@@ -127,9 +127,12 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
     let genesis = agent.take_mutation().unwrap().expect("a new record");
 
     // What the mailbox offers an agent.
-    for action in ["deliver-message", "draft-message", "draft-reply"] {
+    for action in ["deliver-message", "draft-message"] {
         assert_eq!(operation(&agent, action).kind, OperationKind::Document);
     }
+    // A reply is drafted from the message wherever it is kept, fetched or
+    // held, so the view answers it and records the draft.
+    assert_eq!(operation(&agent, "draft-reply").kind, OperationKind::Effect);
     assert!(
         readable(&operation(&agent, "read")),
         "a planner may read the mailbox while it plans"
@@ -205,12 +208,23 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
         "reading changes nothing"
     );
 
-    // Drafting a reply: written into the mailbox's draft, never sent.
-    step(
+    // Drafting a reply: a draft of its own each time, never sent.
+    let reply = step(
         &agent,
         "draft-reply",
-        json!({ "message": request_id, "body": "Booked for 14 on 3 November." }),
+        json!({
+            "message": request_id,
+            "body": "Booked for 14 on 3 November.",
+            "notes": "Check the harbour venue's catering first.",
+        }),
+    )
+    .value
+    .expect("a reply answers with its draft");
+    assert_eq!(
+        reply["draft"]["to"], "Dana Ruiz <dana@example.test>",
+        "{reply}"
     );
+    assert_eq!(reply["draft"]["subject"], "Re: Offsite venue", "{reply}");
     let drafted = agent.take_mutation().unwrap().expect("the draft");
 
     // Exporting as content the room keeps, the draft with the mail.
@@ -224,6 +238,10 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
     ] {
         assert!(markdown.contains(expected), "{expected}: {markdown}");
     }
+    assert!(
+        !markdown.contains("catering"),
+        "a draft's notes are private: {markdown}"
+    );
     assert!(
         agent.take_mutation().unwrap().is_none(),
         "an export changes nothing"
@@ -247,12 +265,21 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
     .unwrap();
     page.apply(&seeded).unwrap();
     page.apply(&drafted).unwrap();
-    let (held, draft) = page
+    let (held, drafts) = page
         .read(|doc| {
             let mail = <mail::resource::Mail as ui::tilo_resource::Resource>::read(doc).unwrap();
-            (mail.held.len(), mail.draft.body)
+            let drafts: Vec<(String, String)> = mail
+                .drafts
+                .values()
+                .map(|draft| (draft.body.clone(), draft.notes.clone()))
+                .collect();
+            (mail.held.len(), drafts)
         })
         .unwrap();
     assert_eq!(held, 2, "both messages are held");
-    assert!(draft.contains("Booked for 14"), "{draft}");
+    let [(body, notes)] = drafts.as_slice() else {
+        panic!("one draft: {drafts:?}");
+    };
+    assert!(body.contains("Booked for 14"), "{body}");
+    assert!(notes.contains("catering"), "{notes}");
 }

@@ -130,6 +130,9 @@ system and an entry in its history:
 | `tell-agent` | people | a message to the issue's agent: the run going reads it, and with none going it starts the next run, which reads it as its direction |
 | `report-run` | the run's agent | its phase, and progress posted in the thread |
 | `incorporate` | the run's agent | the first *n* messages to the run, taken in |
+| `record-read` | the run's agent | a resource it looked up, as the reference it was |
+| `record-step` | the run's agent | a tilolang program it ran and what it answered (`tilo_reference::ProgramStep`): the composer and the thread show it as code, its references as chips, its changes as rows that undo and what it proposes as previews |
+| `record-answer` | the run's agent | the view it answered with: the resource keeping it (an Answer in Views), which opens beside what the request was about |
 | `ask-confirmation` | the run's agent | the draft of an action that asks first |
 | `answer-confirmation` | people, on the host's sheet | confirm (with edits) or decline with a reason |
 | `settle-confirmation` | the run's agent | the answer is spent once the action started |

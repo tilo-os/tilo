@@ -439,7 +439,9 @@ pub fn is_shell_chord(event: &WindowEvent, modifiers: &Modifiers, overlay_open: 
 /// The evdev keycode for a winit key event.
 ///
 /// Prefers the physical key position mapped to the stable peer wire code. Falls back to a
-/// logical-key table for events synthesised without a physical key — the DRM backend's libinput bridge and the test-control socket both build `KeyEvent`s that way.
+/// logical-key table for named keys synthesised without a physical key. A character
+/// without one has no keycode: which key types it is the seat keymap's to say, so
+/// whoever synthesises it names the key (`compositor::keymap_typing`).
 pub fn evdev_keycode(key: &KeyEvent) -> Option<u32> {
     // Only an identified physical key carries a trustworthy scancode: winit maps `PhysicalKey::Unidentified` to `KEY_UNKNOWN` (240), which would otherwise make every synthesised keystroke a dead key.
     if let Some(scancode) = ui::evdev::from_physical(key.physical_key)
@@ -450,7 +452,9 @@ pub fn evdev_keycode(key: &KeyEvent) -> Option<u32> {
     evdev_from_logical(&key.logical_key)
 }
 
-/// Logical-key → evdev keycode fallback. Values are from `linux/input-event-codes.h`.
+/// Logical-key → evdev keycode fallback for named keys, whose position no layout
+/// moves. Values are from `linux/input-event-codes.h`. A character has none: on a
+/// German keymap `y` is the key a US one types `z` with.
 pub fn evdev_from_logical(key: &Key) -> Option<u32> {
     match key {
         Key::Named(n) => match n {
@@ -490,105 +494,12 @@ pub fn evdev_from_logical(key: &Key) -> Option<u32> {
             NamedKey::Super | NamedKey::Meta => Some(125),
             _ => None,
         },
-        Key::Character(s) => {
-            let mut chars = s.chars();
-            let (Some(c), None) = (chars.next(), chars.next()) else {
-                return None;
-            };
-            evdev_from_char(c)
-        }
         _ => None,
     }
 }
 
-/// The unshifted key a character sits on, and whether Shift reaches it. A
-/// keycode names a *position*, not a character: 39 is `;` or `:` purely by whether Shift is held (US positions).
-pub fn unshifted(c: char) -> (char, bool) {
-    let pair = match c {
-        '!' => '1',
-        '@' => '2',
-        '#' => '3',
-        '$' => '4',
-        '%' => '5',
-        '^' => '6',
-        '&' => '7',
-        '*' => '8',
-        '(' => '9',
-        ')' => '0',
-        '_' => '-',
-        '+' => '=',
-        '{' => '[',
-        '}' => ']',
-        ':' => ';',
-        '"' => '\'',
-        '~' => '`',
-        '|' => '\\',
-        '<' => ',',
-        '>' => '.',
-        '?' => '/',
-        _ => return (c.to_ascii_lowercase(), c.is_ascii_uppercase()),
-    };
-    (pair, true)
-}
-
-/// Single-character → evdev keycode (US layout positions) — answers about the *position*, so a shifted character resolves to the key its unshifted twin sits on (see [`unshifted`]).
-fn evdev_from_char(c: char) -> Option<u32> {
-    let (lower, _) = unshifted(c);
-    let code = match lower {
-        'a' => 30,
-        'b' => 48,
-        'c' => 46,
-        'd' => 32,
-        'e' => 18,
-        'f' => 33,
-        'g' => 34,
-        'h' => 35,
-        'i' => 23,
-        'j' => 36,
-        'k' => 37,
-        'l' => 38,
-        'm' => 50,
-        'n' => 49,
-        'o' => 24,
-        'p' => 25,
-        'q' => 16,
-        'r' => 19,
-        's' => 31,
-        't' => 20,
-        'u' => 22,
-        'v' => 47,
-        'w' => 17,
-        'x' => 45,
-        'y' => 21,
-        'z' => 44,
-        '1' => 2,
-        '2' => 3,
-        '3' => 4,
-        '4' => 5,
-        '5' => 6,
-        '6' => 7,
-        '7' => 8,
-        '8' => 9,
-        '9' => 10,
-        '0' => 11,
-        '-' => 12,
-        '=' => 13,
-        '[' => 26,
-        ']' => 27,
-        ';' => 39,
-        '\'' => 40,
-        '`' => 41,
-        '\\' => 43,
-        ',' => 51,
-        '.' => 52,
-        '/' => 53,
-        ' ' => 57,
-        _ => return None,
-    };
-    Some(code)
-}
-
-/// evdev keycode → the single character [`evdev_from_char`] would have mapped to it, in lowercase. `None` for codes that carry no character.
+/// evdev keycode → the lowercase character a US keyboard prints on that key. `None`
+/// for codes that carry no character.
 fn char_from_evdev(code: u32) -> Option<char> {
     Some(match code {
         30 => 'a',
@@ -1608,69 +1519,12 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn keys_buttons_and_scroll_map_to_stable_wire_codes() {
-        fn every_printable_ascii_character_names_a_key() {
-            let missing: Vec<char> = (0x20u8..0x7f)
-                .map(char::from)
-                .filter(|c| evdev_from_char(*c).is_none())
-                .collect();
-            assert!(
-                missing.is_empty(),
-                "these characters reach a client as nothing at all: {missing:?}",
-            );
-        }
-
-        fn a_shifted_character_shares_its_key_with_the_unshifted_one() {
-            for (shifted, plain) in [
-                (':', ';'),
-                ('"', '\''),
-                ('?', '/'),
-                ('_', '-'),
-                ('+', '='),
-                ('{', '['),
-                ('}', ']'),
-                ('<', ','),
-                ('>', '.'),
-                ('~', '`'),
-                ('|', '\\'),
-                ('!', '1'),
-                (')', '0'),
-            ] {
-                assert_eq!(
-                    evdev_from_char(shifted),
-                    evdev_from_char(plain),
-                    "{shifted:?} and {plain:?} are one key",
-                );
-                assert_eq!(
-                    unshifted(shifted),
-                    (plain, true),
-                    "{shifted:?} is {plain:?} with Shift held",
-                );
-            }
-            assert_eq!(unshifted('a'), ('a', false), "a lowercase letter is bare");
-            assert_eq!(unshifted('A'), ('a', true), "a capital is Shift held");
-        }
-
         fn evdev_keycodes_match_the_kernel_table() {
             // Values from linux/input-event-codes.h — the codes `wl_keyboard.key` carries on the wire.
             assert_eq!(
-                evdev_from_logical(&Key::Character(SmolStr::new("a"))),
-                Some(30)
-            );
-            assert_eq!(
-                evdev_from_logical(&Key::Character(SmolStr::new("A"))),
-                Some(30)
-            );
-            assert_eq!(
-                evdev_from_logical(&Key::Character(SmolStr::new("q"))),
-                Some(16)
-            );
-            assert_eq!(
-                evdev_from_logical(&Key::Character(SmolStr::new("1"))),
-                Some(2)
-            );
-            assert_eq!(
-                evdev_from_logical(&Key::Character(SmolStr::new("0"))),
-                Some(11)
+                evdev_from_logical(&Key::Character(SmolStr::new("y"))),
+                None,
+                "a character's key is the keymap's to say, not a US table's"
             );
             assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Enter)), Some(28));
             assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Escape)), Some(1));
@@ -1740,8 +1594,6 @@ mod tests {
         }
 
         fn chord_key_agrees_across_both_directions() {
-            // Every character the forward table maps, including the space some layouts deliver as text rather than `NamedKey::Space`.
-            const CHARS: &str = "abcdefghijklmnopqrstuvwxyz0123456789-=[];'`\\,./ ";
             let named = [
                 NamedKey::Escape,
                 NamedKey::Backspace,
@@ -1790,26 +1642,26 @@ mod tests {
                 );
                 checked += 1;
             }
-            for c in CHARS.chars() {
+            let mut characters = 0;
+            for code in 0..=255 {
+                let Some(c) = char_from_evdev(code) else {
+                    continue;
+                };
                 let key = Key::Character(SmolStr::new(c.to_string()));
-                let code = evdev_from_logical(&key)
-                    .unwrap_or_else(|| panic!("{c:?} is in the forward keycode table"));
                 assert_eq!(
                     chord_key_for_evdev(code),
                     chord_key_for_logical(&key),
                     "{c:?} (evdev {code}) narrows differently from each side",
                 );
-                checked += 1;
+                characters += 1;
             }
-            assert_eq!(
-                checked,
-                named.len() + CHARS.chars().count(),
-                "the round-trip sweep skipped keys",
+            assert_eq!(checked, named.len(), "the round-trip sweep skipped keys");
+            assert!(
+                characters > 40,
+                "the character half swept {characters} keys"
             );
         }
 
-        every_printable_ascii_character_names_a_key();
-        a_shifted_character_shares_its_key_with_the_unshifted_one();
         evdev_keycodes_match_the_kernel_table();
         evdev_keycode_prefers_the_physical_scancode();
         non_us_physical_keys_keep_the_peer_wire_code();

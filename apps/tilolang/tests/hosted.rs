@@ -531,7 +531,7 @@ fn new_notes_take_the_keys_typed_right_after_new_note(mut session: Session) {
     let plus = session.new_note_button();
     session.window.click_at(plus.0, plus.1);
     session.settle();
-    let title = session.field("Title");
+    let title = session.field("Untitled");
     session.window.click_at(title.0, title.1);
     session.window.type_text("First ");
     session.settle();
@@ -547,10 +547,10 @@ fn new_notes_take_the_keys_typed_right_after_new_note(mut session: Session) {
         titles,
         [
             // Clicked past its end: typed after it.
-            "UntitledFirst ",
-            "UntitledNote title",
-            "UntitledNote title",
-            "UntitledNote title"
+            "First ",
+            "Note title",
+            "Note title",
+            "Note title"
         ],
         "every key typed after New note lands in the new note's title, none lost"
     );
@@ -580,7 +580,7 @@ fn keys_typed_after_each_of_several_presses_land_in_the_note_that_press_made(mut
     titles.sort();
     assert_eq!(
         titles,
-        ["UntitledAlpha", "UntitledBeta", "UntitledGamma"],
+        ["Alpha", "Beta", "Gamma"],
         "each note has the keys typed after its own press"
     );
 }
@@ -606,7 +606,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_room_onc
     // The connection's queue fills up while the person types fast into notes, open and new.
     busy.store(true, Ordering::SeqCst);
     let before = changes.lock().unwrap().len();
-    let title = session.field("Title");
+    let title = session.field("Untitled");
     session.window.click_at(title.0 + 40.0, title.1);
     for key in ["Be", "ta", "Gam", "ma"] {
         session.window.type_text(key);
@@ -624,7 +624,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_room_onc
     titles.sort();
     assert_eq!(
         titles,
-        ["UntitledBetaGamma", "UntitledWV"],
+        ["BetaGamma", "WV"],
         "every key is kept while the room cannot take it yet"
     );
     assert_eq!(
@@ -668,7 +668,7 @@ fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() 
         session.window.click_at(body.0 + shift, body.1);
         session.window.type_text("Body");
         session.settle();
-        let title = session.field("Title");
+        let title = session.field("Untitled");
         session.window.click_at(title.0 + shift, title.1);
         session.window.type_text("XY");
         session.settle();
@@ -806,7 +806,7 @@ fn a_bar_press_runs_between_the_keys_before_and_after_it_and_typing_after_it_whe
     titles.sort();
     assert_eq!(
         titles,
-        ["UntitledEcho", "UntitledFirst"],
+        ["Echo", "First"],
         "the keys typed after the press are the new note's title"
     );
     let shown = session.shown();

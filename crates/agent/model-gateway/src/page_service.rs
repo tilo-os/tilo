@@ -384,7 +384,8 @@ impl ProviderAdmin for PageService {
         Box::pin(async move {
             let profile = profile(&profile_id)?;
             let key = self.key(&profile)?;
-            let url = transform::models_url(&profile);
+            let url = transform::models_url(&profile)
+                .ok_or_else(|| ModelError::new(ErrorKind::Unsupported))?;
             let body = self
                 .exchange(
                     &profile,

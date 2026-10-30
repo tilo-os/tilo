@@ -754,6 +754,23 @@ fn finish_definition() -> ToolDefinition {
                     "type": "boolean",
                     "description": "Whether the request was completed."
                 },
+                VIEW: {
+                    "type": "object",
+                    "description": VIEW_DESCRIPTION,
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "What the view shows, in a few words."
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": "The view: a tilolang view block over the apps \
+                                listed under \"Apps\", such as `column { ... }`."
+                        }
+                    },
+                    "required": ["title", "source"],
+                    "additionalProperties": false
+                },
                 PARTS: parts_schema(),
                 UNABLE: unable_schema()
             },
@@ -765,6 +782,13 @@ fn finish_definition() -> ToolDefinition {
 
 /// The property listing the request's parts (first invoke or plan).
 pub const PARTS: &str = "parts";
+/// The [`PLAN`] property that answers with a view.
+pub const VIEW: &str = "view";
+const VIEW_DESCRIPTION: &str = "Optional: answer with a view when the answer is about \
+     resources the person will want to look at and act on (what is left, what changed, a \
+     comparison). It opens as a window beside what they pointed at and stays live as the \
+     resources change; keep `reply` to one sentence then. Buttons in it that run actions ask \
+     the person first.";
 /// The property naming parts that cannot be done, with the reason.
 pub const UNABLE: &str = "unable";
 
@@ -882,6 +906,7 @@ pub fn typed_loop_definitions() -> Vec<ToolDefinition> {
         describe_operation_definition(),
         invoke_definition(),
         crate::pages::read_result_definition(),
+        crate::programs::definition(),
         finish_definition(),
     ]
 }
@@ -891,6 +916,28 @@ pub fn typed_loop_definitions() -> Vec<ToolDefinition> {
 pub struct Finish {
     pub reply: Option<String>,
     pub done: bool,
+    /// The answer as a view, when the model answered with one.
+    pub view: Option<ViewAnswer>,
+}
+
+/// A view a task answers with: a tilolang view block and what it shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewAnswer {
+    pub title: String,
+    pub source: String,
+}
+
+/// The most characters of a view answer's source.
+pub const MAX_VIEW_SOURCE_CHARS: usize = 8_000;
+
+fn read_view(input: &Value) -> Option<ViewAnswer> {
+    let view = input.get(VIEW)?;
+    let title = view.get("title")?.as_str()?.trim();
+    let source = view.get("source")?.as_str()?.trim();
+    (!title.is_empty() && !source.is_empty()).then(|| ViewAnswer {
+        title: title.chars().take(120).collect(),
+        source: source.chars().take(MAX_VIEW_SOURCE_CHARS).collect(),
+    })
 }
 
 /// Read the loop's terminal [`PLAN`] call. Lenient by design: a missing
@@ -904,6 +951,7 @@ pub fn read_finish(input: &Value) -> Finish {
             .filter(|reply| !reply.is_empty())
             .map(bound_reply),
         done: input.get("done").and_then(Value::as_bool).unwrap_or(true),
+        view: read_view(input),
     }
 }
 
@@ -1178,6 +1226,9 @@ pub fn validate_loop_calls(calls: &[ToolCall]) -> Result<(), String> {
                     .validate_input(&input)
                     .map_err(|error| error.to_string())?;
             }
+            crate::programs::TILO => crate::programs::definition()
+                .validate_input(&call.input)
+                .map_err(|error| error.to_string())?,
             PLAN if index + 1 == calls.len() => {}
             PLAN => return Err("plan must be the last call in its turn".into()),
             // Every other tool the loop offers is taken as its schema says:
@@ -2570,6 +2621,7 @@ mod tests {
                 DESCRIBE_OPERATION,
                 INVOKE,
                 crate::pages::READ_RESULT,
+                crate::programs::TILO,
                 PLAN
             ]
         );
@@ -2612,7 +2664,8 @@ mod tests {
             read_finish(&json!({"reply": "  Done.  ", "done": false})),
             Finish {
                 reply: Some("Done.".into()),
-                done: false
+                done: false,
+                view: None,
             }
         );
     }

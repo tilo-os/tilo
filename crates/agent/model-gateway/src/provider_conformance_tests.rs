@@ -85,7 +85,6 @@ async fn invoke(
                     target: crate::openai::Target::Standard,
                     retry_refusals: false,
                     stream_end: Arc::default(),
-                    authenticated: false,
                     budget: tilo_test_env::hang_bound(),
                     body: None,
                     failure: Arc::default(),

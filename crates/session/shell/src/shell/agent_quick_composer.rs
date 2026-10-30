@@ -6,11 +6,15 @@
 //! The owner adapter (`overlay_host::agent_actions`), not this widget,
 //! resolves and admits the published agent and Tasks actions.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
+use tilo_reference::{ProgramStep, ResourceAt, StepChange, StepPreview};
 use ui::widget::{
-    Button, ButtonRole, Column, Container, ControlSize, Decorator, Divider, Dropdown, Popover,
-    PopoverSide,
+    BlockEditor, Button, ButtonRole, Chip, Column, Container, ControlSize, Decorator,
+    DisclosureGroup, Divider, Dropdown, ListRow, Popover, PopoverSide, ProgramStepView, Scrollable,
+    Slot, SlotHandle,
 };
 use ui::widget::{Row, Spinner, Text, TextInput, When, Widget};
 use ui::{LocalState, Theme};
@@ -144,6 +148,216 @@ pub(crate) struct RunProgress {
     pub streamed: String,
     /// What the run reported so far, oldest first: the last few steps.
     pub steps: Vec<String>,
+    /// The programs the run ran so far, oldest first, with their answers.
+    pub programs: Vec<tilo_reference::ProgramStep>,
+    /// The view the run answered with, once it did: the resource keeping it.
+    pub answer: Option<tilo_reference::ResourceAt>,
+}
+
+/// What the person did with the work the composer shows, until the adapter takes it: each
+/// goes through the ordinary door as the person.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum WorkPress {
+    /// Open a resource the work names, where it lives.
+    Open(ResourceAt),
+    /// Undo what the followed task changed in one resource.
+    Undo { task: String, change: StepChange },
+    /// Confirm or decline what a step proposes.
+    Resolve { preview: StepPreview, approve: bool },
+    /// Open the view the run answered with.
+    OpenAnswer(ResourceAt),
+}
+
+/// The parts of the composer that show the work, replaced as it moves.
+struct Work {
+    /// What the person pressed in them, oldest first.
+    presses: Rc<RefCell<Vec<WorkPress>>>,
+    /// The subject as a chip.
+    subject: SlotHandle,
+    /// The steps and the answer row.
+    steps: SlotHandle,
+    /// The agent's reply, rendered.
+    reply: SlotHandle,
+    /// Which long answers the person unfolded.
+    folds: DisclosureGroup,
+    /// What the slots show now, so a refresh that changes nothing rebuilds nothing.
+    shown: RefCell<WorkShown>,
+}
+
+#[derive(Default, PartialEq)]
+struct WorkShown {
+    task: String,
+    programs: Vec<ProgramStep>,
+    answer: Option<ResourceAt>,
+    reply: String,
+}
+
+/// The slots [`Work`] fills, as they stand in the composer's tree.
+struct WorkSlots {
+    subject: Slot,
+    steps: Slot,
+    reply: Slot,
+}
+
+impl Work {
+    fn new() -> (Self, WorkSlots) {
+        let (subject, subject_handle) = Slot::empty();
+        let (steps, steps_handle) = Slot::empty();
+        let (reply, reply_handle) = Slot::empty();
+        (
+            Self {
+                presses: Rc::default(),
+                subject: subject_handle,
+                steps: steps_handle,
+                reply: reply_handle,
+                folds: DisclosureGroup::new(),
+                shown: RefCell::default(),
+            },
+            WorkSlots {
+                subject,
+                steps,
+                reply,
+            },
+        )
+    }
+
+    /// Show `progress` of `task` and `reply`, rebuilding only what changed.
+    fn show(&self, task: &str, progress: Option<&RunProgress>, reply: &str) {
+        let mut shown = self.shown.borrow_mut();
+        let (programs, answer) = progress.map_or((&[][..], None), |progress| {
+            (progress.programs.as_slice(), progress.answer.as_ref())
+        });
+        if shown.task != task || shown.programs != programs || shown.answer.as_ref() != answer {
+            task.clone_into(&mut shown.task);
+            shown.programs = programs.to_vec();
+            shown.answer = answer.cloned();
+            self.steps.set(work_list(
+                &self.presses,
+                &self.folds,
+                task,
+                programs,
+                answer,
+            ));
+        }
+        if shown.reply != reply {
+            reply.clone_into(&mut shown.reply);
+            self.reply.set(reply_view(reply));
+        }
+    }
+
+    /// The presses since the last take, oldest first.
+    fn take(&self) -> Vec<WorkPress> {
+        std::mem::take(&mut *self.presses.borrow_mut())
+    }
+}
+
+/// Note `press`, for the adapter's next pump.
+fn pressed(presses: &Rc<RefCell<Vec<WorkPress>>>) -> impl Fn(WorkPress) + 'static {
+    let presses = Rc::clone(presses);
+    move |press| {
+        presses.borrow_mut().push(press);
+        crate::shell::wake_compositor();
+    }
+}
+
+/// The steps a run took, newest last, then the view it answered with as one row.
+fn work_list(
+    presses: &Rc<RefCell<Vec<WorkPress>>>,
+    folds: &DisclosureGroup,
+    task: &str,
+    programs: &[ProgramStep],
+    answer: Option<&ResourceAt>,
+) -> Box<dyn Widget> {
+    let mut column = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_rhythm(ui::tokens::Rhythm::Section);
+    for (index, step) in programs.iter().enumerate() {
+        let (open, undo, confirm, decline) = (
+            pressed(presses),
+            pressed(presses),
+            pressed(presses),
+            pressed(presses),
+        );
+        let task = task.to_owned();
+        column = column.push(
+            ProgramStepView::new(format!("agent-quick-step-{index}"), step.clone())
+                .with_disclosure(folds)
+                .on_open(move |resource| open(WorkPress::Open(resource.clone())))
+                .on_undo(move |change| {
+                    undo(WorkPress::Undo {
+                        task: task.clone(),
+                        change: change.clone(),
+                    });
+                })
+                .on_confirm(move |preview| {
+                    confirm(WorkPress::Resolve {
+                        preview: preview.clone(),
+                        approve: true,
+                    });
+                })
+                .on_decline(move |preview| {
+                    decline(WorkPress::Resolve {
+                        preview: preview.clone(),
+                        approve: false,
+                    });
+                })
+                .into_widget(),
+        );
+    }
+    if let Some(answer) = answer {
+        let open = pressed(presses);
+        let resource = answer.clone();
+        column = column.push(Box::new(
+            ListRow::new("agent-quick-answer-view", answer.reference.label.clone())
+                .secondary(t("agent-quick-answer-view"))
+                .icon(ui::icons::Icon::LayoutGrid)
+                .trailing(Box::new(
+                    Button::new("agent-quick-answer-open", &t("agent-quick-answer-open"))
+                        .with_icon(ui::icons::Icon::ExternalLink)
+                        .role(ButtonRole::Plain)
+                        .control_size(ControlSize::Small)
+                        .on_click(move || open(WorkPress::OpenAnswer(resource.clone()))),
+                )),
+        ));
+    }
+    Box::new(column)
+}
+
+/// The agent's reply as it reads: its Markdown rendered, never shown as source.
+fn reply_view(reply: &str) -> Box<dyn Widget> {
+    if reply.trim().is_empty() {
+        return ui::widget::optional(None);
+    }
+    Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_id("agent-quick-answer")
+            .with_child(Box::new(
+                BlockEditor::reading_markdown(reply)
+                    .with_wrap_lines(true)
+                    .with_compact_paragraph_spacing(true)
+                    .with_block_handles(false)
+                    .with_read_only(true),
+            )),
+    )
+}
+
+/// What the request is about, as a chip: the resource it names, which opens where it lives,
+/// else the app or agent it is about.
+fn subject_chip(
+    presses: &Rc<RefCell<Vec<WorkPress>>>,
+    label: &str,
+    resource: Option<ResourceAt>,
+) -> Box<dyn Widget> {
+    let Some(resource) = resource else {
+        return Box::new(Chip::new(label).with_id("agent-quick-subject"));
+    };
+    let open = pressed(presses);
+    Box::new(
+        Chip::reference(label, "agent-quick-subject")
+            .on_click(move || open(WorkPress::Open(resource.clone()))),
+    )
 }
 
 /// What the person does with a text answer about their selection.
@@ -218,6 +432,10 @@ struct View {
     /// person typed when no run is followed.
     can_chat: LocalState<bool>,
 
+    /// Whether there are steps or an answer view to show.
+    has_work: LocalState<bool>,
+    /// Whether the work area shows anything: steps, an answer view or a reply.
+    has_work_area: LocalState<bool>,
     /// Whether the agent is still at it: thinking, sending or working.
     waiting: LocalState<bool>,
     running: LocalState<bool>,
@@ -247,6 +465,8 @@ impl Default for View {
             has_status: LocalState::new(false),
             has_run: LocalState::new(false),
             can_chat: LocalState::new(false),
+            has_work: LocalState::new(false),
+            has_work_area: LocalState::new(false),
             waiting: LocalState::new(false),
             running: LocalState::new(false),
             enabled: LocalState::new(false),
@@ -364,10 +584,21 @@ pub(crate) struct AgentQuickComposer {
     chat_submission: Option<u64>,
     /// Whether it stands along the bottom of a narrow viewport.
     sheet: bool,
+    /// The work it shows: steps, the answer view and the reply.
+    work: Work,
+    /// What each agent's last run showed, kept once it ended so its steps stay readable.
+    worked: HashMap<ComposerOwner, (String, RunProgress)>,
+    /// The answer views already opened, by resource id: each opens once.
+    opened_answers: HashSet<String>,
+    /// The answer view to open, until the host takes it.
+    answer_to_open: Option<ResourceAt>,
+    /// What the composer keeps clear of: where its subject is drawn.
+    anchor: Option<Rect>,
 }
 
 impl Default for AgentQuickComposer {
     fn default() -> Self {
+        let (work, slots) = Work::new();
         let mut composer = Self {
             popover: Popover::with_content(Container::new()),
             owner: None,
@@ -402,8 +633,13 @@ impl Default for AgentQuickComposer {
             chat_pending: false,
             chat_submission: None,
             sheet: false,
+            work,
+            worked: HashMap::new(),
+            opened_answers: HashSet::new(),
+            answer_to_open: None,
+            anchor: None,
         };
-        composer.popover = composer.controls();
+        composer.popover = composer.controls(slots);
         composer
     }
 }
@@ -413,6 +649,13 @@ impl Default for AgentQuickComposer {
 const COMPOSER_WIDTH: f32 = 360.0;
 /// Below this viewport width the composer is a sheet along the bottom.
 const SHEET_BELOW: f64 = 600.0;
+/// The test id of the area showing the work: the steps, the answer view and the reply.
+const WORK_AREA: &str = "agent-quick-work";
+/// The tallest the work area starts, before the viewport it stands in is known.
+const WORK_MAX: f32 = 360.0;
+/// The share of the viewport's height the work area may take; past it the work scrolls,
+/// following its end, so the field and its controls stay in view.
+const WORK_SHARE: f64 = 0.5;
 
 fn wrapped(text: Text) -> Box<dyn Widget> {
     Box::new(Container::new().with_no_padding().with_child(Box::new(
@@ -422,15 +665,11 @@ fn wrapped(text: Text) -> Box<dyn Widget> {
 
 impl AgentQuickComposer {
     /// What the request is about, and Close.
-    fn header(&self) -> Row {
-        let close = self.presses.close.clone();
+    fn header(subject: Slot, close: LocalState<bool>) -> Row {
         Row::new()
+            .no_wrap()
             .with_justify(taffy::JustifyContent::SpaceBetween)
-            .push(Box::new(
-                Text::from_state(&self.view.subject, Clone::clone)
-                    .with_id("agent-quick-subject")
-                    .with_role(ui::TextRole::Label),
-            ))
+            .push(Box::new(subject))
             .push(Box::new(
                 Button::icon_only(
                     "agent-quick-close",
@@ -568,8 +807,36 @@ impl AgentQuickComposer {
             ))
     }
 
-    fn controls(&self) -> Popover<Container> {
+    fn controls(&self, slots: WorkSlots) -> Popover<Container> {
         let view = &self.view;
+        // The work: the steps, the answer view and the reply, following the end while the run
+        // streams, and scrolled within the composer once it is taller than the room it has.
+        let work = Container::new()
+            .with_no_padding()
+            .with_id(WORK_AREA)
+            .with_child(Box::new(
+                Scrollable::new_vertical()
+                    .following_end()
+                    .with_edge_fade()
+                    .fit_content_height()
+                    .with_max_height(WORK_MAX)
+                    .with_child(Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_rhythm(ui::tokens::Rhythm::Section)
+                            .push(Box::new(When::from_state(
+                                &view.has_work,
+                                |shown| *shown,
+                                Box::new(slots.steps),
+                            )))
+                            .push(Box::new(When::from_state(
+                                &view.has_answer,
+                                |shown| *shown,
+                                Box::new(slots.reply),
+                            ))),
+                    )),
+            ));
         let (status_line, run_line) = self.status();
         let submit = self.presses.submit.clone();
         let editor = TextInput::from_state(&self.draft)
@@ -581,7 +848,10 @@ impl AgentQuickComposer {
         let body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
-            .push(Box::new(self.header()))
+            .push(Box::new(Self::header(
+                slots.subject,
+                self.presses.close.clone(),
+            )))
             .push(Box::new(When::from_state(
                 &view.has_context,
                 |shown| *shown,
@@ -607,13 +877,9 @@ impl AgentQuickComposer {
                 ),
             )))
             .push(Box::new(When::from_state(
-                &view.has_answer,
+                &view.has_work_area,
                 |shown| *shown,
-                wrapped(
-                    Text::from_state(&view.shown, Clone::clone)
-                        .with_id("agent-quick-answer")
-                        .with_live(ui::a11y::Politeness::Polite),
-                ),
+                Box::new(work),
             )))
             .push(Box::new(When::from_state(
                 &view.can_use_answer,
@@ -686,6 +952,11 @@ impl AgentQuickComposer {
     /// width of the viewport, with even air either side.
     fn place(&mut self, viewport: Rect, anchor: Rect, protected: Rect) {
         self.popover.set_viewport(viewport);
+        self.anchor = Some(protected);
+        set_work_max(
+            self.popover.content_mut(),
+            ui::num::f32_of_f64(viewport.height() * WORK_SHARE),
+        );
         if viewport.width() < SHEET_BELOW {
             // The popover keeps its edge margin and padding on both sides.
             let air = 2.0 * f64::from(ui::tokens::Spacing::BASE.s2)
@@ -720,6 +991,10 @@ impl AgentQuickComposer {
         }
         let bottom = viewport.y1 - inset.clamp(0.0, viewport.height());
         let floor = Rect::new(viewport.x0, bottom, viewport.x1, bottom);
+        set_work_max(
+            self.popover.content_mut(),
+            ui::num::f32_of_f64((bottom - viewport.y0) * WORK_SHARE),
+        );
         self.popover
             .set_viewport(Rect::new(viewport.x0, viewport.y0, viewport.x1, bottom));
         self.popover.set_anchor(floor);
@@ -729,20 +1004,25 @@ impl AgentQuickComposer {
     /// selected text as it reads, or with none, the agent and the line the
     /// composer was opened with. Never Markdown source.
     fn show_subject(&self, about: Option<&super::selection_agent::SelectionSeed>) {
-        let (subject, excerpt) = match about {
+        let (subject, excerpt, resource) = match about {
             Some(seed) => {
                 let (label, excerpt) = seed.subject();
                 (
                     label,
                     excerpt.map(|text| t_args("agent-quick-excerpt", &[("text", text.into())])),
+                    seed.subject_resource(),
                 )
             }
             None => (
                 self.label.clone(),
                 Some(super::selection_agent::plain_excerpt(&self.context))
                     .filter(|line| !line.trim().is_empty()),
+                None,
             ),
         };
+        self.work
+            .subject
+            .set(subject_chip(&self.work.presses, &subject, resource));
         self.view.subject.set(subject);
         self.view.has_context.set(excerpt.is_some());
         self.view.context.set(excerpt.unwrap_or_default());
@@ -808,6 +1088,41 @@ impl AgentQuickComposer {
     pub(crate) fn take_open_chat(&mut self) -> Option<String> {
         self.tick();
         self.open_chat.take()
+    }
+
+    /// What the person did with the work shown since the last take, oldest first: opening a
+    /// reference, undoing a change, deciding a proposal. Opening the answer view is not among
+    /// them; [`Self::take_answer_to_open`] has it.
+    pub(crate) fn take_work_presses(&mut self) -> Vec<WorkPress> {
+        let mut presses = self.work.take();
+        presses.retain(|press| match press {
+            WorkPress::OpenAnswer(resource) => {
+                self.answer_to_open = Some(resource.clone());
+                false
+            }
+            _ => true,
+        });
+        presses
+    }
+
+    /// The answer view to open now, exactly once: the followed run's when it first answered
+    /// with one, or the one the person asked to open again.
+    pub(crate) fn take_answer_to_open(&mut self) -> Option<ResourceAt> {
+        let presses = self.take_work_presses();
+        self.work.presses.borrow_mut().splice(0..0, presses);
+        self.answer_to_open.take()
+    }
+
+    /// Where the composer's subject is drawn, which an answer opens beside.
+    pub(crate) fn anchor(&self) -> Option<Rect> {
+        self.anchor
+    }
+
+    /// Say `notice` on the status line until something newer happens.
+    pub(crate) fn tell(&mut self, notice: String) {
+        self.notice = Some(notice);
+        self.notice_waits = false;
+        self.refresh();
     }
 
     /// The answer the composer shows now, as text: the agent's last answer,
@@ -936,6 +1251,21 @@ impl AgentQuickComposer {
             self.refresh();
             return;
         };
+        // What the run showed stays once it ended, and its answer view opens once.
+        if run.phase != RunPhase::Starting {
+            if let Some(answer) = &run.progress.answer
+                && self.opened_answers.insert(answer.reference.id.clone())
+                && self.owner.as_ref() == Some(owner)
+            {
+                self.answer_to_open = Some(answer.clone());
+            }
+            let kept = RunProgress {
+                streamed: String::new(),
+                ..run.progress.clone()
+            };
+            self.worked
+                .insert(owner.clone(), (run.task.task_id.clone(), kept));
+        }
         if run.phase.running() {
             // A new phase says more than an earlier notice; a new revision
             // of the same run does not.
@@ -1069,6 +1399,10 @@ impl AgentQuickComposer {
         // The ruling was for that request; the next one starts from the
         // agent's own decision until the person makes another.
         self.view.mode.set(t("agent-quick-mode-decides"));
+        // A new request starts new work: the last run's steps make way for it.
+        if intent == ComposerIntent::Request && !stop {
+            self.worked.remove(&owner);
+        }
         self.refresh();
         Some(request)
     }
@@ -1265,6 +1599,27 @@ impl AgentQuickComposer {
             .map(str::to_owned)
             .or_else(|| answer.map(|turn| turn.text.clone()))
             .unwrap_or_default();
+        // The work the composer shows: the followed run's, else what the agent's last run
+        // showed before it ended.
+        let worked = run
+            .map(|run| (run.task.task_id.as_str(), &run.progress))
+            .or_else(|| {
+                self.worked
+                    .get(owner)
+                    .map(|(task, progress)| (task.as_str(), progress))
+            });
+        let has_work = worked.is_some_and(|(_, progress)| {
+            !progress.programs.is_empty() || progress.answer.is_some()
+        });
+        self.work.show(
+            worked.map_or("", |(task, _)| task),
+            worked.map(|(_, p)| p),
+            &shown_answer,
+        );
+        self.view.has_work.set(has_work);
+        self.view
+            .has_work_area
+            .set(has_work || !shown_answer.trim().is_empty());
         self.view.has_answer.set(!shown_answer.trim().is_empty());
         self.view.shown.set(shown_answer);
         // A run being started has no issue yet to open.
@@ -1542,6 +1897,37 @@ fn set_placeholder(widget: &mut dyn Widget, placeholder: &str) -> bool {
         .children_mut()
         .into_iter()
         .any(|child| set_placeholder(child, placeholder))
+}
+
+/// Let the work area grow to `most` before it scrolls.
+fn set_work_max(widget: &mut dyn Widget, most: f32) -> bool {
+    fn scroller(widget: &mut dyn Widget, most: f32) -> bool {
+        if let Some(scroll) = widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<Scrollable>())
+        {
+            scroll.set_max_height(most);
+            return true;
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .any(|child| scroller(child, most))
+    }
+    // The area shows only while there is work, so it is reached through its `When`.
+    if let Some(when) = widget
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<When>())
+    {
+        return set_work_max(when.child_mut(), most);
+    }
+    if widget.test_id() == Some(WORK_AREA) {
+        return scroller(widget, most);
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| set_work_max(child, most))
 }
 
 fn restore_editor(widget: &mut dyn Widget, state: &str) -> bool {
@@ -2310,6 +2696,138 @@ mod tests {
         );
     }
 
+    fn board_card() -> ResourceAt {
+        ResourceAt {
+            app: "so.tilo.lang.board".into(),
+            record: None,
+            reference: tilo_reference::ResourceRef::whole(
+                "tl.so.tilo.lang.board.Card",
+                "tl:so.tilo.lang.board:root/cards:c1",
+                "Write the release notes",
+            ),
+        }
+    }
+
+    fn release_progress(answer: bool) -> RunProgress {
+        RunProgress {
+            streamed: "Three cards are **open**".into(),
+            steps: Vec::new(),
+            programs: vec![ProgramStep {
+                program: "board.move(@board.Card:root/cards:c1, column: \"Review\")".into(),
+                outcome: tilo_reference::StepOutcome::Asked,
+                answer: vec![
+                    "@board.Card:root/cards:c1 \"Write the release notes\" column: \"Review\""
+                        .into(),
+                ],
+                refs: vec![board_card()],
+                changes: vec![StepChange {
+                    resource: board_card(),
+                    action: "Moved to Review".into(),
+                }],
+                previews: vec![StepPreview {
+                    invocation: ResourceAt {
+                        app: "so.tilo.lang.chat".into(),
+                        record: None,
+                        reference: tilo_reference::ResourceRef::whole(
+                            "tl.invocation",
+                            "inv-7",
+                            "Post",
+                        ),
+                    },
+                    action: "Post in Release".into(),
+                    summary: String::new(),
+                }],
+                planned: Vec::new(),
+            }],
+            answer: answer.then(|| ResourceAt {
+                app: "so.tilo.lang.views".into(),
+                record: None,
+                reference: tilo_reference::ResourceRef::whole(
+                    "tl.so.tilo.lang.views.Answer",
+                    "tl:so.tilo.lang.views:a1",
+                    "What's left for the release",
+                ),
+            }),
+        }
+    }
+
+    /// A working run shows its steps, and what the person does with them reaches the host as
+    /// presses: opening a reference, undoing a change for the run's task, deciding a proposal.
+    /// The steps stay readable once the run ended, and its answer view opens exactly once.
+    #[test]
+    fn the_run_shows_its_steps_and_what_the_person_does_with_them_reaches_the_host() {
+        let mut composer = AgentQuickComposer::default();
+        let mut doc = automerge::AutoCommit::new();
+        let tide = owner("tide");
+        open(&mut composer, tide.clone());
+        assert!(!composer.view.has_work.get(), "no run, no steps");
+        let mut run = working("task:release", RunPhase::Working);
+        run.progress = release_progress(false);
+        composer.project(&tide, Some(run.clone()));
+        assert!(composer.view.has_work.get());
+        assert_eq!(composer.shown_answer(), "Three cards are **open**");
+        assert!(
+            shown(&mut composer, "agent-quick-answer"),
+            "the reply is rendered"
+        );
+        assert!(
+            composer.take_answer_to_open().is_none(),
+            "no answer view yet"
+        );
+
+        press(
+            &mut composer,
+            &mut doc,
+            "reference:tl:so.tilo.lang.board:root/cards:c1",
+        );
+        press(&mut composer, &mut doc, "agent-quick-step-0-change-0-undo");
+        press(
+            &mut composer,
+            &mut doc,
+            "agent-quick-step-0-preview-0-decline",
+        );
+        let presses = composer.take_work_presses();
+        assert_eq!(
+            presses,
+            vec![
+                WorkPress::Open(board_card()),
+                WorkPress::Undo {
+                    task: "task:release".into(),
+                    change: run.progress.programs[0].changes[0].clone(),
+                },
+                WorkPress::Resolve {
+                    preview: run.progress.programs[0].previews[0].clone(),
+                    approve: false,
+                },
+            ]
+        );
+        assert!(
+            composer.take_work_presses().is_empty(),
+            "each is taken once"
+        );
+
+        // The run answers with a view and ends: the view opens once, the steps stay.
+        run.progress = release_progress(true);
+        composer.project(&tide, Some(run.clone()));
+        let answer = run.progress.answer.clone().unwrap();
+        assert_eq!(composer.take_answer_to_open(), Some(answer.clone()));
+        run.phase = RunPhase::Finished(Some("Moved it.".into()));
+        composer.project(&tide, Some(run.clone()));
+        composer.project(&tide, Some(run));
+        assert_eq!(composer.take_answer_to_open(), None, "opened once");
+        assert!(composer.followed().is_none());
+        assert!(composer.view.has_work.get(), "the ended run's steps stay");
+        assert!(shown(&mut composer, "agent-quick-step-0-program"));
+        // Opening it again is the person's to ask.
+        press(&mut composer, &mut doc, "agent-quick-answer-open");
+        assert_eq!(composer.take_answer_to_open(), Some(answer));
+
+        // A new request makes way for new work.
+        edit(&mut composer, &mut doc, "And what about the website?");
+        let _ = submit(&mut composer, &mut doc);
+        assert!(!composer.view.has_work.get());
+    }
+
     #[test]
     fn every_composer_string_is_in_every_catalogue() {
         const KEYS: &[&str] = &[
@@ -2342,6 +2860,10 @@ mod tests {
             "agent-quick-outcome-unknown",
             "agent-quick-refused",
             "agent-quick-stop-refused",
+            "agent-quick-answer-view",
+            "agent-quick-answer-open",
+            "agent-quick-undo-refused",
+            "agent-quick-resolve-refused",
         ];
         for (locale, source) in [
             ("en-US", include_str!("../../locales/en-US.ftl")),

@@ -22,7 +22,7 @@ use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 
 use crate::shell::agent_quick_composer::{
     AgentQuickComposer, AnswerUse, ComposerIntent, ComposerOutcome, ComposerOwner, ComposerReceipt,
-    ComposerRequest, ComposerRun, ComposerTask, ComposerTurn, RunPhase, RunProgress,
+    ComposerRequest, ComposerRun, ComposerTask, ComposerTurn, RunPhase, RunProgress, WorkPress,
 };
 use crate::shell::broker_services::FollowedRun;
 use crate::shell::certified_action_session::{ActionSessionSource, DesktopActionSession};
@@ -89,8 +89,12 @@ enum Purpose {
     },
     /// A message to, or Stop of, the followed run.
     Submit(ComposerRequest),
-    /// Open an asked issue's page, as any reference to it opens.
+    /// Open an asked issue's page, or a resource the work names, as any reference opens.
     Show,
+    /// Undo what the followed task changed in one resource.
+    Undo,
+    /// Confirm or decline what a step proposes.
+    Resolve,
 }
 
 /// What opens once work is asked: nothing, its issue's page, or its issue
@@ -109,7 +113,13 @@ struct Operation {
     arguments: Map<String, Value>,
     purpose: Purpose,
     /// The application whose action it is.
-    app: &'static str,
+    app: String,
+    /// Where the action is, when the operation names it outright: a reference's `open` in the
+    /// app that keeps it, a tilolang host's `resolve`, the activity's undo. Otherwise the
+    /// catalogue says who publishes it.
+    target: Option<tilo_actions::remote::RemoteActionTarget>,
+    /// The person's confirmation, given by pressing the control that names the action.
+    confirmation: Option<tilo_actions::remote::Confirmation>,
 }
 
 enum Phase {
@@ -183,6 +193,12 @@ impl Followed {
                     .as_ref()
                     .map(|run| run.steps.clone())
                     .unwrap_or_default(),
+                programs: self
+                    .run
+                    .as_ref()
+                    .map(|run| run.programs.clone())
+                    .unwrap_or_default(),
+                answer: self.run.as_ref().and_then(|run| run.answer.clone()),
             },
         }
     }
@@ -428,7 +444,34 @@ impl AgentActions {
             self.use_answer(&owner, choice, about.as_ref());
             changed = true;
         }
+        for press in composer.take_work_presses() {
+            let operation = match press {
+                WorkPress::Open(resource) | WorkPress::OpenAnswer(resource) => {
+                    open_operation(&owner.room, &resource)
+                }
+                WorkPress::Undo { task, change } => undo_operation(&task, &change),
+                WorkPress::Resolve { preview, approve } => {
+                    resolve_operation(&owner.room, &preview, approve)
+                }
+            };
+            self.begin(operation);
+            changed = true;
+        }
         changed
+    }
+
+    /// Open `resource` where it lives, as the person, as any reference to it opens: the
+    /// answer view the run answered with. Whether it was asked.
+    pub(super) fn open_resource(&mut self, resource: &tilo_reference::ResourceAt) -> bool {
+        let Some(owner) = &self.owner else {
+            return false;
+        };
+        if self.session.is_none() {
+            return false;
+        }
+        let operation = open_operation(&owner.room, resource);
+        self.begin(operation);
+        true
     }
 
     fn submit(&mut self, request: ComposerRequest) {
@@ -630,7 +673,7 @@ impl AgentActions {
                     outcome,
                 });
             }
-            Purpose::Show => {}
+            Purpose::Show | Purpose::Undo | Purpose::Resolve => {}
         }
     }
 
@@ -668,6 +711,10 @@ impl AgentActions {
                         ComposerOutcome::Refused
                     },
                 });
+            }
+            Purpose::Undo => composer.tell(crate::shell::i18n::t("agent-quick-undo-refused")),
+            Purpose::Resolve => {
+                composer.tell(crate::shell::i18n::t("agent-quick-resolve-refused"));
             }
             Purpose::Queue { request: None, .. } | Purpose::Show => {}
         }
@@ -741,7 +788,9 @@ fn respond_operation(request: ComposerRequest) -> Operation {
         action: tilo_automation::AGENT_RESPOND_ACTION.into(),
         arguments,
         purpose: Purpose::Respond(request),
-        app: AGENT,
+        app: AGENT.into(),
+        target: None,
+        confirmation: None,
     }
 }
 
@@ -834,7 +883,9 @@ fn queue_operation(
             title,
             opens: Opens::Nothing,
         },
-        app: TRACKER_APP,
+        app: TRACKER_APP.into(),
+        target: None,
+        confirmation: None,
     }
 }
 
@@ -848,7 +899,86 @@ fn show_operation(issue: &str) -> Operation {
         action: tilo_actions::remote::APPLICATION_OPEN_ACTION.into(),
         arguments: Map::new(),
         purpose: Purpose::Show,
-        app: TRACKER_APP,
+        app: TRACKER_APP.into(),
+        target: None,
+        confirmation: None,
+    }
+}
+
+/// Open `resource` in the app that keeps it, in workspace `room`: its `open`, the one action a
+/// chip, a search hit or an agent opens it with (`tilo_reference::ResourceRef::open_target`).
+/// The host launches the app when no window shows it.
+fn open_operation(room: &str, resource: &tilo_reference::ResourceAt) -> Operation {
+    let target = resource
+        .reference
+        .open_target(room, &resource.app, resource.record.as_deref());
+    Operation {
+        resource: resource.reference.id.clone(),
+        action: tilo_actions::remote::APPLICATION_OPEN_ACTION.into(),
+        arguments: Map::new(),
+        purpose: Purpose::Show,
+        app: resource.app.clone(),
+        target: Some(target),
+        confirmation: None,
+    }
+}
+
+/// Undo what task `task` changed in `change`'s resource: the system's undo of that task's run
+/// in that one record ([`tilo_actions::remote::workspace_activity::UNDO_RECORD`], named by its
+/// task), which asks each app that keeps it to revert its own changes. The person pressing the
+/// Undo that names it is their confirmation; the door still admits it as theirs.
+fn undo_operation(task: &str, change: &tilo_reference::StepChange) -> Operation {
+    use tilo_actions::remote::workspace_activity as activity;
+    let query = activity::RecordQuery {
+        task: Some(task.to_owned()),
+        app_id: change.resource.app.clone(),
+        id: change.resource.record.clone().unwrap_or_default(),
+        ..activity::RecordQuery::default()
+    };
+    let arguments = match serde_json::to_value(query) {
+        Ok(Value::Object(arguments)) => arguments,
+        _ => Map::new(),
+    };
+    Operation {
+        resource: activity::RESOURCE.into(),
+        action: activity::UNDO_RECORD.into(),
+        arguments,
+        purpose: Purpose::Undo,
+        app: activity::APP_ID.into(),
+        target: Some(activity::target(activity::UNDO_RECORD)),
+        confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
+    }
+}
+
+/// Confirm (`approve`) or decline what a step proposes: its tilolang host's `resolve` of the
+/// suggested invocation, which only a person may decide and which the host decides again.
+fn resolve_operation(
+    room: &str,
+    preview: &tilo_reference::StepPreview,
+    approve: bool,
+) -> Operation {
+    const HOST: &str = "tl:host";
+    let app = preview.invocation.app.clone();
+    let arguments = Map::from_iter([
+        (
+            "target".into(),
+            preview.invocation.reference.id.clone().into(),
+        ),
+        (
+            "decision".into(),
+            if approve { "approve" } else { "decline" }.into(),
+        ),
+    ]);
+    Operation {
+        resource: HOST.into(),
+        action: "resolve".into(),
+        arguments,
+        purpose: Purpose::Resolve,
+        target: Some(tilo_actions::remote::application_action_target(
+            room, &app, HOST, "resolve",
+        )),
+        app,
+        confirmation: None,
     }
 }
 
@@ -866,7 +996,9 @@ fn chat_operation(issue: &str) -> Option<Operation> {
         action: tilo_resource::Effect::id(&effect).into(),
         arguments: Map::from_iter([("issue".into(), id.into())]),
         purpose: Purpose::Show,
-        app: TRACKER_APP,
+        app: TRACKER_APP.into(),
+        target: None,
+        confirmation: None,
     })
 }
 
@@ -926,7 +1058,9 @@ fn submission_operation(request: ComposerRequest) -> Option<Operation> {
         action: action.into(),
         arguments,
         purpose: Purpose::Submit(request),
-        app: TRACKER_APP,
+        app: TRACKER_APP.into(),
+        target: None,
+        confirmation: None,
     })
 }
 
@@ -954,7 +1088,11 @@ fn provider_step(
     if !page.exhausted || page.stale_cursor || page.budget_exhausted {
         return Step::Refused(false);
     }
-    let app = operation.app;
+    // An action named outright goes where it is named; the host admits it there.
+    if let Some(target) = &operation.target {
+        return invoke_operation(session, operation, target.clone(), None);
+    }
+    let app = operation.app.as_str();
     // The tracker is reached whether or not Tasks runs: the host launches it
     // to take the issue.
     if app == TRACKER_APP {
@@ -1063,7 +1201,7 @@ fn invoke_operation(
         target,
         argument,
         context: None,
-        confirmation: None,
+        confirmation: operation.confirmation.clone(),
         revision,
         on_behalf_of: None,
         appearance: None,
@@ -1177,6 +1315,79 @@ mod tests {
         }
     }
 
+    /// What the person does with a run's steps goes through the door to where each action is:
+    /// a reference's `open` in its app, the activity's undo of that one record named by the
+    /// task (their press its confirmation), and the tilolang host's `resolve`.
+    #[test]
+    fn work_the_person_does_goes_where_each_action_is() {
+        use tilo_actions::remote::workspace_activity as activity;
+        use tilo_reference::{ResourceAt, ResourceRef, StepChange, StepPreview};
+        let card = ResourceAt {
+            app: "so.tilo.lang.board".into(),
+            record: None,
+            reference: ResourceRef::whole(
+                "tl.so.tilo.lang.board.Card",
+                "tl:so.tilo.lang.board:root/cards:c1",
+                "Write the release notes",
+            ),
+        };
+        let open = open_operation("room", &card);
+        assert_eq!(
+            open.target,
+            Some(card.reference.open_target("room", &card.app, None))
+        );
+        assert!(open.confirmation.is_none());
+
+        let undo = undo_operation(
+            "tasks.tracker/issues/release",
+            &StepChange {
+                resource: card.clone(),
+                action: "Moved to Review".into(),
+            },
+        );
+        assert_eq!(undo.target, Some(activity::target(activity::UNDO_RECORD)));
+        assert_eq!(
+            undo.confirmation,
+            Some(tilo_actions::remote::Confirmation::Confirmed)
+        );
+        let query: activity::RecordQuery =
+            serde_json::from_value(Value::Object(undo.arguments.clone())).unwrap();
+        assert_eq!(
+            query,
+            activity::RecordQuery {
+                task: Some("tasks.tracker/issues/release".into()),
+                app_id: "so.tilo.lang.board".into(),
+                ..activity::RecordQuery::default()
+            }
+        );
+
+        let preview = StepPreview {
+            invocation: ResourceAt {
+                app: "so.tilo.lang.chat".into(),
+                record: None,
+                reference: ResourceRef::whole("tl.invocation", "inv-7", "Post"),
+            },
+            action: "Post in Release".into(),
+            summary: String::new(),
+        };
+        let decline = resolve_operation("room", &preview, false);
+        assert_eq!(
+            decline.target,
+            Some(tilo_actions::remote::application_action_target(
+                "room",
+                "so.tilo.lang.chat",
+                "tl:host",
+                "resolve"
+            ))
+        );
+        assert_eq!(decline.arguments["target"], "inv-7");
+        assert_eq!(decline.arguments["decision"], "decline");
+        assert_eq!(
+            resolve_operation("room", &preview, true).arguments["decision"],
+            "approve"
+        );
+    }
+
     #[test]
     fn a_request_asks_the_agent_and_a_running_task_is_steered_or_stopped() {
         let mut asked = request(ComposerIntent::Request);
@@ -1238,7 +1449,7 @@ mod tests {
             (
                 operation.resource.as_str(),
                 operation.action.as_str(),
-                operation.app
+                operation.app.as_str()
             ),
             (TRACKER, "ask-agent", TRACKER_APP)
         );
@@ -1282,7 +1493,7 @@ mod tests {
             (
                 operation.resource.as_str(),
                 operation.action.as_str(),
-                operation.app
+                operation.app.as_str()
             ),
             (TRACKER, "ask-agent", TRACKER_APP)
         );
@@ -1680,6 +1891,8 @@ mod tests {
             incorporated: 0,
             said: None,
             steps: Vec::new(),
+            programs: Vec::new(),
+            answer: None,
         }
     }
 

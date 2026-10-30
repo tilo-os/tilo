@@ -127,6 +127,8 @@ tasks-message-to-run = To the agent
 tasks-message-read-by-run = Read by the agent
 tasks-message-from-run = From the agent
 tasks-message-lookup = Looked up
+tasks-message-answer = Answered with a view
+tasks-message-step = Ran
 
 ## An issue as a chat with its agent
 tasks-open-chat = Open as chat

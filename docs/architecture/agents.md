@@ -50,6 +50,39 @@ not an agent preset, and agent presets never apply to bots. Bots are not capped
 at Editor, because their grant is fixed and reviewed. They still never govern
 the room ([bots.md](bots.md) §3).
 
+### Task agents and collaborators
+
+There are two ways an agent works here, for different work:
+
+- **Collaborators** are standing agents admitted to the workspace (Workspace Settings ›
+  Agents): a certified identity, presence, their own grants and history, a root-signed
+  `Delegation` as above. Work is assigned to them by name.
+- **Task agents** are the default when a person asks (Super+C, the palette, a context menu,
+  the canvas caret). Asking creates a task, and a fresh agent is made for it. No prior
+  admission or membership is needed.
+
+A task agent's authority is a **task delegation**, signed by the asking person's *device*,
+not
+their root, so it can be made on any device the person uses:
+
+- The shell mints a key for the task and signs a task delegation with the device key: the
+  task's work group, the room, acting for the device's person, expiring when the task does
+  (at most a day). It is carried on the run beside its starter.
+- It verifies as a chain: the room's device list holds the device's root-signed certificate,
+  and the device signed the task delegation inside its window. A device can already act as
+  its person in full, so letting it mint a narrower agent widens nothing.
+- What it may do is the least of the person, the agent cap (Editor, never governing) and the
+  task's scope. Finishing or cancelling the task ends it; revoking the device ends every task
+  delegation it signed.
+- The broker admits the task agent's join by verifying that chain and re-checks it on every
+  revalidation. The certified-identity check accepts a verified task delegation as the
+  agent's certification, beside a collaborator's grant.
+
+Both go through the same task, program path (app-language/agents.md) and recorded steps.
+The composer's agent choice defaults to a new task agent; picking a collaborator assigns the
+task to it. Asking is possible whenever an agent runtime is reachable and a model is
+configured; otherwise the composer says which is missing and offers the fix in place.
+
 Presets are conveniences, not a second policy store. The UI derives the preset
 name when the live capability set exactly matches a bundle and shows `Custom`
 otherwise. Pause must be an enforced restriction, never a display-only state.

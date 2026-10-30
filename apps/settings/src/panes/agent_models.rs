@@ -253,12 +253,13 @@ pub enum AgentModelsEffect {
     /// Reload the authoritative profiles and credential status.
     #[effect(job, label = "Refresh providers")]
     RefreshProviders,
-    /// Add a provider from a known one, which fills its name, endpoint and
-    /// protocol; its model is chosen afterwards.
+    /// Add a provider from a known one, which fills its name, endpoint,
+    /// protocol and key header; its key and model are set afterwards. Add
+    /// the same one again for a second account.
     #[effect(job, label = "Add provider")]
     AddProvider {
         #[param(
-            "`openai`, `anthropic`, `gemini`, `mistral`, `openrouter`, `groq`, `xai`, `deepseek`, `together`, `fireworks`, `huggingface`, `ollama`, `lm-studio`, or `openai-compatible` for any other"
+            "A `preset` name from model-providers' list-presets: `openrouter`, `anthropic`, `openai-compatible` or `anthropic-compatible` for any other"
         )]
         preset: String,
     },
@@ -318,6 +319,20 @@ pub enum AgentModelsEffect {
     /// Read source context and this model's configured deployment limits.
     #[effect(row, returns, kind = "read")]
     InspectModelRequestLimits { provider: String, model: String },
+    /// Say what one model can do, over what its provider's list or Tilo's
+    /// table of model families says; omit both to let them decide again.
+    /// An agent plans only with a model that calls tools.
+    #[effect(job, row, idempotent, label = "Set model capabilities")]
+    SetModelCapabilities {
+        #[param("The provider's id")]
+        provider: String,
+        #[param("The model's id")]
+        model: String,
+        #[param("Whether it sees images")]
+        vision: Option<bool>,
+        #[param("Whether it calls tools")]
+        tool_calling: Option<bool>,
+    },
     /// Make a provider the one agents use unless told otherwise.
     #[effect(job, row, idempotent, label = "Use by default")]
     SetDefaultProvider {
@@ -2412,6 +2427,8 @@ fn synced_local_profile(
             vision: model.package.vision,
             face_recognition: model.package.face_recognition,
             tool_calling: true,
+            // The signed catalogue declares what the model sees.
+            capabilities_from: agent_provider_config::CapabilitySource::Provider,
         })
         .collect();
     profile.default_model = profile

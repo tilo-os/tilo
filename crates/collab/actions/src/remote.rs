@@ -46,6 +46,7 @@ pub mod own_device;
 mod pending;
 mod providers;
 mod search;
+pub mod task_programs;
 #[cfg(any(test, feature = "test-support"))]
 mod test_host;
 mod wait;

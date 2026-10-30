@@ -237,7 +237,10 @@ fn a_150_turn_run_of_8_items_stays_within_its_models_context() {
     // the later ones put aside.
     let last = bodies.last().unwrap();
     assert!(folded_handle(last).is_some(), "the oldest turns are folded");
-    assert!(!put_aside(last).is_empty(), "older results are put aside");
+    assert!(
+        bodies.iter().any(|body| !put_aside(body).is_empty()),
+        "older results were put aside before turns were folded"
+    );
     let reread = reread
         .lock()
         .unwrap()
@@ -368,7 +371,10 @@ fn a_long_run_resumes_after_a_restart_and_goes_on_within_its_context() {
         "the model is told the run resumed"
     );
     assert_within_context(&bodies);
-    assert!(!put_aside(bodies.last().unwrap()).is_empty());
+    assert!(
+        bodies.iter().any(|body| !put_aside(body).is_empty()),
+        "older results were put aside"
+    );
 }
 
 /// A model that declares no tool calling never gets a turn: the run fails

@@ -100,6 +100,13 @@ pub enum MessageKind {
     /// A resource the run read, looked up through system search. It reads as
     /// the read it was, and names the address of what was read.
     Lookup,
+    /// A step the run took: a tilolang program it ran and what it answered, in
+    /// [`Message::step`]. The text is the program.
+    Step,
+    /// The run's answer as a view: the resource that keeps it, in
+    /// [`Message::lookup`], which opens as a window beside what the request was
+    /// about. The text is its title.
+    Answer,
 }
 
 /// One message of an issue's thread.
@@ -123,10 +130,15 @@ pub struct Message {
     /// The run it is to or from; 0 for a comment.
     #[model(readonly)]
     pub run: u64,
-    /// The resource a [`MessageKind::Lookup`] read: its address in the app
-    /// that keeps it. Empty for any other message.
+    /// The resource a [`MessageKind::Lookup`] read, or the view a
+    /// [`MessageKind::Answer`] keeps: its address in the app that keeps it.
+    /// Empty for any other message.
     #[model(readonly)]
     pub lookup: String,
+    /// The step a [`MessageKind::Step`] took, as its
+    /// `tilo_reference::ProgramStep` JSON. Empty for any other message.
+    #[model(readonly)]
+    pub step: String,
     /// A message to a run that its agent took in.
     #[model(readonly)]
     pub incorporated: bool,
@@ -464,6 +476,7 @@ impl Imported {
                     },
                     run: 0,
                     lookup: String::new(),
+                    step: String::new(),
                     incorporated: true,
                 },
             );
