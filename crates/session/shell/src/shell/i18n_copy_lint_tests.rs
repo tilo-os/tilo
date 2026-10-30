@@ -102,7 +102,7 @@ fn messages_with_variables_are_never_resolved_without_arguments() {
     for line in catalogue.lines() {
         if line.starts_with(char::is_whitespace) {
             if let Some(key) = current
-                && line.contains("$")
+                && line.contains('$')
             {
                 needs_arguments.insert(key);
             }

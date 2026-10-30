@@ -168,6 +168,15 @@ pub(super) fn context_frame<'a>(
     }
 }
 
+impl super::InvocationEnvelope {
+    /// The argument slot as the application receives it.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn argument_for_test(&self) -> Option<&str> {
+        self.argument.as_deref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,14 +485,5 @@ mod tests {
             rx.try_recv().unwrap().admission,
             OpAdmission::CleartextAdmitted
         );
-    }
-}
-
-impl super::InvocationEnvelope {
-    /// The argument slot as the application receives it.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn argument_for_test(&self) -> Option<&str> {
-        self.argument.as_deref()
     }
 }

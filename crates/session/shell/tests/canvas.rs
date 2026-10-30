@@ -158,7 +158,8 @@ fn painted_shares(desktop: &Desktop, state: &Value, groups: &[u64]) -> Vec<(u64,
             clippy::cast_sign_loss,
             reason = "clamped into the frame first"
         )]
-        let at = |v: f64, side: u32| (v * scale).clamp(0.0, f64::from(side - 1)) as u32;
+        let at =
+            |v: f64, side: u32| (v * scale).clamp(0.0, f64::from(side.saturating_sub(1))) as u32;
         *frame.get_pixel(at(x, width), at(y, height))
     };
     // The empty canvas: the first point of the deck, scanning up from its
@@ -213,9 +214,9 @@ fn painted_shares(desktop: &Desktop, state: &Value, groups: &[u64]) -> Vec<(u64,
                     {
                         continue;
                     }
-                    seen += 1;
+                    seen = seen.checked_add(1).expect("361 samples at most");
                     if differs(pixel(x, y)) {
-                        painted += 1;
+                        painted = painted.checked_add(1).expect("361 samples at most");
                     }
                 }
             }

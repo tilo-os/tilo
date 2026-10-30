@@ -326,7 +326,7 @@ fn an_agent_lays_out_eight_strips_by_id_and_one_undo_takes_it_all_back() {
         .into_iter()
         .find(|(id, ..)| *id == strips[0])
         .unwrap();
-    let mut back = windows.clone();
+    let mut back = windows;
     back.reverse();
     assert_eq!(first.2, back, "the columns in the order asked");
 
@@ -342,6 +342,7 @@ fn an_agent_lays_out_eight_strips_by_id_and_one_undo_takes_it_all_back() {
         "the desktop is as it was before the agent's run"
     );
     let again = fixture.run(&fixture.agent(), layout::UNDO, json!({}));
+    drop(fixture);
     assert!(
         matches!(again, InvocationUpdate::Failed { .. }),
         "the run was taken back once"
@@ -359,7 +360,9 @@ fn an_agent_the_room_never_admitted_changes_nothing() {
         matches!(refused, InvocationUpdate::Failed { .. }),
         "{refused:?}"
     );
-    assert_eq!(fixture.strips(), before);
+    let after = fixture.strips();
+    drop(fixture);
+    assert_eq!(after, before);
 }
 
 #[test]
@@ -388,7 +391,9 @@ fn opening_what_nothing_here_opens_says_why_and_holds_no_place() {
         matches!(&ended, InvocationUpdate::Failed { error, .. } if error.message.contains("group")),
         "{ended:?}"
     );
-    assert_eq!(fixture.strips(), before);
+    let after = fixture.strips();
+    drop(fixture);
+    assert_eq!(after, before);
 }
 
 /// A web address an agent opens is browsed as any visitor would, unless it
@@ -502,11 +507,9 @@ fn an_open_whose_launch_fails_is_answered_failed_and_holds_no_place() {
         matches!(&ended, InvocationUpdate::Failed { error, .. } if error.message.contains("did not open")),
         "{ended:?}"
     );
-    assert_eq!(
-        fixture.strips(),
-        before,
-        "the place the launch held is gone"
-    );
+    let after = fixture.strips();
+    drop(fixture);
+    assert_eq!(after, before, "the place the launch held is gone");
     crate::shell::launcher::set_test_execution_program(None);
     crate::shell::launcher::set_wayland_socket_path(None);
     crate::shell::launcher::clear_pending_placements();

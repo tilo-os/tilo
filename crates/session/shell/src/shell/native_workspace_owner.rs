@@ -85,15 +85,12 @@ impl FileHost for TreeHost {
             {
                 return Err("the workspace made for the join is gone".into());
             }
-            if rooms_change {
-                let mut candidate = tree.clone_without_documents();
-                drop(tree);
-                apply(&mut candidate, next, change);
-                Some(crate::shell::action_authority::Export::of(&candidate))
-            } else {
-                drop(tree);
-                None
-            }
+            // Every publication moves the record on, so every one takes the
+            // export that carries it, rooms changed or not.
+            let mut candidate = tree.clone_without_documents();
+            drop(tree);
+            apply(&mut candidate, next, change);
+            crate::shell::action_authority::Export::of(&candidate)
         };
         #[cfg(test)]
         {
@@ -111,15 +108,26 @@ impl FileHost for TreeHost {
         if rooms_change {
             // Only the final admitted projection reaches authority exports.
             tree.export_fs_capabilities();
-            if let Some(export) = export {
-                export.submit();
-            }
         }
+        export.submit();
         // A save of the tree taken before this record reached it stood
-        // down (`persist::TreeSnapshot`): this one carries the record. Its
-        // policy and file-system exports are the ones taken above.
+        // down (`persist::TreeSnapshot`): this one carries the record, and
+        // so does the policy exported with it. The export above may never
+        // land: a save of the tree taken before the record reached it, but
+        // written before the owner accepted the record, is a later
+        // snapshot, and an export behind it is ignored. This one is taken
+        // after every such save, so the policy reaches the owner's record
+        // and the sandboxes waiting on it are judged. The file-system
+        // export is the one taken above.
         if let Some(path) = tree.persist_path.clone() {
-            super::persist::queue_save(&tree, &path, || {});
+            let actions = crate::shell::action_authority::Export::of(&tree);
+            let failure = actions.failure_handle();
+            super::persist::queue_save_or_report(
+                &tree,
+                &path,
+                move || actions.publish(),
+                move |error| failure.fail(error),
+            );
         }
         drop(tree);
         Ok(())
