@@ -298,7 +298,7 @@ tests = true
 
 
 [[step]]
-name = "codex-hooks"
+name = "codex-hooks-tests"
 label = "Codex CI watcher tests"
 run = "python3 tools/policy/run_unit_tests.py .codex/hooks"
 tests = true
