@@ -284,6 +284,9 @@ pub(super) struct AgentActions {
     started: Option<Instant>,
     /// Task agents whose task now exists, to launch in their room.
     launches: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)>,
+    /// The chats to open, by room and address: the shell's desktop opens
+    /// each in a window of its own ([`Self::take_chats`]).
+    chats: Vec<(String, String)>,
     /// Task agents whose ask Tasks took, by their issue's address, until the
     /// room's tracker as this device holds it shows their run going: their
     /// join is admitted against that tracker, so launched before it shows
@@ -525,9 +528,9 @@ impl AgentActions {
             changed = true;
         }
         if let Some(issue) = composer.take_open_chat()
-            && let Some(operation) = chat_operation(&issue)
+            && let Some(chat) = chat_uri(&issue)
         {
-            self.begin(operation);
+            self.chats.push((owner.room.clone(), chat));
             changed = true;
         }
         if let Some(choice) = composer.take_answer_use() {
@@ -795,8 +798,8 @@ impl AgentActions {
                 match (opens, &asked) {
                     (Opens::Page, Some(issue)) => self.begin(show_operation(issue)),
                     (Opens::Chat, Some(issue)) => {
-                        if let Some(chat) = chat_operation(issue) {
-                            self.begin(chat);
+                        if let (Some(chat), Some(owner)) = (chat_uri(issue), &self.owner) {
+                            self.chats.push((owner.room.clone(), chat));
                         }
                     }
                     _ => {}
@@ -934,6 +937,11 @@ impl AgentActions {
 
     pub(super) fn deadline(&self) -> Option<Instant> {
         self.calls.iter().map(|call| call.deadline).min()
+    }
+
+    /// The chats asked to open since the last take, by room and address.
+    pub(super) fn take_chats(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.chats)
     }
 
     /// The task agents to launch now that their tasks exist, by room.
@@ -1221,29 +1229,12 @@ fn resolve_operation(
     }
 }
 
-/// Open `issue` (its address) as a chat: the desktop's `open` of the chat's
-/// address (`tilo-tasks:chat/<issue>`, which Tasks claims), in a window of its
-/// own. One window opens whether or not Tasks was running, and an agent opens
-/// a chat the same way.
-fn chat_operation(issue: &str) -> Option<Operation> {
-    use tilo_desktop_model::commands::{RESOURCE, layout};
+/// The address `issue` (its address) opens at as a chat
+/// (`tilo-tasks:chat/<issue>`, which Tasks claims): the desktop opens it in a
+/// window of its own, one whether or not Tasks was running.
+fn chat_uri(issue: &str) -> Option<String> {
     let id = issue.strip_prefix(tilo_action_broker::services::TRACKER_ISSUE_PREFIX)?;
-    let uri = tasks::chat_uri(&tilo_resource::Id::from_raw(id));
-    Some(Operation {
-        resource: RESOURCE.into(),
-        action: layout::OPEN.into(),
-        arguments: Map::from_iter([
-            ("target".into(), uri.into()),
-            ("place".into(), "new-window".into()),
-        ]),
-        purpose: Purpose::Show,
-        app: tilo_desktop_model::commands::APP_ID.into(),
-        target: Some(tilo_actions::remote::RemoteActionTarget {
-            provider: layout::PROVIDER.into(),
-            address: tilo_actions::ActionAddress::new(RESOURCE, layout::OPEN),
-        }),
-        confirmation: None,
-    })
+    Some(tasks::chat_uri(&tilo_resource::Id::from_raw(id)))
 }
 
 /// The issue an `ask-agent` operation makes, by its address.
@@ -2602,10 +2593,10 @@ mod tests {
         }
     }
 
-    /// "Open as chat" asks what the person typed as a task for a chat and
-    /// opens its issue's chat through the desktop's `open` of the chat's
-    /// address, in a window of its own, once asked; with a run followed, it
-    /// opens that run's issue the same way and asks nothing.
+    /// "Open as chat" asks what the person typed as a task for a chat and,
+    /// once asked, hands the shell's desktop the chat's address to open in a
+    /// window of its own; with a run followed, it opens that run's issue the
+    /// same way and asks nothing.
     #[test]
     fn open_as_chat_asks_the_typed_request_as_a_chat_and_opens_its_issue_as_one() {
         let room = Room::new(None);
@@ -2626,16 +2617,17 @@ mod tests {
         assert_eq!(asked["title"], "Review the applications in my inbox");
         assert_eq!(asked.get("chat").and_then(Value::as_bool), Some(true));
         let id = asked["id"].as_str().unwrap().to_owned();
-        let open = tilo_desktop_model::commands::layout::OPEN;
-        let desktop_open = format!("{}#{open}", tilo_desktop_model::commands::RESOURCE);
         let chat = tasks::chat_uri(&tilo_resource::Id::from_raw(&id));
         assert_eq!(
             room.invoked(),
-            [format!("{TRACKER}#ask-agent"), desktop_open.clone()],
-            "asked as work, never as a quick answer, then opened as a chat"
+            [format!("{TRACKER}#ask-agent")],
+            "asked as work, never as a quick answer"
         );
-        assert_eq!(room.arguments(open)["target"], chat.as_str());
-        assert_eq!(room.arguments(open)["place"], "new-window");
+        assert_eq!(
+            actions.take_chats(),
+            [(room.id.clone(), chat.clone())],
+            "then opened as a chat, by the shell's desktop"
+        );
         assert!(!composer.is_open(), "the conversation goes on in the chat");
 
         // The run it follows opens as a chat as it is.
@@ -2652,8 +2644,8 @@ mod tests {
             &ui::a11y::Action::Activate,
         );
         settle(&mut actions, &mut composer, &tracker);
-        assert_eq!(room.invoked(), [desktop_open]);
-        assert_eq!(room.arguments(open)["target"], chat.as_str());
+        assert!(room.invoked().is_empty(), "nothing is asked");
+        assert_eq!(actions.take_chats(), [(room.id.clone(), chat)]);
     }
 
     #[test]

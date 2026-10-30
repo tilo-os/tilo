@@ -122,10 +122,10 @@ impl StepReceipt {
             "step": self.step,
             "model": self.model,
             "device": self.device,
-            "inputTokens": self.input_tokens,
-            "outputTokens": self.output_tokens,
-            "pricedCalls": self.priced_calls,
-            "costMicros": self.cost_micros,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "priced_calls": self.priced_calls,
+            "cost_micros": self.cost_micros,
             "currency": self.currency,
         })
     }
@@ -267,7 +267,7 @@ impl Session {
         let Some(issue) = issue_of(run).map(str::to_owned) else {
             return Ok(None);
         };
-        let arguments = json!({ "issue": issue, "tokens": tokens, "costMicros": cost_micros });
+        let arguments = json!({ "issue": issue, "tokens": tokens, "cost_micros": cost_micros });
         self.refusing_tracker_step(
             run,
             "hold-spend",

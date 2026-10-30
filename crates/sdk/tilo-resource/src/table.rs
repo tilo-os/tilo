@@ -3660,3 +3660,123 @@ pub fn holds_nested_items(record: &RecordDesc, value: &dyn Any, path: &[&str]) -
             .is_some_and(|(_, value)| holds_nested_items(item, value, rest))
     })
 }
+
+/// One step from a record toward a published part of it: into an item of a
+/// collection, or into one of its fields.
+enum Step<'a> {
+    Item(&'a str, &'a str),
+    Field(&'a str),
+}
+
+/// The steps `resource_id` takes into a record of the kind `kind`: pairs of
+/// a collection and an item (`<kind>/<field>/<item>/<field>/<item>`), then
+/// at most one field of the item reached (`…/<item>/<field>`, an issue's
+/// body).
+fn steps<'a>(kind: &str, resource_id: &'a str) -> Option<Vec<Step<'a>>> {
+    let path = resource_id.strip_prefix(kind)?.strip_prefix('/')?;
+    let segments: Vec<&str> = path.split('/').collect();
+    if segments.len() < 2 || segments.iter().any(|segment| segment.is_empty()) {
+        return None;
+    }
+    let mut steps: Vec<Step<'a>> = segments
+        .chunks(2)
+        .filter_map(|pair| match pair {
+            [field, item] => Some(Step::Item(field, item)),
+            _ => None,
+        })
+        .collect();
+    if segments.len() % 2 == 1 {
+        steps.push(Step::Field(segments.last()?));
+    }
+    Some(steps)
+}
+
+/// The position and description of the field named `name` of `record`.
+fn field_named<'a>(record: &'a RecordDesc, name: &str) -> Option<(usize, &'a FieldDesc)> {
+    record
+        .fields
+        .iter()
+        .enumerate()
+        .find(|(_, desc)| desc.name == name)
+}
+
+/// What the published part of a record `resource_id` names holds, as its
+/// own model's JSON ([`Model::to_json`]): the document read of an item of a
+/// collection, or of a field of one (an issue's body), whatever their types,
+/// found in `record` (of the table `table`) by the steps
+/// `<kind>/<field>/<item>`, `…/<field>/<item>` for an item of a collection
+/// inside an item, and a last `…/<field>` for a field of the item reached.
+///
+/// # Errors
+/// Why there is nothing to answer: the id names no published part of a
+/// `kind`, or the record holds no such item.
+pub fn item_json(
+    table: &'static ModelTable,
+    record: &dyn Any,
+    kind: &str,
+    resource_id: &str,
+) -> Result<serde_json::Value, String> {
+    let steps = steps(kind, resource_id)
+        .ok_or_else(|| format!("{resource_id} names no item of a {kind}"))?;
+    let (mut table, mut value) = (table, record);
+    for step in steps {
+        let record = table
+            .record()
+            .ok_or_else(|| format!("{resource_id}: what it names a part of is no record"))?;
+        match step {
+            Step::Item(field, item) => {
+                let (index, items) = field_named(record, field)
+                    .and_then(|(index, desc)| Some((index, desc.items?)))
+                    .ok_or_else(|| {
+                        format!("{resource_id}: {field} is no collection of published items")
+                    })?;
+                let list = (record.field)(value, index)
+                    .and_then(|collection| (items.list)(collection))
+                    .ok_or_else(|| format!("{resource_id}: {field} is not readable"))?;
+                value = (0..list.count())
+                    .filter_map(|at| list.item(at))
+                    .find_map(|(id, found)| (id.as_str() == item).then_some(found))
+                    .ok_or_else(|| format!("{resource_id}: there is no such item"))?;
+                table = items.item_table;
+            }
+            Step::Field(field) => {
+                let (index, desc) = field_named(record, field)
+                    .ok_or_else(|| format!("{resource_id}: there is no field {field}"))?;
+                value = (record.field)(value, index)
+                    .ok_or_else(|| format!("{resource_id}: {field} is not readable"))?;
+                table = desc.table;
+            }
+        }
+    }
+    Ok((table.ops.to_json)(table, value))
+}
+
+/// Whether `resource_id` names a part [`item_json`] reads in a record of the
+/// table `table` and kind `kind`: each step an item of a collection of
+/// published items, or a last field, of the record the step before reached.
+/// Decided from the tables alone, so offering the read costs no read.
+#[must_use]
+pub fn reads_item(table: &'static ModelTable, kind: &str, resource_id: &str) -> bool {
+    let Some(steps) = steps(kind, resource_id) else {
+        return false;
+    };
+    let mut table = table;
+    for step in steps {
+        let Some(record) = table.record() else {
+            return false;
+        };
+        table = match step {
+            Step::Item(field, _) => {
+                match field_named(record, field).and_then(|(_, desc)| desc.items) {
+                    Some(items) => items.item_table,
+                    None => return false,
+                }
+            }
+            Step::Field(field) => match field_named(record, field) {
+                Some((_, desc)) => desc.table,
+                None => return false,
+            },
+        };
+    }
+    true
+}

@@ -183,3 +183,12 @@ fn a_relative_path_is_refused_for_every_path_action() {
         assert!(error.contains("absolute"), "{id}: {error}");
     }
 }
+
+#[test]
+fn every_scenario_shows_an_agent_its_actions() {
+    if let Err(failures) =
+        ui::framework::testing::check_agents_are_shown_every_action::<PdfViewerShell>()
+    {
+        panic!("{failures}");
+    }
+}

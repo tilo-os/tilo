@@ -88,16 +88,16 @@ fn rename_chosen_with_the_pointer_takes_the_typed_name() {
         .unwrap();
     let row = app.harness().targets()["canvas-layer-name-layer-1"];
     right_click(&mut app, (row.center().x, row.center().y));
-    let menu = app
-        .harness()
-        .targets()
-        .into_iter()
-        .find(|(path, _)| path.ends_with("/ContextMenu"))
-        .map(|(_, rect)| rect)
-        .expect("the menu opened");
-    // Rename is its first row.
-    let rename = ui::vello::kurbo::Rect::new(menu.x0, menu.y0 + 6.0, menu.x1, menu.y0 + 30.0);
-    app.harness().click_at(rename.center().x, rename.center().y);
+    assert!(
+        app.harness()
+            .targets()
+            .keys()
+            .any(|path| path.ends_with("/ContextMenu")),
+        "the menu opened"
+    );
+    // The menu takes typing: its rows narrow to Rename, and Enter runs it.
+    app.harness().type_text("Rename");
+    app.harness().key("Enter");
     app.harness().type_text("Hills");
     app.harness().key("Enter");
     let names: Vec<String> = app
@@ -110,7 +110,7 @@ fn rename_chosen_with_the_pointer_takes_the_typed_name() {
 }
 
 #[test]
-fn every_context_menu_ends_with_telling_an_agent_about_where_it_was_opened() {
+fn a_sentence_typed_into_a_context_menu_asks_an_agent_about_where_it_was_opened() {
     let mut app = TestApp::<App>::new().unwrap();
     app.call(
         "draw",
@@ -125,12 +125,14 @@ fn every_context_menu_ends_with_telling_an_agent_about_where_it_was_opened() {
     let canvas = app.harness().targets()["canvas"];
     let at = (canvas.center().x, canvas.center().y);
     right_click(&mut app, at);
-    // Up from the first entry wraps to the last.
-    app.harness().key("ArrowUp");
+    // A sentence none of its rows answers asks an agent about where the
+    // menu was opened.
+    app.harness().type_text("make the sun warmer");
     app.harness().key("Enter");
     ui::shared_selection::set_agent_host_available(false);
     let asked = ui::shared_selection::take_agent_requests();
     assert_eq!(asked.len(), 1, "one request to tell an agent");
     assert_eq!(asked[0].at, Some(ui::kurbo::Point::new(at.0, at.1)));
+    assert_eq!(asked[0].ask.as_deref(), Some("make the sun warmer"));
     assert_eq!(app.state().marks.len(), 1, "no app entry ran");
 }
