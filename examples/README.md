@@ -23,6 +23,14 @@ with `tilo-app run examples/apps/NAME`, or start your own app from it with
 - [`graph-screens`](apps/graph-screens/): serialized screens, a mounted Rust component and the screen router.
 - [`qr-code`](apps/qr-code/): a generated visual with alternative text that starts empty.
 
+## Agent trials
+
+Trial packs an operator installs on a hosted desktop for someone else's AI
+agent to work through with semantic actions, each with its documents, task
+cards and a checker.
+
+- [`agent-trials/documents-and-forms`](agent-trials/documents-and-forms/): fill and arrange PDFs, correct a letter, and complete a multi-step application on a mock portal.
+
 ## Packaging
 
 - `packaging/hello` exercises the native application runtime, sandbox, portals,

@@ -535,6 +535,13 @@ suites = [
 ]
 
 [[group]]
+name = "agent-trials"
+inputs = ["examples/agent-trials/"]
+suites = [
+  "examples/agent-trials/documents-and-forms/tests/test_pack.py",
+]
+
+[[group]]
 name = "ux-bench"
 inputs = ["scripts/ux-bench/"]
 suites = [
