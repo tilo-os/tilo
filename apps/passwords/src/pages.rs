@@ -840,7 +840,9 @@ fn export_dialog(acknowledged: bool, reminded: bool, requests: &Requests) -> Mod
         let requests = Rc::clone(requests);
         Checkbox::from_state(&ui::LocalState::new(acknowledged))
             .with_label("I understand the file is not encrypted")
-            .on_change(move |on| requests.borrow_mut().push(Request::Acknowledge(on)))
+            .on_view("passwords-export-acknowledge", move |on| {
+                requests.borrow_mut().push(Request::Acknowledge(on));
+            })
     };
     let mut children: Vec<Element> = vec![
         text(
