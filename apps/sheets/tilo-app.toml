@@ -1,6 +1,6 @@
 # Sheets — Tilo application manifest.
 #
-# Documents are the room's; the app's own state lives in its own
+# Documents are the workspace's; the app's own state lives in its own
 # directory.
 #
 # Beyond the system read profile it needs, as a consented capability:
