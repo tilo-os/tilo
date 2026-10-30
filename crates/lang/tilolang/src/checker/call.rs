@@ -110,6 +110,8 @@ impl Checker<'_> {
             "created" | "updated" | "history" => {
                 return self.builtin_versions(name, args, span);
             }
+            "unseen" => return self.builtin_unseen(args, span),
+            "changes" => return self.builtin_changes(args, span),
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),

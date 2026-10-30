@@ -14,6 +14,7 @@ use crate::handles::FrameKind;
 use crate::ids::Principal;
 use crate::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 use crate::render::Offer;
+use crate::seen::SeenMark;
 use crate::value::{ActionRef, RefValue, ResourceRef, Value};
 use crate::view_state::StateKey;
 
@@ -170,6 +171,23 @@ pub fn lens_key(id: &str) -> StateKey {
     }
 }
 
+/// The seen mark a slot holds ([`crate::Runtime::set_seen`]): `.some((change, at))`.
+fn mark_of(held: Option<&Value>) -> Option<SeenMark> {
+    let Some(Value::Opt(Some(mark))) = held else {
+        return None;
+    };
+    match &**mark {
+        Value::Tuple(fields) => match fields.as_slice() {
+            [Value::Text(change), Value::Text(at)] => Some(SeenMark {
+                change: change.clone(),
+                at: at.clone(),
+            }),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// One action offered on a subject, before it is presented.
 struct Offered<'m> {
     action: &'m ActionMeta,
@@ -260,7 +278,7 @@ impl Core {
                 self.read_versions_of(&target.target)?;
                 let list = versions
                     .into_iter()
-                    .map(|v| self.version_value(v))
+                    .map(|v| self.version_value(v, &target.target))
                     .collect();
                 self.ret_h(Value::List(list))
             }
@@ -273,8 +291,51 @@ impl Core {
                     .version_end(&target.target, last)
                     .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
                 self.read_versions_of(&target.target)?;
-                let value = end.map_or_else(Value::none, |v| Value::some(self.version_value(v)));
+                let value = end.map_or_else(Value::none, |v| {
+                    Value::some(self.version_value(v, &target.target))
+                });
                 self.ret_h(value)
+            }
+            Imp::RunChanges => {
+                // `changes(of: run)`: the run is a `host.TaskRun`, its group first.
+                let run = match self.val(a.h(0)?)? {
+                    Value::Tuple(fields) => match fields.into_iter().next() {
+                        Some(Value::Text(id)) => id,
+                        _ => return trap("changes: a task run names its group first"),
+                    },
+                    other => {
+                        return trap(format!(
+                            "changes: expected a task run, got {}",
+                            other.kind_name()
+                        ));
+                    }
+                };
+                let versions = self
+                    .store
+                    .borrow()
+                    .run_changes(&run)
+                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+                let mut list = Vec::with_capacity(versions.len());
+                for v in versions {
+                    let ty = ResourceRef::parse_id(&v.resource, String::new())
+                        .and_then(|at| self.store.borrow().type_of(&at).ok())
+                        .unwrap_or_default();
+                    if let Some(at) = ResourceRef::parse_id(&v.resource, ty) {
+                        self.read_versions_of(&at)?;
+                        list.push(self.version_value(v, &at));
+                    }
+                }
+                self.ret_h(Value::List(list))
+            }
+            Imp::Unseen => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let person = self.looking()?;
+                let unseen = self.unseen_read(&person, &target.target)?;
+                let list = unseen
+                    .into_iter()
+                    .map(|v| self.version_value(v, &target.target))
+                    .collect();
+                self.ret_h(Value::List(list))
             }
             Imp::MetaOf => {
                 let subject = self.val(a.h(0)?)?;
@@ -319,12 +380,121 @@ impl Core {
     }
 
     /// A version as the language holds it: who, when, by which action.
-    fn version_value(&self, v: crate::store::Version) -> Value {
+    /// A version of `of` as a `host.Version`: who, when, what, the task run, its kind, the
+    /// fields it changed by name, and the resource.
+    fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> Value {
+        let task = v.task.map(|run| {
+            let task = run.task().to_owned();
+            Box::new(Value::Tuple(vec![
+                Value::Text(run.id),
+                Value::Text(task),
+                Value::Text(run.title),
+            ]))
+        });
+        let names = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
+        let fields = v
+            .fields
+            .iter()
+            .map(|id| {
+                let name = names
+                    .as_ref()
+                    .and_then(|info| info.fields.iter().find(|f| f.id == *id))
+                    .map_or_else(|| id.clone(), |f| f.name.clone());
+                Value::Text(name)
+            })
+            .collect();
         Value::Tuple(vec![
             Value::Principal(Principal(v.who)),
             Value::Text(v.at),
             Value::Text(self.action_label(&v.action)),
+            Value::Opt(task),
+            Value::Text(v.kind.word().to_owned()),
+            Value::List(fields),
+            Value::resource(of),
         ])
+    }
+
+    /// Who is looking: the person a view shows to, or the invoker of the action running.
+    pub(crate) fn looking(&self) -> HResult<String> {
+        let frames = self.frames.borrow();
+        Ok(match &frames.top()?.kind {
+            FrameKind::View(view) => view.viewer.0.clone(),
+            FrameKind::Action(state) => state
+                .acting_as
+                .last()
+                .map_or(&state.invoker, |(who, _)| who)
+                .0
+                .clone(),
+            _ => return trap("unseen: only a view or an action has someone looking"),
+        })
+    }
+
+    /// `person`'s seen mark of `resource`, as the runtime holds it.
+    pub(crate) fn seen_mark(&self, person: &str, resource: &str) -> Option<SeenMark> {
+        let key = crate::seen::seen_key(person, resource);
+        mark_of(self.view_states.borrow().get(&key))
+    }
+
+    /// The versions of `at` `person` has not seen.
+    pub(crate) fn unseen_of(
+        &self,
+        person: &str,
+        at: &ResourceRef,
+    ) -> Result<Vec<crate::store::Version>, crate::store::StoreError> {
+        let versions = self.store.borrow().versions(at)?;
+        let mark = self.seen_mark(person, &at.id_string());
+        Ok(crate::seen::unseen(&versions, person, mark.as_ref()))
+    }
+
+    /// [`Self::unseen_of`], read by the frame running: it runs again when the versions of
+    /// `at` or the person's mark of it move.
+    pub(crate) fn unseen_read(
+        &self,
+        person: &str,
+        at: &ResourceRef,
+    ) -> HResult<Vec<crate::store::Version>> {
+        let key = crate::seen::seen_key(person, &at.id_string());
+        let (value, generation) = {
+            let states = self.view_states.borrow();
+            (
+                states.get(&key).cloned().unwrap_or_else(Value::none),
+                states.generation(&key),
+            )
+        };
+        self.note_state_read(key, generation, &value)?;
+        self.read_versions_of(at)?;
+        self.unseen_of(person, at)
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))
+    }
+
+    /// `person` has seen every version of `at` there is now. Whether the mark moved.
+    pub(crate) fn mark_seen(
+        &self,
+        person: &str,
+        at: &ResourceRef,
+    ) -> Result<bool, crate::store::StoreError> {
+        let resource = at.id_string();
+        let versions = self.store.borrow().versions(at)?;
+        let Some(newest) = versions.last() else {
+            return Ok(false);
+        };
+        let mark = SeenMark::of(newest);
+        if self.seen_mark(person, &resource).as_ref() == Some(&mark) {
+            return Ok(false);
+        }
+        self.view_states.borrow_mut().set(
+            crate::seen::seen_key(person, &resource),
+            Value::some(Value::Tuple(vec![
+                Value::Text(mark.change.clone()),
+                Value::Text(mark.at.clone()),
+            ])),
+        );
+        self.seen_writes.borrow_mut().push(crate::seen::SeenWrite {
+            person: person.to_owned(),
+            resource,
+            mark,
+        });
+        Ok(true)
     }
 
     /// Record, in a view's frame, that it read the versions of `target`: it runs again when any
