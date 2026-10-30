@@ -16,5 +16,4 @@ small-hit-target chat › (window) › nav-shell-sidebar [Button]
 
 # The apps' own views.
 small-hit-target tasks › task_row › row [SwipeRow]
-overflow mail › conversation › std.page [Stack]
 small-hit-target chat › channel › channel_message [Chip]
