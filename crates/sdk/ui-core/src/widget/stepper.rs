@@ -43,6 +43,10 @@ struct StepMetrics {
     gap: f64,
     min_gap: f64,
     rule: f64,
+    /// The compact form's progress track: its segments' height and the
+    /// space between segments and above the track.
+    track: f64,
+    track_gap: f64,
 }
 
 impl StepMetrics {
@@ -57,6 +61,8 @@ impl StepMetrics {
             gap: f64::from(spacing.s2),
             min_gap: f64::from(spacing.s6),
             rule: f64::from(theme.tokens.metrics.chrome_rule_px),
+            track: f64::from(spacing.s1),
+            track_gap: f64::from(spacing.s1),
         }
     }
 
@@ -165,7 +171,10 @@ impl<'a> StepperFace<'a> {
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let m = StepMetrics::new(theme);
         if self.is_compact(text, theme, width) {
-            StepMetrics::line(text, &m.position) + StepMetrics::line(text, &m.current)
+            StepMetrics::line(text, &m.position)
+                + StepMetrics::line(text, &m.current)
+                + m.track_gap * 2.0
+                + m.track
         } else {
             m.disc.max(StepMetrics::line(text, &m.current))
         }
@@ -181,6 +190,29 @@ impl<'a> StepperFace<'a> {
                 format!("Step {n} of {}", self.steps.len())
             }
             None => format!("{} steps", self.steps.len()),
+        }
+    }
+
+    /// The compact form's progress: one segment per step across `track`,
+    /// in the stations' inks, so where the person is reads at a glance
+    /// even when the stations do not fit. Done steps take the done disc's
+    /// fill, the current one primary ink, later ones the ground's edge.
+    fn paint_track(&self, ctx: &mut PaintCtx<'_>, track: Rect, m: &StepMetrics) {
+        let colors = &ctx.theme.tokens.colors;
+        let count = crate::num::f64_of_usize(self.steps.len());
+        let segment = ((track.width() - m.track_gap * (count - 1.0)) / count).max(0.0);
+        let mut x = track.x0;
+        for index in 0..self.steps.len() {
+            let ink = if self.is_done(index) {
+                colors.intent.value_fill
+            } else if self.is_current(index) {
+                ctx.theme.text_primary
+            } else {
+                crate::surface::edge_on(colors.surfaces.content)
+            };
+            let piece = Rect::new(x, track.y0, x + segment, track.y1);
+            ctx.fill_round(piece, track.height() / 2.0, ink);
+            x += segment + m.track_gap;
         }
     }
 
@@ -211,6 +243,8 @@ impl<'a> StepperFace<'a> {
                 Point::new(rect.x0, y),
                 None,
             );
+            let y = y + StepMetrics::line(ctx.text, &m.current) + m.track_gap * 2.0;
+            self.paint_track(ctx, Rect::new(rect.x0, y, rect.x1, y + m.track), &m);
             return;
         }
 
@@ -686,6 +720,12 @@ mod tests {
         assert!(
             face.height(&mut text, &theme, 260.0) > face.height(&mut text, &theme, 900.0),
             "the compact form stacks its two lines"
+        );
+        let lines = StepMetrics::line(&mut text, &StepMetrics::new(&theme).position)
+            + StepMetrics::line(&mut text, &StepMetrics::new(&theme).current);
+        assert!(
+            face.height(&mut text, &theme, 260.0) > lines,
+            "the compact form shows its progress under the two lines"
         );
         assert!(face.is_compact(&mut text, &Theme::dark().with_text_scale(2.0), 600.0));
         let done = StepperFace::new(&STEPS, 9);
