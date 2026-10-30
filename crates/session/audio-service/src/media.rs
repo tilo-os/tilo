@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tilo_actions::ResourceSpec;
+use tilo_actions::{ResourcePresentation, ResourceSpec};
 use tilo_resource::Effect;
 use tilo_service::{offer, unavailable};
 
@@ -55,14 +55,19 @@ pub struct Player {
 }
 
 impl Player {
-    /// What it plays, as one line: the title and who made it, else the app.
+    /// What it plays, as the one thing a row says: the title, else the app.
     #[must_use]
     pub fn headline(&self) -> String {
-        match (&self.title, &self.artist) {
-            (Some(title), Some(artist)) if !artist.is_empty() => format!("{title} · {artist}"),
-            (Some(title), _) if !title.is_empty() => title.clone(),
+        match self.title.as_deref() {
+            Some(title) if !title.is_empty() => title.to_owned(),
             _ => self.identity.clone(),
         }
+    }
+
+    /// Who made what it plays, when the player says.
+    #[must_use]
+    pub fn byline(&self) -> Option<&str> {
+        self.artist.as_deref().filter(|artist| !artist.is_empty())
     }
 }
 
@@ -155,10 +160,20 @@ pub enum MediaAction {
     )]
     PlayPause,
     /// Skip to the next track.
-    #[effect(own_device, label = "Next track", icon = "skip-forward", keywords = "skip")]
+    #[effect(
+        own_device,
+        label = "Next track",
+        icon = "skip-forward",
+        keywords = "skip"
+    )]
     Next,
     /// Go back to the previous track.
-    #[effect(own_device, label = "Previous track", icon = "skip-back", keywords = "back")]
+    #[effect(
+        own_device,
+        label = "Previous track",
+        icon = "skip-back",
+        keywords = "back"
+    )]
     Previous,
     /// Stop playing.
     #[effect(own_device, label = "Stop", icon = "square", keywords = "halt")]
@@ -193,7 +208,12 @@ fn front_controls(media: &Media, resource: &mut ResourceSpec) {
         unavailable(resource, "next", "no_next", "The player cannot skip");
     }
     if !front.can_previous {
-        unavailable(resource, "previous", "no_previous", "The player cannot go back");
+        unavailable(
+            resource,
+            "previous",
+            "no_previous",
+            "The player cannot go back",
+        );
     }
 }
 
@@ -221,6 +241,13 @@ fn player_spec(player: &Player) -> ResourceSpec {
     }
     let mut resource = ResourceSpec::new(player_resource(&player.token), PLAYER_KIND, headline);
     resource.actions = controls;
+    // Who made it is the row's second line, not part of its label.
+    if let Some(artist) = player.byline() {
+        resource = resource.with_presentation(ResourcePresentation {
+            detail: Some(artist.to_owned()),
+            ..ResourcePresentation::default()
+        });
+    }
     resource
 }
 

@@ -142,7 +142,7 @@ pub(crate) const RECORD_BRING_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "id",
         ParamType::Text,
-        "The record's id — `file:<absolute path>`, `tab:<id>`, or a minted id.",
+        "The record's id: `file:<absolute path>`, `tab:<id>`, or a minted id.",
     ),
     ActionParam::optional(
         "kind",

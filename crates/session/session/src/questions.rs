@@ -975,7 +975,7 @@ fn share(handle: &str, who: &str, details: Value, remote: bool) -> Option<(Dialo
 /// How the source the app offers reads.
 fn source_label(source: &OfferedSource) -> String {
     match (&source.app_id, source.kind) {
-        (Some(app), SourceKind::Window) => format!("{} — {}", app_name(app), source.label),
+        (Some(app), SourceKind::Window) => format!("{}: {}", app_name(app), source.label),
         _ => source.label.clone(),
     }
 }

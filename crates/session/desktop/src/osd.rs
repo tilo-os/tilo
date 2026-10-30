@@ -28,7 +28,7 @@ use ui::tokens::TextRole;
 use ui::widget::{TaffyTreeExt as _, Widget};
 use ui::{TextRenderer, Theme};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 
 use crate::i18n::{t, t_args};
@@ -363,36 +363,25 @@ impl Widget for OsdSlab {
         let (_, height) = text.measure_style(&caption, None, &style);
         let caption_at = Point::new(inner.x0, inner.center().y - f64::from(height) / 2.0);
         if raised.osd.kind.has_level() {
-            // The bar fills the left of the slab; the caption ends it.
+            // The bar fills the right of the slab; the caption ends it. A
+            // muted bar keeps its level in secondary ink.
+            let height = ui::widget::ProgressBarFace::height(theme);
             let bar_width = inner.width() * 0.45;
             let bar = Rect::new(
                 inner.x1 - bar_width,
-                inner.center().y - 3.0,
+                inner.center().y - height / 2.0,
                 inner.x1,
-                inner.center().y + 3.0,
+                inner.center().y + height / 2.0,
             );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.text_dim.with_alpha(0.25),
-                None,
-                &RoundedRect::from_rect(bar, 3.0),
-            );
-            let filled = bar.with_size((
-                bar.width() * f64::from(raised.osd.level.clamp(0.0, 1.0)),
-                bar.height(),
-            ));
-            let ink = if raised.osd.on {
-                colors.text_primary
+            let face = ui::widget::ProgressBarFace::new(raised.osd.level.clamp(0.0, 1.0));
+            let face = if raised.osd.on {
+                face
             } else {
-                colors.text_dim
+                face.tone(ui::widget::Tone::Neutral)
             };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ink,
-                None,
-                &RoundedRect::from_rect(filled, 3.0),
+            face.paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                bar,
             );
         }
         text.draw_style(
