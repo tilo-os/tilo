@@ -715,25 +715,51 @@ impl Relay {
         }
     }
 
-    /// Tell the host that a device is an agent: verify its root-signed
-    /// delegation against this relay's user and confine the device to the
-    /// delegated rooms from its next envelope on. Replaces an earlier
+    /// Tell the host that the device `cert` certifies is an agent: verify
+    /// its root-signed delegation against this relay's user and confine the
+    /// device to the delegated rooms from its next envelope on, then put it
+    /// on the roster of each room this relay governs that the delegation
+    /// names, as an approved grant does ([`crate::rooms::Rooms::reconcile_agent`]).
+    /// Once this returns, those rooms admit it. Replaces an earlier
     /// delegation of the same device.
-    pub fn register_agent(
+    ///
+    /// # Errors
+    ///
+    /// The delegation names another device, or does not verify.
+    #[cfg_attr(
+        not(feature = "agents"),
+        allow(
+            clippy::unused_async,
+            reason = "only a build with agents keeps them on governed rosters, which it awaits"
+        )
+    )]
+    pub async fn register_agent(
         &self,
+        cert: &tilo_user_identity::DeviceCert,
         delegation: tilo_relay_protocol::delegation::Delegation,
-    ) -> Result<(), tilo_relay_protocol::delegation::DelegationError> {
-        delegation.verify(
-            &self.web.relay.identity.user_public_key,
-            tilo_clock::unix_now_ns(),
-        )?;
+    ) -> Result<(), String> {
+        if cert.device_public_key != delegation.device_public_key {
+            return Err("the delegation names another device".into());
+        }
+        delegation
+            .verify(
+                &self.web.relay.identity.user_public_key,
+                tilo_clock::unix_now_ns(),
+            )
+            .map_err(|error| error.to_string())?;
+        let device = delegation.device_public_key;
         self.web
             .relay
             .agents
             .write_recover()
-            .insert(delegation.device_public_key, Some(delegation));
+            .insert(device, Some(delegation));
         // A replacement may narrow an earlier delegation's rooms.
         crate::authority_epoch::bump();
+        // Governed rooms keep agents on their rosters in a build with agents.
+        #[cfg(feature = "agents")]
+        if let Some(rooms) = &self.rooms {
+            rooms.reconcile_agent(device, Some(cert)).await;
+        }
         Ok(())
     }
 
