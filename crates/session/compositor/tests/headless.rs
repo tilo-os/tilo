@@ -1670,7 +1670,13 @@ fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
     };
     assert_eq!(shown(&mut compositor, 320, 240), Some([255, 0, 0, 255]));
 
+    // The frame kept is the one the window drew last.
+    client.show(200, 100, [0, 255, 0, 255]);
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    assert_eq!(shown(&mut compositor, 320, 240), Some([0, 255, 0, 255]));
+
     client.toplevel.as_ref().unwrap().destroy();
+    client.surface.as_ref().unwrap().destroy();
     pump(&mut compositor, &mut [&mut client], |compositor, _| {
         compositor.windows().is_empty()
     });
@@ -1683,12 +1689,12 @@ fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
     assert_eq!(closing[0].1, rect, "where it stood");
     assert_eq!(
         shown(&mut compositor, 320, 240),
-        Some([255, 0, 0, 255]),
+        Some([0, 255, 0, 255]),
         "its last buffer is still drawn"
     );
     assert_ne!(
         shown(&mut compositor, 221, 191).unwrap(),
-        [255, 0, 0, 255],
+        [0, 255, 0, 255],
         "and still framed"
     );
 
@@ -1702,12 +1708,12 @@ fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
     );
     assert_eq!(
         shown(&mut compositor, 320, 240),
-        Some([255, 0, 0, 255]),
+        Some([0, 255, 0, 255]),
         "the centre stays"
     );
     assert_ne!(
         shown(&mut compositor, 221, 191).unwrap(),
-        [255, 0, 0, 255],
+        [0, 255, 0, 255],
         "it shrinks in"
     );
     compositor.set_window_effect(
@@ -1728,6 +1734,38 @@ fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
     assert!(compositor.closing_windows().is_empty());
     assert_eq!(shown(&mut compositor, 320, 240), Some(BACKGROUND));
     assert_eq!(shown(&mut compositor, 220, 190), Some(BACKGROUND));
+}
+
+#[test]
+fn a_closed_window_is_drawn_where_and_as_big_as_it_stood() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).unwrap();
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 1280, 960).with_scale(2.0))
+        .unwrap();
+    let mut client = mapped_client(&mut compositor, "blue", (200, 100), [0, 0, 255, 255]);
+    let (info, _) = compositor.windows()[0].clone();
+    let shown = |compositor: &mut Compositor, x, y| {
+        compositor.render().unwrap();
+        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
+    };
+    assert_eq!(shown(&mut compositor, 640, 480), Some([0, 0, 255, 255]));
+
+    client.toplevel.as_ref().unwrap().destroy();
+    client.surface.as_ref().unwrap().destroy();
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.windows().is_empty()
+    });
+    assert_eq!(compositor.closing_windows().len(), 1);
+    assert_eq!(shown(&mut compositor, 640, 480), Some([0, 0, 255, 255]));
+    assert_eq!(shown(&mut compositor, 460, 400), Some([0, 0, 255, 255]));
+    assert_eq!(shown(&mut compositor, 820, 560), Some([0, 0, 255, 255]));
+    assert_eq!(
+        shown(&mut compositor, 844, 584),
+        Some(BACKGROUND),
+        "it is no bigger than it stood"
+    );
+    compositor.release_snapshot(info.id);
+    assert_eq!(shown(&mut compositor, 640, 480), Some(BACKGROUND));
 }
 
 /// A hosted surface that pictures one window.
