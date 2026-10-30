@@ -1503,10 +1503,6 @@ pub(super) struct NativeReadJoin {
     pub(super) record_kind: String,
 }
 impl NativeReadJoin {
-    #[expect(
-        clippy::future_not_send,
-        reason = "the original capnp root stays on its shovel LocalSet"
-    )]
     async fn renew(
         &self,
         spec: &RouteSpec,

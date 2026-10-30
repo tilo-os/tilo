@@ -240,10 +240,18 @@ impl OriginalInvocationData {
             // action door, not as the legacy multi-parameter JSON object.
             serde_json::json!({"text": self.request.argument})
         } else {
+            // The action door carries a typed argument object behind its
+            // single-slot prefix.
             self.request
                 .argument
                 .as_deref()
-                .map(serde_json::from_str)
+                .map(|argument| {
+                    serde_json::from_str(
+                        argument
+                            .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                            .unwrap_or(argument),
+                    )
+                })
                 .transpose()
                 .map_err(|_| "invalid original person conversation arguments")?
                 .unwrap_or(serde_json::Value::Null)

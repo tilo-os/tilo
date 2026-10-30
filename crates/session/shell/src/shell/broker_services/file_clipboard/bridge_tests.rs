@@ -8,7 +8,6 @@ use crate::shell::state::{RoomId, Workspace, WorkspaceId};
 use ed25519_dalek::{Signer as _, SigningKey};
 use runtime_collab::file_clipboard::ObjectIdentity;
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
-use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
 
 use std::os::unix::fs::PermissionsExt as _;
 
@@ -361,20 +360,18 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
 {
     let (reader, writer) = tokio::io::split(stream);
-    let network = Box::new(capnp_rpc::twoparty::VatNetwork::new(
-        futures_util::io::BufReader::new(reader.compat()),
-        futures_util::io::BufWriter::new(writer.compat_write()),
-        capnp_rpc::rpc_twoparty_capnp::Side::Client,
-        capnp::message::ReaderOptions::default(),
-    ));
-    let mut rpc = capnp_rpc::RpcSystem::new(network, None);
-    let client = runtime_collab::CollabClient::from_raw(
-        rpc.bootstrap(capnp_rpc::rpc_twoparty_capnp::Side::Server),
-    )
-    .with_descriptors(lane);
-    let driver = tokio::task::spawn_local(async move {
-        let _ = rpc.await;
-    });
+    let (client, carry) = runtime_collab::CollabClient::over(reader, writer);
+    let client = client.with_descriptors(lane);
+    let driver = tokio::task::spawn_local(carry);
+    join(client, Some(driver), room, identity, record).await
+}
+async fn join(
+    client: runtime_collab::CollabClient,
+    driver: Option<tokio::task::JoinHandle<()>>,
+    room: &str,
+    identity: &[u8],
+    record: &str,
+) -> Connection {
     let route = tilo_action_broker::route::CrdtRoute::record(APP, room, record);
     let channel = client
         .join_channel(&route.channel_key(), identity)
@@ -392,11 +389,13 @@ mod child_tests;
 struct Connection {
     channel: runtime_collab::ChannelHandle,
     client: runtime_collab::CollabClient,
-    driver: tokio::task::JoinHandle<()>,
+    driver: Option<tokio::task::JoinHandle<()>>,
 }
 impl Drop for Connection {
     fn drop(&mut self) {
-        self.driver.abort();
+        if let Some(driver) = &self.driver {
+            driver.abort();
+        }
     }
 }
 impl Connection {

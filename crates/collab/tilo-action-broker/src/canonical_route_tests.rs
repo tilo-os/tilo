@@ -55,14 +55,13 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                 let release = Rc::new(tokio::sync::Notify::new());
                 worker
                     .handle
-                    .publish_action_directory(
-                        &room.route.app_id,
-                        capnp_rpc::new_client(signed_worker::HeldHostDirectory {
+                    .publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
+                        signed_worker::HeldHostDirectory {
                             entered,
                             release: release.clone(),
                             row: directory.borrow().row(),
-                        }),
-                    )
+                        },
+                    )))
                     .await
                     .unwrap();
                 let caller = canonical_caller(&room);
@@ -101,10 +100,7 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                 if change == "registration" {
                     worker
                         .handle
-                        .publish_action_directory(
-                            &room.route.app_id,
-                            signed_worker::directory_server(&directory),
-                        )
+                        .publish_action_directory(signed_worker::directory_server(&directory))
                         .await
                         .unwrap();
                 } else if change == "certificate" {
@@ -144,10 +140,9 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
             for worker in [&first, &second] {
                 worker
                     .handle
-                    .publish_action_directory(
-                        &room.route.app_id,
-                        signed_worker::directory_server(&signed_worker::directory_state("r1")),
-                    )
+                    .publish_action_directory(signed_worker::directory_server(
+                        &signed_worker::directory_state("r1"),
+                    ))
                     .await
                     .unwrap();
             }
@@ -253,19 +248,13 @@ async fn canonical_route_uses_signed_directory_admission_order_and_fences_replac
             let first_directory = signed_worker::directory_state("first-r1");
             first
                 .handle
-                .publish_action_directory(
-                    &room.route.app_id,
-                    signed_worker::directory_server(&first_directory),
-                )
+                .publish_action_directory(signed_worker::directory_server(&first_directory))
                 .await
                 .unwrap();
             let other_directory = signed_worker::directory_state("other-r1");
             early
                 .handle
-                .publish_action_directory(
-                    &room.route.app_id,
-                    signed_worker::directory_server(&other_directory),
-                )
+                .publish_action_directory(signed_worker::directory_server(&other_directory))
                 .await
                 .unwrap();
             let caller = canonical_caller(&room);
@@ -299,10 +288,7 @@ async fn canonical_route_uses_signed_directory_admission_order_and_fences_replac
             assert_eq!(other_directory.borrow().query_count, 0);
             first
                 .handle
-                .publish_action_directory(
-                    &room.route.app_id,
-                    signed_worker::directory_server(&first_directory),
-                )
+                .publish_action_directory(signed_worker::directory_server(&first_directory))
                 .await
                 .unwrap();
             assert!(
@@ -339,10 +325,9 @@ async fn canonical_route_refuses_cross_room_forged_tokens_and_filtered_lookup() 
             let _stream = worker.handle.subscribe_stable_invocations().await.unwrap();
             worker
                 .handle
-                .publish_action_directory(
-                    &room.route.app_id,
-                    signed_worker::directory_server(&signed_worker::directory_state("r1")),
-                )
+                .publish_action_directory(signed_worker::directory_server(
+                    &signed_worker::directory_state("r1"),
+                ))
                 .await
                 .unwrap();
             let caller = canonical_caller(&room);
@@ -414,10 +399,7 @@ async fn a_canonical_provider_answers_another_apps_query_without_asking_its_dire
             let directory = signed_worker::directory_state("directory-r1");
             worker
                 .handle
-                .publish_action_directory(
-                    &room.route.app_id,
-                    signed_worker::directory_server(&directory),
-                )
+                .publish_action_directory(signed_worker::directory_server(&directory))
                 .await
                 .unwrap();
             let caller = canonical_caller(&room);

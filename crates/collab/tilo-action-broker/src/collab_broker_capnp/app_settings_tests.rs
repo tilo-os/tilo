@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use runtime_collab::AppSettingsHandle;
+use runtime_collab::SettingsView;
 use runtime_collab::settings::host::{AppSettingsServer, Revalidate};
 use serde_json::{Map, Value, json};
 use settings_store::{SettingsSource, Store};
@@ -20,10 +20,44 @@ fn admitted() -> Revalidate {
     Arc::new(|| Ok(()))
 }
 
+/// An app's settings calls, answered the way the wire answers them.
+struct AppSettingsHandle(AppSettingsServer);
+
+impl From<AppSettingsServer> for AppSettingsHandle {
+    fn from(server: AppSettingsServer) -> Self {
+        Self(server)
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "the host answers each app on its single-threaded broker task"
+)]
+impl AppSettingsHandle {
+    async fn read(&self, after: u64) -> Result<SettingsView, String> {
+        self.0.read(after).await.map(settings_view)
+    }
+
+    #[allow(clippy::unused_async, reason = "mirrors the app's settings handle")]
+    async fn update(
+        &self,
+        section: &str,
+        values: &[u8],
+        action: Option<&str>,
+    ) -> Result<SettingsView, String> {
+        self.0.update(section, values, action).map(settings_view)
+    }
+}
+
+fn settings_view((revision, document_json): (u64, Vec<u8>)) -> SettingsView {
+    SettingsView {
+        revision,
+        document_json,
+    }
+}
+
 fn handle(source: Arc<Store>, revalidate: Revalidate) -> AppSettingsHandle {
-    let client: runtime_collab::collab_capnp::app_settings::Client =
-        capnp_rpc::new_client(AppSettingsServer::new(APP, source, revalidate));
-    client.into()
+    AppSettingsServer::new(APP, source, revalidate).into()
 }
 
 fn run<F: std::future::Future>(future: F) -> F::Output {
@@ -152,7 +186,7 @@ fn a_withdrawn_admission_refuses_reads_and_writes() {
             if gate.load(Ordering::Acquire) {
                 Ok(())
             } else {
-                Err(capnp::Error::failed("admission withdrawn".into()))
+                Err("admission withdrawn".to_owned())
             }
         }),
     );
@@ -171,54 +205,57 @@ fn a_withdrawn_admission_refuses_reads_and_writes() {
 }
 
 #[test]
-fn display_rpc_requires_explicit_origin_and_exact_published_uuid_before_host_execution() {
+fn display_runs_the_hosts_transaction_only_for_an_app_holding_display_authority() {
     let dir = tempfile::tempdir().unwrap();
-    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let record = calls.clone();
-    let delegate = Arc::new(
-        move |_: &[u8], _: runtime_collab::settings::DisplayOrigin| {
-            record.fetch_add(1, Ordering::SeqCst);
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let record = Arc::clone(&calls);
+    let delegate: runtime_collab::settings::host::DisplayControl =
+        Arc::new(move |command, origin| {
+            record.lock().unwrap().push((command.to_vec(), origin));
             Ok(b"{}".to_vec())
-        },
-    );
-    run(async {
-        let client: runtime_collab::collab_capnp::app_settings::Client = capnp_rpc::new_client(
-            AppSettingsServer::new("so.tilo.settings", session(dir.path()), admitted())
-                .with_display(Some(delegate)),
-        );
-        let mut missing = client.display_control_request();
-        missing
-            .get()
-            .set_command_json(br#"{"operation":"identify"}"#);
-        assert!(
-            missing.send().promise.await.is_err(),
-            "omitted origin cannot default to local intent"
-        );
-        for bytes in [vec![], vec![0; 15], vec![0; 17]] {
-            let mut request = client.display_control_request();
-            request
-                .get()
-                .set_origin(runtime_collab::collab_capnp::DisplayRequestOrigin::Published);
-            request.get().set_published_invocation(&bytes);
-            assert!(request.send().promise.await.is_err());
-        }
-        let mut invalid_local = client.display_control_request();
-        invalid_local
-            .get()
-            .set_origin(runtime_collab::collab_capnp::DisplayRequestOrigin::LocalHost);
-        invalid_local.get().set_published_invocation(&[0; 16]);
-        assert!(invalid_local.send().promise.await.is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        let settings: AppSettingsHandle = client.into();
-        settings
-            .display_control(
+        });
+    let records: Arc<dyn SettingsSource> = session(dir.path());
+    let without = AppSettingsServer::new("so.tilo.notes", records.clone(), admitted());
+    assert!(
+        without
+            .display(
                 br#"{"operation":"inspect"}"#,
-                runtime_collab::settings::DisplayOrigin::LocalHost,
+                runtime_collab::settings::DisplayOrigin::LocalHost
             )
-            .await
-            .unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    });
+            .is_err()
+    );
+    assert!(
+        AppSettingsServer::new("so.tilo.settings", Arc::clone(&records), admitted())
+            .with_display(Some(Arc::clone(&delegate)))
+            .display(
+                &vec![b' '; 64 * 1024 + 1],
+                runtime_collab::settings::DisplayOrigin::LocalHost
+            )
+            .is_err(),
+        "an oversized request never reaches the host"
+    );
+    let withdrawn = AppSettingsServer::new(
+        "so.tilo.settings",
+        records.clone(),
+        Arc::new(|| Err("revoked".to_owned())),
+    )
+    .with_display(Some(Arc::clone(&delegate)));
+    assert!(
+        withdrawn
+            .display(b"{}", runtime_collab::settings::DisplayOrigin::LocalHost)
+            .is_err()
+    );
+    assert!(calls.lock().unwrap().is_empty());
+    let settings = AppSettingsServer::new("so.tilo.settings", records, admitted())
+        .with_display(Some(delegate));
+    let published = runtime_collab::settings::DisplayOrigin::Published([7; 16]);
+    settings
+        .display(br#"{"operation":"identify"}"#, published)
+        .unwrap();
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [(br#"{"operation":"identify"}"#.to_vec(), published)]
+    );
 }
 
 fn revocable_admission(allowed: Arc<AtomicBool>) -> Revalidate {
@@ -226,7 +263,7 @@ fn revocable_admission(allowed: Arc<AtomicBool>) -> Revalidate {
         if allowed.load(Ordering::Acquire) {
             Ok(())
         } else {
-            Err(capnp::Error::failed("revoked".into()))
+            Err("revoked".to_owned())
         }
     })
 }
@@ -237,10 +274,9 @@ fn dictionary_handle(
     permission: Revalidate,
     owner: Option<[u8; 32]>,
 ) -> AppSettingsHandle {
-    let client: runtime_collab::collab_capnp::app_settings::Client = capnp_rpc::new_client(
-        AppSettingsServer::new(app, source, permission).with_dictionary_owner(owner),
-    );
-    client.into()
+    AppSettingsServer::new(app, source, permission)
+        .with_dictionary_owner(owner)
+        .into()
 }
 
 fn dictionary_snapshot(
@@ -260,8 +296,7 @@ fn dictionary_snapshot(
 /// dictionary's owner at `revision`; true when the host took it.
 #[allow(
     clippy::future_not_send,
-    reason = "a capnp-rpc settings handle is single-threaded; `run` drives this on its \
-              current-thread `LocalSet`"
+    reason = "the host answers each app on its single-threaded broker task"
 )]
 async fn edit(
     handle: &AppSettingsHandle,
@@ -366,15 +401,13 @@ fn the_settings_apps_write_over_its_channel_lands_in_the_sessions_settings() {
     let reach = Reach::of("so.tilo.settings", &[SYSTEM_SETTINGS_CAPABILITY]);
     assert_eq!(reach, Reach::System);
     let channel = |app: &str, reach: Reach| -> AppSettingsHandle {
-        let client: runtime_collab::collab_capnp::app_settings::Client = capnp_rpc::new_client(
-            AppSettingsServer::new(
-                app,
-                Arc::clone(&records) as Arc<dyn SettingsSource>,
-                admitted(),
-            )
-            .with_reach(reach),
-        );
-        client.into()
+        AppSettingsServer::new(
+            app,
+            Arc::clone(&records) as Arc<dyn SettingsSource>,
+            admitted(),
+        )
+        .with_reach(reach)
+        .into()
     };
     let settings = channel("so.tilo.settings", reach);
     let notes = channel(
@@ -420,15 +453,13 @@ fn a_write_over_the_channel_keeps_the_action_that_made_it() {
     use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_CAPABILITY};
     let dir = tempfile::tempdir().unwrap();
     let records = session(dir.path());
-    let client: runtime_collab::collab_capnp::app_settings::Client = capnp_rpc::new_client(
-        AppSettingsServer::new(
-            "so.tilo.settings",
-            Arc::clone(&records) as Arc<dyn SettingsSource>,
-            admitted(),
-        )
-        .with_reach(Reach::of("so.tilo.settings", &[SYSTEM_SETTINGS_CAPABILITY])),
-    );
-    let settings: AppSettingsHandle = client.into();
+    let settings: AppSettingsHandle = AppSettingsServer::new(
+        "so.tilo.settings",
+        Arc::clone(&records) as Arc<dyn SettingsSource>,
+        admitted(),
+    )
+    .with_reach(Reach::of("so.tilo.settings", &[SYSTEM_SETTINGS_CAPABILITY]))
+    .into();
     run(async {
         settings
             .update(

@@ -2140,8 +2140,6 @@ pub(crate) fn test_broker_with_membership(
     )
 }
 
-use capnp::capability::Promise;
-use runtime_collab::raw::workspace_control_handle;
 use std::rc::Rc;
 use tilo_lock::MutexRecover as _;
 use tokio::sync::Mutex as AsyncMutex;
@@ -2259,15 +2257,14 @@ impl WorkspaceControlServices for NativeWorkspaceControl {
         &self,
         room: tilo_desktop_model::RoomId,
         target: [u8; 32],
-        revalidate: Arc<dyn Fn() -> Result<(), capnp::Error> + Send + Sync>,
-    ) -> Result<workspace_control_handle::Client, capnp::Error> {
+        revalidate: tilo_action_broker::services::ControlRevalidate,
+    ) -> Result<Rc<dyn tilo_action_broker::services::WorkspaceControlSession>, String> {
         revalidate()?;
         let target = iroh::EndpointId::from_bytes(&target)
-            .map_err(|_| capnp::Error::failed("invalid target device identity".into()))?;
+            .map_err(|_| "invalid target device identity".to_owned())?;
         let session = self
             .0
-            .open_workspace_control(tilo_network_actor::room_topic_id(room), target)
-            .map_err(capnp::Error::failed)?;
+            .open_workspace_control(tilo_network_actor::room_topic_id(room), target)?;
         let initial_route = match session.route() {
             tilo_network_actor::WorkspaceControlRoute::Direct { .. } => {
                 runtime_collab::WorkspaceControlRoute::Direct
@@ -2278,31 +2275,27 @@ impl WorkspaceControlServices for NativeWorkspaceControl {
                 }
             }
         };
-        Ok(capnp_rpc::new_client(CapnpWorkspaceControlHandle {
+        Ok(Rc::new(NativeWorkspaceControlSession {
             revalidate,
             network: self.0.clone(),
-            session: Rc::new(AsyncMutex::new(session)),
-            inbound: Rc::new(AsyncMutex::new(self.0.subscribe_workspace_control())),
-            initial: Rc::new(AsyncMutex::new(Some(
+            session: AsyncMutex::new(session),
+            inbound: AsyncMutex::new(self.0.subscribe_workspace_control()),
+            initial: AsyncMutex::new(Some(
                 runtime_collab::WorkspaceControlEvent::WaitingForConsent {
                     route: initial_route,
                 },
-            ))),
+            )),
         }))
     }
 }
-struct CapnpWorkspaceControlHandle {
-    revalidate: Arc<dyn Fn() -> Result<(), capnp::Error> + Send + Sync>,
+struct NativeWorkspaceControlSession {
+    revalidate: tilo_action_broker::services::ControlRevalidate,
     network: Arc<crate::shell::network::ShellNetwork>,
-    session: Rc<AsyncMutex<tilo_network_actor::workspace_control::WorkspaceControlSession>>,
-    inbound: Rc<
-        AsyncMutex<
-            tokio::sync::mpsc::UnboundedReceiver<
-                crate::shell::network::WorkspaceControlNetworkEvent,
-            >,
-        >,
+    session: AsyncMutex<tilo_network_actor::workspace_control::WorkspaceControlSession>,
+    inbound: AsyncMutex<
+        tokio::sync::mpsc::UnboundedReceiver<crate::shell::network::WorkspaceControlNetworkEvent>,
     >,
-    initial: Rc<AsyncMutex<Option<runtime_collab::WorkspaceControlEvent>>>,
+    initial: AsyncMutex<Option<runtime_collab::WorkspaceControlEvent>>,
 }
 
 fn workspace_control_event(
@@ -2348,169 +2341,127 @@ fn closed_workspace_control_event(
     ))
 }
 
-impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
-    fn read(
-        self: Rc<Self>,
-        _params: workspace_control_handle::ReadParams,
-        mut results: workspace_control_handle::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let this = self;
-        Promise::from_future(async move {
-            let initial_event = {
-                let mut initial = this.initial.lock().await;
-                initial.take()
+impl NativeWorkspaceControlSession {
+    async fn next_event(&self) -> Result<runtime_collab::WorkspaceControlEvent, String> {
+        let initial_event = self.initial.lock().await.take();
+        if let Some(event) = initial_event {
+            (self.revalidate)()?;
+            return Ok(event);
+        }
+        loop {
+            let closed = closed_workspace_control_event(&*self.session.lock().await);
+            if let Some(event) = closed {
+                return Ok(event);
+            }
+            if let Err(error) = (self.revalidate)() {
+                return Ok(workspace_control_event(
+                    self.session.lock().await.deny(error),
+                ));
+            }
+            let network_event =
+                match tokio::time::timeout(std::time::Duration::from_millis(250), async {
+                    self.inbound.lock().await.recv().await
+                })
+                .await
+                {
+                    Ok(Some(event)) => event,
+                    Ok(None) => return Err("workspace-control observer closed".to_owned()),
+                    Err(_) => continue,
+                };
+            let mut session = self.session.lock().await;
+            (self.revalidate)()?;
+            let update = match network_event {
+                crate::shell::network::WorkspaceControlNetworkEvent::Message(event)
+                    if event.workspace_topic == session.workspace() =>
+                {
+                    session.observe_from(event.transport_peer, &event.message)
+                }
+                crate::shell::network::WorkspaceControlNetworkEvent::PeerLeft {
+                    workspace_topic,
+                    peer,
+                } if workspace_topic == session.workspace() => session.peer_departed(peer),
+                crate::shell::network::WorkspaceControlNetworkEvent::PeerRevoked {
+                    workspace_topic,
+                    peer,
+                } if workspace_topic == session.workspace() && peer == session.target() => {
+                    Some(session.deny("target device certificate was revoked"))
+                }
+                _ => None,
             };
-            if let Some(event) = initial_event {
-                (this.revalidate)()?;
-                let bytes = postcard::to_allocvec(&event)
-                    .map_err(|error| capnp::Error::failed(error.to_string()))?;
-                results.get().set_event(&bytes);
-                return Ok(());
+            drop(session);
+            if let Some(update) = update {
+                return Ok(workspace_control_event(update));
             }
-            loop {
-                let closed = {
-                    let session = this.session.lock().await;
-                    closed_workspace_control_event(&session)
+        }
+    }
+
+    async fn input(&self, input: runtime_collab::WorkspaceControlInput) -> Result<(), String> {
+        (self.revalidate)()?;
+        let session = self.session.lock().await;
+        (self.revalidate)()?;
+        let input = match input {
+            runtime_collab::WorkspaceControlInput::RequestKeyframe { seq } => {
+                let published = self
+                    .network
+                    .publish_workspace_control_keyframe_request(&session, seq);
+                drop(session);
+                return published;
+            }
+            runtime_collab::WorkspaceControlInput::PointerMotion { x, y } => {
+                tilo_window_share::streaming::InputEvent::PointerMotion { x, y }
+            }
+            runtime_collab::WorkspaceControlInput::PointerButton { button, pressed } => {
+                tilo_window_share::streaming::InputEvent::PointerButton { button, pressed }
+            }
+            runtime_collab::WorkspaceControlInput::Key {
+                keycode,
+                pressed,
+                modifiers,
+            } => tilo_window_share::streaming::InputEvent::Key {
+                keysym: keycode,
+                pressed,
+                modifiers,
+            },
+            runtime_collab::WorkspaceControlInput::KeyboardFocus { focused } => {
+                let tilo_network_actor::workspace_control::WorkspaceControlStatus::Active {
+                    surface,
+                    ..
+                } = session.status()
+                else {
+                    return Err("target has not granted control".to_owned());
                 };
-                if let Some(event) = closed {
-                    let bytes = postcard::to_allocvec(&event)
-                        .map_err(|error| capnp::Error::failed(error.to_string()))?;
-                    results.get().set_event(&bytes);
-                    return Ok(());
-                }
-                if let Err(error) = (this.revalidate)() {
-                    let event = {
-                        let mut session = this.session.lock().await;
-                        workspace_control_event(session.deny(error.to_string()))
-                    };
-                    let bytes = postcard::to_allocvec(&event)
-                        .map_err(|error| capnp::Error::failed(error.to_string()))?;
-                    results.get().set_event(&bytes);
-                    return Ok(());
-                }
-                let network_event =
-                    match tokio::time::timeout(std::time::Duration::from_millis(250), async {
-                        this.inbound.lock().await.recv().await
-                    })
-                    .await
-                    {
-                        Ok(Some(event)) => event,
-                        Ok(None) => {
-                            return Err(capnp::Error::disconnected(
-                                "workspace-control observer closed".into(),
-                            ));
-                        }
-                        Err(_) => continue,
-                    };
-                let mut session = this.session.lock().await;
-                (this.revalidate)()?;
-                let update = match network_event {
-                    crate::shell::network::WorkspaceControlNetworkEvent::Message(event)
-                        if event.workspace_topic == session.workspace() =>
-                    {
-                        session.observe_from(event.transport_peer, &event.message)
-                    }
-                    crate::shell::network::WorkspaceControlNetworkEvent::PeerLeft {
-                        workspace_topic,
-                        peer,
-                    } if workspace_topic == session.workspace() => session.peer_departed(peer),
-                    crate::shell::network::WorkspaceControlNetworkEvent::PeerRevoked {
-                        workspace_topic,
-                        peer,
-                    } if workspace_topic == session.workspace() && peer == session.target() => {
-                        Some(session.deny("target device certificate was revoked"))
-                    }
-                    _ => None,
-                };
-                if let Some(update) = update {
-                    let bytes = postcard::to_allocvec(&workspace_control_event(update))
-                        .map_err(|error| capnp::Error::failed(error.to_string()))?;
-                    results.get().set_event(&bytes);
-                    return Ok(());
+                tilo_window_share::streaming::InputEvent::KeyboardFocus {
+                    surface: *surface,
+                    focused,
                 }
             }
-        })
+        };
+        let published = self
+            .network
+            .publish_workspace_control_input(&session, &input);
+        drop(session);
+        published
+    }
+}
+
+impl tilo_action_broker::services::WorkspaceControlSession for NativeWorkspaceControlSession {
+    fn read(
+        &self,
+    ) -> tilo_action_broker::services::ControlAnswer<'_, runtime_collab::WorkspaceControlEvent>
+    {
+        Box::pin(self.next_event())
     }
 
     fn send_input(
-        self: Rc<Self>,
-        params: workspace_control_handle::SendInputParams,
-        _results: workspace_control_handle::SendInputResults,
-    ) -> Promise<(), capnp::Error> {
-        if let Err(error) = (self.revalidate)() {
-            return Promise::err(error);
-        }
-        let bytes = match params.get().and_then(
-            runtime_collab::collab_capnp::workspace_control_handle::send_input_params::Reader::get_event,
-        ) {
-            Ok(bytes) => bytes,
-            Err(error) => return Promise::err(error),
-        };
-        let input: runtime_collab::WorkspaceControlInput = match postcard::from_bytes(bytes) {
-            Ok(input) => input,
-            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-        };
-        let this = self;
-        Promise::from_future(async move {
-            {
-                let session = this.session.lock().await;
-                (this.revalidate)()?;
-                let input = match input {
-                    runtime_collab::WorkspaceControlInput::RequestKeyframe { seq } => {
-                        let published = this
-                            .network
-                            .publish_workspace_control_keyframe_request(&session, seq)
-                            .map_err(capnp::Error::failed);
-                        drop(session);
-                        return published;
-                    }
-                    runtime_collab::WorkspaceControlInput::PointerMotion { x, y } => {
-                        tilo_window_share::streaming::InputEvent::PointerMotion { x, y }
-                    }
-                    runtime_collab::WorkspaceControlInput::PointerButton { button, pressed } => {
-                        tilo_window_share::streaming::InputEvent::PointerButton { button, pressed }
-                    }
-                    runtime_collab::WorkspaceControlInput::Key {
-                        keycode,
-                        pressed,
-                        modifiers,
-                    } => tilo_window_share::streaming::InputEvent::Key {
-                        keysym: keycode,
-                        pressed,
-                        modifiers,
-                    },
-                    runtime_collab::WorkspaceControlInput::KeyboardFocus { focused } => {
-                        let surface = match session.status() {
-                            tilo_network_actor::workspace_control::WorkspaceControlStatus::Active { surface, .. } => {
-                                *surface
-                            }
-                            _ => {
-                                return Err(capnp::Error::failed(
-                                    "target has not granted control".into(),
-                                ));
-                            }
-                        };
-                        tilo_window_share::streaming::InputEvent::KeyboardFocus { surface, focused }
-                    }
-                };
-                let published = this
-                    .network
-                    .publish_workspace_control_input(&session, &input)
-                    .map_err(capnp::Error::failed);
-                drop(session);
-                published
-            }
-        })
+        &self,
+        input: runtime_collab::WorkspaceControlInput,
+    ) -> tilo_action_broker::services::ControlAnswer<'_, ()> {
+        Box::pin(self.input(input))
     }
 
-    fn close(
-        self: Rc<Self>,
-        _params: workspace_control_handle::CloseParams,
-        _results: workspace_control_handle::CloseResults,
-    ) -> Promise<(), capnp::Error> {
-        let session = self.session.clone();
-        Promise::from_future(async move {
-            session.lock().await.disconnect();
+    fn close(&self) -> tilo_action_broker::services::ControlAnswer<'_, ()> {
+        Box::pin(async move {
+            self.session.lock().await.disconnect();
             Ok(())
         })
     }

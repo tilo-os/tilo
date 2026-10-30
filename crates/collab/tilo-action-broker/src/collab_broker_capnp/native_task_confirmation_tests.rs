@@ -1,50 +1,23 @@
 //! A native run pauses at an action asking first, through production RPCs.
 #![expect(
     clippy::future_not_send,
-    reason = "Capnp RPC clients are intentionally thread confined to the existing LocalSet"
+    reason = "the broker's Rc-backed channel handles stay on the test LocalSet"
 )]
 use super::*;
 use crate::services::{TrackerAnswer, TrackerQuestion};
 
 /// Notes' `append`, taking a `text`, published on peer 200.
-async fn append_target(f: &Fixture) -> (channel_handle::Client, invocation_stream::Client) {
-    let target = f.channel(200, false);
-    let mut publish = target.publish_actions_request();
-    publish.get().set_app_id("so.tilo.notes");
-    {
-        let mut row = publish.get().init_actions(1).get(0);
-        row.set_resource("notes:release");
-        row.set_action("append");
-        row.set_resource_kind("document");
-        row.set_resource_label("Release notes");
-        row.set_action_label("Append");
-        row.set_operation_kind("effect");
-        let params = vec![tilo_actions::ActionParam::required(
-            "text",
-            tilo_actions::ParamType::Text,
-            "What to append",
-        )];
-        row.set_params_json(serde_json::to_string(&params).unwrap());
-        let contract = tilo_actions::ActionContract {
-            kind: tilo_actions::ActionKind::Undoable,
-            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-            result: tilo_actions::ResultSpec::Job,
-            ..Default::default()
-        };
-        row.set_contract_json(serde_json::to_string(&contract).unwrap());
-    }
-    publish.send().promise.await.unwrap();
-    let mut subscribe = target.subscribe_invocations_request();
-    subscribe.get().set_stable_invocation_ids(true);
-    let stream = subscribe
-        .send()
-        .promise
-        .await
-        .unwrap()
-        .get()
-        .unwrap()
-        .get_stream()
-        .unwrap();
+async fn append_target(f: &Fixture) -> (runtime_collab::ChannelHandle, InvocationStreamServer) {
+    let handle = Rc::new(f.app_handle(200, "so.tilo.notes", false));
+    let target = wire_channel_rc(Rc::clone(&handle));
+    let mut append = notes_append();
+    append.params = vec![tilo_actions::ActionParam::required(
+        "text",
+        tilo_actions::ParamType::Text,
+        "What to append",
+    )];
+    target.publish_actions(&[append]).await.unwrap();
+    let stream = handle.invocation_feed(true).unwrap();
     (target, stream)
 }
 
@@ -69,11 +42,11 @@ fn asks_first_for_notes(f: &Fixture) -> tilo_action_policy::Grant {
 }
 
 async fn append(
-    channel: &channel_handle::Client,
+    channel: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     invocation: u128,
     text: &str,
-) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
+) -> Result<(u64, tilo_actions::InvocationUpdate), runtime_portal::NotAvailable> {
     append_as(
         channel,
         run,
@@ -85,39 +58,52 @@ async fn append(
 
 /// [`append`] with `argument` exactly as the agent sends it.
 async fn append_as(
-    channel: &channel_handle::Client,
+    channel: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     invocation: u128,
     argument: String,
-) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
-    append_held(channel, run, invocation, argument, 0).await
+) -> Result<(u64, tilo_actions::InvocationUpdate), runtime_portal::NotAvailable> {
+    let target = runtime_collab::TaskAction {
+        argument: Some(&argument),
+        ..notes_action()
+    };
+    let (id, update) = channel
+        .invoke_task_action(
+            run.run_id,
+            &run.lease,
+            target,
+            &uuid::Uuid::from_u128(invocation).to_string(),
+        )
+        .await?;
+    Ok((id, serde_json::from_str(&update).unwrap()))
 }
 
-/// [`append_as`], asking the broker to hold the answer up to `wait_ms`.
+/// [`append_as`], asking the broker to hold the answer up to `wait_ms`
+/// while it stays accepted, as the agent waits for its person.
 async fn append_held(
-    channel: &channel_handle::Client,
+    channel: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     invocation: u128,
     argument: String,
     wait_ms: u32,
-) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
-    let mut request = channel.invoke_task_action_request();
-    let mut p = request.get();
-    p.set_wait_ms(wait_ms);
-    p.set_run_id(run.run_id);
-    p.set_lease(&run.lease);
-    p.set_peer_id(200);
-    p.set_resource("notes:release");
-    p.set_action("append");
-    p.set_argument(argument);
-    p.set_has_argument(true);
-    p.set_invocation(uuid::Uuid::from_u128(invocation).to_string());
-    let response = request.send().promise.await?;
-    let value = response.get()?;
-    Ok((
-        value.get_id(),
-        serde_json::from_str(value.get_update_json()?.to_str().unwrap()).unwrap(),
-    ))
+) -> Result<(u64, tilo_actions::InvocationUpdate), runtime_portal::NotAvailable> {
+    let target = runtime_collab::TaskAction {
+        argument: Some(&argument),
+        ..notes_action()
+    };
+    let (id, update) = channel
+        .observe_task_child(
+            run.run_id,
+            &run.lease,
+            target,
+            &uuid::Uuid::from_u128(invocation).to_string(),
+            runtime_collab::TaskChildWait {
+                wait_ms,
+                seen: tilo_actions::remote::UpdateMark::Accepted,
+            },
+        )
+        .await?;
+    Ok((id, serde_json::from_str(&update).unwrap()))
 }
 
 /// The question the run asks its person, as its agent asked it on the issue.
@@ -318,20 +304,17 @@ async fn the_tasks_app_has_a_runs_question_put_to_its_person_on_the_hosts_sheet(
 
 /// The Tasks app's tracker on peer 300, publishing the answer to a run's
 /// question its people give.
-async fn tracker_target(f: &Fixture) -> (channel_handle::Client, invocation_stream::Client) {
+async fn tracker_target(f: &Fixture) -> (runtime_collab::ChannelHandle, InvocationStreamServer) {
     use crate::services::TRACKER_APP;
-    let target = f.app_channel(300, TRACKER_APP, false);
-    let mut publish = target.publish_actions_request();
-    publish.get().set_app_id(TRACKER_APP);
-    {
-        let mut row = publish.get().init_actions(1).get(0);
-        row.set_resource("tasks.tracker");
-        row.set_action("answer-confirmation");
-        row.set_resource_kind("tracker");
-        row.set_resource_label("Tasks");
-        row.set_action_label("Answer");
-        row.set_operation_kind("effect");
-        let params = vec![
+    let handle = Rc::new(f.app_handle(300, TRACKER_APP, false));
+    let target = wire_channel_rc(Rc::clone(&handle));
+    let answer = runtime_collab::ExportedAction {
+        resource: "tasks.tracker".into(),
+        action: "answer-confirmation".into(),
+        resource_kind: "tracker".into(),
+        resource_label: "Tasks".into(),
+        action_label: "Answer".into(),
+        params: vec![
             tilo_actions::ActionParam::required("issue", tilo_actions::ParamType::Text, "Issue"),
             tilo_actions::ActionParam::required(
                 "confirm",
@@ -340,45 +323,24 @@ async fn tracker_target(f: &Fixture) -> (channel_handle::Client, invocation_stre
             ),
             tilo_actions::ActionParam::optional("edits", tilo_actions::ParamType::Array, "Edits"),
             tilo_actions::ActionParam::optional("reason", tilo_actions::ParamType::Text, "Why"),
-        ];
-        row.set_params_json(serde_json::to_string(&params).unwrap());
-        let contract = tilo_actions::ActionContract {
-            kind: tilo_actions::ActionKind::Undoable,
-            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-            result: tilo_actions::ResultSpec::Job,
-            ..Default::default()
-        };
-        row.set_contract_json(serde_json::to_string(&contract).unwrap());
-    }
-    publish.send().promise.await.unwrap();
-    let mut subscribe = target.subscribe_invocations_request();
-    subscribe.get().set_stable_invocation_ids(true);
-    let stream = subscribe
-        .send()
-        .promise
-        .await
-        .unwrap()
-        .get()
-        .unwrap()
-        .get_stream()
-        .unwrap();
+        ],
+        ..notes_append()
+    };
+    target.publish_actions(&[answer]).await.unwrap();
+    let stream = handle.invocation_feed(true).unwrap();
     (target, stream)
 }
 
 /// The arguments of the next invocation `stream` delivers.
-async fn next_arguments(stream: &invocation_stream::Client) -> serde_json::Value {
-    let delivered = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        stream.read_request().send().promise,
-    )
-    .await
-    .expect("an invocation is delivered")
-    .unwrap();
-    let wire = delivered.get().unwrap();
-    let text = wire.get_argument().unwrap().to_str().unwrap();
+async fn next_arguments(stream: &InvocationStreamServer) -> serde_json::Value {
+    let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+        .await
+        .expect("an invocation is delivered")
+        .unwrap();
+    let text = delivered.argument.unwrap();
     serde_json::from_str(
         text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-            .unwrap_or(text),
+            .unwrap_or(&text),
     )
     .unwrap()
 }
@@ -386,7 +348,7 @@ async fn next_arguments(stream: &invocation_stream::Client) -> serde_json::Value
 /// The Tasks app's answer button, as the app sends it through its door:
 /// its own word on the edits, which is never the person's.
 fn press_answer(
-    tracker: &channel_handle::Client,
+    tracker: &runtime_collab::ChannelHandle,
 ) -> tokio::task::JoinHandle<tilo_actions::remote::RemoteActionMessage> {
     use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
     let request = tilo_actions::remote::InvokeRequest {
@@ -415,14 +377,10 @@ fn press_answer(
     let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(request))
         .encode()
         .unwrap();
-    let mut call = tracker.remote_action_request();
-    call.get().set_frame(&frame);
-    let reply = call.send().promise;
+    let tracker = tracker.clone();
     tokio::task::spawn_local(async move {
-        let reply = reply.await.unwrap();
-        RemoteActionFrame::decode(reply.get().unwrap().get_frame().unwrap())
-            .unwrap()
-            .message
+        let reply = tracker.remote_action(&frame).await.unwrap();
+        RemoteActionFrame::decode(&reply).unwrap().message
     })
 }
 
@@ -699,10 +657,9 @@ async fn an_asking_action_pauses_the_run_and_runs_exactly_what_the_person_confir
                 update,
                 tilo_actions::InvocationUpdate::Accepted { .. }
             ));
-            let delivered = stream.read_request().send().promise.await.unwrap();
-            let wire = delivered.get().unwrap();
+            let delivered = stream.next().await.unwrap();
             let argument: serde_json::Value =
-                serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
+                serde_json::from_str(&delivered.argument.unwrap()).unwrap();
             assert_eq!(argument["text"], "Reviewed line", "the person's edit ran");
             drop(f);
         })
@@ -814,10 +771,9 @@ async fn a_held_ask_runs_once_its_person_answers() {
                 update,
                 tilo_actions::InvocationUpdate::Accepted { .. }
             ));
-            let delivered = stream.read_request().send().promise.await.unwrap();
-            let wire = delivered.get().unwrap();
+            let delivered = stream.next().await.unwrap();
             let argument: serde_json::Value =
-                serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
+                serde_json::from_str(&delivered.argument.unwrap()).unwrap();
             assert_eq!(argument["text"], "Reviewed line");
             drop(f);
         })
@@ -887,9 +843,8 @@ async fn arguments_in_the_agents_wire_form_ask_first_and_run_as_confirmed() {
             ask_append(&f, "Draft line");
             confirm_as(&f, "Reviewed line");
             append_as(&agent, &run, 9300, wire()).await.unwrap();
-            let delivered = stream.read_request().send().promise.await.unwrap();
-            let wire = delivered.get().unwrap();
-            let argument = wire.get_argument().unwrap().to_str().unwrap();
+            let delivered = stream.next().await.unwrap();
+            let argument = delivered.argument.unwrap();
             let argument: serde_json::Value = serde_json::from_str(
                 argument
                     .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
@@ -964,10 +919,9 @@ async fn a_run_delivered_again_carries_the_step_it_is_paused_at() {
                 update,
                 tilo_actions::InvocationUpdate::Accepted { .. }
             ));
-            let delivered = stream.read_request().send().promise.await.unwrap();
-            let wire = delivered.get().unwrap();
+            let delivered = stream.next().await.unwrap();
             let argument: serde_json::Value =
-                serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
+                serde_json::from_str(&delivered.argument.unwrap()).unwrap();
             assert_eq!(argument["text"], "Draft line");
             drop(f);
         })

@@ -1142,19 +1142,38 @@ pub trait ContentSink: Send {
     fn finish(self: Box<Self>) -> Result<(String, u64), String>;
 }
 
-/// Called on the broker `LocalSet`; returned Cap'n Proto clients never cross threads.
+/// What a workspace control session's calls answer.
+pub type ControlAnswer<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + 'a>>;
+
+/// One open workspace control session; it lives on the broker `LocalSet`.
+pub trait WorkspaceControlSession {
+    /// The session's next event.
+    fn read(&self) -> ControlAnswer<'_, runtime_collab::WorkspaceControlEvent>;
+
+    /// Send the controlled device `input`.
+    fn send_input(&self, input: runtime_collab::WorkspaceControlInput) -> ControlAnswer<'_, ()>;
+
+    /// End the session.
+    fn close(&self) -> ControlAnswer<'_, ()>;
+}
+
+/// Asked before each step of a workspace control session; an error ends it.
+pub type ControlRevalidate = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
+/// Opens workspace control sessions; called on the broker `LocalSet`.
 pub trait WorkspaceControlServices: Send + Sync {
-    /// Opens the workspace control handle of `room` for `target`.
+    /// Opens the workspace control session of `room` with `target`.
     ///
     /// # Errors
     ///
-    /// Returns a Cap'n Proto error when the handle cannot be opened.
+    /// Why the session cannot be opened.
     fn open(
         &self,
         room: RoomId,
         target: [u8; 32],
-        revalidate: Arc<dyn Fn() -> Result<(), capnp::Error> + Send + Sync>,
-    ) -> Result<runtime_collab::raw::workspace_control_handle::Client, capnp::Error>;
+        revalidate: ControlRevalidate,
+    ) -> Result<std::rc::Rc<dyn WorkspaceControlSession>, String>;
 }
 
 /// The broker-authenticated identity passed to native realtime continuity.

@@ -765,13 +765,12 @@ async fn an_ask_edited_on_the_sheet_runs_the_persons_arguments_through_the_door(
                 }
                 let delivered = tokio::time::timeout(
                     std::time::Duration::from_secs(5),
-                    notes.read_request().send().promise,
+                    notes.read(),
                 )
                 .await
                 .expect("the app runs it")
                 .unwrap();
-                let wire = delivered.get().unwrap();
-                let text = wire.get_argument().unwrap().to_str().unwrap();
+                let text = delivered.argument.as_deref().unwrap_or_default();
                 let delivered: Value = serde_json::from_str(
                     text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
                         .unwrap_or(text),

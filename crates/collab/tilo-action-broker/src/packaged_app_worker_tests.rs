@@ -157,15 +157,14 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
             assert_eq!(registration.route, env.route);
             assert_eq!(registration.certificate, env.cert);
 
-            own.publish_action_directory(
-                &env.route.app_id,
-                capnp_rpc::new_client(LocalDocumentDirectory {
+            own.publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
+                LocalDocumentDirectory {
                     kind: tilo_actions::OperationKind::Document,
                     read: false,
                     pin_dropped: Rc::new(std::cell::Cell::new(false)),
                     resolutions: Rc::new(std::cell::Cell::new(0)),
-                }),
-            )
+                },
+            )))
             .await
             .unwrap();
             let person = tilo_action_policy::Subject::Person(principal_id_for_root(
@@ -301,15 +300,14 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
                     );
                 }
                 channels[RECORDS - 1]
-                    .publish_action_directory(
-                        &env.route.app_id,
-                        capnp_rpc::new_client(LocalDocumentDirectory {
+                    .publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
+                        LocalDocumentDirectory {
                             kind: tilo_actions::OperationKind::Document,
                             read: false,
                             pin_dropped: Rc::new(std::cell::Cell::new(false)),
                             resolutions: Rc::new(std::cell::Cell::new(0)),
-                        }),
-                    )
+                        },
+                    )))
                     .await
                     .unwrap();
                 windows.push((peer, app, server, client, channels));
@@ -400,12 +398,9 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
                     .await
                     .unwrap();
                 channel
-                    .publish_action_directory(
-                        &env.route.app_id,
-                        super::signed_worker::directory_server(&directory_state(&format!(
-                            "{id}-r1"
-                        ))),
-                    )
+                    .publish_action_directory(super::signed_worker::directory_server(
+                        &directory_state(&format!("{id}-r1")),
+                    ))
                     .await
                     .unwrap();
                 let stream = channel.subscribe_stable_invocations().await.unwrap();

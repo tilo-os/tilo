@@ -1,8 +1,6 @@
 //! Private person authority comes from the native app's certified transport.
 use super::{CapnpChannelHandle, InvocationOwner, PrivateWorkerRegistration};
 use crate::services::person_chat::PersonChatCommand;
-use capnp::capability::Promise;
-use runtime_collab::raw::{channel_handle, person_chat_stream};
 use std::{cell::RefCell, rc::Rc};
 
 /// Original app actor, never an Agent attestor promoted into a person.
@@ -64,23 +62,6 @@ impl CapnpChannelHandle {
             .as_ref()
             .ok_or("private person owner unavailable")?
             .subscribe(&self.route().cluster_id, &actor, peer)
-    }
-
-    pub(super) fn subscribe_person_chat_dispatch(
-        self: Rc<Self>,
-        params: &channel_handle::SubscribePersonChatParams,
-        mut results: channel_handle::SubscribePersonChatResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            let params = params.get()?;
-            let stream: person_chat_stream::Client = capnp_rpc::new_client(PrivateChanges::open(
-                self,
-                params.get_public_key()?.to_str()?.to_owned(),
-                params.get_on_behalf_of()?.to_vec(),
-            )?);
-            results.get().set_stream(stream);
-            Ok(())
-        })())
     }
 
     fn person_chat_actor(
@@ -362,27 +343,5 @@ impl PrivateChanges {
         let generation = *changes.borrow_and_update();
         *self.changes.borrow_mut() = Some(changes);
         Ok(generation)
-    }
-}
-
-impl person_chat_stream::Server for PrivateChanges {
-    fn read(
-        self: Rc<Self>,
-        _params: person_chat_stream::ReadParams,
-        mut results: person_chat_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from(PrivateChanges::read(&self).map(|reply| results.get().set_reply(&reply)))
-    }
-
-    fn next(
-        self: Rc<Self>,
-        _params: person_chat_stream::NextParams,
-        mut results: person_chat_stream::NextResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let generation = PrivateChanges::next(&self).await?;
-            results.get().set_generation(generation);
-            Ok(())
-        })
     }
 }

@@ -1,8 +1,8 @@
 //! Authenticated SDK admission only; deliberately no application delivery.
 use super::{
     AdmissionProvenance, AdmittedJoinIdentity, CapnpBrokerState, CapnpChannelHandle, CrdtRoute,
-    InvocationCaller, InvocationInputs, InvocationJournal, InvocationKey, InvocationOwner, Promise,
-    PublishedAction, Rc, admission_request_digest, channel_handle, invocation_journal,
+    InvocationCaller, InvocationInputs, InvocationJournal, InvocationKey, InvocationOwner,
+    PublishedAction, Rc, admission_request_digest, invocation_journal,
 };
 use crate::local_document_action::Request;
 
@@ -218,28 +218,27 @@ fn receipt(
     Ok(receipts.lookup(key).cloned())
 }
 
-fn write_observation(
-    mut out: runtime_collab::collab_capnp::published_invocation_observation::Builder<'_>,
+fn observation(
     record: &ReceiptRecord,
-) -> Result<(), capnp::Error> {
-    out.set_host(record.key.host.as_bytes());
-    out.set_invocation(record.key.invocation.0.as_bytes());
-    out.set_found(true);
-    out.set_id(record.id);
-    out.set_update_json(
-        &serde_json::to_string(&tilo_actions::InvocationUpdate::Accepted {
-            invocation: record.key.invocation,
-        })
-        .map_err(|_| capnp::Error::failed("local observation encoding failed".into()))?,
-    );
-    out.set_admission_json(
-        &serde_json::to_string(&record.admission)
-            .map_err(|_| capnp::Error::failed("local admission encoding failed".into()))?,
-    );
-    out.set_terminal_json("");
-    out.set_uncertain(false);
-    out.set_cancellation_requested(false);
-    Ok(())
+) -> Result<runtime_collab::PublishedInvocationObservation, capnp::Error> {
+    Ok(runtime_collab::PublishedInvocationObservation {
+        host: *record.key.host.as_bytes(),
+        invocation: *record.key.invocation.0.as_bytes(),
+        result: Some(runtime_collab::PublishedInvocationResult {
+            id: record.id,
+            update_json: serde_json::to_string(&tilo_actions::InvocationUpdate::Accepted {
+                invocation: record.key.invocation,
+            })
+            .map_err(|_| capnp::Error::failed("local observation encoding failed".into()))?,
+            admission_json: Some(
+                serde_json::to_string(&record.admission)
+                    .map_err(|_| capnp::Error::failed("local admission encoding failed".into()))?,
+            ),
+            terminal_json: None,
+            uncertain: false,
+            cancellation_requested: false,
+        }),
+    })
 }
 
 fn validate_report_offer(request: &Request, action: &PublishedAction) -> Result<(), String> {
@@ -283,13 +282,19 @@ fn rejected(mut reason: String) -> capnp::Error {
     clippy::significant_drop_tightening,
     reason = "`state` borrows the channel's broker state; the admission guard is held to the end on purpose, serializing admission"
 )]
+#[allow(
+    clippy::future_not_send,
+    clippy::needless_pass_by_value,
+    reason = "admission runs on the broker's LocalSet; its future holds the channel"
+)]
 pub(super) fn admit(
     channel: Rc<CapnpChannelHandle>,
-    params: &channel_handle::AdmitLocalDocumentActionParams,
-    mut results: channel_handle::AdmitLocalDocumentActionResults,
-) -> Promise<(), capnp::Error> {
+    report: Vec<u8>,
+) -> impl std::future::Future<
+    Output = Result<runtime_collab::PublishedInvocationObservation, capnp::Error>,
+> {
     let parsed = (|| {
-        let request = Request::decode(params.get()?.get_request()?).map_err(rejected)?;
+        let request = Request::decode(&report).map_err(rejected)?;
         if request.bound_invocation().map_err(rejected)? != request.invocation {
             return Err(rejected(
                 "local report invocation does not bind capture".into(),
@@ -302,11 +307,8 @@ pub(super) fn admit(
         validate_report_custody(&request, &route, &admitted)?;
         Ok((request, route, admitted))
     })();
-    let (request, route, admitted) = match parsed {
-        Ok(value) => value,
-        Err(error) => return Promise::err(error),
-    };
-    Promise::from_future(async move {
+    async move {
+        let (request, route, admitted) = parsed?;
         let state = &channel.state;
         let peer = channel.peer_id;
         {
@@ -315,7 +317,7 @@ pub(super) fn admit(
                 .lock()
                 .map_err(|_| capnp::Error::failed("invocation admission unavailable".into()))?;
             if let Some(record) = cached_receipt(&channel, &route, &request)? {
-                return write_observation(results.get().init_observation(), &record);
+                return observation(&record);
             }
         }
         // A fresh policy failure cannot prove an earlier admission never
@@ -341,7 +343,7 @@ pub(super) fn admit(
             .map_err(|_| capnp::Error::failed("invocation admission unavailable".into()))?;
         // Resolution yields: another concurrent report may have won admission.
         if let Some(record) = cached_receipt(&channel, &route, &request)? {
-            return write_observation(results.get().init_observation(), &record);
+            return observation(&record);
         }
         let offer = offer.map_err(capnp::Error::failed)?;
         state
@@ -425,6 +427,6 @@ pub(super) fn admit(
         };
         let record = receipt(state, &key)?
             .ok_or_else(|| capnp::Error::failed("local report receipt unavailable".into()))?;
-        write_observation(results.get().init_observation(), &record)
-    })
+        observation(&record)
+    }
 }

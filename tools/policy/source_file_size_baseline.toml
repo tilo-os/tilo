@@ -46,9 +46,9 @@
 "crates/agent/model-gateway/src/service.rs" = 4000
 "crates/browser/tilo-browser-peer/src/session.rs" = 4000
 "crates/browser/tilo-browser-runtime/src/browser.rs" = 3500
-"crates/collab/collaboration/src/broker.rs" = 13500
+"crates/collab/collaboration/src/broker.rs" = 13000
 "crates/collab/tilo-action-broker/src/channel_encryption.rs" = 3500
-"crates/collab/tilo-action-broker/src/collab_broker_capnp.rs" = 19500
+"crates/collab/tilo-action-broker/src/collab_broker_capnp.rs" = 17500
 "crates/collab/tilo-action-broker/src/collab_broker_capnp/action_host.rs" = 4000
 "crates/collab/tilo-peer-state/src/state.rs" = 4000
 "crates/dev/tilo-app-cli/src/lib.rs" = 10500
@@ -63,7 +63,6 @@
 "crates/hosting/tilo-relay/src/enroll.rs" = 3500
 "crates/hosting/tilo-room-host/src/store/retained.rs" = 3500
 "crates/packaging/launcher/src/run.rs" = 6500
-"crates/runtime/runtime-collab/src/lib.rs" = 4000
 "crates/runtime/runtime-fs/src/operations.rs" = 5000
 "crates/runtime/runtime-identity/src/unix.rs" = 3500
 "crates/runtime/tilo-runtime/src/mcp.rs" = 3500

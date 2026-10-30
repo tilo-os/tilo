@@ -52,7 +52,7 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
             let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge));
             let (worker, _authorizer) =
                 join_worker(&state, &directories, &env.route, &env.cert, &env.key, 401).await;
-            let settings = worker.handle.settings().await.unwrap();
+            let settings = worker.handle.settings();
             assert_eq!(
                 settings
                     .display_control(
@@ -96,8 +96,6 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
             assert!(
                 ordinary
                     .settings()
-                    .await
-                    .unwrap()
                     .display_control(b"{}", runtime_collab::settings::DisplayOrigin::LocalHost)
                     .await
                     .is_err()
@@ -127,8 +125,6 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
                     assert!(
                         foreign
                             .settings()
-                            .await
-                            .unwrap()
                             .display_control(
                                 b"{}",
                                 runtime_collab::settings::DisplayOrigin::LocalHost
@@ -179,8 +175,6 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
                 replacement
                     .handle
                     .settings()
-                    .await
-                    .unwrap()
                     .display_control(b"{}", runtime_collab::settings::DisplayOrigin::LocalHost)
                     .await
                     .is_ok()
@@ -198,29 +192,6 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
         .await;
 }
 
-struct NativePersonFixture(Arc<CurrentHost>);
-impl crate::services::LocalPersonServices for NativePersonFixture {
-    fn certificate(
-        &self,
-        room: &str,
-        person: &str,
-    ) -> Result<tilo_user_identity::DeviceCert, String> {
-        let certificate = self
-            .0
-            .certificate
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or("native identity retired")?;
-        if room != self.0.route.cluster_id
-            || person != principal_id_for_root(certificate.user_public_key)
-        {
-            return Err("native person mismatch".into());
-        }
-        Ok(certificate)
-    }
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_continuation_and_replacement()
  {
@@ -236,7 +207,9 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
             let rig = Rig::with_services(
                 &env,
                 HostServices {
-                    local_person: Some(Arc::new(NativePersonFixture(env.authority.clone()))),
+                    local_person: Some(Arc::new(super::signed_worker::NativePerson(
+                        env.authority.clone(),
+                    ))),
                     settings: Some(Arc::new(settings_store::HostDocument::new(
                         serde_json::Map::default(),
                         |_| Ok(()),
@@ -252,26 +225,23 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
             contract.result = tilo_actions::ResultSpec::Job;
             rig.worker
                 .handle
-                .publish_actions(
-                    "so.tilo.settings",
-                    &[runtime_collab::ExportedAction {
-                        state: tilo_actions::ActionState::default(),
-                        resource: "settings.display".into(),
-                        semantic_identity: None,
-                        action: "identify-displays".into(),
-                        resource_kind: "settings".into(),
-                        resource_label: "Displays".into(),
-                        action_label: "Identify".into(),
-                        keywords: Vec::new(),
-                        icon: None,
-                        description: None,
-                        operation_kind: tilo_actions::OperationKind::View,
-                        params: Vec::new(),
-                        contract,
-                        input: runtime_collab::ExportedInput::None,
-                        view: None,
-                    }],
-                )
+                .publish_actions(&[runtime_collab::ExportedAction {
+                    state: tilo_actions::ActionState::default(),
+                    resource: "settings.display".into(),
+                    semantic_identity: None,
+                    action: "identify-displays".into(),
+                    resource_kind: "settings".into(),
+                    resource_label: "Displays".into(),
+                    action_label: "Identify".into(),
+                    keywords: Vec::new(),
+                    icon: None,
+                    description: None,
+                    operation_kind: tilo_actions::OperationKind::View,
+                    params: Vec::new(),
+                    contract,
+                    input: runtime_collab::ExportedInput::None,
+                    view: None,
+                }]))
                 .await
                 .unwrap();
             let person = tilo_actions::remote::Caller::local_person(principal_id_for_root(
@@ -306,7 +276,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                 .unwrap()
                 .unwrap();
             let generic_delivery = rig.stream.as_ref().unwrap().read().await.unwrap();
-            let settings = rig.worker.handle.settings().await.unwrap();
+            let settings = rig.worker.handle.settings();
             assert!(
                 settings
                     .display_control(
@@ -329,7 +299,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
             assert_eq!(delivered.invocation_uuid, request.invocation.0.into_bytes());
             let origin =
                 runtime_collab::settings::DisplayOrigin::Published(delivered.invocation_uuid);
-            let settings = rig.worker.handle.settings().await.unwrap();
+            let settings = rig.worker.handle.settings();
             settings
                 .display_control(br#"{"operation":"identify"}"#, origin)
                 .await
@@ -384,4 +354,237 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
             rig.stop().await;
         })
         .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn display_control_keeps_the_original_published_caller_and_refuses_unknown_or_cancelled_ids()
+{
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut env = Environment::new();
+            env.route.app_id = "so.tilo.settings".into();
+            env.authority =
+                CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
+            let delegate = Arc::new(DisplayDelegate {
+                calls: Mutex::new(vec![]),
+            });
+            let rig = Rig::with_services(
+                &env,
+                HostServices {
+                    settings: Some(Arc::new(settings_store::HostDocument::new(
+                        serde_json::Map::default(),
+                        |_| Ok(()),
+                    ))),
+                    display_control: Some(delegate.clone()),
+                    ..env.membership.services()
+                },
+            )
+            .await;
+            let mut contract = tilo_actions::ActionContract::view();
+            contract.kind = tilo_actions::ActionKind::Outside;
+            contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
+            contract.result = tilo_actions::ResultSpec::Job;
+            rig.worker
+                .handle
+                .publish_actions(&[runtime_collab::ExportedAction {
+                    resource: "settings.display".into(),
+                    semantic_identity: None,
+                    action: "identify-displays".into(),
+                    resource_kind: "settings".into(),
+                    resource_label: "Displays".into(),
+                    action_label: "Identify".into(),
+                    keywords: Vec::new(),
+                    icon: None,
+                    description: None,
+                    operation_kind: tilo_actions::OperationKind::View,
+                    params: Vec::new(),
+                    contract,
+                    input: runtime_collab::ExportedInput::None,
+                    view: None,
+                }])
+                .await
+                .unwrap();
+            // The application that launched this connection is the one whose
+            // actions these are: its own door reaches them.
+            let mut caller = rig.app_caller(&env, 905, "so.tilo.settings", None).await;
+            let settings = rig.worker.handle.settings();
+            let receipt = identify_displays(&caller.handle).await;
+            let original = runtime_collab::settings::DisplayOrigin::Published(
+                receipt.invocation.0.into_bytes(),
+            );
+            let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+            assert_eq!(delivered.invocation_uuid, receipt.invocation.0.into_bytes());
+            settings
+                .display_control(br#"{"operation":"identify"}"#, original)
+                .await
+                .unwrap();
+            assert_eq!(
+                *delegate.calls.lock().unwrap(),
+                vec![(
+                    env.route.cluster_id.clone(),
+                    env.cert.user_public_key,
+                    env.cert.device_public_key
+                )]
+            );
+            assert!(
+                settings
+                    .display_control(
+                        br#"{"operation":"identify"}"#,
+                        runtime_collab::settings::DisplayOrigin::Published(
+                            uuid::Uuid::new_v4().into_bytes()
+                        )
+                    )
+                    .await
+                    .is_err()
+            );
+            super::signed_worker::cancel(&caller.handle, receipt.invocation)
+                .await
+                .unwrap();
+            assert!(
+                settings
+                    .display_control(br#"{"operation":"identify"}"#, original)
+                    .await
+                    .is_err(),
+                "cancelled original authority cannot become local intent"
+            );
+            // A real published Agent invocation retains its original identity through
+            // this Settings worker; it never borrows the worker's person certificate.
+            {
+                use crate::test_support::{Grants as _, KindSet, Subject};
+                let workspace = &mut env.membership.write().workspaces[0];
+                workspace.admit_agent("display-agent", KindSet::ALL);
+                workspace.allow_app(
+                    Subject::agent("display-agent"),
+                    &env.route.app_id,
+                    KindSet::ALL,
+                );
+            }
+            let agent = rig
+                .app_caller(&env, 906, "so.tilo.settings", Some("display-agent"))
+                .await;
+            let receipt = identify_displays(&agent.handle).await;
+            if matches!(
+                receipt.status,
+                tilo_actions::remote::ReceiptStatus::Accepted
+            ) {
+                let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+                assert_eq!(delivered.invocation_uuid, receipt.invocation.0.into_bytes());
+                assert!(
+                    settings
+                        .display_control(
+                            br#"{"operation":"identify"}"#,
+                            runtime_collab::settings::DisplayOrigin::Published(
+                                receipt.invocation.0.into_bytes()
+                            )
+                        )
+                        .await
+                        .is_err()
+                );
+            } else {
+                assert!(matches!(
+                    receipt.status,
+                    tilo_actions::remote::ReceiptStatus::Rejected { .. }
+                        | tilo_actions::remote::ReceiptStatus::Failed { .. }
+                ));
+            }
+            assert_eq!(delegate.calls.lock().unwrap().len(), 1);
+            // A foreign member device of the same person has workspace Admin but
+            // must not obtain the original worker's device certificate.
+            let (_, evidence) = member_device_evidence(&env, 97, false);
+            let (host, client) = std::os::unix::net::UnixStream::pair().unwrap();
+            let (rpc, foreign_server, foreign_client) = rpc_pair(
+                rig.state.clone(),
+                907,
+                host,
+                client,
+                None,
+                rig.directories.clone(),
+            );
+            let foreign = rpc
+                .join_channel(
+                    &CrdtRoute::cluster(env.route.cluster_id.clone()).channel_key(),
+                    &evidence,
+                )
+                .await
+                .unwrap();
+            // Whether or not the other device's call is admitted, it never
+            // carries this worker's device into the display transaction.
+            let receipt = identify_displays(&foreign).await;
+            if matches!(
+                receipt.status,
+                tilo_actions::remote::ReceiptStatus::Accepted
+            ) {
+                let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+                assert_eq!(delivered.invocation_uuid, receipt.invocation.0.into_bytes());
+            }
+            assert!(
+                settings
+                    .display_control(
+                        br#"{"operation":"identify"}"#,
+                        runtime_collab::settings::DisplayOrigin::Published(
+                            receipt.invocation.0.into_bytes()
+                        )
+                    )
+                    .await
+                    .is_err(),
+                "workspace Admin admission is not physical device ownership"
+            );
+            assert_eq!(delegate.calls.lock().unwrap().len(), 1);
+            foreign_server.abort();
+            foreign_client.abort();
+            let _ = foreign_server.await;
+            let _ = foreign_client.await;
+            rig.state.remove_connection(903);
+            let (mut replacement, _) = join_worker(
+                &rig.state,
+                &rig.directories,
+                &env.route,
+                &env.cert,
+                &env.key,
+                908,
+            )
+            .await;
+            assert!(
+                replacement
+                    .handle
+                    .settings()
+                    .display_control(br#"{"operation":"identify"}"#, original)
+                    .await
+                    .is_err(),
+                "a new private channel cannot reinterpret an old UUID as local intent"
+            );
+            assert_eq!(delegate.calls.lock().unwrap().len(), 1);
+            replacement.server.abort();
+            replacement.client.abort();
+            let _ = (&mut replacement.server).await;
+            let _ = (&mut replacement.client).await;
+            caller.server.abort();
+            caller.client.abort();
+            let _ = (&mut caller.server).await;
+            let _ = (&mut caller.client).await;
+            rig.stop().await;
+        })
+        .await;
+}
+
+/// Ask the Settings worker (peer 903) to identify its displays over
+/// `handle`'s channel, as an app reaches another's action.
+async fn identify_displays(
+    handle: &runtime_collab::ChannelHandle,
+) -> tilo_actions::remote::InvocationReceipt {
+    super::signed_worker::receipt(
+        super::signed_worker::ask(
+            handle,
+            tilo_actions::remote::RemoteActionMessage::Invoke(
+                super::signed_worker::invoke_request(
+                    "903",
+                    "settings.display",
+                    "identify-displays",
+                    None,
+                ),
+            ),
+        )
+        .await
+        .unwrap(),
+    )
 }

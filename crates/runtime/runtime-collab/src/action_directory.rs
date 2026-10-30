@@ -3,12 +3,9 @@
 //!
 //! Every type here holds the typed `tilo_actions` vocabulary: an operation
 //! kind is an [`OperationKind`], a contract an [`ActionContract`], a
-//! presentation a [`ResourcePresentation`]. The Cap'n Proto schema still
-//! carries contracts, parameters and presentations as JSON text
-//! (`paramsJson`, `contractJson`, `resourcePresentationJson`,
-//! `visibilityContractJson`), and that encoding is confined to this module's
-//! codec: callers never see a JSON string, and a malformed payload is refused
-//! at decode with the row it came from named, rather than dropped further
+//! presentation a [`ResourcePresentation`]. A directory answer travels as
+//! JSON and is checked row by row when it is read, so a malformed row is
+//! refused with the row it came from named, rather than dropped further
 //! along by whoever happened to parse it.
 
 use tilo_actions::{
@@ -130,6 +127,26 @@ pub struct BrokerActionSurface {
 }
 
 impl ExportedAction {
+    /// Whether this action, read from the app that published it, names a
+    /// semantic identity only of its own kind and in bounds.
+    ///
+    /// # Errors
+    /// What is out of bounds, naming the action.
+    pub fn check(&self) -> Result<(), String> {
+        if self.semantic_identity.as_ref().is_some_and(|identity| {
+            identity.kind.len() > ResourceSemanticIdentity::MAX_KIND_BYTES
+                || identity.key.len() > ResourceSemanticIdentity::MAX_KEY_BYTES
+                || !identity.is_valid()
+                || identity.kind != self.resource_kind
+        }) {
+            return Err(format!(
+                "action `{}`/`{}`: invalid resource semantic identity",
+                self.resource, self.action
+            ));
+        }
+        Ok(())
+    }
+
     /// The typed descriptor this action exports, run at `locus`: the wire
     /// carries no locus of its own.
     pub fn descriptor(&self, locus: ExecutionLocus) -> ActionDescriptor {
@@ -180,7 +197,7 @@ impl From<&ActionDescriptor> for ExportedAction {
 /// `cursor` is opaque to callers. A source must reject it as stale when its
 /// revision no longer names the same ordering, rather than silently skipping
 /// or duplicating rows. Every numeric field is an upper bound, never a hint.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionDirectoryQuery {
     /// Broker-issued live connection id. Zero requests the broker's root
     /// directory; non-zero addresses one application directory.
@@ -201,7 +218,7 @@ pub struct ActionDirectoryQuery {
 /// A hierarchy-preserving directory row. Resource rows have no action or
 /// descriptor; action rows contain the canonical descriptor for that exact
 /// resource/action address.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionDirectoryRow {
     pub parent_resource: String,
     pub resource: String,
@@ -222,7 +239,7 @@ pub struct ActionDirectoryRow {
     pub visibility: Option<RowVisibility>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionDirectoryPage {
     pub revision: String,
     pub rows: Vec<ActionDirectoryRow>,
@@ -233,7 +250,7 @@ pub struct ActionDirectoryPage {
 }
 
 /// Exact, current-authority response before an invocation is admitted.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ActionDirectoryResolution {
     /// The row, and the revision the owner resolved it against: the named
     /// one, or the directory as it is now for an empty revision. An
@@ -280,6 +297,76 @@ pub fn wire_json_len<T: serde::Serialize + ?Sized>(value: &T) -> usize {
     }
 }
 
+impl ActionDirectoryRow {
+    /// Whether this row, read from the app that published it, is in bounds:
+    /// its presentation valid, its descriptor's semantic identity naming its
+    /// kind, and its contract, parameters and visibility contract bounded.
+    ///
+    /// # Errors
+    /// What is out of bounds, naming the row.
+    pub fn check(&self) -> Result<(), String> {
+        let refuse = |what: &str| {
+            Err(format!(
+                "action directory row `{}`/`{}`: {what}",
+                self.resource,
+                self.action.as_deref().unwrap_or_default()
+            ))
+        };
+        if let Some(presentation) = &self.presentation
+            && (!presentation.is_valid()
+                || wire_json_len(presentation) > MAX_DIRECTORY_PRESENTATION_WIRE_BYTES)
+        {
+            return refuse("resource presentation is out of bounds");
+        }
+        if let Some(visibility) = &self.visibility
+            && (visibility.action.is_empty()
+                || wire_json_len(&visibility.contract) > MAX_DIRECTORY_CONTRACT_WIRE_BYTES)
+        {
+            return refuse("visibility contract is out of bounds");
+        }
+        if let Some(descriptor) = &self.descriptor {
+            descriptor.check()?;
+            if wire_json_len(&descriptor.params) > MAX_DIRECTORY_PARAMS_WIRE_BYTES {
+                return refuse("parameters are out of bounds");
+            }
+            if wire_json_len(&descriptor.contract) > MAX_DIRECTORY_CONTRACT_WIRE_BYTES {
+                return refuse("contract is out of bounds");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Read a directory answer the app gave as JSON: refused when its rows'
+/// size exceeds `max_bytes` or a row is out of bounds.
+///
+/// # Errors
+/// The answer is oversized, malformed or out of bounds.
+pub fn read_directory_answer<T: serde::de::DeserializeOwned>(
+    json: &str,
+    max_bytes: u64,
+    rows: impl Fn(&T) -> Vec<&ActionDirectoryRow>,
+) -> Result<T, String> {
+    // JSON is wordier than the rows' size bound; four times it and a little
+    // more is what a well-formed answer needs at most.
+    let limit = max_bytes.saturating_mul(4).saturating_add(64 * 1024);
+    if u64::try_from(json.len()).unwrap_or(u64::MAX) > limit {
+        return Err("application exceeded directory byte budget".into());
+    }
+    let answer: T =
+        serde_json::from_str(json).map_err(|error| format!("invalid directory answer: {error}"))?;
+    let rows = rows(&answer);
+    let size = rows
+        .iter()
+        .map(|row| action_directory_row_wire_bytes(row))
+        .fold(0_usize, usize::saturating_add);
+    if u64::try_from(size).unwrap_or(u64::MAX) > max_bytes {
+        return Err("application exceeded directory byte budget".into());
+    }
+    rows.into_iter().try_for_each(ActionDirectoryRow::check)?;
+    Ok(answer)
+}
+
 /// The parts of [`action_directory_row_wire_bytes`]'s bound.
 mod wire_size {
     /// A struct's data words, pointer and list tag.
@@ -310,10 +397,9 @@ mod wire_size {
     }
 }
 
-/// An upper bound on `row`'s Cap'n Proto size, which the broker checks a
-/// page against: every text field costs its bytes, a NUL, padding to a word
-/// and an 8-byte pointer; every struct a fixed allowance for its data words,
-/// pointer and list tag.
+/// The size `row` counts against a page's byte budget: every text field
+/// costs its bytes, a NUL, padding to a word and an 8-byte pointer; every
+/// struct a fixed allowance for its data words, pointer and list tag.
 #[must_use]
 pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
     use wire_size::{STRUCT, json, optional, sum, text};
@@ -407,692 +493,6 @@ pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
     ])
 }
 
-#[cfg(feature = "client")]
-#[cfg(feature = "client")]
-pub use codec::{
-    decode_action_directory_page, decode_action_directory_resolution, decode_exported_action,
-    decode_surface_delta, resolve_local_document_action, write_action_directory_page,
-    write_action_directory_resolution, write_action_directory_row, write_exported_action,
-    write_surface_delta,
-};
-
-/// The Cap'n Proto codec: the only place an exported action or directory
-/// row is turned into, or read back from, its wire text.
-#[cfg(feature = "client")]
-mod codec {
-    use super::{
-        ActionDirectoryPage, ActionDirectoryResolution, ActionDirectoryRow, ExportedAction,
-        ExportedInput, MAX_DIRECTORY_CONTRACT_WIRE_BYTES, MAX_DIRECTORY_PARAMS_WIRE_BYTES,
-        MAX_DIRECTORY_PRESENTATION_WIRE_BYTES, RowVisibility,
-    };
-    use crate::collab_capnp;
-    use crate::{ResourceFields, SHAPE_ID_BYTES, ShapeId, SurfaceDelta, SurfaceResource};
-    use tilo_actions::{
-        ActionContract, OperationKind, ResourcePresentation, ResourceSemanticIdentity,
-        ResourceViewDescriptor, ResourceViewMountSpec, ResourceViewRangeSpec,
-    };
-
-    /// Which reader an exported action reaches the decoder through. Both
-    /// require the kind, parameters and contract; a directory row's are
-    /// also bounded, because its contract is what authorizes showing it.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Source {
-        Published,
-        Directory,
-    }
-
-    /// Names the address a decode error came from, so a refused payload
-    /// points at the action its application published.
-    struct Address<'a> {
-        source: Source,
-        resource: &'a str,
-        action: &'a str,
-    }
-
-    impl Address<'_> {
-        fn error(&self, what: impl std::fmt::Display) -> capnp::Error {
-            let noun = match self.source {
-                Source::Published => "exported action",
-                Source::Directory => "action directory row",
-            };
-            capnp::Error::failed(format!(
-                "{noun} `{}`/`{}`: {what}",
-                self.resource, self.action
-            ))
-        }
-    }
-
-    fn capnp_text(value: capnp::text::Reader<'_>) -> Result<String, capnp::Error> {
-        value.to_str().map(str::to_owned).map_err(|error| {
-            capnp::Error::failed(format!("invalid UTF-8 in action directory: {error}"))
-        })
-    }
-
-    fn encode_json<T: serde::Serialize + ?Sized>(
-        value: &T,
-        what: &str,
-    ) -> Result<String, capnp::Error> {
-        serde_json::to_string(value)
-            .map_err(|error| capnp::Error::failed(format!("cannot encode {what}: {error}")))
-    }
-
-    /// Parse one JSON payload, refusing an oversized or malformed one with
-    /// the row named.
-    fn decode_json<T: serde::de::DeserializeOwned>(
-        address: &Address<'_>,
-        json: &str,
-        what: &str,
-        maximum: usize,
-    ) -> Result<T, capnp::Error> {
-        if json.is_empty() || json.len() > maximum {
-            return Err(address.error(format_args!("{what} must be non-empty and bounded")));
-        }
-        serde_json::from_str(json)
-            .map_err(|error| address.error(format_args!("invalid {what}: {error}")))
-    }
-
-    fn operation_kind(address: &Address<'_>, wire: &str) -> Result<OperationKind, capnp::Error> {
-        match wire {
-            "document" => Ok(OperationKind::Document),
-            "effect" => Ok(OperationKind::Effect),
-            "view" => Ok(OperationKind::View),
-            other => Err(address.error(format_args!("unknown operation kind `{other}`"))),
-        }
-    }
-
-    /// Encode one exported action into its wire struct.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the semantic identity is invalid or does not
-    /// name the action's resource kind, or when a typed payload cannot be
-    /// encoded.
-    pub fn write_exported_action(
-        mut out: collab_capnp::exported_action::Builder<'_>,
-        action: &ExportedAction,
-    ) -> Result<(), capnp::Error> {
-        out.set_resource(&action.resource);
-        if let Some(identity) = &action.semantic_identity {
-            if !identity.is_valid() || identity.kind != action.resource_kind {
-                return Err(capnp::Error::failed(
-                    "invalid resource semantic identity".into(),
-                ));
-            }
-            let mut out = out.reborrow().init_semantic_identity();
-            out.set_kind(&identity.kind);
-            out.set_key(&identity.key);
-        }
-        out.set_action(&action.action);
-        out.set_resource_kind(&action.resource_kind);
-        out.set_resource_label(&action.resource_label);
-        out.set_action_label(&action.action_label);
-        if !action.keywords.is_empty() {
-            let count = u32::try_from(action.keywords.len())
-                .map_err(|_| capnp::Error::failed("too many action keywords".into()))?;
-            let mut keywords = out.reborrow().init_keywords(count);
-            for (at, word) in (0..count).zip(&action.keywords) {
-                keywords.set(at, word);
-            }
-        }
-        out.set_icon(action.icon.as_deref().unwrap_or(""));
-        out.set_description(action.description.as_deref().unwrap_or(""));
-        out.set_operation_kind(action.operation_kind.as_str());
-        out.set_params_json(&encode_json(&action.params, "action parameters")?);
-        out.set_contract_json(&encode_json(&action.contract, "action contract")?);
-        if let Some(view) = &action.view {
-            write_view(out.reborrow().init_view(), view);
-        }
-        let mut input = out.init_input();
-        match &action.input {
-            ExportedInput::None => input.set_none(()),
-            ExportedInput::Text {
-                prompt,
-                placeholder,
-                wants_content,
-            } => {
-                let mut text = input.init_text();
-                text.set_prompt(prompt);
-                text.set_placeholder(placeholder);
-                text.set_wants_content(*wants_content);
-            }
-        }
-        Ok(())
-    }
-
-    fn write_view(
-        mut out: collab_capnp::resource_view_descriptor::Builder<'_>,
-        view: &ResourceViewDescriptor,
-    ) {
-        out.set_id(&view.id);
-        out.set_label(&view.label);
-        out.set_description(view.description.as_deref().unwrap_or(""));
-        out.set_open_action(&view.open_action);
-        out.set_primary(view.primary);
-        if let Some(range) = &view.range {
-            let mut range_out = out.reborrow().init_range();
-            range_out.set_action(&range.action);
-            range_out.set_start_param(&range.start_param);
-            range_out.set_end_param(&range.end_param);
-            range_out.set_unit_param(&range.unit_param);
-        }
-        if let Some(mount) = &view.mount {
-            let mut out = out.init_mount();
-            out.set_action(&mount.action);
-            out.set_capability_param(&mount.capability_param);
-            out.set_view_param(&mount.view_param);
-        }
-    }
-
-    /// Encode one directory row into its wire struct.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the row's descriptor cannot be written (see
-    /// [`write_exported_action`]) or a typed payload cannot be encoded.
-    pub fn write_action_directory_row(
-        mut out: collab_capnp::action_directory_row::Builder<'_>,
-        row: &ActionDirectoryRow,
-    ) -> Result<(), capnp::Error> {
-        out.set_parent_resource(&row.parent_resource);
-        out.set_resource(&row.resource);
-        out.set_resource_kind(&row.resource_kind);
-        out.set_resource_label(&row.resource_label);
-        if let Some(presentation) = &row.presentation {
-            out.set_resource_presentation_json(&encode_json(
-                presentation,
-                "resource presentation",
-            )?);
-        }
-        out.set_action(row.action.as_deref().unwrap_or(""));
-        out.set_has_children(row.has_children);
-        if let Some(visibility) = &row.visibility {
-            out.set_visibility_action(&visibility.action);
-            if let Some(kind) = visibility.governing_kind {
-                out.set_visibility_governing_kind(kind.as_str());
-            }
-            out.set_visibility_contract_json(&encode_json(
-                &visibility.contract,
-                "visibility contract",
-            )?);
-        }
-        if let Some(descriptor) = &row.descriptor {
-            write_exported_action(out.reborrow().init_descriptor(), descriptor)?;
-        }
-        Ok(())
-    }
-
-    /// Encode one directory page into its wire struct.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the page has more rows than a list can address,
-    /// or any row cannot be written.
-    pub fn write_action_directory_page(
-        mut out: collab_capnp::action_directory_page::Builder<'_>,
-        page: &ActionDirectoryPage,
-    ) -> Result<(), capnp::Error> {
-        out.set_revision(&page.revision);
-        out.set_next_cursor(&page.next_cursor);
-        out.set_exhausted(page.exhausted);
-        out.set_stale_cursor(page.stale_cursor);
-        out.set_budget_exhausted(page.budget_exhausted);
-        let len = u32::try_from(page.rows.len())
-            .map_err(|_| capnp::Error::failed("too many action directory rows".into()))?;
-        let mut rows = out.reborrow().init_rows(len);
-        for (index, row) in (0..len).zip(&page.rows) {
-            write_action_directory_row(rows.reborrow().get(index), row)?;
-        }
-        Ok(())
-    }
-
-    /// Encode one exact resolution into its wire union.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a found row cannot be written.
-    pub fn write_action_directory_resolution(
-        mut out: collab_capnp::action_directory_resolution::Builder<'_>,
-        resolution: &ActionDirectoryResolution,
-    ) -> Result<(), capnp::Error> {
-        match resolution {
-            ActionDirectoryResolution::Found { row, revision } => {
-                write_action_directory_row(out.reborrow().init_found(), row)?;
-                if let Some(revision) = revision {
-                    out.set_resolved_revision(revision.as_str());
-                }
-            }
-            ActionDirectoryResolution::NotFound => out.set_not_found(()),
-            ActionDirectoryResolution::StaleRevision => out.set_stale_revision(()),
-            ActionDirectoryResolution::Unavailable => out.set_unavailable(()),
-        }
-        Ok(())
-    }
-
-    fn decode_semantic_identity(
-        address: &Address<'_>,
-        row: collab_capnp::exported_action::Reader<'_>,
-    ) -> Result<Option<ResourceSemanticIdentity>, capnp::Error> {
-        if !row.has_semantic_identity() {
-            return Ok(None);
-        }
-        let identity = row.get_semantic_identity()?;
-        let kind = identity.get_kind()?;
-        let key = identity.get_key()?;
-        if kind.len() > ResourceSemanticIdentity::MAX_KIND_BYTES
-            || key.len() > ResourceSemanticIdentity::MAX_KEY_BYTES
-        {
-            return Err(address.error("oversized resource semantic identity"));
-        }
-        let identity = ResourceSemanticIdentity {
-            kind: capnp_text(kind)?,
-            key: capnp_text(key)?,
-        };
-        if !identity.is_valid() || identity.kind != capnp_text(row.get_resource_kind()?)? {
-            return Err(address.error("invalid resource semantic identity"));
-        }
-        Ok(Some(identity))
-    }
-
-    fn decode_view(
-        view: collab_capnp::resource_view_descriptor::Reader<'_>,
-    ) -> Result<ResourceViewDescriptor, capnp::Error> {
-        let description = capnp_text(view.get_description()?)?;
-        Ok(ResourceViewDescriptor {
-            id: capnp_text(view.get_id()?)?,
-            label: capnp_text(view.get_label()?)?,
-            description: (!description.is_empty()).then_some(description),
-            open_action: capnp_text(view.get_open_action()?)?,
-            primary: view.get_primary(),
-            range: view
-                .has_range()
-                .then(|| view.get_range())
-                .transpose()?
-                .map(|range| {
-                    Ok::<_, capnp::Error>(ResourceViewRangeSpec {
-                        action: capnp_text(range.get_action()?)?,
-                        start_param: capnp_text(range.get_start_param()?)?,
-                        end_param: capnp_text(range.get_end_param()?)?,
-                        unit_param: capnp_text(range.get_unit_param()?)?,
-                    })
-                })
-                .transpose()?,
-            mount: view
-                .has_mount()
-                .then(|| view.get_mount())
-                .transpose()?
-                .map(|mount| {
-                    Ok::<_, capnp::Error>(ResourceViewMountSpec {
-                        action: capnp_text(mount.get_action()?)?,
-                        capability_param: capnp_text(mount.get_capability_param()?)?,
-                        view_param: capnp_text(mount.get_view_param()?)?,
-                    })
-                })
-                .transpose()?,
-        })
-    }
-
-    fn decode_action(
-        row: collab_capnp::exported_action::Reader<'_>,
-        source: Source,
-    ) -> Result<ExportedAction, capnp::Error> {
-        let resource = capnp_text(row.get_resource()?)?;
-        let action = capnp_text(row.get_action()?)?;
-        let address = Address {
-            source,
-            resource: &resource,
-            action: &action,
-        };
-        let semantic_identity = decode_semantic_identity(&address, row)?;
-        let operation_kind =
-            operation_kind(&address, capnp_text(row.get_operation_kind()?)?.as_str())?;
-        let params_json = capnp_text(row.get_params_json()?)?;
-        let contract_json = capnp_text(row.get_contract_json()?)?;
-        let (params_bound, contract_bound) = match source {
-            Source::Published => (usize::MAX, usize::MAX),
-            Source::Directory => (
-                MAX_DIRECTORY_PARAMS_WIRE_BYTES,
-                MAX_DIRECTORY_CONTRACT_WIRE_BYTES,
-            ),
-        };
-        let params: Vec<_> = decode_json(&address, &params_json, "parameters", params_bound)?;
-        let contract: ActionContract =
-            decode_json(&address, &contract_json, "contract", contract_bound)?;
-        let input = match row.get_input()?.which()? {
-            collab_capnp::action_input::Which::None(()) => ExportedInput::None,
-            collab_capnp::action_input::Which::Text(text) => ExportedInput::Text {
-                prompt: capnp_text(text.get_prompt()?)?,
-                placeholder: capnp_text(text.get_placeholder()?)?,
-                wants_content: text.get_wants_content(),
-            },
-        };
-        let view = row
-            .has_view()
-            .then(|| row.get_view())
-            .transpose()?
-            .map(decode_view)
-            .transpose()?;
-        let description = capnp_text(row.get_description()?)?;
-        let keywords = row
-            .get_keywords()?
-            .iter()
-            .map(|word| capnp_text(word?))
-            .collect::<Result<Vec<_>, _>>()?;
-        let icon = capnp_text(row.get_icon()?)?;
-        Ok(ExportedAction {
-            state: tilo_actions::ActionState::default(),
-            semantic_identity,
-            resource_kind: capnp_text(row.get_resource_kind()?)?,
-            resource_label: capnp_text(row.get_resource_label()?)?,
-            action_label: capnp_text(row.get_action_label()?)?,
-            keywords,
-            icon: (!icon.is_empty()).then_some(icon),
-            description: (!description.is_empty()).then_some(description),
-            operation_kind,
-            params,
-            contract,
-            view,
-            input,
-            resource,
-            action,
-        })
-    }
-
-    /// Decode one action from a published surface (`publishActions`): its
-    /// operation kind, parameters and contract must all be present and parse.
-    pub fn decode_exported_action(
-        row: collab_capnp::exported_action::Reader<'_>,
-    ) -> Result<ExportedAction, capnp::Error> {
-        decode_action(row, Source::Published)
-    }
-
-    pub(crate) fn decode_action_directory_row(
-        row: collab_capnp::action_directory_row::Reader<'_>,
-    ) -> Result<ActionDirectoryRow, capnp::Error> {
-        let resource = capnp_text(row.get_resource()?)?;
-        let action = capnp_text(row.get_action()?)?;
-        let address = Address {
-            source: Source::Directory,
-            resource: &resource,
-            action: &action,
-        };
-        let presentation_json = capnp_text(row.get_resource_presentation_json()?)?;
-        let presentation = if presentation_json.is_empty() {
-            None
-        } else {
-            let presentation: ResourcePresentation = decode_json(
-                &address,
-                &presentation_json,
-                "resource presentation",
-                MAX_DIRECTORY_PRESENTATION_WIRE_BYTES,
-            )?;
-            if !presentation.is_valid() {
-                return Err(address.error("resource presentation is out of bounds"));
-            }
-            Some(presentation)
-        };
-        let visibility_action = capnp_text(row.get_visibility_action()?)?;
-        let visibility_contract = capnp_text(row.get_visibility_contract_json()?)?;
-        let visibility = match (visibility_action.is_empty(), visibility_contract.is_empty()) {
-            (true, true) => None,
-            (false, false) => Some(RowVisibility {
-                contract: decode_json(
-                    &address,
-                    &visibility_contract,
-                    "visibility contract",
-                    MAX_DIRECTORY_CONTRACT_WIRE_BYTES,
-                )?,
-                action: visibility_action,
-                governing_kind: match capnp_text(row.get_visibility_governing_kind()?)?.as_str() {
-                    "" => None,
-                    "document" => Some(OperationKind::Document),
-                    "effect" => Some(OperationKind::Effect),
-                    "view" => Some(OperationKind::View),
-                    _ => return Err(address.error("invalid visibility governing kind")),
-                },
-            }),
-            _ => {
-                return Err(address.error("visibility action and contract must be set together"));
-            }
-        };
-        let descriptor = row
-            .has_descriptor()
-            .then(|| row.get_descriptor())
-            .transpose()?
-            .map(|descriptor| decode_action(descriptor, Source::Directory))
-            .transpose()?;
-        Ok(ActionDirectoryRow {
-            parent_resource: capnp_text(row.get_parent_resource()?)?,
-            resource_kind: capnp_text(row.get_resource_kind()?)?,
-            resource_label: capnp_text(row.get_resource_label()?)?,
-            presentation,
-            action: (!action.is_empty()).then_some(action),
-            descriptor,
-            has_children: row.get_has_children(),
-            visibility,
-            resource,
-        })
-    }
-
-    /// Decode one bounded action-directory page from its Cap'n Proto wire
-    /// form, into the typed rows an in-process shell client or the broker
-    /// filters.
-    ///
-    /// # Errors
-    ///
-    /// Returns a Cap'n Proto error naming the row when a field is absent,
-    /// malformed, oversized, or cannot be decoded into the typed
-    /// resource/action representation. Nothing malformed is dropped
-    /// silently: a refused row refuses its page.
-    pub fn decode_action_directory_page(
-        page: collab_capnp::action_directory_page::Reader<'_>,
-    ) -> Result<ActionDirectoryPage, capnp::Error> {
-        let rows = page
-            .get_rows()?
-            .iter()
-            .map(decode_action_directory_row)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(ActionDirectoryPage {
-            revision: capnp_text(page.get_revision()?)?,
-            rows,
-            next_cursor: page.get_next_cursor()?.to_vec(),
-            exhausted: page.get_exhausted(),
-            stale_cursor: page.get_stale_cursor(),
-            budget_exhausted: page.get_budget_exhausted(),
-        })
-    }
-
-    /// Resolve a retained pre-event snapshot for local mutation admission only.
-    /// This must never be used to authorize delivery of an ordinary invocation.
-    #[expect(
-        clippy::future_not_send,
-        reason = "directory capabilities are Rc-backed and driven on a LocalSet"
-    )]
-    pub async fn resolve_local_document_action(
-        directory: &crate::ActionDirectoryClient,
-        revision: &str,
-        resource: &str,
-        action: &str,
-        max_bytes: u64,
-    ) -> capnp::Result<ActionDirectoryResolution> {
-        let mut request = directory.resolve_local_document_action_request();
-        {
-            let mut wire = request.get();
-            wire.set_revision(revision);
-            wire.set_resource(resource);
-            wire.set_action(action);
-        }
-        let reply = request.send().promise.await?;
-        let resolution = reply.get()?.get_resolution()?;
-        if resolution.total_size()?.word_count.saturating_mul(8) > max_bytes {
-            return Err(capnp::Error::failed(
-                "local directory resolution exceeds byte budget".into(),
-            ));
-        }
-        decode_action_directory_resolution(resolution)
-    }
-
-    /// Decode an exact action-directory resolution from its wire form.
-    pub fn decode_action_directory_resolution(
-        resolution: collab_capnp::action_directory_resolution::Reader<'_>,
-    ) -> Result<ActionDirectoryResolution, capnp::Error> {
-        match resolution.which()? {
-            collab_capnp::action_directory_resolution::Which::Found(row) => {
-                let revision = capnp_text(resolution.get_resolved_revision()?)?;
-                Ok(ActionDirectoryResolution::Found {
-                    row: Box::new(decode_action_directory_row(row?)?),
-                    revision: (!revision.is_empty()).then_some(revision),
-                })
-            }
-            collab_capnp::action_directory_resolution::Which::NotFound(()) => {
-                Ok(ActionDirectoryResolution::NotFound)
-            }
-            collab_capnp::action_directory_resolution::Which::StaleRevision(()) => {
-                Ok(ActionDirectoryResolution::StaleRevision)
-            }
-            collab_capnp::action_directory_resolution::Which::Unavailable(()) => {
-                Ok(ActionDirectoryResolution::Unavailable)
-            }
-        }
-    }
-
-    /// Encode a surface delta into the `publishActionSurface` request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a shape or binding cannot be encoded, or a list
-    /// is longer than a capnp list can address.
-    pub fn write_surface_delta(
-        mut out: collab_capnp::channel_handle::publish_action_surface_params::Builder<'_>,
-        app_id: &str,
-        delta: &SurfaceDelta,
-    ) -> Result<(), capnp::Error> {
-        let count = |len: usize| {
-            u32::try_from(len)
-                .map_err(|_| capnp::Error::failed("too many actions to publish".to_string()))
-        };
-        out.set_app_id(app_id);
-        out.set_reset(delta.reset);
-        {
-            let mut shapes = out.reborrow().init_shapes(count(delta.shapes.len())?);
-            for (index, (id, shape)) in delta.shapes.iter().enumerate() {
-                let mut row = shapes.reborrow().get(count(index)?);
-                row.set_id(id);
-                write_exported_action(row.init_action(), shape)?;
-            }
-        }
-        {
-            let mut templates = out.reborrow().init_templates(count(delta.templates.len())?);
-            for (index, (id, members)) in delta.templates.iter().enumerate() {
-                let mut row = templates.reborrow().get(count(index)?);
-                row.set_id(id);
-                row.set_shapes(&members.concat());
-            }
-        }
-        {
-            let mut resources = out.reborrow().init_resources(count(delta.resources.len())?);
-            for (index, resource) in delta.resources.iter().enumerate() {
-                let mut row = resources.reborrow().get(count(index)?);
-                row.set_resource(&resource.resource);
-                row.set_resource_kind(&resource.fields.resource_kind);
-                row.set_resource_label(&resource.fields.resource_label);
-                row.set_template(&resource.template);
-                if let Some(identity) = &resource.fields.semantic_identity {
-                    if !identity.is_valid() || identity.kind != resource.fields.resource_kind {
-                        return Err(capnp::Error::failed(
-                            "invalid resource semantic identity".into(),
-                        ));
-                    }
-                    let mut out = row.init_semantic_identity();
-                    out.set_kind(&identity.kind);
-                    out.set_key(&identity.key);
-                }
-            }
-        }
-        let mut removed = out.init_removed(count(delta.removed.len())?);
-        for (index, resource) in delta.removed.iter().enumerate() {
-            removed.set(count(index)?, resource);
-        }
-        Ok(())
-    }
-
-    /// Decode a `publishActionSurface` request.
-    pub fn decode_surface_delta(
-        request: collab_capnp::channel_handle::publish_action_surface_params::Reader<'_>,
-    ) -> Result<SurfaceDelta, capnp::Error> {
-        fn shape_id(data: &[u8]) -> Result<ShapeId, capnp::Error> {
-            ShapeId::try_from(data)
-                .map_err(|_| capnp::Error::failed("action shape id has the wrong length".into()))
-        }
-        let mut delta = SurfaceDelta {
-            reset: request.get_reset(),
-            ..SurfaceDelta::default()
-        };
-        for row in request.get_shapes()? {
-            delta.shapes.push((
-                shape_id(row.get_id()?)?,
-                decode_action(row.get_action()?, Source::Published)?,
-            ));
-        }
-        for row in request.get_templates()? {
-            let members = row.get_shapes()?;
-            if members.len() % SHAPE_ID_BYTES != 0 {
-                return Err(capnp::Error::failed(
-                    "action template shapes are not a whole number of ids".into(),
-                ));
-            }
-            delta.templates.push((
-                shape_id(row.get_id()?)?,
-                members
-                    .chunks_exact(SHAPE_ID_BYTES)
-                    .map(shape_id)
-                    .collect::<Result<_, _>>()?,
-            ));
-        }
-        for row in request.get_resources()? {
-            let resource = capnp_text(row.get_resource()?)?;
-            let address = Address {
-                source: Source::Published,
-                resource: &resource,
-                action: "",
-            };
-            let resource_kind = capnp_text(row.get_resource_kind()?)?;
-            let semantic_identity = if row.has_semantic_identity() {
-                let identity = row.get_semantic_identity()?;
-                let (kind, key) = (identity.get_kind()?, identity.get_key()?);
-                if kind.len() > ResourceSemanticIdentity::MAX_KIND_BYTES
-                    || key.len() > ResourceSemanticIdentity::MAX_KEY_BYTES
-                {
-                    return Err(address.error("oversized resource semantic identity"));
-                }
-                let identity = ResourceSemanticIdentity {
-                    kind: capnp_text(kind)?,
-                    key: capnp_text(key)?,
-                };
-                if !identity.is_valid() || identity.kind != resource_kind {
-                    return Err(address.error("invalid resource semantic identity"));
-                }
-                Some(identity)
-            } else {
-                None
-            };
-            delta.resources.push(SurfaceResource {
-                fields: ResourceFields {
-                    resource_label: capnp_text(row.get_resource_label()?)?,
-                    semantic_identity,
-                    resource_kind,
-                },
-                template: shape_id(row.get_template()?)?,
-                resource,
-            });
-        }
-        for row in request.get_removed()? {
-            delta.removed.push(capnp_text(row?)?);
-        }
-        Ok(delta)
-    }
-}
-
 #[cfg(test)]
-#[cfg(feature = "client")]
 #[path = "action_directory_tests.rs"]
 mod tests;

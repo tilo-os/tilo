@@ -5,9 +5,9 @@
 //! [`HostFrame::Reply`] carrying the call's id, so calls run concurrently on
 //! one connection. There are no capability objects: what a call opens (a
 //! channel) is named by a [`Handle`] the host allocates and keeps for the
-//! connection's lifetime or until it is closed, and a [`Request::Subscribe`]
+//! connection's lifetime or until it is closed, and a [`Operation::Subscribe`]
 //! call's id names the subscription its [`HostFrame::Event`]s carry until
-//! [`HostFrame::Ended`] or [`Request::Unsubscribe`].
+//! [`HostFrame::Ended`] or [`Operation::Unsubscribe`].
 //!
 //! The verbs are few: join a channel, publish into it, subscribe to one of
 //! its topics, read from it, command one of the host's services on it, and
@@ -21,7 +21,10 @@ use collab_types::presence::Collaborator;
 use collab_types::{ArtifactId, PeerPresence, SignedOp};
 use serde::{Deserialize, Serialize};
 
-use crate::{CertifiedJoinIdentity, RoomStatus};
+use crate::{
+    ActionDirectoryQuery, CertifiedJoinIdentity, DisplayOrigin, PublishedInvocationObservation,
+    RoomStatus, WorkspaceControlEvent, WorkspaceControlInput,
+};
 
 #[cfg(feature = "client")]
 pub mod client;
@@ -38,12 +41,12 @@ pub struct Handle(pub u64);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Call {
     pub id: u64,
-    pub request: Request,
+    pub request: Operation,
 }
 
 /// What an endpoint asks the host.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Request {
+pub enum Operation {
     /// Join a channel, answered with [`Reply::Opened`] once the room is
     /// ready for apps to open documents in.
     Join(Join),
@@ -104,6 +107,30 @@ pub enum Request {
         run_id: u64,
         lease: String,
         call: TaskCall,
+    },
+    /// A call on the app's own settings.
+    Settings { channel: Handle, call: SettingsCall },
+    /// A call on the app's live activity: what it shows outside its
+    /// windows, and the controls pressed on it.
+    LiveActivity {
+        channel: Handle,
+        call: LiveActivityCall,
+    },
+    /// Admit a local document action the app already performed, as an
+    /// encoded `LocalDocumentActionReport`, answered as [`Reply::Admitted`].
+    /// A refusal starting with `LOCAL_DOCUMENT_REJECTED` proves it was not
+    /// admitted; any other failure leaves it uncertain.
+    Admit { channel: Handle, report: Vec<u8> },
+    /// Input for the workspace control session the subscription
+    /// `subscription` ([`Topic::WorkspaceControl`]) holds.
+    ControlInput {
+        subscription: u64,
+        input: WorkspaceControlInput,
+    },
+    /// The endpoint's answer to the host's [`HostFrame::Ask`] `ask`.
+    Answer {
+        ask: u64,
+        answer: Result<Answer, String>,
     },
     /// Stop a subscription this connection started.
     Unsubscribe { subscription: u64 },
@@ -188,7 +215,81 @@ pub struct TaskStep {
     pub seen: Option<String>,
 }
 
-/// What a [`Request::Changed`] waits on. Each wait says only that
+/// A call on the app's settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SettingsCall {
+    /// The app's view once its revision differs from `after` (at once for
+    /// 0), answered as [`Reply::Settings`].
+    Read { after: u64 },
+    /// Merge `values` (a JSON object) into the app's entry in `section`,
+    /// answered as [`Reply::Settings`] with the view after the write.
+    /// `action` names the action that made the change, for history.
+    Update {
+        section: String,
+        values: Vec<u8>,
+        action: Option<String>,
+    },
+    /// A display transaction, the Settings app's only, answered as
+    /// [`Reply::Answer`].
+    Display {
+        command: Vec<u8>,
+        origin: DisplayOrigin,
+    },
+}
+
+/// A call on the app's live activity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LiveActivityCall {
+    /// Show this JSON object as the app's activity; empty ends it.
+    Show(Vec<u8>),
+    /// The controls pressed after `after`, once there is one, answered as
+    /// [`Reply::Controls`].
+    Controls { after: u64 },
+}
+
+/// What the host asks an endpoint that published something it answers for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Ask {
+    /// A page of the action directory the endpoint published on `channel`,
+    /// answered as [`Answer::Page`].
+    Query {
+        channel: Handle,
+        query: ActionDirectoryQuery,
+    },
+    /// One action of that directory, current now, answered as
+    /// [`Answer::Resolution`]; `local_document` asks only for the retained
+    /// snapshot a local document action was captured from.
+    Resolve {
+        channel: Handle,
+        revision: String,
+        resource: String,
+        action: String,
+        local_document: bool,
+    },
+}
+
+/// An endpoint's answer to an [`Ask`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Answer {
+    /// An `ActionDirectoryPage`, as JSON (its descriptors skip absent
+    /// fields, which postcard cannot carry).
+    Page(String),
+    /// An `ActionDirectoryResolution`, as JSON.
+    Resolution(String),
+}
+
+/// One step of an approved check's reported progress.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CheckProgress {
+    /// An encoded `approved_checks::Report`.
+    Report(Vec<u8>),
+    /// The encoded terminal `approved_checks::Receipt`; nothing follows.
+    Receipt(Vec<u8>),
+    /// The check failed; nothing follows.
+    Failed(String),
+}
+
+/// What a [`Operation::Changed`] waits on. Each wait says only that
 /// something changed; the endpoint asks again for what it shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Changes {
@@ -204,7 +305,7 @@ pub enum Changes {
     Applications,
 }
 
-/// A host service a [`Request::Command`] addresses. Their commands are
+/// A host service a [`Operation::Command`] addresses. Their commands are
 /// internally tagged JSON (`native_media::Command`, `audio_output::Command`,
 /// ...) or their own postcard, which the wire carries as they are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +363,9 @@ pub enum Publication {
         action: String,
         update: String,
     },
+    /// The app answers for its own action directory from now on: the host
+    /// asks it with [`HostFrame::Ask`] for as long as the channel is held.
+    Directory,
     /// The app's whole action surface, as JSON `Vec<ExportedAction>`,
     /// replacing what it published.
     Actions(String),
@@ -330,6 +434,14 @@ pub enum Topic {
     /// `peer`, for the invocation `on_behalf_of` (UUID bytes, or none), as it
     /// stands and then each time it changes.
     PersonChat { peer: String, on_behalf_of: Vec<u8> },
+    /// The realtime continuity events this app sees.
+    Realtime,
+    /// The reported progress of the approved check the encoded
+    /// `approved_checks::Request` starts, ending with its receipt.
+    ApprovedCheck(Vec<u8>),
+    /// A workspace control session with `target_device`, open while the
+    /// subscription lives; input goes in [`Operation::ControlInput`].
+    WorkspaceControl { target_device: [u8; 32] },
 }
 
 /// The host's answer to a call that succeeded.
@@ -355,10 +467,23 @@ pub enum Reply {
         id: u64,
         update: String,
     },
-    /// The revision a [`Request::Changed`] waits from next.
+    /// The revision a [`Operation::Changed`] waits from next.
     Changed(u64),
-    /// A [`Request::Command`]'s answer, in its service's encoding.
+    /// A [`Operation::Command`]'s answer, in its service's encoding.
     Answer(Vec<u8>),
+    /// The app's settings view: its revision, and its sections as JSON.
+    Settings {
+        revision: u64,
+        document: Vec<u8>,
+    },
+    /// Controls pressed on the app's live activity, as a JSON array, and
+    /// the serial to wait after next.
+    Controls {
+        serial: u64,
+        controls: Vec<u8>,
+    },
+    /// Where an admitted local document action stands.
+    Admitted(PublishedInvocationObservation),
     /// A page of history, each change the postcard bytes of its
     /// [`SignedOp`]. Not `exhausted` while older changes remain here or
     /// were asked of the room's other devices, whose answer a later read
@@ -405,6 +530,10 @@ pub enum Event {
     /// A task run handed to this agent, as `TaskRunEnvelope` JSON (its
     /// action context is free-form JSON, which postcard cannot carry).
     TaskRun(String),
+    /// A realtime continuity event, as JSON.
+    Realtime(Vec<u8>),
+    ApprovedCheck(CheckProgress),
+    WorkspaceControl(WorkspaceControlEvent),
 }
 
 /// One change of a channel's context.
@@ -441,6 +570,9 @@ pub enum HostFrame {
     /// The host ended the subscription: its channel closed or the endpoint
     /// lost the right to it. No further events follow.
     Ended { subscription: u64, reason: String },
+    /// The host asks the endpoint something it answers for; the endpoint
+    /// answers with [`Operation::Answer`] naming `id`.
+    Ask { id: u64, ask: Ask },
 }
 
 #[cfg(test)]
@@ -452,7 +584,7 @@ mod tests {
     fn frames_round_trip_through_the_framing() {
         let call = Call {
             id: 7,
-            request: Request::Publish {
+            request: Operation::Publish {
                 channel: Handle(3),
                 publication: Publication::Presence(PeerPresence {
                     key: vec![1, 2],

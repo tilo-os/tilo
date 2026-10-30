@@ -31,8 +31,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@11"
-tilo-fs = "optional@11"
+collab = "optional@12"
+tilo-fs = "optional@12"
 
 # Writing an issue's note asks Notes to make it. Done for someone the host
 # delivered the action for, that is their request; pressed here, it is

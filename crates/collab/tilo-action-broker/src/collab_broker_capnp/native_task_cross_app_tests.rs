@@ -1,5 +1,5 @@
 //! One deterministic semantic acceptance journey, not a model or screenshot test.
-//! Uses the enrolled native owner, delegated Capnp task executor and real Writer
+//! Uses the enrolled native owner, delegated task executor and real Writer
 //! and Settings resource vocabularies/action door. The small worker adapter below
 //! replaces window/process mounting, not the broker, policy or action executor.
 //! Worker records are saved and reopened; this does not prove session document
@@ -12,8 +12,8 @@ use tilo_resource::{Invoke, Resource};
 use word_processor::model::Document;
 
 struct Worker<R: Resource> {
-    channel: channel_handle::Client,
-    stream: invocation_stream::Client,
+    channel: runtime_collab::ChannelHandle,
+    stream: InvocationStreamServer,
     peer: u64,
     app: &'static str,
     action: String,
@@ -30,32 +30,26 @@ impl<R: Resource> Worker<R> {
         let tree =
             tilo_resource::resource::publish::<R>(R::KIND, R::LABEL, &R::read(&doc).unwrap());
         let spec = tree.actions.iter().find(|spec| spec.id == action).unwrap();
-        let channel = f.app_channel(peer, app, false);
-        let mut publish = channel.publish_actions_request();
-        publish.get().set_app_id(app);
-        {
-            let mut row = publish.get().init_actions(1).get(0);
-            row.set_resource(&tree.id.0);
-            row.set_resource_kind(&tree.kind);
-            row.set_resource_label(&tree.label);
-            row.set_action(&spec.id);
-            row.set_action_label(&spec.label);
-            row.set_operation_kind(spec.kind.as_str());
-            row.set_params_json(serde_json::to_string(spec.params()).unwrap());
-            row.set_contract_json(serde_json::to_string(&spec.contract).unwrap());
-        }
-        publish.send().promise.await.unwrap();
-        let mut subscribe = channel.subscribe_invocations_request();
-        subscribe.get().set_stable_invocation_ids(true);
-        let stream = subscribe
-            .send()
-            .promise
-            .await
-            .unwrap()
-            .get()
-            .unwrap()
-            .get_stream()
-            .unwrap();
+        let handle = Rc::new(f.app_handle(peer, app, false));
+        let channel = wire_channel_rc(Rc::clone(&handle));
+        let published = runtime_collab::ExportedAction {
+            semantic_identity: None,
+            resource: tree.id.0.clone(),
+            action: spec.id.clone(),
+            resource_kind: tree.kind.clone(),
+            resource_label: tree.label.clone(),
+            action_label: spec.label.clone(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            operation_kind: spec.kind,
+            params: spec.params().to_vec(),
+            contract: spec.contract.clone(),
+            input: runtime_collab::ExportedInput::None,
+            view: None,
+        };
+        channel.publish_actions(&[published]).await.unwrap();
+        let stream = handle.invocation_feed(true).unwrap();
         Self {
             channel,
             stream,
@@ -71,26 +65,18 @@ impl<R: Resource> Worker<R> {
     // Resolve the broker-delivered address and arguments against the app's fresh
     // publication, decode in its real registry and execute with task provenance.
     async fn settle(&mut self, wire_id: u64, invocation: uuid::Uuid, group: &str) {
-        let response = tilo_test_env::within(
-            "the worker delivery",
-            self.stream.read_request().send().promise,
-        )
-        .await
-        .unwrap();
-        let wire = response.get().unwrap();
-        assert_eq!(wire.get_id(), wire_id);
-        assert_eq!(wire.get_invocation_uuid().unwrap(), invocation.as_bytes());
-        let actor = wire.get_actor().unwrap().to_str().unwrap();
+        let wire = tilo_test_env::within("the worker delivery", self.stream.next())
+            .await
+            .unwrap();
+        assert_eq!(wire.id, wire_id);
+        assert_eq!(wire.invocation.0, invocation);
+        let actor = wire.actor.as_str();
         assert_eq!(actor, "agent:scribe");
-        let context: tilo_actions::ActionContext =
-            serde_json::from_str(wire.get_context_json().unwrap().to_str().unwrap()).unwrap();
+        let context = wire.context.clone().unwrap();
         assert_eq!(context.group.as_ref().unwrap().id, group);
-        let address = tilo_actions::ActionAddress::new(
-            wire.get_resource().unwrap().to_str().unwrap(),
-            wire.get_action().unwrap().to_str().unwrap(),
-        );
+        let address = tilo_actions::ActionAddress::new(&wire.resource, &wire.action);
         let arguments: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
+            serde_json::from_str(wire.argument.as_deref().unwrap()).unwrap();
         let tree =
             tilo_resource::resource::publish::<R>(R::KIND, R::LABEL, &R::read(&self.doc).unwrap());
         let spec = tilo_actions::door::resolve(std::slice::from_ref(&tree), &address)
@@ -139,12 +125,10 @@ impl<R: Resource> Worker<R> {
             invocation: tilo_actions::InvocationId(invocation),
             output,
         };
-        let mut update = self.channel.update_invocation_request();
-        update.get().set_id(wire_id);
-        update
-            .get()
-            .set_update_json(serde_json::to_string(&terminal).unwrap());
-        update.send().promise.await.unwrap();
+        self.channel
+            .update_invocation(wire_id, &serde_json::to_string(&terminal).unwrap())
+            .await
+            .unwrap();
     }
 
     fn reopened(&self) -> automerge::AutoCommit {
@@ -178,30 +162,28 @@ fn permission(f: &Fixture, app: &str, allow: bool) {
 }
 
 async fn plan_step<R: Resource>(
-    agent: &channel_handle::Client,
+    agent: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     worker: &Worker<R>,
     invocation: uuid::Uuid,
     arguments: &serde_json::Map<String, serde_json::Value>,
-) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
-    let mut request = agent.invoke_task_action_request();
-    {
-        let mut p = request.get();
-        p.set_run_id(run.run_id);
-        p.set_lease(&run.lease);
-        p.set_peer_id(worker.peer);
-        p.set_resource(R::KIND);
-        p.set_action(&worker.action);
-        p.set_argument(serde_json::to_string(arguments).unwrap());
-        p.set_has_argument(true);
-        p.set_invocation(invocation.to_string());
-    }
-    let response = request.send().promise.await?;
-    let value = response.get()?;
-    Ok((
-        value.get_id(),
-        tilo_actions::decode_json(value.get_update_json()?.to_str().unwrap().as_bytes()).unwrap(),
-    ))
+) -> Result<(u64, tilo_actions::InvocationUpdate), runtime_portal::NotAvailable> {
+    let argument = serde_json::to_string(arguments).unwrap();
+    let (id, update) = agent
+        .invoke_task_action(
+            run.run_id,
+            &run.lease,
+            runtime_collab::TaskAction {
+                peer_id: worker.peer,
+                provider: "",
+                resource: R::KIND,
+                action: &worker.action,
+                argument: Some(&argument),
+            },
+            &invocation.to_string(),
+        )
+        .await?;
+    Ok((id, tilo_actions::decode_json(update.as_bytes()).unwrap()))
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -261,7 +243,7 @@ async fn native_cross_app_approval_steering_stop_and_grants() {
 
 async fn approve_journey(
     f: &Fixture,
-    agent: &channel_handle::Client,
+    agent: &runtime_collab::ChannelHandle,
     writer: &Worker<Document>,
     settings: &Worker<DesktopControls>,
 ) -> runtime_collab::TaskRunEnvelope {
@@ -281,7 +263,7 @@ async fn approve_journey(
 
 async fn writer_journey(
     f: &Fixture,
-    agent: &channel_handle::Client,
+    agent: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     writer: &mut Worker<Document>,
     settings: &Worker<DesktopControls>,
@@ -321,7 +303,7 @@ async fn writer_journey(
 
 async fn steering_journey(
     f: &Fixture,
-    agent: &channel_handle::Client,
+    agent: &runtime_collab::ChannelHandle,
     run: &mut runtime_collab::TaskRunEnvelope,
     settings: &mut Worker<DesktopControls>,
     settings_args: &serde_json::Map<String, serde_json::Value>,
@@ -384,7 +366,7 @@ fn assert_reopened_resources(writer: &Worker<Document>, settings: &Worker<Deskto
 
 async fn stop_journey(
     f: &Fixture,
-    agent: &channel_handle::Client,
+    agent: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     writer: &Worker<Document>,
     settings: &Worker<DesktopControls>,
@@ -414,18 +396,11 @@ async fn stop_journey(
     let before_writer = std::fs::read(&writer.path).unwrap();
     let before_settings = std::fs::read(&settings.path).unwrap();
     f.stop();
-    let mut cancelled = agent.task_run_cancelled_request();
-    cancelled.get().set_run_id(run.run_id);
-    cancelled.get().set_lease(&run.lease);
     assert!(
-        cancelled
-            .send()
-            .promise
+        agent
+            .task_run_cancelled(run.run_id, &run.lease)
             .await
             .unwrap()
-            .get()
-            .unwrap()
-            .get_cancelled()
     );
     assert!(
         plan_step(agent, run, writer, uuid::Uuid::from_u128(4104), first_args)

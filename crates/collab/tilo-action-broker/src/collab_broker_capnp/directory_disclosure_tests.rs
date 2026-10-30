@@ -1,6 +1,6 @@
 #![expect(
     clippy::future_not_send,
-    reason = "real Cap'n Proto connections and the broker registry run on the test LocalSet"
+    reason = "real wire connections and the broker registry run on the test LocalSet"
 )]
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
@@ -55,15 +55,9 @@ type Directory<'a> = (
 );
 
 struct Connection {
-    channel: channel_handle::Client,
+    channel: runtime_collab::ChannelHandle,
     cluster: String,
     actor: BrokerActor,
-    driver: tokio::task::JoinHandle<Result<(), capnp::Error>>,
-}
-impl Drop for Connection {
-    fn drop(&mut self) {
-        self.driver.abort();
-    }
 }
 impl Connection {
     async fn join(
@@ -74,7 +68,7 @@ impl Connection {
         claimed_participant: &str,
     ) -> Self {
         let peer = state.next_peer_id();
-        let service: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
+        let service = Rc::new(CapnpCollabService {
             worker: None,
             app_worker: None,
             state: state.clone(),
@@ -88,35 +82,26 @@ impl Connection {
             }),
             holds: route_holds::ConnectionHolds::default(),
         });
-        let (server, client) = tokio::net::UnixStream::pair().unwrap();
-        let driver =
-            tokio::task::spawn_local(runtime_portal::serve_connected_io(server, service.client));
-        let client: collab_service::Client = runtime_portal::CapnpClient::from_connected_io(
-            client,
-            capnp_rpc::rpc_twoparty_capnp::Side::Client,
-        )
-        .bootstrap();
-        let mut join = client.join_channel_request();
-        join.get().set_channel_id(route.channel_key());
-        join.get()
-            .set_identity(&person.presentation(&route.cluster_id));
-        join.get().set_participant_kind("person");
-        join.get().set_participant_handle(claimed_participant);
-        let response = join.send().promise.await.unwrap();
+        let (connection, outgoing) = wire::WireConnection::new(Some(service));
+        let channel = wire_client(connection, outgoing)
+            .join_channel_as(
+                &route.channel_key(),
+                &person.presentation(&route.cluster_id),
+                claimed_participant,
+            )
+            .await
+            .unwrap();
         Self {
-            channel: response.get().unwrap().get_handle().unwrap(),
+            channel,
             cluster: route.cluster_id.clone(),
             actor: BrokerActor::person(person.id()),
-            driver,
         }
     }
-    async fn publish(&self, app: &str, rows: Vec<runtime_collab::ActionDirectoryRow>) {
-        let mut publish = self.channel.publish_action_directory_request();
-        publish.get().set_app_id(app);
-        publish
-            .get()
-            .set_directory(capnp_rpc::new_client(CachedDirectory(rows)));
-        publish.send().promise.await.unwrap();
+    async fn publish(&self, rows: Vec<runtime_collab::ActionDirectoryRow>) {
+        self.channel
+            .publish_action_directory(wire_answerer(Rc::new(CachedDirectory(rows))))
+            .await
+            .unwrap();
     }
     async fn query(
         &self,
@@ -161,58 +146,54 @@ impl Connection {
 }
 
 struct CachedDirectory(Vec<runtime_collab::ActionDirectoryRow>);
-impl action_directory::Server for CachedDirectory {
+impl wire::DirectorySource for CachedDirectory {
     fn query(
-        self: Rc<Self>,
-        params: action_directory::QueryParams,
-        mut results: action_directory::QueryResults,
-    ) -> Promise<(), capnp::Error> {
-        let result = (|| {
-            let request = params.get()?;
-            let query = request.get_query()?;
-            let needle = query.get_needle()?.to_str()?;
-            // This models a publisher's owner-scoped cached SDK snapshot. It
-            // deliberately does not know which person the broker is serving.
-            let paged = needle == "paged";
-            let tail = !query.get_cursor()?.is_empty();
-            let rows = self
-                .0
-                .iter()
-                .enumerate()
-                .filter(|(index, row)| {
-                    if paged {
-                        if tail { *index >= 4 } else { *index < 4 }
-                    } else {
-                        row.resource_label.contains(needle)
-                    }
-                })
-                .map(|(_, row)| row.clone())
-                .collect();
-            runtime_collab::write_action_directory_page(
-                results.get().init_page(),
-                &runtime_collab::ActionDirectoryPage {
-                    revision: "cached-r1".into(),
-                    rows,
-                    next_cursor: if paged && !tail {
-                        b"Secret account label:offset:4".to_vec()
-                    } else {
-                        Vec::new()
-                    },
-                    exhausted: !paged || tail,
-                    stale_cursor: false,
-                    budget_exhausted: false,
+        &self,
+        query: runtime_collab::ActionDirectoryQuery,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryPage> {
+        // This models a publisher's owner-scoped cached SDK snapshot. It
+        // deliberately does not know which person the broker is serving.
+        let needle = query.needle.as_str();
+        let paged = needle == "paged";
+        let tail = !query.cursor.is_empty();
+        let rows = self
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(index, row)| {
+                if paged {
+                    if tail { *index >= 4 } else { *index < 4 }
+                } else {
+                    row.resource_label.contains(needle)
+                }
+            })
+            .map(|(_, row)| row.clone())
+            .collect();
+        Box::pin(std::future::ready(Ok(
+            runtime_collab::ActionDirectoryPage {
+                revision: "cached-r1".into(),
+                rows,
+                next_cursor: if paged && !tail {
+                    b"Secret account label:offset:4".to_vec()
+                } else {
+                    Vec::new()
                 },
-            )
-        })();
-        Promise::from(result)
+                exhausted: !paged || tail,
+                stale_cursor: false,
+                budget_exhausted: false,
+            },
+        )))
     }
     fn resolve(
-        self: Rc<Self>,
-        _params: action_directory::ResolveParams,
-        mut results: action_directory::ResolveResults,
-    ) -> Promise<(), capnp::Error> {
-        results.get().init_resolution().set_not_found(());
-        Promise::ok(())
+        &self,
+        _target: (&str, &str, &str),
+        _local_document: bool,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryResolution> {
+        Box::pin(std::future::ready(Ok(
+            runtime_collab::ActionDirectoryResolution::NotFound,
+        )))
     }
 }
 
@@ -401,7 +382,7 @@ impl Fixture {
         let directories = Rc::new(LocalActionDirectoryRegistry::new(rx));
         let publisher =
             Connection::join(&state, &directories, &route, &owner, "display-owner").await;
-        publisher.publish(&route.app_id, rows()).await;
+        publisher.publish(rows()).await;
         let peer = *directories.directories.borrow().keys().next().unwrap();
         assert_eq!(
             directories
@@ -474,7 +455,7 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
             // Even the room's Owner cannot inspect another person's private view.
             let foreign_publisher =
                 Connection::join(&state, &directories, &route, &editor, &owner.id()).await;
-            foreign_publisher.publish(&route.app_id, rows()).await;
+            foreign_publisher.publish(rows()).await;
             let foreign_peer = *directories
                 .directories
                 .borrow()
@@ -616,10 +597,7 @@ async fn framework_projection_keeps_private_child_metadata_off_signed_wire_and_b
                 });
                 published.push(row);
             }
-            fixture
-                .publisher
-                .publish(&fixture.route.app_id, published)
-                .await;
+            fixture.publisher.publish(published).await;
             let reader = Connection::join(
                 &fixture.state,
                 &fixture.directories,
@@ -712,10 +690,7 @@ async fn document_read_views_are_disclosed_without_exposing_the_publishers_priva
                 "document:readable",
                 "document:readable",
             ];
-            fixture
-                .publisher
-                .publish(&fixture.route.app_id, published)
-                .await;
+            fixture.publisher.publish(published).await;
             let reader = Connection::join(
                 &fixture.state,
                 &fixture.directories,

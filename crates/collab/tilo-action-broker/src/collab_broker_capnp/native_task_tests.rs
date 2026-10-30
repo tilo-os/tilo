@@ -1,6 +1,6 @@
 #![expect(
     clippy::future_not_send,
-    reason = "Capnp RPC clients are intentionally thread confined to the existing LocalSet"
+    reason = "the broker's Rc-backed channel handles stay on the test LocalSet"
 )]
 use super::super::*;
 use crate::peer_actions::{CertificateAuthority, OwnerPolicyClock, PolicyOrigin};
@@ -439,7 +439,7 @@ impl Fixture {
         }
         self.state.refresh_native_task_delivery();
     }
-    fn channel(&self, peer: u64, agent: bool) -> channel_handle::Client {
+    fn channel(&self, peer: u64, agent: bool) -> runtime_collab::ChannelHandle {
         self.app_channel(
             peer,
             if agent {
@@ -465,7 +465,10 @@ impl Fixture {
         .encode()
         .unwrap()
     }
-    fn app_channel(&self, peer: u64, app: &str, agent: bool) -> channel_handle::Client {
+    fn app_channel(&self, peer: u64, app: &str, agent: bool) -> runtime_collab::ChannelHandle {
+        wire_channel(self.app_handle(peer, app, agent))
+    }
+    fn app_handle(&self, peer: u64, app: &str, agent: bool) -> CapnpChannelHandle {
         let room = room().to_string();
         let mut admitted = self
             .state
@@ -482,7 +485,7 @@ impl Fixture {
             )
             .unwrap();
         }
-        capnp_rpc::new_client(CapnpChannelHandle {
+        CapnpChannelHandle {
             as_app: None,
             person_chat_views: std::cell::RefCell::default(),
             committed_read: Rc::new(std::cell::RefCell::new(committed_document::Slot::default())),
@@ -496,82 +499,59 @@ impl Fixture {
             route_access: RouteAccess::Own,
             lease: None,
             _hold: None,
-        })
+        }
     }
 }
 
-async fn delivered(channel: &channel_handle::Client) -> runtime_collab::TaskRunEnvelope {
-    let stream = channel
-        .subscribe_task_runs_request()
-        .send()
-        .promise
+async fn delivered(channel: &runtime_collab::ChannelHandle) -> runtime_collab::TaskRunEnvelope {
+    let stream = channel.subscribe_task_runs().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), stream.read())
         .await
         .unwrap()
-        .get()
         .unwrap()
-        .get_stream()
-        .unwrap();
-    let reply = tokio::time::timeout(Duration::from_secs(2), stream.read_request().send().promise)
-        .await
-        .unwrap()
-        .unwrap();
-    serde_json::from_str(
-        reply
-            .get()
-            .unwrap()
-            .get_task_json()
-            .unwrap()
-            .to_str()
-            .unwrap(),
-    )
-    .unwrap()
 }
 async fn report(
-    channel: &channel_handle::Client,
+    channel: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     update: runtime_collab::TaskRunUpdate,
-) -> Result<(), capnp::Error> {
-    let mut request = channel.report_task_run_request();
-    let mut p = request.get();
-    p.set_run_id(run.run_id);
-    p.set_lease(&run.lease);
-    p.set_update_json(serde_json::to_string(&update).unwrap());
-    request.send().promise.await.map(|_| ())
+) -> Result<(), runtime_portal::NotAvailable> {
+    channel
+        .report_task_run(run.run_id, &run.lease, &update)
+        .await
 }
 
-async fn notes_target(f: &Fixture) -> (channel_handle::Client, invocation_stream::Client) {
-    let target = f.channel(200, false);
-    let mut publish = target.publish_actions_request();
-    publish.get().set_app_id("so.tilo.notes");
-    {
-        let mut row = publish.get().init_actions(1).get(0);
-        row.set_resource("notes:release");
-        row.set_action("append");
-        row.set_resource_kind("document");
-        row.set_resource_label("Release notes");
-        row.set_action_label("Append");
-        row.set_operation_kind("effect");
-        row.set_params_json("[]");
-        let contract = tilo_actions::ActionContract {
+/// The Notes app's published append action, the agent's target.
+fn notes_append() -> runtime_collab::ExportedAction {
+    runtime_collab::ExportedAction {
+        semantic_identity: None,
+        resource: "notes:release".into(),
+        action: "append".into(),
+        resource_kind: "document".into(),
+        resource_label: "Release notes".into(),
+        action_label: "Append".into(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        operation_kind: tilo_actions::OperationKind::Effect,
+        params: Vec::new(),
+        contract: tilo_actions::ActionContract {
             kind: tilo_actions::ActionKind::Undoable,
             execution: tilo_actions::ExecutionMode::Background { cancellable: true },
             result: tilo_actions::ResultSpec::Job,
             ..Default::default()
-        };
-        row.set_contract_json(serde_json::to_string(&contract).unwrap());
+        },
+        input: runtime_collab::ExportedInput::None,
+        view: None,
     }
-    publish.send().promise.await.unwrap();
-    let mut subscribe = target.subscribe_invocations_request();
-    subscribe.get().set_stable_invocation_ids(true);
-    let stream = subscribe
-        .send()
-        .promise
-        .await
-        .unwrap()
-        .get()
-        .unwrap()
-        .get_stream()
-        .unwrap();
+}
+
+/// The Notes app as peer 200: its channel, and its invocation feed read on
+/// the broker's side so what it was not handed stays countable.
+async fn notes_target(f: &Fixture) -> (runtime_collab::ChannelHandle, InvocationStreamServer) {
+    let handle = Rc::new(f.app_handle(200, "so.tilo.notes", false));
+    let target = wire_channel_rc(Rc::clone(&handle));
+    target.publish_actions(&[notes_append()]).await.unwrap();
+    let stream = handle.invocation_feed(true).unwrap();
     (target, stream)
 }
 fn grant_notes(f: &Fixture) {
@@ -646,25 +626,30 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
             .unwrap();
     }
 }
+fn notes_action() -> runtime_collab::TaskAction<'static> {
+    runtime_collab::TaskAction {
+        peer_id: 200,
+        provider: "",
+        resource: "notes:release",
+        action: "append",
+        argument: None,
+    }
+}
+
 async fn invoke(
-    channel: &channel_handle::Client,
+    channel: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     invocation: uuid::Uuid,
-) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
-    let mut request = channel.invoke_task_action_request();
-    let mut p = request.get();
-    p.set_run_id(run.run_id);
-    p.set_lease(&run.lease);
-    p.set_peer_id(200);
-    p.set_resource("notes:release");
-    p.set_action("append");
-    p.set_invocation(invocation.to_string());
-    let response = request.send().promise.await?;
-    let value = response.get()?;
-    Ok((
-        value.get_id(),
-        serde_json::from_str(value.get_update_json()?.to_str().unwrap()).unwrap(),
-    ))
+) -> Result<(u64, tilo_actions::InvocationUpdate), runtime_portal::NotAvailable> {
+    let (id, update) = channel
+        .invoke_task_action(
+            run.run_id,
+            &run.lease,
+            notes_action(),
+            &invocation.to_string(),
+        )
+        .await?;
+    Ok((id, serde_json::from_str(&update).unwrap()))
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -697,11 +682,8 @@ async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
                 first.1,
                 tilo_actions::InvocationUpdate::Accepted { .. }
             ));
-            let reply = stream.read_request().send().promise.await.unwrap();
-            assert_eq!(
-                reply.get().unwrap().get_invocation_uuid().unwrap(),
-                invocation.as_bytes()
-            );
+            let reply = stream.next().await.unwrap();
+            assert_eq!(reply.invocation.0, invocation);
             assert_eq!(invoke(&agent, &run, invocation).await.unwrap(), first);
             drop(f);
         })
@@ -768,17 +750,18 @@ async fn ordinary_native_agent_invocation_remains_fenced_after_stop() {
             grant_notes(&f);
             let invocation = uuid::Uuid::new_v4();
             let (id, _) = invoke(&agent, &run, invocation).await.unwrap();
-            stream.read_request().send().promise.await.unwrap();
-            let mut update = target.update_invocation_request();
-            update.get().set_id(id);
-            update.get().set_update_json(
-                serde_json::to_string(&tilo_actions::InvocationUpdate::Succeeded {
-                    invocation: tilo_actions::InvocationId(invocation),
-                    output: tilo_actions::ActionOutput::default(),
-                })
-                .unwrap(),
-            );
-            update.send().promise.await.unwrap();
+            stream.next().await.unwrap();
+            target
+                .update_invocation(
+                    id,
+                    &serde_json::to_string(&tilo_actions::InvocationUpdate::Succeeded {
+                        invocation: tilo_actions::InvocationId(invocation),
+                        output: tilo_actions::ActionOutput::default(),
+                    })
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
             f.stop();
             assert!(invoke(&agent, &run, uuid::Uuid::new_v4()).await.is_err());
             assert_eq!(
@@ -808,7 +791,7 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
             *f.native.cached_projection.lock().unwrap() = Some(projected);
             let original = uuid::Uuid::from_u128(8010);
             invoke(&agent, &run, original).await.unwrap();
-            stream.read_request().send().promise.await.unwrap();
+            stream.next().await.unwrap();
             set_notes_permission(&f, false);
             assert!(
                 invoke(&agent, &run, original)
@@ -826,11 +809,11 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
             );
             assert_eq!(crate::collab_broker_capnp::unread_invocations(200), 0);
             f.remove_agent();
-            let mut control = agent.task_run_cancelled_request();
-            control.get().set_run_id(run.run_id);
-            control.get().set_lease(&run.lease);
             assert!(
-                control.send().promise.await.is_err(),
+                agent
+                    .task_run_cancelled(run.run_id, &run.lease)
+                    .await
+                    .is_err(),
                 "removed agent must not read pending directions through a stale projection"
             );
             drop(f);
@@ -914,11 +897,11 @@ async fn a_failed_run_is_replaced_by_the_next_approval_and_reads_as_replaced() {
             f.approve();
             let restarted = delivered(&agent).await;
             assert_ne!(restarted.run_id, run.run_id);
-            let mut old = agent.task_run_cancelled_request();
-            old.get().set_run_id(run.run_id);
-            old.get().set_lease(&run.lease);
             assert!(
-                old.send().promise.await.is_err(),
+                agent
+                    .task_run_cancelled(run.run_id, &run.lease)
+                    .await
+                    .is_err(),
                 "the replaced run no longer reads"
             );
             let control = observed_control(&agent, &restarted).await;
@@ -948,19 +931,16 @@ async fn a_started_run_acts_as_its_starter_and_deleted_targets_fail_closed() {
                 first.1,
                 tilo_actions::InvocationUpdate::Accepted { .. }
             ));
-            let delivered_request = stream.read_request().send().promise.await.unwrap();
-            let wire = delivered_request.get().unwrap();
-            assert_eq!(wire.get_actor().unwrap().to_str().unwrap(), "agent:scribe");
+            let delivered_request = stream.next().await.unwrap();
+            assert_eq!(delivered_request.actor, "agent:scribe");
             let terminal = tilo_actions::InvocationUpdate::Succeeded {
                 invocation: tilo_actions::InvocationId(id),
                 output: tilo_actions::ActionOutput::default(),
             };
-            let mut update = target.update_invocation_request();
-            update.get().set_id(first.0);
-            update
-                .get()
-                .set_update_json(serde_json::to_string(&terminal).unwrap());
-            update.send().promise.await.unwrap();
+            target
+                .update_invocation(first.0, &serde_json::to_string(&terminal).unwrap())
+                .await
+                .unwrap();
             // Observing the retained effect after a reconnect is held to the
             // starter too, not to the agent's admission.
             f.state.remove_connection(100);
@@ -1023,18 +1003,11 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
             let (_target, _stream) = notes_target(&f).await;
             grant_notes(&f);
             f.stop();
-            let mut status = agent.task_run_cancelled_request();
-            status.get().set_run_id(run.run_id);
-            status.get().set_lease(&run.lease);
             assert!(
-                status
-                    .send()
-                    .promise
+                agent
+                    .task_run_cancelled(run.run_id, &run.lease)
                     .await
                     .unwrap()
-                    .get()
-                    .unwrap()
-                    .get_cancelled()
             );
             assert!(
                 invoke(&agent, &run, uuid::Uuid::from_u128(900))
@@ -1096,12 +1069,10 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
                 first.1,
                 tilo_actions::InvocationUpdate::Accepted { .. }
             ));
-            let invocation_reply = stream.read_request().send().promise.await.unwrap();
-            let wire = invocation_reply.get().unwrap();
-            assert_eq!(wire.get_actor().unwrap().to_str().unwrap(), "agent:scribe");
-            assert_eq!(wire.get_invocation_uuid().unwrap(), id.as_bytes());
-            let context: tilo_actions::ActionContext =
-                serde_json::from_str(wire.get_context_json().unwrap().to_str().unwrap()).unwrap();
+            let invocation_reply = stream.next().await.unwrap();
+            assert_eq!(invocation_reply.actor, "agent:scribe");
+            assert_eq!(invocation_reply.invocation.0, id);
+            let context = invocation_reply.context.unwrap();
             assert_eq!(context.group.as_ref().unwrap().id, run.group());
             let duplicate = invoke(&agent, &run, id).await.unwrap();
             assert_eq!(duplicate, first);
@@ -1114,12 +1085,10 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
                 invocation: tilo_actions::InvocationId(id),
                 output: tilo_actions::ActionOutput::default(),
             };
-            let mut update = target.update_invocation_request();
-            update.get().set_id(first.0);
-            update
-                .get()
-                .set_update_json(serde_json::to_string(&terminal).unwrap());
-            update.send().promise.await.unwrap();
+            target
+                .update_invocation(first.0, &serde_json::to_string(&terminal).unwrap())
+                .await
+                .unwrap();
             f.state.remove_connection(100);
             let reconnected = f.channel(101, true);
             let resumed = delivered(&reconnected).await;
@@ -1175,14 +1144,7 @@ async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied
         .run_until(async {
             let f = Fixture::new();
             let person = f.channel(99, false);
-            assert!(
-                person
-                    .subscribe_task_runs_request()
-                    .send()
-                    .promise
-                    .await
-                    .is_err()
-            );
+            assert!(person.subscribe_task_runs().await.is_err());
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
@@ -1224,50 +1186,36 @@ async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied
 }
 
 async fn observed_control(
-    channel: &channel_handle::Client,
+    channel: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
 ) -> runtime_collab::TaskRunControl {
-    let mut status = channel.task_run_cancelled_request();
-    status.get().set_run_id(run.run_id);
-    status.get().set_lease(&run.lease);
-    let reply = status.send().promise.await.unwrap();
-    serde_json::from_str(
-        reply
-            .get()
-            .unwrap()
-            .get_control_json()
-            .unwrap()
-            .to_str()
-            .unwrap(),
-    )
-    .unwrap()
+    channel
+        .task_run_status(run.run_id, &run.lease)
+        .await
+        .unwrap()
+        .control
+        .unwrap()
 }
 
 /// Re-ask for the child `invocation` and let the broker hold the answer for
 /// up to `wait_ms` until it moves past `seen`.
 async fn observe_held(
-    channel: &channel_handle::Client,
+    channel: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     invocation: uuid::Uuid,
     wait_ms: u32,
     seen: tilo_actions::remote::UpdateMark,
-) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
-    let mut request = channel.invoke_task_action_request();
-    let mut p = request.get();
-    p.set_run_id(run.run_id);
-    p.set_lease(&run.lease);
-    p.set_peer_id(200);
-    p.set_resource("notes:release");
-    p.set_action("append");
-    p.set_invocation(invocation.to_string());
-    p.set_wait_ms(wait_ms);
-    p.set_seen_json(serde_json::to_string(&seen).unwrap());
-    let response = request.send().promise.await?;
-    let value = response.get()?;
-    Ok((
-        value.get_id(),
-        serde_json::from_str(value.get_update_json()?.to_str().unwrap()).unwrap(),
-    ))
+) -> Result<(u64, tilo_actions::InvocationUpdate), runtime_portal::NotAvailable> {
+    let (id, update) = channel
+        .observe_task_child(
+            run.run_id,
+            &run.lease,
+            notes_action(),
+            &invocation.to_string(),
+            runtime_collab::TaskChildWait { wait_ms, seen },
+        )
+        .await?;
+    Ok((id, serde_json::from_str(&update).unwrap()))
 }
 
 /// Wait until a re-ask spawned after `before` was counted holds on the
@@ -1302,7 +1250,7 @@ async fn a_held_native_reask_is_answered_when_the_child_settles() {
                 accepted,
                 tilo_actions::InvocationUpdate::Accepted { .. }
             ));
-            stream.read_request().send().promise.await.unwrap();
+            stream.next().await.unwrap();
             let before = f.state.invocation_generation.receiver_count();
             let held = tokio::task::spawn_local({
                 let agent = agent.clone();
@@ -1324,12 +1272,10 @@ async fn a_held_native_reask_is_answered_when_the_child_settles() {
                 invocation: tilo_actions::InvocationId(id),
                 output: tilo_actions::ActionOutput::default(),
             };
-            let mut update = target.update_invocation_request();
-            update.get().set_id(wire);
-            update
-                .get()
-                .set_update_json(serde_json::to_string(&terminal).unwrap());
-            update.send().promise.await.unwrap();
+            target
+                .update_invocation(wire, &serde_json::to_string(&terminal).unwrap())
+                .await
+                .unwrap();
             // The update is answered once its outcome is on disk. From here
             // the clock moves only while every task waits: the settled
             // outcome, not a sample or the hold's end, must answer.
@@ -1374,7 +1320,7 @@ async fn a_held_native_reask_ends_when_the_run_is_cancelled() {
             grant_notes(&f);
             let id = uuid::Uuid::from_u128(4343);
             invoke(&agent, &run, id).await.unwrap();
-            stream.read_request().send().promise.await.unwrap();
+            stream.next().await.unwrap();
             // The clock moves only while every task waits, so the hold is
             // timed by the test, from before it starts.
             tokio::time::pause();

@@ -1,11 +1,11 @@
-/// Publish through the actual Cap'n Proto channel with current signed admission
+/// Publish through the actual collaboration wire channel with current signed admission
 /// and the host-retained launcher association, pinned to a real kernel socket.
 async fn checkout_channel(
     room: &signed_worker::OriginalRoom,
     peer: u64,
     attested: bool,
 ) -> (
-    channel_handle::Client,
+    runtime_collab::ChannelHandle,
     Option<Arc<native_media::LocalAppConnection>>,
     signed_worker::Connection,
 ) {
@@ -34,7 +34,7 @@ async fn checkout_channel(
         )
         .unwrap()
     });
-    let channel: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+    let channel = wire_channel(CapnpChannelHandle {
         as_app: None,
         person_chat_views: RefCell::default(),
         committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -54,12 +54,12 @@ async fn checkout_channel(
         })),
         _hold: None,
     });
-    let mut request = channel.publish_action_directory_request();
-    request.get().set_app_id(&room.route.app_id);
-    request.get().set_directory(signed_worker::directory_server(
-        &signed_worker::directory_state("checkout-r1"),
-    ));
-    request.send().promise.await.unwrap();
+    channel
+        .publish_action_directory(signed_worker::directory_server(
+            &signed_worker::directory_state("checkout-r1"),
+        ))
+        .await
+        .unwrap();
     (channel, local, worker)
 }
 
@@ -188,7 +188,13 @@ async fn certified_native_checkout_refuses_unattested_revoked_and_ambiguous_chan
                 );
                 drop(second);
                 drop(channel);
-                assert!(room.state.native_checkouts.lock().unwrap().is_empty());
+                // The host closes a dropped channel once its close arrives.
+                tilo_test_env::within("the closed channels release their checkout", async {
+                    while !room.state.native_checkouts.lock().unwrap().is_empty() {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await;
             }
         })
         .await;
@@ -216,7 +222,7 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 .only(peer)
                 .unwrap()
                 .clone();
-            let channel: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+            let channel = wire_channel(CapnpChannelHandle {
                 as_app: None,
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -231,21 +237,27 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 lease: None,
                 _hold: None,
             });
-            let mut send = channel.send_request();
-            send.get().set_op(b"any op");
-            let refused = send.send().promise.await.err().expect("a write is refused");
-            assert!(refused.to_string().contains("changes nothing"), "{refused}");
-            let mut publish = channel.publish_action_directory_request();
-            publish.get().set_app_id(&room.route.app_id);
-            publish.get().set_directory(signed_worker::directory_server(
-                &signed_worker::directory_state("read-only-r1"),
-            ));
-            let refused = publish
-                .send()
-                .promise
+            let route = &room.route;
+            let op = collab_types::SignedOp::new_unsigned(
+                b"any op".to_vec(),
+                document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+                collab_types::Ed25519PublicKey::from_bytes(room.key.verifying_key().to_bytes()),
+                document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                collab_types::OpKind::Change,
+                std::time::SystemTime::now(),
+                1,
+            );
+            let refused = channel
+                .send(&postcard::to_stdvec(&op).unwrap())
                 .await
-                .err()
-                .expect("a publication is refused");
+                .expect_err("a write is refused");
+            assert!(refused.to_string().contains("changes nothing"), "{refused}");
+            let refused = channel
+                .publish_action_directory(signed_worker::directory_server(
+                    &signed_worker::directory_state("read-only-r1"),
+                ))
+                .await
+                .expect_err("a publication is refused");
             assert!(refused.to_string().contains("changes nothing"), "{refused}");
         })
         .await;

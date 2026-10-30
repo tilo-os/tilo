@@ -173,6 +173,25 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        // What the connection's own person or agent invoked is owned under
+        // its certificate, not its actor name: cancel it as that owner.
+        if let super::published_invocation::InvocationCaller::Local { admitted, .. } = &self.origin
+            && let Some(certificate) = admitted.certificate.as_ref()
+            && let Some(job) = self.state.remote_job(caller, id)
+        {
+            let owner = super::InvocationOwner::AuthenticatedLocal {
+                root: certificate.user_public_key,
+                device: certificate.device_public_key,
+                agent: admitted.agent_id.clone(),
+            };
+            if self.state.can_cancel_for_owner(job, &owner) {
+                return answered_when_durable(
+                    self.state
+                        .request_cancellation_for_owner(job, &owner)
+                        .map_err(|reason| ActionHostError::NotCancellable { reason }),
+                );
+            }
+        }
         self.state.action_cancel(caller, id)
     }
 

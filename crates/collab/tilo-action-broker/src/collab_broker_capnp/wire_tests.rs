@@ -173,7 +173,7 @@ impl Endpoint {
         }
     }
 
-    async fn send(&mut self, request: Request) -> u64 {
+    async fn send(&mut self, request: Operation) -> u64 {
         use tokio::io::AsyncWriteExt as _;
         let id = self.next_id;
         self.next_id = id.wrapping_add(1);
@@ -194,7 +194,7 @@ impl Endpoint {
         .expect("the host keeps the connection open")
     }
 
-    async fn call(&mut self, request: Request) -> Result<Reply, String> {
+    async fn call(&mut self, request: Operation) -> Result<Reply, String> {
         let id = self.send(request).await;
         match self.frame().await {
             HostFrame::Reply {
@@ -211,7 +211,7 @@ impl Endpoint {
         payload: PeerPresencePayload,
     ) -> Result<Reply, String> {
         let channel = self.channel;
-        self.call(Request::Publish {
+        self.call(Operation::Publish {
             channel,
             publication: Publication::Presence(PeerPresence {
                 key: postcard::to_stdvec(key).unwrap(),
@@ -230,7 +230,7 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
             let mut watcher = room.endpoint(1);
             let mut author = room.endpoint(2);
             let channel = watcher.channel;
-            let subscription = watcher.send(Request::Subscribe {
+            let subscription = watcher.send(Operation::Subscribe {
                 channel,
                 topic: Topic::Presence,
             })
@@ -300,7 +300,7 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
             );
 
             assert_eq!(
-                watcher.call(Request::Unsubscribe { subscription }).await,
+                watcher.call(Operation::Unsubscribe { subscription }).await,
                 Ok(Reply::Done)
             );
             author
@@ -309,7 +309,7 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                 .unwrap();
             let channel = watcher.channel;
             assert_eq!(
-                watcher.call(Request::Close { handle: channel }).await,
+                watcher.call(Operation::Close { handle: channel }).await,
                 Ok(Reply::Done),
                 "nothing more arrives on an ended subscription before the next reply"
             );
@@ -333,7 +333,7 @@ async fn a_signed_change_crosses_the_wire_to_the_channel_subscribers() {
             let mut author = room.endpoint(5);
             let channel = watcher.channel;
             let subscription = watcher
-                .send(Request::Subscribe {
+                .send(Operation::Subscribe {
                     channel,
                     topic: Topic::Ops,
                 })
@@ -362,7 +362,7 @@ async fn a_signed_change_crosses_the_wire_to_the_channel_subscribers() {
             let channel = author.channel;
             assert_eq!(
                 author
-                    .call(Request::Publish {
+                    .call(Operation::Publish {
                         channel,
                         publication: Publication::Document(Box::new(op.clone())),
                     })
@@ -388,7 +388,7 @@ async fn a_signed_change_crosses_the_wire_to_the_channel_subscribers() {
             let channel = watcher.channel;
             assert!(matches!(
                 watcher
-                    .call(Request::Read {
+                    .call(Operation::Read {
                         channel,
                         read: Read::History {
                             artifact: op.artifact,
@@ -413,7 +413,7 @@ async fn a_late_joiner_asks_a_context_subscriber_for_the_document() {
             let channel = holder.channel;
             assert_eq!(
                 holder
-                    .call(Request::Subscribe {
+                    .call(Operation::Subscribe {
                         channel,
                         topic: Topic::Context,
                     })
@@ -423,7 +423,7 @@ async fn a_late_joiner_asks_a_context_subscriber_for_the_document() {
             let channel = joiner.channel;
             assert_eq!(
                 joiner
-                    .call(Request::Read {
+                    .call(Operation::Read {
                         channel,
                         read: Read::Document,
                     })
@@ -450,7 +450,7 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
             let channel = room.route.channel_key();
             assert_eq!(
                 endpoint
-                    .call(Request::Room {
+                    .call(Operation::Room {
                         channel: channel.clone(),
                         seen: None,
                     })
@@ -458,7 +458,7 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
                 Ok(Reply::Room(runtime_collab::RoomStatus::Ready))
             );
             let refused = endpoint
-                .call(Request::Join(Join {
+                .call(Operation::Join(Join {
                     channel: channel.clone(),
                     identity: crate::collab_broker_capnp::tests::certified_join(
                         &room.route.cluster_id,
@@ -476,7 +476,7 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
                 "a device the room never enrolled joins nothing"
             );
             let Ok(Reply::Opened(handle)) = endpoint
-                .call(Request::Join(Join {
+                .call(Operation::Join(Join {
                     channel,
                     identity: crate::collab_broker_capnp::tests::certified_join(
                         &room.route.cluster_id,
@@ -528,7 +528,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                 Service::RemoteAction,
             ] {
                 let refused = endpoint
-                    .call(Request::Command {
+                    .call(Operation::Command {
                         channel,
                         service,
                         body: b"not a command".to_vec(),
@@ -539,7 +539,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             }
             assert!(
                 endpoint
-                    .call(Request::Command {
+                    .call(Operation::Command {
                         channel: Handle(77),
                         service: Service::PersonChat,
                         body: Vec::new(),
@@ -560,7 +560,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             ] {
                 assert!(
                     endpoint
-                        .call(Request::Publish {
+                        .call(Operation::Publish {
                             channel,
                             publication: Publication::Report(report.clone()),
                         })
@@ -571,7 +571,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             }
             assert!(
                 endpoint
-                    .call(Request::Publish {
+                    .call(Operation::Publish {
                         channel,
                         publication: Publication::Effect {
                             resource: "note:1".into(),
@@ -592,7 +592,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             ] {
                 assert!(
                     endpoint
-                        .call(Request::Changed {
+                        .call(Operation::Changed {
                             channel,
                             of,
                             after: 0,
@@ -615,7 +615,7 @@ async fn task_runs_and_their_calls_are_only_for_a_delegated_agent() {
             let channel = endpoint.channel;
             assert!(
                 endpoint
-                    .call(Request::Subscribe {
+                    .call(Operation::Subscribe {
                         channel,
                         topic: Topic::TaskRuns,
                     })
@@ -640,7 +640,7 @@ async fn task_runs_and_their_calls_are_only_for_a_delegated_agent() {
             ] {
                 assert!(
                     endpoint
-                        .call(Request::Task {
+                        .call(Operation::Task {
                             channel,
                             run_id: 1,
                             lease: "lease".into(),
@@ -664,7 +664,7 @@ async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own
             let channel = endpoint.channel;
             assert_eq!(
                 endpoint
-                    .call(Request::Subscribe {
+                    .call(Operation::Subscribe {
                         channel,
                         topic: Topic::Invocations { stable_ids: true },
                     })
@@ -681,7 +681,7 @@ async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own
             ] {
                 assert!(
                     endpoint
-                        .call(Request::Invocation {
+                        .call(Operation::Invocation {
                             channel,
                             id: 404,
                             call: call.clone(),
@@ -693,7 +693,7 @@ async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own
             }
             assert!(
                 endpoint
-                    .call(Request::Subscribe {
+                    .call(Operation::Subscribe {
                         channel,
                         topic: Topic::PersonChat {
                             peer: "ed25519:nobody".into(),
@@ -706,7 +706,7 @@ async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own
             );
             assert!(
                 endpoint
-                    .call(Request::Launch {
+                    .call(Operation::Launch {
                         channel,
                         app_id: "so.tilo.notes".into(),
                         package_root: String::new(),
@@ -718,7 +718,7 @@ async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own
             );
             assert_eq!(
                 endpoint
-                    .call(Request::Subscribe {
+                    .call(Operation::Subscribe {
                         channel,
                         topic: Topic::Catalogue,
                     })
@@ -757,7 +757,7 @@ async fn an_app_publishes_its_action_surface_whole_or_as_a_change() {
             ] {
                 assert_eq!(
                     endpoint
-                        .call(Request::Publish {
+                        .call(Operation::Publish {
                             channel,
                             publication: publication.clone(),
                         })
@@ -772,7 +772,7 @@ async fn an_app_publishes_its_action_surface_whole_or_as_a_change() {
             ] {
                 assert!(
                     endpoint
-                        .call(Request::Publish {
+                        .call(Operation::Publish {
                             channel,
                             publication: publication.clone(),
                         })
@@ -810,7 +810,7 @@ async fn the_wire_client_calls_and_subscribes_against_the_host() {
             let key = PresenceKey::surface_pointer("editor");
             assert_eq!(
                 author
-                    .call(Request::Publish {
+                    .call(Operation::Publish {
                         channel: authored,
                         publication: Publication::Presence(PeerPresence {
                             key: postcard::to_stdvec(&key).unwrap(),
@@ -827,12 +827,12 @@ async fn the_wire_client_calls_and_subscribes_against_the_host() {
             assert_eq!(user_id, principal(12));
             assert!(
                 watcher
-                    .call(Request::Close { handle: Handle(99) })
+                    .call(Operation::Close { handle: Handle(99) })
                     .await
                     .is_err(),
                 "a refusal reaches the call that caused it"
             );
-            watcher.unsubscribe(presence).await.unwrap();
+            drop(presence);
         })
         .await;
 }

@@ -5,19 +5,31 @@ async fn resolved_invocation_capacity_is_bounded_and_cancellation_releases_it() 
         release: Rc<tokio::sync::Notify>,
         row: runtime_collab::ActionDirectoryRow,
     }
-    impl action_directory::Server for Held {
+    impl wire::DirectorySource for Held {
+        fn query(
+            &self,
+            _query: runtime_collab::ActionDirectoryQuery,
+            _max_bytes: u32,
+        ) -> wire::Asked<runtime_collab::ActionDirectoryPage> {
+            Box::pin(std::future::ready(Err("not listed here".into())))
+        }
+
         fn resolve(
-            self: Rc<Self>,
-            _: action_directory::ResolveParams,
-            mut results: action_directory::ResolveResults,
-        ) -> Promise<(), capnp::Error> {
-            Promise::from_future(async move {
-                self.entered.send(()).unwrap();
-                self.release.notified().await;
-                runtime_collab::write_action_directory_row(
-                    results.get().init_resolution().init_found(),
-                    &self.row,
-                )
+            &self,
+            _target: (&str, &str, &str),
+            _local_document: bool,
+            _max_bytes: u32,
+        ) -> wire::Asked<runtime_collab::ActionDirectoryResolution> {
+            let entered = self.entered.clone();
+            let release = Rc::clone(&self.release);
+            let row = self.row.clone();
+            Box::pin(async move {
+                entered.send(()).unwrap();
+                release.notified().await;
+                Ok(runtime_collab::ActionDirectoryResolution::Found {
+                    row: Box::new(row),
+                    revision: None,
+                })
             })
         }
     }
@@ -26,7 +38,7 @@ async fn resolved_invocation_capacity_is_bounded_and_cancellation_releases_it() 
             let fixture = local_directory_fixture();
             let (tx, mut entered) = mpsc::unbounded_channel();
             let release = Rc::new(tokio::sync::Notify::new());
-            let held = capnp_rpc::new_client(Held {
+            let held = Rc::new(Held {
                 entered: tx,
                 release,
                 row: fixture.directory_state.borrow().row(),
@@ -113,33 +125,28 @@ struct RecordingDirectory {
     resolved: Option<&'static str>,
 }
 
-impl action_directory::Server for RecordingDirectory {
+impl wire::DirectorySource for RecordingDirectory {
+    fn query(
+        &self,
+        _query: runtime_collab::ActionDirectoryQuery,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryPage> {
+        Box::pin(std::future::ready(Err("not listed here".into())))
+    }
+
     fn resolve(
-        self: Rc<Self>,
-        params: action_directory::ResolveParams,
-        mut results: action_directory::ResolveResults,
-    ) -> Promise<(), capnp::Error> {
-        let revision = params.get().and_then(|request| {
-            request
-                .get_revision()?
-                .to_str()
-                .map(str::to_owned)
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        });
-        match revision {
-            Ok(revision) => self.revisions.borrow_mut().push(revision),
-            Err(error) => return Promise::err(error),
-        }
-        let mut out = results.get().init_resolution();
-        if let Err(error) =
-            runtime_collab::write_action_directory_row(out.reborrow().init_found(), &self.row)
-        {
-            return Promise::err(error);
-        }
-        if let Some(resolved) = self.resolved {
-            out.set_resolved_revision(resolved);
-        }
-        Promise::ok(())
+        &self,
+        (revision, _, _): (&str, &str, &str),
+        _local_document: bool,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryResolution> {
+        self.revisions.borrow_mut().push(revision.to_owned());
+        Box::pin(std::future::ready(Ok(
+            runtime_collab::ActionDirectoryResolution::Found {
+                row: Box::new(self.row.clone()),
+                revision: self.resolved.map(str::to_owned),
+            },
+        )))
     }
 }
 
@@ -150,7 +157,7 @@ fn record_resolutions(
     resolved: Option<&'static str>,
 ) -> Rc<RefCell<Vec<String>>> {
     let revisions = Rc::new(RefCell::new(Vec::new()));
-    let recording = capnp_rpc::new_client(RecordingDirectory {
+    let recording = Rc::new(RecordingDirectory {
         revisions: Rc::clone(&revisions),
         row: fixture.directory_state.borrow().row(),
         resolved,
@@ -382,7 +389,6 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
                 OriginalRoom::new(tilo_user_identity::DeviceCapabilities::host(), None, None);
             let (worker, _authorize) = room.join_worker(905).await;
             let handle = &worker.handle;
-            let app = room.route.app_id.clone();
             let mut base = directory_state("original-r1")
                 .borrow()
                 .row()
@@ -427,7 +433,7 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
                     .collect(),
                 removed: Vec::new(),
             };
-            handle.publish_action_surface(&app, &first).await.unwrap();
+            handle.publish_action_surface(&first).await.unwrap();
             assert_eq!(
                 surface().unwrap(),
                 resources
@@ -443,7 +449,7 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
                 removed: vec!["workspace:c".into()],
                 ..SurfaceDelta::default()
             };
-            handle.publish_action_surface(&app, &edit).await.unwrap();
+            handle.publish_action_surface(&edit).await.unwrap();
             assert_eq!(
                 surface().unwrap(),
                 vec![
@@ -457,7 +463,7 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
                 resources: vec![resource("workspace:z", "Z", [9; SHAPE_ID_BYTES])],
                 ..SurfaceDelta::default()
             };
-            assert!(handle.publish_action_surface(&app, &unknown).await.is_err());
+            assert!(handle.publish_action_surface(&unknown).await.is_err());
             let invalid = SurfaceDelta {
                 reset: true,
                 shapes: vec![(shape_id, base.shape())],
@@ -465,18 +471,18 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
                 resources: vec![resource("workspace:a", " ", template)],
                 removed: Vec::new(),
             };
-            assert!(handle.publish_action_surface(&app, &invalid).await.is_err());
+            assert!(handle.publish_action_surface(&invalid).await.is_err());
             assert_eq!(surface().unwrap().len(), 2);
 
             // A whole-surface publication supersedes the delta state: a delta
             // that leans on an earlier template is refused, a reset is
             // accepted.
             handle
-                .publish_actions(&app, &[expanded("workspace:only", "Only")])
+                .publish_actions(&[expanded("workspace:only", "Only")])
                 .await
                 .unwrap();
-            assert!(handle.publish_action_surface(&app, &edit).await.is_err());
-            handle.publish_action_surface(&app, &first).await.unwrap();
+            assert!(handle.publish_action_surface(&edit).await.is_err());
+            handle.publish_action_surface(&first).await.unwrap();
             assert_eq!(surface().unwrap().len(), 3);
         })
         .await;

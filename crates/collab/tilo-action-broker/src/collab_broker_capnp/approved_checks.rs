@@ -276,7 +276,7 @@ impl ReportPublisher {
 
 pub(super) fn reported_progress(
     mut context: ApprovedCheckContext,
-) -> Result<runtime_collab::collab_capnp::approved_check_reported_progress_stream::Client, String> {
+) -> Result<ReportedProgress, String> {
     let (send, receive) = watch::channel(None);
     let publisher = Arc::new(ReportPublisher {
         state: Mutex::new(ReportFrontier {
@@ -290,19 +290,53 @@ pub(super) fn reported_progress(
     // Admission remains exactly the original execution/replay registry.
     // Retain the worker's exact terminal receiver independently of report delivery.
     let completion = start(&context)?;
-    Ok(capnp_rpc::new_client(ReportedProgressStream {
+    Ok(ReportedProgress {
         context,
-        reader: super::Rc::new(super::AsyncMutex::new(ReportReader {
+        reader: super::AsyncMutex::new(ReportReader {
             receive,
             completion: Some(completion),
             terminal: None,
             initial: true,
-        })),
-    }))
+        }),
+        finished: std::cell::Cell::new(false),
+    })
 }
-struct ReportedProgressStream {
+
+/// The reported progress of one started check, ending with its receipt.
+pub(super) struct ReportedProgress {
     context: ApprovedCheckContext,
-    reader: super::Rc<super::AsyncMutex<ReportReader>>,
+    reader: super::AsyncMutex<ReportReader>,
+    finished: std::cell::Cell<bool>,
+}
+
+impl ReportedProgress {
+    /// The next report, then the receipt or failure; an error after that.
+    #[allow(
+        clippy::future_not_send,
+        reason = "a check's progress is read on the broker's LocalSet"
+    )]
+    pub(super) async fn next(&self) -> Result<runtime_collab::wire::CheckProgress, String> {
+        use runtime_collab::wire::CheckProgress;
+        if self.finished.get() {
+            return Err("the approved check finished".into());
+        }
+        self.context.recheck()?;
+        let frame = self.reader.lock().await.next().await?;
+        self.context.recheck()?;
+        Ok(match frame {
+            Frame::Report(report) => CheckProgress::Report(report.encode()?),
+            Frame::Final(reply) => {
+                self.finished.set(true);
+                match reply.as_ref() {
+                    Ok(receipt) => CheckProgress::Receipt(
+                        matched_reply(&self.context, receipt.clone())
+                            .and_then(|receipt| receipt.encode())?,
+                    ),
+                    Err(error) => CheckProgress::Failed(error.chars().take(512).collect()),
+                }
+            }
+        })
+    }
 }
 struct ReportReader {
     receive: watch::Receiver<Option<Frame>>,
@@ -344,45 +378,6 @@ impl ReportReader {
         }
     }
 }
-impl runtime_collab::collab_capnp::approved_check_reported_progress_stream::Server
-    for ReportedProgressStream
-{
-    fn read(
-        self: super::Rc<Self>,
-        _params: runtime_collab::collab_capnp::approved_check_reported_progress_stream::ReadParams,
-        mut results: runtime_collab::collab_capnp::approved_check_reported_progress_stream::ReadResults,
-    ) -> capnp::capability::Promise<(), capnp::Error> {
-        capnp::capability::Promise::from_future(async move {
-            self.context.recheck().map_err(capnp::Error::failed)?;
-            let frame = self
-                .reader
-                .lock()
-                .await
-                .next()
-                .await
-                .map_err(capnp::Error::failed)?;
-            self.context.recheck().map_err(capnp::Error::failed)?;
-            match frame {
-                Frame::Report(report) => results
-                    .get()
-                    .set_report(&report.encode().map_err(capnp::Error::failed)?),
-                Frame::Final(reply) => match reply.as_ref() {
-                    Ok(receipt) => results.get().set_receipt(
-                        &matched_reply(&self.context, receipt.clone())
-                            .and_then(|receipt| receipt.encode())
-                            .map_err(capnp::Error::failed)?,
-                    ),
-                    Err(error) => {
-                        let bounded: String = error.chars().take(512).collect();
-                        results.get().set_error(bounded.as_str());
-                    }
-                },
-            }
-            Ok(())
-        })
-    }
-}
-
 #[cfg(test)]
 mod report_delivery_tests {
     use super::*;

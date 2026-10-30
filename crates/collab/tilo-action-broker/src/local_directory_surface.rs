@@ -13,37 +13,35 @@ impl LocalDirectoryFixture {
         (resource, action): (&str, &str),
         params: &[tilo_actions::ActionParam],
         contract: &tilo_actions::ActionContract,
-    ) -> (channel_handle::Client, invocation_stream::Client) {
+    ) -> (
+        runtime_collab::ChannelHandle,
+        runtime_collab::InvocationStream,
+    ) {
         let channel = self.invocation_channel();
-        let mut publish = channel.publish_actions_request();
-        publish.get().set_app_id(&self.route.app_id);
-        {
-            let mut row = publish.get().init_actions(1).get(0);
-            row.set_resource(resource);
-            row.set_action(action);
-            row.set_resource_kind("note");
-            row.set_resource_label("Notes");
-            row.set_action_label("Append");
-            row.set_operation_kind("effect");
-            row.set_params_json(serde_json::to_string(params).expect("params encode"));
-            row.set_contract_json(serde_json::to_string(contract).expect("contract encodes"));
-        }
-        publish
-            .send()
-            .promise
+        let action = runtime_collab::ExportedAction {
+            semantic_identity: None,
+            resource: resource.into(),
+            action: action.into(),
+            resource_kind: "note".into(),
+            resource_label: "Notes".into(),
+            action_label: "Append".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            params: params.to_vec(),
+            contract: contract.clone(),
+            input: runtime_collab::ExportedInput::None,
+            view: None,
+        };
+        channel
+            .publish_actions(&[action])
             .await
             .expect("the surface is published");
-        let mut subscribe = channel.subscribe_invocations_request();
-        subscribe.get().set_stable_invocation_ids(true);
-        let stream = subscribe
-            .send()
-            .promise
+        let stream = channel
+            .subscribe_stable_invocations()
             .await
-            .expect("subscribed")
-            .get()
-            .expect("subscribed")
-            .get_stream()
-            .expect("an invocation stream");
+            .expect("subscribed");
         (channel, stream)
     }
 }

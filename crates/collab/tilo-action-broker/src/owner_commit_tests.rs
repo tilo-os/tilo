@@ -53,7 +53,7 @@ mod owner_commit_tests {
             fanout.attach_capnp(state.clone());
             state.ensure_channel(&route.channel_key());
             let mut subscriber = state.subscribe_ops(&route.channel_key(), 2);
-            let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+            let client = wire_channel(CapnpChannelHandle {
                 as_app: None,
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -72,9 +72,7 @@ mod owner_commit_tests {
                 document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
                 collab_types::OpKind::Change, SystemTime::now(), 1);
             sign_op(&mut op, &device).unwrap();
-            let mut request = client.send_request();
-            request.get().set_op(&postcard::to_stdvec(&op).unwrap());
-            assert!(request.send().promise.await.is_err(),
+            assert!(client.send(&postcard::to_stdvec(&op).unwrap()).await.is_err(),
                 "standalone send RPC acknowledged a wired void publisher without an owner commit receipt");
             assert!(subscriber.try_recv().is_err(), "uncommitted state must not fan out");
         }).await;
@@ -157,52 +155,37 @@ mod owner_commit_tests {
                         state.durable_owner_required,
                         "exercise actual configured durable worker mode"
                     );
-                    let client: channel_handle::Client =
-                        capnp_rpc::new_client(CapnpChannelHandle {
-                            as_app: None,
-                            person_chat_views: RefCell::default(),
-                            committed_read: Rc::new(RefCell::new(
-                                committed_document::Slot::default(),
-                            )),
-                            state,
-                            directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
-                            channel_id: route.channel_key(),
-                            peer_id: 1,
-                            connection_id: 1,
-                            verified_identity: admitted,
-                            record_kind: None,
-                            route_access: RouteAccess::Own,
-                            lease: None,
-                            _hold: None,
-                        });
-                    let mut request = client.committed_document_request();
-                    request.get().set_request(
-                        &runtime_collab::committed_document::Request::Open {
+                    let client = wire_channel(CapnpChannelHandle {
+                        as_app: None,
+                        person_chat_views: RefCell::default(),
+                        committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+                        state,
+                        directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
+                        channel_id: route.channel_key(),
+                        peer_id: 1,
+                        connection_id: 1,
+                        verified_identity: admitted,
+                        record_kind: None,
+                        route_access: RouteAccess::Own,
+                        lease: None,
+                        _hold: None,
+                    });
+                    let response = client
+                        .committed_document(&runtime_collab::committed_document::Request::Open {
                             known_revision: None,
-                        }
-                        .encode()
-                        .unwrap(),
-                    );
-                    let response = request.send().promise.await;
+                        })
+                        .await;
                     if native {
                         assert!(
                             response.is_err()
-                                || response.as_ref().is_ok_and(|response| {
-                                    runtime_collab::committed_document::Reply::decode(
-                                        response.get().unwrap().get_reply().unwrap(),
-                                    )
-                                    .unwrap()
-                                        == runtime_collab::committed_document::Reply::Unavailable
+                                || response.as_ref().is_ok_and(|reply| {
+                                    *reply == runtime_collab::committed_document::Reply::Unavailable
                                 }),
                             "required native owner cannot become Legacy"
                         );
                     } else {
-                        let response = response.unwrap();
                         assert_eq!(
-                            runtime_collab::committed_document::Reply::decode(
-                                response.get().unwrap().get_reply().unwrap()
-                            )
-                            .unwrap(),
+                            response.unwrap(),
                             runtime_collab::committed_document::Reply::Legacy,
                             "portable worker is already hydrated and must preserve storage behavior"
                         );
@@ -436,7 +419,7 @@ mod owner_commit_tests {
         owner: crate::test_owner::SessionOwner,
         mailbox: crate::test_owner::owner_commit::OwnerCommitMailbox,
         state: Arc<CapnpBrokerState>,
-        client: channel_handle::Client,
+        channel: Rc<CapnpChannelHandle>,
         route: CrdtRoute,
         _fanout: Arc<FanoutState>,
     }
@@ -585,7 +568,7 @@ mod owner_commit_tests {
         );
         fanout.attach_capnp(state.clone());
         state.ensure_channel(&route.channel_key());
-        let client = capnp_rpc::new_client(CapnpChannelHandle {
+        let channel = Rc::new(CapnpChannelHandle {
             as_app: None,
             person_chat_views: RefCell::default(),
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -605,9 +588,15 @@ mod owner_commit_tests {
             owner,
             mailbox,
             state,
-            client,
+            channel,
             route,
             _fanout: fanout,
+        }
+    }
+    impl OwnerFixture {
+        /// The app's channel, over its own wire connection.
+        fn client(&self) -> runtime_collab::ChannelHandle {
+            wire_channel_rc(Rc::clone(&self.channel))
         }
     }
     fn owner_snapshot(f: &OwnerFixture) -> SignedOp {
@@ -643,11 +632,11 @@ mod owner_commit_tests {
                 let mut f = owner_fixture(root.path());
                 let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
                 let envelope = owner_snapshot(&f);
-                let mut request = f.client.send_request();
-                request
-                    .get()
-                    .set_op(&postcard::to_stdvec(&envelope).unwrap());
-                let response = tokio::task::spawn_local(request.send().promise);
+                let op = postcard::to_stdvec(&envelope).unwrap();
+                let response = tokio::task::spawn_local({
+                    let client = f.client();
+                    async move { client.send(&op).await }
+                });
                 let pending = f.mailbox.recv().await.unwrap();
                 assert!(!response.is_finished());
                 assert!(
@@ -674,11 +663,11 @@ mod owner_commit_tests {
                 let mut f = owner_fixture(root.path());
                 let before = f.owner.status();
                 let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
-                let mut request = f.client.send_request();
-                request
-                    .get()
-                    .set_op(&postcard::to_stdvec(&owner_snapshot(&f)).unwrap());
-                let response = tokio::task::spawn_local(request.send().promise);
+                let op = postcard::to_stdvec(&owner_snapshot(&f)).unwrap();
+                let response = tokio::task::spawn_local({
+                    let client = f.client();
+                    async move { client.send(&op).await }
+                });
                 let pending = f.mailbox.recv().await.unwrap();
                 f.membership.write().workspaces.clear();
                 pending.apply(&mut f.owner).unwrap();
@@ -818,16 +807,14 @@ mod owner_commit_tests {
                         invocation: key.invocation,
                         output: tilo_actions::ActionOutput::default(),
                     };
-                    let mut request = f.client.update_invocation_request();
-                    request.get().set_id(1);
-                    request
-                        .get()
-                        .set_update_json(serde_json::to_string(&update).unwrap());
-                    let mut response = tokio::task::spawn_local(request.send().promise);
+                    let update_json = serde_json::to_string(&update).unwrap();
+                    let mut response = tokio::task::spawn_local({
+                        let client = f.client();
+                        async move { client.update_invocation(1, &update_json).await }
+                    });
                     let pending = tokio::select! {
                         pending = f.mailbox.recv() => pending.unwrap(),
                         rejected = &mut response => {
-                            let rejected = rejected.map(|reply| reply.map(|_| ()));
                             panic!("terminal update ended before owner receipt admission: {rejected:?}");
                         }
                     };
@@ -910,7 +897,9 @@ mod owner_commit_tests {
                         }
                     }
                     assert_eq!(std::fs::read(root.path().join("effect")).unwrap(), b"once");
+                    let gone = Arc::downgrade(&f.state);
                     drop(f);
+                    broker_gone(gone).await;
                     let recovered = InvocationJournal::open(&root.path().join("journal"))
                         .unwrap()
                         .lookup(&key)
@@ -932,11 +921,11 @@ mod owner_commit_tests {
                     let mut f = owner_fixture_with_receipt_fault(root.path(), fault);
                     let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
                     let envelope = owner_snapshot(&f);
-                    let mut request = f.client.send_request();
-                    request
-                        .get()
-                        .set_op(&postcard::to_stdvec(&envelope).unwrap());
-                    let response = tokio::task::spawn_local(request.send().promise);
+                    let op = postcard::to_stdvec(&envelope).unwrap();
+                    let response = tokio::task::spawn_local({
+                        let client = f.client();
+                        async move { client.send(&op).await }
+                    });
                     f.mailbox.recv().await.unwrap().apply(&mut f.owner).unwrap();
                     assert!(
                         response.await.unwrap().is_err(),
@@ -1420,10 +1409,7 @@ mod owner_commit_tests {
             .row()
             .descriptor
             .unwrap();
-            handle
-                .publish_actions(&route.app_id, &[descriptor])
-                .await
-                .unwrap();
+            handle.publish_actions(&[descriptor]).await.unwrap();
             let invocations = handle.subscribe_stable_invocations().await.unwrap();
             for revoked in [false, true] {
                 let mut rejected = vec![];
@@ -1488,10 +1474,9 @@ mod owner_commit_tests {
                 .unwrap()
                 .2
                 .clone();
-            let before_read = authority.checks.load(Ordering::SeqCst);
             let pending_read =
                 tokio::task::spawn_local(async move { waiting_catalogue.read().await });
-            while authority.checks.load(Ordering::SeqCst) == before_read {
+            for _ in 0..32 {
                 tokio::task::yield_now().await;
             }
             assert!(
@@ -1585,9 +1570,12 @@ mod owner_commit_tests {
                 "a stream must recheck authority after its read wakes"
             );
             assert!(handle.subscribe_action_catalogue().await.is_err());
+            // The catalogue as it stood was disclosed while the worker was
+            // current; nothing after it is.
+            assert!(retained_catalogue.read().await.is_ok());
             assert!(
                 retained_catalogue.read().await.is_err(),
-                "retained stream must recheck host authority before disclosing a buffered snapshot"
+                "a retained stream must recheck host authority before disclosing the next snapshot"
             );
             assert!(state.connect_local_worker(route.clone(), &cert).is_err());
             let mut expired = cert.clone();
@@ -1634,11 +1622,11 @@ mod owner_commit_tests {
                         "exercise actual native config=None"
                     );
                     let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
-                    let mut request = f.client.send_request();
-                    request
-                        .get()
-                        .set_op(&postcard::to_stdvec(&owner_snapshot(&f)).unwrap());
-                    let response = tokio::task::spawn_local(request.send().promise);
+                    let op = postcard::to_stdvec(&owner_snapshot(&f)).unwrap();
+                    let response = tokio::task::spawn_local({
+                        let client = f.client();
+                        async move { client.send(&op).await }
+                    });
                     let pending = tilo_test_env::within(
                         "native enrolled document bypassed the actual owner service",
                         f.mailbox.recv(),
@@ -1733,11 +1721,10 @@ mod owner_commit_tests {
                 let f = owner_fixture_with_native_config(root.path(), 0, true, false);
                 assert!(!f.state.publisher.requires_owner_for(&f.route.cluster_id));
                 let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
-                let mut request = f.client.send_request();
-                request
-                    .get()
-                    .set_op(&postcard::to_stdvec(&owner_snapshot(&f)).unwrap());
-                request.send().promise.await.unwrap();
+                f.client()
+                    .send(&postcard::to_stdvec(&owner_snapshot(&f)).unwrap())
+                    .await
+                    .unwrap();
                 assert!(subscriber.try_recv().is_ok());
                 assert!(
                     f.mailbox.is_empty(),

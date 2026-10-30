@@ -130,12 +130,11 @@ mod files_clipboard_tests {
                 runtime.block_on(tokio::task::LocalSet::new().run_until(async move {
                     let descriptor =
                         runtime_portal::agent_transport::connect_endpoint(&endpoint).unwrap();
-                    let connection = runtime_portal::CapnpClient::from_connected_fd(
-                        descriptor,
-                        capnp_rpc::rpc_twoparty_capnp::Side::Client,
+                    let (client, _end) = runtime_collab::CollabClient::from_connected_fd(
+                        // SAFETY: just connected; this takes its only owner.
+                        unsafe { std::os::fd::FromRawFd::from_raw_fd(descriptor) },
                     )
                     .unwrap();
-                    let client = runtime_collab::CollabClient::from_raw(connection.bootstrap());
                     let channel = tokio::time::timeout(
                         tilo_test_env::hang_bound(),
                         client.join_channel_as_kind(&room, &presentation, &agent, "agent", ""),

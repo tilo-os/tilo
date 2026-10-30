@@ -66,7 +66,6 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
                 handle
                     .launch_installed_application_for(
                         "so.tilo.word-processor",
-                        None,
                         Some(&selected),
                         Some(*original.0.as_bytes()),
                     )
@@ -261,11 +260,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                 let selected = root.clone();
                 let pending = tokio::task::spawn_local(async move {
                     handle
-                        .launch_installed_application(
-                            "so.tilo.word-processor",
-                            None,
-                            Some(&selected),
-                        )
+                        .launch_installed_application("so.tilo.word-processor", Some(&selected))
                         .await
                 });
                 certified_launch_wait(&started_rx).await;
@@ -350,11 +345,7 @@ async fn installed_launch_rpc_rejects_a_noncanonical_package_root_before_host_ad
             assert!(
                 caller
                     .handle
-                    .launch_installed_application(
-                        "so.tilo.word-processor",
-                        None,
-                        Some("../../payload")
-                    )
+                    .launch_installed_application("so.tilo.word-processor", Some("../../payload"))
                     .await
                     .is_err()
             );
@@ -414,7 +405,6 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                         .launch_installed_application_for(
                             target,
                             None,
-                            None,
                             Some(*original.0.as_bytes())
                         )
                         .await
@@ -425,7 +415,6 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                     handle
                         .launch_installed_application_for(
                             target,
-                            None,
                             None,
                             Some(*original.0.as_bytes()),
                         )
@@ -491,7 +480,9 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                 let rig = Rig::with_services(
                     &env,
                     HostServices {
-                        local_person: Some(Arc::new(NativePersonFixture(env.authority.clone()))),
+                        local_person: Some(Arc::new(super::signed_worker::NativePerson(
+                            env.authority.clone(),
+                        ))),
                         launcher: Some(launcher.clone()),
                         ..env.membership.services()
                     },
@@ -532,7 +523,6 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                     handle
                         .launch_installed_application_for(
                             "host:org.example.App.desktop",
-                            None,
                             None,
                             Some(original.0.into_bytes()),
                         )

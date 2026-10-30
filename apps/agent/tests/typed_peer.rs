@@ -2,7 +2,7 @@
 //!
 //! The assertions in these tests predate the native collaboration service,
 //! so the adapter deliberately retains their request/event-shaped driving
-//! code while putting every byte on the production Cap'n Proto endpoint.
+//! code while putting every byte on the production collaboration endpoint.
 
 #![allow(
     dead_code,

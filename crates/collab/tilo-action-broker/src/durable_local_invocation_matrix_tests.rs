@@ -161,7 +161,7 @@ mod durable_local_matrix {
             let (worker, authorize) =
                 join_worker(&state, &directories, &env.route, &env.cert, &env.key, 903).await;
             let handle = &worker.handle;
-            publish_for(handle, &env.route.app_id).await;
+            publish_directory(handle).await;
             let stream = handle.subscribe_stable_invocations().await.unwrap();
             // Mirror the production accept loop: later continuations can queue
             // another eager admission after the caller's first explicit drain.
@@ -257,6 +257,13 @@ mod durable_local_matrix {
             let _ = (&mut self.worker.client).await;
             self.state.stop();
         }
+        /// Stop this broker and open the host's journal again in a new one.
+        async fn restarted(self, env: &Environment) -> Self {
+            let gone = Arc::downgrade(&self.state);
+            self.stop().await;
+            super::broker_gone(gone).await;
+            Self::new(env).await
+        }
         async fn delivered_effect(&self, env: &Environment, id: tilo_actions::InvocationId) -> u64 {
             let delivered = self.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(delivered.invocation_uuid, *id.0.as_bytes());
@@ -279,30 +286,23 @@ mod durable_local_matrix {
             delivered.id
         }
     }
-    async fn publish_for(
+    async fn publish_directory(
         handle: &runtime_collab::ChannelHandle,
-        app: &str,
     ) -> Rc<RefCell<TestActionDirectory>> {
         let state = directory_state("original-r1");
         handle
-            .publish_action_directory(
-                app,
-                capnp_rpc::new_client(DurableDirectory {
+            .publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
+                DurableDirectory {
                     state: state.clone(),
-                }),
-            )
+                },
+            )))
             .await
             .unwrap();
         state
     }
-    /// Ask the rig's application (peer 903) for its action as `handle`'s
-    /// caller, the way a person's or agent's press reaches it.
-    async fn invoke(
-        handle: &runtime_collab::ChannelHandle,
-        id: tilo_actions::InvocationId,
-    ) -> Result<tilo_actions::remote::InvocationReceipt, String> {
-        use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
-        let request = tilo_actions::remote::InvokeRequest {
+    /// The rig's application's (peer 903) action, as invocation `id`.
+    fn durable_request(id: tilo_actions::InvocationId) -> tilo_actions::remote::InvokeRequest {
+        tilo_actions::remote::InvokeRequest {
             invocation: id,
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: "903".into(),
@@ -315,7 +315,22 @@ mod durable_local_matrix {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
-        };
+        }
+    }
+    /// Ask the rig's application (peer 903) for its action as `handle`'s
+    /// caller, the way a person's or agent's press reaches it.
+    async fn invoke(
+        handle: &runtime_collab::ChannelHandle,
+        id: tilo_actions::InvocationId,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, String> {
+        invoke_with(handle, durable_request(id)).await
+    }
+    /// Send `request` as `handle`'s caller: the receipt, or why it was refused.
+    async fn invoke_with(
+        handle: &runtime_collab::ChannelHandle,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, String> {
+        use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
         let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(request))
             .encode()
             .map_err(|error| error.to_string())?;
@@ -337,16 +352,26 @@ mod durable_local_matrix {
     fn id(value: u128) -> tilo_actions::InvocationId {
         tilo_actions::InvocationId(uuid::Uuid::from_u128(value))
     }
-    /// Nothing was dispatched to the rig's app (peer 903) that it has not read.
-    fn no_delivery(_rig: &Rig) {
-        assert_eq!(crate::collab_broker_capnp::unread_invocations(903), 0);
+    /// Nothing reached the rig's application: a round trip on its
+    /// connection carries anything the broker handed it ahead of the answer.
+    async fn no_delivery(rig: &Rig) {
+        let _ = rig.worker.handle.invocation_cancellation(u64::MAX).await;
+        if let Some(stream) = rig.stream.as_ref() {
+            assert!(
+                futures::FutureExt::now_or_never(stream.read()).is_none(),
+                "the application was handed an invocation"
+            );
+        }
     }
 
     include!("display_control_tests.rs");
     include!("person_chat_rpc_tests.rs");
     include!("admitted_local_host_tests.rs");
+    include!("private_draft_tests.rs");
+    include!("person_chat_selected_view_tests.rs");
     include!("certified_lifecycle_tests.rs");
     include!("dispatcher_receipt_tests.rs");
+    include!("durable_local_wire_tests.rs");
     include!("local_document_action_rpc_tests.rs");
     include!("packaged_app_worker_tests.rs");
     include!("certified_launch_tests.rs");

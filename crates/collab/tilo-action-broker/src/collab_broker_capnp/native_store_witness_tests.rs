@@ -54,52 +54,46 @@ fn operation(action: &str, content: &str) -> String {
     .unwrap()
 }
 
-async fn target(f: &Fixture, action: &str) -> (channel_handle::Client, invocation_stream::Client) {
-    let target = f.app_channel(200, STORE, false);
-    let mut publish = target.publish_actions_request();
-    publish.get().set_app_id(STORE);
-    {
-        let mut row = publish.get().init_actions(1).get(0);
-        row.set_resource(RESOURCE);
-        row.set_action(action);
-        row.set_resource_kind("store.package");
-        row.set_resource_label("Package");
-        row.set_action_label("Submit");
-        row.set_operation_kind("effect");
-        row.set_params_json(
-            serde_json::to_string(&vec![
-                tilo_actions::ActionParam::required(
-                    "app",
-                    tilo_actions::ParamType::Text,
-                    "Package",
-                ),
-                tilo_actions::ActionParam::required(
-                    "operation",
-                    tilo_actions::ParamType::Text,
-                    "Report",
-                ),
-            ])
-            .unwrap(),
-        );
-        row.set_contract_json(
-            serde_json::to_string(&tilo_actions::ActionContract {
-                kind: tilo_actions::ActionKind::Outside,
-                confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-                result: tilo_actions::ResultSpec::Job,
-                execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                ..Default::default()
-            })
-            .unwrap(),
-        );
-    }
-    publish.send().promise.await.unwrap();
+async fn target(
+    f: &Fixture,
+    action: &str,
+) -> (runtime_collab::ChannelHandle, InvocationStreamServer) {
+    let handle = Rc::new(f.app_handle(200, STORE, false));
+    let target = wire_channel_rc(Rc::clone(&handle));
+    let submit = runtime_collab::ExportedAction {
+        semantic_identity: None,
+        resource: RESOURCE.into(),
+        action: action.into(),
+        resource_kind: "store.package".into(),
+        resource_label: "Package".into(),
+        action_label: "Submit".into(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        operation_kind: tilo_actions::OperationKind::Effect,
+        params: vec![
+            tilo_actions::ActionParam::required("app", tilo_actions::ParamType::Text, "Package"),
+            tilo_actions::ActionParam::required(
+                "operation",
+                tilo_actions::ParamType::Text,
+                "Report",
+            ),
+        ],
+        contract: tilo_actions::ActionContract {
+            kind: tilo_actions::ActionKind::Outside,
+            confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+            result: tilo_actions::ResultSpec::Job,
+            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+            ..Default::default()
+        },
+        input: runtime_collab::ExportedInput::None,
+        view: None,
+    };
+    target.publish_actions(&[submit]).await.unwrap();
     f.state
         .launchable
         .retain(&f.state.surfaces.lock().unwrap()[&200]);
-    let mut subscribe = target.subscribe_invocations_request();
-    subscribe.get().set_stable_invocation_ids(true);
-    let response = subscribe.send().promise.await.unwrap();
-    let stream = response.get().unwrap().get_stream().unwrap();
+    let stream = handle.invocation_feed(true).unwrap();
     (target, stream)
 }
 
@@ -126,37 +120,44 @@ fn confirm(f: &Fixture, text: String) {
 }
 
 async fn invoke(
-    agent: &channel_handle::Client,
+    agent: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     action: &str,
     provider: u8,
-) -> Result<(), capnp::Error> {
-    let mut request = agent.invoke_task_action_request();
-    {
-        let mut p = request.get();
-        p.set_run_id(run.run_id);
-        p.set_lease(&run.lease);
-        p.set_peer_id(if provider == 0 { 200 } else { 0 });
-        match provider {
-            1 => p.set_provider(format!("launch:{}:{STORE}:main", room())),
-            2 => p.set_provider(
-                tilo_actions::remote::application_action_target(
-                    &room().to_string(),
-                    STORE,
-                    RESOURCE,
-                    action,
-                )
-                .provider,
-            ),
-            _ => {}
+) -> Result<(), runtime_portal::NotAvailable> {
+    let provider = match provider {
+        1 => format!("launch:{}:{STORE}:main", room()),
+        2 => {
+            tilo_actions::remote::application_action_target(
+                &room().to_string(),
+                STORE,
+                RESOURCE,
+                action,
+            )
+            .provider
         }
-        p.set_resource(RESOURCE);
-        p.set_action(action);
-        p.set_argument(serde_json::json!({"app": "org.example.app", "operation": operation(action, "Original")}).to_string());
-        p.set_has_argument(true);
-        p.set_invocation(uuid::Uuid::from_u128(9200).to_string());
-    }
-    request.send().promise.await.map(|_| ())
+        _ => String::new(),
+    };
+    let argument = serde_json::json!({
+        "app": "org.example.app",
+        "operation": operation(action, "Original"),
+    })
+    .to_string();
+    agent
+        .invoke_task_action(
+            run.run_id,
+            &run.lease,
+            runtime_collab::TaskAction {
+                peer_id: if provider.is_empty() { 200 } else { 0 },
+                provider: &provider,
+                resource: RESOURCE,
+                action,
+                argument: Some(&argument),
+            },
+            &uuid::Uuid::from_u128(9200).to_string(),
+        )
+        .await
+        .map(|_| ())
 }
 
 fn provision_receipt_signer(
@@ -231,9 +232,8 @@ async fn native_store_host_sheet_uses_final_task_edits_and_rechecks_authority() 
                         assert!(confirmation::nothing_delivered());
                     } else {
                         result.unwrap();
-                        let delivered = stream.read_request().send().promise.await.unwrap();
-                        let wire = delivered.get().unwrap();
-                        let arguments: serde_json::Value = serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
+                        let delivered = stream.next().await.unwrap();
+                        let arguments: serde_json::Value = serde_json::from_str(delivered.argument.as_deref().unwrap()).unwrap();
                         assert_eq!(arguments["operation"], operation(action, "Reviewed"));
                     }
                 }
@@ -362,11 +362,10 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
             assert!(confirmation::nothing_delivered());
             answer.send(AppActionConsent::Once.into()).unwrap();
             tilo_test_env::within("confirmed Store invocation to be admitted", &mut call).await.unwrap();
-            let delivered = tilo_test_env::within("Store stream to receive the confirmed invocation", stream.read_request().send().promise)
+            let delivered = tilo_test_env::within("Store stream to receive the confirmed invocation", stream.next())
                 .await.unwrap();
-            let wire = delivered.get().unwrap();
-            assert_eq!(wire.get_action().unwrap().to_str().unwrap(), action);
-            let arguments: serde_json::Value = serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
+            assert_eq!(delivered.action, action);
+            let arguments: serde_json::Value = serde_json::from_str(delivered.argument.as_deref().unwrap()).unwrap();
             assert_eq!(arguments["operation"], operation(action, "Reviewed while Store was closed"));
             assert!(confirmation::held(&f).is_none_or(|held| held.id == asked.id && !matches!(held.answer, TrackerAnswer::Waiting)));
             assert!(launches.try_recv().is_err(), "one confirmed draft launches once");

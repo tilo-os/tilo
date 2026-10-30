@@ -146,13 +146,13 @@ fn once_permission(f: &Fixture) {
 }
 
 async fn invoke_provider(
-    agent: &channel_handle::Client,
+    agent: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     provider: &str,
     resource: &str,
     action: &str,
     arguments: serde_json::Value,
-) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
+) -> Result<(u64, tilo_actions::InvocationUpdate), runtime_portal::NotAvailable> {
     invoke_provider_id(
         agent,
         run,
@@ -166,38 +166,36 @@ async fn invoke_provider(
 }
 
 async fn invoke_provider_id(
-    agent: &channel_handle::Client,
+    agent: &runtime_collab::ChannelHandle,
     run: &runtime_collab::TaskRunEnvelope,
     provider: &str,
     resource: &str,
     action: &str,
     arguments: serde_json::Value,
     id: uuid::Uuid,
-) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
-    let mut request = agent.invoke_task_action_request();
-    {
-        let mut p = request.get();
-        p.set_run_id(run.run_id);
-        p.set_lease(&run.lease);
-        p.set_provider(provider);
-        p.set_resource(resource);
-        p.set_action(action);
-        p.set_argument(arguments.to_string());
-        p.set_has_argument(true);
-        p.set_invocation(id.to_string());
-    }
-    let response = request.send().promise.await?;
-    let value = response.get()?;
-    Ok((
-        value.get_id(),
-        tilo_actions::decode_json(value.get_update_json()?.to_str()?.as_bytes()).unwrap(),
-    ))
+) -> Result<(u64, tilo_actions::InvocationUpdate), runtime_portal::NotAvailable> {
+    let argument = arguments.to_string();
+    let (id, update) = agent
+        .invoke_task_action(
+            run.run_id,
+            &run.lease,
+            runtime_collab::TaskAction {
+                peer_id: 0,
+                provider,
+                resource,
+                action,
+                argument: Some(&argument),
+            },
+            &id.to_string(),
+        )
+        .await?;
+    Ok((id, tilo_actions::decode_json(update.as_bytes()).unwrap()))
 }
 
 struct Writer {
     app: HeadlessApp<WordProcessorApp>,
-    channel: channel_handle::Client,
-    stream: invocation_stream::Client,
+    channel: runtime_collab::ChannelHandle,
+    stream: InvocationStreamServer,
     peer: u64,
 }
 impl Writer {
@@ -205,34 +203,20 @@ impl Writer {
         let mut app = HeadlessApp::<WordProcessorApp>::new().unwrap();
         let descriptors = app.actions().unwrap();
         let peer = 210;
-        let channel = f.app_channel(peer, WRITER, false);
-        let mut publish = channel.publish_actions_request();
-        publish.get().set_app_id(WRITER);
-        {
-            let mut rows = publish
-                .get()
-                .init_actions(u32::try_from(descriptors.len()).unwrap());
-            for (index, descriptor) in descriptors.into_iter().enumerate() {
-                let mut row = rows.reborrow().get(u32::try_from(index).unwrap());
-                row.set_resource(&descriptor.address.resource);
-                row.set_resource_kind(&descriptor.resource_kind);
-                row.set_resource_label(&descriptor.resource_label);
-                row.set_action(&descriptor.address.action);
-                row.set_action_label(&descriptor.action_label);
-                row.set_operation_kind(descriptor.kind.as_str());
-                row.set_params_json(serde_json::to_string(&descriptor.params).unwrap());
-                let mut contract = descriptor.contract;
+        let handle = Rc::new(f.app_handle(peer, WRITER, false));
+        let channel = wire_channel_rc(Rc::clone(&handle));
+        let actions = descriptors
+            .iter()
+            .map(|descriptor| {
+                let mut action = runtime_collab::ExportedAction::from(descriptor);
                 if changed && descriptor.address.action == "append-paragraph" {
-                    contract.field = Some("comments".into());
+                    action.contract.field = Some("comments".into());
                 }
-                row.set_contract_json(serde_json::to_string(&contract).unwrap());
-            }
-        }
-        publish.send().promise.await.unwrap();
-        let mut subscribe = channel.subscribe_invocations_request();
-        subscribe.get().set_stable_invocation_ids(true);
-        let response = subscribe.send().promise.await.unwrap();
-        let stream = response.get().unwrap().get_stream().unwrap();
+                action
+            })
+            .collect::<Vec<_>>();
+        channel.publish_actions(&actions).await.unwrap();
+        let stream = handle.invocation_feed(true).unwrap();
         Self {
             app,
             channel,
@@ -242,46 +226,36 @@ impl Writer {
     }
 
     async fn settle(&mut self, id: u64) {
-        let response = tilo_test_env::within(
-            "the Writer delivery",
-            self.stream.read_request().send().promise,
-        )
-        .await
-        .unwrap();
-        let wire = response.get().unwrap();
-        assert_eq!(wire.get_id(), id);
-        let actor = wire.get_actor().unwrap().to_str().unwrap();
-        assert_eq!(actor, "agent:scribe");
-        let resource = wire.get_resource().unwrap().to_str().unwrap();
-        let action = wire.get_action().unwrap().to_str().unwrap();
+        let delivered = tilo_test_env::within("the Writer delivery", self.stream.next())
+            .await
+            .unwrap();
+        assert_eq!(delivered.id, id);
+        assert_eq!(delivered.actor, "agent:scribe");
         let arguments: serde_json::Value =
-            serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
-        let invocation = tilo_actions::InvocationId(
-            uuid::Uuid::from_slice(wire.get_invocation_uuid().unwrap()).unwrap(),
-        );
-        let context: tilo_actions::ActionContext =
-            serde_json::from_str(wire.get_context_json().unwrap().to_str().unwrap()).unwrap();
+            serde_json::from_str(delivered.argument.as_deref().unwrap()).unwrap();
+        let context = delivered.context.clone().unwrap();
         assert_eq!(context.group.as_ref().unwrap().kind, "task");
-        let invoker = tilo_actions::ActionInvoker::delivered(actor, Some(&context));
+        let invoker = tilo_actions::ActionInvoker::delivered(&delivered.actor, Some(&context));
         assert!(
             invoker.participant.is_some(),
             "the native host must supply the task's own view"
         );
         let output = self
             .app
-            .call_by(invoker, resource, action, arguments)
+            .call_by(invoker, &delivered.resource, &delivered.action, arguments)
             .unwrap();
         self.app.settle();
-        let mut update = self.channel.update_invocation_request();
-        update.get().set_id(id);
-        update.get().set_update_json(
-            serde_json::to_string(&tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output,
-            })
-            .unwrap(),
-        );
-        update.send().promise.await.unwrap();
+        self.channel
+            .update_invocation(
+                id,
+                &serde_json::to_string(&tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: delivered.invocation,
+                    output,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
     }
 
     fn assert_no_delivery(&self) {
@@ -372,6 +346,7 @@ async fn a_cold_package_activates_before_fresh_resource_actions_move_the_writer_
             assert!(agent.anchor.is_some(), "navigation must select the visible match");
             assert_eq!(widget.local_participant_view(), person, "agent navigation must preserve the person's caret");
         }).unwrap();
+        drop(writer);
         assert!(launches.try_recv().is_err(), "fresh resource actions must not launch a second copy");
     })).await;
 }
@@ -504,6 +479,7 @@ async fn retained_actions_activate_the_host_but_changed_fresh_contracts_have_no_
                 assert!(writer.app.harness().inspection_json().unwrap().contains("Retained request visible"),
                     "a retained call must reach the mounted Writer's actual semantic UI");
             }
+            drop(writer);
             assert!(launches.try_recv().is_err(), "one retained request activates once");
         }
     })).await;
@@ -591,6 +567,7 @@ async fn stop_and_revocation_while_a_cold_app_is_waiting_deliver_no_action() {
                         .unwrap()
                         .contains("Must remain absent")
                 );
+                drop(writer);
             }
         }))
         .await;
@@ -1092,6 +1069,7 @@ async fn a_retained_action_that_asks_first_pauses_at_a_draft_before_launching() 
                     .contains("Drafted while Writer was closed"),
                 "the confirmed draft reached the launched Writer"
             );
+            drop(writer);
         }))
         .await;
 }

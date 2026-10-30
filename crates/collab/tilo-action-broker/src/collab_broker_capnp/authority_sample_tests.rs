@@ -358,46 +358,40 @@ impl WideDirectory {
     }
 }
 
-#[allow(
-    refining_impl_trait,
-    reason = "the generated Cap'n Proto test endpoint has the same concrete Promise shape as production endpoints"
-)]
-impl action_directory::Server for WideDirectory {
+impl wire::DirectorySource for WideDirectory {
     fn query(
-        self: Rc<Self>,
-        _params: action_directory::QueryParams,
-        mut results: action_directory::QueryResults,
-    ) -> Promise<(), capnp::Error> {
-        let page = runtime_collab::ActionDirectoryPage {
-            revision: "wide-r1".into(),
-            rows: (0..PAGE_ROWS).map(Self::row).collect(),
-            next_cursor: Vec::new(),
-            exhausted: true,
-            stale_cursor: false,
-            budget_exhausted: false,
-        };
-        if let Err(error) =
-            runtime_collab::write_action_directory_page(results.get().init_page(), &page)
-        {
-            return Promise::err(error);
-        }
-        Promise::ok(())
+        &self,
+        _query: runtime_collab::ActionDirectoryQuery,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryPage> {
+        Box::pin(std::future::ready(Ok(
+            runtime_collab::ActionDirectoryPage {
+                revision: "wide-r1".into(),
+                rows: (0..PAGE_ROWS).map(Self::row).collect(),
+                next_cursor: Vec::new(),
+                exhausted: true,
+                stale_cursor: false,
+                budget_exhausted: false,
+            },
+        )))
     }
 
     fn resolve(
-        self: Rc<Self>,
-        _params: action_directory::ResolveParams,
-        mut results: action_directory::ResolveResults,
-    ) -> Promise<(), capnp::Error> {
-        results.get().init_resolution().set_not_found(());
-        Promise::ok(())
+        &self,
+        _target: (&str, &str, &str),
+        _local_document: bool,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryResolution> {
+        Box::pin(std::future::ready(Ok(
+            runtime_collab::ActionDirectoryResolution::NotFound,
+        )))
     }
 }
 
 /// Query one page of the wide directory in `room` as `actor`.
 #[allow(
     clippy::future_not_send,
-    reason = "the directory registry holds Rc Cap'n Proto clients and is driven on the test's LocalSet, like production"
+    reason = "the directory registry is Rc-backed and driven on the test's LocalSet, like production"
 )]
 async fn query_wide_page(
     authority: &Arc<SampledAuthority>,
@@ -424,7 +418,7 @@ async fn query_wide_page(
             publishing_person: Some(owner()),
             app_id: route.app_id.clone(),
             route,
-            directory: capnp_rpc::new_client(WideDirectory),
+            directory: Rc::new(WideDirectory),
         },
     );
     authority.reset();

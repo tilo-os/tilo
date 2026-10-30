@@ -62,11 +62,7 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                 let selected = root.clone();
                 let mut pending = tokio::task::spawn_local(async move {
                     handle
-                        .launch_installed_application(
-                            "so.tilo.word-processor",
-                            None,
-                            Some(&selected),
-                        )
+                        .launch_installed_application("so.tilo.word-processor", Some(&selected))
                         .await
                 });
                 if !matches!(

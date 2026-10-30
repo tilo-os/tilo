@@ -364,3 +364,93 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
         })
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_persons_invocation_lets_its_effect_call_another_app_as_them() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = native_person_rig(&env).await;
+            let mut notes = publish_notes(&rig, &env);
+            let app = rig.worker.handle.clone();
+            let asked = id(0xc4a4);
+            let delivered = person_asks(&rig, &env, asked).await;
+
+            let made = app_asks(&app, new_note(Some(asked))).await;
+            assert!(admitted(&made), "{made:?}");
+            let note = notes.try_recv().expect("Notes runs the call");
+            assert_eq!(note.actor, delivered.actor, "the person who asked");
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_persons_read_does_not_make_their_edit_unasked() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = native_person_rig(&env).await;
+            let mut notes = publish_notes(&rig, &env);
+            let app = rig.worker.handle.clone();
+            let notes_app = rig.app_caller(&env, NOTES_PEER, NOTES, None).await;
+            let asked = id(0xc4b2);
+            person_asks(&rig, &env, asked).await;
+            let read = notebook("read-page", asked);
+            assert!(admitted(&app_asks(&app, read.clone()).await));
+            notes.try_recv().expect("Notes reads");
+
+            // The person may edit; their read's effect may not, even when it
+            // claims their confirmation.
+            for confirmation in [None, Some(tilo_actions::remote::Confirmation::Confirmed)] {
+                let mut edit = notebook("create-page", read.invocation);
+                edit.confirmation = confirmation;
+                let edit = app_asks(&notes_app.handle, edit).await;
+                assert!(!admitted(&edit), "{edit:?}");
+            }
+            assert!(notes.try_recv().is_err(), "no edit reached Notes");
+            drop(notes_app);
+            rig.stop().await;
+        })
+        .await;
+}
+
+/// The rig with the host's native seat, the door the person's own palette
+/// and sheets invoke through.
+async fn native_person_rig(env: &Environment) -> Rig {
+    Rig::with_services(
+        env,
+        HostServices {
+            local_person: Some(Arc::new(super::signed_worker::NativePerson(
+                env.authority.clone(),
+            ))),
+            ..env.membership.services()
+        },
+    )
+    .await
+}
+
+/// The person asks the rig's application for its action as `asked`; the
+/// invocation it is handed.
+async fn person_asks(
+    rig: &Rig,
+    env: &Environment,
+    asked: tilo_actions::InvocationId,
+) -> runtime_collab::Invocation {
+    let mut request = local_host_request(true);
+    request.invocation = asked;
+    let receipt = local_host_answer(rig.state.action_invoke_local_person(
+        &super::signed_worker::native_person(&env.route, &env.cert),
+        &request,
+    ))
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            receipt.status,
+            tilo_actions::remote::ReceiptStatus::Accepted
+        ),
+        "{receipt:?}"
+    );
+    rig.stream.as_ref().unwrap().read().await.unwrap()
+}

@@ -2672,8 +2672,6 @@ name = "collaboration"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "capnp",
- "capnp-rpc",
  "channel-crypto",
  "collab-types",
  "durable-store",
@@ -14160,8 +14158,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "browser-continuity-core",
- "capnp",
- "capnp-rpc",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "libc",
@@ -21973,8 +21969,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "browser-continuity-core",
- "capnp",
- "capnp-rpc",
  "channel-crypto",
  "chrono",
  "collab-types",

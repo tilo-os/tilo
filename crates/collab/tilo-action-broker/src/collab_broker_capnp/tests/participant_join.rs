@@ -43,7 +43,7 @@ impl ParticipantJoinFixture {
             directories: Rc::clone(&directories),
             peer_id,
         });
-        let raw: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
+        let (connection, outgoing) = wire::WireConnection::new(Some(Rc::new(CapnpCollabService {
             worker: None,
             app_worker: None,
             state: Arc::clone(&state),
@@ -51,14 +51,14 @@ impl ParticipantJoinFixture {
             peer_id,
             lease,
             holds: route_holds::ConnectionHolds::default(),
-        });
+        })));
         let presentation = certified_join(&route.cluster_id, &root, &device)
             .encode()
             .unwrap();
         Self {
             state,
             fanout,
-            client: runtime_collab::CollabClient::from_raw(raw),
+            client: wire_client(connection, outgoing),
             presentation,
             route,
             principal,
@@ -68,53 +68,56 @@ impl ParticipantJoinFixture {
 
 #[tokio::test(flavor = "current_thread")]
 async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
-    let ascii = "a".repeat(128);
-    let multibyte = "\u{e9}".repeat(64);
-    let fixture = ParticipantJoinFixture::new(&[
-        ascii.clone(),
-        multibyte.clone(),
-        // The old display-name truncation would silently select this
-        // different, also admitted Agent rather than reject the join.
-        "a".repeat(64),
-    ]);
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let _subscription = fixture.fanout.subscribe_rooms(
-        vec![fixture.route.cluster_id.clone()],
-        Box::new(move |event, _| {
-            event_tx.send(event.clone()).unwrap();
-        }),
-    );
-    let key = PresenceKey::Resource {
-        app: "so.tilo.notes".into(),
-        id: "note:draft".into(),
-        kind: "note".into(),
-    };
-    let key_bytes = postcard::to_stdvec(&key).unwrap();
-    for expected in [ascii, multibyte] {
-        let input = format!(" {} ", expected.to_uppercase());
-        let channel = fixture
-            .client
-            .join_channel_as_kind(
-                &fixture.route.channel_key(),
-                &fixture.presentation,
-                &input,
-                "agent",
-                "",
-            )
-            .await
-            .expect("certified join preserves the complete canonical Agent ID");
-        channel
-            .presence()
-            .await
-            .unwrap()
-            .publish_arrived(&key_bytes)
-            .await
-            .unwrap();
-        let event = event_rx.try_recv().unwrap();
-        assert!(matches!(event,
-            CollabEvent::RemotePresenceUpdate { user_id, key: delivered, payload: PresencePayload::Arrived }
-                if user_id == format!("agent:{expected}") && delivered == key));
-    }
+    // The wire connection is served on the test's LocalSet.
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let ascii = "a".repeat(128);
+            let multibyte = "\u{e9}".repeat(64);
+            let fixture = ParticipantJoinFixture::new(&[
+                ascii.clone(),
+                multibyte.clone(),
+                // The old display-name truncation would silently select this
+                // different, also admitted Agent rather than reject the join.
+                "a".repeat(64),
+            ]);
+            let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+            let _subscription = fixture.fanout.subscribe_rooms(
+                vec![fixture.route.cluster_id.clone()],
+                Box::new(move |event, _| {
+                    event_tx.send(event.clone()).unwrap();
+                }),
+            );
+            let key = PresenceKey::Resource {
+                app: "so.tilo.notes".into(),
+                id: "note:draft".into(),
+                kind: "note".into(),
+            };
+            let key_bytes = postcard::to_stdvec(&key).unwrap();
+            for expected in [ascii, multibyte] {
+                let input = format!(" {} ", expected.to_uppercase());
+                let channel = fixture
+                    .client
+                    .join_channel_as_kind(
+                        &fixture.route.channel_key(),
+                        &fixture.presentation,
+                        &input,
+                        "agent",
+                        "",
+                    )
+                    .await
+                    .expect("certified join preserves the complete canonical Agent ID");
+                channel
+                    .presence()
+                    .publish_arrived(&key_bytes)
+                    .await
+                    .unwrap();
+                let event = event_rx.try_recv().unwrap();
+                assert!(matches!(event,
+                    CollabEvent::RemotePresenceUpdate { user_id, key: delivered, payload: PresencePayload::Arrived }
+                        if user_id == format!("agent:{expected}") && delivered == key));
+            }
+        })
+        .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -174,8 +177,6 @@ async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback()
             );
             person
                 .presence()
-                .await
-                .unwrap()
                 .publish_arrived(&postcard::to_stdvec(&PresenceKey::pointer_default()).unwrap())
                 .await
                 .unwrap();

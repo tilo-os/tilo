@@ -231,17 +231,10 @@ fn run_sandbox(info: &ChildInfo) -> std::process::ExitStatus {
     reason = "Cap'n Proto runs on the disposable child LocalSet"
 )]
 async fn inherited_connection(info: &ChildInfo, record: &str) -> Connection {
-    // Exercise the production SDK inherited-service hub, including its one-time
-    // executing-task handshake, rather than completing that protocol in a helper.
-    let stream = std::os::unix::net::UnixStream::from(
-        runtime_portal::connect_service_fd("collab").expect("production inherited SDK connection"),
-    );
-    stream.set_nonblocking(true).expect("async socket");
-    let stream = tokio::net::UnixStream::from_std(stream).expect("async service descriptor");
-    // Selected objects ride the inherited connection's own descriptor lane,
-    // which the production hub writes; this private hub connection has none.
-    let lane = runtime_portal::service_descriptors("collab").expect("inherited descriptor lane");
-    connect_stream(stream, lane, &info.room, &info.identity, record).await
+    // The production SDK connection over the inherited descriptor, including
+    // its one-time executing-task handshake and its descriptor lane.
+    let client = runtime_collab::try_connect().expect("production inherited SDK connection");
+    join(client, None, &info.room, &info.identity, record).await
 }
 
 fn start_child(fixture: &Fixture, protected_path: PathBuf) {

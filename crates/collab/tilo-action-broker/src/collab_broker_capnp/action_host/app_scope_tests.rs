@@ -17,8 +17,6 @@ use crate::services::{
     ShortcutLibraryServices, WorkspaceGovernanceServices,
 };
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
-use capnp::capability::Promise;
-use runtime_collab::raw::action_directory;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -441,18 +439,17 @@ struct Directory {
     asked: Rc<Asked>,
 }
 
-impl action_directory::Server for Directory {
+impl super::super::wire::DirectorySource for Directory {
     fn query(
-        self: Rc<Self>,
-        _params: action_directory::QueryParams,
-        mut results: action_directory::QueryResults,
-    ) -> Promise<(), capnp::Error> {
+        &self,
+        _query: runtime_collab::ActionDirectoryQuery,
+        _max_bytes: u32,
+    ) -> super::super::wire::Asked<runtime_collab::ActionDirectoryPage> {
         self.asked
             .pages
             .set(self.asked.pages.get().saturating_add(1));
-        Promise::from(runtime_collab::write_action_directory_page(
-            results.get().init_page(),
-            &runtime_collab::ActionDirectoryPage {
+        Box::pin(std::future::ready(Ok(
+            runtime_collab::ActionDirectoryPage {
                 revision: "directory-r1".into(),
                 rows: self.rows.clone(),
                 next_cursor: Vec::new(),
@@ -460,25 +457,25 @@ impl action_directory::Server for Directory {
                 stale_cursor: false,
                 budget_exhausted: false,
             },
-        ))
+        )))
     }
 
     fn resolve(
-        self: Rc<Self>,
-        _params: action_directory::ResolveParams,
-        mut results: action_directory::ResolveResults,
-    ) -> Promise<(), capnp::Error> {
+        &self,
+        _target: (&str, &str, &str),
+        _local_document: bool,
+        _max_bytes: u32,
+    ) -> super::super::wire::Asked<runtime_collab::ActionDirectoryResolution> {
         self.asked
             .targets
             .set(self.asked.targets.get().saturating_add(1));
-        let Some(row) = self.rows.first() else {
-            results.get().init_resolution().set_not_found(());
-            return Promise::ok(());
-        };
-        Promise::from(runtime_collab::write_action_directory_row(
-            results.get().init_resolution().init_found(),
-            row,
-        ))
+        Box::pin(std::future::ready(Ok(match self.rows.first() {
+            Some(row) => runtime_collab::ActionDirectoryResolution::Found {
+                row: Box::new(row.clone()),
+                revision: None,
+            },
+            None => runtime_collab::ActionDirectoryResolution::NotFound,
+        })))
     }
 }
 
@@ -520,7 +517,7 @@ fn directory_fixture(app_id: &str) -> DirectoryFixture {
             publishing_person: None,
             app_id: app_id.into(),
             route: CrdtRoute::record(app_id, room.clone(), "atlas"),
-            directory: capnp_rpc::new_client(Directory {
+            directory: Rc::new(Directory {
                 rows: directory_rows(),
                 asked: Rc::clone(&asked),
             }),

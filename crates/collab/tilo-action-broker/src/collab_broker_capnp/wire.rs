@@ -13,162 +13,20 @@
 )]
 
 use std::cell::Cell;
+use std::rc::Weak;
 
 use runtime_collab::wire::{
-    Call, Changes, ContextUpdate, Event, FRAMING, Handle, HostFrame, InvocationCall, Join,
-    Participant, Publication, Read, Reply, Report, Request, Service, TaskCall, TaskStep, Topic,
+    Answer as Answered, Ask, Call, Changes, CheckProgress, ContextUpdate, Event, FRAMING, Handle,
+    HostFrame, InvocationCall, Join, LiveActivityCall, Operation, Participant, Publication, Read,
+    Reply, Report, Service, SettingsCall, TaskCall, TaskStep, Topic,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::*;
 
-/// A channel's presence as one admitted endpoint has it: what it publishes,
-/// and the feed of everyone else's.
-pub(super) struct PresenceSession {
-    state: Arc<CapnpBrokerState>,
-    channel_id: String,
-    peer_id: u64,
-    verified_identity: AdmittedJoinIdentity,
-    /// Broker-owned monotonic sequence per invocation. Publishers describe
-    /// phases and targets but cannot reorder or resurrect their visual state.
-    interaction_sequences: Mutex<HashMap<tilo_actions::InvocationId, u64>>,
-}
-
-impl PresenceSession {
-    pub(super) fn new(
-        state: Arc<CapnpBrokerState>,
-        channel_id: String,
-        peer_id: u64,
-        verified_identity: AdmittedJoinIdentity,
-    ) -> Self {
-        Self {
-            state,
-            channel_id,
-            peer_id,
-            verified_identity,
-            interaction_sequences: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Widened to room scope — presence is room-wide, only document
-    /// payloads are confined to a record.
-    fn route(&self) -> CrdtRoute {
-        self.full_route().to_cluster_scope()
-    }
-
-    /// Unwidened, so peer replication carries the full app/cluster route.
-    fn full_route(&self) -> CrdtRoute {
-        CrdtRoute::from_channel_key(&self.channel_id)
-    }
-
-    fn revalidate(&self) -> Result<(), String> {
-        let route = if self.verified_identity.host_scope.is_some() {
-            self.full_route()
-        } else {
-            self.route()
-        };
-        self.state
-            .revalidate_admission(&route, &self.verified_identity)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-
-    /// Publish a keyless pointer position: the cursor stream's event and
-    /// the default pointer key's presence.
-    pub(super) fn publish_cursor(&self, x: f32, y: f32) -> Result<(), String> {
-        self.revalidate()?;
-        let (route, full_route) = (self.route(), self.full_route());
-        let event = CollabEvent::RemoteCursorMoved {
-            user_id: CapnpBrokerState::participant_id(&self.verified_identity),
-            x,
-            y,
-        };
-        self.state.publish_presence(
-            &full_route,
-            &PresenceKey::pointer_default(),
-            &PresencePayload::Pointer { x, y },
-        );
-        if let Some(fanout) = self.state.fanout.upgrade() {
-            fanout.fanout_presence(&event, self.peer_id, &route, &full_route);
-        }
-        Ok(())
-    }
-
-    /// Publish one keyed presence update after the broker's own checks: a
-    /// status is trimmed and bounded, an interaction is attributed to this
-    /// endpoint and sequenced, and the desktop's own presence is refused.
-    pub(super) fn publish(&self, key: PresenceKey, payload: PresencePayload) -> Result<(), String> {
-        self.revalidate()?;
-        let payload = match payload {
-            PresencePayload::Status { text, automatic } => {
-                let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                if text.chars().count() > ui::MAX_STATUS_CHARS {
-                    return Err("status exceeds local protocol bound".into());
-                }
-                PresencePayload::Status { text, automatic }
-            }
-            PresencePayload::Interaction(update) => {
-                PresencePayload::Interaction(Box::new(self.attributed(*update)?))
-            }
-            PresencePayload::Availability { .. } => {
-                return Err("desktop presence is the shell's, never an app's".into());
-            }
-            other => other,
-        };
-        let route = self.route();
-        self.state
-            .publish_presence(&self.full_route(), &key, &payload);
-        let event = CollabEvent::RemotePresenceUpdate {
-            user_id: CapnpBrokerState::participant_id(&self.verified_identity),
-            key,
-            payload,
-        };
-        if let Some(fanout) = self.state.fanout.upgrade() {
-            fanout.fanout_presence(&event, self.peer_id, &route, &self.full_route());
-        }
-        Ok(())
-    }
-
-    /// `update` as this endpoint's: its actor is the admitted one, and its
-    /// sequence the broker's next for the invocation.
-    fn attributed(
-        &self,
-        update: tilo_actions::SemanticInteraction,
-    ) -> Result<tilo_actions::SemanticInteraction, String> {
-        let actor = self.verified_identity.broker_actor();
-        let normalized_actor = tilo_actions::InteractionActor::new(
-            CapnpBrokerState::participant_id(&self.verified_identity),
-            if actor.is_agent {
-                tilo_actions::ActorKind::Agent
-            } else {
-                tilo_actions::ActorKind::Person
-            },
-        );
-        let mut sequences = self
-            .interaction_sequences
-            .lock()
-            .map_err(|_| "interaction sequence registry unavailable".to_owned())?;
-        let current = sequences.entry(update.invocation).or_insert(0);
-        *current = current.saturating_add(1);
-        let sequence = *current;
-        drop(sequences);
-        let update = update.normalized_by_broker(normalized_actor, sequence);
-        update
-            .validate()
-            .map_err(|error| format!("invalid interaction: {error}"))?;
-        Ok(update)
-    }
-
-    /// Everyone else's presence in this room from now on.
-    pub(super) fn subscribe(&self) -> Result<Feed<PresenceEnvelope>, String> {
-        self.revalidate()?;
-        Ok(Feed::new(
-            HostWorkerReadGuard::for_channel(&self.state, self.peer_id, &self.verified_identity),
-            self.state
-                .subscribe_presence(&self.channel_id, self.peer_id),
-        ))
-    }
-}
+mod presence;
+pub(super) use presence::PresenceSession;
+use presence::presence_event;
 
 /// What a subscription receives from the broker's fanout. A host worker's
 /// feed ends with an error once that worker is no longer current, and a
@@ -218,6 +76,11 @@ impl<T> Feed<T> {
 pub(super) struct ChannelSession {
     channel: Rc<CapnpChannelHandle>,
     presence: PresenceSession,
+    /// The app's settings, opened on its first call.
+    settings: RefCell<Option<Rc<runtime_collab::settings::host::AppSettingsServer>>>,
+    /// The app's live activity, opened on its first call; it ends when the
+    /// app closes the channel.
+    live_activity: RefCell<Option<Rc<runtime_collab::live_activity::LiveActivityServer>>>,
 }
 
 impl ChannelSession {
@@ -228,7 +91,103 @@ impl ChannelSession {
             channel.connection_id,
             channel.verified_identity.clone(),
         );
-        Self { channel, presence }
+        Self {
+            channel,
+            presence,
+            settings: RefCell::default(),
+            live_activity: RefCell::default(),
+        }
+    }
+
+    fn settings(&self) -> Result<Rc<runtime_collab::settings::host::AppSettingsServer>, String> {
+        let route = self.route();
+        self.state
+            .revalidate_admission(&route, &self.verified_identity)
+            .map_err(Refusal::refusal)?;
+        if let Some(settings) = self.settings.borrow().as_ref() {
+            return Ok(Rc::clone(settings));
+        }
+        let settings = Rc::new(
+            app_settings_capability(&self.state, route, self.verified_identity.clone())
+                .map_err(Refusal::refusal)?,
+        );
+        *self.settings.borrow_mut() = Some(Rc::clone(&settings));
+        Ok(settings)
+    }
+
+    fn live_activity(
+        &self,
+    ) -> Result<Rc<runtime_collab::live_activity::LiveActivityServer>, String> {
+        let route = self.route();
+        self.state
+            .revalidate_admission(&route, &self.verified_identity)
+            .map_err(Refusal::refusal)?;
+        if let Some(activity) = self.live_activity.borrow().as_ref() {
+            return Ok(Rc::clone(activity));
+        }
+        let activity = Rc::new(
+            live_activity_capability(&self.state, route, self.verified_identity.clone())
+                .map_err(Refusal::refusal)?,
+        );
+        *self.live_activity.borrow_mut() = Some(Rc::clone(&activity));
+        Ok(activity)
+    }
+
+    /// Answer a call on the app's settings.
+    fn settings_call(&self, call: SettingsCall) -> Answer<Reply> {
+        let settings = match self.settings() {
+            Ok(settings) => settings,
+            Err(error) => return Box::pin(std::future::ready(Err(capnp::Error::failed(error)))),
+        };
+        let view = |(revision, document)| Reply::Settings { revision, document };
+        match call {
+            SettingsCall::Read { after } => Box::pin(async move {
+                settings
+                    .read(after)
+                    .await
+                    .map(view)
+                    .map_err(capnp::Error::failed)
+            }),
+            SettingsCall::Update {
+                section,
+                values,
+                action,
+            } => Box::pin(std::future::ready(
+                settings
+                    .update(&section, &values, action.as_deref())
+                    .map(view)
+                    .map_err(capnp::Error::failed),
+            )),
+            SettingsCall::Display { command, origin } => Box::pin(std::future::ready(
+                settings
+                    .display(&command, origin)
+                    .map(Reply::Answer)
+                    .map_err(capnp::Error::failed),
+            )),
+        }
+    }
+
+    /// Answer a call on the app's live activity.
+    fn live_activity_call(&self, call: LiveActivityCall) -> Answer<Reply> {
+        let activity = match self.live_activity() {
+            Ok(activity) => activity,
+            Err(error) => return Box::pin(std::future::ready(Err(capnp::Error::failed(error)))),
+        };
+        match call {
+            LiveActivityCall::Show(shown) => Box::pin(std::future::ready(
+                activity
+                    .show(&shown)
+                    .map(|()| Reply::Done)
+                    .map_err(capnp::Error::failed),
+            )),
+            LiveActivityCall::Controls { after } => Box::pin(async move {
+                activity
+                    .controls(after)
+                    .await
+                    .map(|(serial, controls)| Reply::Controls { serial, controls })
+                    .map_err(capnp::Error::failed)
+            }),
+        }
     }
 }
 
@@ -312,8 +271,7 @@ impl CapnpChannelHandle {
         self: Rc<Self>,
         request: runtime_collab::committed_document::Request,
     ) -> Result<runtime_collab::committed_document::Reply, String> {
-        use runtime_collab::committed_document::Request;
-        if let Request::Await { known_revision } = request {
+        if let runtime_collab::committed_document::Request::Await { known_revision } = request {
             return self.await_committed_change(known_revision).await;
         }
         if let Some(waiting) = self.committed_history_wait(&request) {
@@ -355,7 +313,7 @@ impl ChannelSession {
         on_behalf_of: &[u8],
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Reply, String>>>> {
         let channel = Rc::clone(&self.channel);
-        let failed = |error: capnp::Error| error.to_string();
+        let failed = Refusal::refusal;
         let ready = |reply: Result<Vec<u8>, capnp::Error>| -> Result<Answering, String> {
             let reply = reply.map_err(failed)?;
             Ok(Box::pin(std::future::ready(Ok(reply))))
@@ -392,7 +350,7 @@ impl ChannelSession {
                     .wifi_continuity_dispatch(&channel.route().app_id, body)
                     .map_err(failed)
                     .map(|reply| -> Answering {
-                        Box::pin(async move { reply.await.map_err(|error| error.to_string()) })
+                        Box::pin(async move { reply.await.map_err(Refusal::refusal) })
                     }),
                 Service::Speaker => ready(channel.speaker_dispatch(body)),
                 Service::CommittedDocument => {
@@ -412,17 +370,14 @@ impl ChannelSession {
                     .local_file_dispatch(body, on_behalf_of)
                     .map_err(failed)
                     .map(|reply| -> Answering {
-                        Box::pin(async move { reply.await.map_err(|error| error.to_string()) })
+                        Box::pin(async move { reply.await.map_err(Refusal::refusal) })
                     }),
                 Service::ApprovedCheck => runtime_collab::approved_checks::Request::decode(body)
                     .and_then(|request| approved_checks::context(&channel, request))
                     .map(|context| -> Answering { Box::pin(approved_checks::execute(context)) }),
                 Service::RemoteAction => {
                     let reply = channel.remote_action_dispatch(body);
-                    Ok(
-                        Box::pin(async move { reply.await.map_err(|error| error.to_string()) })
-                            as Answering,
-                    )
+                    Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
                 }
                 Service::PersonChat => channel
                     .person_chat_dispatch(body, on_behalf_of)
@@ -1762,6 +1717,82 @@ impl CapnpChannelHandle {
     }
 }
 
+impl CapnpChannelHandle {
+    /// Register `directory` as this app's action directory, which the host
+    /// asks instead of keeping its rows.
+    pub(super) fn publish_directory(
+        &self,
+        directory: Rc<dyn DirectorySource>,
+    ) -> Result<(), capnp::Error> {
+        // No app changes another app's route: a channel held to read refuses.
+        self.writable()?;
+        let route = self.route();
+        self.state
+            .revalidate_admission(&route, &self.verified_identity)?;
+        validate_directory_identifier(
+            &route.app_id,
+            "app id",
+            DIRECTORY_MAX_IDENTIFIER_BYTES,
+            true,
+        )?;
+        let app_id = route.app_id.clone();
+        let registration = Rc::new(uuid::Uuid::new_v4());
+        let Ok(_admission) = self.state.admission_lock.lock() else {
+            return Err(capnp::Error::failed(
+                "directory admission unavailable".into(),
+            ));
+        };
+        self.state
+            .register_canonical_directory(self.peer_id, &route, *registration)
+            .map_err(capnp::Error::failed)?;
+        self.directories.directories.borrow_mut().insert(
+            self.peer_id,
+            RegisteredActionDirectory {
+                registration,
+                pagination: directory_pagination::DirectoryPagination::default(),
+                publishing_person: self
+                    .verified_identity
+                    .certificate
+                    .as_ref()
+                    .map(|cert| principal_id_for_root(cert.user_public_key)),
+                app_id: app_id.clone(),
+                route: route.clone(),
+                directory,
+            },
+        );
+        if let Ok(mut roots) = self.state.action_directory_roots.lock() {
+            roots.insert(
+                self.peer_id,
+                ActionDirectoryRoot {
+                    peer_id: self.peer_id,
+                    app_id,
+                    cluster_id: route.cluster_id.clone(),
+                    record_id: route.record_id.clone(),
+                },
+            );
+        }
+        self.state
+            .advance_witness_publication(self.peer_id, WitnessPublicationKind::Directory);
+        self.retain_native_checkout(&route);
+        self.state.refresh_action_directory_root_snapshot();
+        // The directory can alter remote discoverability without an eager
+        // action snapshot changing, so tell catalogue subscribers.
+        self.state.publish_action_catalogue();
+        self.state.launch_published(self.peer_id);
+        Ok(())
+    }
+
+    /// The realtime continuity events this app sees.
+    pub(super) fn realtime_feed(&self) -> Result<Feed<Vec<u8>>, capnp::Error> {
+        let context = self.realtime_context()?;
+        let service = self.state.services.realtime.as_ref().ok_or_else(|| {
+            capnp::Error::failed("realtime continuity is unsupported by this host".into())
+        })?;
+        let rx = service.subscribe(&context).map_err(capnp::Error::failed)?;
+        Ok(Feed::new(self.host_guard(), rx))
+    }
+}
+
 impl CapnpCollabService {
     /// Admit `join` and hold its channel for this connection: the identity
     /// is verified, a room still being joined or placed is waited for, the
@@ -2002,6 +2033,105 @@ impl CapnpCollabService {
     }
 }
 
+/// What an action directory a connection published answers.
+pub(super) type Asked<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, String>>>>;
+
+/// An app's action directory, which the app answers for: the host keeps no
+/// copy of its rows and asks it for each page and resolution.
+pub(super) trait DirectorySource {
+    /// A page for `query`, whose rows' size stays within `max_bytes`.
+    fn query(
+        &self,
+        query: runtime_collab::ActionDirectoryQuery,
+        max_bytes: u32,
+    ) -> Asked<runtime_collab::ActionDirectoryPage>;
+
+    /// The action `resource`/`action` at `revision` (empty: now); with
+    /// `local_document`, only from the snapshot a local document action was
+    /// captured from.
+    fn resolve(
+        &self,
+        target: (&str, &str, &str),
+        local_document: bool,
+        max_bytes: u32,
+    ) -> Asked<runtime_collab::ActionDirectoryResolution>;
+}
+
+/// The directory an endpoint published on one of its channels, asked over
+/// its connection.
+pub(super) struct WireDirectory {
+    connection: Weak<WireConnection>,
+    channel: Handle,
+}
+
+impl WireDirectory {
+    fn ask(&self, ask: Ask) -> Asked<Answered> {
+        let asked = self
+            .connection
+            .upgrade()
+            .ok_or_else(|| "the application's connection closed".to_owned())
+            .map(|connection| connection.ask(ask));
+        Box::pin(async move {
+            asked?
+                .await
+                .map_err(|_| "the application's connection closed".to_owned())?
+        })
+    }
+}
+
+impl DirectorySource for WireDirectory {
+    fn query(
+        &self,
+        query: runtime_collab::ActionDirectoryQuery,
+        max_bytes: u32,
+    ) -> Asked<runtime_collab::ActionDirectoryPage> {
+        let asked = self.ask(Ask::Query {
+            channel: self.channel,
+            query,
+        });
+        Box::pin(async move {
+            let Answered::Page(page) = asked.await? else {
+                return Err("the application answered a page with something else".into());
+            };
+            runtime_collab::read_directory_answer(
+                &page,
+                u64::from(max_bytes),
+                |page: &runtime_collab::ActionDirectoryPage| page.rows.iter().collect(),
+            )
+        })
+    }
+
+    fn resolve(
+        &self,
+        (revision, resource, action): (&str, &str, &str),
+        local_document: bool,
+        max_bytes: u32,
+    ) -> Asked<runtime_collab::ActionDirectoryResolution> {
+        let asked = self.ask(Ask::Resolve {
+            channel: self.channel,
+            revision: revision.to_owned(),
+            resource: resource.to_owned(),
+            action: action.to_owned(),
+            local_document,
+        });
+        Box::pin(async move {
+            let Answered::Resolution(resolution) = asked.await? else {
+                return Err("the application answered a resolution with something else".into());
+            };
+            runtime_collab::read_directory_answer(
+                &resolution,
+                u64::from(max_bytes),
+                |resolution: &runtime_collab::ActionDirectoryResolution| match resolution {
+                    runtime_collab::ActionDirectoryResolution::Found { row, .. } => {
+                        vec![row.as_ref()]
+                    }
+                    _ => Vec::new(),
+                },
+            )
+        })
+    }
+}
+
 /// One endpoint's connection: the handles it holds, its live subscriptions,
 /// and the queue every outgoing frame takes.
 pub(super) struct WireConnection {
@@ -2011,6 +2141,11 @@ pub(super) struct WireConnection {
     channels: RefCell<HashMap<Handle, Rc<ChannelSession>>>,
     next_handle: Cell<u64>,
     subscriptions: RefCell<HashMap<u64, (Handle, tokio::task::AbortHandle)>>,
+    /// The workspace control sessions subscriptions hold, for their input.
+    controls: RefCell<HashMap<u64, Rc<dyn crate::services::WorkspaceControlSession>>>,
+    /// The host's asks of the endpoint waiting for its answer.
+    asks: RefCell<HashMap<u64, tokio::sync::oneshot::Sender<Result<Answered, String>>>>,
+    next_ask: Cell<u64>,
     frames: mpsc::UnboundedSender<HostFrame>,
 }
 
@@ -2019,7 +2154,17 @@ impl Drop for WireConnection {
         for (_, (_, task)) in self.subscriptions.get_mut().drain() {
             task.abort();
         }
+        for (_, control) in self.controls.get_mut().drain() {
+            close_control(control);
+        }
     }
+}
+
+/// End a workspace control session the endpoint let go of.
+fn close_control(control: Rc<dyn crate::services::WorkspaceControlSession>) {
+    tokio::task::spawn_local(async move {
+        let _ = control.close().await;
+    });
 }
 
 impl WireConnection {
@@ -2033,9 +2178,25 @@ impl WireConnection {
             channels: RefCell::default(),
             next_handle: Cell::new(1),
             subscriptions: RefCell::default(),
+            controls: RefCell::default(),
+            asks: RefCell::default(),
+            next_ask: Cell::new(1),
             frames,
         });
         (connection, outgoing)
+    }
+
+    /// Ask the endpoint `ask`; its answer arrives as a
+    /// [`Operation::Answer`], or never if the connection closes first.
+    fn ask(&self, ask: Ask) -> tokio::sync::oneshot::Receiver<Result<Answered, String>> {
+        let id = self.next_ask.get();
+        self.next_ask.set(id.wrapping_add(1));
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        self.asks.borrow_mut().insert(id, answer);
+        if self.frames.send(HostFrame::Ask { id, ask }).is_err() {
+            self.asks.borrow_mut().remove(&id);
+        }
+        answered
     }
 
     /// Hold `session` for this connection under a fresh handle.
@@ -2064,7 +2225,7 @@ impl WireConnection {
     )]
     pub(super) fn call(self: &Rc<Self>, Call { id, request }: Call) {
         let answer: std::pin::Pin<Box<dyn Future<Output = Result<Reply, String>>>> = match request {
-            Request::Publish {
+            Operation::Publish {
                 channel,
                 publication: Publication::Document(envelope),
             } => {
@@ -2074,24 +2235,21 @@ impl WireConnection {
                         .publish_document(*envelope)
                         .await
                         .map(|()| Reply::Done)
-                        .map_err(|error| error.to_string())
+                        .map_err(Refusal::refusal)
                 })
             }
-            Request::Join(join) => {
+            Operation::Join(join) => {
                 let (service, connection) = (self.service.clone(), Rc::downgrade(self));
                 Box::pin(async move {
                     let service = service.ok_or("this connection joins no channels")?;
-                    let channel = service
-                        .join(join)
-                        .await
-                        .map_err(|error| error.to_string())?;
+                    let channel = service.join(join).await.map_err(Refusal::refusal)?;
                     let connection = connection.upgrade().ok_or("the connection closed")?;
                     Ok(Reply::Opened(
                         connection.open(ChannelSession::new(Rc::new(channel))),
                     ))
                 })
             }
-            Request::Room { channel, seen } => {
+            Operation::Room { channel, seen } => {
                 let memberships = self
                     .service
                     .as_ref()
@@ -2107,7 +2265,7 @@ impl WireConnection {
                     }))
                 })
             }
-            Request::Publish {
+            Operation::Publish {
                 channel,
                 publication:
                     Publication::Effect {
@@ -2123,17 +2281,17 @@ impl WireConnection {
                         .map_err(|e| e.to_string())
                 });
                 Box::pin(async move {
-                    recorded?.await.map_err(|error| error.to_string())?;
+                    recorded?.await.map_err(Refusal::refusal)?;
                     Ok(Reply::Done)
                 })
             }
-            Request::Changed { channel, of, after } => {
+            Operation::Changed { channel, of, after } => {
                 let change = self
                     .channel(channel)
                     .and_then(|session| session.change(of, after).map_err(|e| e.to_string()));
                 Box::pin(async move { Ok(Reply::Changed(change?.await)) })
             }
-            Request::Command {
+            Operation::Command {
                 channel,
                 service,
                 body,
@@ -2142,7 +2300,7 @@ impl WireConnection {
                 Ok(session) => session.command(service, &body, &on_behalf_of),
                 Err(error) => Box::pin(std::future::ready(Err(error))),
             },
-            Request::Launch {
+            Operation::Launch {
                 channel,
                 app_id,
                 package_root,
@@ -2153,9 +2311,9 @@ impl WireConnection {
                         .channel
                         .launch(&app_id, &package_root, &on_behalf_of)
                 });
-                Box::pin(async move { answer?.await.map_err(|error| error.to_string()) })
+                Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
             }
-            Request::Invocation {
+            Operation::Invocation {
                 channel,
                 id: invocation,
                 call,
@@ -2163,9 +2321,9 @@ impl WireConnection {
                 let answer = self
                     .channel(channel)
                     .map(|session| session.invocation_call(invocation, call));
-                Box::pin(async move { answer?.await.map_err(|error| error.to_string()) })
+                Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
             }
-            Request::Task {
+            Operation::Task {
                 channel,
                 run_id,
                 lease,
@@ -2174,7 +2332,42 @@ impl WireConnection {
                 let answer = self
                     .channel(channel)
                     .map(|session| session.task_call(run_id, lease, call));
-                Box::pin(async move { answer?.await.map_err(|error| error.to_string()) })
+                Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
+            }
+            Operation::ControlInput {
+                subscription,
+                input,
+            } => {
+                let control = self
+                    .controls
+                    .borrow()
+                    .get(&subscription)
+                    .cloned()
+                    .ok_or_else(|| format!("no workspace control session {subscription}"));
+                Box::pin(async move {
+                    control?.send_input(input).await?;
+                    Ok(Reply::Done)
+                })
+            }
+            Operation::Settings { channel, call } => {
+                let answer = self
+                    .channel(channel)
+                    .map(|session| session.settings_call(call));
+                Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
+            }
+            Operation::LiveActivity { channel, call } => {
+                let answer = self
+                    .channel(channel)
+                    .map(|session| session.live_activity_call(call));
+                Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
+            }
+            Operation::Admit { channel, report } => {
+                let answer = self.channel(channel).map(|session| {
+                    super::local_document_action::admit(Rc::clone(&session.channel), report)
+                });
+                Box::pin(
+                    async move { answer?.await.map(Reply::Admitted).map_err(Refusal::refusal) },
+                )
             }
             request => {
                 let result = self.dispatch(id, request);
@@ -2193,9 +2386,13 @@ impl WireConnection {
         clippy::too_many_lines,
         reason = "one arm per request the host answers at once"
     )]
-    fn dispatch(self: &Rc<Self>, id: u64, request: Request) -> Result<Reply, String> {
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "a subscription's channel is held while its feed is opened"
+    )]
+    fn dispatch(self: &Rc<Self>, id: u64, request: Operation) -> Result<Reply, String> {
         match request {
-            Request::Publish {
+            Operation::Publish {
                 channel,
                 publication: Publication::Presence(presence),
             } => {
@@ -2204,28 +2401,32 @@ impl WireConnection {
                 self.channel(channel)?.presence.publish(key, payload)?;
                 Ok(Reply::Done)
             }
-            Request::Publish {
+            Operation::Publish {
                 publication: Publication::Document(_) | Publication::Effect { .. },
                 ..
             }
-            | Request::Join(_)
-            | Request::Room { .. }
-            | Request::Command { .. }
-            | Request::Changed { .. }
-            | Request::Task { .. }
-            | Request::Invocation { .. }
-            | Request::Launch { .. } => Err("answered when done".into()),
-            Request::Publish {
+            | Operation::Join(_)
+            | Operation::Room { .. }
+            | Operation::Command { .. }
+            | Operation::Changed { .. }
+            | Operation::Task { .. }
+            | Operation::Invocation { .. }
+            | Operation::Settings { .. }
+            | Operation::LiveActivity { .. }
+            | Operation::Admit { .. }
+            | Operation::ControlInput { .. }
+            | Operation::Launch { .. } => Err("answered when done".into()),
+            Operation::Publish {
                 channel,
                 publication: Publication::Report(report),
             } => {
                 let session = self.channel(channel)?;
                 let reported = session.report(&session.route().app_id, report);
                 drop(session);
-                reported.map_err(|error| error.to_string())?;
+                reported.map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
             }
-            Request::Publish {
+            Operation::Publish {
                 channel,
                 publication: Publication::Actions(actions),
             } => {
@@ -2235,10 +2436,10 @@ impl WireConnection {
                 let published =
                     session.publish_surface(&session.route().app_id, SurfaceChange::Whole(actions));
                 drop(session);
-                published.map_err(|error| error.to_string())?;
+                published.map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
             }
-            Request::Publish {
+            Operation::Publish {
                 channel,
                 publication: Publication::Surface(delta),
             } => {
@@ -2248,19 +2449,19 @@ impl WireConnection {
                 let published =
                     session.publish_surface(&session.route().app_id, SurfaceChange::Delta(delta));
                 drop(session);
-                published.map_err(|error| error.to_string())?;
+                published.map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
             }
-            Request::Publish {
+            Operation::Publish {
                 channel,
                 publication: Publication::Content { hash, bytes },
             } => {
                 self.channel(channel)?
                     .offer_content(&hash, &bytes)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
             }
-            Request::Read {
+            Operation::Read {
                 channel,
                 read:
                     Read::History {
@@ -2272,34 +2473,34 @@ impl WireConnection {
                 let (ops, exhausted) = self
                     .channel(channel)?
                     .history(artifact, before_seq, max)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(Refusal::refusal)?;
                 Ok(Reply::History { ops, exhausted })
             }
-            Request::Read {
+            Operation::Read {
                 channel,
                 read: Read::Document,
             } => {
                 self.channel(channel)?
                     .ask_for_document()
-                    .map_err(|error| error.to_string())?;
+                    .map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
             }
-            Request::Read {
+            Operation::Read {
                 channel,
                 read: Read::Content { hash },
             } => {
                 self.channel(channel)?
                     .want_content(&hash)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
             }
-            Request::Subscribe { channel, topic } => {
+            Operation::Subscribe { channel, topic } => {
                 if self.subscriptions.borrow().contains_key(&id) {
                     return Err(format!("subscription {id} is already live"));
                 }
                 let session = self.channel(channel)?;
                 let frames = self.frames.clone();
-                let failed = |error: capnp::Error| error.to_string();
+                let failed = Refusal::refusal;
                 let task = match topic {
                     Topic::Presence => {
                         let feed = session.presence.subscribe()?;
@@ -2354,6 +2555,59 @@ impl WireConnection {
                             task_run_json(run).ok().map(Event::TaskRun)
                         }))
                     }
+                    Topic::WorkspaceControl { target_device } => {
+                        let control = session.workspace_control(target_device).map_err(failed)?;
+                        self.controls.borrow_mut().insert(id, Rc::clone(&control));
+                        tokio::task::spawn_local(async move {
+                            let reason = loop {
+                                match control.read().await {
+                                    Ok(event) => {
+                                        let closed = matches!(
+                                            event,
+                                            runtime_collab::WorkspaceControlEvent::Closed(_)
+                                        );
+                                        if frames
+                                            .send(HostFrame::Event {
+                                                subscription: id,
+                                                event: Event::WorkspaceControl(event),
+                                            })
+                                            .is_err()
+                                        {
+                                            return;
+                                        }
+                                        if closed {
+                                            break "the workspace control session closed"
+                                                .to_owned();
+                                        }
+                                    }
+                                    Err(error) => break error,
+                                }
+                            };
+                            let _ = frames.send(HostFrame::Ended {
+                                subscription: id,
+                                reason,
+                            });
+                        })
+                    }
+                    Topic::Realtime => {
+                        let feed = session.realtime_feed().map_err(failed)?;
+                        tokio::task::spawn_local(pump(feed, id, frames, |event| {
+                            Some(Event::Realtime(event))
+                        }))
+                    }
+                    Topic::ApprovedCheck(request) => {
+                        let progress = runtime_collab::approved_checks::Request::decode(&request)
+                            .and_then(|request| {
+                                super::approved_checks::context(&session.channel, request)
+                            })
+                            .and_then(super::approved_checks::reported_progress)?;
+                        tokio::task::spawn_local(pump_pulled(
+                            progress,
+                            id,
+                            frames,
+                            Event::ApprovedCheck,
+                        ))
+                    }
                     Topic::Content => {
                         let feed = session.subscribe_content().map_err(failed)?;
                         tokio::task::spawn_local(pump(
@@ -2375,7 +2629,31 @@ impl WireConnection {
                     .insert(id, (channel, task.abort_handle()));
                 Ok(Reply::Subscribed)
             }
-            Request::Unsubscribe { subscription } => {
+            Operation::Answer { ask, answer } => {
+                let waiting = self
+                    .asks
+                    .borrow_mut()
+                    .remove(&ask)
+                    .ok_or_else(|| format!("no ask {ask} is waiting"))?;
+                let _ = waiting.send(answer);
+                Ok(Reply::Done)
+            }
+            Operation::Publish {
+                channel,
+                publication: Publication::Directory,
+            } => {
+                self.channel(channel)?
+                    .publish_directory(Rc::new(WireDirectory {
+                        connection: Rc::downgrade(self),
+                        channel,
+                    }))
+                    .map_err(Refusal::refusal)?;
+                Ok(Reply::Done)
+            }
+            Operation::Unsubscribe { subscription } => {
+                if let Some(control) = self.controls.borrow_mut().remove(&subscription) {
+                    close_control(control);
+                }
                 let (_, task) = self
                     .subscriptions
                     .borrow_mut()
@@ -2384,17 +2662,21 @@ impl WireConnection {
                 task.abort();
                 Ok(Reply::Done)
             }
-            Request::Close { handle } => {
+            Operation::Close { handle } => {
                 self.channels
                     .borrow_mut()
                     .remove(&handle)
                     .ok_or_else(|| format!("no channel {} on this connection", handle.0))?;
+                let mut controls = self.controls.borrow_mut();
                 self.subscriptions
                     .borrow_mut()
-                    .retain(|_, (channel, task)| {
+                    .retain(|subscription, (channel, task)| {
                         let keep = *channel != handle;
                         if !keep {
                             task.abort();
+                            if let Some(control) = controls.remove(subscription) {
+                                close_control(control);
+                            }
                         }
                         keep
                     });
@@ -2402,21 +2684,6 @@ impl WireConnection {
             }
         }
     }
-}
-
-/// Another participant's presence as the wire carries it; `None` for what
-/// no app receives or what does not fit the wire.
-fn presence_event(envelope: PresenceEnvelope) -> Option<Event> {
-    if !envelope.payload.reaches_apps() {
-        return None;
-    }
-    Some(Event::Presence {
-        user_id: envelope.user_id,
-        presence: collab_types::PeerPresence {
-            key: envelope.key_bytes,
-            payload: crate::collab_presence::payload_to_peer(&envelope.payload)?,
-        },
-    })
 }
 
 /// Deliver `feed` as the subscription `subscription`'s events until it
@@ -2444,7 +2711,7 @@ async fn pump<T>(
                 }
             }
             Ok(None) => break "the channel's fanout closed".to_owned(),
-            Err(error) => break error.to_string(),
+            Err(error) => break error.refusal(),
         }
     };
     let _ = frames.send(HostFrame::Ended {
@@ -2471,6 +2738,13 @@ impl Pulled for super::person_chat::PrivateChanges {
     async fn pull(&self) -> Result<Self::Item, capnp::Error> {
         let generation = self.next().await?;
         Ok((generation, self.read()?))
+    }
+}
+
+impl Pulled for super::approved_checks::ReportedProgress {
+    type Item = CheckProgress;
+    async fn pull(&self) -> Result<Self::Item, capnp::Error> {
+        self.next().await.map_err(capnp::Error::failed)
     }
 }
 
@@ -2501,7 +2775,7 @@ async fn pump_pulled<S: Pulled>(
                     return;
                 }
             }
-            Err(error) => break error.to_string(),
+            Err(error) => break error.refusal(),
         }
     };
     let _ = frames.send(HostFrame::Ended {
@@ -2555,6 +2829,24 @@ where
 #[cfg(test)]
 #[path = "wire_tests.rs"]
 mod wire_tests;
+
+/// What an endpoint is told of a refusal: its reason, without the kind of
+/// error the broker carried it as.
+pub(super) trait Refusal {
+    fn refusal(self) -> String;
+}
+
+impl Refusal for capnp::Error {
+    fn refusal(self) -> String {
+        self.extra
+    }
+}
+
+impl Refusal for String {
+    fn refusal(self) -> String {
+        self
+    }
+}
 
 /// An answer already given.
 fn ready<T: 'static>(answer: T) -> Answer<T> {

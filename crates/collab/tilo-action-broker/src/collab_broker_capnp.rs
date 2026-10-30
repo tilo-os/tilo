@@ -1,17 +1,13 @@
-#![allow(
-    refining_impl_trait,
-    reason = "`Promise::from_future(async move {..})` refines capnp-rpc's declared `Promise<.., capnp::Error>` return type, the intended pattern"
-)]
-
-//! Native Cap'n Proto server for the Tilo collaboration broker.
+//! The Tilo collaboration broker's host side.
 //!
-//! Answers the `runtime-collab` schema on the shell's collaboration socket.
+//! Answers the collaboration wire (`runtime_collab::wire`) on the shell's
+//! collaboration socket.
 //!
-//! `join_channel` uses the caller's `channel_id` verbatim as the routing
-//! key. Document traffic has one path: `send` with a certified signed op.
-//! `fetchScrollbackFor` answers from the in-memory op log; an
-//! exhausted-but-empty batch triggers no fallback push, callers repeat the
-//! fetch instead.
+//! A join uses the caller's channel id verbatim as the routing key.
+//! Document traffic has one path: a certified signed op published into the
+//! channel. A history read answers from the in-memory op log; an
+//! exhausted-but-empty page triggers no fallback push, callers repeat the
+//! read instead.
 
 mod approved_checks;
 mod external_moderation;
@@ -121,15 +117,10 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use capnp::capability::Promise;
-#[cfg(any(test, feature = "test-support"))]
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::{mpsc, watch};
-#[cfg(any(test, feature = "test-support"))]
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_types::inbound::OpAdmission;
 use collab_types::presence::PresencePayload;
@@ -140,12 +131,7 @@ use collab_types::{
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::event::CollabEvent;
-use runtime_collab::raw::{
-    OpKind, action_catalogue_stream, action_directory, blob_stream, channel_handle, collab_service,
-    context_stream, invocation_stream, presence_event, presence_handle, presence_payload,
-    presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
-};
-use runtime_collab::wire::{ContextUpdate, InvocationCall, Reply, Report, TaskCall};
+use runtime_collab::wire::ContextUpdate;
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Grant, RoomPolicy, Subject, TreePath, roles,
 };
@@ -2422,7 +2408,7 @@ struct RegisteredActionDirectory {
     publishing_person: Option<String>,
     app_id: String,
     route: CrdtRoute,
-    directory: action_directory::Client,
+    directory: Rc<dyn wire::DirectorySource>,
     registration: Rc<uuid::Uuid>,
 }
 
@@ -4737,42 +4723,24 @@ impl CapnpBrokerState {
                 &query.cursor,
             )
             .map_err(|error| error.to_string())?;
-        let mut request = registered.directory.query_request();
-        {
-            let mut wire = request.get().init_query();
-            wire.set_peer_id(query.peer_id);
-            wire.set_revision(&query.revision);
-            wire.set_cursor(&cursor);
-            wire.set_needle(&query.needle);
-            wire.set_parent_resource(&query.parent_resource);
-            wire.set_max_results(max_results);
-            wire.set_max_bytes(max_bytes);
-            wire.set_max_work(max_work);
-            wire.set_max_depth(max_depth);
-            wire.set_resource_name(&query.resource_name);
-        }
-        let reply = request
-            .send()
-            .promise
-            .await
-            .map_err(|error| error.to_string())?;
-        let page = reply
-            .get()
-            .and_then(
-                runtime_collab::collab_capnp::action_directory::query_results::Reader::get_page,
+        let page = registered
+            .directory
+            .query(
+                runtime_collab::ActionDirectoryQuery {
+                    peer_id: query.peer_id,
+                    revision: query.revision.clone(),
+                    cursor,
+                    needle: query.needle.clone(),
+                    parent_resource: query.parent_resource.clone(),
+                    max_results,
+                    max_bytes,
+                    max_work,
+                    max_depth,
+                    resource_name: query.resource_name.clone(),
+                },
+                max_bytes,
             )
-            .map_err(|error| error.to_string())?;
-        if page
-            .total_size()
-            .map_err(|error| error.to_string())?
-            .word_count
-            .saturating_mul(8)
-            > u64::from(max_bytes)
-        {
-            return Err("application exceeded directory byte budget".into());
-        }
-        let page = runtime_collab::decode_action_directory_page(page)
-            .map_err(|error| error.to_string())?;
+            .await?;
         let mut page = filter_directory_page(
             self,
             cluster_id,
@@ -4814,33 +4782,14 @@ impl CapnpBrokerState {
         let registered = directories
             .registered(peer_id, cluster_id)
             .map_err(|error| error.to_string())?;
-        let mut request = registered.directory.resolve_request();
-        {
-            let mut wire = request.get();
-            wire.set_revision(revision);
-            wire.set_resource(resource);
-            wire.set_action(action);
-        }
-        let reply = request
-            .send()
-            .promise
-            .await
-            .map_err(|error| error.to_string())?;
-        let resolution = reply
-            .get()
-            .and_then(runtime_collab::collab_capnp::action_directory::resolve_results::Reader::get_resolution)
-            .map_err(|error| error.to_string())?;
-        if resolution
-            .total_size()
-            .map_err(|error| error.to_string())?
-            .word_count
-            .saturating_mul(8)
-            > u64::from(Self::DIRECTORY_MAX_BYTES)
-        {
-            return Err("application exceeded directory resolution byte budget".into());
-        }
-        let decoded = runtime_collab::decode_action_directory_resolution(resolution)
-            .map_err(|error| error.to_string())?;
+        let decoded = registered
+            .directory
+            .resolve(
+                (revision, resource, action),
+                false,
+                Self::DIRECTORY_MAX_BYTES,
+            )
+            .await?;
         match decoded {
             runtime_collab::ActionDirectoryResolution::Found {
                 row,
@@ -4907,15 +4856,14 @@ impl CapnpBrokerState {
         let registered = directories
             .registered(peer_id, cluster_id)
             .map_err(|error| error.to_string())?;
-        let decoded = runtime_collab::resolve_local_document_action(
-            &registered.directory,
-            revision,
-            resource,
-            action,
-            u64::from(Self::DIRECTORY_MAX_BYTES),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+        let decoded = registered
+            .directory
+            .resolve(
+                (revision, resource, action),
+                true,
+                Self::DIRECTORY_MAX_BYTES,
+            )
+            .await?;
         match decoded {
             runtime_collab::ActionDirectoryResolution::Found {
                 row,
@@ -5848,11 +5796,18 @@ impl CapnpBrokerState {
         {
             return Err("desktop invocation capacity exhausted".into());
         }
+        // A stream the app has dropped takes nothing: refuse before the
+        // journal admits what could never be delivered.
         let sender = self
             .invocation_subscribers
             .lock()
             .ok()
-            .and_then(|subscribers| subscribers.get(&peer_id).cloned());
+            .and_then(|subscribers| {
+                subscribers
+                    .get(&peer_id)
+                    .filter(|sender| !sender.is_closed())
+                    .cloned()
+            });
         if local_report.is_none() && sender.is_none() {
             return Err("the application has no invocation stream".into());
         }
@@ -8207,20 +8162,6 @@ struct ConnectionLease {
     peer_id: u64,
 }
 
-/// Disconnect even when the `LocalSet` cancels a connection instead of polling it
-/// to EOF. capnp-rpc's first disconnect poll releases exported capabilities and
-/// pipelines synchronously; dropping `RpcSystem` alone does not release those
-/// cycles. No peer response or additional shutdown time is needed here.
-struct DisconnectOnDrop<F: std::future::Future>(Option<F>);
-
-impl<F: std::future::Future> Drop for DisconnectOnDrop<F> {
-    fn drop(&mut self) {
-        if let Some(disconnector) = self.0.take() {
-            let _ = futures::FutureExt::now_or_never(disconnector);
-        }
-    }
-}
-
 struct ConnectionExit {
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
@@ -8247,100 +8188,6 @@ impl Drop for ConnectionLease {
         for hold in holds {
             self.directories.remove(hold);
         }
-    }
-}
-
-/// The room a channel id names, for a status asked before any join.
-fn channel_room(channel_id: capnp::Result<capnp::text::Reader<'_>>) -> capnp::Result<String> {
-    let channel_id = channel_id?
-        .to_str()
-        .map_err(|error| capnp::Error::failed(format!("channelId not utf8: {error}")))?;
-    Ok(CrdtRoute::from_channel_key(channel_id).cluster_id)
-}
-
-impl collab_service::Server for CapnpCollabService {
-    fn join_channel(
-        self: Rc<Self>,
-        params: collab_service::JoinChannelParams,
-        mut results: collab_service::JoinChannelResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let reader = params.get()?;
-            let text = |text: capnp::Result<capnp::text::Reader<'_>>, what: &str| {
-                text?
-                    .to_str()
-                    .map(str::to_owned)
-                    .map_err(|error| capnp::Error::failed(format!("{what} not utf8: {error}")))
-            };
-            let handle = text(reader.get_participant_handle(), "participant handle")?;
-            let participant =
-                match text(reader.get_participant_kind(), "participant kind")?.as_str() {
-                    "" | "person" => runtime_collab::wire::Participant::Person { handle },
-                    "agent" => runtime_collab::wire::Participant::Agent { id: handle },
-                    other => {
-                        return Err(capnp::Error::failed(format!(
-                            "unknown collaboration participant kind `{other}`"
-                        )));
-                    }
-                };
-            let record_kind = Some(text(reader.get_record_kind(), "record kind")?)
-                .filter(|kind| !kind.is_empty());
-            let join = runtime_collab::wire::Join {
-                channel: text(reader.get_channel_id(), "channelId")?,
-                identity: join_presentation(reader.get_identity()?).map_err(|error| {
-                    capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
-                })?,
-                participant,
-                record_kind,
-            };
-            let handle: channel_handle::Client = capnp_rpc::new_client(self.join(join).await?);
-            results.get().set_handle(handle);
-            Ok(())
-        })
-    }
-
-    fn room_status(
-        self: Rc<Self>,
-        params: collab_service::RoomStatusParams,
-        mut results: collab_service::RoomStatusResults,
-    ) -> Promise<(), capnp::Error> {
-        let room = match channel_room(
-            params
-                .get()
-                .and_then(collab_service::room_status_params::Reader::get_channel_id),
-        ) {
-            Ok(room) => room,
-            Err(error) => return Promise::err(error),
-        };
-        let status = self
-            .state
-            .services
-            .workspace_memberships
-            .as_ref()
-            .map_or_else(runtime_collab::RoomStatus::default, |memberships| {
-                memberships.room_status(&room)
-            });
-        status.write(results.get().init_status());
-        Promise::ok(())
-    }
-
-    fn await_room(
-        self: Rc<Self>,
-        params: collab_service::AwaitRoomParams,
-        mut results: collab_service::AwaitRoomResults,
-    ) -> Promise<(), capnp::Error> {
-        let memberships = self.state.services.workspace_memberships.clone();
-        Promise::from_future(async move {
-            let reader = params.get()?;
-            let room = channel_room(reader.get_channel_id())?;
-            let seen = runtime_collab::RoomStatus::from_reader(reader.get_seen()?)?;
-            let status = match memberships {
-                Some(memberships) => memberships.room_status_change(&room, seen).await,
-                None => runtime_collab::RoomStatus::default(),
-            };
-            status.write(results.get().init_status());
-            Ok(())
-        })
     }
 }
 
@@ -8501,7 +8348,7 @@ fn app_settings_capability(
     state: &Arc<CapnpBrokerState>,
     route: CrdtRoute,
     identity: AdmittedJoinIdentity,
-) -> Result<runtime_collab::collab_capnp::app_settings::Client, capnp::Error> {
+) -> Result<runtime_collab::settings::host::AppSettingsServer, capnp::Error> {
     if route.app_id.is_empty() {
         return Err(capnp::Error::failed(
             "settings belong to a certified app route".into(),
@@ -8527,14 +8374,18 @@ fn app_settings_capability(
     .then_some(identity.verified.user_public_key);
     let reach = settings_reach(state, &route, &identity);
     let state = Arc::clone(state);
-    let revalidate: runtime_collab::settings::host::Revalidate =
-        Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
-    Ok(capnp_rpc::new_client(
+    let revalidate: runtime_collab::settings::host::Revalidate = Arc::new(move || {
+        state
+            .revalidate_admission(&route, &identity)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    });
+    Ok(
         runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
             .with_reach(reach)
             .with_dictionary_owner(dictionary_owner)
             .with_display(display),
-    ))
+    )
 }
 
 /// What the app `route` certifies reaches of the settings: every section
@@ -8666,7 +8517,7 @@ fn live_activity_capability(
     state: &Arc<CapnpBrokerState>,
     route: CrdtRoute,
     identity: AdmittedJoinIdentity,
-) -> Result<runtime_collab::collab_capnp::live_activity::Client, capnp::Error> {
+) -> Result<runtime_collab::live_activity::LiveActivityServer, capnp::Error> {
     if route.app_id.is_empty() {
         return Err(capnp::Error::failed(
             "a live activity belongs to a certified app route".into(),
@@ -8679,10 +8530,14 @@ fn live_activity_capability(
     };
     let app_id = route.app_id.clone();
     let state = Arc::clone(state);
-    let revalidate: runtime_collab::live_activity::Revalidate =
-        Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
-    Ok(capnp_rpc::new_client(
-        runtime_collab::live_activity::LiveActivityServer::new(app_id, board, revalidate),
+    let revalidate: runtime_collab::live_activity::Revalidate = Arc::new(move || {
+        state
+            .revalidate_admission(&route, &identity)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    });
+    Ok(runtime_collab::live_activity::LiveActivityServer::new(
+        app_id, board, revalidate,
     ))
 }
 
@@ -8887,1120 +8742,6 @@ fn delegate_nearby_transfer_command(
             "Nearby Send reply exceeds the local protocol bound".into(),
         )),
         Err(error) => Err(capnp::Error::failed(error.to_string())),
-    }
-}
-
-/// Answer a remote-action call with `message` at once.
-/// News of content for one channel's record, pulled one per `read`:
-/// content that arrived, or where a want of it has got to.
-struct BlobStreamServer {
-    feed: Rc<AsyncMutex<wire::Feed<crate::record_content::ContentNews>>>,
-}
-
-impl blob_stream::Server for BlobStreamServer {
-    fn read(
-        self: Rc<Self>,
-        _params: blob_stream::ReadParams,
-        mut results: blob_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let feed = self.feed.clone();
-        Promise::from_future(async move {
-            let next = feed.lock().await.next().await?;
-            let Some(arrival) = next else {
-                return Err(capnp::Error::disconnected(
-                    "record content stream closed".into(),
-                ));
-            };
-            let mut reply = results.get();
-            reply.set_hash(&arrival.hash);
-            reply.set_bytes(&arrival.bytes);
-            reply.set_state(match arrival.state {
-                tilo_content::ContentState::Resolved => runtime_collab::BlobState::Arrived,
-                tilo_content::ContentState::Pending => runtime_collab::BlobState::Fetching,
-                tilo_content::ContentState::Waiting => runtime_collab::BlobState::Waiting,
-                tilo_content::ContentState::Unavailable => runtime_collab::BlobState::Unavailable,
-            });
-            Ok(())
-        })
-    }
-}
-
-impl channel_handle::Server for CapnpChannelHandle {
-    /// Resolves once this route's own channel changed since `after`. The
-    /// channel is derived from the admitted route, so an app follows only
-    /// its own records' channels, and learns nothing but that one changed.
-    fn channel_keys_changed(
-        self: Rc<Self>,
-        params: channel_handle::ChannelKeysChangedParams,
-        mut results: channel_handle::ChannelKeysChangedResults,
-    ) -> Promise<(), capnp::Error> {
-        let change = params.get().and_then(|params| {
-            self.change(
-                runtime_collab::wire::Changes::ChannelKeys,
-                params.get_after(),
-            )
-        });
-        Promise::from_future(async move {
-            results.get().set_change(change?.await);
-            Ok(())
-        })
-    }
-
-    /// Resolves once what a Nearby Send snapshot would show may have changed
-    /// since `after`. Only the certified Files route may wait, the same route
-    /// every Nearby command is confined to, and it learns nothing but that
-    /// something changed: it asks for a snapshot, which is checked as always.
-    fn nearby_transfer_changed(
-        self: Rc<Self>,
-        params: channel_handle::NearbyTransferChangedParams,
-        mut results: channel_handle::NearbyTransferChangedResults,
-    ) -> Promise<(), capnp::Error> {
-        let change = params.get().and_then(|params| {
-            self.change(
-                runtime_collab::wire::Changes::NearbyTransfers,
-                params.get_after(),
-            )
-        });
-        Promise::from_future(async move {
-            results.get().set_change(change?.await);
-            Ok(())
-        })
-    }
-
-    /// Resolves once the drive list Files is shown may have changed since
-    /// `after`. Only the certified Files route may wait, and it learns
-    /// nothing but that something changed: it asks the tools service for
-    /// the list again.
-    fn drives_changed(
-        self: Rc<Self>,
-        params: channel_handle::DrivesChangedParams,
-        mut results: channel_handle::DrivesChangedResults,
-    ) -> Promise<(), capnp::Error> {
-        let change = params.get().and_then(|params| {
-            self.change(runtime_collab::wire::Changes::Drives, params.get_after())
-        });
-        Promise::from_future(async move {
-            results.get().set_change(change?.await);
-            Ok(())
-        })
-    }
-
-    fn applications_changed(
-        self: Rc<Self>,
-        params: channel_handle::ApplicationsChangedParams,
-        mut results: channel_handle::ApplicationsChangedResults,
-    ) -> Promise<(), capnp::Error> {
-        let change = params.get().and_then(|params| {
-            self.change(
-                runtime_collab::wire::Changes::Applications,
-                params.get_after(),
-            )
-        });
-        Promise::from_future(async move {
-            results.get().set_change(change?.await);
-            Ok(())
-        })
-    }
-
-    fn approved_check_reported_progress(
-        self: Rc<Self>,
-        params: channel_handle::ApprovedCheckReportedProgressParams,
-        mut results: channel_handle::ApprovedCheckReportedProgressResults,
-    ) -> Promise<(), capnp::Error> {
-        let request = params
-            .get()
-            .and_then(channel_handle::approved_check_reported_progress_params::Reader::get_request)
-            .map_err(|error| error.to_string())
-            .and_then(runtime_collab::approved_checks::Request::decode);
-        let stream = request
-            .and_then(|request| approved_checks::context(&self, request))
-            .and_then(approved_checks::reported_progress);
-        match stream {
-            Ok(stream) => {
-                results.get().set_stream(stream);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(capnp::Error::failed(error)),
-        }
-    }
-    fn approved_check(
-        self: Rc<Self>,
-        params: channel_handle::ApprovedCheckParams,
-        mut results: channel_handle::ApprovedCheckResults,
-    ) -> Promise<(), capnp::Error> {
-        let request = match params
-            .get()
-            .and_then(channel_handle::approved_check_params::Reader::get_request)
-            .map_err(|error| error.to_string())
-            .and_then(runtime_collab::approved_checks::Request::decode)
-        {
-            Ok(request) => request,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
-        let context = match approved_checks::context(&self, request) {
-            Ok(context) => context,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
-        Promise::from_future(async move {
-            let reply = approved_checks::execute(context)
-                .await
-                .map_err(capnp::Error::failed)?;
-            results.get().set_receipt(&reply);
-            Ok(())
-        })
-    }
-    fn offer_blob(
-        self: Rc<Self>,
-        params: channel_handle::OfferBlobParams,
-        _results: channel_handle::OfferBlobResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let p = params.get()?;
-            let hash = p
-                .get_hash()?
-                .to_str()
-                .map_err(|e| capnp::Error::failed(format!("offerBlob hash: {e}")))?;
-            self.offer_content(hash, p.get_bytes()?)
-        })
-    }
-
-    fn want_blob(
-        self: Rc<Self>,
-        params: channel_handle::WantBlobParams,
-        _results: channel_handle::WantBlobResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let hash = params
-                .get()?
-                .get_hash()?
-                .to_str()
-                .map_err(|e| capnp::Error::failed(format!("wantBlob hash: {e}")))?
-                .to_owned();
-            self.want_content(&hash)
-        })
-    }
-
-    fn subscribe_blobs(
-        self: Rc<Self>,
-        _params: channel_handle::SubscribeBlobsParams,
-        mut results: channel_handle::SubscribeBlobsResults,
-    ) -> Promise<(), capnp::Error> {
-        let feed = match self.subscribe_content() {
-            Ok(feed) => feed,
-            Err(error) => return Promise::err(error),
-        };
-        let client: blob_stream::Client = capnp_rpc::new_client(BlobStreamServer {
-            feed: Rc::new(AsyncMutex::new(feed)),
-        });
-        results.get().set_stream(client);
-        Promise::ok(())
-    }
-
-    /// The caller-side door to published actions: one remote-action request
-    /// frame in, one answer out, as the caller this channel was admitted as.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one door: admission, an app's grant question and the person's confirmation decide each request in order"
-    )]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the action host moves into the future that answers the request"
-    )]
-    fn remote_action(
-        self: Rc<Self>,
-        params: channel_handle::RemoteActionParams,
-        mut results: channel_handle::RemoteActionResults,
-    ) -> Promise<(), capnp::Error> {
-        let answer = match params
-            .get()
-            .and_then(channel_handle::remote_action_params::Reader::get_frame)
-        {
-            Ok(frame) => self.remote_action_dispatch(frame),
-            Err(error) => return Promise::err(error),
-        };
-        Promise::from_future(async move {
-            results.get().set_frame(&answer.await?);
-            Ok(())
-        })
-    }
-
-    fn subscribe_person_chat(
-        self: Rc<Self>,
-        params: channel_handle::SubscribePersonChatParams,
-        results: channel_handle::SubscribePersonChatResults,
-    ) -> Promise<(), capnp::Error> {
-        self.subscribe_person_chat_dispatch(&params, results)
-    }
-
-    fn person_chat(
-        self: Rc<Self>,
-        params: channel_handle::PersonChatParams,
-        mut results: channel_handle::PersonChatResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            let params = params.get()?;
-            let reply = self
-                .person_chat_dispatch(params.get_command()?, params.get_on_behalf_of()?)
-                .map_err(capnp::Error::failed)?;
-            results.get().set_reply(&reply);
-            Ok(())
-        })())
-    }
-
-    fn committed_document(
-        self: Rc<Self>,
-        params: channel_handle::CommittedDocumentParams,
-        mut results: channel_handle::CommittedDocumentResults,
-    ) -> Promise<(), capnp::Error> {
-        let request = params.get().and_then(|reader| {
-            runtime_collab::committed_document::Request::decode(reader.get_request()?)
-                .map_err(|e| capnp::Error::failed(e.into()))
-        });
-        Promise::from_future(async move {
-            let reply = self
-                .committed_document_answer(request?)
-                .await
-                .map_err(capnp::Error::failed)?;
-            results
-                .get()
-                .set_reply(&reply.encode().map_err(|e| capnp::Error::failed(e.into()))?);
-            Ok(())
-        })
-    }
-
-    fn audio_output_command(
-        self: Rc<Self>,
-        params: channel_handle::AudioOutputCommandParams,
-        mut results: channel_handle::AudioOutputCommandResults,
-    ) -> Promise<(), capnp::Error> {
-        let future = (|| self.audio_output_dispatch(params.get()?.get_command()?))();
-        let future = match future {
-            Ok(future) => future,
-            Err(error) => return Promise::err(error),
-        };
-        Promise::from_future(async move {
-            let snapshot = future.await.map_err(capnp::Error::failed)?;
-            let bytes = serde_json::to_vec(&snapshot)
-                .map_err(|_| capnp::Error::failed("audio output reply encoding failed".into()))?;
-            results.get().set_reply(&bytes);
-            Ok(())
-        })
-    }
-
-    fn native_media_command(
-        self: Rc<Self>,
-        params: channel_handle::NativeMediaCommandParams,
-        mut results: channel_handle::NativeMediaCommandResults,
-    ) -> Promise<(), capnp::Error> {
-        let future = (|| {
-            let request = params.get()?;
-            self.native_media_dispatch(request.get_command_json()?)
-        })();
-        let future = match future {
-            Ok(future) => future,
-            Err(error) => return Promise::err(error),
-        };
-        Promise::from_future(async move {
-            let snapshot = future.await.map_err(capnp::Error::failed)?;
-            let bytes = snapshot
-                .encode()
-                .map_err(|e| capnp::Error::failed(e.into()))?;
-            results.get().set_reply_json(&bytes);
-            Ok(())
-        })
-    }
-
-    fn request_document_snapshot(
-        self: Rc<Self>,
-        _params: channel_handle::RequestDocumentSnapshotParams,
-        _results: channel_handle::RequestDocumentSnapshotResults,
-    ) -> Promise<(), capnp::Error> {
-        match self.ask_for_document() {
-            Ok(()) => Promise::ok(()),
-            Err(error) => Promise::err(error),
-        }
-    }
-
-    fn realtime_command(
-        self: Rc<Self>,
-        params: channel_handle::RealtimeCommandParams,
-        mut results: channel_handle::RealtimeCommandResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            let request = params.get()?;
-            let claimed_app = request
-                .get_app_id()?
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            let reply = self.realtime_dispatch(claimed_app, request.get_command_json()?)?;
-            results.get().set_reply_json(&reply);
-            Ok(())
-        })())
-    }
-
-    fn speaker_command(
-        self: Rc<Self>,
-        params: channel_handle::SpeakerCommandParams,
-        mut results: channel_handle::SpeakerCommandResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            let request = params.get()?;
-            let claimed_app = request
-                .get_app_id()?
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            if claimed_app != self.route().app_id {
-                return Err(capnp::Error::failed(
-                    "speaker command app id must match the certified connection route".into(),
-                ));
-            }
-            let reply = self.speaker_dispatch(request.get_command_json()?)?;
-            results.get().set_reply_json(&reply);
-            Ok(())
-        })())
-    }
-
-    /// Resolves once what a speaker snapshot would show may have changed
-    /// since `after`. Only the certified Settings route may wait, the same
-    /// route every speaker command is confined to, and it learns nothing but
-    /// that something changed: it asks for a snapshot, which is checked as
-    /// always.
-    fn speaker_changed(
-        self: Rc<Self>,
-        params: channel_handle::SpeakerChangedParams,
-        mut results: channel_handle::SpeakerChangedResults,
-    ) -> Promise<(), capnp::Error> {
-        let change = params.get().and_then(|params| {
-            self.change(runtime_collab::wire::Changes::Speakers, params.get_after())
-        });
-        Promise::from_future(async move {
-            results.get().set_change(change?.await);
-            Ok(())
-        })
-    }
-
-    fn settings(
-        self: Rc<Self>,
-        _params: channel_handle::SettingsParams,
-        mut results: channel_handle::SettingsResults,
-    ) -> Promise<(), capnp::Error> {
-        let route = self.route();
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&route, &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        match app_settings_capability(&self.state, route, self.verified_identity.clone()) {
-            Ok(settings) => {
-                results.get().set_settings(settings);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(error),
-        }
-    }
-
-    fn live_activity(
-        self: Rc<Self>,
-        _params: channel_handle::LiveActivityParams,
-        mut results: channel_handle::LiveActivityResults,
-    ) -> Promise<(), capnp::Error> {
-        let route = self.route();
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&route, &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        match live_activity_capability(&self.state, route, self.verified_identity.clone()) {
-            Ok(activity) => {
-                results.get().set_activity(activity);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(error),
-        }
-    }
-
-    fn wifi_continuity_command(
-        self: Rc<Self>,
-        params: channel_handle::WifiContinuityCommandParams,
-        mut results: channel_handle::WifiContinuityCommandResults,
-    ) -> Promise<(), capnp::Error> {
-        let reply = (|| {
-            let request = params.get()?;
-            let claimed_app = request
-                .get_app_id()?
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            self.wifi_continuity_dispatch(claimed_app, request.get_command_json()?)
-        })();
-        Promise::from_future(async move {
-            results.get().set_reply_json(&reply?.await?);
-            Ok(())
-        })
-    }
-
-    fn browser_service_session_command(
-        self: Rc<Self>,
-        params: channel_handle::BrowserServiceSessionCommandParams,
-        mut results: channel_handle::BrowserServiceSessionCommandResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            let reply = self.browser_service_session_dispatch(params.get()?.get_command()?)?;
-            results.get().set_reply(&reply);
-            Ok(())
-        })())
-    }
-
-    fn nearby_transfer_command(
-        self: Rc<Self>,
-        params: channel_handle::NearbyTransferCommandParams,
-        mut results: channel_handle::NearbyTransferCommandResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            let request = params.get()?;
-            let claimed_app = request
-                .get_app_id()?
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            let reply = self.nearby_transfer_dispatch(claimed_app, request.get_command_json()?)?;
-            results.get().set_reply_json(&reply);
-            Ok(())
-        })())
-    }
-
-    fn local_file_clipboard(
-        self: Rc<Self>,
-        params: channel_handle::LocalFileClipboardParams,
-        mut results: channel_handle::LocalFileClipboardResults,
-    ) -> Promise<(), capnp::Error> {
-        let answer = params.get().and_then(|request| {
-            self.local_file_dispatch(request.get_command_json()?, request.get_on_behalf_of()?)
-        });
-        Promise::from_future(async move {
-            results.get().set_reply_json(&answer?.await?);
-            Ok(())
-        })
-    }
-
-    fn subscribe_realtime(
-        self: Rc<Self>,
-        _params: channel_handle::SubscribeRealtimeParams,
-        mut results: channel_handle::SubscribeRealtimeResults,
-    ) -> Promise<(), capnp::Error> {
-        let context = match self.realtime_context() {
-            Ok(context) => context,
-            Err(error) => return Promise::err(error),
-        };
-        let Some(service) = self.state.services.realtime.as_ref() else {
-            return Promise::err(capnp::Error::failed(
-                "realtime continuity is unsupported by this host".into(),
-            ));
-        };
-        let rx = match service.subscribe(&context) {
-            Ok(rx) => rx,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
-        let client: realtime_stream::Client = capnp_rpc::new_client(RealtimeStreamServer {
-            host_guard: HostWorkerReadGuard::for_channel(
-                &self.state,
-                self.peer_id,
-                &self.verified_identity,
-            ),
-            rx: Rc::new(AsyncMutex::new(rx)),
-        });
-        results.get().set_stream(client);
-        Promise::ok(())
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "receipt validation and persistence share one RPC boundary so acknowledgement cannot precede durable local state"
-    )]
-    fn record_local_effect(
-        self: Rc<Self>,
-        params: channel_handle::RecordLocalEffectParams,
-        _results: channel_handle::RecordLocalEffectResults,
-    ) -> Promise<(), capnp::Error> {
-        let recorded = params.get().and_then(|request| {
-            let text = |text: capnp::Result<capnp::text::Reader<'_>>| {
-                text?
-                    .to_str()
-                    .map(str::to_owned)
-                    .map_err(|error| capnp::Error::failed(error.to_string()))
-            };
-            let update = serde_json::from_str(&text(request.get_update_json())?)
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            self.record_local_effect_dispatch(
-                &text(request.get_resource())?,
-                &text(request.get_action())?,
-                update,
-            )
-        });
-        Promise::from_future(async move { recorded?.await })
-    }
-
-    fn open_workspace_control(
-        self: Rc<Self>,
-        params: channel_handle::OpenWorkspaceControlParams,
-        mut results: channel_handle::OpenWorkspaceControlResults,
-    ) -> Promise<(), capnp::Error> {
-        let route = self.route();
-        if let Err(error) =
-            revalidate_workspace_control(&self.state, &route, &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let Some(room) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
-            return Promise::err(capnp::Error::failed(
-                "workspace control requires a workspace-scoped channel".into(),
-            ));
-        };
-        let target_bytes = match params.get().and_then(
-            runtime_collab::collab_capnp::channel_handle::open_workspace_control_params::Reader::get_target_device,
-        ) {
-            Ok(bytes) if bytes.len() == 32 => {
-                let mut target = [0_u8; 32];
-                target.copy_from_slice(bytes);
-                target
-            }
-            _ => {
-                return Promise::err(capnp::Error::failed(
-                    "target device must be an exact 32-byte identity".into(),
-                ));
-            }
-        };
-        let Some(service) = self.state.services.workspace_control.as_ref() else {
-            return Promise::err(capnp::Error::failed("workspace control unsupported".into()));
-        };
-        let state = self.state.clone();
-        let identity = self.verified_identity.clone();
-        let revalidate =
-            Arc::new(move || revalidate_workspace_control(&state, &route, &identity).map(|_| ()));
-        let client = match service.open(room, target_bytes, revalidate) {
-            Ok(client) => client,
-            Err(error) => return Promise::err(error),
-        };
-        results.get().set_handle(client);
-        Promise::ok(())
-    }
-
-    fn send(
-        self: Rc<Self>,
-        params: channel_handle::SendParams,
-        _results: channel_handle::SendResults,
-    ) -> Promise<(), capnp::Error> {
-        // A channel held to read refuses before it reads the change.
-        if let Err(error) = self.writable() {
-            return Promise::err(error);
-        }
-        Promise::from_future(async move {
-            let envelope: SignedOp =
-                postcard::from_bytes(params.get()?.get_op()?).map_err(|e| {
-                    capnp::Error::failed(format!(
-                        "send: op is not a postcard-encoded SignedOp: {e}"
-                    ))
-                })?;
-            self.publish_document(envelope).await
-        })
-    }
-
-    fn subscribe(
-        self: Rc<Self>,
-        _params: channel_handle::SubscribeParams,
-        mut results: channel_handle::SubscribeResults,
-    ) -> Promise<(), capnp::Error> {
-        let feed = match self.subscribe_ops() {
-            Ok(feed) => feed,
-            Err(error) => return Promise::err(error),
-        };
-        let client: stream::Client = capnp_rpc::new_client(OpStreamServer {
-            feed: Rc::new(AsyncMutex::new(feed)),
-        });
-        results.get().set_stream(client);
-        Promise::ok(())
-    }
-
-    fn presence(
-        self: Rc<Self>,
-        _params: channel_handle::PresenceParams,
-        mut results: channel_handle::PresenceResults,
-    ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let client: presence_handle::Client =
-            capnp_rpc::new_client(CapnpPresenceHandle(wire::PresenceSession::new(
-                self.state.clone(),
-                self.channel_id.clone(),
-                self.connection_id,
-                self.verified_identity.clone(),
-            )));
-        results.get().set_handle(client);
-        Promise::ok(())
-    }
-
-    fn retired_unsigned_snapshot(
-        self: Rc<Self>,
-        _params: channel_handle::RetiredUnsignedSnapshotParams,
-        _results: channel_handle::RetiredUnsignedSnapshotResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::ok(())
-    }
-
-    fn retired_unsigned_incremental(
-        self: Rc<Self>,
-        _params: channel_handle::RetiredUnsignedIncrementalParams,
-        _results: channel_handle::RetiredUnsignedIncrementalResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::ok(())
-    }
-
-    fn subscribe_context(
-        self: Rc<Self>,
-        _params: channel_handle::SubscribeContextParams,
-        mut results: channel_handle::SubscribeContextResults,
-    ) -> Promise<(), capnp::Error> {
-        let feed = match self.context_feed() {
-            Ok(feed) => feed,
-            Err(error) => return Promise::err(error),
-        };
-        let client: context_stream::Client = capnp_rpc::new_client(ContextStreamServer {
-            feed: Rc::new(AsyncMutex::new(feed)),
-        });
-        results.get().set_stream(client);
-        Promise::ok(())
-    }
-
-    fn fetch_scrollback_for(
-        self: Rc<Self>,
-        params: channel_handle::FetchScrollbackForParams,
-        mut results: channel_handle::FetchScrollbackForResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let p = params.get()?;
-            let uuid = uuid::Uuid::from_slice(p.get_artifact_id()?).map_err(|e| {
-                capnp::Error::failed(format!(
-                    "capnp fetch_scrollback_for: artifactId must be 16 bytes: {e}"
-                ))
-            })?;
-            let (ops, exhausted) =
-                self.history(ArtifactId(uuid), p.get_before_seq(), p.get_max())?;
-            fill_scrollback_batch(results.get().init_batch(), &ops, exhausted)
-        })
-    }
-
-    fn publish_actions(
-        self: Rc<Self>,
-        params: channel_handle::PublishActionsParams,
-        _results: channel_handle::PublishActionsResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            let request = params.get()?;
-            let mut rows = Vec::with_capacity(request.get_actions()?.len() as usize);
-            for row in request.get_actions()? {
-                rows.push(runtime_collab::decode_exported_action(row)?);
-            }
-            self.publish_surface(
-                request.get_app_id()?.to_str()?,
-                wire::SurfaceChange::Whole(rows),
-            )
-        })())
-    }
-
-    fn publish_action_surface(
-        self: Rc<Self>,
-        params: channel_handle::PublishActionSurfaceParams,
-        _results: channel_handle::PublishActionSurfaceResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            let request = params.get()?;
-            self.publish_surface(
-                request.get_app_id()?.to_str()?,
-                wire::SurfaceChange::Delta(runtime_collab::decode_surface_delta(request)?),
-            )
-        })())
-    }
-
-    fn publish_action_directory(
-        self: Rc<Self>,
-        params: channel_handle::PublishActionDirectoryParams,
-        _results: channel_handle::PublishActionDirectoryResults,
-    ) -> Promise<(), capnp::Error> {
-        // No app changes another app's route: a channel held to read refuses.
-        if let Err(error) = self.writable() {
-            return Promise::err(error);
-        }
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let request = match params.get() {
-            Ok(request) => request,
-            Err(error) => return Promise::err(error),
-        };
-        let app_id = match request.get_app_id().and_then(|value| {
-            value
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok(value) => value.to_owned(),
-            Err(error) => return Promise::err(error),
-        };
-        if let Err(error) =
-            validate_directory_identifier(&app_id, "app id", DIRECTORY_MAX_IDENTIFIER_BYTES, true)
-        {
-            return Promise::err(error);
-        }
-        if self.route().app_id.is_empty() || app_id != self.route().app_id {
-            return Promise::err(capnp::Error::failed(
-                "publishActionDirectory appId must match the certified connection route".into(),
-            ));
-        }
-        let directory = match request.get_directory() {
-            Ok(directory) => directory,
-            Err(error) => return Promise::err(error),
-        };
-        let route = self.route();
-        let registration = Rc::new(uuid::Uuid::new_v4());
-        let Ok(_admission) = self.state.admission_lock.lock() else {
-            return Promise::err(capnp::Error::failed(
-                "directory admission unavailable".into(),
-            ));
-        };
-        if let Err(error) =
-            self.state
-                .register_canonical_directory(self.peer_id, &route, *registration)
-        {
-            return Promise::err(capnp::Error::failed(error));
-        }
-        self.directories.directories.borrow_mut().insert(
-            self.peer_id,
-            RegisteredActionDirectory {
-                registration,
-                pagination: directory_pagination::DirectoryPagination::default(),
-                publishing_person: self
-                    .verified_identity
-                    .certificate
-                    .as_ref()
-                    .map(|cert| principal_id_for_root(cert.user_public_key)),
-                app_id: app_id.clone(),
-                route: route.clone(),
-                directory,
-            },
-        );
-        if let Ok(mut roots) = self.state.action_directory_roots.lock() {
-            roots.insert(
-                self.peer_id,
-                ActionDirectoryRoot {
-                    peer_id: self.peer_id,
-                    app_id,
-                    cluster_id: route.cluster_id.clone(),
-                    record_id: route.record_id.clone(),
-                },
-            );
-        }
-        self.state
-            .advance_witness_publication(self.peer_id, WitnessPublicationKind::Directory);
-        self.retain_native_checkout(&route);
-        self.state.refresh_action_directory_root_snapshot();
-        // The directory can alter remote discoverability without an eager
-        // action snapshot changing, so notify legacy catalogue subscribers.
-        self.state.publish_action_catalogue();
-        self.state.launch_published(self.peer_id);
-        Promise::ok(())
-    }
-
-    fn subscribe_invocations(
-        self: Rc<Self>,
-        params: channel_handle::SubscribeInvocationsParams,
-        mut results: channel_handle::SubscribeInvocationsResults,
-    ) -> Promise<(), capnp::Error> {
-        let stream = params
-            .get()
-            .and_then(|request| self.invocation_feed(request.get_stable_invocation_ids()));
-        match stream {
-            Ok(stream) => {
-                let client: invocation_stream::Client = capnp_rpc::new_client(stream);
-                results.get().set_stream(client);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(error),
-        }
-    }
-
-    fn subscribe_task_runs(
-        self: Rc<Self>,
-        _params: channel_handle::SubscribeTaskRunsParams,
-        mut results: channel_handle::SubscribeTaskRunsResults,
-    ) -> Promise<(), capnp::Error> {
-        let feed = match self.task_run_feed() {
-            Ok(feed) => feed,
-            Err(error) => return Promise::err(error),
-        };
-        let client: task_run_stream::Client = capnp_rpc::new_client(TaskRunStreamServer {
-            feed: Rc::new(AsyncMutex::new(feed)),
-        });
-        results.get().set_stream(client);
-        Promise::ok(())
-    }
-
-    fn report_task_run(
-        self: Rc<Self>,
-        params: channel_handle::ReportTaskRunParams,
-        _results: channel_handle::ReportTaskRunResults,
-    ) -> Promise<(), capnp::Error> {
-        let answer = (|| {
-            let request = params.get()?;
-            Ok::<_, capnp::Error>(self.task_call(
-                request.get_run_id(),
-                request.get_lease()?.to_str()?.to_owned(),
-                TaskCall::Report(request.get_update_json()?.to_str()?.to_owned()),
-            ))
-        })();
-        Promise::from_future(async move { answer?.await.map(drop) })
-    }
-
-    fn invoke_task_action(
-        self: Rc<Self>,
-        params: channel_handle::InvokeTaskActionParams,
-        mut results: channel_handle::InvokeTaskActionResults,
-    ) -> Promise<(), capnp::Error> {
-        let answer = (|| {
-            let request = params.get()?;
-            // Interactive confirmations have no safe unattended equivalent.
-            if !request.get_confirmation_json()?.to_str()?.trim().is_empty() {
-                return Err(capnp::Error::failed(
-                    "task action confirmation evidence is not accepted; request human confirmation outside the run".into(),
-                ));
-            }
-            let argument = request
-                .get_has_argument()
-                .then(|| {
-                    request
-                        .get_argument()
-                        .and_then(|value| Ok(value.to_str()?.to_owned()))
-                })
-                .transpose()?;
-            let step = runtime_collab::wire::TaskStep {
-                peer_id: request.get_peer_id(),
-                provider: request.get_provider()?.to_str()?.to_owned(),
-                resource: request.get_resource()?.to_str()?.to_owned(),
-                action: request.get_action()?.to_str()?.to_owned(),
-                argument,
-                invocation: request.get_invocation()?.to_str()?.to_owned(),
-                wait_ms: request.get_wait_ms(),
-                seen: Some(request.get_seen_json()?.to_str()?.to_owned()),
-            };
-            Ok(self.task_call(
-                request.get_run_id(),
-                request.get_lease()?.to_str()?.to_owned(),
-                TaskCall::Invoke(step),
-            ))
-        })();
-        Promise::from_future(async move {
-            let Reply::Invoked { id, update } = answer?.await? else {
-                return Err(capnp::Error::failed("unexpected task answer".into()));
-            };
-            results.get().set_id(id);
-            results.get().set_update_json(&update);
-            Ok(())
-        })
-    }
-
-    fn task_run_cancelled(
-        self: Rc<Self>,
-        params: channel_handle::TaskRunCancelledParams,
-        mut results: channel_handle::TaskRunCancelledResults,
-    ) -> Promise<(), capnp::Error> {
-        let answer = (|| {
-            let request = params.get()?;
-            Ok::<_, capnp::Error>(self.task_call(
-                request.get_run_id(),
-                request.get_lease()?.to_str()?.to_owned(),
-                TaskCall::Cancelled,
-            ))
-        })();
-        Promise::from_future(async move {
-            let Reply::TaskCancelled { cancelled, control } = answer?.await? else {
-                return Err(capnp::Error::failed("unexpected task answer".into()));
-            };
-            results.get().set_cancelled(cancelled);
-            if let Some(control) = control {
-                results.get().set_control_json(&control);
-            }
-            Ok(())
-        })
-    }
-
-    fn complete_invocation(
-        self: Rc<Self>,
-        params: channel_handle::CompleteInvocationParams,
-        _results: channel_handle::CompleteInvocationResults,
-    ) -> Promise<(), capnp::Error> {
-        let answer = (|| {
-            let request = params.get()?;
-            Ok::<_, capnp::Error>(self.invocation_call(
-                request.get_id(),
-                InvocationCall::Complete {
-                    code: request.get_code()?.to_str()?.to_owned(),
-                    message: request.get_message()?.to_str()?.to_owned(),
-                },
-            ))
-        })();
-        Promise::from_future(async move { answer?.await.map(drop) })
-    }
-
-    fn update_invocation(
-        self: Rc<Self>,
-        params: channel_handle::UpdateInvocationParams,
-        _results: channel_handle::UpdateInvocationResults,
-    ) -> Promise<(), capnp::Error> {
-        let answer = (|| {
-            let request = params.get()?;
-            Ok::<_, capnp::Error>(self.invocation_call(
-                request.get_id(),
-                InvocationCall::Update(request.get_update_json()?.to_str()?.to_owned()),
-            ))
-        })();
-        Promise::from_future(async move { answer?.await.map(drop) })
-    }
-
-    fn invocation_cancellation(
-        self: Rc<Self>,
-        params: channel_handle::InvocationCancellationParams,
-        mut results: channel_handle::InvocationCancellationResults,
-    ) -> Promise<(), capnp::Error> {
-        let answer = params
-            .get()
-            .map(|request| self.invocation_call(request.get_id(), InvocationCall::Cancelled));
-        Promise::from_future(async move {
-            let Reply::Cancelled(cancelled) = answer?.await? else {
-                return Err(capnp::Error::failed("unexpected invocation answer".into()));
-            };
-            results.get().set_cancelled(cancelled);
-            Ok(())
-        })
-    }
-
-    fn subscribe_action_catalogue(
-        self: Rc<Self>,
-        _params: channel_handle::SubscribeActionCatalogueParams,
-        mut results: channel_handle::SubscribeActionCatalogueResults,
-    ) -> Promise<(), capnp::Error> {
-        match self.catalogue_feed() {
-            Ok(stream) => {
-                let client: action_catalogue_stream::Client = capnp_rpc::new_client(stream);
-                results.get().set_stream(client);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(error),
-        }
-    }
-
-    fn admit_local_document_action(
-        self: Rc<Self>,
-        params: channel_handle::AdmitLocalDocumentActionParams,
-        results: channel_handle::AdmitLocalDocumentActionResults,
-    ) -> Promise<(), capnp::Error> {
-        local_document_action::admit(self, &params, results)
-    }
-
-    fn launch_published_application(
-        self: Rc<Self>,
-        params: channel_handle::LaunchPublishedApplicationParams,
-        mut results: channel_handle::LaunchPublishedApplicationResults,
-    ) -> Promise<(), capnp::Error> {
-        let answer = (|| {
-            let request = params.get()?;
-            Ok::<_, capnp::Error>(self.launch(
-                request.get_app_id()?.to_str()?,
-                request.get_package_root()?.to_str()?,
-                request.get_on_behalf_of()?,
-            ))
-        })();
-        Promise::from_future(async move {
-            let Reply::Invoked { id, update } = answer?.await? else {
-                return Err(capnp::Error::failed("unexpected launch answer".into()));
-            };
-            results.get().set_id(id);
-            results.get().set_update_json(&update);
-            Ok(())
-        })
-    }
-
-    fn report_continuation(
-        self: Rc<Self>,
-        params: channel_handle::ReportContinuationParams,
-        _results: channel_handle::ReportContinuationResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            let request = params.get()?;
-            let app_id = request
-                .get_app_id()?
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            self.report(
-                app_id,
-                Report::Continuation {
-                    schema_version: request.get_schema_version(),
-                    metadata: request.get_metadata()?.to_vec(),
-                },
-            )
-        })())
-    }
-
-    fn handoff(
-        self: Rc<Self>,
-        params: channel_handle::HandoffParams,
-        _results: channel_handle::HandoffResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            let request = params.get()?;
-            let app_id = request
-                .get_app_id()?
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            self.report(app_id, Report::Handoff(request.get_message()?.to_vec()))
-        })())
-    }
-
-    fn clear_continuation(
-        self: Rc<Self>,
-        params: channel_handle::ClearContinuationParams,
-        _results: channel_handle::ClearContinuationResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            let request = params.get()?;
-            let app_id = request
-                .get_app_id()?
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            self.report(app_id, Report::ClearContinuation)
-        })())
-    }
-
-    fn publish_search_index(
-        self: Rc<Self>,
-        params: channel_handle::PublishSearchIndexParams,
-        _results: channel_handle::PublishSearchIndexResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            let request = params.get()?;
-            let app_id = request
-                .get_app_id()?
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            self.report(
-                app_id,
-                Report::SearchIndex(request.get_delta_json()?.to_vec()),
-            )
-        })())
     }
 }
 
@@ -10297,6 +9038,36 @@ fn published_directory_action(
     Ok(descriptor.clone())
 }
 
+impl CapnpChannelHandle {
+    /// Open a workspace control session with `target`, for an editor of
+    /// this channel's workspace, checked again at every step.
+    pub(super) fn workspace_control(
+        &self,
+        target: [u8; 32],
+    ) -> Result<Rc<dyn crate::services::WorkspaceControlSession>, capnp::Error> {
+        let route = self.route();
+        revalidate_workspace_control(&self.state, &route, &self.verified_identity)?;
+        let Some(room) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
+            return Err(capnp::Error::failed(
+                "workspace control requires a workspace-scoped channel".into(),
+            ));
+        };
+        let Some(service) = self.state.services.workspace_control.as_ref() else {
+            return Err(capnp::Error::failed("workspace control unsupported".into()));
+        };
+        let state = self.state.clone();
+        let identity = self.verified_identity.clone();
+        let revalidate: crate::services::ControlRevalidate = Arc::new(move || {
+            revalidate_workspace_control(&state, &route, &identity)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        });
+        service
+            .open(room, target, revalidate)
+            .map_err(capnp::Error::failed)
+    }
+}
+
 fn revalidate_workspace_control(
     state: &CapnpBrokerState,
     route: &CrdtRoute,
@@ -10533,217 +9304,7 @@ fn read_scrollback(
     (encoded, exhausted)
 }
 
-/// Encode a scrollback page into the capnp response.
-///
-/// # Errors
-///
-/// Returns an error if `ops` holds more entries than fit in a capnp
-/// `List` count (`u32`) — unreachable in practice since `ops` is always
-/// capped by the `u16` `max` accepted in [`read_scrollback`], but checked
-/// rather than assumed since this is peer-request-shaped data.
-fn fill_scrollback_batch(
-    mut b: scrollback_batch::Builder<'_>,
-    ops: &[Vec<u8>],
-    exhausted: bool,
-) -> Result<(), capnp::Error> {
-    let n = u32::try_from(ops.len())
-        .map_err(|_| capnp::Error::failed("scrollback batch too large to encode".into()))?;
-    let mut list = b.reborrow().init_ops(n);
-    for (i, op) in ops.iter().enumerate() {
-        let idx = u32::try_from(i)
-            .map_err(|_| capnp::Error::failed("scrollback batch index overflow".into()))?;
-        list.set(idx, op);
-    }
-    // Bracket seq isn't tracked; consumers needing bounds decode the ops.
-    b.set_earliest_seq(0);
-    b.set_latest_seq(0);
-    b.set_done(exhausted);
-    Ok(())
-}
-
 // Presence handle + streams
-
-struct CapnpPresenceHandle(wire::PresenceSession);
-
-impl CapnpPresenceHandle {
-    /// Publish a keyed update whose key arrives as postcard bytes. A
-    /// malformed key is isolated to this update rather than taking down the
-    /// broker.
-    fn publish_keyed(
-        &self,
-        key_bytes: &[u8],
-        payload: PresencePayload,
-    ) -> Result<(), capnp::Error> {
-        let Ok(key) = postcard::from_bytes::<PresenceKey>(key_bytes) else {
-            tracing::debug!(
-                len = key_bytes.len(),
-                "capnp presence publish: key bytes not decodable — dropping",
-            );
-            return Ok(());
-        };
-        self.0.publish(key, payload).map_err(capnp::Error::failed)
-    }
-}
-
-/// A peer-supplied offset as a local one; rejected rather than wrapped onto
-/// an unrelated position on a 32-bit target.
-fn presence_offset(value: u64, what: &str) -> Result<usize, capnp::Error> {
-    usize::try_from(value)
-        .map_err(|_| capnp::Error::failed(format!("{what} overflows usize on this platform")))
-}
-
-impl presence_handle::Server for CapnpPresenceHandle {
-    fn publish_cursor(
-        self: Rc<Self>,
-        params: presence_handle::PublishCursorParams,
-        _results: presence_handle::PublishCursorResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let r = params.get()?;
-            self.0
-                .publish_cursor(r.get_x(), r.get_y())
-                .map_err(capnp::Error::failed)
-        })
-    }
-
-    fn publish_pointer(
-        self: Rc<Self>,
-        params: presence_handle::PublishPointerParams,
-        _results: presence_handle::PublishPointerResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let r = params.get()?;
-            let payload = PresencePayload::Pointer {
-                x: r.get_x(),
-                y: r.get_y(),
-            };
-            self.publish_keyed(r.get_key_bytes()?, payload)
-        })
-    }
-
-    fn publish_caret(
-        self: Rc<Self>,
-        params: presence_handle::PublishCaretParams,
-        _results: presence_handle::PublishCaretResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let r = params.get()?;
-            let pos = presence_offset(r.get_pos(), "publishCaret: pos")?;
-            self.publish_keyed(r.get_key_bytes()?, PresencePayload::Caret { pos })
-        })
-    }
-
-    fn publish_selection(
-        self: Rc<Self>,
-        params: presence_handle::PublishSelectionParams,
-        _results: presence_handle::PublishSelectionResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let r = params.get()?;
-            let start = presence_offset(r.get_start(), "publishSelection: start")?;
-            let end = presence_offset(r.get_end(), "publishSelection: end")?;
-            self.publish_keyed(
-                r.get_key_bytes()?,
-                PresencePayload::Selection { start, end },
-            )
-        })
-    }
-
-    fn publish_typing(
-        self: Rc<Self>,
-        params: presence_handle::PublishTypingParams,
-        _results: presence_handle::PublishTypingResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let r = params.get()?;
-            let start = presence_offset(r.get_start(), "publishTyping: start")?;
-            let end = presence_offset(r.get_end(), "publishTyping: end")?;
-            self.publish_keyed(r.get_key_bytes()?, PresencePayload::Typing { start, end })
-        })
-    }
-
-    fn publish_interaction(
-        self: Rc<Self>,
-        params: presence_handle::PublishInteractionParams,
-        _results: presence_handle::PublishInteractionResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let r = params.get()?;
-            let json = r.get_interaction_json()?.to_str().map_err(|error| {
-                capnp::Error::failed(format!("invalid interaction utf8: {error}"))
-            })?;
-            if json.len() > 64 * 1024 {
-                return Err(capnp::Error::failed(
-                    "interaction payload exceeds 64 KiB".into(),
-                ));
-            }
-            let update: tilo_actions::SemanticInteraction = serde_json::from_str(json)
-                .map_err(|error| capnp::Error::failed(format!("invalid interaction: {error}")))?;
-            self.publish_keyed(
-                r.get_key_bytes()?,
-                PresencePayload::Interaction(Box::new(update)),
-            )
-        })
-    }
-
-    fn publish_status(
-        self: Rc<Self>,
-        params: presence_handle::PublishStatusParams,
-        _results: presence_handle::PublishStatusResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let request = params.get()?;
-            let text = request
-                .get_text()?
-                .to_str()
-                .map_err(|error| capnp::Error::failed(format!("invalid status utf8: {error}")))?
-                .to_owned();
-            self.publish_keyed(
-                request.get_key_bytes()?,
-                PresencePayload::Status {
-                    text,
-                    automatic: request.get_automatic(),
-                },
-            )
-        })
-    }
-
-    fn publish_arrived(
-        self: Rc<Self>,
-        params: presence_handle::PublishArrivedParams,
-        _results: presence_handle::PublishArrivedResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            self.publish_keyed(params.get()?.get_key_bytes()?, PresencePayload::Arrived)
-        })
-    }
-
-    fn publish_left(
-        self: Rc<Self>,
-        params: presence_handle::PublishLeftParams,
-        _results: presence_handle::PublishLeftResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            self.publish_keyed(params.get()?.get_key_bytes()?, PresencePayload::Left)
-        })
-    }
-
-    fn subscribe_all(
-        self: Rc<Self>,
-        _params: presence_handle::SubscribeAllParams,
-        mut results: presence_handle::SubscribeAllResults,
-    ) -> Promise<(), capnp::Error> {
-        let feed = match self.0.subscribe() {
-            Ok(feed) => feed,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
-        let client: presence_stream::Client = capnp_rpc::new_client(PresenceStreamServer {
-            feed: Rc::new(AsyncMutex::new(feed)),
-        });
-        results.get().set_stream(client);
-        Promise::ok(())
-    }
-}
 
 /// A returned stream retains the local descriptor's host identity, not a past
 /// permission decision. Both sides of every await recheck current authority.
@@ -10792,62 +9353,6 @@ impl HostWorkerReadGuard {
 // this crate is `panic = "abort"`, so that panic takes the whole desktop
 // session down). The async mutex instead makes the second reader simply wait
 // its turn — the two calls serialize instead of racing.
-
-struct OpStreamServer {
-    feed: Rc<AsyncMutex<wire::Feed<OpEnvelope>>>,
-}
-
-impl stream::Server for OpStreamServer {
-    fn read(
-        self: Rc<Self>,
-        _params: stream::ReadParams,
-        mut results: stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let feed = self.feed.clone();
-        Promise::from_future(async move {
-            let next = feed.lock().await.next().await?;
-            let Some(env) = next else {
-                return Err(capnp::Error::disconnected("op stream fanout closed".into()));
-            };
-            let mut r = results.get();
-            r.set_op(&env.op_bytes);
-            r.set_from_user_id(&env.from_user_id);
-            r.set_kind(OpKind::Signed);
-            r.set_admission(env.admission.into());
-            Ok(())
-        })
-    }
-}
-
-struct PresenceStreamServer {
-    feed: Rc<AsyncMutex<wire::Feed<PresenceEnvelope>>>,
-}
-
-struct RealtimeStreamServer {
-    host_guard: Option<HostWorkerReadGuard>,
-    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<Vec<u8>>>>,
-}
-
-impl realtime_stream::Server for RealtimeStreamServer {
-    fn read(
-        self: Rc<Self>,
-        _params: realtime_stream::ReadParams,
-        mut results: realtime_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let rx = self.rx.clone();
-        Promise::from_future(async move {
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            let mut guard = rx.lock().await;
-            let event = guard.recv().await.ok_or_else(|| {
-                capnp::Error::disconnected("realtime continuity stream closed".into())
-            })?;
-            drop(guard);
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            results.get().set_event_json(&event);
-            Ok(())
-        })
-    }
-}
 
 /// What the host is told each time an invocation is handed to `app` in
 /// `room`; nothing when no launcher hosts it.
@@ -10925,10 +9430,6 @@ fn task_run_json(run: TaskRunEnvelope) -> Result<String, capnp::Error> {
     serde_json::to_string(&payload).map_err(|error| capnp::Error::failed(error.to_string()))
 }
 
-struct TaskRunStreamServer {
-    feed: Rc<AsyncMutex<wire::Feed<TaskRunEnvelope>>>,
-}
-
 struct ActionCatalogueStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
     reader: Rc<AsyncMutex<ActionCatalogueReader>>,
@@ -10965,19 +9466,6 @@ impl ActionCatalogueStreamServer {
             })?;
         HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         Ok(snapshot)
-    }
-}
-
-impl action_catalogue_stream::Server for ActionCatalogueStreamServer {
-    fn read(
-        self: Rc<Self>,
-        _params: action_catalogue_stream::ReadParams,
-        mut results: action_catalogue_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            results.get().set_catalogue_json(&self.next().await?);
-            Ok(())
-        })
     }
 }
 
@@ -11022,116 +9510,6 @@ impl InvocationEnvelope {
     }
 }
 
-impl invocation_stream::Server for InvocationStreamServer {
-    fn read(
-        self: Rc<Self>,
-        _params: invocation_stream::ReadParams,
-        mut results: invocation_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let invocation = self.next().await?.on_wire()?;
-            let mut result = results.get();
-            result.set_id(invocation.id);
-            result.set_invocation_uuid(&invocation.invocation);
-            result.set_resource(&invocation.resource);
-            result.set_action(&invocation.action);
-            result.set_argument(invocation.argument.as_deref().unwrap_or(""));
-            result.set_has_argument(invocation.argument.is_some());
-            result.set_actor(&invocation.actor);
-            result.set_context_json(invocation.context.as_deref().unwrap_or(""));
-            Ok(())
-        })
-    }
-}
-
-impl task_run_stream::Server for TaskRunStreamServer {
-    fn read(
-        self: Rc<Self>,
-        _params: task_run_stream::ReadParams,
-        mut results: task_run_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let feed = self.feed.clone();
-        Promise::from_future(async move {
-            let run = feed
-                .lock()
-                .await
-                .next()
-                .await?
-                .ok_or_else(|| capnp::Error::disconnected("agent task stream closed".into()))?;
-            results.get().set_task_json(&task_run_json(run)?);
-            Ok(())
-        })
-    }
-}
-
-impl presence_stream::Server for PresenceStreamServer {
-    fn read(
-        self: Rc<Self>,
-        _params: presence_stream::ReadParams,
-        mut results: presence_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let feed = self.feed.clone();
-        Promise::from_future(async move {
-            let next = feed.lock().await.next().await?;
-            let Some(env) = next else {
-                return Err(capnp::Error::disconnected(
-                    "presence stream fanout closed".into(),
-                ));
-            };
-            let mut ev: presence_event::Builder = results.get().init_event();
-            ev.set_user_id(&env.user_id);
-            ev.set_key_bytes(&env.key_bytes);
-            let mut payload: presence_payload::Builder = ev.init_payload();
-            match env.payload {
-                PresencePayload::Pointer { x, y } => {
-                    let mut c = payload.init_pointer();
-                    c.set_x(x);
-                    c.set_y(y);
-                }
-                PresencePayload::Caret { pos } => {
-                    payload.init_caret().set_pos(pos as u64);
-                }
-                PresencePayload::Selection { start, end } => {
-                    let mut s = payload.init_selection();
-                    s.set_start(start as u64);
-                    s.set_end(end as u64);
-                }
-                PresencePayload::Typing { start, end } => {
-                    let mut s = payload.init_typing();
-                    s.set_start(start as u64);
-                    s.set_end(end as u64);
-                }
-                PresencePayload::Following { target } => {
-                    payload.set_following(target.as_deref().unwrap_or(""));
-                }
-                PresencePayload::Interaction(update) => {
-                    let json = serde_json::to_string(&update).map_err(|error| {
-                        capnp::Error::failed(format!("encode semantic interaction: {error}"))
-                    })?;
-                    payload.set_interaction_json(&json);
-                }
-                PresencePayload::Status { text, automatic } => {
-                    let mut status = payload.init_status();
-                    status.set_text(&text);
-                    status.set_automatic(automatic);
-                }
-                PresencePayload::Arrived => payload.set_arrived(()),
-                PresencePayload::Left => payload.set_left(()),
-                PresencePayload::Availability { .. } => {
-                    return Err(capnp::Error::failed(
-                        "desktop presence is never fanned to an app".into(),
-                    ));
-                }
-            }
-            Ok(())
-        })
-    }
-}
-
-struct ContextStreamServer {
-    feed: Rc<AsyncMutex<wire::Feed<ContextUpdate>>>,
-}
-
 struct NativeContextReadGuard {
     state: Arc<CapnpBrokerState>,
     route: CrdtRoute,
@@ -11174,108 +9552,6 @@ impl NativeContextReadGuard {
         }
         Ok(())
     }
-}
-
-impl context_stream::Server for ContextStreamServer {
-    fn read(
-        self: Rc<Self>,
-        _params: context_stream::ReadParams,
-        mut results: context_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let feed = self.feed.clone();
-        Promise::from_future(async move {
-            let Some(env) = feed.lock().await.next().await? else {
-                return Err(capnp::Error::disconnected(
-                    "context stream fanout closed".into(),
-                ));
-            };
-            let mut ctx = results.get().init_ctx();
-            let (collaborators, permissions) = match env {
-                ContextUpdate::Snapshot {
-                    collaborators,
-                    permissions,
-                } => (collaborators, permissions),
-                ContextUpdate::FollowChanged { peer_id } => {
-                    ctx.set_follow_changed(true);
-                    ctx.set_follow_target(peer_id.as_deref().unwrap_or(""));
-                    return Ok(());
-                }
-                ContextUpdate::SnapshotRequested => {
-                    ctx.set_snapshot_requested(true);
-                    return Ok(());
-                }
-                ContextUpdate::Handoff(message) => {
-                    ctx.set_handoff(&message);
-                    return Ok(());
-                }
-                ContextUpdate::HistoryAgents(agents) => {
-                    encode_history_agents(&mut ctx, &agents)?;
-                    return Ok(());
-                }
-                ContextUpdate::RecordsArrived(records) => {
-                    let count = u32::try_from(records.len())
-                        .map_err(|_| capnp::Error::failed("context: too many records".into()))?;
-                    let mut arrived = ctx.init_records_arrived(count);
-                    (0..count)
-                        .zip(&records)
-                        .for_each(|(i, r)| arrived.set(i, r.as_str()));
-                    return Ok(());
-                }
-            };
-            let collab_count = u32::try_from(collaborators.len()).map_err(|_| {
-                capnp::Error::failed("context: too many collaborators to encode".into())
-            })?;
-            {
-                let mut collabs = ctx.reborrow().init_collaborators(collab_count);
-                for (i, c) in collaborators.iter().enumerate() {
-                    // `i < env.collaborators.len()`, already proven to fit
-                    // in `u32` above; `u32::MAX` is unreachable here.
-                    let idx = u32::try_from(i).unwrap_or(u32::MAX);
-                    let mut slot = collabs.reborrow().get(idx);
-                    slot.set_user_id(&c.id);
-                    slot.set_display_name(&c.name);
-                    slot.set_color(c.packed_colour());
-                    slot.set_is_agent(c.is_agent);
-                    slot.set_is_self(c.is_self);
-                    slot.set_joined_at_ms(c.packed_joined_at());
-                }
-            }
-            let perm_count = u32::try_from(permissions.len()).map_err(|_| {
-                capnp::Error::failed("context: too many permissions to encode".into())
-            })?;
-            {
-                let mut perms = ctx.init_permissions(perm_count);
-                for (i, p) in permissions.iter().enumerate() {
-                    let idx = u32::try_from(i).unwrap_or(u32::MAX);
-                    perms.set(idx, p.as_str());
-                }
-            }
-            Ok(())
-        })
-    }
-}
-
-/// Write a session-local frame naming a room's verified agents: clients
-/// leave the roster untouched and replace the room's agents with these.
-fn encode_history_agents(
-    ctx: &mut runtime_collab::raw::channel_context::Builder<'_>,
-    agents: &[collab_types::history::RosterAgent],
-) -> Result<(), capnp::Error> {
-    let count = u32::try_from(agents.len())
-        .map_err(|_| capnp::Error::failed("context: too many history agents to encode".into()))?;
-    ctx.set_history_agents_changed(true);
-    let mut rows = ctx.reborrow().init_history_agents(count);
-    for (index, agent) in (0..count).zip(agents) {
-        let mut row = rows.reborrow().get(index);
-        row.set_device(&agent.device);
-        row.set_person(&agent.person);
-        row.set_person_name(&agent.person_name);
-        row.set_agent_id(&agent.agent_id);
-        row.set_label(&agent.label);
-        let [red, green, blue] = agent.color;
-        row.set_color(u32::from_be_bytes([0, red, green, blue]));
-    }
-    Ok(())
 }
 
 // Listener wiring
@@ -12048,71 +10324,6 @@ async fn serve_broker_thread(
     }
 }
 
-/// Dial the capnp socket at `path` for tests. Production apps go through
-/// `runtime_collab::try_connect` (launcher-passed fd). Public so
-/// out-of-tree integration tests can reach it too.
-///
-/// # Errors
-///
-/// Returns an error if the socket at `path` does not appear and accept a
-/// connection within the shared test hang bound — the accept loop in
-/// [`spawn`] may not have bound yet, or the broker never started.
-#[cfg(any(test, feature = "test-support"))]
-pub async fn dial_capnp_for_test(
-    path: PathBuf,
-) -> Result<
-    (
-        runtime_collab::raw::collab_service::Client,
-        tokio::task::JoinHandle<()>,
-    ),
-    std::io::Error,
-> {
-    // Retry until the accept loop has bound; the bound only catches a broker
-    // that never starts, since a loaded machine can delay the bind for seconds.
-    let stream = {
-        let mut last_err: Option<std::io::Error> = None;
-        let mut stream = None;
-        let deadline = tilo_test_env::hang_deadline();
-        while std::time::Instant::now() < deadline {
-            match tokio::net::UnixStream::connect(&path).await {
-                Ok(s) => {
-                    stream = Some(s);
-                    break;
-                }
-                Err(e) => {
-                    last_err = Some(e);
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            }
-        }
-        match stream {
-            Some(s) => s,
-            None => {
-                return Err(last_err.unwrap_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "capnp socket did not appear within the hang bound",
-                    )
-                }));
-            }
-        }
-    };
-    let (r, w) = stream.into_split();
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(r.compat()),
-        futures::io::BufWriter::new(w.compat_write()),
-        rpc_twoparty_capnp::Side::Client,
-        capnp::message::ReaderOptions::default(),
-    ));
-    let mut rpc = RpcSystem::new(network, None);
-    let client: runtime_collab::raw::collab_service::Client =
-        rpc.bootstrap(rpc_twoparty_capnp::Side::Server);
-    let driver = tokio::task::spawn_local(async move {
-        let _ = rpc.await;
-    });
-    Ok((client, driver))
-}
-
 // Every `*::Server` impl in this file takes `self: Rc<Self>` (capnp-rpc's
 // dispatch convention), so the client/capability chain built here and the
 // `RpcSystem` future it drives are inherently `!Send`. That is fine: this
@@ -12337,19 +10548,105 @@ async fn authenticate_launcher_handoff(
     })
 }
 
-/// Tell a refused app why over the protocol it speaks: every call on the
-/// service it bootstraps fails with `error`. Dropping the socket instead
-/// leaves its first message unread, and the app only sees its connection
-/// reset. Bounded, so a peer that never hangs up holds nothing for long.
-#[allow(
-    clippy::future_not_send,
-    reason = "Cap'n Proto RPC is Rc-backed and runs only on the broker LocalSet"
-)]
+/// Read the launcher's marker and handoff off `stream`; `None` for a raw
+/// client that sent no marker.
+async fn read_launcher_handoff(
+    stream: &mut tokio::net::UnixStream,
+) -> Result<Option<LauncherHandoff>, capnp::Error> {
+    if !has_collab_launch_marker(stream).await? {
+        return Ok(None);
+    }
+    let credentials = stream.peer_cred().map_err(|error| {
+        capnp::Error::failed(format!(
+            "could not read collaboration peer credentials: {error}"
+        ))
+    })?;
+    // A socket pathname is not authority. The kernel must identify a process
+    // from this user before it can attest the compositor's launch record.
+    if credentials.uid() != rustix::process::geteuid().as_raw() {
+        return Err(capnp::Error::failed(
+            "collaboration service rejected a peer from another user".into(),
+        ));
+    }
+    let pid = credentials
+        .pid()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| capnp::Error::failed("collaboration peer has no usable pid".into()))?;
+    // Retain this exact connected task before consulting the expiring launch
+    // record. Unsupported kernels keep ordinary collaboration available.
+    let media_process = native_media::PeerProcess::from_socket(stream);
+
+    let mut marker = [0_u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()];
+    stream.read_exact(&mut marker).await.map_err(|error| {
+        capnp::Error::failed(format!(
+            "could not read collaboration launch marker: {error}"
+        ))
+    })?;
+    if marker != launcher::services::COLLAB_LAUNCH_MAGIC {
+        return Err(capnp::Error::failed(
+            "collaboration launch marker changed while being read".into(),
+        ));
+    }
+    let bytes = match launcher::services::COLLAB_LAUNCH_FRAMING
+        .read_async(stream)
+        .await
+    {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            return Err(capnp::Error::failed(
+                "collaboration launch handoff is missing".into(),
+            ));
+        }
+        Err(wire_frame::FrameError::EmptyFrame | wire_frame::FrameError::TooLarge(_)) => {
+            return Err(capnp::Error::failed(
+                "collaboration launch handoff has an invalid length".into(),
+            ));
+        }
+        Err(error) => {
+            return Err(capnp::Error::failed(format!(
+                "could not read collaboration launch handoff: {error}"
+            )));
+        }
+    };
+    let handoff: CollabLaunchHandoff = serde_json::from_slice(&bytes).map_err(|error| {
+        capnp::Error::failed(format!("invalid collaboration launch handoff: {error}"))
+    })?;
+    Ok(Some(LauncherHandoff {
+        handoff,
+        pid,
+        media_process,
+    }))
+}
+
+/// Tell a refused app why over the wire it speaks: every call it makes is
+/// answered with `error`. Dropping the socket instead leaves its first call
+/// unanswered, and the app only sees its connection reset. Bounded, so a
+/// peer that never hangs up holds nothing for long.
 async fn answer_refused_launch(stream: tokio::net::UnixStream, error: capnp::Error) {
-    let refused: collab_service::Client =
-        capnp_rpc::new_future_client(std::future::ready(Err(error)));
-    let rpc = runtime_portal::serve_connected_io(stream, refused.client);
-    let _ = tokio::time::timeout(REFUSED_LAUNCH_ANSWER_WINDOW, rpc).await;
+    use tokio::io::AsyncWriteExt as _;
+    let reason = error.to_string();
+    let (mut reader, mut writer) = stream.into_split();
+    let answer = async {
+        while let Ok(Some(call)) = runtime_collab::wire::FRAMING
+            .read_value_async::<_, runtime_collab::wire::Call>(&mut reader)
+            .await
+        {
+            let frame = runtime_collab::wire::HostFrame::Reply {
+                id: call.id,
+                result: Err(reason.clone()),
+            };
+            if runtime_collab::wire::FRAMING
+                .write_value_async(&mut writer, &frame)
+                .await
+                .is_err()
+                || writer.flush().await.is_err()
+            {
+                return;
+            }
+        }
+    };
+    let _ = tokio::time::timeout(REFUSED_LAUNCH_ANSWER_WINDOW, answer).await;
 }
 
 /// How long a refused app's connection is kept open to hear why.
@@ -12413,7 +10710,7 @@ async fn drive_connection(
     let app_worker = local_media
         .as_ref()
         .map(|app| (uuid::Uuid::new_v4(), app.app_id.clone()));
-    let client: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
+    let (connection, outgoing) = wire::WireConnection::new(Some(Rc::new(CapnpCollabService {
         worker,
         app_worker,
         lease: Rc::new(ConnectionLease {
@@ -12426,19 +10723,20 @@ async fn drive_connection(
         directories,
         peer_id,
         holds: route_holds::ConnectionHolds::default(),
-    });
+    })));
     // Files hands over the objects it selects on its own connection; the
     // broker keeps them for the request naming them. Every other peer's
     // descriptors are closed on receipt.
-    let rpc = match handed_descriptors {
-        Some(received) => runtime_portal::serve_connected_io(
+    let served = if let Some(received) = handed_descriptors {
+        let (reader, writer) = tokio::io::split(
             runtime_portal::descriptor_lane::DescriptorStream::receiving(stream, received),
-            client.client,
-        ),
-        None => runtime_portal::serve_connected_io(stream, client.client),
+        );
+        wire::serve(connection, outgoing, reader, writer).await
+    } else {
+        let (reader, writer) = stream.into_split();
+        wire::serve(connection, outgoing, reader, writer).await
     };
-    let _disconnect = DisconnectOnDrop(Some(rpc.get_disconnector()));
-    rpc.await
+    served.map_err(|error| capnp::Error::failed(error.to_string()))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -12847,21 +11145,12 @@ pub mod tests {
             .expect("runtime");
         let error = tokio::task::LocalSet::new().block_on(&runtime, async move {
             let stream = tokio::net::UnixStream::from_std(stream).expect("tokio stream");
-            let client = runtime_collab::CollabClient::from_raw(
-                runtime_portal::CapnpClient::from_connected_io(
-                    stream,
-                    rpc_twoparty_capnp::Side::Client,
-                )
-                .bootstrap(),
-            );
+            let (client, _end) = runtime_collab::CollabClient::connected_local(stream);
             match client
-                .join_channel(
-                    "5ba25f73-87c5-447f-a5a6-880dc4249a81#app:so.tilo.calculator",
-                    b"",
-                )
+                .room_status("5ba25f73-87c5-447f-a5a6-880dc4249a81")
                 .await
             {
-                Ok(_) => panic!("an unattested launch joined a channel"),
+                Ok(_) => panic!("an unattested launch was answered"),
                 Err(error) => error.to_string(),
             }
         });
@@ -12952,8 +11241,7 @@ pub mod tests {
         };
         let (marker, handoff) = launcher_handoff_bytes(APP, ROOM);
         for recorded in [false, true] {
-            let (mut broker_end, mut launcher_end) =
-                tokio::net::UnixStream::pair().expect("socket pair");
+            let (mut broker_end, mut launcher_end) = tokio::net::UnixStream::pair().unwrap();
             if recorded {
                 launches.0.lock().expect("records").push((
                     std::process::id(),
@@ -13012,7 +11300,7 @@ pub mod tests {
         let marker = launcher::services::COLLAB_LAUNCH_MAGIC;
         let (head, tail) = marker.split_at(marker.len() / 2);
 
-        let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().expect("socket pair");
+        let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().unwrap();
         launcher_end.write_all(head).await.expect("first half");
         let reading = has_collab_launch_marker(&broker_end);
         tokio::pin!(reading);
@@ -13030,7 +11318,7 @@ pub mod tests {
             .expect("the marker is still unread");
         assert_eq!(kept, marker, "peeking leaves the stream untouched");
 
-        let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().expect("socket pair");
+        let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().unwrap();
         launcher_end.write_all(head).await.expect("first half");
         let unfinished = has_collab_launch_marker(&broker_end).await;
         assert!(
@@ -13042,7 +11330,7 @@ pub mod tests {
         );
         drop(launcher_end);
 
-        let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().expect("socket pair");
+        let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().unwrap();
         launcher_end.write_all(head).await.expect("first half");
         drop(launcher_end);
         assert!(
@@ -13424,10 +11712,9 @@ pub mod tests {
             .build()
             .expect("client runtime");
         tokio::task::LocalSet::new().block_on(&runtime, async {
-            let (_client, rpc) = dial_capnp_for_test(socket.clone())
+            tokio::net::UnixStream::connect(&socket)
                 .await
                 .expect("a client connects after the restart");
-            rpc.abort();
         });
 
         // One that keeps failing stays down and releases what it held.
@@ -13489,7 +11776,7 @@ pub mod tests {
                 publishing_person: Some("fixture-owner".into()),
                 app_id: fixture.route.app_id.clone(),
                 route: fixture.route.clone(),
-                directory: fixture.directory.clone(),
+                directory: Rc::clone(&fixture.directory),
             },
         );
         for peer_id in [fixture.peer_id, survivor] {
@@ -13586,9 +11873,9 @@ pub mod tests {
         NotFound,
     }
 
-    /// A real `Cap'n Proto` directory endpoint retained by the `LocalSet` test
-    /// below. It answers only bounded inert rows, but is deliberately a
-    /// capability client rather than a mock of the shell bridge.
+    /// A directory endpoint retained by the `LocalSet` tests below. It
+    /// answers only bounded inert rows, through the broker's real directory
+    /// registry rather than a mock of the shell bridge.
     pub struct TestActionDirectory {
         revision: String,
         pub resolve_mode: DirectoryResolveMode,
@@ -13655,16 +11942,12 @@ pub mod tests {
         state: Rc<RefCell<TestActionDirectory>>,
     }
 
-    #[allow(
-        refining_impl_trait,
-        reason = "the generated Cap'n Proto test endpoint has the same concrete Promise shape as production endpoints"
-    )]
-    impl action_directory::Server for TestActionDirectoryServer {
+    impl wire::DirectorySource for TestActionDirectoryServer {
         fn query(
-            self: Rc<Self>,
-            _params: action_directory::QueryParams,
-            mut results: action_directory::QueryResults,
-        ) -> Promise<(), capnp::Error> {
+            &self,
+            _query: runtime_collab::ActionDirectoryQuery,
+            _max_bytes: u32,
+        ) -> wire::Asked<runtime_collab::ActionDirectoryPage> {
             let mut state = self.state.borrow_mut();
             state.query_count = state.query_count.saturating_add(1);
             let page = runtime_collab::ActionDirectoryPage {
@@ -13675,33 +11958,36 @@ pub mod tests {
                 stale_cursor: false,
                 budget_exhausted: false,
             };
-            runtime_collab::write_action_directory_page(results.get().init_page(), &page)
-                .expect("test directory page encodes");
-            Promise::ok(())
+            Box::pin(std::future::ready(Ok(page)))
         }
 
         fn resolve(
-            self: Rc<Self>,
-            _params: action_directory::ResolveParams,
-            mut results: action_directory::ResolveResults,
-        ) -> Promise<(), capnp::Error> {
+            &self,
+            _target: (&str, &str, &str),
+            local_document: bool,
+            _max_bytes: u32,
+        ) -> wire::Asked<runtime_collab::ActionDirectoryResolution> {
+            if local_document {
+                return Box::pin(std::future::ready(Err(
+                    "no local document snapshots here".into()
+                )));
+            }
             let mut state = self.state.borrow_mut();
             state.resolve_count = state.resolve_count.saturating_add(1);
-            let mut out = results.get().init_resolution();
-            match state.resolve_mode {
-                DirectoryResolveMode::Found => {
-                    runtime_collab::write_action_directory_row(
-                        out.reborrow().init_found(),
-                        &state.row(),
-                    )
-                    .expect("test directory row encodes");
-                    // As a current owner does: the revision it resolved at.
-                    out.set_resolved_revision(state.revision.as_str());
+            let resolution = match state.resolve_mode {
+                // As a current owner does: the revision it resolved at.
+                DirectoryResolveMode::Found => runtime_collab::ActionDirectoryResolution::Found {
+                    row: Box::new(state.row()),
+                    revision: Some(state.revision.clone()),
+                },
+                DirectoryResolveMode::Stale => {
+                    runtime_collab::ActionDirectoryResolution::StaleRevision
                 }
-                DirectoryResolveMode::Stale => out.set_stale_revision(()),
-                DirectoryResolveMode::NotFound => out.set_not_found(()),
-            }
-            Promise::ok(())
+                DirectoryResolveMode::NotFound => {
+                    runtime_collab::ActionDirectoryResolution::NotFound
+                }
+            };
+            Box::pin(std::future::ready(Ok(resolution)))
         }
     }
 
@@ -13715,6 +12001,8 @@ pub mod tests {
     include!("resolved_invocation_tests.rs");
     #[cfg(test)]
     include!("external_moderation_rpc_tests.rs");
+    #[cfg(test)]
+    include!("approved_check_tests.rs");
     #[cfg(test)]
     include!("canonical_route_tests.rs");
     #[cfg(all(test, target_os = "linux"))]
@@ -13732,7 +12020,7 @@ pub mod tests {
         _fanout: Arc<FanoutState>,
         state: Arc<CapnpBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
-        directory: action_directory::Client,
+        directory: Rc<dyn wire::DirectorySource>,
         directory_state: Rc<RefCell<TestActionDirectory>>,
         pub broker: crate::collab_broker::AppActionBroker,
         pub membership: Option<WorkspaceTreeHandle>,
@@ -13782,7 +12070,7 @@ pub mod tests {
                     }),
                     app_id: self.route.app_id.clone(),
                     route: self.route.clone(),
-                    directory: self.directory.clone(),
+                    directory: Rc::clone(&self.directory),
                 },
             );
         }
@@ -13800,7 +12088,7 @@ pub mod tests {
             self.directory_state.borrow_mut().result = result;
         }
 
-        fn invocation_channel(&self) -> channel_handle::Client {
+        fn invocation_channel(&self) -> runtime_collab::ChannelHandle {
             self.invocation_channel_for(self.peer_id, &self.route)
         }
 
@@ -13808,9 +12096,8 @@ pub mod tests {
             &self,
             peer_id: u64,
             route: &CrdtRoute,
-        ) -> channel_handle::Client {
-            capnp_rpc::new_client(CapnpChannelHandle {
-                as_app: None,
+        ) -> runtime_collab::ChannelHandle {
+            wire_channel(CapnpChannelHandle {
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: Arc::clone(&self.state),
@@ -13847,15 +12134,13 @@ pub mod tests {
             &self,
             id: u64,
             update: &tilo_actions::InvocationUpdate,
-        ) -> Result<(), capnp::Error> {
-            let client = self.invocation_channel();
-            let mut request = client.update_invocation_request();
-            request.get().set_id(id);
-            request
-                .get()
-                .set_update_json(serde_json::to_string(update).expect("canonical update"));
-            request.send().promise.await?;
-            Ok(())
+        ) -> Result<(), runtime_portal::NotAvailable> {
+            self.invocation_channel()
+                .update_invocation(
+                    id,
+                    &serde_json::to_string(update).expect("canonical update"),
+                )
+                .await
         }
 
         pub fn set_resolve_mode(&self, mode: DirectoryResolveMode) {
@@ -13917,14 +12202,10 @@ pub mod tests {
                 ] {
                     let mut request = runtime_collab::native_media::Request::new(command);
                     request.intent = 1;
-                    let mut rpc = channel.native_media_command_request();
-                    rpc.get().set_command_json(&request.encode().unwrap());
-                    let error = rpc
-                        .send()
-                        .promise
+                    let error = channel
+                        .native_media_command(&request)
                         .await
-                        .err()
-                        .expect("ordinary admitted channel cannot mint local process custody");
+                        .expect_err("ordinary admitted channel cannot mint local process custody");
                     assert!(error.to_string().contains("launcher-attested"), "{error}");
                 }
             })
@@ -13967,26 +12248,17 @@ pub mod tests {
             );
             fixture.route = CrdtRoute::app(WIFI_CONTINUITY_APP_ID, collab_types::person_room(&[0; 32]).to_string());
             let client = fixture.invocation_channel();
-            let command = serde_json::to_vec(&runtime_collab::WifiContinuityCommand::NetworkWake {
+            let command = runtime_collab::WifiContinuityCommand::NetworkWake {
                 profile_uuid: "11111111-1111-4111-8111-111111111111".into(), enabled: Some(true),
-            }).unwrap();
-            let mut request = client.wifi_continuity_command_request();
-            request.get().set_app_id(WIFI_CONTINUITY_APP_ID);
-            request.get().set_command_json(&command);
-            let response = request.send().promise.await.unwrap();
-            let reply: runtime_collab::WifiContinuityReply = serde_json::from_slice(response.get().unwrap().get_reply_json().unwrap()).unwrap();
+            };
+            let reply = client.wifi_continuity_command(&command).await.unwrap();
             assert!(reply.valid());
             assert!(matches!(reply, runtime_collab::WifiContinuityReply::NetworkWake { status } if status.applied == Some(true)));
             assert_ne!(service.0.lock().unwrap().as_slice(), [std::thread::current().id()]);
-            let mut spoofed = client.wifi_continuity_command_request();
-            spoofed.get().set_app_id("so.tilo.browser");
-            spoofed.get().set_command_json(&command);
-            assert!(spoofed.send().promise.await.is_err());
+            // The route decides the app, never the caller: another app's
+            // channel is refused.
             fixture.route.app_id = "so.tilo.browser".into();
-            let mut forbidden = fixture.invocation_channel().wifi_continuity_command_request();
-            forbidden.get().set_app_id(WIFI_CONTINUITY_APP_ID);
-            forbidden.get().set_command_json(&command);
-            assert!(forbidden.send().promise.await.is_err());
+            assert!(fixture.invocation_channel().wifi_continuity_command(&command).await.is_err());
             assert_eq!(service.0.lock().unwrap().len(), 1);
         }).await;
     }
@@ -14005,17 +12277,10 @@ pub mod tests {
                         cut: true,
                     },
                 ] {
-                    let mut request = channel.local_file_clipboard_request();
-                    request
-                        .get()
-                        .set_command_json(&serde_json::to_vec(&command).expect("command"));
-                    request.get().set_on_behalf_of(&[]);
-                    let error = request
-                        .send()
-                        .promise
+                    let error = channel
+                        .local_file_clipboard_command(&command, None)
                         .await
-                        .err()
-                        .expect("unattested channel must be refused");
+                        .expect_err("unattested channel must be refused");
                     assert!(error.to_string().contains("launcher-attested"), "{error}");
                 }
             })
@@ -14036,16 +12301,10 @@ pub mod tests {
                     request_id: uuid::Uuid::new_v4().to_string(),
                     components: vec![b"document.md".to_vec()],
                 };
-                let mut rpc = channel.local_file_clipboard_request();
-                rpc.get()
-                    .set_command_json(&serde_json::to_vec(&discovery).unwrap());
-                rpc.get().set_on_behalf_of(&[]);
-                let error = rpc
-                    .send()
-                    .promise
+                let error = channel
+                    .local_file_selected_discovery(&discovery, None)
                     .await
-                    .err()
-                    .expect("discovery cannot mint a local Files peer");
+                    .expect_err("discovery cannot mint a local Files peer");
                 assert!(error.to_string().contains("launcher-attested"), "{error}");
                 let selected = runtime_collab::open_selected::v2::Request {
                     protocol: runtime_collab::open_selected::v2::PROTOCOL.into(),
@@ -14061,35 +12320,17 @@ pub mod tests {
                     parent_descriptor: 4,
                     proof_descriptor: 5,
                 };
-                let mut rpc = channel.local_file_clipboard_request();
-                rpc.get()
-                    .set_command_json(&serde_json::to_vec(&selected).unwrap());
-                rpc.get().set_on_behalf_of(&[]);
-                let error = rpc
-                    .send()
-                    .promise
+                let error = channel
+                    .local_file_open_selected_v2(&selected, Some(*uuid::Uuid::new_v4().as_bytes()))
                     .await
-                    .err()
-                    .expect("Edit requires its actual semantic invocation");
-                assert!(
-                    error.to_string().contains("admitted semantic invocation"),
-                    "{error}"
-                );
+                    .expect_err("Edit requires its actual semantic invocation");
+                assert!(error.to_string().contains("absent"), "{error}");
                 let navigation = selected.navigation();
-                let mut rpc = channel.local_file_clipboard_request();
-                rpc.get()
-                    .set_command_json(&serde_json::to_vec(&navigation).unwrap());
-                rpc.get().set_on_behalf_of(&[]);
-                let error = rpc
-                    .send()
-                    .promise
+                let error = channel
+                    .local_file_open_selected(&navigation, Some(*uuid::Uuid::new_v4().as_bytes()))
                     .await
-                    .err()
-                    .expect("Read requires its actual semantic invocation");
-                assert!(
-                    error.to_string().contains("admitted semantic invocation"),
-                    "{error}"
-                );
+                    .expect_err("Read requires its actual semantic invocation");
+                assert!(error.to_string().contains("absent"), "{error}");
             })
             .await;
     }
@@ -14109,9 +12350,7 @@ pub mod tests {
                         samples: vec![123; 1920],
                     },
                 ] {
-                    let mut rpc = channel.audio_output_command_request();
-                    rpc.get().set_command(&command.encode().unwrap());
-                    let error = rpc.send().promise.await.err().expect(
+                    let error = channel.audio_output_command(&command).await.expect_err(
                         "an admitted remote/raw route cannot manufacture launcher process custody",
                     );
                     assert!(error.to_string().contains("launcher-attested"), "{error}");
@@ -14123,20 +12362,16 @@ pub mod tests {
     #[cfg(test)]
     async fn witness_publish(
         fixture: &LocalDirectoryFixture,
-        channel: &channel_handle::Client,
-        app: &str,
+        channel: &runtime_collab::ChannelHandle,
         directory: bool,
     ) {
         if directory {
-            let mut request = channel.publish_action_directory_request();
-            request.get().set_app_id(app);
-            request.get().set_directory(fixture.directory.clone());
-            request.send().promise.await.unwrap();
+            channel
+                .publish_action_directory(wire_answerer(Rc::clone(&fixture.directory)))
+                .await
+                .unwrap();
         } else {
-            let mut request = channel.publish_actions_request();
-            request.get().set_app_id(app);
-            request.get().init_actions(0);
-            request.send().promise.await.unwrap();
+            channel.publish_actions(&[]).await.unwrap();
         }
     }
 
@@ -14159,7 +12394,7 @@ pub mod tests {
                         tree.workspaces.push(other_workspace);
                     }
                     let target = fixture.invocation_channel();
-                    witness_publish(&fixture, &target, &fixture.route.app_id, directory).await;
+                    witness_publish(&fixture, &target, directory).await;
                     let request = tilo_actions::remote::InvokeRequest {
                         invocation: tilo_actions::InvocationId::new(),
                         target: tilo_actions::remote::RemoteActionTarget {
@@ -14188,8 +12423,8 @@ pub mod tests {
                         let route = CrdtRoute::record("org.example.unrelated", room, "main");
                         let other = fixture.invocation_channel_for(other_peer, &route);
                         for other_directory in [false, true] {
-                            witness_publish(&fixture, &other, &route.app_id, other_directory).await;
-                            witness_publish(&fixture, &other, &route.app_id, other_directory).await;
+                            witness_publish(&fixture, &other, other_directory).await;
+                            witness_publish(&fixture, &other, other_directory).await;
                         }
                         fixture.state.remove_connection(other_peer);
                     }
@@ -14199,7 +12434,7 @@ pub mod tests {
                     );
 
                     let token = fixture.state.witness_confirmation(&original).unwrap();
-                    witness_publish(&fixture, &target, &fixture.route.app_id, directory).await;
+                    witness_publish(&fixture, &target, directory).await;
                     assert!(
                         !fixture.state.take_witness(&token, &binding()),
                         "identical target republication revokes consent"
@@ -14213,7 +12448,7 @@ pub mod tests {
                         "disconnect revokes consent"
                     );
                     let token = fixture.state.witness_confirmation(&current).unwrap();
-                    witness_publish(&fixture, &target, &fixture.route.app_id, directory).await;
+                    witness_publish(&fixture, &target, directory).await;
                     assert!(
                         !fixture.state.take_witness(&token, &binding()),
                         "peer reuse cannot restore old consent"
@@ -14305,10 +12540,9 @@ pub mod tests {
             query_count: 0,
             resolve_count: 0,
         }));
-        let directory: action_directory::Client =
-            capnp_rpc::new_client(TestActionDirectoryServer {
-                state: Rc::clone(&directory_state),
-            });
+        let directory: Rc<dyn wire::DirectorySource> = Rc::new(TestActionDirectoryServer {
+            state: Rc::clone(&directory_state),
+        });
         directories.directories.borrow_mut().insert(
             peer_id,
             RegisteredActionDirectory {
@@ -14444,8 +12678,6 @@ pub mod tests {
 
     #[test]
     fn published_semantic_identity_retains_exact_directory_address_and_refuses_bad_wire() {
-        use runtime_collab::collab_capnp::exported_action;
-
         let fixture = local_directory_fixture();
         let mut row = fixture.directory_state.borrow().row();
         let identity = runtime_collab::ExportedResourceSemanticIdentity {
@@ -14462,29 +12694,15 @@ pub mod tests {
         );
 
         let decode = |kind: &str, key: &str| {
-            let mut message = capnp::message::Builder::new_default();
-            let mut descriptor = message.init_root::<exported_action::Builder<'_>>();
-            descriptor.set_resource_kind("chat.agent");
-            // A published action names its kind, parameters and contract.
-            descriptor.set_operation_kind("effect");
-            descriptor.set_params_json("[]");
-            descriptor.set_contract_json(
-                serde_json::to_string(&tilo_actions::ActionContract::default()).unwrap(),
-            );
-            let mut identity = descriptor.init_semantic_identity();
-            identity.set_kind(kind);
-            identity.set_key(key);
-            runtime_collab::decode_exported_action(
-                message
-                    .get_root_as_reader::<exported_action::Reader<'_>>()
-                    .unwrap(),
-            )
-            .map(|action| action.semantic_identity)
+            let mut descriptor = row.descriptor.clone().unwrap();
+            descriptor.resource_kind = "chat.agent".into();
+            descriptor.semantic_identity = Some(runtime_collab::ExportedResourceSemanticIdentity {
+                kind: kind.into(),
+                key: key.into(),
+            });
+            descriptor.check()
         };
-        assert_eq!(
-            decode("chat.agent", "chat.person:scribe").unwrap(),
-            tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.person:scribe")
-        );
+        assert_eq!(decode("chat.agent", "chat.person:scribe"), Ok(()));
         assert!(decode("chat.person", "chat.person:scribe").is_err());
         assert!(decode("chat.agent", "key\nsecret").is_err());
         assert!(decode("chat.agent", &"x".repeat(4097)).is_err());
@@ -14505,17 +12723,13 @@ pub mod tests {
         row: runtime_collab::ActionDirectoryRow,
     }
 
-    #[allow(
-        refining_impl_trait,
-        reason = "the generated Cap'n Proto test endpoint has the same concrete Promise shape as production endpoints"
-    )]
     #[cfg(test)]
-    impl action_directory::Server for UndecodableVisibilityDirectory {
+    impl wire::DirectorySource for UndecodableVisibilityDirectory {
         fn query(
-            self: Rc<Self>,
-            _params: action_directory::QueryParams,
-            mut results: action_directory::QueryResults,
-        ) -> Promise<(), capnp::Error> {
+            &self,
+            _query: runtime_collab::ActionDirectoryQuery,
+            max_bytes: u32,
+        ) -> wire::Asked<runtime_collab::ActionDirectoryPage> {
             let container = runtime_collab::ActionDirectoryRow {
                 parent_resource: String::new(),
                 resource: "workspace:folder".into(),
@@ -14539,15 +12753,23 @@ pub mod tests {
                 stale_cursor: false,
                 budget_exhausted: false,
             };
-            let mut out = results.get().init_page();
-            runtime_collab::write_action_directory_page(out.reborrow(), &page)
-                .expect("test directory page encodes");
             // A permission the broker does not know: the gate is unreadable.
-            out.get_rows()
-                .unwrap()
-                .get(1)
-                .set_visibility_contract_json(r#"{"kind":"everyone"}"#);
-            Promise::ok(())
+            let mut json = serde_json::to_value(&page).expect("test directory page encodes");
+            json["rows"][1]["visibility"]["contract"] = serde_json::json!({"kind": "everyone"});
+            Box::pin(std::future::ready(runtime_collab::read_directory_answer(
+                &json.to_string(),
+                u64::from(max_bytes),
+                |page: &runtime_collab::ActionDirectoryPage| page.rows.iter().collect(),
+            )))
+        }
+
+        fn resolve(
+            &self,
+            _target: (&str, &str, &str),
+            _local_document: bool,
+            _max_bytes: u32,
+        ) -> wire::Asked<runtime_collab::ActionDirectoryResolution> {
+            Box::pin(std::future::ready(Err("not resolved here".into())))
         }
     }
 
@@ -14595,7 +12817,7 @@ pub mod tests {
                     .borrow_mut()
                     .get_mut(&fixture.peer_id)
                     .expect("fixture directory")
-                    .directory = capnp_rpc::new_client(UndecodableVisibilityDirectory { row });
+                    .directory = Rc::new(UndecodableVisibilityDirectory { row });
                 let refused = list().await;
                 assert!(refused.is_err(), "{refused:?}");
             })
@@ -15655,10 +13877,8 @@ pub mod tests {
                 document: None,
             })),
         ));
-        let client: context_stream::Client = capnp_rpc::new_client(ContextStreamServer {
-            feed: Rc::clone(&queued),
-        });
-        let mut pending = Box::pin(client.read_request().send().promise);
+        let reading = Rc::clone(&queued);
+        let mut pending = Box::pin(async move { reading.lock().await.next().await });
         // The actual stream read must be waiting before revocation: it holds
         // the queue while it waits for the next envelope.
         tilo_test_env::within("the stream read to wait for an envelope", async {
@@ -15674,10 +13894,10 @@ pub mod tests {
             observed.lock().unwrap().last().unwrap().1.is_empty(),
             "losing the certified source withdraws the complete shell roster"
         );
-        let Err(error) = pending.await else {
-            panic!("revocation must terminate an already waiting native read");
-        };
-        assert!(error.to_string().contains("context stream fanout closed"));
+        assert!(
+            !matches!(pending.await, Ok(Some(_))),
+            "revocation must terminate an already waiting native read"
+        );
         assert!(
             state
                 .certified_agent_identity(&room, &format!("agent:{tide}"))
@@ -17341,17 +15561,13 @@ pub mod tests {
         use super::*;
 
         async fn update_app(
-            client: &channel_handle::Client,
+            client: &runtime_collab::ChannelHandle,
             id: u64,
             update: &tilo_actions::InvocationUpdate,
-        ) -> Result<(), capnp::Error> {
-            let mut request = client.update_invocation_request();
-            request.get().set_id(id);
-            request
-                .get()
-                .set_update_json(serde_json::to_string(update).unwrap());
-            request.send().promise.await?;
-            Ok(())
+        ) -> Result<(), runtime_portal::NotAvailable> {
+            client
+                .update_invocation(id, &serde_json::to_string(update).unwrap())
+                .await
         }
 
         const FULL_ID: u128 = 0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b;
@@ -17736,18 +15952,14 @@ pub mod tests {
                             &mut fixture.invocation_rx,
                             empty_rx,
                         )));
-                        let stream: invocation_stream::Client =
-                            capnp_rpc::new_client(InvocationStreamServer {
-                                host_guard: None,
-                                rx: rx.clone(),
-                                delivered: None,
-                            });
-                        let response = stream.read_request().send().promise.await.unwrap();
-                        assert_eq!(response.get().unwrap().get_id(), wire_id);
-                        assert_eq!(
-                            response.get().unwrap().get_invocation_uuid().unwrap(),
-                            request.invocation.0.as_bytes()
-                        );
+                        let stream = InvocationStreamServer {
+                            host_guard: None,
+                            rx: rx.clone(),
+                            delivered: None,
+                        };
+                        let response = stream.next().await.unwrap();
+                        assert_eq!(response.id, wire_id);
+                        assert_eq!(response.invocation, request.invocation);
                         effect(root.path());
                         let conflict = if scenario == "caller-before-legacy" {
                             fixture
@@ -17807,7 +16019,9 @@ pub mod tests {
                         }
                         let membership = fixture.membership.as_ref().unwrap().clone();
                         drop(channel);
+                        let gone = Arc::downgrade(&fixture.state);
                         drop(fixture);
+                        broker_gone(gone).await;
                         let (mut reopened, _, mut again) =
                             durable_fixture(root.path(), Some(membership));
                         again.invocation = request.invocation;
@@ -17878,22 +16092,17 @@ pub mod tests {
                         &mut fixture.invocation_rx,
                         empty_rx,
                     )));
-                    let stream: invocation_stream::Client =
-                        capnp_rpc::new_client(InvocationStreamServer {
-                            host_guard: None,
-                            rx: rx.clone(),
-                            delivered: None,
-                        });
-                    let response = stream.read_request().send().promise.await.unwrap();
-                    let delivered = response.get().unwrap();
-                    let delivered_id = delivered.get_id();
-                    assert_eq!(
-                        delivered.get_invocation_uuid().unwrap(),
-                        request.invocation.0.as_bytes()
-                    );
+                    let stream = InvocationStreamServer {
+                        host_guard: None,
+                        rx: rx.clone(),
+                        delivered: None,
+                    };
+                    let delivered = stream.next().await.unwrap();
+                    let delivered_id = delivered.id;
+                    assert_eq!(delivered.invocation, request.invocation);
                     assert!(
                         rx.lock().await.try_recv().is_err(),
-                        "one actual Cap'n Proto application delivery"
+                        "one actual application delivery"
                     );
                     effect(root.path());
                     let terminal = tilo_actions::InvocationUpdate::Succeeded {
@@ -17944,7 +16153,9 @@ pub mod tests {
                         );
                         tree.persist_path = Some(root.path().join("state.json"));
                     }
+                    let gone = Arc::downgrade(&fixture.state);
                     drop(fixture);
+                    broker_gone(gone).await;
                     let (mut restarted, caller, _) = durable_fixture(root.path(), Some(membership));
                     assert_eq!(
                         restarted
@@ -17981,7 +16192,9 @@ pub mod tests {
                         assert!(fixture.invocation_rx.try_recv().is_err());
                     }
                     let membership = fixture.membership.clone().unwrap();
+                    let gone = Arc::downgrade(&fixture.state);
                     drop(fixture);
+                    broker_gone(gone).await;
                     let (mut restarted, caller, _) = durable_fixture(root.path(), Some(membership));
                     if boundary == BarrierFailure::File {
                         assert!(restarted.state.verified_invocation_status(&caller, request.invocation).unwrap().is_none());
@@ -18246,16 +16459,15 @@ pub mod tests {
                         ..Default::default()
                     };
                     let (tx, rx) = mpsc::unbounded_channel();
-                    let stream: invocation_stream::Client =
-                        capnp_rpc::new_client(InvocationStreamServer {
-                            host_guard: None,
-                            rx: Rc::new(AsyncMutex::new(rx)),
-                            delivered: invocation_delivery_notice(
-                                &services,
-                                "so.tilo.notes".into(),
-                                "room-7".into(),
-                            ),
-                        });
+                    let stream = InvocationStreamServer {
+                        host_guard: None,
+                        rx: Rc::new(AsyncMutex::new(rx)),
+                        delivered: invocation_delivery_notice(
+                            &services,
+                            "so.tilo.notes".into(),
+                            "room-7".into(),
+                        ),
+                    };
                     assert!(recording.0.lock().unwrap().is_empty());
                     tx.send(InvocationEnvelope {
                         id: 1,
@@ -18267,7 +16479,7 @@ pub mod tests {
                         context: None,
                     })
                     .unwrap();
-                    stream.read_request().send().promise.await.unwrap();
+                    stream.next().await.unwrap();
                     assert_eq!(
                         *recording.0.lock().unwrap(),
                         vec![("so.tilo.notes".to_owned(), "room-7".to_owned())]
@@ -18291,9 +16503,9 @@ pub mod tests {
                 .run_until(async {
                     let root = tempfile::tempdir().unwrap();
                     let (fixture, caller, request) = durable_fixture(root.path(), None);
-                    let client: channel_handle::Client =
-                        capnp_rpc::new_client(CapnpChannelHandle {
-                            as_app: None,
+                    let (connection, outgoing) = wire::WireConnection::new(None);
+                    let handle =
+                        connection.open(wire::ChannelSession::new(Rc::new(CapnpChannelHandle {
                             person_chat_views: RefCell::default(),
                             committed_read: Rc::new(RefCell::new(
                                 committed_document::Slot::default(),
@@ -18308,14 +16520,16 @@ pub mod tests {
                             route_access: RouteAccess::Own,
                             lease: None,
                             _hold: None,
-                        });
-                    let legacy = client
-                        .subscribe_invocations_request()
-                        .send()
-                        .promise
+                        })));
+                    let app = wire_client(connection, outgoing);
+                    let _legacy = app
+                        .wire()
+                        .subscribe(
+                            handle,
+                            runtime_collab::wire::Topic::Invocations { stable_ids: false },
+                        )
                         .await
                         .unwrap();
-                    let _legacy_stream = legacy.get().unwrap().get_stream().unwrap();
                     assert!(
                         fixture
                             .state
@@ -18323,19 +16537,17 @@ pub mod tests {
                             .unwrap_err()
                             .contains("stable_identity_unavailable")
                     );
-                    let mut subscription = client.subscribe_invocations_request();
-                    subscription.get().set_stable_invocation_ids(true);
-                    let capable = subscription.send().promise.await.unwrap();
-                    let stream = capable.get().unwrap().get_stream().unwrap();
+                    let stream = app
+                        .channel(handle)
+                        .subscribe_stable_invocations()
+                        .await
+                        .unwrap();
                     fixture
                         .state
                         .start_verified_invocation(&caller, &request, None)
                         .unwrap();
-                    let reply = stream.read_request().send().promise.await.unwrap();
-                    assert_eq!(
-                        reply.get().unwrap().get_invocation_uuid().unwrap(),
-                        request.invocation.0.as_bytes()
-                    );
+                    let delivered = stream.read().await.unwrap();
+                    assert_eq!(delivered.invocation_uuid, *request.invocation.0.as_bytes());
                 })
                 .await;
         }
@@ -18349,8 +16561,7 @@ pub mod tests {
                 let channel = fixture.invocation_channel();
                 let admitted = fixture.state.start_verified_invocation(&caller, &request, None).unwrap();
                 fixture.invocation_rx.try_recv().unwrap();
-                let foreign: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
-                    as_app: None,
+                let foreign = wire_channel(CapnpChannelHandle {
                     person_chat_views: RefCell::default(),
                     committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                     state: fixture.state.clone(), directories: fixture.directories.clone(),
@@ -18375,19 +16586,14 @@ pub mod tests {
                     assert!(update_app(&channel, admitted.wire_id, &update).await.is_err());
                     assert!(matches!(fixture.state.verified_invocation_status(&caller, request.invocation).unwrap().unwrap().update, tilo_actions::InvocationUpdate::Accepted { .. }));
                 }
-                let mut complete = channel.complete_invocation_request();
-                complete.get().set_id(admitted.wire_id);
-                complete.get().set_code(""); complete.get().set_message("");
-                complete.send().promise.await.unwrap();
+                channel.complete_invocation(admitted.wire_id, "", "").await.unwrap();
                 assert!(matches!(fixture.state.verified_invocation_status(&caller, request.invocation).unwrap().unwrap().update, tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == request.invocation));
 
                 // The legacy numeric local caller still receives and completes its original handle.
                 let legacy = fixture.state.start_invocation(71, &request.resource, &request.action, None, &caller.admitted.principal_id).unwrap();
                 let delivered = fixture.invocation_rx.try_recv().unwrap();
                 assert_eq!(delivered.invocation.0.as_u128(), u128::from(legacy.id));
-                let mut complete = channel.complete_invocation_request();
-                complete.get().set_id(legacy.id); complete.get().set_code(""); complete.get().set_message("");
-                complete.send().promise.await.unwrap();
+                channel.complete_invocation(legacy.id, "", "").await.unwrap();
                 assert!(legacy.completion.recv().unwrap().code.is_empty());
             }).await;
         }
@@ -18428,11 +16634,11 @@ pub mod tests {
                             .unwrap()
                             .recv_timeout(tilo_test_env::hang_bound());
                     }));
-                    let mut complete = channel.complete_invocation_request();
-                    complete.get().set_id(admitted.wire_id);
-                    complete.get().set_code("");
-                    complete.get().set_message("");
-                    let completing = tokio::task::spawn_local(complete.send().promise);
+                    let completing = tokio::task::spawn_local({
+                        let channel = channel.clone();
+                        let id = admitted.wire_id;
+                        async move { channel.complete_invocation(id, "", "").await }
+                    });
                     tilo_test_env::within("the completion to reach its journal write", async {
                         while at_write.try_recv().is_err() {
                             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -18440,11 +16646,9 @@ pub mod tests {
                     })
                     .await;
                     // Another request the loop answers, as it answers an app.
-                    let mut asked = channel.invocation_cancellation_request();
-                    asked.get().set_id(admitted.wire_id);
                     tilo_test_env::within(
                         "the loop to answer while the completion writes",
-                        asked.send().promise,
+                        channel.invocation_cancellation(admitted.wire_id),
                     )
                     .await
                     .unwrap();
@@ -18829,6 +17033,98 @@ impl CapnpBrokerState {
         }
         Ok(())
     }
+}
+
+/// `handle` held by an app on its own wire connection to the broker.
+/// Spawns on the current `LocalSet`.
+#[cfg(any(test, feature = "test-support"))]
+fn wire_channel(handle: CapnpChannelHandle) -> runtime_collab::ChannelHandle {
+    wire_channel_rc(Rc::new(handle))
+}
+
+/// [`wire_channel`] for a handle the test also reads from the broker's side,
+/// as its invocation feed: pulled, so whatever the broker dispatched and the
+/// test did not take stays countable ([`unread_invocations`]).
+#[cfg(any(test, feature = "test-support"))]
+fn wire_channel_rc(handle: Rc<CapnpChannelHandle>) -> runtime_collab::ChannelHandle {
+    let (connection, outgoing) = wire::WireConnection::new(None);
+    let channel = connection.open(wire::ChannelSession::new(handle));
+    wire_client(connection, outgoing).channel(channel)
+}
+
+/// An app's wire client served by `connection`. Spawns on the current
+/// `LocalSet`.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test support: a host without socket pairs cannot run the test at all"
+)]
+fn wire_client(
+    connection: Rc<wire::WireConnection>,
+    outgoing: tokio::sync::mpsc::UnboundedReceiver<runtime_collab::wire::HostFrame>,
+) -> runtime_collab::CollabClient {
+    let (host, app) = tokio::net::UnixStream::pair().unwrap();
+    let (reader, writer) = host.into_split();
+    tokio::task::spawn_local(wire::serve(connection, outgoing, reader, writer));
+    let (reader, writer) = app.into_split();
+    let (client, carry) = runtime_collab::CollabClient::over(reader, writer);
+    tokio::task::spawn_local(carry);
+    client
+}
+
+/// Wait for a dropped broker to go: its channels let go of it once their
+/// wire connections, closing with their clients, have wound down.
+#[cfg(test)]
+async fn broker_gone(state: std::sync::Weak<CapnpBrokerState>) {
+    tilo_test_env::within("the dropped broker's connections close", async {
+        while state.strong_count() > 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
+/// An app answering the host's asks of its published action directory from
+/// `directory`. Spawns on the current `LocalSet`.
+#[cfg(test)]
+fn wire_answerer(
+    directory: Rc<dyn wire::DirectorySource>,
+) -> runtime_collab::wire::client::Answerer {
+    use runtime_collab::wire::{Answer, Ask};
+    type Asked = (Ask, tokio::sync::oneshot::Sender<Result<Answer, String>>);
+    let (asks, mut asked) = tokio::sync::mpsc::unbounded_channel::<Asked>();
+    tokio::task::spawn_local(async move {
+        while let Some((ask, answer)) = asked.recv().await {
+            let answered = match ask {
+                Ask::Query { query, .. } => directory
+                    .query(query, u32::MAX)
+                    .await
+                    .and_then(|page| serde_json::to_string(&page).map_err(|e| e.to_string()))
+                    .map(Answer::Page),
+                Ask::Resolve {
+                    revision,
+                    resource,
+                    action,
+                    local_document,
+                    ..
+                } => directory
+                    .resolve((&revision, &resource, &action), local_document, u32::MAX)
+                    .await
+                    .and_then(|found| serde_json::to_string(&found).map_err(|e| e.to_string()))
+                    .map(Answer::Resolution),
+            };
+            let _ = answer.send(answered);
+        }
+    });
+    Arc::new(move |ask| {
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let _ = asks.send((ask, answer));
+        Box::pin(async move {
+            answered
+                .await
+                .map_err(|_| "the directory closed".to_owned())?
+        })
+    })
 }
 
 #[cfg(test)]

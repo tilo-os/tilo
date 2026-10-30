@@ -182,18 +182,13 @@ impl crate::ChannelHandle {
         &self,
         command: &BrowserServiceSessionCommand,
     ) -> Result<BrowserServiceSessionReply, crate::NotAvailable> {
-        let failed =
-            |message: &str| crate::NotAvailable::Capnp(capnp::Error::failed(message.into()));
+        let failed = |message: &str| crate::NotAvailable::Refused(message.into());
         let bytes = command.encode().map_err(failed)?;
-        let mut request = self.inner.browser_service_session_command_request();
-        request.get().set_command(&bytes);
-        let response = request.send().promise.await?;
-        let reader = response.get()?.get_reply()?;
+        let reader = Zeroizing::new(self.browser_service_session(bytes.to_vec()).await?);
         if reader.len() > MAX_BROWSER_SERVICE_SESSION_REPLY_BYTES {
             return Err(failed("service-session reply too large"));
         }
-        let bytes = Zeroizing::new(reader.to_vec());
-        let reply = BrowserServiceSessionReply::decode(&bytes).map_err(failed)?;
+        let reply = BrowserServiceSessionReply::decode(&reader).map_err(failed)?;
         if !reply.matches(command) {
             return Err(failed("service-session reply does not match request"));
         }

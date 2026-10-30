@@ -359,25 +359,80 @@ impl Drop for HostOutput {
 mod tests {
     //! SDK wire scheduling fixtures, not proofs of native launcher custody or device output.
     use super::*;
-    use runtime_collab::collab_capnp::{channel_handle, collab_service};
     use std::{
         cell::{Cell, RefCell},
+        future::Future,
+        pin::Pin,
         rc::Rc,
     };
 
+    /// How a fixture host's audio output answers each command.
+    type Answering = Rc<dyn Fn(Command) -> Pin<Box<dyn Future<Output = Result<Snapshot, String>>>>>;
+
+    /// A channel on a collaboration host whose audio output answers with
+    /// `answer`, served on this `LocalSet`.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the fixture host runs on the test's `LocalSet`"
+    )]
+    async fn host_channel(answer: Answering) -> runtime_collab::ChannelHandle {
+        use runtime_collab::wire::{Call, FRAMING, Handle, HostFrame, Operation, Reply, Service};
+        use tokio::io::AsyncWriteExt as _;
+        let (client, host) = tokio::io::duplex(1 << 20);
+        tokio::task::spawn_local(async move {
+            let (mut reader, writer) = tokio::io::split(host);
+            let writer = Rc::new(tokio::sync::Mutex::new(writer));
+            while let Ok(Some(Call { id, request })) =
+                FRAMING.read_value_async::<_, Call>(&mut reader).await
+            {
+                let result: Pin<Box<dyn Future<Output = Result<Reply, String>>>> = match request {
+                    Operation::Join(_) => {
+                        Box::pin(std::future::ready(Ok(Reply::Opened(Handle(1)))))
+                    }
+                    Operation::Command {
+                        service: Service::AudioOutput,
+                        body,
+                        ..
+                    } => {
+                        let answer = answer(Command::decode(&body).unwrap());
+                        Box::pin(async move {
+                            let snapshot = answer.await?;
+                            Ok(Reply::Answer(serde_json::to_vec(&snapshot).unwrap()))
+                        })
+                    }
+                    _ => continue,
+                };
+                let writer = Rc::clone(&writer);
+                tokio::task::spawn_local(async move {
+                    let result = result.await;
+                    let mut writer = writer.lock().await;
+                    let _ = FRAMING
+                        .write_value_async(&mut *writer, &HostFrame::Reply { id, result })
+                        .await;
+                    let _ = writer.flush().await;
+                });
+            }
+        });
+        let (client, _) = runtime_collab::CollabClient::connected_local(client);
+        client
+            .join_channel("fixture", &super::super::harness_presentation())
+            .await
+            .unwrap()
+    }
+
     #[derive(Clone, Default)]
     struct Peer(Rc<RefCell<(bool, bool, Vec<Command>)>>);
-    impl channel_handle::Server for Peer {
-        fn audio_output_command(
-            self: Rc<Self>,
-            params: channel_handle::AudioOutputCommandParams,
-            mut results: channel_handle::AudioOutputCommandResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let command = Command::decode(params.get().unwrap().get_command().unwrap()).unwrap();
+    impl Peer {
+        fn answering(&self) -> Answering {
+            let peer = self.clone();
+            Rc::new(move |command| Box::pin(std::future::ready(peer.answer(command))))
+        }
+
+        fn answer(&self, command: Command) -> Result<Snapshot, String> {
             let mut state = self.0.borrow_mut();
             state.2.push(command.clone());
             if state.1 {
-                return std::future::ready(Err(capnp::Error::failed("generation ended".into())));
+                return Err("generation ended".into());
             }
             match command {
                 Command::Flush { .. } => state.0 = true,
@@ -389,7 +444,7 @@ mod tests {
             } else {
                 0
             };
-            let snapshot = Snapshot {
+            Ok(Snapshot {
                 generation: 7,
                 accepted_sequence: accepted,
                 rendered_frames: 0,
@@ -397,24 +452,7 @@ mod tests {
                 paused: false,
                 ready: !state.1,
                 closed: state.1,
-            };
-            drop(state);
-            results
-                .get()
-                .set_reply(&serde_json::to_vec(&snapshot).unwrap());
-            std::future::ready(Ok(()))
-        }
-    }
-    impl collab_service::Server for Peer {
-        fn join_channel(
-            self: Rc<Self>,
-            _: collab_service::JoinChannelParams,
-            mut results: collab_service::JoinChannelResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            results
-                .get()
-                .set_handle(capnp_rpc::new_client(self.as_ref().clone()));
-            std::future::ready(Ok(()))
+            })
         }
     }
 
@@ -425,68 +463,50 @@ mod tests {
         generation: Rc<Cell<u64>>,
         fail_progress: bool,
     }
-    impl channel_handle::Server for DelayedProgressPeer {
+    impl DelayedProgressPeer {
+        fn answering(&self) -> Answering {
+            let peer = self.clone();
+            Rc::new(move |command| Box::pin(peer.clone().answer(command)))
+        }
+
         #[expect(
             clippy::future_not_send,
-            reason = "the Cap'n Proto fixture retains Rc capabilities and runs only on the SDK LocalSet"
+            reason = "the fixture host runs on the test's `LocalSet`"
         )]
-        fn audio_output_command(
-            self: Rc<Self>,
-            params: channel_handle::AudioOutputCommandParams,
-            mut results: channel_handle::AudioOutputCommandResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let command = Command::decode(params.get().unwrap().get_command().unwrap()).unwrap();
-            async move {
-                let (generation, sequence) = match command {
-                    Command::Open {} => {
-                        self.generation.set(self.generation.get() + 1);
-                        (self.generation.get(), 0)
+        async fn answer(self, command: Command) -> Result<Snapshot, String> {
+            let (generation, sequence) = match command {
+                Command::Open {} => {
+                    self.generation.set(self.generation.get() + 1);
+                    (self.generation.get(), 0)
+                }
+                Command::Status { generation } => {
+                    self.status_started.notify_one();
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    if self.fail_progress && generation == 7 {
+                        return Err("generation ended".into());
                     }
-                    Command::Status { generation } => {
-                        self.status_started.notify_one();
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        if self.fail_progress && generation == 7 {
-                            return Err(capnp::Error::failed("generation ended".into()));
-                        }
-                        (generation, 0)
-                    }
-                    Command::Write {
-                        generation,
-                        sequence,
-                        samples,
-                    } => {
-                        *self.accepted.borrow_mut() = samples;
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        (generation, sequence)
-                    }
-                    _ => (self.generation.get(), 0),
-                };
-                let snapshot = Snapshot {
+                    (generation, 0)
+                }
+                Command::Write {
                     generation,
-                    accepted_sequence: sequence,
-                    rendered_frames: if sequence > 0 { 960 } else { 0 },
-                    queued_frames: 0,
-                    paused: false,
-                    ready: true,
-                    closed: false,
-                };
-                results
-                    .get()
-                    .set_reply(&serde_json::to_vec(&snapshot).unwrap());
-                Ok(())
-            }
-        }
-    }
-    impl collab_service::Server for DelayedProgressPeer {
-        fn join_channel(
-            self: Rc<Self>,
-            _: collab_service::JoinChannelParams,
-            mut results: collab_service::JoinChannelResults,
-        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            results
-                .get()
-                .set_handle(capnp_rpc::new_client(self.as_ref().clone()));
-            std::future::ready(Ok(()))
+                    sequence,
+                    samples,
+                } => {
+                    *self.accepted.borrow_mut() = samples;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    (generation, sequence)
+                }
+                _ => (self.generation.get(), 0),
+            };
+            Ok(Snapshot {
+                generation,
+                accepted_sequence: sequence,
+                rendered_frames: if sequence > 0 { 960 } else { 0 },
+                queued_frames: 0,
+                paused: false,
+                ready: true,
+                closed: false,
+            })
         }
     }
 
@@ -525,8 +545,7 @@ mod tests {
                 generation: Rc::new(Cell::new(6)),
                 fail_progress: false,
             };
-            let channel = runtime_collab::CollabClient::from_raw(capnp_rpc::new_client(peer.clone()))
-                .join_channel("fixture", &[]).await.unwrap();
+            let channel = host_channel(peer.answering()).await;
             let connection = serve(channel);
             let output = open(&connection).await;
             tokio::time::timeout(Duration::from_secs(1), peer.status_started.notified())
@@ -558,11 +577,7 @@ mod tests {
                         generation: Rc::new(Cell::new(6)),
                         fail_progress: true,
                     };
-                    let channel =
-                        runtime_collab::CollabClient::from_raw(capnp_rpc::new_client(peer.clone()))
-                            .join_channel("fixture", &[])
-                            .await
-                            .unwrap();
+                    let channel = host_channel(peer.answering()).await;
                     let connection = serve(channel);
                     let first = open(&connection).await;
                     tokio::time::timeout(Duration::from_secs(1), peer.status_started.notified())
@@ -598,20 +613,18 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for delayed_rpc in [true, false] {
-                    let client = if delayed_rpc {
-                        capnp_rpc::new_client(DelayedProgressPeer {
+                    let answering = if delayed_rpc {
+                        DelayedProgressPeer {
                             status_started: Rc::new(tokio::sync::Notify::new()),
                             accepted: Rc::new(RefCell::new(Vec::new())),
                             generation: Rc::new(Cell::new(7)),
                             fail_progress: false,
-                        })
+                        }
+                        .answering()
                     } else {
-                        capnp_rpc::new_client(Peer::default())
+                        Peer::default().answering()
                     };
-                    let channel = runtime_collab::CollabClient::from_raw(client)
-                        .join_channel("fixture", &[])
-                        .await
-                        .unwrap();
+                    let channel = host_channel(answering).await;
                     let (_urgent, mut receive) = async_mpsc::channel(8);
                     let write = Command::Write {
                         generation: 7,
@@ -649,11 +662,7 @@ mod tests {
                     Command::Close { generation: 7 },
                 ] {
                     let peer = Peer::default();
-                    let channel =
-                        runtime_collab::CollabClient::from_raw(capnp_rpc::new_client(peer.clone()))
-                            .join_channel("fixture", &[])
-                            .await
-                            .unwrap();
+                    let channel = host_channel(peer.answering()).await;
                     let (urgent, mut receive) = async_mpsc::channel(8);
                     let (reply, received) = mpsc::sync_channel(1);
                     urgent

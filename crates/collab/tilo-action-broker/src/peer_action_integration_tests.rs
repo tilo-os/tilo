@@ -244,10 +244,10 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         assert!(matches!(reply(&caller, duplicate).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Accepted { .. }), .. }));
         let (_, empty_rx) = mpsc::unbounded_channel();
         let rx = Rc::new(AsyncMutex::new(std::mem::replace(&mut fixture.invocation_rx, empty_rx)));
-        let stream: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer { host_guard: None, rx: rx.clone(), delivered: None });
-        let delivery = stream.read_request().send().promise.await.unwrap();
-        let wire_id = delivery.get().unwrap().get_id();
-        assert_eq!(delivery.get().unwrap().get_invocation_uuid().unwrap(), request.invocation.0.as_bytes());
+        let stream = InvocationStreamServer { host_guard: None, rx: rx.clone(), delivered: None };
+        let delivery = stream.next().await.unwrap();
+        let wire_id = delivery.id;
+        assert_eq!(delivery.invocation, request.invocation);
         effect(root.path());
         // The application's resulting document mutation follows the ordinary
         // signed broker publication path and the same relay state session.
@@ -341,8 +341,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let mut silent = request.clone(); silent.invocation = tilo_actions::InvocationId::new();
         let started = send(&caller, room, 52, invoke(&silent));
         assert!(matches!(reply(&caller, started).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Accepted { .. }), .. }));
-        let silent_delivery = stream.read_request().send().promise.await.unwrap();
-        let silent_wire = silent_delivery.get().unwrap().get_id();
+        let silent_wire = stream.next().await.unwrap().id;
         fixture.state.pending_invocations.lock().unwrap().get_mut(&silent_wire).unwrap().last_activity = std::time::Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
         fixture.state.expire_stale_invocations_at(std::time::Instant::now(), Duration::from_secs(1), Duration::from_secs(1));
         let unknown = send(&caller, room, 52, invoke(&silent));
@@ -351,7 +350,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         // Restart the real broker on its original private journal and original
         // room tree. Neither retained terminal nor uncertain identity dispatches.
         server.abort(); worker.abort(); let _ = server.await; let _ = worker.await;
-        session.close().await; drop(session); drop(channel); drop(fixture); tokio::task::yield_now().await;
+        session.close().await; drop(session); drop(channel); let gone = Arc::downgrade(&fixture.state); drop(fixture); broker_gone(gone).await;
         let (mut reopened, _, mut reopened_request) = durable_fixture(root.path(), Some(membership));
         package_primary(&mut reopened, &mut reopened_request);
         assert!(reopened.state.certificate_authority.set(authority.clone()).is_ok());
@@ -464,27 +463,34 @@ fn native_peer_facade_recording_only_startup_cannot_advertise_durable_attachment
     drop(broker);
 }
 
-/// A real local capability whose pending resolve futures are released by the
+/// A local directory whose pending resolve futures are released by the
 /// test. This exercises draining/processing rather than a full unread channel.
 struct BlockedBridgeDirectory {
     entered: Rc<std::cell::Cell<usize>>,
     releases: Rc<RefCell<std::collections::VecDeque<tokio::sync::oneshot::Sender<()>>>>,
 }
-#[allow(refining_impl_trait, reason = "generated Capnp endpoint Promise shape")]
-impl action_directory::Server for BlockedBridgeDirectory {
+impl wire::DirectorySource for BlockedBridgeDirectory {
+    fn query(
+        &self,
+        _query: runtime_collab::ActionDirectoryQuery,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryPage> {
+        Box::pin(std::future::ready(Err("not listed here".into())))
+    }
+
     fn resolve(
-        self: Rc<Self>,
-        _params: action_directory::ResolveParams,
-        mut results: action_directory::ResolveResults,
-    ) -> Promise<(), capnp::Error> {
+        &self,
+        _target: (&str, &str, &str),
+        _local_document: bool,
+        _max_bytes: u32,
+    ) -> wire::Asked<runtime_collab::ActionDirectoryResolution> {
         self.entered.set(self.entered.get() + 1);
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.releases.borrow_mut().push_back(tx);
-        Promise::from_future(async move {
+        Box::pin(async move {
             rx.await
-                .map_err(|_| capnp::Error::failed("test directory cancelled".into()))?;
-            results.get().init_resolution().set_stale_revision(());
-            Ok(())
+                .map_err(|_| "test directory cancelled".to_owned())?;
+            Ok(runtime_collab::ActionDirectoryResolution::StaleRevision)
         })
     }
 }
@@ -557,7 +563,7 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
                 .borrow_mut()
                 .get_mut(&71)
                 .unwrap()
-                .directory = capnp_rpc::new_client(BlockedBridgeDirectory {
+                .directory = Rc::new(BlockedBridgeDirectory {
                 entered: entered.clone(),
                 releases: releases.clone(),
             });

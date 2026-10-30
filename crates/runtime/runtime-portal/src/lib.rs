@@ -45,7 +45,7 @@ pub mod windows;
 /// this version (docs/architecture/compatibility.md); `interface.toml`
 /// holds the schema, and the repository policy fails a change to it that
 /// keeps the number.
-pub const RUNTIME_INTERFACE_VERSION: u32 = 11;
+pub const RUNTIME_INTERFACE_VERSION: u32 = 12;
 
 use std::env;
 use std::io;
@@ -91,6 +91,9 @@ pub enum NotAvailable {
     /// The service responded but its protocol version doesn't match this client's.
     #[error("protocol mismatch: expected {expected}, got {got}")]
     ProtocolMismatch { expected: u32, got: u32 },
+    /// The service read the request and refused it, saying why.
+    #[error("refused: {0}")]
+    Refused(String),
     /// Capability error talking to the service (rejected request, malformed reply).
     #[cfg(feature = "rpc")]
     #[error("capnp error: {0}")]
