@@ -10,6 +10,7 @@
 //! [`AppActionGrants`](crate::services::AppActionGrants). "Allow once" lives
 //! only for the call it was given for.
 
+use crate::BrokerError;
 use std::sync::Arc;
 
 use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
@@ -276,6 +277,6 @@ pub(super) fn serve_after_consent(
             let person = consent.request.person.clone();
             super::witness::serve_answering(Arc::clone(&state), host, caller, person, message).await
         };
-        reply.ok_or_else(|| capnp::Error::failed("the action host dropped the request".into()))
+        reply.ok_or_else(|| BrokerError::failed("the action host dropped the request".into()))
     })
 }

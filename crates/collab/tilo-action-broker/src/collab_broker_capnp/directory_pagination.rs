@@ -1,5 +1,6 @@
 //! Broker-owned continuation tokens never expose a source's offsets or ids.
 use super::{BrokerActor, Rc, RefCell};
+use crate::BrokerError;
 use std::collections::HashMap;
 
 #[derive(Clone, Default)]
@@ -21,7 +22,7 @@ impl DirectoryPagination {
         needle: &str,
         parent: &str,
         token: &[u8],
-    ) -> Result<Vec<u8>, capnp::Error> {
+    ) -> Result<Vec<u8>, BrokerError> {
         if token.is_empty() {
             return Ok(Vec::new());
         }
@@ -35,7 +36,7 @@ impl DirectoryPagination {
                     && entry.parent == parent
             })
             .map(|entry| entry.source.clone())
-            .ok_or_else(|| capnp::Error::failed("unknown directory continuation".into()))
+            .ok_or_else(|| BrokerError::failed("unknown directory continuation".into()))
     }
 
     pub(super) fn shield(

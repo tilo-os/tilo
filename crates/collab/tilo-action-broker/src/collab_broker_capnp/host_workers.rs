@@ -10,6 +10,7 @@
 //! each route of that app it joins is one of its worker routes. From there
 //! both are the same worker: admitted, revalidated and retired alike.
 
+use crate::BrokerError;
 use std::collections::HashMap;
 
 use super::{AdmittedJoinIdentity, CapnpBrokerState, CrdtRoute, PrivateWorkerRegistration};
@@ -144,22 +145,22 @@ impl CapnpBrokerState {
         peer: u64,
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
-    ) -> Result<(), capnp::Error> {
+    ) -> Result<(), BrokerError> {
         if admitted.host_scope.is_none() && admitted.worker_registration.is_none() {
             return Ok(());
         }
         if !self.is_accepting() {
-            return Err(capnp::Error::failed("broker unavailable".into()));
+            return Err(BrokerError::failed("broker unavailable".into()));
         }
         let mut workers = self
             .host_workers
             .lock()
-            .map_err(|_| capnp::Error::failed("host worker provenance unavailable".into()))?;
+            .map_err(|_| BrokerError::failed("host worker provenance unavailable".into()))?;
         if let Some(previous) = workers.get(peer, route) {
             if previous.host_scope != admitted.host_scope
                 || previous.worker_registration != admitted.worker_registration
             {
-                return Err(capnp::Error::failed(
+                return Err(BrokerError::failed(
                     "host worker scope replacement rejected".into(),
                 ));
             }

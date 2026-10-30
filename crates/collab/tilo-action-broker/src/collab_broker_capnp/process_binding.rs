@@ -1,5 +1,6 @@
 //! Bind descriptor custody to the actual app without changing launch authority.
 use super::{CollabLaunchHandoff, HostServices, native_media::PeerProcess};
+use crate::BrokerError;
 use crate::services::ExecutingBindingPhase as Phase;
 use tokio::io::AsyncWriteExt as _;
 
@@ -21,7 +22,7 @@ pub(super) async fn bind(
     services: &HostServices,
     pid: u32,
     handoff: &CollabLaunchHandoff,
-) -> Result<PeerProcess, capnp::Error> {
+) -> Result<PeerProcess, BrokerError> {
     let observation = Observation {
         services,
         id: services
@@ -49,7 +50,7 @@ pub(super) async fn bind(
                 } else {
                     format!("refused: {error}")
                 };
-                Err(capnp::Error::failed(format!("native executing-task binding {reason}")))
+                Err(BrokerError::failed(format!("native executing-task binding {reason}")))
             }
         },
         () = async {
@@ -59,7 +60,7 @@ pub(super) async fn bind(
             }
         } => {
             observation.phase(Phase::Abandoned);
-            Err(capnp::Error::failed(
+            Err(BrokerError::failed(
                 "native executing-task binding abandoned: the launch exited before the application answered".into(),
             ))
         }

@@ -41,7 +41,6 @@ tilo-content = { path = "../../system/content", default-features = false }
 libc.workspace = true
 tokio-util.workspace = true
 
-capnp.workspace = true
 runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"] }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }

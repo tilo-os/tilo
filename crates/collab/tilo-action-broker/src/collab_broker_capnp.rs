@@ -9,6 +9,7 @@
 //! exhausted-but-empty page triggers no fallback push, callers repeat the
 //! read instead.
 
+use crate::BrokerError;
 mod approved_checks;
 mod external_moderation;
 mod local_document_action;
@@ -1167,19 +1168,19 @@ pub use runtime_collab::ExportedAction as PublishedAction;
 /// Input contract published for one live application action.
 pub use runtime_collab::ExportedInput as PublishedInput;
 
-fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<(), capnp::Error> {
+fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<(), BrokerError> {
     if action.operation_kind != tilo_actions::OperationKind::View {
-        return Err(capnp::Error::failed(format!(
+        return Err(BrokerError::failed(format!(
             "resource view {role} action must be a view operation"
         )));
     }
     if action.contract.confirmation != tilo_actions::ConfirmationPolicy::None {
-        return Err(capnp::Error::failed(format!(
+        return Err(BrokerError::failed(format!(
             "resource view {role} action must not require confirmation"
         )));
     }
     if action.params.iter().any(|parameter| parameter.required) {
-        return Err(capnp::Error::failed(format!(
+        return Err(BrokerError::failed(format!(
             "resource view {role} action must not require caller parameters"
         )));
     }
@@ -1190,12 +1191,12 @@ fn validate_resource_range_binding(
     actions: &[PublishedAction],
     action: &PublishedAction,
     range: &tilo_actions::ResourceViewRangeSpec,
-) -> Result<(), capnp::Error> {
+) -> Result<(), BrokerError> {
     let names = [&range.start_param, &range.end_param, &range.unit_param];
     let target = actions
         .iter()
         .find(|target| target.resource == action.resource && target.action == range.action)
-        .ok_or_else(|| capnp::Error::failed("resource range action missing".into()))?;
+        .ok_or_else(|| BrokerError::failed("resource range action missing".into()))?;
     if names.iter().any(|name| name.is_empty())
         || names[0] == names[1]
         || names[0] == names[2]
@@ -1203,9 +1204,7 @@ fn validate_resource_range_binding(
         || target.operation_kind != tilo_actions::OperationKind::View
         || target.contract.confirmation != tilo_actions::ConfirmationPolicy::None
     {
-        return Err(capnp::Error::failed(
-            "invalid resource range binding".into(),
-        ));
+        return Err(BrokerError::failed("invalid resource range binding".into()));
     }
     for (name, ty) in [
         (&range.start_param, tilo_actions::ParamType::Integer),
@@ -1217,7 +1216,7 @@ fn validate_resource_range_binding(
             .iter()
             .any(|p| p.name.as_ref() == name && p.ty == ty)
         {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "invalid resource range parameter".into(),
             ));
         }
@@ -1227,7 +1226,7 @@ fn validate_resource_range_binding(
         .iter()
         .any(|p| p.required && !names.iter().any(|n| p.name.as_ref() == *n))
     {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "resource range requires unrelated input".into(),
         ));
     }
@@ -1239,7 +1238,7 @@ fn validate_resource_range_binding(
 /// contracts and parameters valid, resource views consistent.
 fn validate_published_surface(
     rows: Vec<PublishedAction>,
-) -> Result<Vec<PublishedAction>, capnp::Error> {
+) -> Result<Vec<PublishedAction>, BrokerError> {
     let mut seen = std::collections::HashSet::with_capacity(rows.len());
     let mut actions = Vec::with_capacity(rows.len());
     for published in rows {
@@ -1249,7 +1248,7 @@ fn validate_published_surface(
             || published.action.contains(tilo_actions::KEY_SEP)
             || !seen.insert((published.resource.clone(), published.action.clone()))
         {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "exported action addresses must be non-empty, unique, and contain no separator"
                     .into(),
             ));
@@ -1258,24 +1257,24 @@ fn validate_published_surface(
             || published.resource_label.trim().is_empty()
             || published.action_label.trim().is_empty()
         {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "exported actions require non-empty kind and labels".into(),
             ));
         }
         if let Some(reason) = published.contract.validate_declaration().into_iter().next() {
-            return Err(capnp::Error::failed(format!(
+            return Err(BrokerError::failed(format!(
                 "invalid exported action contract: {reason}"
             )));
         }
         let mut parameter_names = std::collections::HashSet::new();
         for parameter in &published.params {
             if !parameter_names.insert(parameter.name.as_ref()) {
-                return Err(capnp::Error::failed(
+                return Err(BrokerError::failed(
                     "exported action parameter names must be unique".into(),
                 ));
             }
             if let Some(reason) = parameter.validate_declaration().into_iter().next() {
-                return Err(capnp::Error::failed(format!(
+                return Err(BrokerError::failed(format!(
                     "invalid exported action parameter `{}`: {reason}",
                     parameter.name
                 )));
@@ -1290,7 +1289,7 @@ fn validate_published_surface(
 /// Recheck the resource-view invariants after decoding an untrusted action
 /// surface. A view with a mount must carry that action in the same atomic
 /// publication/page so the broker can prove the binding before exposing it.
-fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(), capnp::Error> {
+fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(), BrokerError> {
     #[derive(Default)]
     struct ResourceViews<'a> {
         ids: std::collections::HashSet<&'a str>,
@@ -1304,17 +1303,17 @@ fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(),
             continue;
         };
         if view.id.is_empty() || view.id.contains(tilo_actions::KEY_SEP) {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "resource view id must be non-empty and contain no separator".into(),
             ));
         }
         if view.label.trim().is_empty() {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "resource view label must be non-empty".into(),
             ));
         }
         if view.open_action != action.action {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "resource view must be attached to its open action".into(),
             ));
         }
@@ -1322,19 +1321,19 @@ fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(),
 
         let seen = resources.entry(&action.resource).or_default();
         if !seen.ids.insert(&view.id) {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "resource view ids must be unique per resource".into(),
             ));
         }
         if !seen.open_actions.insert(&view.open_action) {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "at most one resource view may reference an open action".into(),
             ));
         }
         if view.primary {
             seen.primary_count = seen.primary_count.saturating_add(1);
             if seen.primary_count > 1 {
-                return Err(capnp::Error::failed(
+                return Err(BrokerError::failed(
                     "at most one resource view may be primary".into(),
                 ));
             }
@@ -1352,7 +1351,7 @@ fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(),
             || mount.view_param.trim().is_empty()
             || mount.capability_param == mount.view_param
         {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "resource view mount requires an action and distinct parameter names".into(),
             ));
         }
@@ -1360,7 +1359,7 @@ fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(),
             candidate.resource == action.resource && candidate.action == mount.action
         });
         let Some(mount_action) = mount_action else {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "resource view mount action is not exported by its resource".into(),
             ));
         };
@@ -1374,7 +1373,7 @@ fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(),
                     && parameter.ty == tilo_actions::ParamType::Text
                     && !parameter.required
             }) {
-                return Err(capnp::Error::failed(format!(
+                return Err(BrokerError::failed(format!(
                     "resource view mount {role} parameter `{name}` must name an optional text parameter"
                 )));
             }
@@ -2461,13 +2460,13 @@ impl LocalActionDirectoryRegistry {
         &self,
         peer_id: u64,
         cluster_id: &str,
-    ) -> Result<RegisteredActionDirectory, capnp::Error> {
+    ) -> Result<RegisteredActionDirectory, BrokerError> {
         self.directories
             .borrow()
             .get(&peer_id)
             .filter(|entry| entry.route.cluster_id == cluster_id)
             .cloned()
-            .ok_or_else(|| capnp::Error::failed("unknown live application directory".into()))
+            .ok_or_else(|| BrokerError::failed("unknown live application directory".into()))
     }
 
     fn remove(&self, peer_id: u64) {
@@ -2974,9 +2973,9 @@ fn validate_directory_text(
     field: &str,
     maximum: usize,
     required: bool,
-) -> Result<(), capnp::Error> {
+) -> Result<(), BrokerError> {
     if (required && value.is_empty()) || value.len() > maximum || value.contains('\0') {
-        return Err(capnp::Error::failed(format!(
+        return Err(BrokerError::failed(format!(
             "invalid action directory {field}"
         )));
     }
@@ -2988,10 +2987,10 @@ fn validate_directory_identifier(
     field: &str,
     maximum: usize,
     required: bool,
-) -> Result<(), capnp::Error> {
+) -> Result<(), BrokerError> {
     validate_directory_text(value, field, maximum, required)?;
     if value.bytes().any(|byte| byte.is_ascii_control()) {
-        return Err(capnp::Error::failed(format!(
+        return Err(BrokerError::failed(format!(
             "invalid action directory {field}"
         )));
     }
@@ -3000,7 +2999,7 @@ fn validate_directory_identifier(
 
 fn validate_directory_query_input(
     query: &runtime_collab::ActionDirectoryQuery,
-) -> Result<(), capnp::Error> {
+) -> Result<(), BrokerError> {
     validate_directory_text(
         &query.revision,
         "query revision",
@@ -3020,7 +3019,7 @@ fn validate_directory_query_input(
         false,
     )?;
     if query.cursor.len() > DIRECTORY_MAX_CURSOR_BYTES {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "invalid action directory query cursor".into(),
         ));
     }
@@ -3033,7 +3032,7 @@ fn validate_directory_query_input(
     // A name lookup is one whole answer about one level (the top, or one
     // parent's children): it neither continues a page nor narrows a needle.
     if !query.resource_name.is_empty() && (!query.cursor.is_empty() || !query.needle.is_empty()) {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "a resource name lookup takes no cursor or needle".into(),
         ));
     }
@@ -3081,7 +3080,7 @@ fn validate_directory_target_input(
     action: &str,
     argument: Option<&str>,
     confirmation: Option<&DirectoryActionConfirmation>,
-) -> Result<(), capnp::Error> {
+) -> Result<(), BrokerError> {
     validate_directory_identifier(
         cluster_id,
         "directory cluster",
@@ -3871,7 +3870,7 @@ impl CapnpBrokerState {
         &self,
         request: tilo_owner_commit::OwnerCommitRequest,
         record_kind: Option<String>,
-    ) -> Result<(), capnp::Error> {
+    ) -> Result<(), BrokerError> {
         // Dropping the waiting RPC cannot convert an admitted effect into a
         // refusal or leave the standalone capability apparently healthy.
         struct Waiting<'a> {
@@ -3888,7 +3887,7 @@ impl CapnpBrokerState {
                 }
             }
         }
-        self.owner_health().map_err(capnp::Error::failed)?;
+        self.owner_health().map_err(BrokerError::failed)?;
         let mut waiting = Waiting {
             failure: &self.owner_commit_failure,
             complete: false,
@@ -3903,7 +3902,7 @@ impl CapnpBrokerState {
                 if let Ok(mut failure) = self.owner_commit_failure.lock() {
                     failure.get_or_insert_with(|| format!("owner commit failed: {reason}"));
                 }
-                Err(capnp::Error::failed(reason))
+                Err(BrokerError::failed(reason))
             }
         }
     }
@@ -3912,27 +3911,27 @@ impl CapnpBrokerState {
         &self,
         pending: &PendingInvocation,
         update: &tilo_actions::InvocationUpdate,
-    ) -> Result<(), capnp::Error> {
+    ) -> Result<(), BrokerError> {
         if !(self.durable_owner_required || self.publisher.records_effects_for(&pending.cluster_id))
             || !update.is_terminal()
         {
             return Ok(());
         }
-        self.owner_health().map_err(capnp::Error::failed)?;
+        self.owner_health().map_err(BrokerError::failed)?;
         self.checked_policy_time(pending.policy_time.as_ref())
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         if pending.operation_kind != tilo_actions::OperationKind::Effect {
             return Ok(());
         }
         let status = tilo_actions::EffectReceiptStatus::from_terminal(update)
-            .ok_or_else(|| capnp::Error::failed("nonterminal effect receipt".into()))?;
+            .ok_or_else(|| BrokerError::failed("nonterminal effect receipt".into()))?;
         let request = {
             let mut prepared = pending.prepared_effect.lock().map_err(|_| {
-                capnp::Error::failed("effect receipt preparation unavailable".into())
+                BrokerError::failed("effect receipt preparation unavailable".into())
             })?;
             if let Some(previous) = prepared.as_ref() {
                 if previous.update != *update {
-                    return Err(capnp::Error::failed(
+                    return Err(BrokerError::failed(
                         "effect terminal outcome changed".into(),
                     ));
                 }
@@ -3950,7 +3949,7 @@ impl CapnpBrokerState {
                     operation: tilo_owner_commit::CommitOperation::EffectReceipt {
                         invocation: update.invocation().0,
                         redacted: serde_json::to_vec(&receipt)
-                            .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                            .map_err(|error| BrokerError::failed(error.to_string()))?,
                     },
                 };
                 *prepared = Some(PreparedEffectCommit {
@@ -3964,14 +3963,14 @@ impl CapnpBrokerState {
             let (_, durable) = self
                 .journal
                 .lock()
-                .map_err(|_| capnp::Error::failed("invocation journal unavailable".into()))?
+                .map_err(|_| BrokerError::failed("invocation journal unavailable".into()))?
                 .as_mut()
-                .map_err(|error| capnp::Error::failed(error.clone()))?
+                .map_err(|error| BrokerError::failed(error.clone()))?
                 .as_mut()
-                .ok_or_else(|| capnp::Error::failed("durable admission unavailable".into()))?
+                .ok_or_else(|| BrokerError::failed("durable admission unavailable".into()))?
                 .stage_prepared_effect(key, update.clone(), &request)
-                .map_err(capnp::Error::failed)?;
-            durable.wait().await.map_err(capnp::Error::failed)?;
+                .map_err(BrokerError::failed)?;
+            durable.wait().await.map_err(BrokerError::failed)?;
         }
         self.commit_owner_request(request, None).await
     }
@@ -5096,10 +5095,10 @@ impl CapnpBrokerState {
         actor: &BrokerActor,
         app_id: &str,
         questions: &[DirectoryQuestion<'_>],
-    ) -> Result<Vec<Answer>, capnp::Error> {
-        let now = self.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
+    ) -> Result<Vec<Answer>, BrokerError> {
+        let now = self.policy_now_ns().map_err(BrokerError::failed)? / 1_000_000_000;
         let membership = self.membership.as_ref().ok_or_else(|| {
-            capnp::Error::failed("the action broker has no workspace authority".into())
+            BrokerError::failed("the action broker has no workspace authority".into())
         })?;
         membership
             .decide_in_room(cluster_id, |workspace| {
@@ -5123,7 +5122,7 @@ impl CapnpBrokerState {
                 )
             })
             .and_then(std::convert::identity)
-            .map_err(capnp::Error::failed)
+            .map_err(BrokerError::failed)
     }
 
     #[allow(
@@ -7054,11 +7053,11 @@ impl CapnpBrokerState {
         &self,
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
-    ) -> Result<AdmittedJoinIdentity, capnp::Error> {
-        let now = self.policy_now_ns().map_err(capnp::Error::failed)?;
+    ) -> Result<AdmittedJoinIdentity, BrokerError> {
+        let now = self.policy_now_ns().map_err(BrokerError::failed)?;
         if let Some(cert) = &admitted.certificate {
             tilo_user_identity::verify_device_cert_at(cert, now)
-                .map_err(|_| capnp::Error::failed("certificate no longer valid".into()))?;
+                .map_err(|_| BrokerError::failed("certificate no longer valid".into()))?;
             if let Some(scope) = &admitted.host_scope {
                 if !self.is_accepting()
                     || !cert.capabilities.can_act_as_host
@@ -7066,38 +7065,38 @@ impl CapnpBrokerState {
                     || cert != &scope.certificate
                     || admitted.agent_id.is_some()
                 {
-                    return Err(capnp::Error::failed(
+                    return Err(BrokerError::failed(
                         "host worker scope no longer valid".into(),
                     ));
                 }
                 self.certificate_authority
                     .get()
                     .ok_or_else(|| {
-                        capnp::Error::failed("current host worker authority unavailable".into())
+                        BrokerError::failed("current host worker authority unavailable".into())
                     })?
                     .authorize_host_worker(route, cert)
-                    .map_err(capnp::Error::failed)?;
+                    .map_err(BrokerError::failed)?;
             } else {
                 if cert.capabilities.can_act_as_host {
-                    return Err(capnp::Error::failed(
+                    return Err(BrokerError::failed(
                         "host certificate requires a private host worker descriptor".into(),
                     ));
                 }
                 if let Some(authority) = self.certificate_authority.get() {
                     let room = uuid::Uuid::parse_str(&route.cluster_id)
-                        .map_err(|_| capnp::Error::failed("invalid exact room".into()))?;
+                        .map_err(|_| BrokerError::failed("invalid exact room".into()))?;
                     authority
                         .authorize_join(room, cert)
-                        .map_err(capnp::Error::failed)?;
+                        .map_err(BrokerError::failed)?;
                 }
             }
         } else if admitted.host_scope.is_some() {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "host worker certificate missing".into(),
             ));
         }
         let membership = self.membership.as_ref().ok_or_else(|| {
-            capnp::Error::failed("certified session lost its membership authority".into())
+            BrokerError::failed("certified session lost its membership authority".into())
         })?;
         // The certificate was checked above; its connection ceiling must also
         // reflect current governance, not just governance at the original join.
@@ -7136,7 +7135,7 @@ impl CapnpBrokerState {
                 Ok::<_, String>(current)
             })
             .and_then(std::convert::identity)
-            .map_err(capnp::Error::failed)
+            .map_err(BrokerError::failed)
     }
 
     /// Bind a certified operation to the route, typed document protocol and
@@ -7148,10 +7147,10 @@ impl CapnpBrokerState {
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
         envelope: &SignedOp,
-    ) -> Result<AuthorizedDocumentRoute, capnp::Error> {
-        let now = self.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
+    ) -> Result<AuthorizedDocumentRoute, BrokerError> {
+        let now = self.policy_now_ns().map_err(BrokerError::failed)? / 1_000_000_000;
         if route.app_id.is_empty() {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "certified document operation does not match its joined route".into(),
             ));
         }
@@ -7162,7 +7161,7 @@ impl CapnpBrokerState {
             envelope,
         )
         .map_err(|error| {
-            capnp::Error::failed(format!(
+            BrokerError::failed(format!(
                 "certified document operation has an invalid routed payload: {error}"
             ))
         })?;
@@ -7192,15 +7191,15 @@ impl CapnpBrokerState {
                 room = %route.cluster_id,
                 "an unencrypted write to a sealed room was refused"
             );
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "this room seals every write: an unencrypted write is refused".into(),
             ));
         }
         let broker_channels = self.broker_channels.lock().map_err(|_| {
-            capnp::Error::failed("collaboration governance state is unavailable".into())
+            BrokerError::failed("collaboration governance state is unavailable".into())
         })?;
         if !broker_channels.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "plaintext document operation rejected after MLS migration".into(),
             ));
         }
@@ -7230,9 +7229,9 @@ impl CapnpBrokerState {
                 )
                 .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit)
             })
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         if !allowed {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "current workspace grants deny this document action".into(),
             ));
         }
@@ -8251,12 +8250,12 @@ impl Drop for ConnectionLease {
 fn route_record_kind(
     route: &CrdtRoute,
     named: Option<String>,
-) -> Result<Option<String>, capnp::Error> {
+) -> Result<Option<String>, BrokerError> {
     let Some(record) = collab_types::workspace_record(&route.app_id, &route.record_id) else {
         return Ok(named);
     };
     match named {
-        Some(kind) if kind != record.kind => Err(capnp::Error::failed(format!(
+        Some(kind) if kind != record.kind => Err(BrokerError::failed(format!(
             "the workspace record of kind {} was joined as {kind}",
             record.kind
         ))),
@@ -8306,14 +8305,12 @@ impl JoinPhases {
 
 /// The resource kind a join names for its record: none when empty, and
 /// refused unless it is a record kind the toolkit accepts.
-fn joined_record_kind(kind: &str) -> Result<Option<String>, capnp::Error> {
+fn joined_record_kind(kind: &str) -> Result<Option<String>, BrokerError> {
     if kind.is_empty() {
         return Ok(None);
     }
     if !ui::record::RecordKind::new(kind).is_valid() {
-        return Err(capnp::Error::failed(format!(
-            "invalid record kind `{kind}`"
-        )));
+        return Err(BrokerError::failed(format!("invalid record kind `{kind}`")));
     }
     Ok(Some(kind.to_owned()))
 }
@@ -8366,10 +8363,10 @@ impl CapnpChannelHandle {
     /// This handle's hold on its channel as the wire keeps it.
     /// Refuse a change on a channel the app holds only to read: no app
     /// writes on another app's route.
-    fn writable(&self) -> Result<(), capnp::Error> {
+    fn writable(&self) -> Result<(), BrokerError> {
         match self.route_access {
             RouteAccess::Own => Ok(()),
-            RouteAccess::ReadOnly => Err(capnp::Error::failed(format!(
+            RouteAccess::ReadOnly => Err(BrokerError::failed(format!(
                 "this connection reads {}'s record and changes nothing on it; another app's \
                  resources change only through its actions",
                 self.route().app_id
@@ -8377,12 +8374,12 @@ impl CapnpChannelHandle {
         }
     }
 
-    fn realtime_context(&self) -> Result<crate::services::RealtimeRequestContext, capnp::Error> {
+    fn realtime_context(&self) -> Result<crate::services::RealtimeRequestContext, BrokerError> {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let route = self.route();
         if route.app_id.is_empty() || route.cluster_id.is_empty() {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "realtime continuity requires an exact certified app/workspace route".into(),
             ));
         }
@@ -8401,14 +8398,14 @@ fn app_settings_capability(
     state: &Arc<CapnpBrokerState>,
     route: CrdtRoute,
     identity: AdmittedJoinIdentity,
-) -> Result<runtime_collab::settings::host::AppSettingsServer, capnp::Error> {
+) -> Result<runtime_collab::settings::host::AppSettingsServer, BrokerError> {
     if route.app_id.is_empty() {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "settings belong to a certified app route".into(),
         ));
     }
     let Some(source) = state.services.settings.clone() else {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "this host keeps no settings for apps".into(),
         ));
     };
@@ -8570,14 +8567,14 @@ fn live_activity_capability(
     state: &Arc<CapnpBrokerState>,
     route: CrdtRoute,
     identity: AdmittedJoinIdentity,
-) -> Result<runtime_collab::live_activity::LiveActivityServer, capnp::Error> {
+) -> Result<runtime_collab::live_activity::LiveActivityServer, BrokerError> {
     if route.app_id.is_empty() {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "a live activity belongs to a certified app route".into(),
         ));
     }
     let Some(board) = state.services.live_activities.clone() else {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "this host presents no live activities".into(),
         ));
     };
@@ -8599,18 +8596,18 @@ fn delegate_realtime_command(
     context: &crate::services::RealtimeRequestContext,
     claimed_app: &str,
     command: &[u8],
-) -> Result<Vec<u8>, capnp::Error> {
+) -> Result<Vec<u8>, BrokerError> {
     if claimed_app != context.app_id() {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "realtime app id must match the certified connection route".into(),
         ));
     }
     let service = services.realtime.as_ref().ok_or_else(|| {
-        capnp::Error::failed("realtime continuity is unsupported by this host".into())
+        BrokerError::failed("realtime continuity is unsupported by this host".into())
     })?;
     service
         .command(context, command)
-        .map_err(capnp::Error::failed)
+        .map_err(BrokerError::failed)
 }
 
 /// The only application that may carry Wi-Fi credentials between devices.
@@ -8623,40 +8620,40 @@ fn delegate_wifi_continuity_command(
     route_app: &str,
     claimed_app: &str,
     command: &[u8],
-) -> Result<Vec<u8>, capnp::Error> {
+) -> Result<Vec<u8>, BrokerError> {
     if route_app != WIFI_CONTINUITY_APP_ID {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "Wi-Fi continuity is restricted to the certified Settings application".into(),
         ));
     }
     if claimed_app != route_app {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "Wi-Fi continuity app id must match the certified connection route".into(),
         ));
     }
     if command.len() > runtime_collab::MAX_WIFI_CONTINUITY_WIRE_BYTES {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "Wi-Fi continuity command exceeds the local protocol bound".into(),
         ));
     }
     let command = match serde_json::from_slice::<runtime_collab::WifiContinuityCommand>(command) {
         Ok(command) if command.valid() => command,
         Ok(_) => {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "Wi-Fi continuity command is structurally invalid".into(),
             ));
         }
-        Err(error) => return Err(capnp::Error::failed(error.to_string())),
+        Err(error) => return Err(BrokerError::failed(error.to_string())),
     };
     let service = services.wifi_continuity.as_ref().ok_or_else(|| {
-        capnp::Error::failed("Wi-Fi continuity is unsupported by this host".into())
+        BrokerError::failed("Wi-Fi continuity is unsupported by this host".into())
     })?;
     match serde_json::to_vec(&service.command(command)) {
         Ok(reply) if reply.len() <= runtime_collab::MAX_WIFI_CONTINUITY_WIRE_BYTES => Ok(reply),
-        Ok(_) => Err(capnp::Error::failed(
+        Ok(_) => Err(BrokerError::failed(
             "Wi-Fi continuity reply exceeds the local protocol bound".into(),
         )),
-        Err(error) => Err(capnp::Error::failed(error.to_string())),
+        Err(error) => Err(BrokerError::failed(error.to_string())),
     }
 }
 
@@ -8664,8 +8661,8 @@ fn delegate_browser_service_session_command(
     services: &HostServices,
     context: &crate::services::BrowserServiceSessionRequestContext,
     bytes: &[u8],
-) -> Result<zeroize::Zeroizing<Vec<u8>>, capnp::Error> {
-    let refused = || capnp::Error::failed("private service-session request refused".into());
+) -> Result<zeroize::Zeroizing<Vec<u8>>, BrokerError> {
+    let refused = || BrokerError::failed("private service-session request refused".into());
     if context.app_id() != "so.tilo.browser"
         || context.workspace_id().is_empty()
         || context.person().is_empty()
@@ -8707,9 +8704,9 @@ fn nearby_transfer_change(
     services: &HostServices,
     context: &crate::services::NearbyTransferRequestContext,
     after: u64,
-) -> Result<crate::services::NearbyTransferChange, capnp::Error> {
+) -> Result<crate::services::NearbyTransferChange, BrokerError> {
     if context.app_id() != NEARBY_TRANSFER_APP_ID || context.workspace_id().is_empty() {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "Nearby Send requires the certified Files application route".into(),
         ));
     }
@@ -8718,7 +8715,7 @@ fn nearby_transfer_change(
         .as_ref()
         .and_then(|service| service.changed(context, after))
         .ok_or_else(|| {
-            capnp::Error::unimplemented("this host does not say when Nearby Send changes".into())
+            BrokerError::unimplemented("this host does not say when Nearby Send changes".into())
         })
 }
 
@@ -8732,9 +8729,9 @@ fn speaker_change(
     services: &HostServices,
     route_app: &str,
     after: u64,
-) -> Result<crate::services::SpeakerChange, capnp::Error> {
+) -> Result<crate::services::SpeakerChange, BrokerError> {
     if route_app != SPEAKER_APP_ID {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "speaker groups are managed only by the certified Settings application".into(),
         ));
     }
@@ -8743,7 +8740,7 @@ fn speaker_change(
         .as_ref()
         .and_then(|service| service.changed(after))
         .ok_or_else(|| {
-            capnp::Error::unimplemented("this host does not say when speaker groups change".into())
+            BrokerError::unimplemented("this host does not say when speaker groups change".into())
         })
 }
 
@@ -8752,49 +8749,49 @@ fn delegate_nearby_transfer_command(
     context: &crate::services::NearbyTransferRequestContext,
     claimed_app: &str,
     command: &[u8],
-) -> Result<Vec<u8>, capnp::Error> {
+) -> Result<Vec<u8>, BrokerError> {
     if context.app_id() != NEARBY_TRANSFER_APP_ID || context.workspace_id().is_empty() {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "Nearby Send requires the certified Files application route".into(),
         ));
     }
     if claimed_app != context.app_id() {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "Nearby Send app id must match the certified connection route".into(),
         ));
     }
     if command.len() > runtime_collab::MAX_NEARBY_TRANSFER_WIRE_BYTES {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "Nearby Send command exceeds the local protocol bound".into(),
         ));
     }
     let command = match serde_json::from_slice::<runtime_collab::NearbyTransferCommand>(command) {
         Ok(command) if command.valid() => command,
         Ok(_) => {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "Nearby Send command is structurally invalid".into(),
             ));
         }
-        Err(error) => return Err(capnp::Error::failed(error.to_string())),
+        Err(error) => return Err(BrokerError::failed(error.to_string())),
     };
     let service = services
         .nearby_transfer
         .as_ref()
-        .ok_or_else(|| capnp::Error::failed("Nearby Send is unsupported by this host".into()))?;
+        .ok_or_else(|| BrokerError::failed("Nearby Send is unsupported by this host".into()))?;
     let reply = service
         .command(context, command)
-        .map_err(capnp::Error::failed)?;
+        .map_err(BrokerError::failed)?;
     if !reply.valid() {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "Nearby Send produced an invalid bounded reply".into(),
         ));
     }
     match serde_json::to_vec(&reply) {
         Ok(bytes) if bytes.len() <= runtime_collab::MAX_NEARBY_TRANSFER_WIRE_BYTES => Ok(bytes),
-        Ok(_) => Err(capnp::Error::failed(
+        Ok(_) => Err(BrokerError::failed(
             "Nearby Send reply exceeds the local protocol bound".into(),
         )),
-        Err(error) => Err(capnp::Error::failed(error.to_string())),
+        Err(error) => Err(BrokerError::failed(error.to_string())),
     }
 }
 
@@ -8809,7 +8806,7 @@ fn permits_directory_row(
     app_id: &str,
     publishing_person: Option<&str>,
     row: &runtime_collab::ActionDirectoryRow,
-) -> Result<bool, capnp::Error> {
+) -> Result<bool, BrokerError> {
     let question = directory_row_question(row)?;
     if !question.disclosed_to(actor, publishing_person) {
         return Ok(false);
@@ -8873,7 +8870,7 @@ impl<'a> DirectoryQuestion<'a> {
 )]
 fn directory_row_question(
     row: &runtime_collab::ActionDirectoryRow,
-) -> Result<DirectoryQuestion<'_>, capnp::Error> {
+) -> Result<DirectoryQuestion<'_>, BrokerError> {
     validate_directory_identifier(
         &row.parent_resource,
         "parent resource",
@@ -8914,7 +8911,7 @@ fn directory_row_question(
                             .is_some_and(|kind| kind != descriptor.operation_kind)
                 })
             {
-                return Err(capnp::Error::failed(
+                return Err(BrokerError::failed(
                     "directory action row does not match its descriptor".into(),
                 ));
             }
@@ -8932,7 +8929,7 @@ fn directory_row_question(
                         || description.contains('\0')
                 })
             {
-                return Err(capnp::Error::failed(
+                return Err(BrokerError::failed(
                     "invalid action directory description".into(),
                 ));
             }
@@ -8969,7 +8966,7 @@ fn directory_row_question(
         }
         (None, None) => {
             let Some(visibility) = &row.visibility else {
-                return Err(capnp::Error::failed(
+                return Err(BrokerError::failed(
                     "directory resource row has no visibility contract".into(),
                 ));
             };
@@ -8987,7 +8984,7 @@ fn directory_row_question(
                 visibility.governing_kind,
             ))
         }
-        _ => Err(capnp::Error::failed(
+        _ => Err(BrokerError::failed(
             "directory row mixes resource and action shapes".into(),
         )),
     }
@@ -9001,7 +8998,7 @@ fn filter_directory_page(
     publishing_person: Option<&str>,
     mut page: runtime_collab::ActionDirectoryPage,
     max_results: u32,
-) -> Result<runtime_collab::ActionDirectoryPage, capnp::Error> {
+) -> Result<runtime_collab::ActionDirectoryPage, BrokerError> {
     validate_directory_text(
         &page.revision,
         "directory revision",
@@ -9009,12 +9006,10 @@ fn filter_directory_page(
         false,
     )?;
     if page.next_cursor.len() > DIRECTORY_MAX_CURSOR_BYTES {
-        return Err(capnp::Error::failed(
-            "invalid directory continuation".into(),
-        ));
+        return Err(BrokerError::failed("invalid directory continuation".into()));
     }
     if page.rows.len() > usize::try_from(max_results).unwrap_or(usize::MAX) {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "application exceeded directory result budget".into(),
         ));
     }
@@ -9065,17 +9060,17 @@ fn filter_directory_page(
 /// an action row: containers are discoverable but never invokable.
 fn published_directory_action(
     row: &runtime_collab::ActionDirectoryRow,
-) -> Result<PublishedAction, capnp::Error> {
+) -> Result<PublishedAction, BrokerError> {
     let action = row
         .action
         .as_deref()
-        .ok_or_else(|| capnp::Error::failed("directory container is not invokable".into()))?;
+        .ok_or_else(|| BrokerError::failed("directory container is not invokable".into()))?;
     let descriptor = row
         .descriptor
         .as_ref()
-        .ok_or_else(|| capnp::Error::failed("directory action has no descriptor".into()))?;
+        .ok_or_else(|| BrokerError::failed("directory action has no descriptor".into()))?;
     if descriptor.resource != row.resource || descriptor.action != action {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "directory descriptor address changed during conversion".into(),
         ));
     }
@@ -9084,7 +9079,7 @@ fn published_directory_action(
         .as_ref()
         .is_some_and(|identity| !identity.is_valid() || identity.kind != descriptor.resource_kind)
     {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "invalid directory resource semantic identity".into(),
         ));
     }
@@ -9097,16 +9092,16 @@ impl CapnpChannelHandle {
     pub(super) fn workspace_control(
         &self,
         target: [u8; 32],
-    ) -> Result<Rc<dyn crate::services::WorkspaceControlSession>, capnp::Error> {
+    ) -> Result<Rc<dyn crate::services::WorkspaceControlSession>, BrokerError> {
         let route = self.route();
         revalidate_workspace_control(&self.state, &route, &self.verified_identity)?;
         let Some(room) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "workspace control requires a workspace-scoped channel".into(),
             ));
         };
         let Some(service) = self.state.services.workspace_control.as_ref() else {
-            return Err(capnp::Error::failed("workspace control unsupported".into()));
+            return Err(BrokerError::failed("workspace control unsupported".into()));
         };
         let state = self.state.clone();
         let identity = self.verified_identity.clone();
@@ -9117,7 +9112,7 @@ impl CapnpChannelHandle {
         });
         service
             .open(room, target, revalidate)
-            .map_err(capnp::Error::failed)
+            .map_err(BrokerError::failed)
     }
 }
 
@@ -9125,10 +9120,10 @@ fn revalidate_workspace_control(
     state: &CapnpBrokerState,
     route: &CrdtRoute,
     identity: &AdmittedJoinIdentity,
-) -> Result<AdmittedJoinIdentity, capnp::Error> {
+) -> Result<AdmittedJoinIdentity, BrokerError> {
     let current = state.revalidate_admission(route, identity)?;
     if !workspace_control_role_allowed(current.role) {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "workspace control requires current editor authority".into(),
         ));
     }
@@ -9378,19 +9373,19 @@ impl HostWorkerReadGuard {
             identity: identity.clone(),
         })
     }
-    fn check(guard: Option<&Self>) -> Result<(), capnp::Error> {
+    fn check(guard: Option<&Self>) -> Result<(), BrokerError> {
         if let Some(guard) = guard {
             let scope = guard
                 .identity
                 .host_scope
                 .as_ref()
-                .ok_or_else(|| capnp::Error::failed("host worker scope missing".into()))?;
+                .ok_or_else(|| BrokerError::failed("host worker scope missing".into()))?;
             if !guard
                 .state
                 .is_current_host_worker(guard.peer_id, &scope.route, &scope.certificate)
-                .map_err(capnp::Error::failed)?
+                .map_err(BrokerError::failed)?
             {
-                return Err(capnp::Error::failed("host worker no longer current".into()));
+                return Err(BrokerError::failed("host worker no longer current".into()));
             }
         }
         Ok(())
@@ -9462,7 +9457,7 @@ struct InvocationStreamServer {
 
 /// A task run as the agent receives it: `runtime_collab::TaskRunEnvelope`
 /// JSON.
-fn task_run_json(run: TaskRunEnvelope) -> Result<String, capnp::Error> {
+fn task_run_json(run: TaskRunEnvelope) -> Result<String, BrokerError> {
     let payload = runtime_collab::TaskRunEnvelope {
         paused: run.paused,
         version: 1,
@@ -9476,10 +9471,10 @@ fn task_run_json(run: TaskRunEnvelope) -> Result<String, capnp::Error> {
         planning: run.planning,
         execution_budget: run.execution_budget,
         action_context: serde_json::to_value(run.action_context)
-            .map_err(|error| capnp::Error::failed(error.to_string()))?,
+            .map_err(|error| BrokerError::failed(error.to_string()))?,
         model: run.model,
     };
-    serde_json::to_string(&payload).map_err(|error| capnp::Error::failed(error.to_string()))
+    serde_json::to_string(&payload).map_err(|error| BrokerError::failed(error.to_string()))
 }
 
 struct ActionCatalogueStreamServer {
@@ -9510,12 +9505,15 @@ impl ActionCatalogueStreamServer {
         clippy::future_not_send,
         reason = "the stream is served on the connection's single-threaded local set"
     )]
-    async fn next(&self) -> Result<Arc<str>, capnp::Error> {
+    async fn next(&self) -> Result<Arc<str>, BrokerError> {
         HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-        let snapshot =
-            self.reader.lock().await.next().await.map_err(|()| {
-                capnp::Error::disconnected("action catalogue stream closed".into())
-            })?;
+        let snapshot = self
+            .reader
+            .lock()
+            .await
+            .next()
+            .await
+            .map_err(|()| BrokerError::disconnected("action catalogue stream closed".into()))?;
         HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         Ok(snapshot)
     }
@@ -9527,11 +9525,11 @@ impl InvocationStreamServer {
         clippy::future_not_send,
         reason = "the stream is served on the connection's single-threaded local set"
     )]
-    async fn next(&self) -> Result<InvocationEnvelope, capnp::Error> {
+    async fn next(&self) -> Result<InvocationEnvelope, BrokerError> {
         HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         let mut guard = self.rx.lock().await;
         let invocation = guard.recv().await.ok_or_else(|| {
-            capnp::Error::disconnected("application invocation stream closed".into())
+            BrokerError::disconnected("application invocation stream closed".into())
         })?;
         drop(guard);
         HostWorkerReadGuard::check(self.host_guard.as_ref())?;
@@ -9544,7 +9542,7 @@ impl InvocationStreamServer {
 
 impl InvocationEnvelope {
     /// The invocation as the app receives it on the collaboration wire.
-    fn on_wire(self) -> Result<runtime_collab::wire::Invocation, capnp::Error> {
+    fn on_wire(self) -> Result<runtime_collab::wire::Invocation, BrokerError> {
         Ok(runtime_collab::wire::Invocation {
             id: self.id,
             invocation: *self.invocation.0.as_bytes(),
@@ -9557,7 +9555,7 @@ impl InvocationEnvelope {
                 .as_ref()
                 .map(serde_json::to_string)
                 .transpose()
-                .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                .map_err(|error| BrokerError::failed(error.to_string()))?,
         })
     }
 }
@@ -9571,7 +9569,7 @@ struct NativeContextReadGuard {
 }
 
 impl NativeContextReadGuard {
-    fn check(guard: Option<&Self>) -> Result<(), capnp::Error> {
+    fn check(guard: Option<&Self>) -> Result<(), BrokerError> {
         if let Some(guard) = guard {
             if !guard
                 .state
@@ -9580,7 +9578,7 @@ impl NativeContextReadGuard {
                 .as_ref()
                 .is_some_and(|owner| owner.requires_room(&guard.route.cluster_id))
             {
-                return Err(capnp::Error::failed(
+                return Err(BrokerError::failed(
                     "native context owner is no longer current".into(),
                 ));
             }
@@ -9588,18 +9586,18 @@ impl NativeContextReadGuard {
                 .state
                 .revalidate_admission(&guard.route, &guard.identity)?;
             if let Some(context) = &guard.document {
-                context.revalidate().map_err(capnp::Error::failed)?;
+                context.revalidate().map_err(BrokerError::failed)?;
                 guard
                     .state
                     .services
                     .committed_documents
                     .as_ref()
                     .ok_or_else(|| {
-                        capnp::Error::failed("native private document owner ended".into())
+                        BrokerError::failed("native private document owner ended".into())
                     })?
                     .authorize(context)
-                    .map_err(capnp::Error::failed)?;
-                context.revalidate().map_err(capnp::Error::failed)?;
+                    .map_err(BrokerError::failed)?;
+                context.revalidate().map_err(BrokerError::failed)?;
             }
         }
         Ok(())
@@ -10299,24 +10297,17 @@ async fn serve_broker_thread(
             tokio::task::spawn_local(async move {
                 let result = async {
                     let stream = tokio::net::UnixStream::from_std(worker.stream)
-                        .map_err(capnp::Error::from)?;
+                        .map_err(BrokerError::from)?;
                     drive_connection(stream, state, directories, peer_id, Some(worker.binding))
                         .await
                 }
                 .await;
                 if let Err(error) = result {
-                    let error_class = match error.kind {
-                        capnp::ErrorKind::Failed => "failed",
-                        capnp::ErrorKind::Overloaded => "overloaded",
-                        capnp::ErrorKind::Disconnected => "disconnected",
-                        capnp::ErrorKind::Unimplemented => "unimplemented",
-                        _ => "protocol",
-                    };
                     tracing::warn!(
                         peer_id,
                         phase = "local_worker_rpc",
-                        error_class,
-                        "capnp broker: local worker disconnected"
+                        error_class = error.kind.as_str(),
+                        "collaboration broker: local worker disconnected"
                     );
                 }
             });
@@ -10379,9 +10370,9 @@ async fn serve_broker_thread(
 /// Peek at an incoming descriptor without consuming the wire's framing
 /// prefix. Raw endpoint diagnostics intentionally omit the launcher marker;
 /// only a marker-bearing connection is subject to shell-process attestation.
-async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<bool, capnp::Error> {
+async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<bool, BrokerError> {
     let incomplete =
-        || capnp::Error::failed("collaboration peer sent an incomplete protocol header".into());
+        || BrokerError::failed("collaboration peer sent an incomplete protocol header".into());
     // A peer that has not begun is waited for as before; one that began has
     // `LAUNCH_MARKER_COMPLETION` to send the rest.
     let mut complete_by = None;
@@ -10394,7 +10385,7 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
                 .map_err(|_| incomplete())?,
         }
         .map_err(|error| {
-            capnp::Error::failed(format!("collaboration socket unreadable: {error}"))
+            BrokerError::failed(format!("collaboration socket unreadable: {error}"))
         })?;
         let mut partial = false;
         // A peek that finds only part of the marker reports `WouldBlock`, so
@@ -10406,7 +10397,7 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if partial {
                     if ready.is_read_closed() {
-                        return Err(capnp::Error::disconnected(
+                        return Err(BrokerError::disconnected(
                             "collaboration peer closed mid protocol header".into(),
                         ));
                     }
@@ -10418,12 +10409,12 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Err(capnp::Error::disconnected(
+                return Err(BrokerError::disconnected(
                     "collaboration peer closed before its protocol header".into(),
                 ));
             }
             Err(error) => {
-                return Err(capnp::Error::failed(format!(
+                return Err(BrokerError::failed(format!(
                     "could not inspect collaboration protocol header: {error}"
                 )));
             }
@@ -10465,7 +10456,7 @@ fn peek_launch_marker(
 
 /// Why a connection was refused before its first wire call.
 struct LaunchRefusal {
-    error: capnp::Error,
+    error: BrokerError,
     /// What the connection said it was, as far as it got: the process and
     /// the app and room its launcher named.
     peer: String,
@@ -10511,7 +10502,7 @@ async fn authenticate_launcher_handoff(
         || handoff.workspace_id.trim().is_empty()
     {
         return Err(LaunchRefusal {
-            error: capnp::Error::failed(
+            error: BrokerError::failed(
                 "collaboration launch handoff has an unsupported or empty identity".into(),
             ),
             peer,
@@ -10530,7 +10521,7 @@ async fn authenticate_launcher_handoff(
         .map(|service| handoff.authenticated_launch(service.as_ref(), pid))
         .transpose()
         .map_err(|error| LaunchRefusal {
-            error: capnp::Error::failed(error),
+            error: BrokerError::failed(error),
             peer: peer.clone(),
             answerable: !handoff.executing_peer,
         })?
@@ -10553,7 +10544,7 @@ async fn authenticate_launcher_handoff(
         #[cfg(not(target_os = "linux"))]
         if handoff.executing_peer {
             return Err(LaunchRefusal {
-                error: capnp::Error::failed("executing custody requires Linux".into()),
+                error: BrokerError::failed("executing custody requires Linux".into()),
                 peer,
                 answerable: false,
             });
@@ -10584,7 +10575,7 @@ async fn authenticate_launcher_handoff(
          started by hand through tilo-launcher, or a process that has exited)"
     };
     Err(LaunchRefusal {
-        error: capnp::Error::failed(error.into()),
+        error: BrokerError::failed(error.into()),
         peer,
         answerable: !handoff.executing_peer,
     })
@@ -10665,7 +10656,7 @@ async fn read_launcher_handoff(
 /// answered with `error`. Dropping the socket instead leaves its first call
 /// unanswered, and the app only sees its connection reset. Bounded, so a
 /// peer that never hangs up holds nothing for long.
-async fn answer_refused_launch(stream: tokio::net::UnixStream, error: capnp::Error) {
+async fn answer_refused_launch(stream: tokio::net::UnixStream, error: BrokerError) {
     use tokio::io::AsyncWriteExt as _;
     let reason = error.to_string();
     let (mut reader, mut writer) = stream.into_split();
@@ -10704,7 +10695,7 @@ async fn drive_connection(
     directories: Rc<LocalActionDirectoryRegistry>,
     peer_id: u64,
     worker: Option<WorkerBinding>,
-) -> Result<(), capnp::Error> {
+) -> Result<(), BrokerError> {
     let _exit = ConnectionExit {
         state: Arc::clone(&state),
         directories: Rc::clone(&directories),
@@ -10778,7 +10769,7 @@ async fn drive_connection(
         let (reader, writer) = stream.into_split();
         wire::serve(connection, outgoing, reader, writer).await
     };
-    served.map_err(|error| capnp::Error::failed(error.to_string()))
+    served.map_err(|error| BrokerError::failed(error.to_string()))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -16978,7 +16969,7 @@ impl CapnpBrokerState {
         id: u64,
         update: tilo_actions::InvocationUpdate,
         identity: Option<(CrdtRoute, AdmittedJoinIdentity)>,
-    ) -> Result<(), capnp::Error> {
+    ) -> Result<(), BrokerError> {
         let state = self;
         let host_guard = identity
             .as_ref()
@@ -16987,7 +16978,7 @@ impl CapnpBrokerState {
         let owner_room = state
             .pending_invocations
             .lock()
-            .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?
+            .map_err(|_| BrokerError::failed("invocation registry unavailable".into()))?
             .get(&id)
             .map(|pending| pending.cluster_id.clone());
         let requires_owner = state.durable_owner_required
@@ -17007,11 +16998,11 @@ impl CapnpBrokerState {
             let registry = state
                 .pending_invocations
                 .lock()
-                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
+                .map_err(|_| BrokerError::failed("invocation registry unavailable".into()))?;
             let pending = registry
                 .get(&id)
                 .filter(|pending| pending.peer_id == peer_id)
-                .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
+                .ok_or_else(|| BrokerError::failed("unknown invocation id".into()))?;
             let next_sequence = invocation_update::validate_invocation_update(pending, &update)?;
             (pending.clone(), next_sequence)
         };
@@ -17028,12 +17019,12 @@ impl CapnpBrokerState {
         let mut registry = state
             .pending_invocations
             .lock()
-            .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
+            .map_err(|_| BrokerError::failed("invocation registry unavailable".into()))?;
         let pending = registry
             .get_mut(&id)
             .filter(|pending| pending.peer_id == peer_id && pending.update == staged.update)
             .ok_or_else(|| {
-                capnp::Error::failed("invocation changed while committing; outcome unknown".into())
+                BrokerError::failed("invocation changed while committing; outcome unknown".into())
             })?;
         pending.last_activity = std::time::Instant::now();
         pending.last_sequence = next_sequence;
@@ -17055,14 +17046,14 @@ impl CapnpBrokerState {
                     message: message.clone().unwrap_or_default(),
                 },
                 _ => {
-                    return Err(capnp::Error::failed(
+                    return Err(BrokerError::failed(
                         "nonterminal invocation reached terminal handling".into(),
                     ));
                 }
             };
             let pending = registry
                 .remove(&id)
-                .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
+                .ok_or_else(|| BrokerError::failed("unknown invocation id".into()))?;
             // Retire it before releasing the registry: a waiter woken by the
             // change above must find it pending or completed, never neither.
             state.record_completion(id, pending.completion_owner(), update.clone());
@@ -17225,7 +17216,7 @@ mod host_worker_capacity_tests {
     fn retained(state: &CapnpBrokerState) -> usize {
         state.host_workers.lock().unwrap().len()
     }
-    fn retain(state: &CapnpBrokerState, peer: u64, record: usize) -> Result<(), capnp::Error> {
+    fn retain(state: &CapnpBrokerState, peer: u64, record: usize) -> Result<(), BrokerError> {
         let worker = host_worker(record);
         let route = worker.host_scope.clone().unwrap().route;
         state.retain_host_worker(peer, &route, &worker)

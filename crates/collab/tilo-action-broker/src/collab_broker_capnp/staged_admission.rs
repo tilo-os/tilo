@@ -2,6 +2,7 @@
 //! invocation, delivered and acknowledged once its admission is written,
 //! and a definite outcome, published once its terminal record is.
 
+use crate::BrokerError;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -154,24 +155,24 @@ impl CapnpBrokerState {
         id: u64,
         staged: &tilo_actions::InvocationUpdate,
         update: &tilo_actions::InvocationUpdate,
-    ) -> Result<(), capnp::Error> {
+    ) -> Result<(), BrokerError> {
         let outcome = {
             let registry = self
                 .pending_invocations
                 .lock()
-                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
+                .map_err(|_| BrokerError::failed("invocation registry unavailable".into()))?;
             let pending = registry
                 .get(&id)
                 .filter(|pending| pending.peer_id == peer_id && &pending.update == staged)
                 .ok_or_else(|| {
-                    capnp::Error::failed(
+                    BrokerError::failed(
                         "invocation changed while committing; outcome unknown".into(),
                     )
                 })?;
             self.stage_definite_outcome(id, pending, update)
-                .map_err(capnp::Error::failed)?
+                .map_err(BrokerError::failed)?
         };
-        outcome.settle().await.map_err(capnp::Error::failed)
+        outcome.settle().await.map_err(BrokerError::failed)
     }
 
     pub(super) fn start_admitted(&self, admitted: Admitted) -> Result<InvocationJob, String> {

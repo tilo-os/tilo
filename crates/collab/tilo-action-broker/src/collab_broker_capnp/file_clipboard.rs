@@ -1,5 +1,6 @@
 //! Local Files offers use actual launcher custody and the existing action policy.
 use super::{Arc, CapnpChannelHandle, Rc};
+use crate::BrokerError;
 use crate::services::FileClipboardContext;
 use runtime_collab::file_clipboard::{Command, MAX_WIRE_BYTES};
 use tilo_actions::{ActionKind, InvocationId};
@@ -10,8 +11,8 @@ impl CapnpChannelHandle {
         self: Rc<Self>,
         bytes: &[u8],
         parent: &[u8],
-    ) -> Result<crate::services::SelectedDiscoveryFuture, capnp::Error> {
-        let failed = capnp::Error::failed;
+    ) -> Result<crate::services::SelectedDiscoveryFuture, BrokerError> {
+        let failed = BrokerError::failed;
         let request = runtime_collab::open_selected::discovery::decode_request(bytes)
             .map_err(|e| failed(e.to_string()))?;
         let parent = super::observed_launch::launch_parent(parent)?;
@@ -229,8 +230,8 @@ impl CapnpChannelHandle {
         &self,
         bytes: &[u8],
         parent: &[u8],
-    ) -> Result<Vec<u8>, capnp::Error> {
-        let failed = capnp::Error::failed;
+    ) -> Result<Vec<u8>, BrokerError> {
+        let failed = BrokerError::failed;
         let request = runtime_collab::write_attribution::decode(bytes).map_err(failed)?;
         let parent = super::observed_launch::launch_parent(parent)?
             .ok_or_else(|| failed("write attribution requires its invocation".into()))?;
@@ -281,8 +282,8 @@ impl CapnpChannelHandle {
         self: Rc<Self>,
         bytes: &[u8],
         parent: &[u8],
-    ) -> Result<crate::services::OpenSelectedFuture, capnp::Error> {
-        let failed = |message: String| capnp::Error::failed(message);
+    ) -> Result<crate::services::OpenSelectedFuture, BrokerError> {
+        let failed = |message: String| BrokerError::failed(message);
         let request = runtime_collab::open_selected::decode_request(bytes)
             .map_err(|e| failed(e.to_string()))?;
         let parent = super::observed_launch::launch_parent(parent)?;
@@ -348,8 +349,8 @@ impl CapnpChannelHandle {
         self: Rc<Self>,
         bytes: &[u8],
         parent: &[u8],
-    ) -> Result<crate::services::OpenSelectedV2Future, capnp::Error> {
-        let failed = |message: String| capnp::Error::failed(message);
+    ) -> Result<crate::services::OpenSelectedV2Future, BrokerError> {
+        let failed = |message: String| BrokerError::failed(message);
         let request = runtime_collab::open_selected::v2::decode_request(bytes)
             .map_err(|e| failed(e.to_string()))?;
         let parent = super::observed_launch::launch_parent(parent)?;
@@ -414,8 +415,8 @@ impl CapnpChannelHandle {
         self: Rc<Self>,
         bytes: &[u8],
         parent: &[u8],
-    ) -> Result<Vec<u8>, capnp::Error> {
-        let failed = |message: String| capnp::Error::failed(message);
+    ) -> Result<Vec<u8>, BrokerError> {
+        let failed = |message: String| BrokerError::failed(message);
         if bytes.len() > MAX_WIRE_BYTES {
             return Err(failed("clipboard command exceeds bound".into()));
         }

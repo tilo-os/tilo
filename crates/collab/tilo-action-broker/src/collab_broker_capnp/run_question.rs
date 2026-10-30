@@ -20,6 +20,7 @@
 //! own: its Answer puts the same question on the same sheet, and the host
 //! then gives the tracker the person's answer through their own door.
 
+use crate::BrokerError;
 use std::sync::Arc;
 
 use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
@@ -462,6 +463,6 @@ pub(super) fn serve_answered(
     })
 }
 
-fn dropped() -> capnp::Error {
-    capnp::Error::failed("the action host dropped the request".into())
+fn dropped() -> BrokerError {
+    BrokerError::failed("the action host dropped the request".into())
 }

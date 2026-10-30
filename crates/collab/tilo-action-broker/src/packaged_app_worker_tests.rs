@@ -1,3 +1,4 @@
+use crate::BrokerError;
 // An app the shell launched is the worker of its own routes: what it edits
 // is admitted as its own actions, attributed to its person and to it.
 // Included beside the local document report tests, whose rig it shares.
@@ -51,7 +52,7 @@ fn launched_app_connection(
     room: &str,
 ) -> (
     runtime_collab::CollabClient,
-    tokio::task::JoinHandle<Result<(), capnp::Error>>,
+    tokio::task::JoinHandle<Result<(), BrokerError>>,
     tokio::task::JoinHandle<()>,
 ) {
     use std::io::Write as _;

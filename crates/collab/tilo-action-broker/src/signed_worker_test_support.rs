@@ -1,3 +1,4 @@
+use crate::BrokerError;
 // Signed private-worker RPC fixtures shared by the owner, lazy, reliable and
 // durable invocation tests: a revocable current-host policy, real directory
 // endpoints and actual Unix-socket collaboration wire connections.
@@ -223,7 +224,7 @@ pub fn rpc_pair(
     directories: Rc<LocalActionDirectoryRegistry>,
 ) -> (
     runtime_collab::CollabClient,
-    tokio::task::JoinHandle<Result<(), capnp::Error>>,
+    tokio::task::JoinHandle<Result<(), BrokerError>>,
     tokio::task::JoinHandle<()>,
 ) {
     server.set_nonblocking(true).unwrap();
@@ -246,7 +247,7 @@ pub fn rpc_pair(
 /// A joined channel whose connection tasks stop when it is dropped.
 pub struct Connection {
     pub handle: runtime_collab::ChannelHandle,
-    pub server: tokio::task::JoinHandle<Result<(), capnp::Error>>,
+    pub server: tokio::task::JoinHandle<Result<(), BrokerError>>,
     pub client: tokio::task::JoinHandle<()>,
 }
 

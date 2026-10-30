@@ -1078,24 +1078,24 @@ impl NativeRealtimeServices {
         app_id: &str,
         workspace_id: &str,
         bytes: &[u8],
-    ) -> Result<collab_types::realtime::RealtimeReply, capnp::Error> {
+    ) -> Result<collab_types::realtime::RealtimeReply, tilo_action_broker::BrokerError> {
         let app = tilo_device_fabric::realtime_session::VerifiedAppRegistration::new_verified(
             app_id,
             workspace_id,
         )
-        .map_err(|error| capnp::Error::failed(error.to_string()))?;
+        .map_err(|error| tilo_action_broker::BrokerError::failed(error.to_string()))?;
         let local = self.state.local.clone();
         let command: collab_types::realtime::RealtimeCommand = match serde_json::from_slice(bytes) {
             Ok(command) => command,
-            Err(error) => return Err(capnp::Error::failed(error.to_string())),
+            Err(error) => return Err(tilo_action_broker::BrokerError::failed(error.to_string())),
         };
         if !command.valid() {
-            return Err(capnp::Error::failed(
+            return Err(tilo_action_broker::BrokerError::failed(
                 "realtime command contains an unsafe semantic locator".into(),
             ));
         }
         let Ok(mut bridge) = self.state.realtime.lock() else {
-            return Err(capnp::Error::failed(
+            return Err(tilo_action_broker::BrokerError::failed(
                 "realtime broker is unavailable".into(),
             ));
         };
@@ -1125,13 +1125,17 @@ impl NativeRealtimeServices {
                         intent.room_id,
                     ) {
                         Ok(room) => room,
-                        Err(error) => return Err(capnp::Error::failed(error.to_string())),
+                        Err(error) => {
+                            return Err(tilo_action_broker::BrokerError::failed(error.to_string()));
+                        }
                     },
                     semantic_position: intent.semantic_position,
                     media: match tilo_device_fabric::realtime_session::RealtimeMediaSet::new(facets)
                     {
                         Ok(media) => media,
-                        Err(error) => return Err(capnp::Error::failed(error.to_string())),
+                        Err(error) => {
+                            return Err(tilo_action_broker::BrokerError::failed(error.to_string()));
+                        }
                     },
                     controls: broker_realtime_controls(intent.controls),
                 };
@@ -1144,7 +1148,9 @@ impl NativeRealtimeServices {
                     .and_then(|mut broker| broker.register(&app, local.clone(), registered, now))
                 {
                     Ok(id) => id,
-                    Err(error) => return Err(capnp::Error::failed(error.to_string())),
+                    Err(error) => {
+                        return Err(tilo_action_broker::BrokerError::failed(error.to_string()));
+                    }
                 };
                 let token = bridge.new_token();
                 bridge.sessions.insert(
@@ -1167,21 +1173,25 @@ impl NativeRealtimeServices {
                 capture_authorizations,
             } => {
                 let Some(binding) = bridge.sessions.get(&session) else {
-                    return Err(capnp::Error::failed("unknown realtime session".into()));
+                    return Err(tilo_action_broker::BrokerError::failed(
+                        "unknown realtime session".into(),
+                    ));
                 };
                 if binding.app != app {
-                    return Err(capnp::Error::failed(
+                    return Err(tilo_action_broker::BrokerError::failed(
                         "realtime session binding mismatch".into(),
                     ));
                 }
                 if binding.authorization.is_some() || binding.target_peer.is_some() {
-                    return Err(capnp::Error::failed(
+                    return Err(tilo_action_broker::BrokerError::failed(
                         "realtime target already accepted".into(),
                     ));
                 }
                 let (id, source, imported) = (binding.id, binding.source.clone(), binding.imported);
                 let Some(required) = bridge.required_capture_kinds(id) else {
-                    return Err(capnp::Error::failed("unknown realtime session".into()));
+                    return Err(tilo_action_broker::BrokerError::failed(
+                        "unknown realtime session".into(),
+                    ));
                 };
                 let leases = match acquire_realtime_capture_leases(
                     &bridge.capture,
@@ -1193,7 +1203,9 @@ impl NativeRealtimeServices {
                     now,
                 ) {
                     Ok(leases) => leases,
-                    Err(error) => return Err(capnp::Error::failed(error.to_string())),
+                    Err(error) => {
+                        return Err(tilo_action_broker::BrokerError::failed(error.to_string()));
+                    }
                 };
                 let authorization = if imported {
                     if let Err(error) =
@@ -1202,7 +1214,7 @@ impl NativeRealtimeServices {
                             .accept_imported(id.fabric_id(), &source, &local, now)
                     {
                         release_realtime_capture_leases(&bridge.capture, &leases);
-                        return Err(capnp::Error::failed(error.to_string()));
+                        return Err(tilo_action_broker::BrokerError::failed(error.to_string()));
                     }
                     None
                 } else {
@@ -1214,7 +1226,7 @@ impl NativeRealtimeServices {
                         Ok(authorization) => authorization,
                         Err(error) => {
                             release_realtime_capture_leases(&bridge.capture, &leases);
-                            return Err(capnp::Error::failed(error.to_string()));
+                            return Err(tilo_action_broker::BrokerError::failed(error.to_string()));
                         }
                     };
                     if let Err(error) = bridge.broker.lock().map_err(|_| {
@@ -1223,7 +1235,7 @@ impl NativeRealtimeServices {
                         broker.accept_target(&app, id, &source, &local, authorization, now)
                     }) {
                         release_realtime_capture_leases(&bridge.capture, &leases);
-                        return Err(capnp::Error::failed(error.to_string()));
+                        return Err(tilo_action_broker::BrokerError::failed(error.to_string()));
                     }
                     Some(authorization)
                 };
@@ -1237,20 +1249,22 @@ impl NativeRealtimeServices {
             }
             collab_types::realtime::RealtimeCommand::MediaReady { session } => {
                 let Some(binding) = bridge.sessions.get(&session) else {
-                    return Err(capnp::Error::failed("unknown realtime session".into()));
+                    return Err(tilo_action_broker::BrokerError::failed(
+                        "unknown realtime session".into(),
+                    ));
                 };
                 if binding.app != app {
-                    return Err(capnp::Error::failed(
+                    return Err(tilo_action_broker::BrokerError::failed(
                         "realtime session binding mismatch".into(),
                     ));
                 }
                 if !binding.imported && binding.authorization.is_none() {
-                    return Err(capnp::Error::failed(
+                    return Err(tilo_action_broker::BrokerError::failed(
                         "fresh target capture authorization is required".into(),
                     ));
                 }
                 if binding.target_peer != Some(peer_id) {
-                    return Err(capnp::Error::failed(
+                    return Err(tilo_action_broker::BrokerError::failed(
                         "realtime target binding mismatch".into(),
                     ));
                 }
@@ -1289,7 +1303,7 @@ impl NativeRealtimeServices {
                             session: session.clone(),
                         },
                     );
-                    return Err(capnp::Error::failed(error.to_string()));
+                    return Err(tilo_action_broker::BrokerError::failed(error.to_string()));
                 }
                 let directive = if imported {
                     bridge
@@ -1298,7 +1312,7 @@ impl NativeRealtimeServices {
                         .map(|()| None)
                 } else {
                     let Some(authorization) = authorization else {
-                        return Err(capnp::Error::failed(
+                        return Err(tilo_action_broker::BrokerError::failed(
                             "fresh target capture authorization is required".into(),
                         ));
                     };
@@ -1337,7 +1351,7 @@ impl NativeRealtimeServices {
                                 session: session.clone(),
                             },
                         );
-                        return Err(capnp::Error::failed(error.to_string()));
+                        return Err(tilo_action_broker::BrokerError::failed(error.to_string()));
                     }
                 };
                 if directive.is_some_and(|directive| directive.stop_source) {
@@ -1352,15 +1366,17 @@ impl NativeRealtimeServices {
             }
             collab_types::realtime::RealtimeCommand::TargetFailed { session } => {
                 let Some(binding) = bridge.sessions.get(&session) else {
-                    return Err(capnp::Error::failed("unknown realtime session".into()));
+                    return Err(tilo_action_broker::BrokerError::failed(
+                        "unknown realtime session".into(),
+                    ));
                 };
                 if binding.app != app {
-                    return Err(capnp::Error::failed(
+                    return Err(tilo_action_broker::BrokerError::failed(
                         "realtime session binding mismatch".into(),
                     ));
                 }
                 if binding.target_peer != Some(peer_id) {
-                    return Err(capnp::Error::failed(
+                    return Err(tilo_action_broker::BrokerError::failed(
                         "realtime target binding mismatch".into(),
                     ));
                 }
@@ -1384,7 +1400,7 @@ impl NativeRealtimeServices {
                         })
                 };
                 if let Err(error) = failed {
-                    return Err(capnp::Error::failed(error.to_string()));
+                    return Err(tilo_action_broker::BrokerError::failed(error.to_string()));
                 }
                 if let Some(binding) = bridge.sessions.get_mut(&session) {
                     binding.authorization = None;

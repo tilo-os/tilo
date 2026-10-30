@@ -2,6 +2,7 @@
 #[cfg(target_os = "linux")]
 use super::AsRawFd;
 use super::{Arc, AtomicBool, CapnpBrokerState, CapnpChannelHandle, Ordering, Rc};
+use crate::BrokerError;
 use runtime_collab::native_media::{Request, Snapshot};
 
 /// Immutable route plus a live connection/process/admission check. There is no
@@ -407,9 +408,9 @@ impl CapnpChannelHandle {
     pub(super) fn audio_output_dispatch(
         self: Rc<Self>,
         bytes: &[u8],
-    ) -> Result<AudioOutputFuture, capnp::Error> {
+    ) -> Result<AudioOutputFuture, BrokerError> {
         let command = runtime_collab::audio_output::Command::decode(bytes)
-            .map_err(|error| capnp::Error::failed(error.into()))?;
+            .map_err(|error| BrokerError::failed(error.into()))?;
         let context = self.native_media_context(matches!(
             command,
             runtime_collab::audio_output::Command::Close { .. }
@@ -428,7 +429,7 @@ impl CapnpChannelHandle {
             .services
             .audio_output
             .as_ref()
-            .ok_or_else(|| capnp::Error::failed("governed audio output unavailable".into()))?;
+            .ok_or_else(|| BrokerError::failed("governed audio output unavailable".into()))?;
         Ok(service.output(context, command))
     }
 
@@ -439,13 +440,13 @@ impl CapnpChannelHandle {
     pub(super) fn native_media_context(
         &self,
         stopping: bool,
-    ) -> Result<NativeMediaRequestContext, capnp::Error> {
+    ) -> Result<NativeMediaRequestContext, BrokerError> {
         let local = self
             .lease
             .as_ref()
             .and_then(|lease| lease.local_media.clone())
             .ok_or_else(|| {
-                capnp::Error::failed("local media requires a live launcher-attested process".into())
+                BrokerError::failed("local media requires a live launcher-attested process".into())
             })?;
         let route = self.route();
         if self.verified_identity.agent_id.is_some()
@@ -454,7 +455,7 @@ impl CapnpChannelHandle {
             || route.app_id != local.app_id
             || route.cluster_id != local.workspace_id
         {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "local media route or process unavailable".into(),
             ));
         }
@@ -544,10 +545,10 @@ impl CapnpChannelHandle {
     pub(super) fn native_media_dispatch(
         self: Rc<Self>,
         bytes: &[u8],
-    ) -> Result<NativeMediaFuture, capnp::Error> {
-        let request = Request::decode(bytes).map_err(|e| capnp::Error::failed(e.into()))?;
+    ) -> Result<NativeMediaFuture, BrokerError> {
+        let request = Request::decode(bytes).map_err(|e| BrokerError::failed(e.into()))?;
         if !request.dispatch_valid() {
-            return Err(capnp::Error::failed("invalid native media intent".into()));
+            return Err(BrokerError::failed("invalid native media intent".into()));
         }
         let stopping = matches!(
             request.command,
@@ -563,7 +564,7 @@ impl CapnpChannelHandle {
             .services
             .native_media
             .as_ref()
-            .ok_or_else(|| capnp::Error::failed("native media unavailable".into()))?;
+            .ok_or_else(|| BrokerError::failed("native media unavailable".into()))?;
         Ok(service.command(context, request))
     }
 }

@@ -1,6 +1,7 @@
 //! Completion of a launch admitted on an application's original channel.
 use super::host_action_admission::{AdmittedHostAction, HostActionAdmission};
 use super::{BrokerActor, CapnpChannelHandle, InvocationCaller, app_node};
+use crate::BrokerError;
 use crate::services::{LaunchReadiness, LaunchReadinessError};
 use tilo_actions::InvocationId;
 
@@ -309,7 +310,7 @@ impl CapnpChannelHandle {
         parent: Option<InvocationId>,
         admitted: &AdmittedHostAction,
         outcome: Result<Option<crate::services::LaunchAdoption>, LaunchReadinessError>,
-    ) -> Result<tilo_actions::InvocationUpdate, capnp::Error> {
+    ) -> Result<tilo_actions::InvocationUpdate, BrokerError> {
         let outcome = outcome.and_then(|adoption| {
             self.current_launch_authority(app, parent)
                 .map_err(LaunchReadinessError::Failed)?;
@@ -353,7 +354,7 @@ impl CapnpChannelHandle {
         } else {
             self.state.complete_host_action(admitted, update.clone())
         }
-        .map_err(|error| capnp::Error::failed(error.to_string()))?;
+        .map_err(|error| BrokerError::failed(error.to_string()))?;
         Ok(update)
     }
 }
@@ -547,7 +548,7 @@ pub(super) async fn wait_for_startup(
     }
 }
 
-pub(super) fn package_root(root: &str) -> Result<Option<String>, capnp::Error> {
+pub(super) fn package_root(root: &str) -> Result<Option<String>, BrokerError> {
     if root.is_empty() {
         return Ok(None);
     }
@@ -559,18 +560,16 @@ pub(super) fn package_root(root: &str) -> Result<Option<String>, capnp::Error> {
     }) {
         return Ok(Some(root.to_owned()));
     }
-    Err(capnp::Error::failed(
-        "invalid installed package root".into(),
-    ))
+    Err(BrokerError::failed("invalid installed package root".into()))
 }
 
-pub(super) fn launch_parent(bytes: &[u8]) -> Result<Option<InvocationId>, capnp::Error> {
+pub(super) fn launch_parent(bytes: &[u8]) -> Result<Option<InvocationId>, BrokerError> {
     if bytes.is_empty() {
         return Ok(None);
     }
     uuid::Uuid::from_slice(bytes)
         .map(|id| Some(InvocationId(id)))
-        .map_err(|_| capnp::Error::failed("invalid original launch invocation".into()))
+        .map_err(|_| BrokerError::failed("invalid original launch invocation".into()))
 }
 
 pub(super) fn launch_author(

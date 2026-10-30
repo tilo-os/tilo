@@ -15524,7 +15524,6 @@ dependencies = [
  "bounded-command",
  "browser-continuity",
  "bytes",
- "capnp",
  "channel-crypto",
  "chat",
  "chrono",
@@ -17236,7 +17235,6 @@ version = "0.1.0"
 dependencies = [
  "app-cli",
  "blake3",
- "capnp",
  "channel-crypto",
  "chat",
  "collab-types",

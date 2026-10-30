@@ -4,6 +4,7 @@ use super::{
     AdmissionProvenance, CapnpBrokerState, DurableContext, InvocationInputs, InvocationKey,
     InvocationOwner, PendingTaskRun, StagedJob, TaskRunEnvelope, durable_local_invocation,
 };
+use crate::BrokerError;
 use crate::services::NativeTaskBinding;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -23,7 +24,7 @@ pub(super) struct ChildWait {
 impl ChildWait {
     /// The wait a re-ask asked for, capped at
     /// [`tilo_actions::remote::MAX_REMOTE_WAIT`]; `None` for an answer now.
-    pub(super) fn new(wait_ms: u32, seen: Option<&str>) -> Result<Option<Self>, capnp::Error> {
+    pub(super) fn new(wait_ms: u32, seen: Option<&str>) -> Result<Option<Self>, BrokerError> {
         if wait_ms == 0 {
             return Ok(None);
         }
@@ -32,7 +33,7 @@ impl ChildWait {
             .filter(|seen| !seen.is_empty())
             .map(|seen| {
                 serde_json::from_str(seen).map_err(|_| {
-                    capnp::Error::failed("task child wait names an invalid update mark".into())
+                    BrokerError::failed("task child wait names an invalid update mark".into())
                 })
             })
             .transpose()?;
@@ -86,21 +87,20 @@ pub(super) fn child_provenance(
         durable_local_invocation::LocalCaller,
         tilo_actions::InvocationId,
     )>,
-    capnp::Error,
+    BrokerError,
 > {
     if runtime_collab::native_task_revision(lease).is_none() {
         return Ok(None);
     }
     let id = uuid::Uuid::parse_str(invocation).map_err(|_| {
-        capnp::Error::failed("native task child requires stable invocation UUID".into())
+        BrokerError::failed("native task child requires stable invocation UUID".into())
     })?;
     if id.is_nil() {
-        return Err(capnp::Error::failed("nil task invocation".into()));
+        return Err(BrokerError::failed("nil task invocation".into()));
     }
     Ok(Some((
-        caller.ok_or_else(|| {
-            capnp::Error::failed("native task channel custody unavailable".into())
-        })?,
+        caller
+            .ok_or_else(|| BrokerError::failed("native task channel custody unavailable".into()))?,
         tilo_actions::InvocationId(id),
     )))
 }
@@ -130,7 +130,7 @@ impl CapnpBrokerState {
         reask: &ChildReask<'_>,
         wait: Option<ChildWait>,
         admission: (&super::CrdtRoute, &super::AdmittedJoinIdentity),
-    ) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
+    ) -> Result<(u64, tilo_actions::InvocationUpdate), BrokerError> {
         if let Some(observed) = self.observe_native_child(reask, wait, admission).await? {
             return Ok(observed);
         }
@@ -154,9 +154,9 @@ impl CapnpBrokerState {
             }
             if self
                 .task_run_cancelled(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
-                .map_err(capnp::Error::failed)?
+                .map_err(BrokerError::failed)?
             {
-                return Err(capnp::Error::failed(
+                return Err(BrokerError::failed(
                     "the task was cancelled while its step waited for the person".into(),
                 ));
             }
@@ -192,16 +192,16 @@ impl CapnpBrokerState {
     async fn start_native_child(
         self: &std::sync::Arc<Self>,
         reask: &ChildReask<'_>,
-    ) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
+    ) -> Result<(u64, tilo_actions::InvocationUpdate), BrokerError> {
         if !reask.target.provider.is_empty() {
             return self
                 .launch_native_task_action(reask)
                 .await
-                .map_err(capnp::Error::failed);
+                .map_err(BrokerError::failed);
         }
         let gate = self
             .native_confirmation_gate(reask)
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         let (argument, confirmation) = match gate {
             super::native_task_confirmation::NativeGate::Proceed => (None, None),
             super::native_task_confirmation::NativeGate::Confirmed {
@@ -215,14 +215,14 @@ impl CapnpBrokerState {
         }
         let run = self
             .task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         let offered = self
             .surfaces
             .lock()
-            .map_err(|_| capnp::Error::failed("task surface unavailable".into()))?
+            .map_err(|_| BrokerError::failed("task surface unavailable".into()))?
             .get(&target.peer_id)
             .and_then(|surface| surface.action_projection(target.resource, target.action))
-            .ok_or_else(|| capnp::Error::failed("task action unavailable".into()))?;
+            .ok_or_else(|| BrokerError::failed("task action unavailable".into()))?;
         let witness = self
             .native_store_witness(
                 (&run, reask.lease, confirmation.is_some()),
@@ -232,11 +232,11 @@ impl CapnpBrokerState {
                 reask.invocation,
             )
             .await
-            .map_err(capnp::Error::failed)?;
-        reask.caller.current(self).map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
+        reask.caller.current(self).map_err(BrokerError::failed)?;
         if witness.is_some() {
             self.check_native_store_offer(&offered)
-                .map_err(capnp::Error::failed)?;
+                .map_err(BrokerError::failed)?;
         }
         let provenance = (reask.caller.clone(), reask.invocation);
         let job = self
@@ -251,12 +251,12 @@ impl CapnpBrokerState {
                     (confirmation.is_some(), witness.as_deref()),
                 ),
             )
-            .map_err(capnp::Error::failed)?
+            .map_err(BrokerError::failed)?
             .start(self)
             .await
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         let update = self.invocation_status(job.id).ok_or_else(|| {
-            capnp::Error::failed("accepted task action has no broker state".into())
+            BrokerError::failed("accepted task action has no broker state".into())
         })?;
         Ok((job.id, update))
     }
@@ -272,13 +272,13 @@ impl CapnpBrokerState {
         reask: &ChildReask<'_>,
         wait: Option<ChildWait>,
         admission: (&super::CrdtRoute, &super::AdmittedJoinIdentity),
-    ) -> Result<Option<(u64, tilo_actions::InvocationUpdate)>, capnp::Error> {
+    ) -> Result<Option<(u64, tilo_actions::InvocationUpdate)>, BrokerError> {
         let observe = || {
             let run =
                 self.task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)?;
             self.native_task_observation(&run, reask.invocation, reask.target, reask.caller)
         };
-        let (observed, wait) = match (observe().map_err(capnp::Error::failed)?, wait) {
+        let (observed, wait) = match (observe().map_err(BrokerError::failed)?, wait) {
             (Some(observed), Some(wait)) => (observed, wait),
             (observed, _) => return Ok(observed),
         };
@@ -286,8 +286,8 @@ impl CapnpBrokerState {
         let (route, identity) = admission;
         self.revalidate_admission(route, identity)?;
         observe()
-            .map_err(capnp::Error::failed)?
-            .ok_or_else(|| capnp::Error::failed("native task child is no longer recorded".into()))
+            .map_err(BrokerError::failed)?
+            .ok_or_else(|| BrokerError::failed("native task child is no longer recorded".into()))
             .map(Some)
     }
 

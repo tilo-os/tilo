@@ -4,6 +4,7 @@ use super::{
     InvocationCaller, InvocationInputs, InvocationJournal, InvocationKey, InvocationOwner,
     PublishedAction, Rc, admission_request_digest, invocation_journal,
 };
+use crate::BrokerError;
 use crate::local_document_action::Request;
 
 /// Retry acceleration only. Durability belongs to the SDK's private receipt
@@ -106,7 +107,7 @@ fn validate_report_custody(
     request: &Request,
     route: &CrdtRoute,
     current: &AdmittedJoinIdentity,
-) -> Result<(), capnp::Error> {
+) -> Result<(), BrokerError> {
     let custody = request
         .custody
         .as_ref()
@@ -138,10 +139,10 @@ fn cached_receipt(
     channel: &CapnpChannelHandle,
     route: &CrdtRoute,
     request: &Request,
-) -> Result<Option<ReceiptRecord>, capnp::Error> {
+) -> Result<Option<ReceiptRecord>, BrokerError> {
     let state = &channel.state;
     if !state.is_accepting() {
-        return Err(capnp::Error::failed("invocation broker retired".into()));
+        return Err(BrokerError::failed("invocation broker retired".into()));
     }
     let current = state.revalidate_admission(route, &channel.verified_identity)?;
     validate_report_custody(request, route, &current)?;
@@ -153,7 +154,7 @@ fn cached_receipt(
     let target = state
         .host_workers
         .lock()
-        .map_err(|_| capnp::Error::failed("worker registry unavailable".into()))?
+        .map_err(|_| BrokerError::failed("worker registry unavailable".into()))?
         .get(channel.peer_id, route)
         .cloned()
         .ok_or_else(|| not_a_host_worker(state))?;
@@ -161,7 +162,7 @@ fn cached_receipt(
     let certificate = current
         .certificate
         .as_ref()
-        .ok_or_else(|| capnp::Error::failed("original caller certificate missing".into()))?;
+        .ok_or_else(|| BrokerError::failed("original caller certificate missing".into()))?;
     let key = InvocationKey {
         room: route.cluster_id.clone(),
         host: journal_host(state)?,
@@ -176,14 +177,14 @@ fn cached_receipt(
         return Ok(None);
     };
     let report = serde_json::to_value(request)
-        .map_err(|_| capnp::Error::failed("local report encoding failed".into()))?;
+        .map_err(|_| BrokerError::failed("local report encoding failed".into()))?;
     let intent_str = |field: &str| record.intent.get(field).and_then(serde_json::Value::as_str);
     if record.peer_id != channel.peer_id
         || intent_str("app_id") != Some(route.app_id.as_str())
         || intent_str("record_id") != Some(route.record_id.as_str())
         || record.report_digest != admission_request_digest(&report)
     {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "local report identity reused with different input or route".into(),
         ));
     }
@@ -192,17 +193,17 @@ fn cached_receipt(
 
 /// The host the admission journal records invocations under; its lock is
 /// held only to read it.
-fn journal_host(state: &CapnpBrokerState) -> Result<uuid::Uuid, capnp::Error> {
+fn journal_host(state: &CapnpBrokerState) -> Result<uuid::Uuid, BrokerError> {
     let journal = state
         .journal
         .lock()
-        .map_err(|_| capnp::Error::failed("invocation journal unavailable".into()))?;
+        .map_err(|_| BrokerError::failed("invocation journal unavailable".into()))?;
     journal
         .as_ref()
-        .map_err(|error| capnp::Error::failed(error.clone()))?
+        .map_err(|error| BrokerError::failed(error.clone()))?
         .as_ref()
         .map(InvocationJournal::host)
-        .ok_or_else(|| capnp::Error::failed("admission journal unavailable".into()))
+        .ok_or_else(|| BrokerError::failed("admission journal unavailable".into()))
 }
 
 /// The cached receipt of `key`, if the cache still holds it; its lock is
@@ -210,17 +211,17 @@ fn journal_host(state: &CapnpBrokerState) -> Result<uuid::Uuid, capnp::Error> {
 fn receipt(
     state: &CapnpBrokerState,
     key: &InvocationKey,
-) -> Result<Option<ReceiptRecord>, capnp::Error> {
+) -> Result<Option<ReceiptRecord>, BrokerError> {
     let receipts = state
         .local_report_receipts
         .lock()
-        .map_err(|_| capnp::Error::failed("local receipt cache unavailable".into()))?;
+        .map_err(|_| BrokerError::failed("local receipt cache unavailable".into()))?;
     Ok(receipts.lookup(key).cloned())
 }
 
 fn observation(
     record: &ReceiptRecord,
-) -> Result<runtime_collab::PublishedInvocationObservation, capnp::Error> {
+) -> Result<runtime_collab::PublishedInvocationObservation, BrokerError> {
     Ok(runtime_collab::PublishedInvocationObservation {
         host: *record.key.host.as_bytes(),
         invocation: *record.key.invocation.0.as_bytes(),
@@ -229,10 +230,10 @@ fn observation(
             update_json: serde_json::to_string(&tilo_actions::InvocationUpdate::Accepted {
                 invocation: record.key.invocation,
             })
-            .map_err(|_| capnp::Error::failed("local observation encoding failed".into()))?,
+            .map_err(|_| BrokerError::failed("local observation encoding failed".into()))?,
             admission_json: Some(
                 serde_json::to_string(&record.admission)
-                    .map_err(|_| capnp::Error::failed("local admission encoding failed".into()))?,
+                    .map_err(|_| BrokerError::failed("local admission encoding failed".into()))?,
             ),
             terminal_json: None,
             uncertain: false,
@@ -261,17 +262,17 @@ fn validate_report_offer(request: &Request, action: &PublishedAction) -> Result<
 /// connection no launcher authenticated, or a route of another app than the
 /// one launched. Retirement clears every registration, and says nothing
 /// about what was admitted before it: that stays uncertain.
-fn not_a_host_worker(state: &CapnpBrokerState) -> capnp::Error {
+fn not_a_host_worker(state: &CapnpBrokerState) -> BrokerError {
     if state.is_accepting() {
         rejected(runtime_collab::LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING.into())
     } else {
-        capnp::Error::failed("invocation broker retired".into())
+        BrokerError::failed("invocation broker retired".into())
     }
 }
 
-fn rejected(mut reason: String) -> capnp::Error {
+fn rejected(mut reason: String) -> BrokerError {
     reason.insert_str(0, runtime_collab::LOCAL_DOCUMENT_REJECTED);
-    capnp::Error::failed(reason)
+    BrokerError::failed(reason)
 }
 
 #[expect(
@@ -290,9 +291,8 @@ fn rejected(mut reason: String) -> capnp::Error {
 pub(super) fn admit(
     channel: Rc<CapnpChannelHandle>,
     report: Vec<u8>,
-) -> impl std::future::Future<
-    Output = Result<runtime_collab::PublishedInvocationObservation, capnp::Error>,
-> {
+) -> impl std::future::Future<Output = Result<runtime_collab::PublishedInvocationObservation, BrokerError>>
+{
     let parsed = (|| {
         let request = Request::decode(&report).map_err(rejected)?;
         if request.bound_invocation().map_err(rejected)? != request.invocation {
@@ -315,7 +315,7 @@ pub(super) fn admit(
             let _admission = state
                 .admission_lock
                 .lock()
-                .map_err(|_| capnp::Error::failed("invocation admission unavailable".into()))?;
+                .map_err(|_| BrokerError::failed("invocation admission unavailable".into()))?;
             if let Some(record) = cached_receipt(&channel, &route, &request)? {
                 return observation(&record);
             }
@@ -324,8 +324,8 @@ pub(super) fn admit(
         // happened. Exact cached retries return before consulting policy time.
         let time = state
             .registered_policy_time()
-            .map_err(capnp::Error::failed)?
-            .ok_or_else(|| capnp::Error::failed("original policy time unavailable".into()))?;
+            .map_err(BrokerError::failed)?
+            .ok_or_else(|| BrokerError::failed("original policy time unavailable".into()))?;
         let offer = state
             .resolve_local_document_offer(
                 &channel.directories,
@@ -340,15 +340,15 @@ pub(super) fn admit(
         let admission = state
             .admission_lock
             .lock()
-            .map_err(|_| capnp::Error::failed("invocation admission unavailable".into()))?;
+            .map_err(|_| BrokerError::failed("invocation admission unavailable".into()))?;
         // Resolution yields: another concurrent report may have won admission.
         if let Some(record) = cached_receipt(&channel, &route, &request)? {
             return observation(&record);
         }
-        let offer = offer.map_err(capnp::Error::failed)?;
+        let offer = offer.map_err(BrokerError::failed)?;
         state
             .checked_policy_time(Some(&time))
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         let current = state.revalidate_admission(&route, &admitted)?;
         validate_report_custody(&request, &route, &current)?;
         offer
@@ -416,9 +416,9 @@ pub(super) fn admit(
                 },
                 Some(&request),
             )
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         drop(admission);
-        drop(staged.start(state).await.map_err(capnp::Error::failed)?);
+        drop(staged.start(state).await.map_err(BrokerError::failed)?);
         let key = InvocationKey {
             room: route.cluster_id,
             host: journal_host(state)?,
@@ -426,7 +426,7 @@ pub(super) fn admit(
             owner,
         };
         let record = receipt(state, &key)?
-            .ok_or_else(|| capnp::Error::failed("local report receipt unavailable".into()))?;
+            .ok_or_else(|| BrokerError::failed("local report receipt unavailable".into()))?;
         observation(&record)
     }
 }

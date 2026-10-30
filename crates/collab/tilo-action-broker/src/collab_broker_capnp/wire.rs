@@ -12,6 +12,7 @@
     reason = "the wire's dispatcher is the broker's channel core seen from another transport, and uses most of it"
 )]
 
+use crate::BrokerError;
 use std::cell::Cell;
 use std::rc::Weak;
 
@@ -55,13 +56,13 @@ impl<T> Feed<T> {
         self
     }
 
-    fn check(&self) -> Result<(), capnp::Error> {
+    fn check(&self) -> Result<(), BrokerError> {
         HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         NativeContextReadGuard::check(self.native_guard.as_ref())
     }
 
     /// The next item, or `None` when the fanout closed.
-    pub(super) async fn next(&mut self) -> Result<Option<T>, capnp::Error> {
+    pub(super) async fn next(&mut self) -> Result<Option<T>, BrokerError> {
         self.check()?;
         let Some(next) = self.rx.recv().await else {
             return Ok(None);
@@ -137,7 +138,7 @@ impl ChannelSession {
     fn settings_call(&self, call: SettingsCall) -> Answer<Reply> {
         let settings = match self.settings() {
             Ok(settings) => settings,
-            Err(error) => return Box::pin(std::future::ready(Err(capnp::Error::failed(error)))),
+            Err(error) => return Box::pin(std::future::ready(Err(BrokerError::failed(error)))),
         };
         let view = |(revision, document)| Reply::Settings { revision, document };
         match call {
@@ -146,7 +147,7 @@ impl ChannelSession {
                     .read(after)
                     .await
                     .map(view)
-                    .map_err(capnp::Error::failed)
+                    .map_err(BrokerError::failed)
             }),
             SettingsCall::Update {
                 section,
@@ -156,13 +157,13 @@ impl ChannelSession {
                 settings
                     .update(&section, &values, action.as_deref())
                     .map(view)
-                    .map_err(capnp::Error::failed),
+                    .map_err(BrokerError::failed),
             )),
             SettingsCall::Display { command, origin } => Box::pin(std::future::ready(
                 settings
                     .display(&command, origin)
                     .map(Reply::Answer)
-                    .map_err(capnp::Error::failed),
+                    .map_err(BrokerError::failed),
             )),
         }
     }
@@ -171,28 +172,28 @@ impl ChannelSession {
     fn live_activity_call(&self, call: LiveActivityCall) -> Answer<Reply> {
         let activity = match self.live_activity() {
             Ok(activity) => activity,
-            Err(error) => return Box::pin(std::future::ready(Err(capnp::Error::failed(error)))),
+            Err(error) => return Box::pin(std::future::ready(Err(BrokerError::failed(error)))),
         };
         match call {
             LiveActivityCall::Show(shown) => Box::pin(std::future::ready(
                 activity
                     .show(&shown)
                     .map(|()| Reply::Done)
-                    .map_err(capnp::Error::failed),
+                    .map_err(BrokerError::failed),
             )),
             LiveActivityCall::Controls { after } => Box::pin(async move {
                 activity
                     .controls(after)
                     .await
                     .map(|(serial, controls)| Reply::Controls { serial, controls })
-                    .map_err(capnp::Error::failed)
+                    .map_err(BrokerError::failed)
             }),
         }
     }
 }
 
 /// A local-file command's answer on its way.
-pub(super) type FileAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8>, capnp::Error>>>>;
+pub(super) type FileAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8>, BrokerError>>>>;
 
 impl CapnpChannelHandle {
     /// Answer a command about the person's local files, JSON both ways:
@@ -202,19 +203,19 @@ impl CapnpChannelHandle {
         self: Rc<Self>,
         bytes: &[u8],
         on_behalf_of: &[u8],
-    ) -> Result<FileAnswer, capnp::Error> {
+    ) -> Result<FileAnswer, BrokerError> {
         #[cfg(target_os = "linux")]
         if runtime_collab::open_selected::discovery::is_envelope(bytes) {
             let future = self.selected_discovery_dispatch(bytes, on_behalf_of)?;
             return Ok(Box::pin(async move {
-                let value = future.await.map_err(capnp::Error::failed)?;
+                let value = future.await.map_err(BrokerError::failed)?;
                 if !value.valid() {
-                    return Err(capnp::Error::failed("invalid discovery response".into()));
+                    return Err(BrokerError::failed("invalid discovery response".into()));
                 }
                 let bytes =
-                    serde_json::to_vec(&value).map_err(|e| capnp::Error::failed(e.to_string()))?;
+                    serde_json::to_vec(&value).map_err(|e| BrokerError::failed(e.to_string()))?;
                 if bytes.len() > runtime_collab::open_selected::discovery::MAX_BYTES {
-                    return Err(capnp::Error::failed(
+                    return Err(BrokerError::failed(
                         "discovery response exceeds limit".into(),
                     ));
                 }
@@ -225,18 +226,18 @@ impl CapnpChannelHandle {
         if runtime_collab::open_selected::v2::is_envelope(bytes) {
             let future = self.selected_open_v2_dispatch(bytes, on_behalf_of)?;
             return Ok(Box::pin(async move {
-                let receipt = future.await.map_err(capnp::Error::failed)?;
+                let receipt = future.await.map_err(BrokerError::failed)?;
                 runtime_collab::open_selected::v2::encode_observed(&receipt)
-                    .map_err(|e| capnp::Error::failed(e.to_string()))
+                    .map_err(|e| BrokerError::failed(e.to_string()))
             }));
         }
         #[cfg(target_os = "linux")]
         if runtime_collab::open_selected::is_envelope(bytes) {
             let future = self.selected_open_dispatch(bytes, on_behalf_of)?;
             return Ok(Box::pin(async move {
-                let receipt = future.await.map_err(capnp::Error::failed)?;
+                let receipt = future.await.map_err(BrokerError::failed)?;
                 runtime_collab::open_selected::encode_observed(&receipt)
-                    .map_err(|e| capnp::Error::failed(e.to_string()))
+                    .map_err(|e| BrokerError::failed(e.to_string()))
             }));
         }
         if runtime_collab::write_attribution::is_envelope(bytes) {
@@ -245,15 +246,15 @@ impl CapnpChannelHandle {
         }
         if external_moderation::is_envelope(bytes) {
             let receive = external_moderation::start(&self, bytes, on_behalf_of)
-                .map_err(capnp::Error::failed)?;
+                .map_err(BrokerError::failed)?;
             return Ok(Box::pin(async move {
                 let reply = receive
                     .await
                     .map_err(|_| {
-                        capnp::Error::failed("external moderation outcome unobserved".into())
+                        BrokerError::failed("external moderation outcome unobserved".into())
                     })?
-                    .map_err(capnp::Error::failed)?;
-                serde_json::to_vec(&reply).map_err(|error| capnp::Error::failed(error.to_string()))
+                    .map_err(BrokerError::failed)?;
+                serde_json::to_vec(&reply).map_err(|error| BrokerError::failed(error.to_string()))
             }));
         }
         let reply = self.file_clipboard_dispatch(bytes, on_behalf_of)?;
@@ -286,7 +287,7 @@ impl CapnpChannelHandle {
 }
 
 /// A local effect's record on its way into workspace activity.
-pub(super) type Recording = std::pin::Pin<Box<dyn Future<Output = Result<(), capnp::Error>>>>;
+pub(super) type Recording = std::pin::Pin<Box<dyn Future<Output = Result<(), BrokerError>>>>;
 
 /// A service's answer on its way.
 /// A change to an app's published action surface.
@@ -298,10 +299,10 @@ pub(super) enum SurfaceChange {
 }
 
 /// What the host answers once its work is done.
-pub(super) type Answer<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, capnp::Error>>>>;
+pub(super) type Answer<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, BrokerError>>>>;
 
 /// A task call's answer, which a task step may wait on.
-pub(super) type TaskAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Reply, capnp::Error>>>>;
+pub(super) type TaskAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Reply, BrokerError>>>>;
 type Answering = std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8>, String>>>>;
 
 impl ChannelSession {
@@ -314,7 +315,7 @@ impl ChannelSession {
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Reply, String>>>> {
         let channel = Rc::clone(&self.channel);
         let failed = Refusal::refusal;
-        let ready = |reply: Result<Vec<u8>, capnp::Error>| -> Result<Answering, String> {
+        let ready = |reply: Result<Vec<u8>, BrokerError>| -> Result<Answering, String> {
             let reply = reply.map_err(failed)?;
             Ok(Box::pin(std::future::ready(Ok(reply))))
         };
@@ -398,12 +399,12 @@ impl std::ops::Deref for ChannelSession {
 impl CapnpChannelHandle {
     /// Admit, commit where the room's owner must hold it first, and fan out
     /// one signed document change.
-    pub(super) async fn publish_document(&self, envelope: SignedOp) -> Result<(), capnp::Error> {
+    pub(super) async fn publish_document(&self, envelope: SignedOp) -> Result<(), BrokerError> {
         self.writable()?;
         let (state, route) = (&self.state, self.route());
         let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
         verify_session_author(&current_identity, envelope.author)
-            .map_err(|error| capnp::Error::failed(format!("send: {error}")))?;
+            .map_err(|error| BrokerError::failed(format!("send: {error}")))?;
         state.authorize_certified_document(&route, &current_identity, &envelope)?;
         let owner_required =
             state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id);
@@ -444,7 +445,7 @@ impl CapnpChannelHandle {
 
     /// Every document change on this channel from now on, other endpoints'
     /// and peers'.
-    pub(super) fn subscribe_ops(&self) -> Result<Feed<OpEnvelope>, capnp::Error> {
+    pub(super) fn subscribe_ops(&self) -> Result<Feed<OpEnvelope>, BrokerError> {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         Ok(Feed::new(
@@ -461,33 +462,33 @@ impl CapnpChannelHandle {
     /// The host's record-content service, for a channel still admitted.
     fn record_content(
         &self,
-    ) -> Result<(CrdtRoute, Arc<crate::record_content::RouteContent>), capnp::Error> {
+    ) -> Result<(CrdtRoute, Arc<crate::record_content::RouteContent>), BrokerError> {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let route = self.route();
         if route.app_id.is_empty() || route.cluster_id.is_empty() {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "record content belongs to a certified app route".into(),
             ));
         }
         let content = self.state.services.record_content.clone().ok_or_else(|| {
-            capnp::Error::unimplemented("this host keeps no record content".into())
+            BrokerError::unimplemented("this host keeps no record content".into())
         })?;
         Ok((route, content))
     }
 
     /// Keep content the record references, which the app stored.
-    pub(super) fn offer_content(&self, hash: &str, bytes: &[u8]) -> Result<(), capnp::Error> {
+    pub(super) fn offer_content(&self, hash: &str, bytes: &[u8]) -> Result<(), BrokerError> {
         self.writable()?;
         let (route, content) = self.record_content()?;
         content
             .offer(&route, hash, bytes)
-            .map_err(capnp::Error::failed)
+            .map_err(BrokerError::failed)
     }
 
     /// Fetch content the record references and the app lacks; it arrives on
     /// the content feed.
-    pub(super) fn want_content(&self, hash: &str) -> Result<(), capnp::Error> {
+    pub(super) fn want_content(&self, hash: &str) -> Result<(), BrokerError> {
         let (route, content) = self.record_content()?;
         content.want(&route, hash);
         Ok(())
@@ -496,19 +497,19 @@ impl CapnpChannelHandle {
     /// The channel's context from now on, starting with its current
     /// roster. A native private window's context also follows the
     /// continuation it shows.
-    pub(super) fn context_feed(&self) -> Result<Feed<ContextUpdate>, capnp::Error> {
-        let route = self.route();
+    pub(super) fn context_feed(&self) -> Result<Feed<ContextUpdate>, BrokerError> {
+        let route = self.record_route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
         let native = self
             .state
             .native_roster_for_subscriber(&route, &self.verified_identity)
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         let instance = self
             .native_private_window_instance()
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         let document = match instance {
-            Some(_) => Some(self.document_read_context().map_err(capnp::Error::failed)?),
+            Some(_) => Some(self.document_read_context().map_err(BrokerError::failed)?),
             None => None,
         };
         let rx = self
@@ -535,7 +536,7 @@ impl CapnpChannelHandle {
 
     /// Ask another endpoint holding this channel to publish the document's
     /// current state.
-    pub(super) fn ask_for_document(&self) -> Result<(), capnp::Error> {
+    pub(super) fn ask_for_document(&self) -> Result<(), BrokerError> {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let _ = self
@@ -547,7 +548,7 @@ impl CapnpChannelHandle {
     /// Take a report about this channel's own instance or record from the
     /// app `claimed_app`, which must be the route's: no app reports for
     /// another, and a channel held to read reports nothing.
-    pub(super) fn report(&self, claimed_app: &str, report: Report) -> Result<(), capnp::Error> {
+    pub(super) fn report(&self, claimed_app: &str, report: Report) -> Result<(), BrokerError> {
         let verb = match &report {
             Report::Continuation { .. } => "reportContinuation",
             Report::ClearContinuation => "clearContinuation",
@@ -559,7 +560,7 @@ impl CapnpChannelHandle {
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
         if route.app_id.is_empty() || claimed_app != route.app_id {
-            return Err(capnp::Error::failed(format!(
+            return Err(BrokerError::failed(format!(
                 "{verb} appId must match the certified connection route"
             )));
         }
@@ -567,10 +568,10 @@ impl CapnpChannelHandle {
         // instance; a search index for the record the route names.
         let instance = match report {
             Report::SearchIndex(_) => None,
-            _ => Some(self.continuation_instance().map_err(capnp::Error::failed)?),
+            _ => Some(self.continuation_instance().map_err(BrokerError::failed)?),
         };
         let room = tilo_desktop_model::RoomId::parse(&route.cluster_id).ok_or_else(|| {
-            capnp::Error::failed(format!("{verb} route has no durable workspace room"))
+            BrokerError::failed(format!("{verb} route has no durable workspace room"))
         })?;
         let services = &self.state.services;
         let continuations = |unsupported: &str| {
@@ -594,7 +595,7 @@ impl CapnpChannelHandle {
                 .and_then(|service| service.handoff(room, app_id, instance, message)),
             Report::SearchIndex(delta) => {
                 if delta.len() > crate::services::MAX_SEARCH_INDEX_DELTA_BYTES {
-                    return Err(capnp::Error::failed(
+                    return Err(BrokerError::failed(
                         "publishSearchIndex delta exceeds its bound".into(),
                     ));
                 }
@@ -605,7 +606,7 @@ impl CapnpChannelHandle {
                     .and_then(|service| service.publish(room, &app_id, &route.record_id, &delta))
             }
         }
-        .map_err(capnp::Error::failed)
+        .map_err(BrokerError::failed)
     }
 
     /// Record a terminal effect this app ran itself on one of the actions
@@ -616,14 +617,14 @@ impl CapnpChannelHandle {
         resource: &str,
         action: &str,
         update: tilo_actions::InvocationUpdate,
-    ) -> Result<Recording, capnp::Error> {
+    ) -> Result<Recording, BrokerError> {
         // No app changes another app's route: a channel held to read refuses.
         self.writable()?;
         let current = self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let Some(status) = tilo_actions::EffectReceiptStatus::from_terminal(&update) else {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "only a terminal effect may enter workspace activity".into(),
             ));
         };
@@ -642,12 +643,12 @@ impl CapnpChannelHandle {
                 Some((surface, offered))
             })
         else {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "the application no longer publishes that action".into(),
             ));
         };
         if offered.operation_kind != tilo_actions::OperationKind::Effect {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "only Effects produce durable invocation receipts".into(),
             ));
         }
@@ -690,7 +691,7 @@ impl CapnpChannelHandle {
                             operation: tilo_owner_commit::CommitOperation::EffectReceipt {
                                 invocation: update.invocation().0,
                                 redacted: serde_json::to_vec(&receipt)
-                                    .map_err(|e| capnp::Error::failed(e.to_string()))?,
+                                    .map_err(|e| BrokerError::failed(e.to_string()))?,
                             },
                         },
                         None,
@@ -715,7 +716,7 @@ impl CapnpChannelHandle {
                     status,
                 )
             })
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         Ok(Box::pin(std::future::ready(Ok(()))))
     }
 
@@ -726,7 +727,7 @@ impl CapnpChannelHandle {
         &self,
         of: Changes,
         after: u64,
-    ) -> Result<crate::services::NearbyTransferChange, capnp::Error> {
+    ) -> Result<crate::services::NearbyTransferChange, BrokerError> {
         let route = self.route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
@@ -750,12 +751,12 @@ impl CapnpChannelHandle {
             }
             Changes::ChannelKeys => {
                 if route.app_id.is_empty() || route.cluster_id.is_empty() {
-                    return Err(capnp::Error::failed(
+                    return Err(BrokerError::failed(
                         "channel keys belong to a certified app route".into(),
                     ));
                 }
                 let keys = services.channel_keys.clone().ok_or_else(|| {
-                    capnp::Error::unimplemented("this host has no channel service to follow".into())
+                    BrokerError::unimplemented("this host has no channel service to follow".into())
                 })?;
                 let channel = collab_types::document_channel_id(
                     &route.app_id,
@@ -774,16 +775,16 @@ impl CapnpChannelHandle {
         &self,
         claimed_app: &str,
         bytes: &[u8],
-    ) -> Result<Vec<u8>, capnp::Error> {
+    ) -> Result<Vec<u8>, BrokerError> {
         let context = self.realtime_context()?;
         if bytes.len() > collab_types::realtime::MAX_REALTIME_WIRE_BYTES {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "realtime command exceeds local protocol bound".into(),
             ));
         }
         let reply = delegate_realtime_command(&self.state.services, &context, claimed_app, bytes)?;
         if reply.len() > collab_types::realtime::MAX_REALTIME_WIRE_BYTES {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "realtime reply exceeds local protocol bound".into(),
             ));
         }
@@ -795,7 +796,7 @@ impl CapnpChannelHandle {
         &self,
         claimed_app: &str,
         bytes: &[u8],
-    ) -> Result<Vec<u8>, capnp::Error> {
+    ) -> Result<Vec<u8>, BrokerError> {
         let route = self.route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
@@ -818,17 +819,17 @@ impl CapnpChannelHandle {
         &self,
         claimed_app: &str,
         bytes: &[u8],
-    ) -> Result<impl Future<Output = Result<Vec<u8>, capnp::Error>> + use<>, capnp::Error> {
+    ) -> Result<impl Future<Output = Result<Vec<u8>, BrokerError>> + use<>, BrokerError> {
         let route = self.route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
         if route.app_id != WIFI_CONTINUITY_APP_ID || claimed_app != route.app_id {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "Wi-Fi continuity requires the certified Settings connection route".into(),
             ));
         }
         if bytes.len() > runtime_collab::MAX_WIFI_CONTINUITY_WIRE_BYTES {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "Wi-Fi continuity command exceeds the local protocol bound".into(),
             ));
         }
@@ -843,7 +844,7 @@ impl CapnpChannelHandle {
                 delegate_wifi_continuity_command(&services, &route.app_id, &claimed_app, &command)
             })
             .await
-            .map_err(|error| capnp::Error::failed(error.to_string()))?
+            .map_err(|error| BrokerError::failed(error.to_string()))?
         })
     }
 
@@ -852,8 +853,8 @@ impl CapnpChannelHandle {
     pub(super) fn browser_service_session_dispatch(
         &self,
         bytes: &[u8],
-    ) -> Result<zeroize::Zeroizing<Vec<u8>>, capnp::Error> {
-        let refused = || capnp::Error::failed("private service-session request refused".into());
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, BrokerError> {
+        let refused = || BrokerError::failed("private service-session request refused".into());
         if self.route().app_id != "so.tilo.browser"
             || self.verified_identity.agent_id.is_some()
             || self.verified_identity.host_scope.is_some()
@@ -871,34 +872,34 @@ impl CapnpChannelHandle {
 
     /// Answer a speaker-group command, JSON both ways. Only the certified
     /// Settings route manages the person's speaker groups.
-    pub(super) fn speaker_dispatch(&self, bytes: &[u8]) -> Result<Vec<u8>, capnp::Error> {
+    pub(super) fn speaker_dispatch(&self, bytes: &[u8]) -> Result<Vec<u8>, BrokerError> {
         let route = self.route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
         if route.app_id != SPEAKER_APP_ID {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "speaker groups are managed only by the certified Settings application".into(),
             ));
         }
         if bytes.len() > runtime_collab::MAX_SPEAKER_WIRE_BYTES {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "speaker command exceeds the local protocol bound".into(),
             ));
         }
         let command = serde_json::from_slice::<runtime_collab::SpeakerCommand>(bytes)
-            .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            .map_err(|error| BrokerError::failed(error.to_string()))?;
         if !command.valid() {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "speaker command is structurally invalid".into(),
             ));
         }
         let speakers = self.state.services.speakers.as_ref().ok_or_else(|| {
-            capnp::Error::failed("speaker groups are unsupported by this host".into())
+            BrokerError::failed("speaker groups are unsupported by this host".into())
         })?;
         let reply = serde_json::to_vec(&speakers.command(command))
-            .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            .map_err(|error| BrokerError::failed(error.to_string()))?;
         if reply.len() > runtime_collab::MAX_SPEAKER_WIRE_BYTES {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "speaker reply exceeds the local protocol bound".into(),
             ));
         }
@@ -915,8 +916,8 @@ impl CapnpChannelHandle {
         artifact: ArtifactId,
         before_seq: u64,
         max: u32,
-    ) -> Result<(Vec<Vec<u8>>, bool), capnp::Error> {
-        let route = self.route();
+    ) -> Result<(Vec<Vec<u8>>, bool), BrokerError> {
+        let route = self.record_route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
         let broker_channels = &self.state.broker_channels;
@@ -947,11 +948,11 @@ impl CapnpChannelHandle {
 
     /// The task runs the workspace hands this delegated agent from now on.
     /// A replacement subscription is handed the approved run again.
-    pub(super) fn task_run_feed(&self) -> Result<Feed<TaskRunEnvelope>, capnp::Error> {
+    pub(super) fn task_run_feed(&self) -> Result<Feed<TaskRunEnvelope>, BrokerError> {
         if self.state.services.legacy_workspace.is_none()
             && !self.state.task_admitted_room(&self.route().cluster_id)
         {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "task execution service unsupported".into(),
             ));
         }
@@ -959,7 +960,7 @@ impl CapnpChannelHandle {
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let agent_id = current.agent_id.ok_or_else(|| {
-            capnp::Error::failed(
+            BrokerError::failed(
                 "only an admitted delegated agent may subscribe to task runs".into(),
             )
         })?;
@@ -967,7 +968,7 @@ impl CapnpChannelHandle {
         self.state
             .task_subscribers
             .lock()
-            .map_err(|_| capnp::Error::failed("task subscription registry unavailable".into()))?
+            .map_err(|_| BrokerError::failed("task subscription registry unavailable".into()))?
             .insert(
                 self.peer_id,
                 TaskSubscription {
@@ -995,7 +996,7 @@ impl CapnpChannelHandle {
             .revalidate_admission(&self.route(), &self.verified_identity)
             .and_then(|current| {
                 current.agent_id.ok_or_else(|| {
-                    capnp::Error::failed("only an agent may act on a task run".into())
+                    BrokerError::failed("only an agent may act on a task run".into())
                 })
             }) {
             Ok(agent_id) => agent_id,
@@ -1005,7 +1006,7 @@ impl CapnpChannelHandle {
             TaskCall::Invoke(step) => return self.invoke_task_step(agent_id, run_id, lease, step),
             TaskCall::Report(update) => {
                 serde_json::from_str::<runtime_collab::TaskRunUpdate>(&update)
-                    .map_err(|error| capnp::Error::failed(format!("invalid task update: {error}")))
+                    .map_err(|error| BrokerError::failed(format!("invalid task update: {error}")))
                     .and_then(|update| {
                         self.state
                             .record_task_run_update(
@@ -1015,7 +1016,7 @@ impl CapnpChannelHandle {
                                 &lease,
                                 &update,
                             )
-                            .map_err(capnp::Error::failed)
+                            .map_err(BrokerError::failed)
                     })
                     .map(|()| Reply::Done)
             }
@@ -1029,23 +1030,23 @@ impl CapnpChannelHandle {
         agent_id: &str,
         run_id: u64,
         lease: &str,
-    ) -> Result<Reply, capnp::Error> {
+    ) -> Result<Reply, BrokerError> {
         let cancelled = self
             .state
             .task_run_cancelled(self.peer_id, agent_id, run_id, lease)
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         let run = self
             .state
             .task_run_for(self.peer_id, agent_id, run_id, lease)
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         let control = self
             .state
             .native_task_status(&run, lease)
-            .map_err(capnp::Error::failed)?
+            .map_err(BrokerError::failed)?
             .control
             .map(|control| serde_json::to_string(&control))
             .transpose()
-            .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            .map_err(|error| BrokerError::failed(error.to_string()))?;
         Ok(Reply::TaskCancelled { cancelled, control })
     }
 
@@ -1065,7 +1066,7 @@ impl CapnpChannelHandle {
         let identity = self.verified_identity.clone();
         Box::pin(async move {
             if !step.provider.is_empty() && step.peer_id != 0 {
-                return Err(capnp::Error::failed(
+                return Err(BrokerError::failed(
                     "task target mixes live and stable provider identities".into(),
                 ));
             }
@@ -1097,7 +1098,7 @@ impl CapnpChannelHandle {
                     .await?
             } else {
                 if !step.provider.is_empty() {
-                    return Err(capnp::Error::failed(
+                    return Err(BrokerError::failed(
                         "closed-app activation requires a native task's authenticated custody"
                             .into(),
                     ));
@@ -1111,17 +1112,17 @@ impl CapnpChannelHandle {
                         target,
                         (None, (false, None)),
                     )
-                    .map_err(capnp::Error::failed)?
+                    .map_err(BrokerError::failed)?
                     .start(&state)
                     .await
-                    .map_err(capnp::Error::failed)?;
+                    .map_err(BrokerError::failed)?;
                 let update = state.invocation_status(job.id).ok_or_else(|| {
-                    capnp::Error::failed("accepted task action has no broker state".into())
+                    BrokerError::failed("accepted task action has no broker state".into())
                 })?;
                 (job.id, update)
             };
             let update = serde_json::to_string(&update)
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+                .map_err(|error| BrokerError::failed(error.to_string()))?;
             Ok(Reply::Invoked { id, update })
         })
     }
@@ -1133,7 +1134,7 @@ impl CapnpChannelHandle {
         let encode = |message: RemoteActionMessage| {
             RemoteActionFrame::new(message)
                 .encode()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
+                .map_err(|error| BrokerError::failed(error.to_string()))
         };
         let answer = match self.remote_action_answer(frame) {
             Ok(answer) => answer,
@@ -1153,17 +1154,17 @@ impl CapnpChannelHandle {
     fn remote_action_answer(
         &self,
         frame: &[u8],
-    ) -> Result<Answer<tilo_actions::remote::RemoteActionMessage>, capnp::Error> {
+    ) -> Result<Answer<tilo_actions::remote::RemoteActionMessage>, BrokerError> {
         use tilo_actions::remote::RemoteActionFrame;
         let original_time = self
             .state
             .registered_policy_time()
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         let current = self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let request = RemoteActionFrame::decode(frame)
-            .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            .map_err(|error| BrokerError::failed(error.to_string()))?;
         let route = self.route();
         let person = current.caller(&route.cluster_id);
         // An app's request continuing an invocation someone asked of it (an
@@ -1214,7 +1215,7 @@ impl CapnpChannelHandle {
         )
         .is_none()
         {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "only remote-action requests are answered".into(),
             ));
         }
@@ -1288,7 +1289,7 @@ impl CapnpChannelHandle {
         Ok(Box::pin(async move {
             answer
                 .await
-                .ok_or_else(|| capnp::Error::failed("the action host dropped the request".into()))
+                .ok_or_else(|| BrokerError::failed("the action host dropped the request".into()))
         }))
     }
 
@@ -1297,13 +1298,13 @@ impl CapnpChannelHandle {
     pub(super) fn invocation_feed(
         &self,
         stable: bool,
-    ) -> Result<InvocationStreamServer, capnp::Error> {
+    ) -> Result<InvocationStreamServer, BrokerError> {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         // Stream replacement and resolved dispatch share the admission boundary:
         // an admitted old token must never dispatch to a replacement stream.
         let Ok(admission) = self.state.admission_lock.lock() else {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "invocation admission registry unavailable".into(),
             ));
         };
@@ -1312,7 +1313,7 @@ impl CapnpChannelHandle {
         if let Ok(mut directories) = self.state.canonical_directories.lock() {
             directories.stream_replaced(self.peer_id);
         } else {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "canonical stream registry unavailable".into(),
             ));
         }
@@ -1323,7 +1324,7 @@ impl CapnpChannelHandle {
                 capabilities.remove(&self.peer_id);
             }
         } else {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "application capability registry unavailable".into(),
             ));
         }
@@ -1331,7 +1332,7 @@ impl CapnpChannelHandle {
         if let Ok(mut subscribers) = self.state.invocation_subscribers.lock() {
             subscribers.insert(self.peer_id, tx);
         } else {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "invocation subscriber registry unavailable".into(),
             ));
         }
@@ -1373,7 +1374,7 @@ impl CapnpChannelHandle {
                 let admission = Some((self.route(), self.verified_identity.clone()));
                 Box::pin(async move {
                     let update = serde_json::from_str(&update).map_err(|error| {
-                        capnp::Error::failed(format!("invalid invocation update: {error}"))
+                        BrokerError::failed(format!("invalid invocation update: {error}"))
                     })?;
                     state
                         .apply_invocation_update(peer_id, id, update, admission)
@@ -1410,7 +1411,7 @@ impl CapnpChannelHandle {
             }
             let completion = InvocationCompletion { code, message };
             if !completion.code.is_empty() && completion.message.trim().is_empty() {
-                return Err(capnp::Error::failed(
+                return Err(BrokerError::failed(
                     "failed invocation completion requires a message".into(),
                 ));
             }
@@ -1418,12 +1419,12 @@ impl CapnpChannelHandle {
                 let registry = state
                     .pending_invocations
                     .lock()
-                    .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
+                    .map_err(|_| BrokerError::failed("invocation registry unavailable".into()))?;
                 let pending = registry
                     .get(&id)
                     .filter(|pending| pending.peer_id == peer_id)
                     .ok_or_else(|| {
-                        capnp::Error::failed(
+                        BrokerError::failed(
                             "an application may complete only its own invocation".into(),
                         )
                     })?;
@@ -1432,7 +1433,7 @@ impl CapnpChannelHandle {
                         .result
                         .validate(&tilo_actions::ActionOutput::default())
                         .map_err(|error| {
-                            capnp::Error::failed(format!(
+                            BrokerError::failed(format!(
                                 "legacy completion violated its published result contract: {error}"
                             ))
                         })?;
@@ -1470,9 +1471,9 @@ impl CapnpChannelHandle {
             let pending = state
                 .pending_invocations
                 .lock()
-                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?
+                .map_err(|_| BrokerError::failed("invocation registry unavailable".into()))?
                 .remove(&id)
-                .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
+                .ok_or_else(|| BrokerError::failed("unknown invocation id".into()))?;
             state.publish_activity(pending.activity.as_ref(), &update);
             state.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = state.cancellation_requests.lock() {
@@ -1500,7 +1501,7 @@ impl CapnpChannelHandle {
             .and_then(|pending| pending.get(&id).map(|job| job.peer_id == self.peer_id))
             .unwrap_or(false);
         if !owns {
-            return Box::pin(std::future::ready(Err(capnp::Error::failed(
+            return Box::pin(std::future::ready(Err(BrokerError::failed(
                 "unknown invocation id".into(),
             ))));
         }
@@ -1515,7 +1516,7 @@ impl CapnpChannelHandle {
         // The application hears of the request once it is durable.
         let durable = self.state.invocation_in_flight(id);
         Box::pin(async move {
-            durable.wait().await.map_err(capnp::Error::failed)?;
+            durable.wait().await.map_err(BrokerError::failed)?;
             Ok(Reply::Cancelled(true))
         })
     }
@@ -1526,19 +1527,19 @@ impl CapnpChannelHandle {
         &self,
         claimed_app: &str,
         change: SurfaceChange,
-    ) -> Result<(), capnp::Error> {
+    ) -> Result<(), BrokerError> {
         // No app changes another app's route: a channel held to read refuses.
         self.writable()?;
         let route = self.route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
         if route.app_id.is_empty() || claimed_app != route.app_id {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "a published surface's appId must match the certified connection route".into(),
             ));
         }
         let peer_id = self.peer_id;
-        let unavailable = || capnp::Error::failed("action surface registry unavailable".into());
+        let unavailable = || BrokerError::failed("action surface registry unavailable".into());
         let (actions, table) = match change {
             SurfaceChange::Whole(rows) => (validate_published_surface(rows)?, None),
             SurfaceChange::Delta(delta) => {
@@ -1553,7 +1554,7 @@ impl CapnpChannelHandle {
                     .cloned()
                     .unwrap_or_default();
                 table.apply(&delta).map_err(|reason| {
-                    capnp::Error::failed(format!("action surface delta refused: {reason}"))
+                    BrokerError::failed(format!("action surface delta refused: {reason}"))
                 })?;
                 (validate_published_surface(table.actions())?, Some(table))
             }
@@ -1603,7 +1604,7 @@ impl CapnpChannelHandle {
 
     /// The action catalogue this endpoint may see: as it stands, then each
     /// time it changes.
-    pub(super) fn catalogue_feed(&self) -> Result<ActionCatalogueStreamServer, capnp::Error> {
+    pub(super) fn catalogue_feed(&self) -> Result<ActionCatalogueStreamServer, BrokerError> {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let cluster = self.route().cluster_id;
@@ -1611,7 +1612,7 @@ impl CapnpChannelHandle {
         let snapshot = self.state.action_catalogue_json_for(&cluster, &actor, None);
         let initial = match snapshot {
             Ok(snapshot) => Arc::<str>::from(snapshot),
-            Err(error) => return Err(capnp::Error::failed(error)),
+            Err(error) => return Err(BrokerError::failed(error)),
         };
         // The session's normal tracing filter passes only errors. Its flight
         // recorder captures stderr; report numeric metadata without changing
@@ -1624,7 +1625,7 @@ impl CapnpChannelHandle {
         if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
             subscribers.insert(self.connection_id, (cluster, actor, tx));
         } else {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "action catalogue subscriber registry unavailable".into(),
             ));
         }
@@ -1648,7 +1649,7 @@ impl CapnpChannelHandle {
         on_behalf_of: &[u8],
     ) -> Answer<Reply> {
         let refuse =
-            |error: capnp::Error| -> Answer<Reply> { Box::pin(std::future::ready(Err(error))) };
+            |error: BrokerError| -> Answer<Reply> { Box::pin(std::future::ready(Err(error))) };
         let parent = match observed_launch::launch_parent(on_behalf_of) {
             Ok(parent) => parent,
             Err(error) => return refuse(error),
@@ -1667,17 +1668,17 @@ impl CapnpChannelHandle {
                 .app_open_authority(self.peer_id, &self.route().app_id, parent)
                 .is_none()
         {
-            return refuse(capnp::Error::failed(
+            return refuse(BrokerError::failed(
                 "nothing the person or an invocation asked for is behind this launch".into(),
             ));
         }
         if let Err(error) = self.current_launch_authority(&app_id, parent) {
-            return refuse(capnp::Error::failed(error));
+            return refuse(BrokerError::failed(error));
         }
 
         let admitted = match self.admit_observed_launch(&app_id, package_root.as_deref(), parent) {
             Ok(admitted) => admitted,
-            Err(error) => return refuse(capnp::Error::failed(error)),
+            Err(error) => return refuse(BrokerError::failed(error)),
         };
         #[cfg(test)]
         self.observed_launch_effect_barrier();
@@ -1700,7 +1701,7 @@ impl CapnpChannelHandle {
             let outcome = observed_launch::wait_for_startup(started).await;
             let update = channel.finish_observed_launch(&app_id, parent, &admitted, outcome)?;
             let update = serde_json::to_string(&update)
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+                .map_err(|error| BrokerError::failed(error.to_string()))?;
             Ok(Reply::Invoked {
                 id: admitted.id,
                 update,
@@ -1711,7 +1712,7 @@ impl CapnpChannelHandle {
     /// News of the record's content from now on.
     pub(super) fn subscribe_content(
         &self,
-    ) -> Result<Feed<crate::record_content::ContentNews>, capnp::Error> {
+    ) -> Result<Feed<crate::record_content::ContentNews>, BrokerError> {
         let (route, content) = self.record_content()?;
         Ok(Feed::new(self.host_guard(), content.subscribe(&route)))
     }
@@ -1723,7 +1724,7 @@ impl CapnpChannelHandle {
     pub(super) fn publish_directory(
         &self,
         directory: Rc<dyn DirectorySource>,
-    ) -> Result<(), capnp::Error> {
+    ) -> Result<(), BrokerError> {
         // No app changes another app's route: a channel held to read refuses.
         self.writable()?;
         let route = self.route();
@@ -1738,13 +1739,13 @@ impl CapnpChannelHandle {
         let app_id = route.app_id.clone();
         let registration = Rc::new(uuid::Uuid::new_v4());
         let Ok(_admission) = self.state.admission_lock.lock() else {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "directory admission unavailable".into(),
             ));
         };
         self.state
             .register_canonical_directory(self.peer_id, &route, *registration)
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         self.directories.directories.borrow_mut().insert(
             self.peer_id,
             RegisteredActionDirectory {
@@ -1783,12 +1784,12 @@ impl CapnpChannelHandle {
     }
 
     /// The realtime continuity events this app sees.
-    pub(super) fn realtime_feed(&self) -> Result<Feed<Vec<u8>>, capnp::Error> {
+    pub(super) fn realtime_feed(&self) -> Result<Feed<Vec<u8>>, BrokerError> {
         let context = self.realtime_context()?;
         let service = self.state.services.realtime.as_ref().ok_or_else(|| {
-            capnp::Error::failed("realtime continuity is unsupported by this host".into())
+            BrokerError::failed("realtime continuity is unsupported by this host".into())
         })?;
-        let rx = service.subscribe(&context).map_err(capnp::Error::failed)?;
+        let rx = service.subscribe(&context).map_err(BrokerError::failed)?;
         Ok(Feed::new(self.host_guard(), rx))
     }
 }
@@ -1802,7 +1803,7 @@ impl CapnpCollabService {
         clippy::too_many_lines,
         reason = "one ordered join admission: identity, route, custody and channel handle"
     )]
-    pub(super) async fn join(&self, join: Join) -> Result<CapnpChannelHandle, capnp::Error> {
+    pub(super) async fn join(&self, join: Join) -> Result<CapnpChannelHandle, BrokerError> {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         let mut phases = JoinPhases::start();
@@ -1827,7 +1828,7 @@ impl CapnpCollabService {
                 .and_then(|worker| worker.host_scope.as_ref()),
         )
         .map_err(|error| {
-            capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
+            BrokerError::failed(format!("collaboration join identity rejected: {error}"))
         })?;
         phases.mark("verify");
         // A room still being joined or placed on its host holds the join
@@ -1840,7 +1841,7 @@ impl CapnpCollabService {
                     .await;
             }
             if let runtime_collab::RoomStatus::Refused(reason) = status {
-                return Err(capnp::Error::failed(reason));
+                return Err(BrokerError::failed(reason));
             }
         }
         // An attested launch joins its own route; another app's only to
@@ -1850,7 +1851,7 @@ impl CapnpCollabService {
                 let person_room = verified_identity
                     .verified
                     .owns_person_room(&route.cluster_id);
-                let now = state.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
+                let now = state.policy_now_ns().map_err(BrokerError::failed)? / 1_000_000_000;
                 attested_route_access(&app.app_id, &route, person_room, || {
                     identity_reads_record(
                         state.membership.as_ref(),
@@ -1859,7 +1860,7 @@ impl CapnpCollabService {
                         now,
                     )
                 })
-                .map_err(capnp::Error::failed)?
+                .map_err(BrokerError::failed)?
             }
             None => RouteAccess::Own,
         };
@@ -1868,7 +1869,7 @@ impl CapnpCollabService {
                 || verified_identity.verified.user_public_key != worker.root
                 || verified_identity.verified.device_public_key != worker.device
             {
-                return Err(capnp::Error::failed(
+                return Err(BrokerError::failed(
                     "worker descriptor route or certificate mismatch".into(),
                 ));
             }
@@ -1876,14 +1877,14 @@ impl CapnpCollabService {
                 if registration.route != route
                     || verified_identity.certificate.as_ref() != Some(&registration.certificate)
                 {
-                    return Err(capnp::Error::failed(
+                    return Err(BrokerError::failed(
                         "registered worker exact certificate changed".into(),
                     ));
                 }
                 verified_identity.worker_registration = Some(registration.clone());
             }
         } else if state.durable_owner_required && !route.app_id.is_empty() {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "application requires host-owned worker descriptor admission".into(),
             ));
         }
@@ -1896,7 +1897,7 @@ impl CapnpCollabService {
             || verified_identity.worker_registration.is_some())
             && !person
         {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "host worker cannot delegate an agent identity".into(),
             ));
         }
@@ -1925,7 +1926,7 @@ impl CapnpCollabService {
                 // Bound allocation before Unicode case normalization;
                 // every normalized character consumes at least one byte.
                 if participant_handle.chars().take(129).count() > 128 {
-                    return Err(capnp::Error::failed(
+                    return Err(BrokerError::failed(
                         "invalid canonical workspace agent identifier".into(),
                     ));
                 }
@@ -1934,11 +1935,11 @@ impl CapnpCollabService {
                     agent: participant_handle.clone(),
                 }
                 .validate()
-                .map_err(capnp::Error::failed)?;
+                .map_err(BrokerError::failed)?;
                 let membership = state.membership.as_ref().ok_or_else(|| {
-                    capnp::Error::failed("agent session has no workspace authority".into())
+                    BrokerError::failed("agent session has no workspace authority".into())
                 })?;
-                let now = state.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
+                let now = state.policy_now_ns().map_err(BrokerError::failed)? / 1_000_000_000;
                 membership
                     .decide_in_room(&route.cluster_id, |workspace| {
                         admit_agent_delegation_at(
@@ -1950,7 +1951,7 @@ impl CapnpCollabService {
                     })
                     .and_then(std::convert::identity)
                     .map_err(|error| {
-                        capnp::Error::failed(format!("agent collaboration join rejected: {error}"))
+                        BrokerError::failed(format!("agent collaboration join rejected: {error}"))
                     })?;
             }
         }
@@ -2723,19 +2724,19 @@ async fn pump<T>(
 /// A stream the host pulls one item at a time.
 trait Pulled {
     type Item;
-    async fn pull(&self) -> Result<Self::Item, capnp::Error>;
+    async fn pull(&self) -> Result<Self::Item, BrokerError>;
 }
 
 impl Pulled for InvocationStreamServer {
     type Item = runtime_collab::wire::Invocation;
-    async fn pull(&self) -> Result<Self::Item, capnp::Error> {
+    async fn pull(&self) -> Result<Self::Item, BrokerError> {
         self.next().await?.on_wire()
     }
 }
 
 impl Pulled for super::person_chat::PrivateChanges {
     type Item = (u64, Vec<u8>);
-    async fn pull(&self) -> Result<Self::Item, capnp::Error> {
+    async fn pull(&self) -> Result<Self::Item, BrokerError> {
         let generation = self.next().await?;
         Ok((generation, self.read()?))
     }
@@ -2743,14 +2744,14 @@ impl Pulled for super::person_chat::PrivateChanges {
 
 impl Pulled for super::approved_checks::ReportedProgress {
     type Item = CheckProgress;
-    async fn pull(&self) -> Result<Self::Item, capnp::Error> {
-        self.next().await.map_err(capnp::Error::failed)
+    async fn pull(&self) -> Result<Self::Item, BrokerError> {
+        self.next().await.map_err(BrokerError::failed)
     }
 }
 
 impl Pulled for ActionCatalogueStreamServer {
     type Item = Arc<str>;
-    async fn pull(&self) -> Result<Self::Item, capnp::Error> {
+    async fn pull(&self) -> Result<Self::Item, BrokerError> {
         self.next().await
     }
 }
@@ -2836,9 +2837,9 @@ pub(super) trait Refusal {
     fn refusal(self) -> String;
 }
 
-impl Refusal for capnp::Error {
+impl Refusal for BrokerError {
     fn refusal(self) -> String {
-        self.extra
+        self.reason
     }
 }
 
@@ -2856,8 +2857,8 @@ fn ready<T: 'static>(answer: T) -> Answer<T> {
 /// The app's remote-action `message` refused as not permitted.
 fn refusal(
     message: &tilo_actions::remote::RemoteActionMessage,
-) -> Result<Answer<tilo_actions::remote::RemoteActionMessage>, capnp::Error> {
+) -> Result<Answer<tilo_actions::remote::RemoteActionMessage>, BrokerError> {
     tilo_actions::remote::refuse(message, tilo_actions::remote::ActionHostError::NotPermitted)
         .map(ready)
-        .ok_or_else(|| capnp::Error::failed("only remote-action requests are answered".into()))
+        .ok_or_else(|| BrokerError::failed("only remote-action requests are answered".into()))
 }

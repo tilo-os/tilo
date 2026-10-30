@@ -2,6 +2,7 @@
 //! change (`applicationsChanged`): content-free, so Files asks the tools
 //! service for the list again instead of asking on a timer.
 
+use crate::BrokerError;
 use crate::services::HostServices;
 
 /// The wait for the app list's next change past `after` for a connection on
@@ -11,9 +12,9 @@ pub(super) fn app_change(
     services: &HostServices,
     route_app: &str,
     after: u64,
-) -> Result<crate::services::ApplicationChange, capnp::Error> {
+) -> Result<crate::services::ApplicationChange, BrokerError> {
     if route_app != super::NEARBY_TRANSFER_APP_ID {
-        return Err(capnp::Error::failed(
+        return Err(BrokerError::failed(
             "the person's apps are listed only to the certified Files application".into(),
         ));
     }
@@ -22,7 +23,7 @@ pub(super) fn app_change(
         .as_ref()
         .and_then(|service| service.changed(after))
         .ok_or_else(|| {
-            capnp::Error::unimplemented("this host does not say when its apps change".into())
+            BrokerError::unimplemented("this host does not say when its apps change".into())
         })
 }
 
@@ -88,7 +89,7 @@ mod tests {
             let unannounced = app_change(&services, super::super::NEARBY_TRANSFER_APP_ID, 0)
                 .err()
                 .expect("a host that cannot announce changes says so");
-            assert_eq!(unannounced.kind, capnp::ErrorKind::Unimplemented);
+            assert_eq!(unannounced.kind, crate::BrokerErrorKind::Unimplemented);
         }
     }
 }

@@ -1,5 +1,6 @@
 //! Private person authority comes from the native app's certified transport.
 use super::{CapnpChannelHandle, InvocationOwner, PrivateWorkerRegistration};
+use crate::BrokerError;
 use crate::services::person_chat::PersonChatCommand;
 use std::{cell::RefCell, rc::Rc};
 
@@ -255,11 +256,11 @@ impl PrivateChanges {
         channel: Rc<CapnpChannelHandle>,
         peer: String,
         original: Vec<u8>,
-    ) -> Result<Self, capnp::Error> {
+    ) -> Result<Self, BrokerError> {
         let selected = if original.is_empty() {
             None
         } else {
-            let key = view_key(&peer, &original).map_err(capnp::Error::failed)?;
+            let key = view_key(&peer, &original).map_err(BrokerError::failed)?;
             Some(
                 channel
                     .person_chat_views
@@ -267,13 +268,13 @@ impl PrivateChanges {
                     .get(&key)
                     .cloned()
                     .ok_or_else(|| {
-                        capnp::Error::failed("private selected view unavailable".into())
+                        BrokerError::failed("private selected view unavailable".into())
                     })?,
             )
         };
         let changes = channel
             .private_changes(&peer, &original, selected.as_ref())
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         Ok(Self {
             channel,
             peer,
@@ -285,30 +286,30 @@ impl PrivateChanges {
     }
 
     /// The conversation as it stands.
-    pub(super) fn read(&self) -> Result<Vec<u8>, capnp::Error> {
+    pub(super) fn read(&self) -> Result<Vec<u8>, BrokerError> {
         // Revalidate the exact selected actor/worker on every private fetch.
         // Never re-enter terminal invocation dispatch or borrow a local actor.
         let actor = self
             .channel
             .private_stream_actor(&self.peer, &self.original, self.selected.as_ref())
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         let command = serde_json::to_vec(&PersonChatCommand::Read {
             public_key: self.peer.clone(),
         })
-        .map_err(|error| capnp::Error::failed(error.to_string()))?;
+        .map_err(|error| BrokerError::failed(error.to_string()))?;
         let reply = self
             .channel
             .state
             .services
             .person_chat
             .as_ref()
-            .ok_or_else(|| capnp::Error::failed("private person owner unavailable".into()))?
+            .ok_or_else(|| BrokerError::failed("private person owner unavailable".into()))?
             .command(&self.channel.route().cluster_id, &actor, &command)
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         // The owner reauthorizes the pair and bounds serialization; enforce
         // the wire bound again before copying into the capability reply.
         if reply.len() > 1024 * 1024 {
-            return Err(capnp::Error::failed(
+            return Err(BrokerError::failed(
                 "private conversation reply exceeds bound".into(),
             ));
         }
@@ -321,25 +322,25 @@ impl PrivateChanges {
         clippy::future_not_send,
         reason = "the stream is served on the connection's single-threaded local set"
     )]
-    pub(super) async fn next(&self) -> Result<u64, capnp::Error> {
+    pub(super) async fn next(&self) -> Result<u64, BrokerError> {
         self.channel
             .private_changes(&self.peer, &self.original, self.selected.as_ref())
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         let mut changes = self
             .changes
             .borrow_mut()
             .take()
-            .ok_or_else(|| capnp::Error::failed("private next already pending".into()))?;
+            .ok_or_else(|| BrokerError::failed("private next already pending".into()))?;
         if !self.initial.replace(false) {
             changes
                 .changed()
                 .await
-                .map_err(|_| capnp::Error::failed("private conversation owner closed".into()))?;
+                .map_err(|_| BrokerError::failed("private conversation owner closed".into()))?;
         }
         // Waiting grants no authority: certify both people again after wake.
         self.channel
             .private_changes(&self.peer, &self.original, self.selected.as_ref())
-            .map_err(capnp::Error::failed)?;
+            .map_err(BrokerError::failed)?;
         let generation = *changes.borrow_and_update();
         *self.changes.borrow_mut() = Some(changes);
         Ok(generation)

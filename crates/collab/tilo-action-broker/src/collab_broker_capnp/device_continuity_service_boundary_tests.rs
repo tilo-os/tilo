@@ -1,4 +1,5 @@
 use super::*;
+use crate::BrokerErrorKind;
 use crate::services::{
     NearbyTransferRequestContext, NearbyTransferServices, WifiContinuityServices,
 };
@@ -377,7 +378,7 @@ fn only_the_certified_files_route_waits_for_nearby_changes() {
         let unannounced = nearby_transfer_change(&services, &files_context(), 0)
             .err()
             .expect("a host that cannot announce changes says so");
-        assert_eq!(unannounced.kind, capnp::ErrorKind::Unimplemented);
+        assert_eq!(unannounced.kind, BrokerErrorKind::Unimplemented);
     }
 }
 
@@ -442,7 +443,7 @@ fn only_the_certified_settings_route_waits_for_speaker_changes() {
         let unannounced = speaker_change(&services, "so.tilo.settings", 0)
             .err()
             .expect("a host that cannot announce changes says so");
-        assert_eq!(unannounced.kind, capnp::ErrorKind::Unimplemented);
+        assert_eq!(unannounced.kind, BrokerErrorKind::Unimplemented);
     }
 }
 

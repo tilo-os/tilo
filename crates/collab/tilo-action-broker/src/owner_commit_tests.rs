@@ -461,9 +461,9 @@ mod owner_commit_tests {
                         let error = response.await.unwrap().unwrap_err();
                         assert_eq!(
                             fixture.state.owner_health().unwrap_err(),
-                            format!("owner commit failed: {}", error.extra)
+                            format!("owner commit failed: {}", error.reason)
                         );
-                        assert!(!error.extra.contains("interrupted"));
+                        assert!(!error.reason.contains("interrupted"));
                     }
                 }
             })

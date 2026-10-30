@@ -417,7 +417,6 @@ tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 # DeviceCert). Same version + features shape as the dev-deps entry
 # below so cargo collapses to one copy in the lockfile.
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
-capnp.workspace = true
 # The session's polkit authentication agent; the shell supplies the sheet it
 # asks in (`polkit_agent`).
 tilo-polkit-agent = { path = "../polkit-agent" }
