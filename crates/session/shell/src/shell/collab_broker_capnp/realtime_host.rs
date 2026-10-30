@@ -46,11 +46,7 @@ impl Default for RealtimeBridge {
             fabric: Arc::new(
                 tilo_device_fabric::realtime_session::BrokerRealtimeFabricAdapter::with_app_verifier(
                     Arc::clone(&broker),
-                    |app_id| {
-                        crate::shell::launcher::installed_apps().is_ok_and(|apps| {
-                            apps.iter().any(|installed| installed.package_id == app_id)
-                        })
-                    },
+                    crate::shell::app_action_access::is_installed,
                 ),
             ),
             broker,

@@ -50,7 +50,6 @@
 "crates/session/shell/src/shell/device_certification.rs" = 1
 "crates/session/shell/src/shell/device_fabric_runtime/mod.rs" = 4
 "crates/session/shell/src/shell/device_fabric_runtime/window_views.rs" = 2
-"crates/session/shell/src/shell/device_unlock.rs" = 1
 "crates/session/shell/src/shell/device_unlock_runtime.rs" = 2
 "crates/session/shell/src/shell/device_vpn/controller.rs" = 1
 "crates/session/shell/src/shell/device_vpn/mod.rs" = 2
@@ -123,7 +122,6 @@
 "crates/session/shell/src/shell/search/providers/waiting_on_you.rs" = 1
 "crates/session/shell/src/shell/search/recent_places.rs" = 1
 "crates/session/shell/src/shell/settings_records.rs" = 1
-"crates/session/shell/src/shell/speaker_group.rs" = 2
 "crates/session/shell/src/shell/state.rs" = 7
 "crates/session/shell/src/shell/state/window_shares.rs" = 2
 "crates/session/shell/src/shell/state/workspace_layout.rs" = 1
