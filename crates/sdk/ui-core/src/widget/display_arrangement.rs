@@ -278,6 +278,7 @@ fn round_to_i32(value: f64) -> i32 {
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
+#[crate::component::not_a_component(system, "the display settings' arrangement of screens")]
 pub struct DisplayArrangement {
     displays: Vec<ArrangedDisplay>,
     moves: Vec<(String, ActionEmitter<(i32, i32)>)>,

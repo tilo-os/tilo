@@ -39,6 +39,7 @@ pub const HANDLE_HIT_HALF_PX: f64 = HANDLE_SLOT_PX / 2.0 + crate::widget::RESIZE
 /// The `GroupRow` constructs one per inter-group gap (N-1 handles for N
 /// groups) and refreshes the handle's `(left, right)` rect snapshot each
 /// layout pass.
+#[crate::component::not_a_component(shell, "resizing windows in the strip")]
 pub struct ResizeHandle {
     /// Rebuilt every layout pass — never trust this outside the current
     /// paint/event cycle.

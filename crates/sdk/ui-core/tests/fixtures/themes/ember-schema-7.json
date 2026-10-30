@@ -1,0 +1,37 @@
+{
+  "schema_version": 7,
+  "id": "ember",
+  "name": "Ember",
+  "palette": {
+    "dark": true,
+    "high_contrast": false,
+    "hue": 60.0,
+    "chroma": 0.006,
+    "surfaces": {
+      "base": 0.16,
+      "content": 0.215,
+      "sidebar": 0.195,
+      "inspector": 0.235,
+      "raised": 0.265,
+      "overlay": 0.285
+    },
+    "ink": { "primary": 0.96, "secondary": 0.76, "tertiary": 0.62 },
+    "status": {
+      "danger": { "lightness": 0.7, "chroma": 0.13 },
+      "warning": { "lightness": 0.8, "chroma": 0.12 },
+      "success": { "lightness": 0.74, "chroma": 0.12 },
+      "info": { "lightness": 0.72, "chroma": 0.11 }
+    }
+  },
+  "emphasis": { "kind": "tinted", "hue": 40.0 },
+  "presence": { "lightness": 0.74, "chroma": 0.14 },
+  "shape": { "window_radius": 14.0 },
+  "density": { "spacing": 1.0 },
+  "type": { "face": "Noto Sans", "reading": "Literata", "base_size": 14.0 },
+  "motion": { "character": 1.0 },
+  "material": {
+    "blur": 30.0,
+    "tint_opacity": 0.8,
+    "selector": { "strip": "floating", "rim_span": 0.55, "rim_alpha": 0.22, "hover_alpha": 0.75 }
+  }
+}
