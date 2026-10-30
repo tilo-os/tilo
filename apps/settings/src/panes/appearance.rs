@@ -254,7 +254,7 @@ fn translucency_key(prefs: &AppearancePrefs) -> String {
 }
 
 /// The translucency the chooser persists for `key`.
-fn translucency_of(key: String) -> Result<Option<f64>, String> {
+fn translucency_of(key: &str) -> Result<Option<f64>, String> {
     if key == THEME_CHOICE {
         return Ok(None);
     }
@@ -545,7 +545,7 @@ fn theme_card(cx: &ViewCx<AppearancePrefs>, actions: &Actions<Settings>) -> Elem
                     paths.translucency,
                     translucency_choices(),
                     translucency_key,
-                    translucency_of,
+                    |key: String| translucency_of(&key),
                 ),
             // Contrast, motion and text size are Accessibility's alone.
             cx.setting(t("settings-appearance-accessibility"))
