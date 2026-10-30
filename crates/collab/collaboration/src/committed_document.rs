@@ -1328,7 +1328,7 @@ impl From<&str> for CaptureFailure {
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn read_capture(
     channel: &runtime_collab::ChannelHandle,
@@ -1578,7 +1578,7 @@ enum Woke {
 /// shovel sleeps; a hang meanwhile is met by the next ask.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn until_stale(
     channel: &runtime_collab::ChannelHandle,
@@ -1634,7 +1634,7 @@ fn opens_committed_document(participant_kind: &str) -> bool {
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) async fn install(
     channel: &runtime_collab::ChannelHandle,

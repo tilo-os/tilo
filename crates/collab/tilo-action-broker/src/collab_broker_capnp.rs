@@ -7351,13 +7351,6 @@ impl CapnpBrokerState {
                     &ContextUpdate::RecordsArrived(records.clone()),
                 );
             }
-            CollabEvent::ActionArrived { type_id, .. } => {
-                // Unreachable today; said out loud, not silently dropped.
-                tracing::warn!(
-                    %type_id,
-                    "capnp fanout: no action stream yet, action dropped"
-                );
-            }
             CollabEvent::ScrollbackBatch { .. }
             | CollabEvent::HistoryAgents { .. }
             | CollabEvent::DocumentSnapshotRequested { .. }

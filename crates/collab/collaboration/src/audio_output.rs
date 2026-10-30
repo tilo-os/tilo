@@ -164,7 +164,7 @@ fn serve(channel: runtime_collab::ChannelHandle) -> Arc<Connection> {
     connection
 }
 
-// Cap'n Proto capabilities stay on the SDK's LocalSet; this future never crosses threads.
+// Runs on the SDK's LocalSet; this future never crosses threads.
 fn dispatch<'a>(
     channel: &'a runtime_collab::ChannelHandle,
     command: &'a Command,

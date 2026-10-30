@@ -35,7 +35,7 @@
 //! returns empty and `send()` is a no-op.
 //!
 //! The default transport (feature `broker-transport`) delegates to the
-//! `runtime-collab` Cap'n Proto broker on a worker thread it owns.
+//! `runtime-collab` collaboration client on a worker thread it owns.
 
 // The broker client brought its lint debt from ui-core, scoped as it was there.
 #![allow(

@@ -461,7 +461,7 @@ fn context_event_bytes(
 /// invocation id or correlation always hears back.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 pub(super) async fn remote_action_round_trip(
     channel: &runtime_collab::ChannelHandle,
@@ -666,16 +666,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             serialized_bytes(key, &mut meter);
             presence_payload_bytes(payload, &mut meter);
             "RemotePresenceUpdate"
-        }
-        CollabEvent::ActionArrived {
-            type_id,
-            payload,
-            from_user_id,
-        } => {
-            meter.string_capacity(type_id);
-            meter.bytes(payload);
-            meter.string_capacity(from_user_id);
-            "ActionArrived"
         }
         CollabEvent::Document {
             envelope,

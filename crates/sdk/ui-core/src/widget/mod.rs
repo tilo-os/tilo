@@ -2341,20 +2341,6 @@ pub trait Widget {
         false
     }
 
-    /// Apply an action another app in this room published, if this app owns
-    /// the document — lets an app address a document it doesn't hold by
-    /// saying what should happen instead of writing bytes directly, keeping
-    /// each document to one writer. An unrecognised `type_id` is silently
-    /// declined, not an error.
-    fn apply_room_action(
-        &mut self,
-        _doc: &mut crate::widget::Edits<'_>,
-        _type_id: &str,
-        _payload: &[u8],
-    ) -> bool {
-        false
-    }
-
     fn wants_pointer_capture(&self) -> bool {
         false
     }

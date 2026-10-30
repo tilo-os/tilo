@@ -66,7 +66,6 @@ FRAMEWORK_LAUNCH = re.compile(
 # vocabulary: a surface's `ResourceSurface::effect`, a view's `cx.effects(..)`.
 TYPED_EFFECT_HANDLER = re.compile(r"\bfn\s+effect\s*\(|\.\s*effects\s*\(\s*(?:move\s*)?\|")
 LEGACY_ENTRY_POINTS = {
-    "legacy room-action override": re.compile(r"\bfn\s+apply_room_action\s*\("),
     "bespoke automation entry point": re.compile(
         r"\bfn\s+(?:automation|agent|mcp|control)_"
         r"(?:invoke|enumerate|dispatch|serve|listen)\b"

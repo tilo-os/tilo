@@ -1,8 +1,8 @@
-//! The broker transport: the `runtime-collab` Cap'n Proto SDK on a worker
-//! thread the transport owns.
+//! The broker transport: the `runtime-collab` collaboration client on a
+//! worker thread the transport owns.
 //!
 //! The worker (the "shovel") runs a `current_thread` Tokio runtime and a
-//! `LocalSet`, because capnp-rpc futures are `!Send`. The owner thread
+//! `LocalSet` that keeps every route's state on that thread. The owner thread
 //! reaches it over a pair of bounded queues: [`CollabTransport::submit`]
 //! enqueues commands and [`CollabTransport::drain`] empties the event queue.
 //! Overload never closes the bridge. Only transient presence is shed;
@@ -378,7 +378,7 @@ pub(super) struct BrokerTransport {
     invocation_owners: std::collections::BTreeMap<u64, committed_document::DeliveryOwner>,
     state: BridgeState,
     /// The receiver stays on the application's owner thread.  RPC servers
-    /// own only the cloneable sender, so a Cap'n Proto callback cannot touch
+    /// own only the cloneable sender, so a host's ask cannot touch
     /// widgets directly.
     action_directory_rx: mpsc::Receiver<ActionDirectoryRequest>,
     action_directory_tx: mpsc::SyncSender<ActionDirectoryRequest>,
@@ -3405,8 +3405,8 @@ impl CollaborationManager {
 
     /// Stand up the shovel thread + its tokio `current_thread` runtime and
     /// return at once. The shovel loads the join identity and runs
-    /// `try_connect` **inside** its `LocalSet` because capnp-rpc futures are
-    /// `!Send` and can't cross a thread boundary.
+    /// `try_connect` **inside** its `LocalSet`, where every route's state
+    /// stays.
     ///
     /// The transport reports [`TransportStatus::Connecting`] until the
     /// shovel is serving commands (or [`TransportStatus::Closed`] if setup
@@ -3531,7 +3531,7 @@ enum InitStatus {
 /// broker cannot be reached; the join is what ends the wait, never this.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc client futures are !Send by design; driven only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn report_join_hold(
     client: &runtime_collab::CollabClient,
@@ -3576,7 +3576,7 @@ fn report_init(state: &BridgeState, init_tx: &mpsc::SyncSender<InitStatus>, stat
 }
 
 /// The shovel thread's body: owns a `current_thread` runtime + `LocalSet`
-/// (capnp-rpc futures are `!Send`), stands up the SDK client, subscribes
+/// (where every route's state stays), stands up the SDK client, subscribes
 /// its three streams, and forwards outbound requests. Exits when
 /// `outbound_rx.recv()` returns `None` (manager dropped).
 fn run_shovel(
@@ -3757,12 +3757,11 @@ fn follow_channel_keys(
 
 /// SDK-side event loop: dispatches outbound requests to SDK calls, and
 /// spawns one subscription task per stream on the first `join_channel`.
-// Not `Send`: `client` wraps a capnp-rpc handle (`Rc`-based, `!Send`), and
-// this only ever runs inside `run_shovel`'s `LocalSet` on its own thread.
+// Not `Send`: the route state it holds stays on `run_shovel`'s `LocalSet`.
 #[allow(
     clippy::future_not_send,
     clippy::too_many_lines,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn drive_shovel(
     client: runtime_collab::CollabClient,
@@ -4293,7 +4292,7 @@ async fn drive_shovel(
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn install_sdk_encryption(
     context: SdkJoinContext<'_>,
@@ -4440,13 +4439,11 @@ struct SdkRoute {
     encryption: SharedRouteKeys,
 }
 
-// Not `Send`: `client`/`channel` wrap capnp-rpc handles, which are
-// `Rc`-based and inherently `!Send` — this runs only on the shovel
-// thread's `LocalSet` (see `run_shovel`), never crossing a thread
-// boundary, so the non-`Send` future is by design, not an oversight.
+// Not `Send`: the route state it holds stays on the shovel thread's
+// `LocalSet` (see `run_shovel`).
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn ensure_sdk_route(
     context: &SdkJoinContext<'_>,
@@ -4677,7 +4674,7 @@ async fn ensure_sdk_route(
 /// to themselves.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_content_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -4739,7 +4736,7 @@ impl RouteLabel {
 /// caller's route setup.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_op_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -4812,7 +4809,7 @@ async fn spawn_op_stream(
 /// [`CollabEvent::Context`] on `inbound_tx`.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_context_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -4998,7 +4995,7 @@ async fn native_invocation_delivery_turn(
 // custody and exact pending job. A waited delivery cannot reuse stale authority.
 #[allow(
     clippy::future_not_send,
-    reason = "the original Rc-backed Cap'n Proto channel is driven only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn recheck_native_invocation(
     channel: &runtime_collab::ChannelHandle,
@@ -5032,7 +5029,7 @@ async fn recheck_native_invocation(
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_invocation_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -5141,7 +5138,7 @@ impl LiveActivityLink {
     /// Send the app's activity if it changed, or again after a join.
     #[allow(
         clippy::future_not_send,
-        reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+        reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
     )]
     async fn flush(&self, resend: bool) {
         let Some(unsent) = super::channel_live_activity::take_unsent(resend) else {
@@ -5227,7 +5224,7 @@ impl SettingsLink {
 /// left, and show the shell's answers.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn send_settings(
     handle: &runtime_collab::AppSettingsHandle,
@@ -5265,7 +5262,7 @@ async fn send_settings(
 /// for [`BrokerTransport::action_directory_publication_counts`].
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn publish_directory(
     route: &SdkRoute,
@@ -5385,7 +5382,7 @@ fn parse_invocation_context(id: u64, json: &str) -> Option<tilo_actions::ActionC
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_action_catalogue_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -5483,7 +5480,7 @@ async fn forward_action_catalogues(
 /// unadmitted agent identities, leaving their normal collaboration intact.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send and are driven only by the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_task_run_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -5507,7 +5504,7 @@ async fn spawn_task_run_stream(
 /// sends), regardless of whether the inbound stream subscribed.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn spawn_presence_stream(
     channel: &runtime_collab::ChannelHandle,
@@ -5534,7 +5531,7 @@ async fn spawn_presence_stream(
 /// it. Hydration runs independently on this same LocalSet.
 #[allow(
     clippy::future_not_send,
-    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn wait_for_document_publication(
     route: &SdkRoute,
@@ -5568,13 +5565,13 @@ async fn wait_for_document_publication(
 }
 
 /// Sign on the shovel thread through the workspace identity service, then use
-/// the one signed Cap'n Proto verb. Missing or denied certification never
+/// the one signed publication. Missing or denied certification never
 /// downgrades the document to unsigned traffic. A mutation larger than one
 /// frame is sent as consecutive segments, each encrypted (on MLS routes),
 /// signed and validated by the broker as its own envelope.
 #[allow(
     clippy::future_not_send,
-    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn send_document_mutation(
     route: &SdkRoute,
@@ -5668,7 +5665,7 @@ fn origin_claims(
 /// content sealed under an older one.
 #[allow(
     clippy::future_not_send,
-    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn send_document_frame(
     route: &SdkRoute,
@@ -5718,7 +5715,7 @@ fn frame_refused(state: &BridgeState, refusal: &FrameRefusal) -> DocumentPublica
 #[allow(
     clippy::future_not_send,
     clippy::too_many_lines,
-    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet; sealing, signing and sending one frame stay one auditable path"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn try_send_frame(
     route: &SdkRoute,
@@ -5999,7 +5996,7 @@ const KEY_ROUNDS: &str = "tilo::collab::key_rounds";
 /// is asked here, and its answers are taken at once.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn refresh_keys(
     routes: &std::collections::HashMap<String, SdkRoute>,
@@ -6049,7 +6046,7 @@ async fn refresh_keys(
 /// Returns whether any route's state or keys changed.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn apply_fetched_keys(
     routes: &std::collections::HashMap<String, SdkRoute>,
@@ -6083,7 +6080,7 @@ async fn apply_fetched_keys(
 /// waited on them.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn refresh_all_route_keys(
     routes: &std::collections::HashMap<String, SdkRoute>,
@@ -6202,11 +6199,10 @@ fn parse_task_update(id: u64, update: &str) -> TaskActionResult {
         .map_err(|error| error.to_string())
 }
 
-// Not `Send`: `route.channel` wraps a capnp-rpc handle (`Rc`-based,
-// `!Send`), and this only ever runs inside the shovel thread's `LocalSet`.
+// Not `Send`: the route state it holds stays on the shovel thread's `LocalSet`.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 #[allow(
     clippy::too_many_lines,
@@ -11238,10 +11234,14 @@ mod tests {
             let mut payload = Vec::with_capacity(5 * 1024 * 1024);
             payload.push(1);
 
-            assert!(!inbound.send_reply(CollabEvent::ActionArrived {
-                type_id: "test.action".to_owned(),
-                payload,
-                from_user_id: "peer".to_owned(),
+            assert!(!inbound.send_reply(CollabEvent::WorkspaceControl {
+                session_id: 1,
+                event: runtime_collab::WorkspaceControlEvent::Frame {
+                    surface: 1,
+                    encoded_h264: payload,
+                    timestamp: 0,
+                    seq: 0,
+                },
             }));
             assert!(!state.is_healthy());
             assert!(rx.try_recv().is_err());

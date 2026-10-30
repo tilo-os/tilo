@@ -1322,16 +1322,6 @@ mod component_adapter {
                 .unwrap_or_default()
         }
 
-        fn apply_room_action(
-            &mut self,
-            doc: &mut crate::widget::Edits<'_>,
-            type_id: &str,
-            payload: &[u8],
-        ) -> bool {
-            self.with_root_edits(doc, |root, edits, _| {
-                root.apply_room_action(edits, type_id, payload)
-            })
-        }
         fn wants_pointer_capture(&self) -> bool {
             self.in_root(|root| root.wants_pointer_capture())
                 .unwrap_or_default()

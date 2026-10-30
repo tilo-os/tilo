@@ -603,11 +603,6 @@ decorator_trait! {
         fn take_focus_request() -> Option<String>;
         fn restore_dev_route(route: &crate::widget::router::RouteSnapshot) -> bool;
         fn set_motion_reduced(reduced: bool);
-        fn apply_room_action(
-            doc: &mut crate::widget::Edits<'_>,
-            type_id: &str,
-            payload: &[u8],
-        ) -> bool;
         fn take_structure_dirty() -> bool;
         fn remount_children(remount: &mut crate::widget::Remount<'_>) -> bool;
         fn mark_drawn();
