@@ -1024,6 +1024,7 @@ mod tests {
             opens_mime_types: vec![],
             opens_uri_schemes: vec![],
             opens_secondary: false,
+            opens_resource_kinds: Vec::new(),
             offers: vec![],
         };
         super::super::lock(&super::super::RETAINED_FILES).insert(
