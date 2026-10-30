@@ -407,6 +407,11 @@ pub struct AgentRequest {
     /// what came back.
     #[serde(default)]
     pub quick: bool,
+    /// Whether it is asked in an agent chat: its runs then get the chat's
+    /// budget ([`crate::model::Budget::chat`]), sized for a long task of
+    /// many items, instead of the runner's default.
+    #[serde(default)]
+    pub chat: bool,
     /// The task delegation the asking device signed for a task agent made
     /// for this issue, hex (`TaskDelegation::to_hex`). It rides on the run
     /// beside its starter; the broker verifies it. `None` when a
