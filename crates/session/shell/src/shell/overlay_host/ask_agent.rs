@@ -472,6 +472,42 @@ impl ShellOverlayHost {
         for (room, agent) in starts {
             self.start_agent_for(&room, &agent);
         }
+        asked | self.ask_door_runs(&chrome)
+    }
+
+    /// Ask Tasks for the run of each agent door connection the person
+    /// admitted: an issue assigned to a task agent minted for it, started
+    /// by the person, as asking a new agent makes one. The connection joins
+    /// the run once it goes; it is never launched. Whether one was asked.
+    fn ask_door_runs(&mut self, chrome: &crate::shell::chrome_state::Chrome) -> bool {
+        let asks = chrome.borrow_mut().take_door_runs();
+        let mut asked = false;
+        for ask in asks {
+            let reply = super::agent_actions::DoorReply::new(ask.reply);
+            let Some(broker) = self.shortcut_triggers.broker() else {
+                reply.send(Err(crate::shell::i18n::t("agent-door-workspace-gone")));
+                continue;
+            };
+            let room = ask.room.to_string();
+            let source = ActionSessionSource::new(broker);
+            let Some(identity_revision) = source.identity_revision(&room) else {
+                reply.send(Err(
+                    "this device's identity in the workspace is not settled yet".into(),
+                ));
+                continue;
+            };
+            let owner = ComposerOwner {
+                person: ask.person,
+                room,
+                agent: crate::shell::task_agents::NEW_TASK_AGENT.into(),
+                identity_revision,
+            };
+            self.agent_actions
+                .entry(owner.clone())
+                .or_default()
+                .open_and_ask_for_door(source, &owner, (&ask.title, &ask.body), reply);
+            asked = true;
+        }
         asked
     }
 
