@@ -33,6 +33,13 @@ const FORWARDED: &[&str] = &[
     "TILO_APPS_DATA_DIR",
     "TILO_IDENTITY_ROOT",
     "TILO_HOME_PEERS_PATH",
+    // The registries and runtime of a session started from a build under
+    // test, so the apps it launches are the ones that build made. Absent
+    // from an installed session, where the installed directories are used.
+    "TILO_APPS_SYSTEM_DIR",
+    "TILO_APPS_SYSTEM_PAYLOAD_DIR",
+    "TILO_RUNTIME_BUNDLE_DIR",
+    "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
     // Their account and shell.
     "HOME",
     "USER",
