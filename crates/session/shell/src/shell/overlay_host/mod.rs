@@ -1004,6 +1004,9 @@ pub struct ShellOverlayHost {
     topbar: Box<topbar_host::TopBarHost>,
     /// The ask-agent chord's progress and the apps that answer it.
     selection_requests: crate::shell::selection_agent::SelectionRequests,
+    /// Work the chrome handed to agents that waits for its room's identity
+    /// on this device to settle, or for the broker.
+    held_agent_asks: ask_agent::HeldAgentAsks,
     /// Controls a development session's test control asked to activate in
     /// the focused window, by their test ids, not yet sent to its app.
     test_activations: Vec<String>,
