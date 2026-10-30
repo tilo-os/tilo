@@ -320,6 +320,25 @@ impl State {
             .collect()
     }
 
+    /// Ask the window with `id` to close, the way its close button does:
+    /// Wayland clients are sent `xdg_toplevel.close`, X11 windows
+    /// `WM_DELETE_WINDOW`; both decide themselves whether they go.
+    pub(crate) fn close_window(&self, id: u64) {
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|window| describe(window).is_some_and(|info| info.id == id))
+        else {
+            return;
+        };
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.send_close();
+        }
+        if let Some(x11) = window.x11_surface() {
+            let _ = x11.close();
+        }
+    }
+
     /// Keep `window`, which is about to go, so the desktop can animate it
     /// away: it is drawn from its last buffer as it stood, until the
     /// desktop drops it with [`crate::Compositor::release_snapshot`] or a

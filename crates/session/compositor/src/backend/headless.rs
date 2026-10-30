@@ -219,7 +219,7 @@ impl Backend for HeadlessBackend {
         crate::capture::copy::<_, Image<'static, 'static>>(&mut self.renderer, state, frame)
     }
 
-    fn screenshot(&mut self, name: &str) -> Result<Screenshot, BackendError> {
+    fn screenshot(&mut self, _state: &mut State, name: &str) -> Result<Screenshot, BackendError> {
         let output = self
             .outputs
             .iter_mut()

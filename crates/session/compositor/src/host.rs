@@ -4,8 +4,8 @@
 //! apps; the compositor holds none of their code. A [`SurfaceHost`] is how one
 //! of them reaches the screen: it hands the compositor buffers to show above
 //! the windows and receives the input that lands on them. The in-process host
-//! drives an ordinary toolkit app and rasterizes its frames into those
-//! buffers; nothing here knows how the pixels were made.
+//! drives an ordinary toolkit app and draws its frames into those buffers;
+//! nothing here knows how the pixels were made.
 
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 

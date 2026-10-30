@@ -98,6 +98,18 @@ impl Default for IdleConfig {
 }
 
 impl IdleConfig {
+    /// No timers at all: nothing dims, blanks, locks or suspends because
+    /// nothing happened. What a session in a window of another desktop
+    /// runs, where idle is that desktop's.
+    #[must_use]
+    pub const fn never() -> Self {
+        Self {
+            blank_timeout: None,
+            lock_timeout: None,
+            suspend_timeout: None,
+        }
+    }
+
     /// Resolve the config from the process environment ([`BLANK_SECS_ENV`] / [`LOCK_SECS_ENV`] / [`SUSPEND_SECS_ENV`]).
     pub fn from_env() -> Self {
         Self::from_env_values(
@@ -223,6 +235,12 @@ impl SessionManager {
     /// Whether the display is currently blanked (DPMS off).
     pub fn is_blanked(&self) -> bool {
         matches!(self.panel, Panel::Off { .. })
+    }
+
+    /// The timeouts it runs on now.
+    #[must_use]
+    pub const fn config(&self) -> IdleConfig {
+        self.config
     }
 
     /// Whether the display is dimmed ahead of blanking (and not yet restored by input).

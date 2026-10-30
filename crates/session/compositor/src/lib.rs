@@ -141,6 +141,9 @@ pub struct Compositor {
     event_loop: EventLoop<'static, LoopData>,
     display: Display<State>,
     data: LoopData,
+    /// It runs in a window of a desktop it did not start: that desktop owns
+    /// idle, blanking, locking and suspend, so this one runs no idle timers.
+    hosted: bool,
 }
 
 impl Compositor {
@@ -172,6 +175,7 @@ impl Compositor {
             event_loop,
             display,
             data: LoopData { state, backend },
+            hosted: false,
         })
     }
 
@@ -195,9 +199,11 @@ impl Compositor {
     /// A compositor in a window of the desktop it runs inside (see
     /// [`backend::nested`]).
     pub fn nested(policy: Box<dyn WindowPolicy>, config: &NestedConfig) -> Result<Self, Error> {
-        Self::new(policy, |handle, state| {
+        let mut compositor = Self::new(policy, |handle, state| {
             Ok(Box::new(NestedBackend::start(handle, state, config)?))
-        })
+        })?;
+        compositor.set_hosted(true);
+        Ok(compositor)
     }
 
     /// Run until `stop` holds or the backend is done: wait for clients, devices and due frames,
@@ -420,12 +426,39 @@ impl Compositor {
 
     /// When the displays dim, blank, and the session locks or suspends
     /// with no input. Applied to the current idle episode: a shorter
-    /// timeout can fire at the next dispatch.
+    /// timeout can fire at the next dispatch. A hosted session runs no idle
+    /// timers whatever it is given: the desktop it runs in owns idle.
     pub fn set_idle_config(&mut self, config: IdleConfig) {
+        let config = if self.hosted {
+            IdleConfig::never()
+        } else {
+            config
+        };
         let session = &mut self.data.state.idle.session;
         session.set_blank_timeout(config.blank_timeout);
         session.set_lock_timeout(config.lock_timeout);
         session.set_suspend_timeout(config.suspend_timeout);
+    }
+
+    /// Whether this session runs in a window of a desktop it did not start;
+    /// setting it drops every idle timer the session was given.
+    pub fn set_hosted(&mut self, hosted: bool) {
+        self.hosted = hosted;
+        if hosted {
+            self.set_idle_config(IdleConfig::never());
+        }
+    }
+
+    /// Whether this session runs in a window of a desktop it did not start.
+    #[must_use]
+    pub const fn hosted(&self) -> bool {
+        self.hosted
+    }
+
+    /// The idle timeouts the session runs on now.
+    #[must_use]
+    pub fn idle_config(&self) -> IdleConfig {
+        self.data.state.idle.session.config()
     }
 
     /// The panel's backlight, which the idle dim lowers; without one the
@@ -796,7 +829,7 @@ impl Compositor {
 
     /// The last frame drawn on the output named `name`.
     pub fn screenshot(&mut self, name: &str) -> Result<Screenshot, Error> {
-        Ok(self.data.backend.screenshot(name)?)
+        Ok(self.data.backend.screenshot(&mut self.data.state, name)?)
     }
 
     /// The mapped windows and their logical rectangles `(x, y, w, h)`,
@@ -808,6 +841,12 @@ impl Compositor {
             .into_iter()
             .map(|(info, rect)| (info, (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)))
             .collect()
+    }
+
+    /// Ask the window with `id` to close, as its own close button would: the
+    /// client decides what closing means, and does it.
+    pub fn close_window(&mut self, id: u64) {
+        self.data.state.close_window(id);
     }
 
     /// Whether a client keeps the session from idling (idle-inhibit).

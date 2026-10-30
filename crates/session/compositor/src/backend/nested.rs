@@ -1,35 +1,34 @@
 //! The compositor in a window of the desktop it runs inside, for
 //! development.
 //!
-//! The window is an X11 window (smithay's X11 backend): that one path runs on
-//! X11 desktops and, through Xwayland, on Wayland ones, and smithay drives it
-//! entirely (window, DRI3 buffers, Present timing, input). The window is one
-//! output; resizing the window changes its mode. Frames are composited with
-//! GLES on the GPU the X server renders with and presented when the server
-//! is ready for the next one. Pointer and keyboard input of the window
-//! becomes [`InputEvent`]s; the pointer is drawn as on a real screen, in
-//! place of the host's.
+//! The window is winit's: a Wayland client where the desktop runs Wayland and
+//! an X11 window where it does not, so the session is a native window either
+//! way. The window is one output; resizing it changes its mode. Frames are
+//! composited with GLES on the GPU that draws the window and presented to the
+//! host with its damage. Pointer and keyboard input of the window becomes
+//! [`InputEvent`]s; the pointer is drawn as on a real screen, in place of the
+//! host's.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Instant;
 
-use smithay::backend::allocator::dmabuf::DmabufAllocator;
-use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
-use smithay::backend::egl::{EGLContext, EGLDisplay};
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::egl::EGLDevice;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{Bind as _, ImportDma as _};
-use smithay::backend::x11::{Window, WindowBuilder, X11Backend, X11Event, X11Surface};
+use smithay::backend::renderer::{Bind as _, ExportMem as _, ImportDma as _, Offscreen as _};
+use smithay::backend::winit::{WinitEvent, WinitGraphicsBackend, init_from_attributes};
 use smithay::output::{Mode, Output};
 use smithay::reexports::calloop::LoopHandle;
-use smithay::utils::{DeviceFd, Logical, Size};
+use smithay::utils::{Buffer, Physical, Rectangle, Size};
+use winit::dpi::PhysicalSize;
+use winit::window::{Window as WinitWindow, WindowAttributes};
 
-use super::{Backend, BackendError, failed, refuse_disabling};
+use super::{Backend, BackendError, Screenshot, failed, refuse_disabling};
 use crate::input::InputEvent;
 use crate::output::{OutputChange, OutputConfig, apply_placement, refresh_interval};
-use crate::present::{Presentation, Shown};
+use crate::present::Shown;
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 use crate::{Error, LoopData};
@@ -66,6 +65,16 @@ impl NestedConfig {
     fn output_scale(&self) -> f64 {
         usable_scale(self.scale).unwrap_or(1.0)
     }
+
+    fn attributes(&self) -> WindowAttributes {
+        WinitWindow::default_attributes()
+            .with_title(&self.title)
+            .with_inner_size(PhysicalSize::new(
+                u32::from(self.size.0),
+                u32::from(self.size.1),
+            ))
+            .with_visible(true)
+    }
 }
 
 /// A scale clients can render at: finite and positive.
@@ -74,22 +83,17 @@ pub(crate) fn usable_scale(scale: f64) -> Option<f64> {
 }
 
 /// The output mode of a window of `size` physical pixels, if it has any.
-fn window_mode(size: Size<u16, Logical>) -> Option<Mode> {
+fn window_mode(size: Size<i32, Physical>) -> Option<Mode> {
     (size.w > 0 && size.h > 0).then(|| Mode {
-        size: (i32::from(size.w), i32::from(size.h)).into(),
+        size: (size.w, size.h).into(),
         refresh: REFRESH_MHZ,
     })
 }
 
 struct Inner {
-    /// Kept for the surface: the window closes when it drops.
-    _window: Window,
-    surface: X11Surface,
-    renderer: GlesRenderer,
+    window: WinitGraphicsBackend<GlesRenderer>,
     output: Output,
     damage: OutputDamageTracker,
-    /// The frame with the X server, until it says the frame was shown.
-    presenting: Option<Presentation>,
     /// When a frame may be drawn though the last one changed nothing.
     next_frame: Instant,
     closed: bool,
@@ -98,103 +102,73 @@ struct Inner {
 }
 
 /// The window backend. Created by [`NestedBackend::start`], which opens the
-/// window and registers the X11 connection in the compositor's loop.
+/// window and registers the host's event loop in the compositor's.
 pub struct NestedBackend {
     inner: Rc<RefCell<Inner>>,
 }
 
 impl NestedBackend {
-    /// Open the window on the X server `$DISPLAY` names and make it an
-    /// output.
+    /// Open the window on the desktop's compositor and make it an output.
     pub fn start(
         handle: &LoopHandle<'static, LoopData>,
         state: &mut State,
         config: &NestedConfig,
     ) -> Result<Self, Error> {
-        let backend = X11Backend::new().map_err(|error| failed("X11 connection", error))?;
-        let x11 = backend.handle();
-        let (node, fd) = x11
-            .drm_node()
-            .map_err(|error| failed("the X server's GPU (DRI3)", error))?;
-        let gbm =
-            GbmDevice::new(DeviceFd::from(fd)).map_err(|error| failed("GBM device", error))?;
-        // SAFETY: the display is created from the GBM device of the X
-        // server's GPU, which the allocator and renderer keep alive.
-        let display = unsafe { EGLDisplay::new(gbm.clone()) }
-            .map_err(|error| failed("EGL display", error))?;
-        let context = EGLContext::new(&display).map_err(|error| failed("EGL context", error))?;
-        let modifiers: HashSet<_> = context
+        let (mut window, events) = init_from_attributes::<GlesRenderer>(config.attributes())
+            .map_err(|error| failed("window", error))?;
+        // Clients render on the GPU that draws this window, and hand their
+        // frames over as dma-bufs it can import.
+        let node = EGLDevice::device_for_display(window.renderer().egl_context().display())
+            .ok()
+            .and_then(|device| device.try_get_render_node().ok().flatten());
+        let formats: Vec<_> = window.renderer().dmabuf_formats().iter().copied().collect();
+        let render_formats: Vec<_> = window
+            .renderer()
+            .egl_context()
             .dmabuf_render_formats()
             .iter()
-            .map(|format| format.modifier)
+            .copied()
             .collect();
-        let window = WindowBuilder::new()
-            .title(&config.title)
-            .size(config.size.into())
-            .build(&x11)
-            .map_err(|error| failed("X11 window", error))?;
-        let surface = x11
-            .create_surface(
-                &window,
-                DmabufAllocator(GbmAllocator::new(gbm, GbmBufferFlags::RENDERING)),
-                modifiers.into_iter(),
-            )
-            .map_err(|error| failed("X11 surface", error))?;
-        // SAFETY: the context is current only on this thread, the loop's.
-        let renderer = unsafe { GlesRenderer::new(context) }
-            .map_err(|error| failed("GLES renderer", error))?;
-        state.enable_dmabuf(
-            renderer.dmabuf_formats().iter().copied().collect(),
-            Some(node),
-        );
-        state.enable_dmabuf_capture(
-            node.dev_id(),
-            renderer
-                .egl_context()
-                .dmabuf_render_formats()
-                .iter()
-                .copied(),
-        );
+        state.enable_dmabuf(formats, node);
+        if let Some(node) = node {
+            state.enable_dmabuf_capture(node.dev_id(), render_formats);
+        }
 
-        let size = window.size();
-        let mut output_config = OutputConfig::new(
-            OUTPUT_NAME,
-            i32::from(size.w).max(1),
-            i32::from(size.h).max(1),
-        )
-        .with_scale(config.output_scale());
+        let size = window.window_size();
+        let mut output_config = OutputConfig::new(OUTPUT_NAME, size.w.max(1), size.h.max(1))
+            .with_scale(
+                // The host's own scale is the window's: a desktop at 150%
+                // shows a 150% session.
+                config.output_scale(),
+            );
         output_config.refresh_mhz = REFRESH_MHZ;
         let output = output_config.create(&state.display, "nested");
         state.add_output(&output, output_config.location());
         let damage = OutputDamageTracker::from_output(&output);
         // The compositor draws the pointer: clients' cursor shapes show.
-        window.set_cursor_visible(false);
-        window.map();
+        window.window().set_cursor_visible(false);
 
         let inner = Rc::new(RefCell::new(Inner {
-            _window: window,
-            surface,
-            renderer,
+            window,
             output,
             damage,
-            presenting: None,
             next_frame: Instant::now(),
             closed: false,
             dark: false,
         }));
-        let events = Rc::clone(&inner);
+        let host = Rc::clone(&inner);
         handle
-            .insert_source(backend, move |event, (), data| {
-                handle_event(&events, &mut data.state, event);
+            .insert_source(events, move |event, (), data| {
+                handle_event(&host, &mut data.state, event);
             })
-            .map_err(|error| failed("X11 source", error.error))?;
+            .map_err(|error| failed("window events", error.error))?;
         Ok(Self { inner })
     }
 }
 
-fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: X11Event) {
+fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: WinitEvent) {
     match event {
-        X11Event::Input { event, .. } => {
+        WinitEvent::Input(event) => {
             let extent = state
                 .output_geometries()
                 .first()
@@ -203,9 +177,9 @@ fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: X11Event) 
                 state.handle_input(event);
             }
         }
-        X11Event::Resized { new_size, .. } => {
+        WinitEvent::Resized { size, .. } => {
             let mut inner = inner.borrow_mut();
-            let Some(mode) = window_mode(new_size) else {
+            let Some(mode) = window_mode(size) else {
                 return;
             };
             inner
@@ -217,21 +191,9 @@ fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: X11Event) 
             drop(inner);
             state.rearrange();
         }
-        X11Event::PresentCompleted { .. } => {
-            let mut inner = inner.borrow_mut();
-            if let Some(presentation) = inner.presenting.take() {
-                presentation.shown(Shown::Host);
-            }
-            inner.next_frame = Instant::now();
-        }
-        X11Event::Refresh { .. } => {
-            let mut inner = inner.borrow_mut();
-            // The server lost what the window showed: draw all of it.
-            inner.surface.reset_buffer_ages();
-            inner.next_frame = Instant::now();
-        }
-        X11Event::CloseRequested { .. } => inner.borrow_mut().closed = true,
-        X11Event::Focus { .. } => {}
+        WinitEvent::Redraw => inner.borrow_mut().next_frame = Instant::now(),
+        WinitEvent::CloseRequested => inner.borrow_mut().closed = true,
+        WinitEvent::Focus(_) => {}
     }
 }
 
@@ -240,44 +202,33 @@ impl Backend for NestedBackend {
         let mut guard = self.inner.borrow_mut();
         let inner = &mut *guard;
         let now = Instant::now();
-        if inner.closed || inner.dark || inner.presenting.is_some() || now < inner.next_frame {
+        if inner.closed || inner.dark || now < inner.next_frame {
             return Ok(());
         }
-        let (mut buffer, age) = inner
-            .surface
-            .buffer()
-            .map_err(|error| failed("window buffer", error))?;
-        let mut elements: Vec<OutputRenderElement<GlesRenderer>> =
-            state.cursor_elements(&mut inner.renderer, &inner.output);
-        elements.extend(output_elements(&mut inner.renderer, state, &inner.output));
-        let drawn = {
-            let mut framebuffer = inner
-                .renderer
-                .bind(&mut buffer)
-                .map_err(|error| failed("bind window buffer", error))?;
-            inner
+        let age = inner.window.buffer_age().unwrap_or(0);
+        let (damage, states) = {
+            let (renderer, mut framebuffer) = inner
+                .window
+                .bind()
+                .map_err(|error| failed("bind window", error))?;
+            let mut elements: Vec<OutputRenderElement<GlesRenderer>> =
+                state.cursor_elements(renderer, &inner.output);
+            elements.extend(output_elements(renderer, state, &inner.output));
+            let drawn = inner
                 .damage
-                .render_output(
-                    &mut inner.renderer,
-                    &mut framebuffer,
-                    usize::from(age),
-                    &elements,
-                    BACKGROUND,
-                )
-                .map_err(|error| failed("render window", error))?
+                .render_output(renderer, &mut framebuffer, age, &elements, BACKGROUND)
+                .map_err(|error| failed("render window", error))?;
+            (drawn.damage, drawn.states)
         };
         // Clients draw their next frame now; with nothing new on screen the
         // window is asked again one refresh later.
-        let presentation = state.frame_drawn(&inner.output, Some(&drawn.states));
-        if drawn.damage.is_some() {
-            inner
-                .surface
-                .submit()
-                .map_err(|error| failed("present window", error))?;
-            inner.presenting = Some(presentation);
-        } else {
-            presentation.shown(Shown::Host);
-        }
+        let presentation = state.frame_drawn(&inner.output, Some(&states));
+        let damaged = damage.map(Vec::as_slice);
+        inner
+            .window
+            .submit(damaged)
+            .map_err(|error| failed("present window", error))?;
+        presentation.shown(Shown::Host);
         inner.next_frame = now
             .checked_add(refresh_interval(
                 inner
@@ -296,7 +247,7 @@ impl Backend for NestedBackend {
         request: &crate::BackdropRequest,
     ) -> Result<Option<crate::BackdropImage>, BackendError> {
         crate::backdrop::draw::<_, smithay::backend::renderer::gles::GlesTexture>(
-            &mut self.inner.borrow_mut().renderer,
+            self.inner.borrow_mut().window.renderer(),
             state,
             region,
             request,
@@ -309,10 +260,50 @@ impl Backend for NestedBackend {
         frame: &crate::capture::Frame,
     ) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
         crate::capture::copy::<_, smithay::backend::renderer::gles::GlesTexture>(
-            &mut self.inner.borrow_mut().renderer,
+            self.inner.borrow_mut().window.renderer(),
             state,
             frame,
         )
+    }
+
+    fn screenshot(&mut self, state: &mut State, name: &str) -> Result<Screenshot, BackendError> {
+        let mut guard = self.inner.borrow_mut();
+        let inner = &mut *guard;
+        if name != inner.output.name() {
+            return Err(BackendError(format!("no output named {name}")));
+        }
+        let mode = inner
+            .output
+            .current_mode()
+            .ok_or_else(|| BackendError(format!("{name}: it has no mode")))?;
+        let size = Size::<i32, Buffer>::from((mode.size.w, mode.size.h));
+        let renderer = inner.window.renderer();
+        // The scene is drawn again, off screen, and read back.
+        let mut target: smithay::backend::renderer::gles::GlesTexture = renderer
+            .create_buffer(Fourcc::Abgr8888, size)
+            .map_err(|error| failed("screenshot image", error))?;
+        let mut framebuffer = renderer
+            .bind(&mut target)
+            .map_err(|error| failed("bind screenshot image", error))?;
+        let mut elements: Vec<OutputRenderElement<GlesRenderer>> =
+            state.cursor_elements(renderer, &inner.output);
+        elements.extend(output_elements(renderer, state, &inner.output));
+        OutputDamageTracker::from_output(&inner.output)
+            .render_output(renderer, &mut framebuffer, 0, &elements, BACKGROUND)
+            .map_err(|error| failed("render screenshot", error))?;
+        let mapping = renderer
+            .copy_framebuffer(&framebuffer, Rectangle::from_size(size), Fourcc::Abgr8888)
+            .map_err(|error| failed("read back", error))?;
+        let bytes = renderer
+            .map_texture(&mapping)
+            .map_err(|error| failed("map", error))?;
+        let width = u32::try_from(mode.size.w).map_err(|error| failed("width", error))?;
+        let height = u32::try_from(mode.size.h).map_err(|error| failed("height", error))?;
+        Ok(Screenshot {
+            width,
+            height,
+            rgba: bytes.to_vec(),
+        })
     }
 
     fn configure(
@@ -347,7 +338,7 @@ impl Backend for NestedBackend {
 
     fn next_deadline(&self) -> Option<Instant> {
         let inner = self.inner.borrow();
-        (inner.presenting.is_none() && !inner.closed && !inner.dark).then_some(inner.next_frame)
+        (!inner.closed && !inner.dark).then_some(inner.next_frame)
     }
 
     fn set_power(&mut self, _state: &mut State, _name: &str, on: bool) -> Result<(), BackendError> {
