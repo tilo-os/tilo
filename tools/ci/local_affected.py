@@ -11,8 +11,7 @@ same run for a change still being edited: base defaults to the merge-base with
 stages are check (the portable tilo-ui and headless tilo-app builds, when the change
 reaches them), clippy, test and session-e2e, and clippy covers the changed packages and
 their direct dependants (the planner's `near`; `--closure` for the whole
-reverse-dependency closure the batch check lints). Landing on `integration` runs it
-without session-e2e, from .githooks/pre-push.
+reverse-dependency closure the batch check lints).
 
 Selection is the planner's (tools/ci/affected_packages.py): the packages a change
 affects, their checks and tests, the same filters CI uses. What differs from CI is only
