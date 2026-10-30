@@ -394,3 +394,46 @@ fn opening_what_nothing_here_opens_says_why_and_holds_no_place() {
     );
     assert_eq!(fixture.strips(), before);
 }
+
+/// A web address an agent opens is browsed as any visitor would, unless it
+/// asks for the person's sign-ins; one the person opens is theirs. Only a
+/// web address has sign-ins to ask for.
+#[test]
+fn an_agent_opens_a_web_address_as_a_visitor_unless_it_asks_for_the_persons_sign_ins() {
+    use crate::shell::desktop_layout::Target;
+    let open = |arguments: Value, agent: bool| {
+        let Value::Object(arguments) = arguments else {
+            panic!("arguments are an object");
+        };
+        super::bind(layout::OPEN, &arguments, agent).map(|command| match command {
+            super::Command::Open { target, .. } => target,
+            other => panic!("open binds an open, not {other:?}"),
+        })
+    };
+    let url = "https://github.com/ada";
+    let visit = Ok(Target::Visit(url.to_owned()));
+    let own = Ok(Target::Url(url.to_owned()));
+    assert_eq!(open(json!({ "target": url }), true), visit);
+    assert_eq!(open(json!({ "target": url, "signed_in": true }), true), own);
+    assert_eq!(open(json!({ "target": url }), false), own);
+    assert_eq!(
+        open(json!({ "target": url, "signed_in": false }), false),
+        visit
+    );
+    let refused = open(
+        json!({ "target": "mail.message:work:INBOX:42", "signed_in": true }),
+        true,
+    );
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.contains("web address")),
+        "{refused:?}"
+    );
+    assert!(open(json!({ "target": url, "signed_in": "yes" }), true).is_err());
+    assert_eq!(
+        open(json!({ "target": "mail.message:work:INBOX:42" }), true),
+        Ok(Target::Resource("mail.message:work:INBOX:42".into())),
+        "a resource opens as it is"
+    );
+}

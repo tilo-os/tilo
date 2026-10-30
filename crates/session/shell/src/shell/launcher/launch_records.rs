@@ -161,6 +161,24 @@ pub fn register_in_process_launch(app_id: &str, workspace_id: &str) {
     });
 }
 
+/// Record that the session is about to connect `app_id` in room `workspace_id` to apply one
+/// change at its record's origin: no window, carrying the creation record of the installed
+/// app it verified, so the broker records the connection as it records an instance's. Spent
+/// by that connection.
+pub(crate) fn register_tilolang_change(
+    app_id: &str,
+    workspace_id: &str,
+    creation: tilo_action_broker::services::ApplicationCreationEvidence,
+) {
+    lock(&IN_PROCESS_LAUNCHES).push(InProcessLaunch {
+        app_id: app_id.to_owned(),
+        workspace_id: workspace_id.to_owned(),
+        window_instance: None,
+        creation: Some(creation),
+        launch_ticket: None,
+    });
+}
+
 /// Record that the session is about to connect window `instance` of
 /// `app_id` in room `workspace_id`. A window has one record: connecting it
 /// again replaces the one it had.

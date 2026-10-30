@@ -724,9 +724,15 @@ impl BrowserWidget {
     /// Headless widget for `--shots`: test engine, pre-navigated to a
     /// deterministic page, never touches the network.
     pub fn new_headless() -> Self {
+        Self::new_headless_in(BrowsingMode::Normal)
+    }
+
+    /// [`Self::new_headless`] for a window of `mode`: a capture of a
+    /// visitor window shows its chrome.
+    pub fn new_headless_in(mode: BrowsingMode) -> Self {
         let engine: SharedEngine = TestEngine::new();
         engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
-        let mut w = Self::with_engine(engine, true);
+        let mut w = Self::with_engine_mode(engine, true, mode);
         w.initial_url = SHOTS_URL.into();
         w
     }
@@ -1093,7 +1099,7 @@ impl BrowserWidget {
     /// this only after validating the URI against Browser's declared schemes.
     #[must_use]
     pub fn with_initial_uri(mut self, uri: String) -> Self {
-        if !self.browsing_mode.is_private()
+        if self.browsing_mode.holds_account_custody()
             && self.service_client.is_some()
             && let Some(destination) = crate::service_destinations::Destination::parse(&uri)
         {
@@ -1113,6 +1119,11 @@ impl BrowserWidget {
 
     /// Handle to the engine this widget drives — the binary uses it to
     /// wire the engine's waker to the winit event-loop proxy.
+    /// How this window browses, fixed when it opened.
+    pub(crate) const fn browsing_mode(&self) -> BrowsingMode {
+        self.browsing_mode
+    }
+
     pub fn engine_handle(&self) -> SharedEngine {
         self.engine.clone()
     }
@@ -1373,7 +1384,11 @@ impl BrowserWidget {
             page_dialog_node: None,
             page_dialog_answer: None,
             permission_answer: None,
-            credentials: crate::credentials::Credentials::new(browsing_mode.is_private()),
+            // Saved passwords and addresses are the person's account
+            // custody: a window without it neither offers nor saves them.
+            credentials: crate::credentials::Credentials::new(
+                !browsing_mode.holds_account_custody(),
+            ),
             anchored_panel: None,
             side_panel_edge: None,
             side_panel_edge_node: None,
@@ -5422,7 +5437,18 @@ impl BrowserWidget {
                 &["element", "to", "by", "into_view", "frame"][..],
             ),
         ] {
-            let spec = spec.bound_asking(asking);
+            let observes = matches!(
+                spec.clone().operation(),
+                BrowserOperation::Page(request) if request.only_observes()
+            );
+            let mut spec = spec.bound_asking(asking);
+            // Reading a page that holds the person's sign-ins takes the
+            // authority to operate it. Without them it takes only what any
+            // visitor has: what only looks at the page is a read. Acting
+            // on the page reaches the web either way.
+            if observes && !self.browsing_mode.holds_account_custody() {
+                spec.type_mut().contract.kind = ui::tilo_actions::ActionKind::Read;
+            }
             page.actions.push(if web_page {
                 spec
             } else {
@@ -5621,7 +5647,17 @@ impl BrowserWidget {
                 "browser.service-sessions",
                 "Accounts",
             )
-            .with_action(E::ListServiceSessions.bound()),
+            .with_action({
+                let list = E::ListServiceSessions.bound();
+                if self.browsing_mode.holds_account_custody() {
+                    list
+                } else {
+                    list.unavailable(
+                        "no_account_custody",
+                        crate::browsing_mode::NO_ACCOUNT_CUSTODY,
+                    )
+                }
+            }),
         );
         if self.service_view.is_some()
             || self.service_pending.is_some()

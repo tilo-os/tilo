@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use super::*;
 
+mod failure_copy;
 mod host_windows;
 mod launch_records;
 
@@ -359,7 +360,10 @@ fn launch_failure_copy_and_logs_are_bounded_and_never_leak_detail() {
             })
             .failure_notice()
             .unwrap();
-            assert_eq!(notice.body, crate::shell::i18n::t(key));
+            assert_eq!(
+                notice.body,
+                crate::shell::i18n::t_args(key, &[("app", "Broken App".into())])
+            );
             assert_ne!(notice.body, unavailable);
             assert!(!notice.body.contains("raw detail"));
         }
@@ -377,7 +381,7 @@ fn launch_failure_copy_and_logs_are_bounded_and_never_leak_detail() {
         .unwrap();
         assert_eq!(
             not_listed.body,
-            crate::shell::i18n::t("launch-error-app-not-in-workspace")
+            "This workspace doesn't include Broken App. An administrator can add it."
         );
         assert!(!not_listed.body.contains("authorship"));
         assert_ne!(
@@ -2956,5 +2960,34 @@ fn runtime_files_never_wait_for_the_disk() {
             .mode()
             & 0o777,
         0o600
+    );
+}
+
+/// A web address opened for an agent reaches Browser with the switch that
+/// makes its window a visitor's, and only a launch of one web address does:
+/// the switch never rides along with a document or with nothing to open.
+#[test]
+fn a_visitor_launch_hands_browser_the_visitor_switch() {
+    let mut command = held(ui::webview::BROWSER_APP_ID, &[]).command;
+    let url = "https://github.com/ada";
+    apply_launch_context(LaunchContext::Visitor, (None, Some(url)), &mut command)
+        .expect("a visit opens one web address");
+    assert_eq!(
+        command.args,
+        vec![ui::webview::VISITOR_WINDOW_FLAG.to_owned()]
+    );
+    for named in [
+        (None, None),
+        (Some(Path::new("/home/ada/cv.pdf")), Some(url)),
+    ] {
+        let mut command = held(ui::webview::BROWSER_APP_ID, &[]).command;
+        assert!(apply_launch_context(LaunchContext::Visitor, named, &mut command).is_err());
+        assert!(command.args.is_empty(), "{named:?}");
+    }
+    let mut command = held(ui::webview::BROWSER_APP_ID, &[]).command;
+    apply_launch_context(LaunchContext::None, (None, Some(url)), &mut command).unwrap();
+    assert!(
+        command.args.is_empty(),
+        "the person's own launch has no switch"
     );
 }

@@ -382,6 +382,43 @@ impl RoomRecord {
         invoker: ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<Option<Json>, RoomError> {
+        let (result, unshared) = self.history_step(edit, resource, kind, invoker, ambient)?;
+        if let Some(why) = unshared {
+            instance.unshared(why);
+        }
+        instance.sync(Some(&self.doc));
+        Ok(result)
+    }
+
+    /// [`Self::history`] with no instance: the record's origin applying an agent task's history
+    /// verb (its `undo`).
+    ///
+    /// # Errors
+    /// The verb was refused, or the room refuses its change for good.
+    pub fn history_at_origin(
+        &mut self,
+        edit: &HistoryEdit,
+        resource: &str,
+        kind: &str,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+    ) -> Result<Option<Json>, RoomError> {
+        match self.history_step(edit, resource, kind, invoker, ambient)? {
+            (_, Some(why)) => Err(RoomError::Refused(why)),
+            (result, None) => Ok(result),
+        }
+    }
+
+    /// Apply the history verb `edit` as one step and send it: what it did, and why the room
+    /// refused its change for good, when it did.
+    fn history_step(
+        &mut self,
+        edit: &HistoryEdit,
+        resource: &str,
+        kind: &str,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+    ) -> Result<(Option<Json>, Option<String>), RoomError> {
         let action = HostHistoryEdit {
             edit: edit.clone(),
             words: self.words.clone(),
@@ -396,11 +433,11 @@ impl RoomRecord {
         self.apply_with(&action, encoded, context, invoker, ambient)?;
         let after = self.doc.get_heads();
         let patches = self.doc.diff(&before, &after);
-        if let Some(why) = self.share() {
-            instance.unshared(why);
-        }
-        instance.sync(Some(&self.doc));
-        Ok(verbs::result(edit.verb(), &self.doc, &patches, &self.words))
+        let unshared = self.share();
+        Ok((
+            verbs::result(edit.verb(), &self.doc, &patches, &self.words),
+            unshared,
+        ))
     }
 
     /// Answer the history view `payload` asks ([`verbs::VIEW_TYPE`]) of the record.
@@ -601,11 +638,54 @@ impl RoomRecord {
 
     /// [`Self::receive`], handing every event that is no change of the record (an invocation,
     /// presence, the route's state) to `other`, in the order they came.
-    pub fn receive_and(
+    pub fn receive_and(&mut self, instance: &mut Instance, other: impl FnMut(CollabEvent)) -> bool {
+        let changed = self.take_in(other);
+        if changed {
+            instance.sync(Some(&self.doc));
+        }
+        changed
+    }
+
+    /// The record's heads now: what [`Self::changes_since`] starts from.
+    #[must_use]
+    pub fn heads(&mut self) -> Vec<ChangeHash> {
+        self.doc.get_heads()
+    }
+
+    /// What the record holds past `heads`, as Automerge changes: what a change applied here
+    /// wrote, for its invoker to read back without waiting on the room.
+    #[must_use]
+    pub fn changes_since(&mut self, heads: &[ChangeHash]) -> Vec<u8> {
+        self.doc.save_after(heads)
+    }
+
+    /// Take in what the record's route brought, with no instance to bring up to date: a record
+    /// held only to apply changes at its origin. Events that are no change of the record are
+    /// dropped. Whether the record changed.
+    pub fn take_in_room(&mut self) -> bool {
+        self.take_in(|_| {})
+    }
+
+    /// Apply `action`, which the door built for `invoker` (an agent task the broker admitted),
+    /// to the room record as one step of its own in `ambient`, and send it on the record's
+    /// route, with no instance: the record's origin applying a change.
+    ///
+    /// # Errors
+    /// The action could not be applied, or the room refuses its change for good.
+    pub fn apply_change(
         &mut self,
-        instance: &mut Instance,
-        mut other: impl FnMut(CollabEvent),
-    ) -> bool {
+        action: &DynAction,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+    ) -> Result<(), RoomError> {
+        self.apply(action, invoker, ambient)?;
+        match self.share() {
+            Some(why) => Err(RoomError::Refused(why)),
+            None => Ok(()),
+        }
+    }
+
+    fn take_in(&mut self, mut other: impl FnMut(CollabEvent)) -> bool {
         let mut changed = false;
         let before = self.doc.get_heads();
         for event in self.manager.poll() {
@@ -667,7 +747,6 @@ impl RoomRecord {
             if let Some(writer) = &mut self.writer {
                 writer.request(&mut self.doc);
             }
-            instance.sync(Some(&self.doc));
         }
         changed
     }

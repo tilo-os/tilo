@@ -95,6 +95,8 @@ impl RecordSource for Line {
 struct Door {
     line: Rc<Line>,
     reads: RecordReads,
+    /// The task as the actions it plans for a preview see their caller.
+    caller: tilolang_tilo::publish::Caller,
 }
 
 impl TaskDoor for Door {
@@ -112,21 +114,47 @@ impl TaskDoor for Door {
     }
 
     fn invoke(&self, call: &Json) -> Answered {
-        let answered = self.line.invoke(call);
-        // What the program reads of the app next is what its change made.
-        if let Some(app) = call.get("app").and_then(Json::as_str) {
-            self.reads.forget_app(app);
+        // A change of an app's record goes to the record's origin with the record it changes,
+        // and what the task's read of it would write, which the origin compares its run with.
+        let mut call = call.clone();
+        if let Some(app) = call.get("app").and_then(Json::as_str).map(str::to_owned)
+            && let Some((under, record)) = self.reads.address(&app)
+        {
+            let preview = self.reads.plan(&call, &self.caller).unwrap_or(Json::Null);
+            if let Some(fields) = call.as_object_mut() {
+                fields.insert("app".to_owned(), json!(under));
+                fields.insert("record".to_owned(), json!(record));
+                fields.insert("preview".to_owned(), preview);
+            }
         }
-        answered
+        let reply = match self.line.ask(&json!({"invoke": call})) {
+            Ok(reply) => reply,
+            Err(why) => return Answered::Failed(why),
+        };
+        // What the program reads of the app next holds what its change made: the origin says
+        // what it wrote, which goes into the record this program read.
+        if let Some(app) = call.get("app").and_then(Json::as_str) {
+            let wrote = reply
+                .get("change")
+                .and_then(Json::as_str)
+                .map(|change| base64::engine::general_purpose::STANDARD.decode(change));
+            let taken = match wrote {
+                Some(Ok(change)) => self.reads.take_in(app, &change),
+                Some(Err(error)) => Err(format!("the origin's change is not base64: {error}")),
+                None => Err("no change said".to_owned()),
+            };
+            if let Err(why) = taken {
+                tracing::debug!(app, why, "the program reads the record again");
+                self.reads.forget_app(app);
+            }
+        }
+        Line::answered(&reply)
     }
 }
 
 impl Line {
-    fn invoke(&self, call: &Json) -> Answered {
-        let reply = match self.ask(&json!({"invoke": call})) {
-            Ok(reply) => reply,
-            Err(why) => return Answered::Failed(why),
-        };
+    /// How the door's `reply` to an invocation says it ended.
+    fn answered(reply: &Json) -> Answered {
         let why = |key: &str| {
             reply
                 .get(key)
@@ -182,6 +210,11 @@ impl Task {
         let door = Rc::new(Door {
             line: Rc::clone(&line),
             reads,
+            caller: tilolang_tilo::publish::Caller {
+                actor: format!("agent:{}", request.task),
+                agent: true,
+                on_behalf_of: request.person.clone(),
+            },
         });
         let session = TaskSession::new(
             &request.task,
@@ -311,6 +344,11 @@ mod tests {
                 None,
                 Rc::clone(&line) as Rc<dyn RecordSource>,
             ),
+            caller: tilolang_tilo::publish::Caller {
+                actor: "agent:task".to_owned(),
+                agent: true,
+                on_behalf_of: None,
+            },
         });
         let session = TaskSession::new(
             "task",

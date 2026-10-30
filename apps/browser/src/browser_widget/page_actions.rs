@@ -878,3 +878,82 @@ fn a_page_action_either_finishes_or_says_what_became_of_it() {
     assert_eq!(error.code, "browser.page.timeout");
     assert!(error.message.contains("unknown"), "{}", error.message);
 }
+
+/// What an agent's run answers a page action with before anyone chose, as
+/// the window publishes it: allowed, or asks first.
+fn agent_default(widget: &BrowserWidget, id: &str) -> ui::permissions::policy::Answer {
+    let action = widget
+        .published()
+        .children
+        .iter()
+        .find(|resource| resource.id.0 == "browser.page")
+        .and_then(|page| page.actions.iter().find(|action| action.id == id).cloned())
+        .unwrap_or_else(|| panic!("{id} is published on the page"));
+    ui::permissions::policy::agent_answers::default_answer(
+        action.contract.need().kind,
+        action.contract.requires_confirmation(),
+    )
+}
+
+/// The page of a window in `mode`, at `url`.
+fn page_in(mode: BrowsingMode, url: &str) -> BrowserWidget {
+    let engine = TestEngine::new();
+    engine.send(WebViewCommand::Navigate(url.into()));
+    let mut widget = BrowserWidget::with_engine_mode(engine, true, mode);
+    let _ = synced(&mut widget);
+    widget
+}
+
+/// Reading a page takes what the window holds. A window opened for an agent
+/// holds none of the person's sign-ins: what only looks at its page takes
+/// no more than any visitor has, and the agent reads it without asking,
+/// while what acts on the page reaches the web and asks first. The person's
+/// own window holds their sign-ins: reading its page takes the authority to
+/// operate it, so every page action asks first, as it always has.
+#[test]
+fn a_page_read_asks_first_only_where_the_window_holds_the_persons_sign_ins() {
+    use ui::permissions::policy::Answer::{Allow, Ask};
+    const OBSERVE: [&str; 8] = [
+        "read-page",
+        "capture-page",
+        "find-page-element",
+        "read-page-changes",
+        "read-page-element-at",
+        "wait-page-settled",
+        "read-page-console",
+        "read-page-network",
+    ];
+    const ACT: [&str; 12] = [
+        "click-page",
+        "fill-page",
+        "select-page",
+        "fill-page-files",
+        "press-page",
+        "submit-page",
+        "fill-page-secret",
+        "hover-page",
+        "drag-page",
+        "pointer-path",
+        "pointer-page",
+        "scroll-page",
+    ];
+    let visitor = page_in(BrowsingMode::Visitor, "https://github.com/ada");
+    for id in OBSERVE {
+        assert_eq!(
+            agent_default(&visitor, id),
+            Allow,
+            "{id} on a visitor's page"
+        );
+    }
+    for id in ACT {
+        assert_eq!(agent_default(&visitor, id), Ask, "{id} on a visitor's page");
+    }
+    let signed_in = page_in(BrowsingMode::Normal, "https://github.com/ada");
+    for id in OBSERVE.into_iter().chain(ACT) {
+        assert_eq!(
+            agent_default(&signed_in, id),
+            Ask,
+            "{id} on a page with the person's sign-ins"
+        );
+    }
+}
