@@ -1702,6 +1702,44 @@ pub(crate) fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::DoorErr
     }
 }
 
+/// The one resource `binding` publishes for the document's `request`ed
+/// history action, and that action's name: a keyboard undo or redo reaches a
+/// document that declares its own history through the action it publishes,
+/// and exactly one of them. Both app hosts ask this.
+pub(crate) fn history_action_resource<'a>(
+    snapshots: &'a [BoundResourceSnapshot],
+    binding: &CallbackBinding,
+    request: crate::undo::UndoRequest,
+) -> Result<(&'a ResourceSpec, &'static str), tilo_actions::DoorError> {
+    let action = match request {
+        crate::undo::UndoRequest::Undo => "undo",
+        crate::undo::UndoRequest::Redo => "redo",
+    };
+    let mut candidates = snapshots
+        .iter()
+        .filter(|snapshot| snapshot.binding.same_component(binding))
+        .flat_map(|snapshot| snapshot.resources().iter())
+        .filter(|resource| {
+            resource
+                .actions
+                .iter()
+                .any(|spec| spec.id == action && spec.kind == tilo_actions::OperationKind::Document)
+        });
+    let resource = candidates
+        .next()
+        .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+            code: "history_action_unavailable".into(),
+            reason: "the current document does not publish its history action".into(),
+        })?;
+    if candidates.next().is_some() {
+        return Err(tilo_actions::DoorError::Unavailable {
+            code: "history_action_ambiguous".into(),
+            reason: "the current document publishes more than one history target".into(),
+        });
+    }
+    Ok((resource, action))
+}
+
 /// Read-only traversal releases each checked document borrow before descending
 /// to another component. It never establishes an undo baseline.
 pub(crate) fn discover_bound_resources(

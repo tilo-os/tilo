@@ -1861,37 +1861,14 @@ impl FrameHarness {
         binding: &crate::bound_dispatch::CallbackBinding,
         request: crate::undo::UndoRequest,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let action = match request {
-            crate::undo::UndoRequest::Undo => "undo",
-            crate::undo::UndoRequest::Redo => "redo",
-        };
         let snapshots = crate::bound_dispatch::discover_bound_resources(
             self.root.as_ref(),
             &self.state.doc,
             None,
         )
         .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?;
-        let mut candidates = snapshots
-            .iter()
-            .filter(|snapshot| snapshot.binding.same_component(binding))
-            .flat_map(|snapshot| snapshot.resources().iter())
-            .filter(|resource| {
-                resource.actions.iter().any(|spec| {
-                    spec.id == action && spec.kind == tilo_actions::OperationKind::Document
-                })
-            });
-        let resource = candidates
-            .next()
-            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
-                code: "history_action_unavailable".into(),
-                reason: "the current document does not publish its history action".into(),
-            })?;
-        if candidates.next().is_some() {
-            return Err(tilo_actions::DoorError::Unavailable {
-                code: "history_action_ambiguous".into(),
-                reason: "the current document publishes more than one history target".into(),
-            });
-        }
+        let (resource, action) =
+            crate::bound_dispatch::history_action_resource(&snapshots, binding, request)?;
         let address = tilo_actions::ActionAddress::new(resource.id.as_str(), action);
         self.invoke_address(&address, &serde_json::Map::new(), false)
     }

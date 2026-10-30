@@ -932,31 +932,8 @@ impl App {
             self.actions.resource_generation.get(),
         )
         .map_err(tilo_actions::DoorError::Failed)?;
-        let action = match request {
-            crate::undo::UndoRequest::Undo => "undo",
-            crate::undo::UndoRequest::Redo => "redo",
-        };
-        let mut candidates = snapshots
-            .iter()
-            .filter(|snapshot| snapshot.binding.same_component(binding))
-            .flat_map(|snapshot| snapshot.resources().iter())
-            .filter(|resource| {
-                resource.actions.iter().any(|spec| {
-                    spec.id == action && spec.kind == tilo_actions::OperationKind::Document
-                })
-            });
-        let resource = candidates
-            .next()
-            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
-                code: "history_action_unavailable".into(),
-                reason: "the current document does not publish its history action".into(),
-            })?;
-        if candidates.next().is_some() {
-            return Err(tilo_actions::DoorError::Unavailable {
-                code: "history_action_ambiguous".into(),
-                reason: "the current document publishes more than one history target".into(),
-            });
-        }
+        let (resource, action) =
+            crate::bound_dispatch::history_action_resource(&snapshots, binding, request)?;
         let alias = self
             .actions
             .bound_publication
