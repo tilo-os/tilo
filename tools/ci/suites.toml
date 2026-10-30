@@ -741,9 +741,14 @@ readers = [
 
 [[cargo]]
 package = "tilolang-app"
-# The window's tests compile the built-in tilolang packages (source and ids lock).
-inputs = ["apps/tl/"]
-readers = ["apps/tilolang/tests/board.rs", "apps/tilolang/tests/opening.rs"]
+# The window's tests compile the built-in tilolang packages (source and ids lock), and the
+# crate embeds the letters fixture among them.
+inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/letters/"]
+readers = [
+  "apps/tilolang/src/packages.rs",
+  "apps/tilolang/tests/board.rs",
+  "apps/tilolang/tests/opening.rs",
+]
 
 [[cargo]]
 package = "tilolang"
@@ -753,15 +758,25 @@ readers = ["crates/lang/tilolang/tests/it/multifile.rs"]
 
 [[cargo]]
 package = "tilolang-cli"
-# The build tests build and sign copies of the built-in packages.
-inputs = ["apps/tl/"]
-readers = ["crates/lang/tilolang-cli/tests/build.rs"]
+# The build tests build and sign copies of the built-in packages, and the native types test
+# describes Chat and Tasks from their sources.
+inputs = ["apps/chat/", "apps/tl/"]
+readers = [
+  "crates/lang/tilolang-cli/tests/build.rs",
+  "crates/lang/tilolang-cli/tests/native_types.rs",
+]
 
 [[cargo]]
 package = "tilolang-runtime"
-# The end-to-end tests compile the built-in packages from their sources.
-inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/"]
+# The end-to-end tests compile the built-in packages from their sources, and read the
+# agent's recorded script.
+inputs = [
+  "apps/tl/",
+  "crates/lang/tilolang/tests/fixtures/",
+  "scripts/headless-examples/agent-tilolang/",
+]
 readers = [
+  "crates/lang/tilolang-runtime/tests/e2e_apps.rs",
   "crates/lang/tilolang-runtime/tests/e2e_blocks.rs",
   "crates/lang/tilolang-runtime/tests/e2e_cleanup.rs",
   "crates/lang/tilolang-runtime/tests/e2e_counter.rs",
@@ -783,8 +798,9 @@ readers = [
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
   "crates/platform/tilolang-tilo/tests/policy.rs",
-  "crates/platform/tilolang-tilo/tests/reflection.rs",
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
+  "crates/platform/tilolang-tilo/tests/task.rs",
+  "crates/platform/tilolang-tilo/tests/tasks.rs",
 ]
 
 [[cargo]]
@@ -795,6 +811,7 @@ readers = [
   "crates/platform/tilolang-host/examples/host_cost.rs",
   "crates/platform/tilolang-host/src/phrases.rs",
   "crates/platform/tilolang-host/tests/host.rs",
+  "crates/platform/tilolang-host/tests/own_records.rs",
 ]
 
 [[cargo]]
