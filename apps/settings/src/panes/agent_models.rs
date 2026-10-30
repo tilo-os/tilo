@@ -969,13 +969,14 @@ impl AgentModelsRead {
     }
 }
 
-/// The ids of the hosted providers in `config`, whose keys this device's
-/// vault holds or not.
+/// The ids of the providers in `config` that take a key, which this
+/// device's vault holds or not: hosted ones, and servers the person gave a
+/// key.
 fn hosted_profiles(config: &ProviderConfig) -> Vec<String> {
     config
         .profiles
         .iter()
-        .filter(|profile| profile.location == EndpointLocation::Hosted)
+        .filter(|profile| profile.credential.is_some())
         .map(|profile| profile.id.clone())
         .collect()
 }

@@ -668,6 +668,9 @@ impl<H: PanelBindings> ProviderPanel<H> {
             self.admin_snapshot = None;
         }
         self.keys = read.keys;
+        if let Some((provider, models)) = read.cached {
+            self.listed_models.insert(provider, Ok(models));
+        }
         let mut value = None;
         let mut listing_failed = None;
         // Which provider the answer is about, as the profile names it: the
@@ -743,10 +746,10 @@ impl<H: PanelBindings> ProviderPanel<H> {
         self.changed = true;
     }
 
-    /// Whether `profile` is hosted and this device's vault has no key for
+    /// Whether `profile` takes a key and this device's vault has none for
     /// it: one that roamed here from another device needs its own.
     pub fn needs_key(&self, profile: &ProviderProfile) -> bool {
-        profile.location == EndpointLocation::Hosted
+        profile.credential.is_some()
             && profile.sign_in.is_none()
             && matches!(
                 self.keys.get(&profile.id),
@@ -859,26 +862,8 @@ impl<H: PanelBindings> ProviderPanel<H> {
         provider: &str,
         model: &str,
     ) -> Result<(), String> {
-        let model = model.trim();
-        if model.is_empty() || model.len() > 256 || model.contains(char::is_control) {
-            return Err(t("agent-model-invalid"));
-        }
-        let listed = self.listed_model(provider, model);
-        let profile = find(config, provider)?;
-        match profile.models.iter_mut().find(|known| known.id == model) {
-            // What the provider now says about a model the person already
-            // has; their own answer stays.
-            Some(known) => {
-                if let Some(listed) = &listed {
-                    agent_provider_config::capabilities::refresh(known, listed);
-                }
-            }
-            None => profile
-                .models
-                .push(listed.unwrap_or_else(|| ModelDescriptor::named(model.to_owned()))),
-        }
-        profile.default_model = Some(model.to_owned());
-        Ok(())
+        let listed = self.listed_model(provider, model.trim());
+        take_model(config, provider, model, listed)
     }
 
     /// Take `model` of `provider` as its list described it, when the person
@@ -1676,6 +1661,40 @@ pub fn set_model_limits(
     Ok(())
 }
 
+/// Make `model` the default of `provider`, which offers it afterwards even
+/// if it was written by hand rather than listed. `listed` is what the
+/// provider's list says of it; without it, a model the profile does not
+/// have yet gets what its family is known to do.
+///
+/// # Errors
+/// An invalid model id, or a provider that is gone.
+pub(crate) fn take_model(
+    config: &mut ProviderConfig,
+    provider: &str,
+    model: &str,
+    listed: Option<ModelDescriptor>,
+) -> Result<(), String> {
+    let model = model.trim();
+    if model.is_empty() || model.len() > 256 || model.contains(char::is_control) {
+        return Err(t("agent-model-invalid"));
+    }
+    let profile = find(config, provider)?;
+    match profile.models.iter_mut().find(|known| known.id == model) {
+        // What the provider now says about a model the person already has;
+        // their own answer stays.
+        Some(known) => {
+            if let Some(listed) = &listed {
+                agent_provider_config::capabilities::refresh(known, listed);
+            }
+        }
+        None => profile
+            .models
+            .push(listed.unwrap_or_else(|| ModelDescriptor::named(model.to_owned()))),
+    }
+    profile.default_model = Some(model.to_owned());
+    Ok(())
+}
+
 /// Set what `model` of `provider` can do. Either flag given makes both the
 /// person's, the other kept as it reads now; neither gives them back to the
 /// family table.
@@ -1689,6 +1708,17 @@ pub fn set_model_capabilities(
     vision: Option<bool>,
     tool_calling: Option<bool>,
 ) -> Result<(), String> {
+    // An agent plans by calling tools: the model of one cannot be said to
+    // call none until the agent plans with another.
+    if tool_calling == Some(false) {
+        let agents: Vec<_> = config.agents_planning_with(provider, model).collect();
+        if !agents.is_empty() {
+            return Err(t_args(
+                "agent-model-tools-in-use",
+                &[("agents", agents.join(", ").into())],
+            ));
+        }
+    }
     let selected = find(config, provider)?
         .models
         .iter_mut()
