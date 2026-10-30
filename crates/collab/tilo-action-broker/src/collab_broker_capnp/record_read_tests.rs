@@ -34,11 +34,38 @@ impl DocumentBytes for Bytes {
 struct Owner {
     captures: AtomicUsize,
     between: Mutex<Option<Box<dyn Fn() + Send>>>,
+    /// For a room whose records are sealed channels: what this device holds of them.
+    sealed: Option<Sealed>,
+}
+
+/// The records of a sealed room this device holds writes of, by record id.
+struct Sealed {
+    /// Records whose writes make the whole record.
+    whole: Vec<&'static str>,
+    /// Records whose writes build on changes this device does not hold.
+    partial: Vec<&'static str>,
 }
 
 impl NativeDocumentReads for Owner {
     fn requires_room(&self, _: &str) -> bool {
-        true
+        self.sealed.is_none()
+    }
+    fn seals_records(&self, _: &str) -> bool {
+        self.sealed.is_some()
+    }
+    fn record_read(&self, _: &str, _: &str, record: &str) -> RecordRead {
+        match &self.sealed {
+            None => RecordRead::Committed,
+            Some(sealed) if sealed.whole.contains(&record) => RecordRead::Sealed,
+            Some(_) => RecordRead::Own,
+        }
+    }
+    fn holds_record(&self, room: &str, app: &str, record: &str) -> bool {
+        self.record_read(room, app, record) != RecordRead::Own
+            || self
+                .sealed
+                .as_ref()
+                .is_some_and(|sealed| sealed.partial.contains(&record))
     }
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
         context.revalidate()
@@ -119,6 +146,11 @@ struct Fixture {
 
 /// A room its person owns, with agent `scribe` admitted to read it.
 fn fixture() -> Fixture {
+    fixture_with(Owner::default())
+}
+
+/// [`fixture`], its records held by `owner`.
+fn fixture_with(owner: Owner) -> Fixture {
     let scratch = tempfile::tempdir().unwrap();
     let session =
         crate::test_owner::SessionOwner::initialize(&scratch.path().join("owner")).unwrap();
@@ -144,7 +176,7 @@ fn fixture() -> Fixture {
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
-    let owner = Arc::new(Owner::default());
+    let owner = Arc::new(owner);
     let origin = Arc::new(Origin::default());
     let services = HostServices {
         record_changes: Some(Arc::clone(&origin) as Arc<dyn RecordChangeServices>),
@@ -214,6 +246,33 @@ fn an_agent_task_reads_the_room_records_and_its_persons_own() {
         f.read(&task, MAIL, &own).unwrap(),
         RecordCopy::Document(format!("{MAIL}/{own}").into_bytes()),
         "the person's own Mail record, read acting for them"
+    );
+}
+
+#[test]
+fn a_sealed_rooms_record_this_device_holds_nothing_of_reads_as_none_yet() {
+    let f = fixture_with(Owner {
+        sealed: Some(Sealed {
+            whole: vec!["kept"],
+            partial: vec!["torn"],
+        }),
+        ..Owner::default()
+    });
+    let task = f.task("scribe");
+    assert_eq!(
+        f.read(&task, NOTES, "").unwrap(),
+        RecordCopy::Absent,
+        "no app ever wrote the room's Notes record: the room has none yet"
+    );
+    assert_eq!(
+        f.read(&task, NOTES, "kept").unwrap(),
+        RecordCopy::Document(format!("{NOTES}/kept").into_bytes()),
+        "a record the room holds is read from its writes"
+    );
+    let torn = f.read(&task, NOTES, "torn").unwrap_err();
+    assert!(
+        torn.to_string().contains("build on changes"),
+        "writes that make no whole record are not read as an empty one: {torn}"
     );
 }
 

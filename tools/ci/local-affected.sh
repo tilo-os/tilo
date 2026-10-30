@@ -10,7 +10,7 @@
 #
 #   --base REF     comparison base (default: merge-base with origin/main; run
 #                  `git fetch origin` first, and rebase when main moved)
-#   --stage LIST   comma list of: check, clippy, test, goldens, certify,
+#   --stage LIST   comma list of: check, clippy, test, policy, goldens, certify,
 #                  scenarios, scoped, tapps (default: all but tapps)
 #   --tapps        also package the size-budgeted tapps (a release build:
 #                  slow) and check them against their budgets

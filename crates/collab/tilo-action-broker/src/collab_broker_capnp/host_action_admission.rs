@@ -197,12 +197,17 @@ impl CapnpBrokerState {
             }
             None => {
                 // A transport key is not retained certificate custody. Do not
-                // silently downgrade a certified caller to actor-only ownership.
-                if self.services.local_person.is_some()
-                    || self.services.native_certificates.is_some()
-                    || caller.device_public_key().is_some()
+                // silently downgrade a certified caller to actor-only ownership,
+                // nor a person, whom a native host serves only through the
+                // seat's retained custody. An agent on this machine (the
+                // session's agent door) carries neither: its invocation is
+                // owned by the agent itself, as its application actions are.
+                let custody_expected = caller.device_public_key().is_some()
                     || caller.user_public_key().is_some()
-                {
+                    || (!actor.is_agent
+                        && (self.services.local_person.is_some()
+                            || self.services.native_certificates.is_some()));
+                if custody_expected {
                     return Err(unavailable(
                         "action_evidence_unavailable: original caller missing",
                     ));

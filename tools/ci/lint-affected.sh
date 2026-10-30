@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The lint job of tools/ci/local-affected.sh, run where cargo runs (on a builder:
-# `rcargo exec`, so its builds share one builder slot and nothing is fetched).
+# its $TILO_BUILDER_EXEC_<ARCH> prefix, so its builds share one builder slot and nothing is fetched).
 #
 #   lint-affected.sh [--portable-ui] [--headless-app] -- -p NAME...
 #   lint-affected.sh --default-builds NAME...

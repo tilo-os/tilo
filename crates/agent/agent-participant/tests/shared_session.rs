@@ -422,7 +422,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         browser_device.key.clone(),
     );
     let browser_events = browser.events();
-    browser.join(workspace()).unwrap();
+    browser.join_placed(ROOM, "Workspace").unwrap();
     ready(&[&browser]).await;
     let catalogue = catalogue();
     let mut page = Replica::open(
@@ -973,6 +973,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         .await
         .unwrap();
     let (readable, sealed) = common::retained_documents(
+        &host_device.cert.device_public_key,
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
