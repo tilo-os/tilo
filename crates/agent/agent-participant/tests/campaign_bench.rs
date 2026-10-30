@@ -238,7 +238,7 @@ impl Browser {
             device.key.clone(),
         );
         let events = peer.events();
-        peer.join(workspace()).unwrap();
+        peer.join_placed(ROOM, "Workspace").unwrap();
         ready(&[&peer]).await;
         Self {
             peer,
