@@ -127,21 +127,34 @@ impl TaskDoor for Door {
                 fields.insert("preview".to_owned(), preview);
             }
         }
-        let answered = self.line.invoke(&call);
-        // What the program reads of the app next is what its change made.
+        let reply = match self.line.ask(&json!({"invoke": call})) {
+            Ok(reply) => reply,
+            Err(why) => return Answered::Failed(why),
+        };
+        // What the program reads of the app next holds what its change made: the origin says
+        // what it wrote, which goes into the record this program read.
         if let Some(app) = call.get("app").and_then(Json::as_str) {
-            self.reads.forget_app(app);
+            let wrote = reply
+                .get("change")
+                .and_then(Json::as_str)
+                .map(|change| base64::engine::general_purpose::STANDARD.decode(change));
+            let taken = match wrote {
+                Some(Ok(change)) => self.reads.take_in(app, &change),
+                Some(Err(error)) => Err(format!("the origin's change is not base64: {error}")),
+                None => Err("no change said".to_owned()),
+            };
+            if let Err(why) = taken {
+                tracing::debug!(app, why, "the program reads the record again");
+                self.reads.forget_app(app);
+            }
         }
-        answered
+        Line::answered(&reply)
     }
 }
 
 impl Line {
-    fn invoke(&self, call: &Json) -> Answered {
-        let reply = match self.ask(&json!({"invoke": call})) {
-            Ok(reply) => reply,
-            Err(why) => return Answered::Failed(why),
-        };
+    /// How the door's `reply` to an invocation says it ended.
+    fn answered(reply: &Json) -> Answered {
         let why = |key: &str| {
             reply
                 .get(key)

@@ -1168,6 +1168,15 @@ impl CapnpBrokerState {
                 for steps in host_steps.iter().filter(|steps| {
                     scope.wants(steps.provider()) && scope.wants_app(steps.app_id())
                 }) {
+                    // The host's own services are publishers like an app's
+                    // window: listed, so a caller finds them by their app.
+                    providers.push(CatalogueProvider {
+                        provider: steps.provider().to_owned(),
+                        app_id: steps.app_id().to_owned(),
+                        room: room.clone(),
+                        record_id: String::new(),
+                        browsable: true,
+                    });
                     Self::host_step_rows((&workspace, &policy, now), steps.as_ref(), &mut rows);
                 }
             }
