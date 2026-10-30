@@ -117,6 +117,8 @@ impl State {
             .outputs()
             .map(|output| crate::output::OutputInfo {
                 name: output.name(),
+                monitor: crate::output::monitor_of(output).0,
+                label: crate::output::monitor_of(output).1,
                 enabled: true,
                 rect: self
                     .space
@@ -128,6 +130,8 @@ impl State {
                     .iter()
                     .map(|output| crate::output::OutputInfo {
                         name: output.name(),
+                        monitor: crate::output::monitor_of(output).0,
+                        label: crate::output::monitor_of(output).1,
                         enabled: false,
                         rect: None,
                     }),

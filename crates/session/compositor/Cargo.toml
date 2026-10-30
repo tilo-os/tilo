@@ -32,6 +32,10 @@ qcms.workspace = true
 tracing.workspace = true
 # Percentiles of the frame pacing it logs.
 tilo-frame-metrics = { path = "../frame-metrics" }
+# Monitors are known by their EDID identity, which a layout follows
+# between ports.
+settings-store = { path = "../../system/settings-store" }
+tilo-wayland-ext = { path = "../wayland-ext" }
 # Xwayland's drag-and-drop (XDND) on a connection of the compositor's own;
 # smithay's window manager speaks selections but not XDND.
 x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }

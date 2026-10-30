@@ -51,6 +51,8 @@ struct Desk {
     /// How the desktop reads touchpad gestures; `None` leaves every one to
     /// the clients.
     gesture_config: Option<GestureConfig>,
+    /// The monitor on each output, as the compositor knows it.
+    monitors: Vec<(Rectangle<i32, Logical>, String)>,
 }
 
 impl Desk {
@@ -80,7 +82,14 @@ impl Desk {
                 let x = f64::from(output.loc.x.saturating_sub(bounds.loc.x));
                 let y = f64::from(output.loc.y.saturating_sub(bounds.loc.y));
                 Output {
-                    monitor: format!("output:{},{}", output.loc.x, output.loc.y),
+                    monitor: self
+                        .monitors
+                        .iter()
+                        .find(|(rect, _)| rect == output)
+                        .map_or_else(
+                            || format!("output:{},{}", output.loc.x, output.loc.y),
+                            |(_, monitor)| monitor.clone(),
+                        ),
                     rect: ui::kurbo::Rect::new(
                         x,
                         y,
@@ -193,6 +202,7 @@ pub fn desktop_with(
         host: WidgetHost::new(root, placement, true),
         gestures: Vec::new(),
         gesture_config: Some(GestureConfig::default()),
+        monitors: Vec::new(),
     }));
     (
         DesktopHost {
@@ -320,6 +330,10 @@ impl StripPolicy {
 }
 
 impl WindowPolicy for StripPolicy {
+    fn monitors(&mut self, monitors: &[(Rectangle<i32, Logical>, String)]) {
+        monitors.clone_into(&mut self.desk.borrow_mut().monitors);
+    }
+
     fn initial_size(
         &mut self,
         window: &WindowInfo,
