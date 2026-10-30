@@ -1528,7 +1528,7 @@ fn pairing(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
                 ));
             }
             dialog.detail = detail;
-            dialog.code = asked.code.clone();
+            dialog.code.clone_from(&asked.code);
             // A code on show has nothing to agree to: the sheet says it
             // and offers only the press that stops the pairing.
             dialog.body = Body::Answers {

@@ -1383,7 +1383,7 @@ impl Session {
         let comforts = (!options.hosted).then(|| {
             let wake = loop_wake.clone();
             mount::comforts::Mirror::mount(std::path::PathBuf::from(tilo_auth::SOCKET), move || {
-                wake.wake_by_ref()
+                wake.wake_by_ref();
             })
         });
         Ok(Self {

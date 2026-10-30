@@ -43,10 +43,11 @@ impl Mirror {
         // settings; the sender is shared through a lock so it can.
         let sender = std::sync::Mutex::new(sender);
         let following = SessionConfig::follow(move |config| {
-            let sender = sender
+            let comfort = (config.comforts, config.apply_comforts_to_sign_in);
+            sender
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let _ = sender.send((config.comforts, config.apply_comforts_to_sign_in));
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .send(comfort);
             wake();
         })
         .inspect_err(

@@ -35,7 +35,11 @@ pub(crate) struct PowerRun {
     sleep: SleepLock,
     /// Keeps the settings watch alive: the loader's one watch, which the
     /// compositor's assists and the power policy both follow.
-    _watch: Option<settings_store::watch::SettingsWatch>,
+    #[expect(
+        dead_code,
+        reason = "held for as long as the run lives, which keeps the watch going"
+    )]
+    watch: Option<settings_store::watch::SettingsWatch>,
 }
 
 impl PowerRun {
@@ -50,7 +54,7 @@ impl PowerRun {
                 prepared: false,
                 locked_before: false,
             },
-            _watch: None,
+            watch: None,
         }
     }
 
@@ -58,7 +62,7 @@ impl PowerRun {
     /// machine's power: the compositor's assists and the idle timers both
     /// come from the one reading.
     fn follow_settings(
-        &mut self,
+        &self,
         waker: std::task::Waker,
     ) -> std::io::Result<settings_store::watch::SettingsWatch> {
         let reload = Arc::clone(&self.reload);
@@ -91,7 +95,7 @@ pub(crate) fn install(compositor: &mut Compositor, options: &Options) -> PowerRu
         .follow_settings(waker)
         .inspect_err(|error| tracing::info!(%error, "the settings are not followed"))
         .ok();
-    run._watch = watch;
+    run.watch = watch;
     let Some(link) = options.power.clone() else {
         return run;
     };

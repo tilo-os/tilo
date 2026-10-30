@@ -125,7 +125,7 @@ impl Apps {
         let Some(desktop) = self.desktop.borrow().clone() else {
             return;
         };
-        let asked = desktop.with_policy(|policy| policy.take_launches());
+        let asked = desktop.with_policy(tilo_desktop_policy::DesktopPolicy::take_launches);
         if asked.is_empty() {
             return;
         }
