@@ -30,6 +30,7 @@ pub mod capture;
 mod chrome;
 mod config;
 mod controls;
+mod desk;
 mod desk_layout;
 pub mod desktop_services;
 pub mod displays;
@@ -44,6 +45,7 @@ mod questions;
 mod search;
 mod setup;
 mod sheets;
+pub mod shell;
 pub mod sync;
 mod system_sounds;
 pub mod unlock;
@@ -1026,6 +1028,8 @@ pub struct Session {
     /// The watch that keeps the notification policy current; dropping it
     /// stops the news.
     _settings_watch: Option<settings_store::watch::SettingsWatch>,
+    /// The shell's bar, when its package started.
+    shell: Option<shell::Shell>,
 }
 
 /// The lock screen's passwords being checked, off the loop.
@@ -1132,11 +1136,23 @@ impl Session {
             &options,
             Rc::clone(&intents),
             Rc::clone(&asks),
-            Rc::clone(&notice_signals),
-            sync.clone(),
         )));
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
         doors.add(chrome);
+
+        // The desk as the session publishes it, and the shell's bar over the
+        // chrome, which reads it through the door.
+        let desk = || desk::Desk {
+            handle: handle.clone(),
+            person: options.person.clone(),
+            signals: Rc::clone(&notice_signals),
+            status_panel: options.quick_settings.is_some(),
+            sync: sync.clone(),
+        };
+        let desk_service = desk();
+        let shell = shell::Shell::mount(&mut compositor, &mut doors, desk(), options.scale)
+            .map_err(|why| tracing::error!(why, "the shell's bar did not start"))
+            .ok();
 
         let banners = mount_banners(&mut compositor, &mut doors, &notices, &options);
 
@@ -1182,7 +1198,9 @@ impl Session {
             options.scale,
         );
 
-        let services = mount_services(&mut doors, std::mem::take(&mut options.services));
+        let mut started = std::mem::take(&mut options.services);
+        started.push(Box::new(desk_service));
+        let services = mount_services(&mut doors, started);
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
         let asker = questions::Asker::new(
@@ -1265,6 +1283,7 @@ impl Session {
             running: Vec::new(),
             pids: std::collections::BTreeMap::new(),
             _settings_watch: settings_watch,
+            shell,
             ended: false,
             magnifier: (
                 settings_store::magnifier::OFF,
@@ -1721,8 +1740,10 @@ impl Session {
             .step(&mut || Some(compositor.activation_token()));
         self.shared.open_notifications();
         self.settle()?;
+        self.follow_shell()?;
         self.windows.step(&mut self.compositor, Instant::now());
         self.compositor.render()?;
+        self.follow_shell()?;
         self.settle()?;
         self.shared.observe();
         self.shared.keep_desk();
@@ -1735,6 +1756,55 @@ impl Session {
                     .map(|workspace| workspace.id.0.to_string())
             }));
         Ok(())
+    }
+
+    /// Hand the shell's bar the desk when it changed, and run what the bar
+    /// asked through the door, as any caller of the action protocol does.
+    fn follow_shell(&mut self) -> Result<(), Error> {
+        let Some(shell) = self.shell.as_mut() else {
+            return Ok(());
+        };
+        shell.publish();
+        if !shell.has_asks() {
+            return Ok(());
+        }
+        let doors = &self.shared.doors;
+        shell.serve(|resource, action, arguments| {
+            doors
+                .invoke(&ActionAddress::new(resource, action), arguments)
+                .map(drop)
+                .map_err(|error| error.to_string())
+        });
+        // What ran may have asked the session in turn (a menu, a sheet).
+        self.settle()?;
+        if let Some(shell) = self.shell.as_mut() {
+            shell.publish();
+        }
+        Ok(())
+    }
+
+    /// How much work the shell's bar did since the session started:
+    /// `None` when its package did not start.
+    #[must_use]
+    pub fn shell_work(&self) -> Option<tilo_surface_host::ShellWork> {
+        self.shell.as_ref().map(shell::Shell::work)
+    }
+
+    /// What the shell's bar refused since the session started, in its own
+    /// words: a press whose action could not run.
+    #[must_use]
+    pub fn shell_refusals(&self) -> Vec<String> {
+        self.shell
+            .as_ref()
+            .map(shell::Shell::refusals)
+            .unwrap_or_default()
+    }
+
+    /// Where the shell bar's control named `name` (as assistive technology
+    /// hears it) stands, logical `(x, y, w, h)`: what a test presses it by.
+    #[must_use]
+    pub fn shell_control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
+        self.shell.as_ref()?.control(name)
     }
 
     /// Run until `stop` holds or the backend is done.

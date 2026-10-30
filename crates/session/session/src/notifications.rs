@@ -161,11 +161,15 @@ impl NoticeSignals {
         self.quiet.get()
     }
 
-    /// How many notifications the app with this verified id is showing as
-    /// unread: zero when it has none, or when this person turned its badges
-    /// off.
-    pub(crate) fn badge(&self, app_id: &str) -> u32 {
-        self.badges.borrow().get(app_id).copied().unwrap_or(0)
+    /// How many notifications each app (by verified id) is showing as
+    /// unread, where it shows any and this person keeps its badges on.
+    pub(crate) fn badges(&self) -> BTreeMap<String, u32> {
+        self.badges
+            .borrow()
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .map(|(app, count)| (app.clone(), *count))
+            .collect()
     }
 }
 
