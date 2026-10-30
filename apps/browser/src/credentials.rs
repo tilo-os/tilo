@@ -193,7 +193,7 @@ impl Credentials {
             self.addresses.refresh();
         }
         self.notice = if self.private {
-            "Passwords and address autofill are unavailable in private windows."
+            "Passwords and address autofill are unavailable here: this window browses without your sign-ins."
         } else if !supported {
             "Form filling is unavailable with this browser engine."
         } else if self.origin.is_none() {

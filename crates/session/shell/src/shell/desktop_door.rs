@@ -244,6 +244,20 @@ pub(crate) fn bind(
                 Some(Value::Bool(background)) => *background,
                 Some(_) => return Err("`background` is true or false".into()),
             };
+            let signed_in = match arguments.get("signed_in") {
+                None | Some(Value::Null) => !actor_is_agent,
+                Some(Value::Bool(signed_in)) if matches!(target, Target::Url(_)) => *signed_in,
+                Some(Value::Bool(_)) => return Err("`signed_in` is for a web address".into()),
+                Some(_) => return Err("`signed_in` is true or false".into()),
+            };
+            // A web address an agent opens is browsed as a visitor would,
+            // unless it asks for the person's sign-ins: then every action on
+            // its page asks the person first.
+            let target = if signed_in {
+                target
+            } else {
+                target.as_visitor()
+            };
             Command::Open {
                 target,
                 place,
@@ -374,6 +388,15 @@ fn params(action: &str) -> Vec<ActionParam> {
                 "background",
                 ParamType::Boolean,
                 "Whether to leave the person's focus where it is. Default true for an agent.",
+            ),
+            ActionParam::optional(
+                "signed_in",
+                ParamType::Boolean,
+                "For a web address: whether Browser opens it with the person's sign-ins \
+                 (their cookies and accounts). Default false for an agent: the page opens \
+                 as any visitor sees it, in a window of its own profile, and reading it \
+                 (read-page, capture-page, find) needs no confirmation. With true, every \
+                 action on the page asks the person first.",
             ),
         ],
         layout::CREATE_STRIP => vec![

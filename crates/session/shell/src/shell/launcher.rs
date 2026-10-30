@@ -1016,7 +1016,14 @@ impl LaunchFailure {
         }
     }
 
-    pub(crate) const fn message_key(self) -> &'static str {
+    /// What the person reads for this failure to open `display_name`.
+    /// Formatted with the app's name whether or not the message names it
+    /// today, so no message can show its `{ $app }` unfilled.
+    pub(crate) fn message(self, display_name: &str) -> String {
+        app_message(self.message_key(), display_name)
+    }
+
+    const fn message_key(self) -> &'static str {
         match self {
             Self::LauncherUnavailable | Self::Other => "launch-failed-launcher-unavailable",
             Self::ProviderUnavailable => "launch-error-provider-unavailable",
@@ -1182,14 +1189,12 @@ impl LaunchEvent {
                 reason: LaunchFailure::RoomRefused,
                 detail,
             } => detail.clone(),
-            LaunchEventKind::SpawnFailed { reason, .. } => {
-                crate::shell::i18n::t(reason.message_key())
-            }
+            LaunchEventKind::SpawnFailed { reason, .. } => reason.message(&self.display_name),
             LaunchEventKind::Failed { code, stderr_tail } => {
-                crate::shell::i18n::t(stopped_reason_key(*code, stderr_tail))
+                app_message(stopped_reason_key(*code, stderr_tail), &self.display_name)
             }
             LaunchEventKind::WindowLost { .. } => {
-                crate::shell::i18n::t("launch-failed-window-lost")
+                app_message("launch-failed-window-lost", &self.display_name)
             }
             LaunchEventKind::Started { .. }
             | LaunchEventKind::Exited
@@ -1333,6 +1338,12 @@ fn compact_notice_name(name: &str) -> String {
     } else {
         compact
     }
+}
+
+/// The launch-failure message `key`, formatted with the app's name: every
+/// such message may name the app it is about.
+fn app_message(key: &str, display_name: &str) -> String {
+    crate::shell::i18n::t_args(key, &[("app", compact_notice_name(display_name).into())])
 }
 
 pub(crate) fn launch_failure_title(display_name: &str) -> String {
@@ -3596,6 +3607,9 @@ enum LaunchContext<'a> {
     None,
     Tool(&'a ToolIntent),
     Raw(String),
+    /// A Browser window that browses as a visitor, without the person's
+    /// sign-ins ([`ui::webview::VISITOR_WINDOW_FLAG`]).
+    Visitor,
 }
 
 /// A launch to run again once its app is updated: everything
@@ -3616,6 +3630,7 @@ enum ReplayContext {
     None,
     Tool(ToolIntent),
     Raw(String),
+    Visitor,
 }
 
 impl ReplayContext {
@@ -3626,6 +3641,7 @@ impl ReplayContext {
             LaunchContext::None => Self::None,
             LaunchContext::Tool(intent) => Self::Tool((*intent).clone()),
             LaunchContext::Raw(raw) => Self::Raw(raw.clone()),
+            LaunchContext::Visitor => Self::Visitor,
         }
     }
 }
@@ -3638,6 +3654,7 @@ impl Replay {
             ReplayContext::None => LaunchContext::None,
             ReplayContext::Tool(intent) => LaunchContext::Tool(intent),
             ReplayContext::Raw(raw) => LaunchContext::Raw(raw.clone()),
+            ReplayContext::Visitor => LaunchContext::Visitor,
         };
         execute_installed_inner(
             app,
@@ -4178,6 +4195,14 @@ fn apply_launch_context(
             command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded));
         }
         LaunchContext::Raw(encoded) => command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded)),
+        LaunchContext::Visitor => {
+            if uri.is_none() || document.is_some() {
+                return Err(LaunchError::RegistryUnreadable {
+                    detail: "a visitor window opens one web address".into(),
+                });
+            }
+            command.args.push(ui::webview::VISITOR_WINDOW_FLAG.into());
+        }
     }
     Ok(())
 }
@@ -4246,7 +4271,7 @@ pub(crate) fn queue_package_target_in_workspace(
     workspace: &Workspace,
     uri: String,
 ) -> Result<(), LaunchError> {
-    queue_package_open(package_id, None, workspace, None, Some(uri))
+    queue_package_open(package_id, None, workspace, None, Some(uri), false)
 }
 
 /// Open `document` or `uri` (or just the app) in the package `package_id`
@@ -4255,7 +4280,9 @@ pub(crate) fn queue_package_target_in_workspace(
 /// [`InstalledApp`]; a refusal arrives as a launch event, named
 /// `display_name` when the caller knows what the person asked to open (a
 /// package that is no longer installed has no registry name to fall back
-/// on), else the package's own display name.
+/// on), else the package's own display name. A `visitor` launch opens `uri`
+/// in a Browser window without the person's sign-ins
+/// ([`ui::webview::VISITOR_WINDOW_FLAG`]).
 ///
 /// # Errors
 ///
@@ -4267,6 +4294,7 @@ pub(crate) fn queue_package_open(
     workspace: &Workspace,
     document: Option<PathBuf>,
     uri: Option<String>,
+    visitor: bool,
 ) -> Result<(), LaunchError> {
     let workspace = workspace.clone();
     spawn_reporting(
@@ -4285,14 +4313,19 @@ pub(crate) fn queue_package_open(
                     });
                 }
                 let grants = workspace.launch_grants(tilo_clock::unix_now());
-                execute_installed(
+                execute_installed_inner(
                     app,
                     workspace.room(),
                     document.as_deref(),
                     uri.as_deref(),
-                    None,
+                    if visitor {
+                        LaunchContext::Visitor
+                    } else {
+                        LaunchContext::None
+                    },
                     None,
                     Some(grants),
+                    None,
                 )
             });
             if let Err(error) = outcome {
@@ -4500,7 +4533,18 @@ pub(crate) fn admit_native_app(
         }
         Ok(())
     };
-    delegate().map_err(|detail| {
+    let asked = delegate();
+    // The grant can be in the room though its answer said otherwise (it
+    // landed, and only recording its receipt failed): the room, not the
+    // answer, says whether the app may author there now.
+    if asked.is_err()
+        && native_app_open_access(owner, room, certificate, package)
+            .is_ok_and(|now| now == NativeAppOpenAccess::Author)
+    {
+        // As any later opening of the app finds it.
+        return Ok(NativeAppOpenAccess::Author);
+    }
+    asked.map_err(|detail| {
         if let Some(detail) = app_authorship_refusal(&detail) {
             return LaunchError::AppAuthorshipRefused {
                 package_id: package.to_owned(),

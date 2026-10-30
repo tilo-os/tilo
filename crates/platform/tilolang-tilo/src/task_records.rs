@@ -10,7 +10,8 @@
 //!
 //! A record is fetched once per program and kept for that program only: the next program
 //! fetches it again, so each read is decided anew and a grant revoked in the middle of a task
-//! cuts what follows. A record the program changed is fetched again before it is read.
+//! cuts what follows. What the record's origin applied for the program is taken into the record
+//! it read ([`RecordReads::take_in`]), so the program reads its own changes at once.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -42,8 +43,8 @@ pub struct RecordReads {
     /// record of its earliest id.
     records_under: BTreeMap<String, String>,
     source: Rc<dyn RecordSource>,
-    /// The records this program read, by app, each in a host of its own.
-    open: RefCell<HashMap<String, Host>>,
+    /// The records this program read, by app, each with a host of its own over it.
+    open: RefCell<HashMap<String, (tilo_resource::Doc, Host)>>,
 }
 
 impl RecordReads {
@@ -94,6 +95,23 @@ impl RecordReads {
     /// Forget the record of the app `app`: the program changed it.
     pub fn forget_app(&self, app: &str) {
         self.open.borrow_mut().remove(app);
+    }
+
+    /// Take in `change`, what the record's origin applied for this program to the record of the
+    /// app `app`: what the program reads next holds it, without waiting for the room. A record
+    /// this program has not read is read whole when it is next read.
+    ///
+    /// # Errors
+    /// The change does not apply to the record.
+    pub fn take_in(&self, app: &str, change: &[u8]) -> Result<(), String> {
+        let mut open = self.open.borrow_mut();
+        let Some((doc, host)) = open.get_mut(app) else {
+            return Ok(());
+        };
+        tilo_automerge::ApplyIncoming::load_incoming(doc, change)
+            .map_err(|error| format!("{app}'s change does not apply to its record: {error}"))?;
+        host.sync_from(doc);
+        Ok(())
     }
 
     /// The fields of the resource `item` of the app `app` ([`Host::read_values`]).
@@ -148,17 +166,17 @@ impl RecordReads {
         app: &str,
         read: impl FnOnce(&Host) -> Result<T, String>,
     ) -> Result<T, String> {
-        if let Some(host) = self.open.borrow().get(app) {
+        if let Some((_, host)) = self.open.borrow().get(app) {
             return read(host);
         }
-        let host = self.open_host(app)?;
+        let (doc, host) = self.open_host(app)?;
         let answer = read(&host);
-        self.open.borrow_mut().insert(app.to_owned(), host);
+        self.open.borrow_mut().insert(app.to_owned(), (doc, host));
         answer
     }
 
     /// A host of the app `app`'s package over its record, as the door hands it now.
-    fn open_host(&self, app: &str) -> Result<Host, String> {
+    fn open_host(&self, app: &str) -> Result<(tilo_resource::Doc, Host), String> {
         let bundle = self
             .bundles
             .get(app)
@@ -175,7 +193,7 @@ impl RecordReads {
         let host = Host::new(&doc, viewer, || None).map_err(|error| error.to_string())?;
         self.load(&host, bundle, &mut Vec::new())?;
         host.wait_index();
-        Ok(host)
+        Ok((doc, host))
     }
 
     /// Load `bundle` into `host`, after the installed packages it uses that it does not carry

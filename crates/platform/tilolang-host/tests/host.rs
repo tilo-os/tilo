@@ -1569,6 +1569,12 @@ fn a_tasks_change_runs_at_the_records_origin_as_its_step_with_no_instance() {
     assert!(answer.get("ok").is_some(), "{answer}");
     assert_eq!(answer["differs"], false, "{answer}");
     assert!(
+        answer["change"]
+            .as_str()
+            .is_some_and(|change| !change.is_empty()),
+        "it says what it wrote, for the task to read back: {answer}"
+    );
+    assert!(
         documents_sent(&sent) > 0,
         "what it wrote was handed to the room"
     );

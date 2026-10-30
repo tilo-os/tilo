@@ -613,6 +613,8 @@ pub(crate) struct AgentQuickComposer {
     blocker: Option<AskBlocker>,
     /// The fix the person pressed, until the host takes it.
     fix: Option<AskBlocker>,
+    /// The provider settings epoch [`Self::blocker`] was read at.
+    block_epoch: u64,
 }
 
 impl Default for AgentQuickComposer {
@@ -656,6 +658,7 @@ impl Default for AgentQuickComposer {
             anchor: None,
             blocker: None,
             fix: None,
+            block_epoch: 0,
         };
         composer.popover = composer.controls(slots);
         composer
@@ -872,7 +875,7 @@ impl AgentQuickComposer {
         let submit = self.presses.submit.clone();
         let editor = TextInput::from_state(&self.draft)
             .with_id("agent-quick-editor")
-            .with_placeholder(t("agent-quick-placeholder-idle"))
+            .with_placeholder(self.placeholder_text())
             .with_accessible_name(t("agent-quick-editor-name"))
             .with_min_lines(2)
             .on_submit(move |_| submit.set(true));
@@ -1240,10 +1243,20 @@ impl AgentQuickComposer {
     /// Say in place what keeps the chosen agent from being asked, and offer
     /// its fix; `None` once nothing does. Sending waits until then.
     pub(crate) fn block(&mut self, blocker: Option<AskBlocker>) {
+        self.block_epoch = crate::shell::settings_records::provider_settings_epoch();
         if self.blocker != blocker {
             self.blocker = blocker;
             self.refresh();
         }
+    }
+
+    /// Whether what keeps the agent from being asked may have changed since it
+    /// was read: the composer is open, blocked, and the provider settings
+    /// moved on (the person set a model up from its Set up).
+    pub(crate) fn block_stale(&self) -> bool {
+        self.is_open()
+            && self.blocker.is_some()
+            && self.block_epoch != crate::shell::settings_records::provider_settings_epoch()
     }
 
     /// The fix the person pressed, exactly once.
