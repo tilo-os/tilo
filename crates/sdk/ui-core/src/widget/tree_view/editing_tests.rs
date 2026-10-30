@@ -136,14 +136,14 @@ fn keyboard_and_assistive_moves_reorder_through_the_commit() {
         ));
         assert_eq!(ids(view.model()), [1, 2, 3]);
         assert!(
-            !dispatch_with(
+            dispatch_with(
                 &mut view,
                 &key_press(Key::Named(NamedKey::ArrowUp)),
                 &taffy,
                 node,
                 alt
             ),
-            "the first row has nowhere up to go"
+            "the first row has nowhere up to go, and the tree still takes its chord"
         );
         assert_eq!(
             view.focused(),

@@ -781,8 +781,8 @@ fn ctrl_arrows_move_the_focused_row_through_the_reorder_commit() {
     assert!(send(&mut list, NamedKey::ArrowUp, alt, laid_out));
     assert_eq!(list.model().items(), &[0, 1, 2], "Alt+Up, as a tree's rows");
     assert!(
-        !send(&mut list, NamedKey::ArrowUp, ctrl, laid_out),
-        "the first row has nowhere up to go"
+        send(&mut list, NamedKey::ArrowUp, ctrl, laid_out),
+        "the first row has nowhere up to go, and the list still takes its chord"
     );
     assert_eq!(list.model().items(), &[0, 1, 2]);
     assert_eq!(

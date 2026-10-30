@@ -4474,9 +4474,16 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                         *handled = true;
                     }
                 } else if let Some(movement) = self.key_move(logical_key, mods) {
-                    *handled = self
+                    let moved = self
                         .command_node()
                         .is_some_and(|id| self.move_node(id, movement));
+                    // An up or down chord is this tree's wherever the node can
+                    // go: a move it refuses (the node is already at its end,
+                    // or the order allows none there) keeps the keyboard on
+                    // that node instead of stepping off it. An indent or
+                    // outdent a row cannot take stays the host's, as Tab does.
+                    let chord = matches!(movement, TreeMove::Up | TreeMove::Down);
+                    *handled = moved || (chord && self.command_node().is_some());
                 } else {
                     let toggle = modifiers.state().control_key() || modifiers.state().super_key();
                     let extend = modifiers.state().shift_key();

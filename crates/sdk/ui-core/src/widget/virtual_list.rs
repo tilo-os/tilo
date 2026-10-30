@@ -2363,12 +2363,16 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 } else if let Some(up) =
                     self.reorder_chord(&event.logical_key, ctx.modifiers.state())
                 {
-                    // The row moves and keeps the focus; a refused move is
-                    // no navigation either. A row that takes the keyboard
-                    // holds it from here, so the focus stays on that row
-                    // when whoever owns the order rebuilds the list.
-                    *ctx.handled = self.move_focused(up);
-                    if *ctx.handled
+                    // The chord belongs to this list wherever the row can go:
+                    // it moves and keeps the focus, and a move it refuses (at
+                    // the row's end, or where the order allows none) leaves
+                    // the keyboard on that row instead of stepping off it.
+                    // A row that takes the keyboard holds it from here, so the
+                    // focus stays on that row when whoever owns the order
+                    // rebuilds the list.
+                    let moved = self.move_focused(up);
+                    *ctx.handled = true;
+                    if moved
                         && self.is_focused
                         && let Some(node) = self
                             .mounted
