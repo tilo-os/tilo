@@ -33,6 +33,8 @@ service = [
 [dependencies]
 base64.workspace = true
 blake3.workspace = true
+# The person's focus schedule is in local time.
+chrono = { workspace = true, default-features = true }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 percent-encoding.workspace = true
 serde.workspace = true

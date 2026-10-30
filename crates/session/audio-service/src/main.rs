@@ -110,11 +110,18 @@ fn serve() {
     services.add(Box::new(media));
     let (events, received) = mpsc::channel();
     let stop = events.clone();
+    // An output arriving or leaving is the person's to hear, as far as their
+    // system-sound settings and the quiet state allow.
+    let sounds = tilo_audio_service::sounds::SystemSounds::new();
+    let heard = sounds.clone();
     let policy = std::thread::Builder::new()
         .name("tilo-audio-policy".into())
         .spawn(move || {
             policy::serve(
-                move |_| refresh(),
+                move |event| {
+                    refresh();
+                    heard.device(event);
+                },
                 move || pause_playing(mpris.as_ref()),
                 events,
                 &received,
@@ -134,4 +141,6 @@ fn serve() {
     if let Ok(policy) = policy {
         let _ = policy.join();
     }
+    // The last player goes with the policy that played it.
+    drop(sounds);
 }
