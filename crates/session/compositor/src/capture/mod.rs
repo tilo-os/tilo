@@ -22,8 +22,11 @@
 )]
 
 mod image_copy;
+pub mod protect;
 mod screencopy;
 mod toplevels;
+
+pub use protect::holds_secrets;
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Format, Fourcc};
@@ -232,6 +235,8 @@ pub(crate) struct Capture {
     sessions: Vec<image_copy::Session>,
     cursor_sessions: Vec<smithay::reexports::wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_cursor_session_v1::ExtImageCopyCaptureCursorSessionV1>,
     toplevels: toplevels::Toplevels,
+    /// The apps whose windows leave as a placeholder.
+    pub(crate) protection: protect::Protection,
 }
 
 impl Capture {
@@ -245,6 +250,7 @@ impl Capture {
             sessions: Vec::new(),
             cursor_sessions: Vec::new(),
             toplevels: toplevels::Toplevels::new(display),
+            protection: protect::Protection::default(),
         }
     }
 
@@ -751,6 +757,60 @@ where
 /// A scene's drawable elements and the colour cleared behind them.
 type SceneElements<R> = (Vec<RelocateRenderElement<OutputRenderElement<R>>>, [f32; 4]);
 
+/// Whether `window` is one a capture may not show (see [`protect`]).
+fn protected(state: &State, window: &smithay::desktop::Window) -> bool {
+    crate::state::describe(&state.display, window)
+        .is_some_and(|info| state.capture.protection.covers(info.app_id.as_deref()))
+}
+
+/// A flat placeholder of `size` at `at`, in physical pixels: what a
+/// protected window leaves behind in a capture.
+fn placeholder<R>(at: Point<i32, Physical>, size: Size<i32, Physical>) -> OutputRenderElement<R>
+where
+    R: ImportAll + ImportMem,
+{
+    use smithay::backend::renderer::Color32F;
+    use smithay::backend::renderer::element::Kind;
+    use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
+    let [red, green, blue, alpha] = protect::PLACEHOLDER;
+    let buffer = SolidColorBuffer::new(
+        Size::<i32, Logical>::from((size.w, size.h)),
+        Color32F::new(red, green, blue, alpha),
+    );
+    OutputRenderElement::Dim(SolidColorRenderElement::from_buffer(
+        &buffer,
+        at,
+        Scale::from(1.0),
+        1.0,
+        Kind::Unspecified,
+    ))
+}
+
+/// The placeholders of the windows `output` shows a capture may not see,
+/// where they stand on it, in physical pixels. A capture draws them over
+/// the windows and under the pointer: a protected window hides, one that
+/// merely passes behind it is covered along with it, which shows nothing
+/// it would not show anyway.
+fn placeholders<R>(state: &State, output: &Output, scale: f64) -> Vec<OutputRenderElement<R>>
+where
+    R: ImportAll + ImportMem,
+{
+    let Some(geometry) = state.space.output_geometry(output) else {
+        return Vec::new();
+    };
+    state
+        .space
+        .elements_for_output(output)
+        .filter(|window| protected(state, window))
+        .filter_map(|window| {
+            let at = (state.space.element_location(window)? - geometry.loc).to_f64();
+            let size = window.geometry().size.to_physical_precise_round(scale);
+            (size.w > 0 && size.h > 0)
+                .then(|| placeholder::<R>(at.to_physical_precise_round(scale), size))
+        })
+        .collect()
+}
+
 /// What `scene` shows, drawn with `renderer`: its elements and what is
 /// cleared behind them. `None` while the session is locked, when no window
 /// is shown.
@@ -773,11 +833,20 @@ where
             } else {
                 Vec::new()
             };
+            elements.extend(placeholders(state, output, scale));
             elements.extend(output_elements(renderer, state, output));
             let offset = Point::<i32, Physical>::from((-region.loc.x, -region.loc.y));
             (elements, offset, BACKGROUND)
         }
         Scene::Window(..) if state.locked() => return None,
+        Scene::Window(window, _) if protected(state, window) => {
+            let size = window.geometry().size.to_physical_precise_round(scale);
+            (
+                vec![placeholder(Point::default(), size)],
+                Point::default(),
+                protect::PLACEHOLDER,
+            )
+        }
         Scene::Window(window, origin) => {
             let mut elements = match state.pointer_on(target) {
                 Some(at) if cursor => state.cursor_elements_at(renderer, at, scale),

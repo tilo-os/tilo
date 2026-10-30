@@ -1196,6 +1196,13 @@ impl Compositor {
         Ok(self.data.backend.screenshot(&mut self.data.state, name)?)
     }
 
+    /// Mark every window of `app_id` as private, or no longer: screenshots,
+    /// recordings and share streams show a placeholder where they are,
+    /// while the person's own display keeps showing them as they are.
+    pub fn protect_app(&mut self, app_id: &str, private: bool) {
+        self.data.state.capture.protection.app(app_id, private);
+    }
+
     /// The processes whose clients disconnected since the last look: the
     /// apps that exited.
     pub fn take_exited_pids(&mut self) -> Vec<u32> {
