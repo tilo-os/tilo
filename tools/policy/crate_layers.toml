@@ -103,10 +103,6 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the browser runtime coalesces the engine's document-frame route for the app it mounts; the engine itself stays in tilo-browser-peer"
 
   [[rule.allow]]
-  package = "tilo-room-load"
-  why = "the room load test names the engine's document-frame route to seed the room it measures"
-
-  [[rule.allow]]
   package = "tilo-browser-peer"
   why = "the browser peer runs the same admission as a native device: it is the engine's browser glue"
 

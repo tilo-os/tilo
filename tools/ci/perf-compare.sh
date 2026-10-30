@@ -34,8 +34,7 @@ for failed in ${T_NEEDS_FAILED:-}; do
   echo "$failed did not pass: its group is compared only for the records it left" >&2
   status=1
 done
-# hosting-room's records are hosting's and footprint-image's footprint's, so the
-# lane's groups are what every run owes.
+# The lane's groups are what every run owes.
 groups=$(python3 -c 'import sys, tomllib
 print(",".join(tomllib.load(open(sys.argv[1], "rb"))["lanes"]["perf-scheduled"]["groups"]))' \
   tools/perf/kpi-budgets.toml) || exit 1

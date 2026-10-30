@@ -42,7 +42,6 @@
 #                      joins the site's home workspace through the site's door
 #                      as a computer joins tilo.coffee's Lounge. Without it
 #                      the session follows this machine's configuration.
-#                      nested-pair.sh points two sessions at a local site.
 #   --ready FILE       once the shell answers on its control socket, write the
 #                      socket, the runtime directory and the state directory to
 #                      FILE as JSON (also kept as session.json in the runtime

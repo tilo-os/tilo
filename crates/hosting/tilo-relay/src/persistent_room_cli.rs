@@ -4,7 +4,7 @@
 //! environment or a log. This is the documented exception to "the host
 //! never holds a room's root": nobody is present to approve guests, and
 //! the room is public anyway. Each guest is pre-admitted as their own
-//! person; the operator (tilo-room-service) decides who may join.
+//! person; the operator decides who may join.
 //!
 //! Visitors who only watch (a page embedding the room) are not members one
 //! by one: they all act as the room's one spectator person, a Viewer whose

@@ -102,8 +102,7 @@ the network learns the endpoint id. Invite addresses work without it.
   workspace and device, for five minutes after a person's last post, and
   for at most 4096 people per workspace. Model prose for them is off unless
   `TILO_RELAY_SUMMARY_*` configures a provider, and it is capped per person,
-  per call and per hour. The variables are in
-  `crates/hosting/tilo-room-service/README.md`.
+  per call and per hour.
 
 ## Cost model
 

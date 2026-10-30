@@ -116,7 +116,7 @@ class CiscoOpenH264ImageTests(unittest.TestCase):
 
 
 class LiveRepositoryImageTests(unittest.TestCase):
-    IMAGE = "crates/hosting/tilo-room-service/container/Containerfile"
+    IMAGE = "os/Containerfile.legacy-guest"
     GATED = """
     FROM registry.fedoraproject.org/fedora-minimal:44 AS runtime
     RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify-no-cisco-openh264.sh,ro \\

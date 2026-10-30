@@ -494,8 +494,6 @@ inputs = [
   "crates/session/shell/src/shell/search/providers/files.rs",
   # ... and the hosting-load KPI ids equal to the relay load bench's.
   "crates/hosting/tilo-relay/examples/relay_load/main.rs",
-  # ... and the room-load report fields equal to the room load bench's.
-  "crates/dev/room-load/src/",
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
   "crates/session/shell/examples/redraw_bench.rs",
@@ -669,13 +667,6 @@ suites = [
 name = "desktop-open-times"
 inputs = ["crates/browser/tilo-web-desktop/scripts/"]
 suites = ["crates/browser/tilo-web-desktop/scripts/open-times-summary.test.mjs"]
-
-[[group]]
-name = "browser-auth-e2e"
-# dev/auth-e2e.mjs reuses the browser qualification's bundle check and
-# drives Chrome through tools/web/chrome.mjs.
-inputs = ["crates/hosting/tilo-room-service/dev/", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs"]
-suites = ["crates/hosting/tilo-room-service/dev/auth-e2e.test.mjs"]
 
 [[group]]
 name = "browser-benchmark-scripts"
@@ -1502,10 +1493,6 @@ reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Pyth
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
 reason = "needs the built web entry image"
-
-[[unrequired]]
-suite = "crates/hosting/tilo-room-service/container/test-image.sh"
-reason = "needs the built room-service image"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"

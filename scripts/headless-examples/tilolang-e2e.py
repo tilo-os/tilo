@@ -27,27 +27,6 @@ app gets on a real system:
   idle       each app untouched for 10 s, native Notes included: one that commits no
              frame wakes no thread at all; one that animates commits one frame per
              pose and no more
-  host-join  a local site (the room service and its workspace host, as
-             nested-pair.sh runs it) and a session of its own whose community it
-             is: the session joins the site's Lounge and it reaches "synced"; the
-             time from dialling the host to the first sync is recorded
-  host-again the same session started again, holding the Lounge already: it syncs
-             again, and the time it takes is recorded
-  spinner    started a third time with the site's processes stopped: the Lounge is
-             connecting, Today (empty) says so with a spinner that turns one
-             committed frame per pose, until the dial gives up
-  unsynced   then the Lounge's host cannot be reached: native Notes says so, keeps
-             its own action, and Today draws nothing more (unsynced-*.png)
-  reconnect  the site's processes go on: the Lounge syncs again by itself
-  host       in the synced Lounge every app is told so and shows the room
-             (synced-*.png), native Notes' "New note" lands, and each launch's time
-             to its first frame is recorded
-  host-edit  tilolang Notes' "New note" lands in the Lounge too; so does a press
-             of its button in a second window of it, which that window makes
-             itself (activated by its test id), and the app started again
-  host-undo  tilolang Notes' Undo, which its host publishes as every app's is,
-             takes the person's last step in the Lounge back: History lists it
-             undone
   routes     the broker's route access, as the attested launch of an app: the
              collaboration probe (crates/dev/collab-probe) is installed as
              Today, whose surface declares that it reads Notes' kinds, and as
@@ -57,7 +36,7 @@ app gets on a real system:
              the probe packages installed in place of Today and Todo.
 
 Usage:
-  scripts/headless-examples/tilolang-e2e.py [--no-build] [--out DIR] [--keep] [--host-only]
+  scripts/headless-examples/tilolang-e2e.py [--no-build] [--out DIR] [--keep]
 
 Without --no-build it builds the nested session remotely (nested-session.sh:
 with cargo), and the tilolang tool and the probe with cargo. Each run
@@ -86,8 +65,6 @@ BIN = REPO / "target/nested-session/bin"
 APPS = ["notes", "chat", "tasks", "today"]
 # The native app installed beside them, to hold the tilolang apps to what it does.
 NATIVE = "so.tilo.notes"
-# Opened last in the local site's Lounge, to time a first launch in a synced room.
-NATIVE_CHAT = "so.tilo.chat"
 PROBE_RUNTIME = "0.1.0+probe"
 # The routes the probe tries as each app: Today declares that it reads Notes'
 # kinds; Todo declares no read.
@@ -95,12 +72,6 @@ PROBE_ROUTES = {
     "today": ["so.tilo.lang.notes", "so.tilo.lang.today"],
     "todo": ["so.tilo.lang.notes"],
 }
-
-
-SITE = REPO / "crates/hosting/tilo-room-service/dev/run.py"
-# The apps the local site's Lounge lets write: its defaults and the tilolang apps, as an
-# operator names the apps of their site (TILO_ROOMS_AUTHOR_APPS).
-SITE_AUTHORS = ["so.tilo.chat", "so.tilo.notes", "so.tilo.canvas"]
 
 
 def app_id(name: str) -> str:
@@ -178,23 +149,6 @@ class Session:
 
     def log(self) -> str:
         return (self.state / "logs/shell.log").read_text(errors="replace")
-
-    def room_sync(self, room: str):
-        """Where the workspace of `room` stands with its host, as its apps are told: None
-        for a room no host is waited on, else "connecting", "unreachable", "synced", ..."""
-        for entry in self.control_json("state-dump")["chrome"]["room_sync"]:
-            if entry["room"] == room:
-                return entry
-        raise Failed(f"no workspace holds room {room}")
-
-    def holds(self, room: str) -> bool:
-        tree = self.control_json("state-dump")["workspace_tree"]
-        return any(str(w.get("room")) == room for w in tree.get("workspaces", []))
-
-    def active_room(self) -> str:
-        tree = self.control_json("state-dump")["workspace_tree"]
-        return next(str(w["room"]) for w in tree["workspaces"] if w["id"] == tree["active"])
-
 
 # --- /proc --------------------------------------------------------------------
 
@@ -295,39 +249,6 @@ def anon_kib(pid: int) -> int | None:
 def host_pids(session_pid: int) -> list[int]:
     """The tilolang hosts of the session."""
     return [p for p in descendants(session_pid) if exe(p).endswith("/bin/tilolang-host")]
-
-
-def launch_timings(session: Session) -> dict:
-    """Where hosted launches spent their time: the shell's handover of each instance and the
-    host's opening of it, by stage, in µs."""
-    return {
-        "handed_over": log_lines(session, "tilolang instance handed over"),
-        "opened": log_lines(session, "tilolang instance opened"),
-    }
-
-
-def window_marks(state: Path) -> dict:
-    """Each hosted window's own startup marks (ms after its process began, the launcher's
-    before it), by the file it wrote: when its patch connection and first tree arrived and
-    what its first frame drew."""
-    out = {}
-    for path in state.glob("**/startup-*.json"):
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        marks = {e["name"]: round(e["ns"] / 1e6, 1) for e in data.get("events", [])}
-        if not any(name.startswith("tilolang-") for name in marks):
-            continue
-        origin = data.get("origin_epoch_us", 0)
-        launcher = {e["name"]: round((e["epoch_us"] - origin) / 1000, 1) for e in data.get("launcher", [])}
-        keep = ("tilolang-", "first-frame", "render-worker-first", "gpu-device-request-done",
-                "window-render-context-done")
-        out[str(path.relative_to(state))] = {
-            "launcher": launcher,
-            "marks": {k: v for k, v in marks.items() if k.startswith(keep)},
-        }
-    return out
 
 
 # --- checks ---------------------------------------------------------------------
@@ -581,18 +502,6 @@ def log_lines(session: Session, pattern: str) -> list[dict]:
     return out
 
 
-def sync_times(session: Session) -> list[float]:
-    """How long each room waited from dialling its host to its first sync, in ms."""
-    return [round(float(f["connect_to_sync_ms"]), 1)
-            for f in log_lines(session, "room synced with its host")]
-
-
-def first_frames(session: Session) -> dict:
-    """Per package, the milliseconds from asking for the launch to its first presented frame."""
-    return {f["package_id"]: round(int(f["request_to_first_present_us"]) / 1000, 1)
-            for f in log_lines(session, "application first frame presented")}
-
-
 def presented(session: Session, app: str) -> bool:
     frames = session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
     return any(f["app_id"] == app and f["presented"] and f["pixels_ready"] for f in frames)
@@ -608,298 +517,6 @@ def check_hosted_here(session: Session, windows: dict, out: Path) -> dict:
         raise Failed(f"the session's own workspace waits on a host: {told}")
     return {"room": room, "state": told["state"],
             "snapshots": snapshots(session, windows, out, "first-")}
-
-
-def open_in_workspace(session: Session, apps: list[str], workspace: str) -> dict:
-    """Open `apps` in the workspace in front, called `workspace`, until each presents a frame.
-    An app with a window there already keeps it: each opens once."""
-    already = {w.get("app_id") for w in session.windows() if w.get("workspace") == workspace}
-    for app in apps:
-        if app not in already:
-            session.invoke("applications", app)
-    def opened():
-        windows = {w.get("app_id"): w for w in session.windows()}
-        return windows if all(a in windows for a in apps) else None
-    windows = until("every app's window", opened)
-    elsewhere = {a: w.get("workspace") for a, w in windows.items() if a in apps and w.get("workspace") != workspace}
-    if elsewhere:
-        raise Failed(f"apps opened outside {workspace}: {elsewhere}")
-    until("a presented frame of every app", lambda: all(presented(session, a) for a in apps), 60)
-    return {a: {"group": windows[a]["group"], "tab": windows[a]["tab"]} for a in apps}
-
-
-def shots_of(session: Session, windows: dict, out: Path, prefix: str) -> dict:
-    shots = {}
-    for app, w in windows.items():
-        session.invoke("desktop-windows", f"tab.focus:{w['group']}:{w['tab']}")
-        time.sleep(0.5)
-        name = {NATIVE: "native-notes", NATIVE_CHAT: "native-chat"}.get(app, app.rsplit(".", 1)[-1])
-        path = out / f"{prefix}{name}.png"
-        session.control_cmd("snapshot", str(path))
-        shots[app] = str(path)
-    return shots
-
-
-def check_joined(session: Session, room: str) -> dict:
-    """A fresh session joins the local site's Lounge through its door, as a computer joins
-    tilo.coffee's, and the room syncs with its host."""
-    until("the session to join the Lounge", lambda: session.holds(room), 120, 0.1)
-    until("the Lounge to sync with its host",
-          lambda: session.room_sync(room)["state"] == "synced", 60, 0.1)
-    if session.active_room() != room:
-        session.invoke("actions", f"workspace.select.{room}")
-        until("the Lounge in front", lambda: session.active_room() == room, 15)
-    return {"room": room, "connect_to_sync_ms": sync_times(session)}
-
-
-def check_host_again(session: Session, room: str) -> dict:
-    """A session that holds the Lounge already syncs with its host again on start."""
-    until("the Lounge restored", lambda: session.holds(room), 60, 0.1)
-    until("the Lounge to sync again", lambda: session.room_sync(room)["state"] == "synced", 60, 0.1)
-    return {"connect_to_sync_ms": sync_times(session)}
-
-
-def history_now(session: Session, app: str):
-    """How many versions `app`'s History lists now; None while it does not answer."""
-    action = next((a for a in session.actions("History") if a.get("application") == app
-                   and a.get("title") == "History" and a.get("operation_kind") == "View"), None)
-    try:
-        return action and value_of(session.invoke("app-actions", action["id"]))["total"]
-    except Failed:
-        return None
-
-
-def new_note_in(session: Session, app: str, args: dict | None = None) -> list[int]:
-    """Invoke `app`'s "New note" edit and wait for it in the app's history: [before, after]."""
-    # Out of focus, an app lists its actions under directory ids, which move on as the
-    # listing changes: find the edit by its application, title and kind, and ask again
-    # when the id listed a moment ago has moved on.
-    def listed():
-        for query in ("New note", "notes"):
-            for action in session.actions(query):
-                if (action.get("application") == app and action.get("title") == "New note"
-                        and action.get("operation_kind") == "Document"):
-                    return action
-        return None
-
-    def history():
-        return history_now(session, app)
-
-    until(f"{app}'s 'New note'", listed)
-    before = until(f"{app}'s history", lambda: (lambda t: None if t is None else (t,))(history()))[0]
-    refusals: list[str] = []
-
-    def invoked():
-        action = listed()
-        if action is None:
-            return None
-        try:
-            return session.invoke("app-actions", action["id"], args)
-        except Failed as error:
-            refusals.append(str(error)[-600:])
-            # A refusal that names the edit, not a stale id, is the answer.
-            return None if "unknown_action" in str(error) else {"refused": str(error)[-600:]}
-
-    try:
-        answer = until(f"{app}'s 'New note' answered", invoked, 30)
-    except Failed:
-        raise Failed(f"{app}'s 'New note' was never answered: {refusals[-1:]}") from None
-    if "refused" in answer:
-        raise Failed(f"{app}'s 'New note' failed: {answer['refused']}")
-    after = until(f"'New note' in {app}'s history",
-                  lambda: (lambda t: t if t is not None and t > before else None)(history()), 15)
-    return [before, after]
-
-
-def check_host(session: Session, room: str, out: Path) -> dict:
-    """In the Lounge, synced with its host: every app is told the room is synced and shows
-    it, not "Connecting…"; the Lounge lets each write; native Notes' "New note" changes the
-    room; and native Chat, opened now, reaches its first frame in a synced room."""
-    told = session.room_sync(room)
-    if told["state"] != "synced":
-        raise Failed(f"the Lounge is not synced: {told}")
-    apps = [app_id(n) for n in APPS]
-    missing = [a for a in [*apps, NATIVE] if a not in told["app_authors"]]
-    if missing:
-        raise Failed(f"the Lounge does not let these apps write: {missing}")
-    windows = open_in_workspace(session, [*apps, NATIVE, NATIVE_CHAT], "Lounge")
-    shots = shots_of(session, windows, out, "synced-")
-    return {
-        "launch_to_first_frame_ms": first_frames(session),
-        "snapshots": shots,
-        "native_new_note": new_note_in(session, NATIVE, {"title": "From the Lounge"}),
-    }
-
-
-def windows_of(session: Session, app: str, workspace: str) -> list:
-    return [w for w in session.windows() if w.get("app_id") == app and w.get("workspace") == workspace]
-
-
-COMPONENTS = REPO / "target/debug/examples/components"
-
-
-def test_id_of(package: str, kind: str, label: str) -> str:
-    """The test id of the `kind` component saying `label` in the first window of the tilolang
-    package `package` (apps/tl/<package>), as its instance builds it: the key the compiler gave
-    it, read from the same compiler (tilolang-host's `components` example)."""
-    for line in run([COMPONENTS, REPO / "apps/tl" / package]).splitlines():
-        component = json.loads(line)
-        if component["kind"] == kind and component["label"] == label:
-            return component["key"]
-    raise Failed(f"apps/tl/{package}'s first window shows no {kind} saying {label!r}")
-
-
-def activate(session: Session, test_id: str) -> None:
-    """The focused window activates its control `test_id`, as assistive technology would."""
-    session.control_cmd("raw", json.dumps({"op": "activate_test_id", "test_id": test_id}))
-
-
-def check_host_edit(session: Session, pids_of) -> dict:
-    """tilolang Notes' "New note" changes the Lounge, as native Notes' does; so does a press of
-    its button in a second window of the app beside the first, made by that window itself;
-    and the app started again edits too."""
-    notes = app_id("notes")
-    out = {"history": new_note_in(session, notes)}
-    # A second window: the first duplicated, as Super+T does. The host's memory before and after
-    # is what one more instance costs it.
-    time.sleep(2)
-    hosts = host_pids(session.pid)
-    out["host_anon_before"] = anon_kib(hosts[0]) if len(hosts) == 1 else None
-    first = windows_of(session, notes, "Lounge")[0]
-    session.invoke("desktop-windows", f"tab.focus:{first['group']}:{first['tab']}")
-    session.invoke("actions", "tab.duplicate")
-    until("a second window of Notes", lambda: len(windows_of(session, notes, "Lounge")) == 2, 30)
-    until("a frame of the second window", lambda: sum(
-        1 for f in session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
-        if f["app_id"] == notes and f["presented"] and f["pixels_ready"]) == 2, 30)
-    hosts = host_pids(session.pid)
-    if len(hosts) != 1:
-        raise Failed(f"the Lounge's tilolang apps run in {len(hosts)} hosts, not one: {hosts}")
-    out["host_anon_kib"] = [out.pop("host_anon_before"), anon_kib(hosts[0])]
-    # The second window, in front, presses its own "New note".
-    second = next(w for w in windows_of(session, notes, "Lounge")
-                  if (w["group"], w["tab"]) != (first["group"], first["tab"]))
-    session.invoke("desktop-windows", f"tab.focus:{second['group']}:{second['tab']}")
-    before = until("Notes' history", lambda: (lambda t: None if t is None else (t,))(history_now(session, notes)))[0]
-    activate(session, test_id_of("notes", "ui.Button", "New note"))
-    after = until("the second window's 'New note' in Notes' history",
-                  lambda: (lambda t: t if t is not None and t > before else None)(history_now(session, notes)), 15)
-    out["second_window"] = [before, after]
-    if len(windows_of(session, notes, "Lounge")) != 2:
-        raise Failed("a window of Notes closed after its second window edited")
-    # Started again: every window closed, the app gone, and opened anew.
-    for w in windows_of(session, notes, "Lounge"):
-        session.invoke("desktop-windows", f"tab.close:{w['group']}:{w['tab']}")
-    until("Notes closed", lambda: not windows_of(session, notes, "Lounge") and not pids_of(notes), 30)
-    open_in_workspace(session, [notes], "Lounge")
-    out["relaunched"] = new_note_in(session, notes)
-    return out
-
-
-def check_host_idle(session: Session, seconds: float = 10.0) -> dict:
-    """The tilolang host, its instances untouched for 10 s, sleeps: what each of its threads
-    woke is recorded, and it must not wake more than once a second."""
-    time.sleep(3)
-    hosts = host_pids(session.pid)
-    if len(hosts) != 1:
-        raise Failed(f"expected one tilolang host, found {hosts}")
-    before = switches(hosts[0])
-    time.sleep(seconds)
-    after = switches(hosts[0])
-    woke = {t: after[t] - before.get(t, 0) for t in after if after[t] != before.get(t, 0)}
-    total = sum(woke.values())
-    out = {"pid": hosts[0], "seconds": seconds, "switches": total, "threads": woke,
-           "anon_kib": anon_kib(hosts[0])}
-    if total > seconds:
-        raise Failed(f"the idle tilolang host woke {total} times in {seconds:.0f} s: {json.dumps(out)}")
-    return out
-
-
-def check_host_undo(session: Session) -> dict:
-    """In the Lounge, tilolang Notes' Undo, published by its host as every app publishes it,
-    takes back the person's last step as a step of its own: History lists that step undone."""
-    notes = app_id("notes")
-    edit = new_note_in(session, notes)
-    undo = until("Notes' Undo", lambda: next(
-        (a for a in session.actions("Undo") if a.get("application") == notes and a.get("title") == "Undo"),
-        None))
-    answer = value_of(session.invoke("app-actions", undo["id"]))
-    undone = answer.get("undone") or []
-    if len(undone) != 1:
-        raise Failed(f"Notes' Undo took back {len(undone)} steps, not the last one: {answer}")
-    change = undone[0]["change"]
-    history = next(a for a in session.actions("History") if a.get("application") == notes
-                   and a.get("title") == "History" and a.get("operation_kind") == "View")
-    versions = value_of(session.invoke("app-actions", history["id"]))["versions"]
-    listed = next((v for v in versions if v.get("change") == change), None)
-    if not listed or not listed.get("undone"):
-        raise Failed(f"History does not list {change} undone: {listed}")
-    return {"history": edit, "undone": change, "now": answer.get("now")}
-
-
-def check_spinner(session: Session, room: str, pid_of) -> dict:
-    """The Lounge's host is stopped: its room is connecting, and Today, empty and in front,
-    says so with a spinner that turns one committed frame per pose, none between, until the
-    dial gives up and the room says its host cannot be reached."""
-    today = app_id("today")
-    until("the Lounge restored", lambda: session.holds(room), 60, 0.1)
-    check_registry(session, ["today"])
-    # The room is dialled once this device's native owner has opened, which an app in
-    # the room needs to open too.
-    until("the Lounge dialled", lambda: session.room_sync(room)["state"] is not None, 60, 0.1)
-    windows = open_in_workspace(session, [today], "Lounge")
-    w = windows[today]
-    session.invoke("desktop-windows", f"tab.focus:{w['group']}:{w['tab']}")
-    state = session.room_sync(room)["state"]
-    if state != "connecting":
-        raise Failed(f"with its host stopped, the Lounge is {state!r}, not connecting")
-    pid = pid_of(today)
-    before, seq, start = switches(pid), frame_seq(session, today), time.monotonic()
-    until("the dial to give up", lambda: session.room_sync(room)["state"] != "connecting", 60, 0.1)
-    frames = frame_seq(session, today) - seq
-    elapsed = time.monotonic() - start
-    after = switches(pid)
-    woke = sum(after[t] - before.get(t, 0) for t in after)
-    poses = elapsed * INDICATOR_POSES_PER_SECOND
-    out = {"seconds": round(elapsed, 1), "frames": frames, "poses": round(poses), "switches": woke,
-           "then": session.room_sync(room)["state"]}
-    if frames == 0:
-        raise Failed(f"the connecting spinner stood still: {out}")
-    # One pose a frame; a frame whose clock reading straddles two poses may land late by one.
-    if frames > poses + 1:
-        raise Failed(f"the spinner committed more frames than it has poses: {out}")
-    if out["then"] != "unreachable":
-        raise Failed(f"a host that does not answer is not said to be out of reach: {out}")
-    return out
-
-
-def check_unsynced(session: Session, room: str, out: Path, pid_of) -> dict:
-    """The Lounge's host cannot be reached: each app says so in place of its own empty state,
-    keeps its own action to work on what this device has, and, with nothing on its way,
-    draws nothing more."""
-    apps = [app_id(n) for n in APPS]
-    windows = open_in_workspace(session, [*apps, NATIVE], "Lounge")
-    told = session.room_sync(room)
-    if told["state"] != "unreachable":
-        raise Failed(f"the Lounge should say its host cannot be reached: {told}")
-    shots = shots_of(session, windows, out, "unsynced-")
-    time.sleep(1)
-    today = app_id("today")
-    pid = pid_of(today)
-    before, seq = switches(pid), frame_seq(session, today)
-    time.sleep(5)
-    frames = frame_seq(session, today) - seq
-    woke = {t: c - before.get(t, 0) for t, c in switches(pid).items() if c != before.get(t, 0)}
-    if frames or woke:
-        raise Failed(f"Today, with nothing on its way, drew {frames} frames and woke {woke}")
-    return {"state": told["state"], "snapshots": shots}
-
-
-def check_reconnect(session: Session, room: str) -> dict:
-    """The host is back: the Lounge syncs by itself, with no one asking."""
-    until("the Lounge to sync once its host is back",
-          lambda: session.room_sync(room)["state"] == "synced", 60, 0.1)
-    return {"state": "synced"}
 
 
 def probe_packages(state: Path, out: Path) -> list[Path]:
@@ -964,83 +581,13 @@ def check_routes(session: Session) -> dict:
     return result
 
 
-def free_port_base() -> int:
-    """A base whose ports the local site takes (see nested-pair.sh --ports) are all free."""
-    import random
-    import socket
-    for _ in range(64):
-        base = random.randrange(20000, 40000, 100)
-        try:
-            for port in (base, base + 1, base + 10, base + 74):
-                for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
-                    with socket.socket(socket.AF_INET, kind) as probe:
-                        probe.bind(("127.0.0.1", port))
-        except OSError:
-            continue
-        return base
-    raise Failed("no free ports for the local site")
-
-
-class Site:
-    """A local site as nested-pair.sh runs it: the room service in persistent mode and its
-    workspace host, the site's entry naming the host's room as its home workspace, the
-    Lounge. Its processes can be stopped and let go on, as a host that stops answering."""
-
-    def __init__(self, out: Path):
-        self.dir = out / "site"
-        self.dir.mkdir(parents=True, exist_ok=True)
-        ready = self.dir / "ready.json"
-        base = free_port_base()
-        argv = [sys.executable, "-I", SITE, "--scratch", self.dir, "--name", "lounge",
-                "--shown-name", "Lounge", "--no-bundle", "--relay-bin", BIN / "tilo-relay",
-                "--room-service-bin", BIN / "tilo-room-service", "--web-port", str(base),
-                "--api-port", str(base + 1), "--port-base", str(base + 10), "--ready-file", ready]
-        authors = ",".join([*SITE_AUTHORS, *(app_id(n) for n in APPS)])
-        env = {**os.environ, "TILO_ROOMS_AUTHOR_APPS": authors,
-               "TILO_ROOMS_GUEST_JOINS_PER_10_MIN": "1000", "TILO_ROOMS_GUEST_JOINS_PER_DAY": "100000"}
-        print("==> starting the local site", file=sys.stderr)
-        self.proc = subprocess.Popen(argv, stdout=open(self.dir / "site.log", "w"), stderr=subprocess.STDOUT,
-                                     start_new_session=True, env=env)
-        until("the local site", lambda: ready.is_file() or self.proc.poll() is not None, 300, 0.25)
-        if self.proc.poll() is not None:
-            raise Failed(f"the local site ended ({self.proc.returncode}); see {self.dir / 'site.log'}")
-        answer = json.loads(ready.read_text())
-        self.url, self.room = answer["site"], answer["room"]
-
-    def processes(self) -> list[int]:
-        # run.py starts the room service in a session of its own, and the service its
-        # workspace host: the whole tree, not one process group.
-        return [self.proc.pid, *descendants(self.proc.pid)]
-
-    def signal(self, number: int) -> None:
-        for pid in self.processes():
-            try:
-                os.kill(pid, number)
-            except ProcessLookupError:
-                pass
-
-    def pause(self) -> None:
-        self.signal(signal.SIGSTOP)
-
-    def resume(self) -> None:
-        self.signal(signal.SIGCONT)
-
-    def stop(self) -> None:
-        if self.proc.poll() is None:
-            self.resume()
-            os.killpg(self.proc.pid, signal.SIGTERM)
-            self.proc.wait(60)
-
-
 def start_session(state: Path, out: Path, tapps: list[Path], tag: str, native: str = "",
-                  community: str | None = None, fresh: bool = True):
+                  fresh: bool = True):
     ready = out / f"ready-{tag}.json"
     argv = [SESSION, "--no-build", "--headless", "--software", "--apps", native,
             "--state", state, "--ready", ready]
     if fresh:
         argv.append("--fresh-desktop")
-    if community:
-        argv += ["--community", community]
     for tapp in tapps:
         argv += ["--install-tapp", tapp]
     print(f"==> starting the headless session ({tag}, lavapipe only)", file=sys.stderr)
@@ -1113,70 +660,11 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
     return True
 
 
-def host_phases(summary: dict, out: Path, running: dict) -> None:
-    """A workspace with a host: a local site, and a session of its own in its Lounge,
-    started three times: fresh, again, and with the site's processes stopped."""
-    site = Site(out)
-    running["site"] = site
-    host_state = out / "host-state"
-    run([SESSION, "--no-build", "--prepare-only", "--apps", "notes chat", "--state", host_state])
-    tapps = [out / "build" / f"{n}.tapp" for n in APPS]
-
-    def start(tag: str, fresh: bool) -> Session:
-        proc, session = start_session(host_state, out, tapps, tag, native="notes chat",
-                                      community=site.url, fresh=fresh)
-        running["proc"] = proc
-        session.pid = proc.pid
-        return session
-
-    def stop(tag: str) -> None:
-        stop_session(running["proc"])
-        running["proc"] = None
-        shutil.copy(host_state / "logs/shell.log", out / f"shell-{tag}.log")
-
-    def pids_of(app: str) -> list[int]:
-        return [p for p in descendants(running["proc"].pid)
-                if environ(p).get("TILO_PACKAGE_ID") == app and exe(p).endswith("/bin/tilolang-app")]
-
-    def pid_of(app: str) -> int:
-        return pids_of(app)[0]
-
-    # A fresh session joins the Lounge; started again it holds it already. No app opens
-    # in either, so every app opens in the third start, where each is first opened.
-    session = start("host-join", True)
-    run_checks(summary, [("host-join", lambda: check_joined(session, site.room))])
-    stop("host-join")
-    session = start("host-again", False)
-    run_checks(summary, [("host-again", lambda: check_host_again(session, site.room))])
-    stop("host-again")
-    # The host stops answering: its processes are stopped, not gone, so a dial waits
-    # for an answer until it gives up.
-    site.pause()
-    session = start("host", False)
-    run_checks(summary, [
-        ("spinner", lambda: check_spinner(session, site.room, pid_of)),
-        ("unsynced", lambda: check_unsynced(session, site.room, out, pid_of)),
-    ])
-    site.resume()
-    run_checks(summary, [
-        ("reconnect", lambda: check_reconnect(session, site.room)),
-        ("host", lambda: check_host(session, site.room, out)),
-        ("host-edit", lambda: check_host_edit(session, pids_of)),
-        ("host-undo", lambda: check_host_undo(session)),
-        ("host-idle", lambda: check_host_idle(session)),
-    ])
-    summary["checks"].setdefault("host", {})["launch_timings"] = launch_timings(session)
-    summary["checks"]["host"]["window_marks"] = window_marks(session.state)
-    stop("host")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--out", type=Path, default=REPO / "target/tilolang-e2e")
     parser.add_argument("--keep", action="store_true")
-    parser.add_argument("--host-only", action="store_true",
-                        help="run only the checks of a workspace with a host (host to reconnect)")
     args = parser.parse_args()
     out = args.out.resolve()
     shutil.rmtree(out, ignore_errors=True)
@@ -1200,12 +688,10 @@ def main() -> int:
          "--tilo-runtime", f"tilo-runtime/{runtime}"])
 
     summary: dict = {"checks": {}, "failed": []}
-    # The session running now, and the local site, stopped at the end whatever happens.
-    running: dict = {"proc": None, "site": None}
+    # The session running now, stopped at the end whatever happens.
+    running: dict = {"proc": None}
     try:
-        ok = args.host_only or apps_phases(summary, state, out, running)
-        if ok:
-            host_phases(summary, out, running)
+        apps_phases(summary, state, out, running)
     except Failed as error:
         summary["failed"].append("session")
         summary["error"] = str(error)
@@ -1214,8 +700,6 @@ def main() -> int:
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
         if not args.keep:
             stop_session(running["proc"])
-            if running["site"] is not None:
-                running["site"].stop()
     print(f"==> {'FAILED: ' + ', '.join(summary['failed']) if summary['failed'] else 'every check passed'}"
           f" (summary: {out / 'summary.json'})", file=sys.stderr)
     return 1 if summary["failed"] else 0

@@ -2,8 +2,7 @@
 # Build everything dist/dev/nested-session.sh runs, into one directory: the
 # host programs (shell, launcher, installer, packager, runtime-bundle tool,
 # model gateway, the ush supervisor, tilo-control, the native-room governor
-# fixture), the workspace host and room service a local site runs
-# (nested-pair.sh), the thin apps, the tilolang runtime binary (apps/tilolang,
+# fixture), the thin apps, the tilolang runtime binary (apps/tilolang,
 # which nested-session.sh bakes into the tilolang runtime bundle), the shared
 # runtime library they link and
 # its engines, the Rust standard library that runtime was linked against, the
@@ -58,7 +57,7 @@ export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
 # profile, features and wrapper differ), and each build spends minutes on a few
 # large crates (tilo-ui, the shell) with most cores idle: one after another, the
 # job used a third of its cores. So the thin build runs beside the host and
-# site builds, under one jobserver holding the job's cores: together they never
+# tilolang-host builds, under one jobserver holding the job's cores: together they never
 # run more compilers (or take more memory) than one build of that width would.
 jobs=${CARGO_BUILD_JOBS:-$(nproc)}
 mkdir -p "$target"
@@ -117,22 +116,6 @@ build_tilolang_host() {
     mapfile -t args < <(profile_args "$host_profile")
     cargo build --locked --timings "${args[@]}" -p tilolang-host --bin tilolang-host
 }
-# The workspace host and the room service in front of it, as the room
-# service's image builds them (tilo-relay with its agents): the local site
-# dist/dev/nested-pair.sh runs, so two nested sessions meet in its home
-# workspace the way two computers meet in a community's. A second build, so
-# the relay's features never unify into the shell's dependencies; after the
-# host build and in its profile, so the units both resolve the same way (most
-# of the toolkit and the agent crates) are compiled once.
-site_bins=(tilo-relay tilo-room-service)
-build_site() {
-    local args
-    mapfile -t args < <(profile_args "$host_profile")
-    cargo build --locked --timings "${args[@]}" \
-        -p tilo-relay --bin tilo-relay --features tilo-relay/agents \
-        -p tilo-room-service --bin tilo-room-service
-}
-
 # --- Thin apps and the shared runtime -----------------------------------------
 # Resolved against the default collection's runtime, so the runtime is the one
 # every app of the collection links, whichever of them the session installs.
@@ -164,7 +147,7 @@ build_thin() {
 # session ships it in a system store of its own, with that key as the store's
 # image publisher, and the ush supervisor finds it there as on a Tilo device.
 # Sealing takes minutes; it needs only the host build's packer, so it runs
-# beside the site build rather than after everything.
+# beside the thin build rather than after everything.
 env_runtime=$target/nested-session-env-runtime
 seal_env_runtime() {
     rm -rf "$env_runtime"
@@ -173,17 +156,16 @@ seal_env_runtime() {
     bash tools/ci/publish/env-runtime.sh dev "$arch" "$env_runtime_trees" "$target/$host_profile" "$env_runtime"
     printf 'sealed the env-runtime in %s s\n' "$((SECONDS - began))"
 }
-build_host_then_site() {
+build_host_then_tilolang() {
     build_host 2>&1 | label host || return 1
     local seal
     seal_env_runtime 2>&1 | label seal & seal=$!
-    build_site 2>&1 | label site || { wait "$seal"; return 1; }
     build_tilolang_host 2>&1 | label tilolang-host || { wait "$seal"; return 1; }
     wait "$seal"
 }
 
 pids=()
-build_host_then_site & pids+=($!)
+build_host_then_tilolang & pids+=($!)
 (build_thin 2>&1 | label thin) & pids+=($!)
 failed=0
 for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
@@ -195,7 +177,7 @@ unset MAKEFLAGS
 # --- Stage ----------------------------------------------------------------------
 rm -rf "$out"
 mkdir -p "$out/bin/examples" "$out/thin-app"
-for name in "${host_bins[@]}" "${site_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
+for name in "${host_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
 cp -p "$target/$host_profile/examples/packaged_native_governor" "$out/bin/examples/"
 # Cargo writes the timings where it ran; a build forwarded to a builder leaves none here.
 [[ ! -d $timings ]] || cp -rp "$timings" "$out/timings"

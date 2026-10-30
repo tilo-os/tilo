@@ -15,12 +15,12 @@ usage:
                  [--tilo-runtime tilo-runtime/<release>] [--version V]
       compile the package in DIR (default: .) and the packages it uses, and write each as a
       signed Tilo app: OUT/<name>.tapp (default OUT: DIR/target)
-  tilolang run [DIR] [--search DIR]... [--peers N] [--headless] [--software] [--state DIR]
+  tilolang run [DIR] [--search DIR]... [--headless] [--software] [--state DIR]
                [--repo DIR]
       build the package, install it into a locally built nested Tilo session
       (dist/dev/nested-session-build.sh target/nested-session) and open it there; from then on
-      as `tilolang dev`. --peers N runs N sessions in one workspace; --software renders with
-      lavapipe only and never opens this machine's GPU.
+      as `tilolang dev`. --software renders with lavapipe only and never opens this machine's
+      GPU.
   tilolang dev [DIR] --session SESSION [--search DIR]... [--runtime BIN | --build-runtime]
                [--runtime-identity FILE] [--repo DIR]
       develop the package in a running nested session (SESSION: its --ready file, runtime
@@ -205,7 +205,6 @@ fn run_command(args: &[String]) -> Result<(), String> {
     let mut options = RunOptions {
         dir: PathBuf::from("."),
         search: Vec::new(),
-        peers: 1,
         headless: false,
         software: false,
         state: None,
@@ -215,14 +214,6 @@ fn run_command(args: &[String]) -> Result<(), String> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--search" => options.search.push(value(&mut iter, arg)?.into()),
-            "--peers" => {
-                let peers = value(&mut iter, arg)?;
-                options.peers = peers
-                    .parse()
-                    .ok()
-                    .filter(|peers| (1..=26).contains(peers))
-                    .ok_or_else(|| format!("--peers {peers}: a number of sessions from 1 to 26"))?;
-            }
             "--headless" => options.headless = true,
             "--software" => options.software = true,
             "--state" => options.state = Some(value(&mut iter, arg)?.into()),
