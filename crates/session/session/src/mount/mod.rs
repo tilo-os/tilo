@@ -9,4 +9,5 @@ pub(crate) mod clipboard_files;
 pub mod comforts;
 pub mod firstboot;
 pub mod lock;
+pub(crate) mod overview;
 pub(crate) mod power;

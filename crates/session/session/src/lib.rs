@@ -389,6 +389,9 @@ struct Shared {
     /// Where a question goes: the display the focused window is on, which
     /// the session settles before the shared state follows its sheets.
     place: std::cell::Cell<Option<questions::PromptPlace>>,
+    /// The overview's pictures and the clock they fly on, which its panel
+    /// in the chrome draws with.
+    overview: mount::overview::Overview,
 }
 
 /// The app a window shows, by its id.
@@ -1223,6 +1226,7 @@ impl Session {
             std::sync::Arc::clone(&wallpapers),
         );
         desktop.set_gestures(options.config.gestures);
+        desktop.set_theme((options.presentation)().theme);
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         // The desk as this device left it: workspaces, their strips, and
         // which of them are in front.
@@ -1262,6 +1266,11 @@ impl Session {
         // The chrome above the windows: its own tree, beside the desk's.
         let intents = Rc::new(RefCell::new(Vec::new()));
         let sync = start_collaboration(&options);
+        let presentation = (options.presentation)();
+        let overview = mount::overview::Overview::new(
+            presentation.theme.motion(),
+            presentation.theme.reduce_motion,
+        );
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
@@ -1269,6 +1278,7 @@ impl Session {
             Rc::clone(&asks),
             Rc::clone(&notice_signals),
             sync.clone(),
+            &overview,
         )));
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
         doors.add(chrome);
@@ -1377,6 +1387,7 @@ impl Session {
             notice_view: RefCell::new(None),
             sync,
             clipboard: mount::clipboard::Clipboard::new(),
+            overview,
         };
         shared.start_search();
         // What the portal brings comes from any thread, and wakes the loop
@@ -1574,6 +1585,15 @@ impl Session {
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
         self.shared.doors.resources()
+    }
+
+    /// The windows the overview pictures as the compositor draws them now:
+    /// each window's id and the rect its picture rests at, logical
+    /// `(x, y, width, height)`, bottom first. Empty while the overview is
+    /// away, and before a window on the desk has a picture.
+    #[must_use]
+    pub fn overview_pictures(&self) -> Vec<(u64, (f64, f64, f64, f64))> {
+        self.shared.overview_pictures()
     }
 
     /// What the service publishing `resource` reads of it now, as JSON;
@@ -2154,7 +2174,13 @@ impl Session {
             .step(&mut || Some(compositor.activation_token()));
         self.shared.open_notifications();
         self.settle()?;
-        self.windows.step(&mut self.compositor, Instant::now());
+        // The toolkit's clock, which a capture pins the frame's instant on.
+        let now = ui::time::now();
+        self.windows.step(&mut self.compositor, now);
+        // The overview's windows fly between the desk and the overview: its
+        // panel names them, the desk says where each stands, and the
+        // compositor draws their own pixels.
+        self.shared.overview.step(&self.shared, now);
         self.compositor.render()?;
         self.settle()?;
         self.shared.observe();

@@ -3,7 +3,7 @@
 //! window bars). The toolkit's portable host runs it (input in, frames out)
 //! and the frame is drawn as an app's is.
 
-use tilo_compositor::{HostLayer, SurfaceHost};
+use tilo_compositor::{HostLayer, SurfaceHost, WindowPicture};
 use ui::headless::FrameHarness;
 use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use vello::kurbo::Affine;
@@ -43,6 +43,15 @@ pub struct WidgetHost {
     modifiers: ModifiersState,
     /// The tree covers the outputs' bounding box, following them.
     covers: bool,
+    /// Other clients' windows the tree names, drawn by the compositor in
+    /// their own pixels: a surface showing other apps' windows (the
+    /// workspace overview) never draws their buffers itself.
+    pictures: Option<Rc<dyn Fn() -> Vec<WindowPicture>>>,
+    /// The regions the tree drew translucent material in last frame, in its
+    /// physical pixels: bounds, blur deviation, texel size.
+    backdrops: Vec<(vello::kurbo::Rect, f64, (u32, u32))>,
+    /// The blurred backdrops the compositor made, by region.
+    provided: Vec<Option<ui::peniko::ImageData>>,
     /// A frame is owed: input arrived or the placement changed.
     owed: bool,
     /// Moves with every frame the tree drew: what it publishes changes only
@@ -83,6 +92,9 @@ impl WidgetHost {
             scene: vello::Scene::new(),
             below,
             keyboard: None,
+            pictures: None,
+            backdrops: Vec::new(),
+            provided: Vec::new(),
             modifiers: ModifiersState::empty(),
             covers: false,
             owed: true,
@@ -95,6 +107,15 @@ impl WidgetHost {
     #[must_use]
     pub const fn covering_outputs(mut self) -> Self {
         self.covers = true;
+        self
+    }
+
+    /// Draw the windows `pictures` names over the tree, where the tree's
+    /// drawing puts them: what the compositor shows of a window's own
+    /// pixels.
+    #[must_use]
+    pub fn with_window_pictures(mut self, pictures: Rc<dyn Fn() -> Vec<WindowPicture>>) -> Self {
+        self.pictures = Some(pictures);
         self
     }
 
@@ -140,6 +161,13 @@ impl WidgetHost {
             self.retained.forget();
         }
         self.placement = placement;
+        self.owed = true;
+    }
+
+    /// Draw the tree with `theme`: the person's palette, tokens and fonts,
+    /// as the session's presentation settings hand them to every surface.
+    pub fn set_theme(&mut self, theme: ui::Theme) {
+        self.host.set_theme(theme);
         self.owed = true;
     }
 
@@ -219,6 +247,47 @@ impl SurfaceHost for WidgetHost {
 
     fn below_windows(&self) -> bool {
         self.below
+    }
+
+    fn window_pictures(&self) -> Vec<WindowPicture> {
+        self.pictures
+            .as_ref()
+            .map_or_else(Vec::new, |pictures| pictures())
+    }
+
+    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+        let (ox, oy) = self.placement.origin;
+        let scale = self.placement.scale;
+        self.backdrops
+            .iter()
+            .map(
+                |(bounds, blur_px, texels)| tilo_compositor::BackdropRequest {
+                    rect: (
+                        f64::from(ox) + bounds.x0 / scale,
+                        f64::from(oy) + bounds.y0 / scale,
+                        bounds.width() / scale,
+                        bounds.height() / scale,
+                    ),
+                    texels: *texels,
+                    blur: blur_px * f64::from(texels.0) / bounds.width().max(1.0),
+                },
+            )
+            .collect()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+        self.provided.resize(images.len(), None);
+        self.provided.truncate(images.len());
+        for (slot, image) in images.into_iter().enumerate() {
+            if let (Some(image), Some(provided)) = (image, self.provided.get_mut(slot)) {
+                *provided = Some(ui::raster::rgba8_premultiplied(
+                    image.rgba,
+                    image.texels.0,
+                    image.texels.1,
+                ));
+            }
+        }
+        self.owed = true;
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
@@ -309,6 +378,17 @@ impl SurfaceHost for WidgetHost {
     }
 
     fn prepare_frame(&mut self) -> bool {
+        // Translucent material records what lies below it; the compositor
+        // blurs that and hands it back (`set_backdrops`). The images are
+        // this tree's: every host on the thread provides its own before it
+        // draws.
+        ui::backdrop::provide_backdrops(
+            self.provided
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, image)| Some((slot, image.clone()?)))
+                .collect(),
+        );
         let drew = self.host.poll_frame().unwrap_or(false);
         if !(drew || std::mem::take(&mut self.owed)) {
             return false;
@@ -318,6 +398,19 @@ impl SurfaceHost for WidgetHost {
         self.scene.reset();
         self.scene
             .append(self.host.scene(), Some(Affine::scale(scale)));
+        self.backdrops = self
+            .host
+            .backdrops()
+            .regions
+            .iter()
+            .map(|region| {
+                (
+                    region.rect,
+                    region.blur_px,
+                    ui::backdrop::backdrop_texels(region.rect),
+                )
+            })
+            .collect();
         let size = self.frames.size();
         let key = TargetKey {
             width: size.0,

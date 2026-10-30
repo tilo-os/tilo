@@ -174,6 +174,7 @@ pub(crate) fn host(
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     signals: Rc<NoticeSignals>,
     sync: Option<Rc<crate::sync::Client>>,
+    overview: &crate::mount::overview::Overview,
 ) -> WidgetHost {
     let rules = Rc::new(SessionRules {
         handle: handle.clone(),
@@ -202,7 +203,8 @@ pub(crate) fn host(
         false,
     )
     .with_intents(intents)
-    .with_asks(asks);
+    .with_asks(asks)
+    .with_overview(overview.flight(), overview.open_flag());
     chrome.set_shortcuts(options.config.shortcuts.clone());
     let keyboard = chrome.keyboard();
     let placement = Placement {
@@ -210,7 +212,10 @@ pub(crate) fn host(
         size: (1, 1),
         scale: options.scale,
     };
-    WidgetHost::new(Box::new(chrome), placement, false)
+    let mut host = WidgetHost::new(Box::new(chrome), placement, false);
+    host.set_theme((options.presentation)().theme);
+    let pictures = overview.clone();
+    host.with_window_pictures(Rc::new(move || pictures.pictures()))
         .covering_outputs()
         .with_keyboard(keyboard)
 }
