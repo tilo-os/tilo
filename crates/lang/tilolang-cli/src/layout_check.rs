@@ -344,39 +344,7 @@ fn check_app(
                 &format!("{}, then {} shown", scenario.name, view.name),
             )?;
         }
-        // What the window shows once a person pressed one of its primary actions (a new note
-        // opened beside the list, its header row laid out again around it): at each size, from
-        // the scenario as staged, pressed with the pointer and with the motion it starts run
-        // out, read as it stands then, before anything lays the window out afresh. A layout
-        // that only a fresh pass puts right (a header row left where a frame of the motion put
-        // it) shows here.
-        for label in primary_labels(&meta) {
-            for size in SIZES {
-                let layout = Layout {
-                    size,
-                    display_scale: 1.0,
-                    text_scale: 1.0,
-                };
-                let viewport = (size.width, size.height);
-                let mut staged = stage::Staged::new(
-                    &meta.app,
-                    &packages,
-                    &scenario.name,
-                    viewport,
-                    layout.theme(),
-                )?;
-                staged.lay_out_moving(viewport, layout.theme(), layout.input())?;
-                let Some(id) = button_named(&staged.harness().inspection().root, label) else {
-                    continue;
-                };
-                staged.press(&id, size.touch)?;
-                check.audit(
-                    &mut staged,
-                    layout,
-                    &format!("{}, then {label} pressed", scenario.name),
-                )?;
-            }
-        }
+        press_stage(&mut check, &meta, &packages, &scenario.name)?;
     }
     let unreached = meta
         .views
@@ -386,6 +354,43 @@ fn check_app(
         .map(|v| format!("{} › {}", check.short, v.name))
         .collect();
     Ok((check.gathered.into_values().collect(), check.ran, unreached))
+}
+
+/// What the window shows once a person pressed one of its primary actions (a new note opened
+/// beside the list, its header row laid out again around it): at each size, from `scenario` as
+/// staged, pressed as a person presses (a tap on a touchscreen, a click otherwise) and with the
+/// motion it starts run out, read as it stands then, before anything lays the window out
+/// afresh. A layout that only a fresh pass puts right (a header row left where a frame of the
+/// motion put it) shows here.
+fn press_stage(
+    check: &mut AppCheck<'_>,
+    meta: &tilolang::PackageMeta,
+    packages: &Rc<stage::Packages>,
+    scenario: &str,
+) -> Result<(), String> {
+    for label in primary_labels(meta) {
+        for size in SIZES {
+            let layout = Layout {
+                size,
+                display_scale: 1.0,
+                text_scale: 1.0,
+            };
+            let viewport = (size.width, size.height);
+            let mut staged =
+                stage::Staged::new(&meta.app, packages, scenario, viewport, layout.theme())?;
+            staged.lay_out_moving(viewport, layout.theme(), layout.input())?;
+            let Some(id) = button_named(&staged.harness().inspection().root, label) else {
+                continue;
+            };
+            staged.press(&id, size.touch)?;
+            check.audit(
+                &mut staged,
+                layout,
+                &format!("{scenario}, then {label} pressed"),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// The views of `meta` the system shows on surfaces of its own: each type's row view and each
@@ -494,8 +499,8 @@ impl AppCheck<'_> {
             let json = serde_json::to_string_pretty(&inspection).map_err(|e| e.to_string())?;
             eprintln!("== {} {label} at {layout}\n{json}", self.meta.app);
             if let Some(dir) = self.shots
-                && layout.display_scale == 1.0
-                && layout.text_scale == 1.0
+                && (layout.display_scale - 1.0).abs() < f64::EPSILON
+                && (layout.text_scale - 1.0).abs() < f32::EPSILON
             {
                 self.shoot(staged, layout, label, dir)?;
             }

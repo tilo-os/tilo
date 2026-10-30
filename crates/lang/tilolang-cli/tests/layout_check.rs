@@ -13,16 +13,17 @@ fn manifest() -> &'static Path {
 
 /// Every app in `apps/tl`: a package directory with an `app.tl`, so an app added there is
 /// checked without being named here.
-fn apps() -> Vec<PathBuf> {
+fn apps() -> std::io::Result<Vec<PathBuf>> {
     let root = manifest().join("../../../apps/tl");
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
-        .expect("apps/tl reads")
-        .map(|entry| entry.expect("an entry of apps/tl reads").path())
-        .filter(|dir| dir.join("app.tl").is_file())
-        .collect();
+    let mut dirs = Vec::new();
+    for entry in std::fs::read_dir(&root)? {
+        let dir = entry?.path();
+        if dir.join("app.tl").is_file() {
+            dirs.push(dir);
+        }
+    }
     dirs.sort();
-    assert!(dirs.len() >= 8, "the apps are found in {}", root.display());
-    dirs
+    Ok(dirs)
 }
 
 #[test]
@@ -74,11 +75,15 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
 #[test]
 fn the_apps_show_no_layout_problem_their_allow_list_does_not_name() {
     let report = layout_check::check(&Options {
-        dirs: apps(),
+        dirs: apps().expect("apps/tl reads"),
         allow: Some(manifest().join("tests/layout_check/allowed")),
         ..Options::default()
     })
     .expect("the apps lay out");
+    assert!(
+        report.layouts > 0 && apps().expect("apps/tl reads").len() >= 8,
+        "every app in apps/tl is checked"
+    );
     assert!(
         report.unreached.is_empty(),
         "every view is laid out: a scenario reaches each, or the system shows it:\n{}",
