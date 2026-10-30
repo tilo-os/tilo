@@ -11,41 +11,21 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use settings_store::live::LiveSettings;
 use settings_store::sign_in_comforts::SignInComforts;
+use settings_store::watch::SettingsWatch;
 
-/// The person's comforts as the login screens would take them, and whether
-/// the person lets them follow.
-fn persons() -> (SignInComforts, bool) {
-    let access = tilo_accessibility_settings::AccessibilitySettings::load();
-    let theme = ui::theme::Theme::configured_comforts();
-    let defaults = SignInComforts::default();
-    let comforts = SignInComforts {
-        screen_reader: access.screen_reader,
-        screen_reader_rate: access.screen_reader_rate,
-        screen_reader_voice: access.screen_reader_voice,
-        language: settings_store::appearance::LANGUAGE.get(),
-        xkb_layout: None,
-        xkb_variant: None,
-        text_scale: theme.text_scale.unwrap_or(defaults.text_scale),
-        high_contrast: theme.high_contrast.unwrap_or(defaults.high_contrast),
-    }
-    .with_keyboard_source(&settings_store::hardware::RichInputConfig::load().keyboard_layout)
-    .clamped();
-    (
-        comforts,
-        settings_store::sign_in_comforts::APPLY_TO_SIGN_IN.get(),
-    )
-}
+use crate::SessionConfig;
 
 /// The session's side of that: what the login screens were last told, and
 /// the worker that tells them the next thing off the frame.
 pub struct Mirror {
-    /// Follows the person's settings, so a change is noticed once however
-    /// many readers look. Between changes, looking costs one atomic load.
-    live: LiveSettings,
-    /// The generation `seen` was read at.
-    generation: u64,
+    /// The comforts the session's settings loader read, newest last.
+    updates: mpsc::Receiver<(SignInComforts, bool)>,
+    /// Keeps the loader's notifications coming; dropping it stops them, as
+    /// it does for every other reader of the loader.
+    _following: Option<SettingsWatch>,
+    /// What the login screens were last told, or what they already hold when
+    /// the session started.
     seen: Option<SignInComforts>,
     /// Sends each change to `tilo-authd` in order, off the frame.
     worker: Option<mpsc::Sender<serde_json::Map<String, serde_json::Value>>>,
@@ -58,9 +38,18 @@ impl Mirror {
     /// the comforts that change; `wake` brings the session's loop back to
     /// look.
     pub fn mount(socket: PathBuf, wake: impl Fn() + Send + 'static) -> Self {
+        let (sender, updates) = mpsc::channel();
+        let following = SessionConfig::follow(move |config| {
+            let _ = sender.send((config.comforts, config.apply_comforts_to_sign_in));
+            wake();
+        })
+        .inspect_err(
+            |error| tracing::info!(%error, "the sign-in comforts do not follow the settings"),
+        )
+        .ok();
         Self {
-            live: LiveSettings::start(wake),
-            generation: 0,
+            updates,
+            _following: following,
             seen: None,
             worker: None,
             socket,
@@ -70,12 +59,20 @@ impl Mirror {
     /// Look at the person's comforts when their settings changed, and once
     /// at the start, which is where the session begins from.
     pub fn observe(&mut self) {
-        let generation = self.live.generation();
-        if self.seen.is_some() && generation == self.generation {
-            return;
+        let mut latest = None;
+        while let Ok(next) = self.updates.try_recv() {
+            latest = Some(next);
         }
-        self.generation = generation;
-        let (now, apply) = persons();
+        let (now, apply) = match latest {
+            Some(next) => next,
+            // The first look is where the session begins from: the settings
+            // the session started with, which the login screens already hold.
+            None if self.seen.is_none() => {
+                let config = SessionConfig::load();
+                (config.comforts, config.apply_comforts_to_sign_in)
+            }
+            None => return,
+        };
         if let Some(changes) = change(&mut self.seen, now, apply) {
             self.send(changes);
         }
