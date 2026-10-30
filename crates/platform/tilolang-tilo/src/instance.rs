@@ -60,6 +60,16 @@ pub enum Mode {
     Capture,
 }
 
+/// What the person asked of their history at the window: the record's undo or redo, as the one
+/// who runs the instance carries it out on the record (`ToApp::Undo`, `ToApp::Redo`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryAsk {
+    /// Take back their last step.
+    Undo,
+    /// Bring back what their last undo took back.
+    Redo,
+}
+
 /// A later build of the package, in a development session.
 #[derive(Clone)]
 pub struct Update {
@@ -272,8 +282,8 @@ pub struct Instance {
     /// The outside services the package's types with an origin are kept in step with.
     origins: crate::origin::Origins,
     pending: Pending,
-    /// The person chose Undo on a notice, and the undo is not yet taken.
-    undo: bool,
+    /// The undos and redos the person asked for, in order, not yet taken.
+    history: Vec<HistoryAsk>,
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
     started: bool,
@@ -352,7 +362,7 @@ impl Instance {
             ),
             origins: Rc::default(),
             pending: Pending::default(),
-            undo: false,
+            history: Vec::new(),
             staged: None,
             started: false,
             loading: false,
@@ -561,9 +571,10 @@ impl Instance {
         self.taken_build.take()
     }
 
-    /// Whether the person chose Undo on a notice since last asked.
-    pub fn take_undo(&mut self) -> bool {
-        std::mem::take(&mut self.undo)
+    /// The undos and redos the person asked for since last asked, in the order they asked: Undo
+    /// on a notice, and the window's undo and redo.
+    pub fn take_history(&mut self) -> Vec<HistoryAsk> {
+        std::mem::take(&mut self.history)
     }
 
     /// The bound control the window's keyboard focus is in, and whether an input method is
@@ -1219,6 +1230,13 @@ impl Instance {
         self.flush();
     }
 
+    /// The undo or redo the person asked for was refused, for `why` (somebody else changed what
+    /// it would take back since): the window says so.
+    pub fn history_refused(&mut self, why: String) {
+        self.notice(Words::Plain(why), ui::NoticeKind::Error);
+        self.flush();
+    }
+
     fn take_door_work(&mut self) -> bool {
         if !self.door_work.take() {
             return false;
@@ -1505,8 +1523,13 @@ impl Instance {
                 }
                 Ok(())
             }
-            ToApp::Undo => {
-                self.undo = true;
+            asked @ (ToApp::Undo | ToApp::Redo) => {
+                let redo = matches!(asked, ToApp::Redo);
+                self.history.push(if redo {
+                    HistoryAsk::Redo
+                } else {
+                    HistoryAsk::Undo
+                });
                 Ok(())
             }
             ToApp::Focus { at } => {
