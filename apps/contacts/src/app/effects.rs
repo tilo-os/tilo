@@ -27,6 +27,8 @@ pub(crate) enum Ask {
     OpenGroup(String),
     /// Show the favorites.
     OpenFavorites,
+    /// Sort the list by the order the list's order picker names so.
+    Sort(String),
     /// Review whether the second contact is a duplicate of the first.
     Review(ContactId, ContactId),
     /// Choose the format a contact is exported in.
@@ -117,6 +119,7 @@ fn answer(
             Ask::OpenGroup(group)
         }
         ContactsEffect::OpenFavorites => Ask::OpenFavorites,
+        ContactsEffect::SortContacts { order } => Ask::Sort(order),
         ContactsEffect::OpenReview { survivor, source } => {
             let kept = book
                 .contact(survivor)
@@ -168,6 +171,7 @@ impl ContactsApp {
                     self.set_group_filter(Some(FAVORITES_FILTER.into()));
                     Ok(())
                 }
+                Ask::Sort(order) => self.sort_by(&order),
                 Ask::Review(survivor, source) => self.open_duplicate_review(survivor, source),
                 Ask::Export(contact) => self.open_contact_export(contact),
                 Ask::Resolve(token, import_as_new) => {
@@ -203,6 +207,7 @@ impl ContactsApp {
 pub(crate) fn window(cx: &ViewCx<Contacts>, mut app: ContactsApp) -> Element {
     app.document = Some(cx.live().clone());
     app.attach_dispatcher(cx.dispatcher());
+    app.attach_actions(&cx.actions());
     app.jobs = Some(cx.jobs());
     if cx.mode().is_live() {
         app.identity_directory = cx.shared_person::<tilo_contact_directory::ContactDirectory>();

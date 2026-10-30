@@ -16,6 +16,9 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui::framework::{Dispatcher, Jobs};
+use ui::tilo_actions::ActionBinding;
+
+use crate::actions::ContactsEffect;
 use ui::tilo_resource::Invoke;
 use ui::widget::{AppModel, ModelPath};
 
@@ -180,6 +183,9 @@ pub struct ContactsApp {
     form: Option<EditForm>,
     form_epoch: u64,
     sort: SortKey,
+    /// What the list's order picker runs, once the window takes part in
+    /// the book.
+    sort_binding: Option<ActionBinding<String>>,
     group_filter: Option<String>,
     duplicate_review: Option<DuplicateReview>,
     duplicate_candidate: Option<crate::actions::DuplicateCandidate>,
@@ -283,21 +289,20 @@ fn sort_value(sort: SortKey) -> &'static str {
         .map_or("name", |(value, ..)| value)
 }
 
-/// The list's order, which the shell stands under the overview's header.
-fn sort_control(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
+/// The list's order, which the shell stands under the overview's header;
+/// choosing one runs `sort`, the window's `sort-contacts` effect.
+fn sort_control(sort: Option<&ActionBinding<String>>, sort_choice: &LocalState<String>) -> Element {
     let labels: Vec<String> = SORTS
         .iter()
         .map(|(_, label, _)| (*label).to_owned())
         .collect();
-    let chosen = std::rc::Rc::clone(shared);
-    let mut sort = Dropdown::from_state(labels, sort_choice)
+    let picker = Dropdown::from_state(labels, sort_choice)
         .with_id("contacts.sort")
-        .with_accessible_name("Sort contacts")
-        .on_change(move |value| {
-            if let Some((.., key)) = SORTS.iter().find(|(v, ..)| *v == value) {
-                chosen.borrow_mut().push(Request::Sort(*key));
-            }
-        });
+        .with_accessible_name("Sort contacts");
+    let mut sort = match sort {
+        Some(sort) => picker.on_action(sort.clone()),
+        None => picker.with_enabled(false),
+    };
     sort.set_value_options(
         SORTS
             .iter()
@@ -370,6 +375,21 @@ impl ContactsApp {
 
     pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Contacts>) {
         self.dispatcher = Some(dispatcher);
+    }
+
+    /// Bind the list's order picker to the book's published effects.
+    pub(crate) fn attach_actions(&mut self, actions: &ui::framework::Actions<Contacts>) {
+        self.sort_binding = actions.effect_binding(ContactsEffect::SORT_CONTACTS);
+    }
+
+    /// Sort the list by `order`, as the order picker names it.
+    pub(crate) fn sort_by(&self, order: &str) -> Result<(), String> {
+        let (.., sort) = SORTS
+            .iter()
+            .find(|(value, ..)| *value == order)
+            .ok_or_else(|| format!("Contacts sort by name or organization, not `{order}`"))?;
+        self.shared.borrow_mut().push(Request::Sort(*sort));
+        Ok(())
     }
 
     /// Show the book the document holds now, when it changed since.
@@ -571,6 +591,7 @@ impl ContactsApp {
             form: None,
             form_epoch: 0,
             sort: SortKey::Name,
+            sort_binding: None,
             group_filter: None,
             duplicate_review: None,
             duplicate_candidate: None,
@@ -1455,7 +1476,7 @@ impl ContactsApp {
             .with_no_padding()
             .with_intrinsic_height();
         if self.sort_shown {
-            controls = controls.push(sort_control(&self.shared, &self.sort_choice));
+            controls = controls.push(sort_control(self.sort_binding.as_ref(), &self.sort_choice));
         }
         if let Some(work) = key.1 {
             let label = match work {

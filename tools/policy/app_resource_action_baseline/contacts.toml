@@ -2,6 +2,5 @@
 "apps/contacts/src/detail.rs" = 6
 
 [ratchets.closure_control]
-"apps/contacts/src/app.rs" = 1
 "apps/contacts/src/app/dialogs.rs" = 1
 "apps/contacts/src/form.rs" = 2

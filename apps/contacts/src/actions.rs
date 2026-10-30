@@ -28,6 +28,12 @@ pub enum ContactsEffect {
     /// Open favorites.
     #[effect(view, row, idempotent)]
     OpenFavorites,
+    /// Sort contacts.
+    #[effect(view, idempotent)]
+    SortContacts {
+        #[param("What the list is sorted by", choices = ["name", "organization"])]
+        order: String,
+    },
     /// Review possible duplicate.
     #[effect(view, row, idempotent)]
     OpenReview {
