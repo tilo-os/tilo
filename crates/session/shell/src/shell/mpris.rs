@@ -165,15 +165,18 @@ impl Client {
 
 fn decode_artwork(image: ArtworkImage) -> Option<Artwork> {
     use base64::Engine as _;
-    let rgba = base64::engine::general_purpose::STANDARD
-        // optional-decode: artwork the audio helper sent malformed shows the player without a cover
-        .decode(image.rgba)
-        .ok()?;
-    (u64::try_from(rgba.len()).ok()?
-        == u64::from(image.width)
-            .checked_mul(u64::from(image.height))?
-            .checked_mul(4)?)
-    .then(|| Artwork {
+    let Ok(rgba) = base64::engine::general_purpose::STANDARD.decode(image.rgba) else {
+        tracing::warn!(
+            width = image.width,
+            height = image.height,
+            "a player sent artwork that is not base64; it shows without it"
+        );
+        return None;
+    };
+    let expected = u64::from(image.width)
+        .checked_mul(u64::from(image.height))
+        .and_then(|pixels| pixels.checked_mul(4));
+    (Some(u64::try_from(rgba.len()).ok()?) == expected).then(|| Artwork {
         width: image.width,
         height: image.height,
         rgba: Arc::new(rgba),

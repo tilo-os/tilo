@@ -1,6 +1,8 @@
 //! An app's frame in ordinary memory, rasterized on the CPU where it
 //! changed.
 
+use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
+use smithay::utils::{Buffer, Rectangle};
 use tilo_cpu_raster::color::AlphaColor;
 use tilo_cpu_raster::{CpuRasterizer, Options, Region, Target};
 use vello::Scene;
@@ -51,6 +53,56 @@ impl Canvas {
             .checked_mul(4)?
             .checked_add(3)?;
         self.pixels.get(index).copied()
+    }
+
+    /// Rasterize `scene` where `damage` says it changed (`None`: all of it)
+    /// and copy what was written into `buffer`, telling it what changed.
+    pub(crate) fn present(
+        &mut self,
+        scene: &Scene,
+        damage: Option<&[Rect]>,
+        buffer: &mut MemoryRenderBuffer,
+    ) {
+        let regions = self.draw(scene, damage);
+        if regions.is_empty() {
+            return;
+        }
+        let pixels = self.pixels();
+        let width = self.size().0 as usize;
+        let drawn = buffer.render().draw(|memory: &mut [u8]| {
+            for region in &regions {
+                for row in region.y..region.y.saturating_add(region.height) {
+                    let start = (row as usize)
+                        .saturating_mul(width)
+                        .saturating_add(region.x as usize)
+                        .saturating_mul(4);
+                    let end = start.saturating_add((region.width as usize).saturating_mul(4));
+                    if let (Some(to), Some(from)) =
+                        (memory.get_mut(start..end), pixels.get(start..end))
+                    {
+                        to.copy_from_slice(from);
+                    }
+                }
+            }
+            Ok::<_, std::convert::Infallible>(
+                regions
+                    .iter()
+                    .filter_map(|region| {
+                        Some(Rectangle::<i32, Buffer>::new(
+                            (i32::try_from(region.x).ok()?, i32::try_from(region.y).ok()?).into(),
+                            (
+                                i32::try_from(region.width).ok()?,
+                                i32::try_from(region.height).ok()?,
+                            )
+                                .into(),
+                        ))
+                    })
+                    .collect(),
+            )
+        });
+        if let Err(never) = drawn {
+            match never {}
+        }
     }
 
     /// Rasterize `scene` where `damage` says it changed (`None`: all of it)

@@ -71,6 +71,7 @@ fn row(action: &str) -> CatalogueRow {
             presentation: None,
         },
         action: Some(tilo_actions::ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: tilo_actions::ActionAddress::new(format!("resource:{action}"), action),
             resource_kind: "fixture".into(),

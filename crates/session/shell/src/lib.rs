@@ -33,18 +33,16 @@ pub mod network_secrets;
 pub mod notifications;
 pub use tilo_onboarding_host::identity as onboarding;
 pub mod onboarding_host;
-use tilo_onboarding_host::nearby as onboarding_nearby;
 #[cfg(target_os = "linux")]
 pub use tilo_onboarding_host::peer as onboarding_peer;
+#[cfg(target_os = "linux")]
+use tilo_onboarding_host::prepared as onboarding_prepared;
 #[cfg(not(target_os = "linux"))]
 use tilo_onboarding_host::retained as retained_files;
 use tilo_onboarding_host::{
     browser as onboarding_browser, migration as onboarding_migration,
-    portable_applications as onboarding_portable_applications,
     portable_home as onboarding_portable_home,
 };
-#[cfg(target_os = "linux")]
-use tilo_onboarding_host::prepared as onboarding_prepared;
 pub mod onboarding_view;
 pub mod polkit_agent;
 pub mod portal;

@@ -8,6 +8,7 @@
 //! runs the compositor in a window inside an existing X11/Wayland session.
 
 pub(crate) mod action_authority;
+pub(crate) mod actions;
 pub mod agent_admission;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
@@ -82,7 +83,7 @@ pub mod document_import;
 pub mod downloaded_apps;
 #[cfg(target_os = "linux")]
 pub mod drives;
-pub mod durable_writer;
+pub use tilo_durable_writer as durable_writer;
 pub mod emoji_recents;
 pub(crate) mod feedback_entry;
 pub(crate) mod feedback_pick;

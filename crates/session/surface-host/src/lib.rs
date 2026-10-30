@@ -10,15 +10,26 @@
 #![cfg(target_os = "linux")]
 
 mod canvas;
+mod desktop;
+mod door;
+mod widget;
+
+pub use desktop::{DeskGesture, DesktopHost, StripPolicy, desktop, desktop_with};
+pub use door::{Doors, Published, Shared, through_door};
+pub use widget::WidgetHost;
 
 use std::cell::Cell;
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::utils::{Buffer, Rectangle, Transform};
-use tilo_compositor::{HostKey, HostLayer, KeyModifiers, SurfaceHost};
+use smithay::utils::Transform;
+use tilo_compositor::{
+    BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostKey, HostLayer, KeyModifiers,
+    SurfaceHost,
+};
 use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
+use ui::device_local_door::SharedDoor;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{
     DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, RawKeyEvent,
@@ -31,6 +42,9 @@ use canvas::Canvas;
 
 /// Cores the rasterizer uses for a large damaged region.
 const RASTER_THREADS: u16 = 2;
+
+/// The format files are dragged in.
+const URI_LIST: &str = "text/uri-list";
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -70,6 +84,8 @@ struct Surface {
     size: PhysicalSize<u32>,
     scale: f64,
     redraw: Cell<bool>,
+    /// The pointer shape the app asked for last.
+    cursor: Cell<CursorIcon>,
 }
 
 impl AppSurface for Surface {
@@ -85,7 +101,20 @@ impl AppSurface for Surface {
         self.redraw.set(true);
     }
 
-    fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
+    fn set_cursor(&self, cursor: winit::window::CursorIcon) {
+        self.cursor.set(cursor);
+    }
+}
+
+/// The files a dropped `text/uri-list` names: its `file:` URIs as paths,
+/// comments and other schemes skipped.
+fn dropped_paths(data: &[u8]) -> Vec<std::path::PathBuf> {
+    String::from_utf8_lossy(data)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| url::Url::parse(line).ok()?.to_file_path().ok())
+        .collect()
 }
 
 /// One toolkit app shown on a rectangle of the desktop.
@@ -103,12 +132,27 @@ pub struct AppHost {
     keyboard: bool,
     /// The modifiers the app last heard of.
     modifiers: ModifiersState,
+    /// The app's actions for this device: what it publishes, and what the
+    /// session's catalogue asked of it, run on the next frame.
+    door: SharedDoor,
+    /// The regions the app drew translucent material in last frame, in
+    /// its physical pixels: bounds, blur deviation, texel size.
+    backdrops: Vec<(vello::kurbo::Rect, f64, (u32, u32))>,
+    /// The blurred backdrops the compositor made, by region.
+    provided: Vec<Option<vello::peniko::ImageData>>,
+    /// The next frame is rasterized whole (its backdrops changed).
+    full: bool,
+    /// Where what the app publishes stands: moves with every frame it
+    /// draws and every action it runs.
+    revision: u64,
 }
 
 impl AppHost {
     /// Show `app` at `placement`. Nothing is drawn before the first
     /// [`SurfaceHost::prepare_frame`].
     pub fn new(app: App, placement: Placement) -> Self {
+        // Drags the app starts come to the compositor through this host.
+        ui::dnd::host_drags_in_process();
         let (width, height) = placement.physical_size();
         Self {
             app,
@@ -117,6 +161,7 @@ impl AppHost {
                 size: PhysicalSize::new(width, height),
                 scale: placement.scale,
                 redraw: Cell::new(true),
+                cursor: Cell::new(CursorIcon::Default),
             },
             canvas: Canvas::new((width, height), RASTER_THREADS),
             buffer: buffer_for((width, height)),
@@ -125,7 +170,34 @@ impl AppHost {
             wants: true,
             keyboard: false,
             modifiers: ModifiersState::empty(),
+            door: SharedDoor::default(),
+            backdrops: Vec::new(),
+            provided: Vec::new(),
+            full: false,
+            revision: 0,
         }
+    }
+
+    /// The app's door, shared with the catalogue the person, a script or
+    /// an agent on this device drives the app through.
+    pub fn door(&self) -> SharedDoor {
+        self.door.clone()
+    }
+
+    /// Run what was asked through the door now, then publish what the app
+    /// offers: the session serves an invocation without waiting for a
+    /// frame. Whether anything ran.
+    pub fn serve_door(&mut self) -> bool {
+        let app = &mut self.app;
+        let ran = self
+            .door
+            .serve_with(|address, arguments| app.invoke_local_resource_action(address, arguments));
+        if ran {
+            self.wants = true;
+        }
+        self.door
+            .publish_resources(Some(self.app.collect_resources()));
+        ran
     }
 
     /// The app, to hand it events of its own (external events, settings).
@@ -189,6 +261,38 @@ impl AppHost {
     }
 }
 
+impl Published for AppHost {
+    fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
+        self.app.collect_resources()
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ui::tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
+        // Through the app's own door, as every caller on this device.
+        let door = self.door.clone();
+        self.revision = self.revision.wrapping_add(1);
+        through_door(&door, address, arguments, || {
+            self.serve_door();
+        })
+    }
+
+    fn revision(&self) -> Option<u64> {
+        Some(self.revision)
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        self.app.refresh_semantic_tree();
+        self.app
+            .semantic_tree()
+            .iter()
+            .filter_map(|node| node.name.clone())
+            .collect()
+    }
+}
+
 impl SurfaceHost for AppHost {
     fn layers(&self) -> Vec<HostLayer> {
         let size = (
@@ -232,24 +336,7 @@ impl SurfaceHost for AppHost {
     }
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
-        let button = match button {
-            BTN_LEFT => MouseButton::Left,
-            BTN_RIGHT => MouseButton::Right,
-            BTN_MIDDLE => MouseButton::Middle,
-            BTN_SIDE => MouseButton::Back,
-            BTN_EXTRA => MouseButton::Forward,
-            other => MouseButton::Other(u16::try_from(other).unwrap_or(u16::MAX)),
-        };
-        let state = if pressed {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        };
-        self.input(WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state,
-            button,
-        });
+        self.input(mouse_input(button, pressed));
     }
 
     fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
@@ -279,66 +366,135 @@ impl SurfaceHost for AppHost {
         self.input(key_event(key));
     }
 
+    fn cursor(&self) -> CursorIcon {
+        self.surface.cursor.get()
+    }
+
+    /// The toolkit takes files dropped on it (as a window of the desktop
+    /// it runs in would), so a drag that offers files is taken.
+    fn drop_offered(&mut self, mimes: &[String], x: f64, y: f64) -> Option<String> {
+        if !mimes.iter().any(|mime| mime == URI_LIST) {
+            return None;
+        }
+        // Drop zones learn where the drag is from the pointer.
+        self.pointer_motion(x, y);
+        Some(URI_LIST.to_owned())
+    }
+
+    fn drop_left(&mut self) {
+        self.input(WindowEvent::HoveredFileCancelled);
+        self.pointer_leave();
+    }
+
+    fn drop_data(&mut self, mime: &str, data: Vec<u8>) {
+        if mime != URI_LIST {
+            return;
+        }
+        for path in dropped_paths(&data) {
+            self.input(WindowEvent::HoveredFile(path.clone()));
+            self.input(WindowEvent::DroppedFile(path));
+        }
+    }
+
+    fn backdrops(&self) -> Vec<BackdropRequest> {
+        let (ox, oy) = self.placement.origin;
+        let scale = self.placement.scale;
+        self.backdrops
+            .iter()
+            .map(|(bounds, blur_px, texels)| BackdropRequest {
+                rect: (
+                    f64::from(ox) + bounds.x0 / scale,
+                    f64::from(oy) + bounds.y0 / scale,
+                    bounds.width() / scale,
+                    bounds.height() / scale,
+                ),
+                texels: *texels,
+                blur: blur_px * f64::from(texels.0) / bounds.width().max(1.0),
+            })
+            .collect()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<BackdropImage>>) {
+        self.provided.resize(images.len(), None);
+        self.provided.truncate(images.len());
+        for (slot, image) in images.into_iter().enumerate() {
+            if let (Some(image), Some(provided)) = (image, self.provided.get_mut(slot)) {
+                *provided = Some(ui::raster::rgba8_premultiplied(
+                    image.rgba,
+                    image.texels.0,
+                    image.texels.1,
+                ));
+            }
+        }
+        self.wants = true;
+        self.full = true;
+    }
+
+    fn take_drag(&mut self) -> Option<HostDrag> {
+        ui::dnd::take_hosted_drag().map(|offer| HostDrag { offer, icon: None })
+    }
+
+    /// The pointer may have moved anywhere while it carried the drag; the
+    /// compositor routes it anew, so the app hears it left.
+    fn drag_ended(&mut self, _dropped: bool) {
+        self.pointer_leave();
+    }
+
     fn prepare_frame(&mut self) {
+        if self.door.has_queued() {
+            self.serve_door();
+        }
         let now = ui::time::now();
         let due = self.app.surface_next_frame().is_some_and(|at| at <= now);
         if !(self.wants || self.surface.redraw.replace(false) || self.app.wake_pending() || due) {
             return;
         }
+        self.revision = self.revision.wrapping_add(1);
         self.app.surface_accessibility();
         self.scene.reset();
+        // Translucent material records what lies below it; the compositor
+        // blurs that and hands it back (`set_backdrops`).
+        // The images are this app's: every host on the thread provides its
+        // own before it draws.
+        ui::backdrop::provide_backdrops(
+            self.provided
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, image)| Some((slot, image.clone()?)))
+                .collect(),
+        );
+        let recording = ui::backdrop::BackdropRecording::begin();
+        ui::backdrop::layer_scene(&self.scene, 0);
         self.wants =
             self.app
                 .surface_frame_with_damage(&self.surface, &mut self.scene, &mut self.damage);
+        self.backdrops = recording
+            .finish()
+            .iter()
+            .map(|surface| {
+                (
+                    surface.bounds,
+                    surface.blur_px,
+                    ui::backdrop::backdrop_texels(surface.bounds),
+                )
+            })
+            .collect();
         let changed = self.damage.take();
-        let regions = self.canvas.draw(&self.scene, changed.as_deref());
-        if regions.is_empty() {
-            return;
-        }
-        let pixels = self.canvas.pixels();
-        let mut context = self.buffer.render();
-        let drawn = context.draw(|memory: &mut [u8]| {
-            let width = self.canvas.size().0 as usize;
-            for region in &regions {
-                for row in region.y..region.y.saturating_add(region.height) {
-                    let start = (row as usize)
-                        .saturating_mul(width)
-                        .saturating_add(region.x as usize)
-                        .saturating_mul(4);
-                    let end = start.saturating_add((region.width as usize).saturating_mul(4));
-                    if let (Some(to), Some(from)) =
-                        (memory.get_mut(start..end), pixels.get(start..end))
-                    {
-                        to.copy_from_slice(from);
-                    }
-                }
-            }
-            Ok::<_, std::convert::Infallible>(
-                regions
-                    .iter()
-                    .filter_map(|region| {
-                        Some(Rectangle::<i32, Buffer>::new(
-                            (i32::try_from(region.x).ok()?, i32::try_from(region.y).ok()?).into(),
-                            (
-                                i32::try_from(region.width).ok()?,
-                                i32::try_from(region.height).ok()?,
-                            )
-                                .into(),
-                        ))
-                    })
-                    .collect(),
-            )
-        });
-        drop(context);
-        if let Err(never) = drawn {
-            match never {}
-        }
+        let changed = if std::mem::take(&mut self.full) {
+            None
+        } else {
+            changed
+        };
+        self.canvas
+            .present(&self.scene, changed.as_deref(), &mut self.buffer);
+        self.door
+            .publish_resources(Some(self.app.collect_resources()));
     }
 }
 
 /// An empty (transparent) buffer of `size` physical pixels; the layer's
 /// logical size scales it onto the output.
-fn buffer_for(size: (u32, u32)) -> MemoryRenderBuffer {
+pub(crate) fn buffer_for(size: (u32, u32)) -> MemoryRenderBuffer {
     let width = i32::try_from(size.0).unwrap_or(i32::MAX);
     let height = i32::try_from(size.1).unwrap_or(i32::MAX);
     // ABGR8888 is R, G, B, A in memory: the rasterizer's premultiplied RGBA.
@@ -351,7 +507,29 @@ fn buffer_for(size: (u32, u32)) -> MemoryRenderBuffer {
     )
 }
 
-fn modifiers_state(modifiers: KeyModifiers) -> ModifiersState {
+/// The toolkit's event for a pointer button (evdev code) changing state.
+pub(crate) fn mouse_input(button: u32, pressed: bool) -> WindowEvent {
+    let button = match button {
+        BTN_LEFT => MouseButton::Left,
+        BTN_RIGHT => MouseButton::Right,
+        BTN_MIDDLE => MouseButton::Middle,
+        BTN_SIDE => MouseButton::Back,
+        BTN_EXTRA => MouseButton::Forward,
+        other => MouseButton::Other(u16::try_from(other).unwrap_or(u16::MAX)),
+    };
+    let state = if pressed {
+        ElementState::Pressed
+    } else {
+        ElementState::Released
+    };
+    WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state,
+        button,
+    }
+}
+
+pub(crate) fn modifiers_state(modifiers: KeyModifiers) -> ModifiersState {
     let mut state = ModifiersState::empty();
     state.set(ModifiersState::SHIFT, modifiers.shift);
     state.set(ModifiersState::CONTROL, modifiers.ctrl);
@@ -361,7 +539,7 @@ fn modifiers_state(modifiers: KeyModifiers) -> ModifiersState {
 }
 
 /// The toolkit's key event for a key the compositor's keymap resolved.
-fn key_event(key: &HostKey) -> WindowEvent {
+pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
     let text = key
         .pressed
         .then_some(key.text)
@@ -382,7 +560,7 @@ fn key_event(key: &HostKey) -> WindowEvent {
         logical_key,
         text.clone(),
         location,
-        false,
+        key.repeat,
         text,
         key_without_modifiers,
     );
@@ -391,6 +569,14 @@ fn key_event(key: &HostKey) -> WindowEvent {
         event,
         is_synthetic: false,
     }
+}
+
+/// The key a hosted surface got, as the toolkit names it, with the
+/// modifiers held: what a shortcut table matches against.
+#[must_use]
+pub fn toolkit_key(key: &HostKey) -> (Key, Modifiers) {
+    let (logical, _) = key_for(key.keysym, key.text);
+    (logical, Modifiers::from(modifiers_state(key.modifiers)))
 }
 
 /// The key `keysym` is: a named key when winit names it, else the
@@ -404,5 +590,22 @@ fn key_for(keysym: u32, text: Option<char>) -> (Key, KeyLocation) {
     match typed {
         Some(c) => (Key::Character(SmolStr::new(c.to_string())), location),
         None => (key, location),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dropped_paths;
+
+    #[test]
+    fn a_uri_list_drops_its_files_decoded_and_skips_the_rest() {
+        let list = b"# from a file manager\r\nfile:///home/ada/My%20Notes.txt\r\nhttps://tilo.so/\r\n\r\nfile://localhost/tmp/a\n";
+        assert_eq!(
+            dropped_paths(list),
+            vec![
+                std::path::PathBuf::from("/home/ada/My Notes.txt"),
+                std::path::PathBuf::from("/tmp/a"),
+            ]
+        );
     }
 }

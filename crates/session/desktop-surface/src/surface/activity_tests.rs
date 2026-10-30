@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::remote::{ActionHostError, Caller};
 use tilo_actions::{InvocationUpdate, InvocationUpdate::Item};
+use tilo_desktop_model::WorkspaceId;
 use ui::{Arrival, RemoteActions};
 
 use super::*;

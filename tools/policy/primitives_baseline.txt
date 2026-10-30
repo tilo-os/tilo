@@ -103,6 +103,7 @@ glyph-join 1 crates/session/shell/src/shell/portal_dialog.rs
 glyph-join 4 crates/session/shell/src/shell/room_activity.rs
 glyph-join 1 crates/session/shell/src/shell/search/providers/actions.rs
 glyph-join 1 crates/session/speaker-service/src/settings.rs
+glyph-join 1 crates/session/shell/src/shell/speaker_settings.rs
 glyph-join 3 crates/session/shell/src/shell/test_control.rs
 glyph-join 1 crates/session/shell/src/shell/workspace_drop.rs
 glyph-join 1 crates/session/tray-host/src/item.rs

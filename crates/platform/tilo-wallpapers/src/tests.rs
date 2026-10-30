@@ -122,3 +122,28 @@ fn decoding_reads_only_what_is_installed() {
     assert_eq!((decoded.width, decoded.height), (4, 2));
     assert_eq!(decoded.rgba.len(), 4 * 2 * 4);
 }
+
+/// The person's own picture is kept privately once it is an image; anything
+/// else is refused and leaves what was kept.
+#[test]
+fn a_custom_picture_is_kept_only_when_it_is_an_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = custom_picture_in(dir.path());
+    let source = dir.path().join("tiny.png");
+    image::RgbaImage::from_pixel(4, 2, image::Rgba([90, 90, 90, 255]))
+        .save(&source)
+        .unwrap();
+    let png = std::fs::read(&source).unwrap();
+    keep_custom_at(&path, &png).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), png);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    assert!(keep_custom_at(&path, b"not a picture").is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), png);
+}

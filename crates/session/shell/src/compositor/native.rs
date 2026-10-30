@@ -19890,6 +19890,7 @@ mod tests {
                         presentation: None,
                     },
                     action: Some(tilo_actions::ActionDescriptor {
+                        state: tilo_actions::ActionState::default(),
                         semantic_identity: None,
                         address: tilo_actions::ActionAddress::new(
                             "calculator.graph:curve2d:stable-17",

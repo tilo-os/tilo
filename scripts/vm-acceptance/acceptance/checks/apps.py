@@ -403,10 +403,10 @@ check("A05", AREA, "Store opens, draws its first frame, and exits on close")(
 
 @check("A06", AREA, "A host Wayland app (foot) opens in a window and exits on close")
 def host_wayland(ctx, res):
-    ids = [a["id"] for a in ctx.vm.actions("foot") if a["provider"] == "host-applications"]
+    ids = [a["id"] for a in ctx.vm.actions("foot") if a["provider"] == "applications"]
     if "foot" not in ids:
         raise Unobservable(f"no host Wayland app to open: `foot` is not in host-applications ({ids})")
-    gid, procs, toasts0 = _lifecycle(ctx, res, "foot", "host-applications", "A06-foot", True,
+    gid, procs, toasts0 = _lifecycle(ctx, res, "foot", "applications", "A06-foot", True,
                                      match=lambda f: "foot" in (f.get("app_id") or ""))
     expect(any("foot" in c.cmd for c in procs.values()),
            f"no foot process observed ({[c.cmd for c in procs.values()][:4]})")
@@ -417,7 +417,7 @@ def host_wayland(ctx, res):
 def x11(ctx, res):
     def x11_clients():
         return {a["id"]: a for a in ctx.vm.actions("xterm") + ctx.vm.actions("xeyes")
-                if a["provider"] == "host-applications"}
+                if a["provider"] == "applications"}
 
     cands = x11_clients()
     if not cands and not ctx.facts.get("apps_installed"):
@@ -432,14 +432,14 @@ def x11(ctx, res):
             cands = x11_clients()
     app = next((i for i in ("xterm", "org.xfce.xterm", "xeyes") if i in cands), None) or next(iter(cands), None)
     if app is None:
-        wine = [a["id"] for a in ctx.vm.actions("Wine File") if a["provider"] == "host-applications"]
+        wine = [a["id"] for a in ctx.vm.actions("Wine File") if a["provider"] == "applications"]
         app = wine[0] if wine else None
     if app is None:
         raise Unobservable("no X11 app available: xterm/xeyes not installable and no Wine File entry")
     res.metrics["x11_app"] = app
     key = app.split("-")[-1].lower()
     try:
-        gid, procs, toasts0 = _lifecycle(ctx, res, app, "host-applications", "A07-x11", True,
+        gid, procs, toasts0 = _lifecycle(ctx, res, app, "applications", "A07-x11", True,
                                          match=lambda f: key in (f.get("app_id") or "").lower()
                                          or "x11" in (f.get("app_id") or "").lower()
                                          or f.get("app_id") not in (None, "", "so.tilo.settings"))

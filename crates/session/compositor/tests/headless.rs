@@ -22,8 +22,10 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
-    Arrangement, Compositor, GestureEvent, HostKey, HostLayer, InputEvent, OutputConfig,
-    StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPhase, WindowInfo, WindowPolicy,
+    Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostKey,
+    HostLayer, InputEvent, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch, TabletEvent,
+    TabletPadEvent, TabletPhase, WindowEffect, WindowFrame, WindowInfo, WindowPicture,
+    WindowPolicy,
 };
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
@@ -31,13 +33,28 @@ use wayland_client::protocol::{
     wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
     wl_shm_pool::WlShmPool, wl_surface::WlSurface, wl_touch, wl_touch::WlTouch,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{
+    Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop, event_created_child,
+};
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1,
     ext_session_lock_v1::ExtSessionLockV1,
 };
+use wayland_protocols::wp::tablet::zv2::client::{
+    zwp_tablet_manager_v2::ZwpTabletManagerV2,
+    zwp_tablet_pad_group_v2::{self, ZwpTabletPadGroupV2},
+    zwp_tablet_pad_ring_v2::{self, ZwpTabletPadRingV2},
+    zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2,
+    zwp_tablet_pad_v2::{self, ZwpTabletPadV2},
+    zwp_tablet_seat_v2::{self, ZwpTabletSeatV2},
+    zwp_tablet_tool_v2::ZwpTabletToolV2,
+    zwp_tablet_v2::ZwpTabletV2,
+};
+use wayland_protocols::xdg::dialog::v1::client::{
+    xdg_dialog_v1::XdgDialogV1, xdg_wm_dialog_v1::XdgWmDialogV1,
+};
 use wayland_protocols::xdg::shell::client::{
-    xdg_surface, xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel, xdg_wm_base,
+    xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
     xdg_wm_base::XdgWmBase,
 };
 
@@ -69,6 +86,15 @@ struct Seen {
     keyboard_focused: bool,
     keys: Vec<(u32, bool)>,
     frames_done: u32,
+    closed: bool,
+    tablet_manager: Option<ZwpTabletManagerV2>,
+    wm_dialog: Option<XdgWmDialogV1>,
+    /// Tablet pad events as `added`, `group`, `buttons 4`, `done`,
+    /// `enter`, `mode 1`, `button 2 pressed`, `ring 90`, `ring stop`,
+    /// `removed`.
+    pad: Vec<String>,
+    /// The surface the pad entered.
+    pad_surface: Option<WlSurface>,
 }
 
 /// One client with one toplevel of a solid colour.
@@ -229,16 +255,66 @@ fn a_window_is_composited_where_the_policy_places_it() {
     assert_eq!((frame.width, frame.height), (640, 480));
     assert_eq!(frame.pixel(320, 240), Some([255, 0, 0, 255]));
     assert_eq!(
-        frame.pixel(220, 190),
+        frame.pixel(232, 200),
         Some([255, 0, 0, 255]),
-        "top-left corner"
+        "inside the top left corner"
     );
-    assert_eq!(frame.pixel(219, 190), Some(BACKGROUND));
+    let corner = frame.pixel(221, 191).expect("a corner pixel");
+    assert!(
+        corner[0] < 90 && corner[1] < 90,
+        "the corner is cut round, showing what is behind: {corner:?}"
+    );
     assert_eq!(frame.pixel(10, 10), Some(BACKGROUND));
 
     pump(&mut compositor, &mut [&mut client], |_, clients| {
         clients[0].seen.frames_done > 0
     });
+}
+
+#[test]
+fn a_window_opens_from_its_first_buffer() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = TestClient::connect(&mut compositor);
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.wm_base.is_some() && clients[0].seen.seat.is_some()
+    });
+    client.open_window("opening");
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.configured
+    });
+    // Committed without a buffer, it is not on the desktop yet: nothing
+    // stands there to be animated open.
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    assert!(compositor.windows().is_empty());
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(frame.pixel(320, 240), Some(BACKGROUND));
+
+    // Its first buffer is what it opens from: the desktop animates the
+    // window it can already see.
+    client.show(200, 100, [255, 0, 0, 255]);
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        !compositor.windows().is_empty()
+    });
+    let (info, rect) = compositor.windows()[0].clone();
+    assert_eq!(rect, (220, 190, 200, 100));
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(frame.pixel(320, 240), Some([255, 0, 0, 255]));
+
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            opacity: 0.5,
+            scale: 0.9,
+            ..WindowEffect::default()
+        }),
+    );
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let opening = frame.pixel(320, 240).expect("a pixel");
+    assert_ne!(opening, [255, 0, 0, 255], "opening faded");
+    assert_ne!(opening, BACKGROUND, "from its first buffer");
 }
 
 #[test]
@@ -254,8 +330,8 @@ fn a_scaled_output_composites_in_physical_pixels() {
     assert_eq!(compositor.windows()[0].1, (220, 190, 200, 100));
     compositor.render().unwrap();
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    assert_eq!(frame.pixel(444, 384), Some([0, 0, 255, 255]));
-    assert_eq!(frame.pixel(836, 576), Some([0, 0, 255, 255]));
+    assert_eq!(frame.pixel(460, 400), Some([0, 0, 255, 255]));
+    assert_eq!(frame.pixel(820, 560), Some([0, 0, 255, 255]));
     assert_eq!(frame.pixel(844, 584), Some(BACKGROUND));
 }
 
@@ -577,6 +653,7 @@ struct Square {
     rect: (i32, i32, i32, i32),
     buffer: MemoryRenderBuffer,
     log: Rc<RefCell<HostLog>>,
+    below: bool,
 }
 
 impl Square {
@@ -591,7 +668,18 @@ impl Square {
             Transform::Normal,
             None,
         );
-        Self { rect, buffer, log }
+        Self {
+            rect,
+            buffer,
+            log,
+            below: false,
+        }
+    }
+
+    /// The same square, under every window.
+    fn below(mut self) -> Self {
+        self.below = true;
+        self
     }
 }
 
@@ -602,6 +690,10 @@ impl SurfaceHost for Square {
             size: (self.rect.2, self.rect.3),
             buffer: self.buffer.clone(),
         }]
+    }
+
+    fn below_windows(&self) -> bool {
+        self.below
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
@@ -799,6 +891,67 @@ fn touches_reach_the_window_under_them_and_hosted_surfaces_as_presses() {
     assert_eq!(client.seen.touches.len(), 6, "the window saw none of it");
 }
 
+#[test]
+fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    compositor.add_host(Box::new(Square::new(
+        (0, 0, 40, 40),
+        [0, 255, 0, 255],
+        Rc::clone(&log),
+    )));
+    let shown = |compositor: &mut Compositor, x, y| {
+        compositor.render().unwrap();
+        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
+    };
+    assert_eq!(shown(&mut compositor, 10, 10), Some([0, 255, 0, 255]));
+
+    // A 20x20 icon, its hotspot two pixels in from its top left.
+    let bytes = [0, 255, 255, 255].repeat(20 * 20);
+    let icon = MemoryRenderBuffer::from_slice(
+        &bytes,
+        Fourcc::Argb8888,
+        (20, 20),
+        1,
+        Transform::Normal,
+        None,
+    );
+    compositor
+        .input(InputEvent::PointerMotion { x: 5.0, y: 5.0 })
+        .unwrap();
+    assert!(
+        compositor
+            .start_host_drag(HostDrag {
+                offer: vec![("text/plain".into(), b"dragged".to_vec())],
+                icon: Some((icon, Point::from((2, 2)))),
+            })
+            .unwrap(),
+        "the hosted app's drag starts"
+    );
+    assert_eq!(
+        shown(&mut compositor, 10, 10),
+        Some([255, 255, 0, 255]),
+        "the icon hangs off the pointer at its hotspot"
+    );
+    assert_eq!(shown(&mut compositor, 2, 2), Some([0, 255, 0, 255]));
+
+    // It follows the pointer.
+    compositor
+        .input(InputEvent::PointerMotion { x: 100.0, y: 100.0 })
+        .unwrap();
+    assert_eq!(shown(&mut compositor, 110, 110), Some([255, 255, 0, 255]));
+    assert_eq!(shown(&mut compositor, 10, 10), Some([0, 255, 0, 255]));
+
+    // The drop ends it, icon and all.
+    compositor
+        .input(InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: false,
+        })
+        .unwrap();
+    assert_eq!(shown(&mut compositor, 110, 110), Some(BACKGROUND));
+}
+
 /// Floating windows; takes touchpad gestures when `claims`, and records
 /// what reached it.
 struct Desktop {
@@ -933,6 +1086,92 @@ fn a_pen_is_a_pointer_to_apps_without_tablet_support() {
     );
 }
 
+#[test]
+fn a_tablet_pad_follows_the_keyboard_focus_to_a_client_that_takes_tablets() {
+    use smithay::wayland::tablet_manager::{
+        TabletDescriptor, TabletPadDescriptor, TabletPadGroupDescriptor,
+    };
+
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "painter", (200, 100), [255, 0, 0, 255]);
+    let seat = client.seen.seat.clone().unwrap();
+    client
+        .seen
+        .tablet_manager
+        .as_ref()
+        .expect("zwp_tablet_manager_v2")
+        .get_tablet_seat(&seat, &client.queue.handle(), ());
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+
+    let pad = |action| {
+        InputEvent::TabletPad(TabletPadEvent {
+            pad: TabletPadDescriptor {
+                name: "Pen tablet Pad".into(),
+                syspath: None,
+                buttons: 4,
+                groups: vec![TabletPadGroupDescriptor {
+                    buttons: vec![0, 1, 2, 3],
+                    rings: vec![0],
+                    strips: Vec::new(),
+                    modes: 2,
+                }],
+            },
+            tablet: TabletDescriptor {
+                name: "Pen tablet".into(),
+                usb_id: Some((0x056a, 0x0374)),
+                syspath: None,
+            },
+            action,
+        })
+    };
+    for action in [
+        PadAction::Added,
+        PadAction::Mode { group: 0, mode: 1 },
+        PadAction::Button {
+            button: 2,
+            pressed: true,
+        },
+        PadAction::Ring {
+            ring: 0,
+            degrees: Some(90.0),
+        },
+        PadAction::Ring {
+            ring: 0,
+            degrees: None,
+        },
+    ] {
+        compositor.input(pad(action)).unwrap();
+    }
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.pad.last().map(String::as_str) == Some("ring stop")
+    });
+    assert_eq!(
+        client.seen.pad,
+        [
+            "added",
+            "group",
+            "buttons 4",
+            "done",
+            "enter",
+            "mode 0",
+            "mode 1",
+            "button 2 pressed",
+            "ring 90",
+            "ring stop",
+        ],
+        "the pad is announced, enters the focused window and its events follow"
+    );
+    assert_eq!(
+        client.seen.pad_surface, client.surface,
+        "the pad entered the window with the keyboard focus"
+    );
+
+    compositor.input(pad(PadAction::Removed)).unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.pad.last().map(String::as_str) == Some("removed")
+    });
+}
+
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
         seen: &mut Self,
@@ -959,6 +1198,10 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 "wl_shm" => seen.shm = Some(registry.bind(name, 1, qh, ())),
                 "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
                 "wl_seat" => seen.seat = Some(registry.bind(name, version.min(7), qh, ())),
+                "zwp_tablet_manager_v2" => {
+                    seen.tablet_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                "xdg_wm_dialog_v1" => seen.wm_dialog = Some(registry.bind(name, 1, qh, ())),
                 _ => {}
             }
         }
@@ -992,6 +1235,21 @@ impl Dispatch<XdgSurface, ()> for Seen {
         if let xdg_surface::Event::Configure { serial } = event {
             surface.ack_configure(serial);
             seen.configured = true;
+        }
+    }
+}
+
+impl Dispatch<XdgToplevel, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &XdgToplevel,
+        event: xdg_toplevel::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, xdg_toplevel::Event::Close) {
+            seen.closed = true;
         }
     }
 }
@@ -1118,13 +1376,727 @@ impl Dispatch<ExtSessionLockV1, ()> for Seen {
     }
 }
 
+impl Dispatch<ZwpTabletSeatV2, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpTabletSeatV2,
+        event: zwp_tablet_seat_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_tablet_seat_v2::Event::PadAdded { .. } = event {
+            seen.pad.push("added".into());
+        }
+    }
+
+    event_created_child!(Seen, ZwpTabletSeatV2, [
+        zwp_tablet_seat_v2::EVT_TABLET_ADDED_OPCODE => (ZwpTabletV2, ()),
+        zwp_tablet_seat_v2::EVT_TOOL_ADDED_OPCODE => (ZwpTabletToolV2, ()),
+        zwp_tablet_seat_v2::EVT_PAD_ADDED_OPCODE => (ZwpTabletPadV2, ()),
+    ]);
+}
+
+impl Dispatch<ZwpTabletPadV2, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpTabletPadV2,
+        event: zwp_tablet_pad_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let line = match event {
+            zwp_tablet_pad_v2::Event::Group { .. } => "group".into(),
+            zwp_tablet_pad_v2::Event::Buttons { buttons } => format!("buttons {buttons}"),
+            zwp_tablet_pad_v2::Event::Done => "done".into(),
+            zwp_tablet_pad_v2::Event::Enter { surface, .. } => {
+                seen.pad_surface = Some(surface);
+                "enter".into()
+            }
+            zwp_tablet_pad_v2::Event::Leave { .. } => "leave".into(),
+            zwp_tablet_pad_v2::Event::Button { button, state, .. } => {
+                let pressed = state == WEnum::Value(zwp_tablet_pad_v2::ButtonState::Pressed);
+                format!(
+                    "button {button} {}",
+                    if pressed { "pressed" } else { "released" }
+                )
+            }
+            zwp_tablet_pad_v2::Event::Removed => "removed".into(),
+            _ => return,
+        };
+        seen.pad.push(line);
+    }
+
+    event_created_child!(Seen, ZwpTabletPadV2, [
+        zwp_tablet_pad_v2::EVT_GROUP_OPCODE => (ZwpTabletPadGroupV2, ()),
+    ]);
+}
+
+impl Dispatch<ZwpTabletPadGroupV2, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpTabletPadGroupV2,
+        event: zwp_tablet_pad_group_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_tablet_pad_group_v2::Event::ModeSwitch { mode, .. } = event {
+            seen.pad.push(format!("mode {mode}"));
+        }
+    }
+
+    event_created_child!(Seen, ZwpTabletPadGroupV2, [
+        zwp_tablet_pad_group_v2::EVT_RING_OPCODE => (ZwpTabletPadRingV2, ()),
+        zwp_tablet_pad_group_v2::EVT_STRIP_OPCODE => (ZwpTabletPadStripV2, ()),
+    ]);
+}
+
+impl Dispatch<ZwpTabletPadRingV2, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpTabletPadRingV2,
+        event: zwp_tablet_pad_ring_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_tablet_pad_ring_v2::Event::Angle { degrees } => {
+                seen.pad.push(format!("ring {degrees}"));
+            }
+            zwp_tablet_pad_ring_v2::Event::Stop => seen.pad.push("ring stop".into()),
+            _ => {}
+        }
+    }
+}
+
+delegate_noop!(Seen: ignore ZwpTabletManagerV2);
+delegate_noop!(Seen: ignore ZwpTabletV2);
+delegate_noop!(Seen: ignore ZwpTabletToolV2);
+delegate_noop!(Seen: ignore ZwpTabletPadStripV2);
 delegate_noop!(Seen: ignore ExtSessionLockManagerV1);
 delegate_noop!(Seen: ignore WlCompositor);
+delegate_noop!(Seen: ignore XdgWmDialogV1);
+delegate_noop!(Seen: ignore XdgDialogV1);
 delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlShmPool);
 delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);
-delegate_noop!(Seen: ignore XdgToplevel);
+
+#[test]
+fn a_surface_below_the_windows_shows_and_takes_the_pointer_only_around_them() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    compositor.add_host(Box::new(
+        Square::new((0, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log)).below(),
+    ));
+    let mut client = mapped_client(&mut compositor, "over", (200, 100), [255, 0, 0, 255]);
+
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        frame.pixel(320, 240),
+        Some([255, 0, 0, 255]),
+        "the window on top"
+    );
+    assert_eq!(
+        frame.pixel(10, 10),
+        Some([0, 0, 255, 255]),
+        "the desktop around it"
+    );
+
+    compositor
+        .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.pointer_inside
+    });
+    assert!(
+        log.borrow().motions.is_empty(),
+        "over a window the window has it"
+    );
+
+    compositor
+        .input(InputEvent::PointerMotion { x: 10.0, y: 10.0 })
+        .unwrap();
+    compositor
+        .input(InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: true,
+        })
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        !clients[0].seen.pointer_inside
+    });
+    assert_eq!(log.borrow().motions, vec![(10.0, 10.0)]);
+    assert_eq!(log.borrow().buttons, vec![(BTN_LEFT, true)]);
+    assert!(client.seen.buttons.is_empty());
+}
+
+/// A floating stack whose focus and closes a test sets, as a desktop's own
+/// controls would.
+#[derive(Default)]
+struct Steered {
+    focus: Rc<RefCell<Option<u64>>>,
+    closes: Rc<RefCell<Vec<u64>>>,
+}
+
+impl WindowPolicy for Steered {
+    fn initial_size(
+        &mut self,
+        window: &WindowInfo,
+        outputs: &[Rectangle<i32, Logical>],
+    ) -> Option<(i32, i32)> {
+        StackPolicy.initial_size(window, outputs)
+    }
+
+    fn place(
+        &mut self,
+        window: &WindowInfo,
+        size: (i32, i32),
+        outputs: &[Rectangle<i32, Logical>],
+    ) -> Point<i32, Logical> {
+        StackPolicy.place(window, size, outputs)
+    }
+
+    fn focused(&mut self) -> Option<u64> {
+        *self.focus.borrow()
+    }
+
+    fn take_close_requests(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.closes.borrow_mut())
+    }
+}
+
+#[test]
+fn the_policy_moves_focus_and_closes_windows_through_its_own_controls() {
+    let policy = Steered::default();
+    let (focus, closes) = (Rc::clone(&policy.focus), Rc::clone(&policy.closes));
+    let mut compositor = headless(Box::new(policy));
+    let mut first = mapped_client(&mut compositor, "first", (100, 100), [255, 0, 0, 255]);
+    let mut second = mapped_client(&mut compositor, "second", (100, 100), [0, 255, 0, 255]);
+    let id = |compositor: &Compositor, app: &str| {
+        compositor
+            .windows()
+            .into_iter()
+            .find(|(info, _)| info.app_id.as_deref() == Some(app))
+            .unwrap()
+            .0
+            .id
+    };
+    assert_eq!(
+        compositor.focused_window().and_then(|info| info.app_id),
+        Some("second".into())
+    );
+
+    *focus.borrow_mut() = Some(id(&compositor, "first"));
+    compositor.render().unwrap();
+    assert_eq!(
+        compositor.focused_window().and_then(|info| info.app_id),
+        Some("first".into())
+    );
+
+    closes.borrow_mut().push(id(&compositor, "second"));
+    compositor.render().unwrap();
+    pump(
+        &mut compositor,
+        &mut [&mut first, &mut second],
+        |_, clients| clients[1].seen.closed,
+    );
+    assert!(!first.seen.closed);
+}
+
+/// How bright a pixel is to the eye, roughly.
+fn luma(pixel: [u8; 4]) -> u32 {
+    u32::from(pixel[0]) * 3 + u32::from(pixel[1]) * 6 + u32::from(pixel[2])
+}
+
+#[test]
+fn a_window_is_drawn_with_rounded_corners_and_a_shadow_below_it() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let pixel = |x, y| frame.pixel(x, y).expect("on the output");
+    let red = [255, 0, 0, 255];
+    // The window stands at (220, 190) to (420, 290) and the window tile
+    // rounds its corners by 14: the corner pixels are not the window's.
+    assert_eq!(pixel(320, 240), red, "the middle is the window");
+    assert_eq!(pixel(232, 200), red, "just inside the corner");
+    assert_ne!(pixel(221, 191), red, "the corner itself is cut");
+    assert_eq!(pixel(420 - 12, 290 - 20), red, "inside the far corner");
+    // Its shadow falls below it, and the hairline that marks its edge runs
+    // just outside it.
+    assert!(
+        luma(pixel(320, 292)) < luma(BACKGROUND),
+        "the shadow darkens the ground below: {:?}",
+        pixel(320, 292)
+    );
+    assert!(
+        luma(pixel(219, 240)) > luma(BACKGROUND),
+        "the edge is a light hairline: {:?}",
+        pixel(219, 240)
+    );
+    assert!(
+        luma(pixel(320, 380)) == luma(BACKGROUND),
+        "the shadow does not reach the far side of the output"
+    );
+}
+
+#[test]
+fn a_window_keeps_its_corners_and_shadow_when_its_effect_scales_it() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, _) = compositor.windows()[0].clone();
+    // Twice the size about its centre: (120, 140) to (520, 340).
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            scale: 2.0,
+            ..WindowEffect::default()
+        }),
+    );
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let pixel = |x, y| frame.pixel(x, y).expect("on the output");
+    let red = [255, 0, 0, 255];
+    assert_eq!(pixel(320, 240), red, "the middle is the window");
+    assert_ne!(
+        pixel(126, 146),
+        red,
+        "the corner grows with the window: it is cut 28 px in, not 14"
+    );
+    assert_eq!(pixel(146, 166), red, "past the cut it is the window");
+    assert!(
+        luma(pixel(320, 344)) < luma(BACKGROUND),
+        "the shadow is twice as far below the grown window: {:?}",
+        pixel(320, 344)
+    );
+}
+
+#[test]
+fn a_window_framed_square_is_drawn_as_its_buffer_is() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, _) = compositor.windows()[0].clone();
+    // A window that fills the display stands on it: no corners, no shadow.
+    compositor.set_window_frame(WindowFrame::square());
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let pixel = |x, y| frame.pixel(x, y).expect("on the output");
+    assert_eq!(pixel(221, 191), [255, 0, 0, 255], "the corner is square");
+    assert_eq!(pixel(220, 190), [255, 0, 0, 255], "its first pixel");
+    assert!(
+        luma(pixel(320, 292)) == luma(BACKGROUND),
+        "and nothing is cast below it"
+    );
+
+    // A window can say so itself, leaving the rest of the desktop framed.
+    compositor.set_window_frame(WindowFrame::default());
+    compositor.set_window_frame_for(info.id, Some(WindowFrame::square()));
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        frame.pixel(221, 191),
+        Some([255, 0, 0, 255]),
+        "square again"
+    );
+    compositor.set_window_frame_for(info.id, None);
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_ne!(
+        frame.pixel(221, 191),
+        Some([255, 0, 0, 255]),
+        "and round again"
+    );
+}
+
+#[test]
+fn the_desktop_moves_scales_and_fades_a_window_without_moving_it() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, rect) = compositor.windows()[0].clone();
+    assert_eq!(rect, (220, 190, 200, 100));
+    let red = Some([255, 0, 0, 255]);
+    let shown = |compositor: &mut Compositor, x, y| {
+        compositor.render().unwrap();
+        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
+    };
+
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            offset: (-200.0, 0.0),
+            ..WindowEffect::default()
+        }),
+    );
+    assert_eq!(shown(&mut compositor, 30, 200), red, "drawn moved left");
+    assert_eq!(shown(&mut compositor, 400, 200), Some(BACKGROUND));
+    assert_eq!(
+        compositor.windows()[0].1,
+        rect,
+        "it still stands where it was"
+    );
+
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            scale: 0.5,
+            ..WindowEffect::default()
+        }),
+    );
+    assert_eq!(shown(&mut compositor, 320, 240), red, "the centre stays");
+    assert_eq!(
+        shown(&mut compositor, 225, 195),
+        Some(BACKGROUND),
+        "corners shrink in"
+    );
+    assert_eq!(shown(&mut compositor, 275, 220), red);
+
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            opacity: 0.5,
+            ..WindowEffect::default()
+        }),
+    );
+    let faded = shown(&mut compositor, 320, 240).unwrap();
+    assert!(
+        faded[0] > 120 && faded[0] < 160,
+        "half red over the background: {faded:?}"
+    );
+
+    compositor.set_window_effect(info.id, None);
+    assert_eq!(shown(&mut compositor, 320, 240), red);
+}
+
+#[test]
+fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, rect) = compositor.windows()[0].clone();
+    assert_eq!(rect, (220, 190, 200, 100));
+    let shown = |compositor: &mut Compositor, x, y| {
+        compositor.render().unwrap();
+        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
+    };
+    assert_eq!(shown(&mut compositor, 320, 240), Some([255, 0, 0, 255]));
+
+    // The frame kept is the one the window drew last.
+    client.show(200, 100, [0, 255, 0, 255]);
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    assert_eq!(shown(&mut compositor, 320, 240), Some([0, 255, 0, 255]));
+
+    client.toplevel.as_ref().unwrap().destroy();
+    client.surface.as_ref().unwrap().destroy();
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.windows().is_empty()
+    });
+
+    // The window left the desktop's windows, and its last frame stays where
+    // it stood, kept as an element the desktop animates away.
+    let closing = compositor.closing_windows();
+    assert_eq!(closing.len(), 1, "one snapshot: {closing:?}");
+    assert_eq!(closing[0].0.id, info.id);
+    assert_eq!(closing[0].1, rect, "where it stood");
+    assert_eq!(
+        shown(&mut compositor, 320, 240),
+        Some([0, 255, 0, 255]),
+        "its last buffer is still drawn"
+    );
+    assert_ne!(
+        shown(&mut compositor, 221, 191).unwrap(),
+        [0, 255, 0, 255],
+        "and still framed"
+    );
+
+    // The close runs like any other window effect.
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            scale: 0.5,
+            ..WindowEffect::default()
+        }),
+    );
+    assert_eq!(
+        shown(&mut compositor, 320, 240),
+        Some([0, 255, 0, 255]),
+        "the centre stays"
+    );
+    assert_ne!(
+        shown(&mut compositor, 221, 191).unwrap(),
+        [0, 255, 0, 255],
+        "it shrinks in"
+    );
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            opacity: 0.0,
+            ..WindowEffect::default()
+        }),
+    );
+    assert_eq!(
+        shown(&mut compositor, 320, 240),
+        Some(BACKGROUND),
+        "faded out, it is gone"
+    );
+
+    // The desktop is done with it.
+    compositor.release_snapshot(info.id);
+    assert!(compositor.closing_windows().is_empty());
+    assert_eq!(shown(&mut compositor, 320, 240), Some(BACKGROUND));
+    assert_eq!(shown(&mut compositor, 220, 190), Some(BACKGROUND));
+}
+
+#[test]
+fn a_closed_window_is_drawn_where_and_as_big_as_it_stood() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).unwrap();
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 1280, 960).with_scale(2.0))
+        .unwrap();
+    let mut client = mapped_client(&mut compositor, "blue", (200, 100), [0, 0, 255, 255]);
+    let (info, _) = compositor.windows()[0].clone();
+    let shown = |compositor: &mut Compositor, x, y| {
+        compositor.render().unwrap();
+        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
+    };
+    assert_eq!(shown(&mut compositor, 640, 480), Some([0, 0, 255, 255]));
+
+    client.toplevel.as_ref().unwrap().destroy();
+    client.surface.as_ref().unwrap().destroy();
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.windows().is_empty()
+    });
+    assert_eq!(compositor.closing_windows().len(), 1);
+    assert_eq!(shown(&mut compositor, 640, 480), Some([0, 0, 255, 255]));
+    assert_eq!(shown(&mut compositor, 460, 400), Some([0, 0, 255, 255]));
+    assert_eq!(shown(&mut compositor, 820, 560), Some([0, 0, 255, 255]));
+    assert_eq!(
+        shown(&mut compositor, 844, 584),
+        Some(BACKGROUND),
+        "it is no bigger than it stood"
+    );
+    compositor.release_snapshot(info.id);
+    assert_eq!(shown(&mut compositor, 640, 480), Some(BACKGROUND));
+}
+
+/// A hosted surface that pictures one window.
+struct Pictures(WindowPicture);
+
+impl SurfaceHost for Pictures {
+    fn layers(&self) -> Vec<HostLayer> {
+        Vec::new()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn window_pictures(&self) -> Vec<WindowPicture> {
+        vec![self.0]
+    }
+}
+
+#[test]
+fn a_hosted_surface_pictures_a_window_live_in_a_rect_of_its_own() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, _) = compositor.windows()[0].clone();
+    compositor.add_host(Box::new(Pictures(WindowPicture {
+        window: info.id,
+        rect: (10.0, 10.0, 100.0, 100.0),
+        opacity: 1.0,
+        clip: None,
+    })));
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    // 200 x 100 fits 100 x 100 as 100 x 50, centred: rows 35..85.
+    assert_eq!(frame.pixel(12, 40), Some([255, 0, 0, 255]));
+    assert_eq!(frame.pixel(108, 80), Some([255, 0, 0, 255]));
+    assert_eq!(frame.pixel(60, 20), Some(BACKGROUND), "above the picture");
+    assert_eq!(frame.pixel(60, 95), Some(BACKGROUND), "below it");
+    assert_eq!(
+        frame.pixel(320, 240),
+        Some([255, 0, 0, 255]),
+        "the window itself"
+    );
+
+    // The picture is live: the window's next buffer shows in it.
+    client.show(200, 100, [0, 255, 0, 255]);
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(frame.pixel(60, 60), Some([0, 255, 0, 255]));
+}
+
+#[test]
+fn a_picture_of_a_window_carries_its_corners_and_its_lift() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, _) = compositor.windows()[0].clone();
+    compositor.add_host(Box::new(Pictures(WindowPicture {
+        window: info.id,
+        rect: (10.0, 10.0, 100.0, 100.0),
+        opacity: 1.0,
+        clip: None,
+    })));
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let pixel = |x, y| frame.pixel(x, y).expect("on the output");
+    // Half size in a 100 x 100 rect: 100 x 50 at (10, 35), corners cut by 7.
+    assert_eq!(pixel(60, 60), [255, 0, 0, 255], "the picture");
+    assert_ne!(pixel(11, 36), [255, 0, 0, 255], "its corner is cut");
+    assert_eq!(pixel(30, 60), [255, 0, 0, 255], "past the cut");
+    assert!(
+        luma(pixel(60, 88)) < luma(BACKGROUND),
+        "and it casts the window's lift below: {:?}",
+        pixel(60, 88)
+    );
+
+    // The picture is a view of its own: the window's effect moves the
+    // window, not the picture.
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            offset: (-200.0, 0.0),
+            ..WindowEffect::default()
+        }),
+    );
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        frame.pixel(60, 60),
+        Some([255, 0, 0, 255]),
+        "the picture stays"
+    );
+    assert_eq!(
+        frame.pixel(320, 240),
+        Some(BACKGROUND),
+        "the window moved away"
+    );
+}
+
+/// A hosted surface of translucent material over (200, 180, 80, 40),
+/// keeping the backdrops it is handed.
+struct Frosted(Rc<RefCell<Vec<Option<BackdropImage>>>>);
+
+impl SurfaceHost for Frosted {
+    fn layers(&self) -> Vec<HostLayer> {
+        Vec::new()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn backdrops(&self) -> Vec<BackdropRequest> {
+        vec![BackdropRequest {
+            rect: (200.0, 180.0, 80.0, 40.0),
+            texels: (40, 20),
+            blur: 3.0,
+        }]
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<BackdropImage>>) {
+        self.0.borrow_mut().extend(images);
+    }
+}
+
+#[test]
+fn translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    // The window covers 220..420 x 190..290: the region's right and lower
+    // part is red, the rest background.
+    let handed = Rc::new(RefCell::new(Vec::new()));
+    compositor.add_host(Box::new(Frosted(Rc::clone(&handed))));
+    compositor.render().unwrap();
+    let first = handed.borrow_mut().pop().flatten().expect("a backdrop");
+    assert_eq!(first.texels, (40, 20));
+    assert_eq!(first.rgba.len(), 40 * 20 * 4);
+    let at = |image: &BackdropImage, x: usize, y: usize| {
+        let i = (y * 40 + x) * 4;
+        [
+            image.rgba[i],
+            image.rgba[i + 1],
+            image.rgba[i + 2],
+            image.rgba[i + 3],
+        ]
+    };
+    let window_texel = at(&first, 35, 15);
+    let background_corner = at(&first, 0, 0);
+    assert!(
+        window_texel[0] > 200 && window_texel[1] < 60,
+        "{window_texel:?}"
+    );
+    assert!(background_corner[0] < 60, "{background_corner:?}");
+    let edge = at(&first, 10, 15);
+    assert!(
+        edge[0] > background_corner[0] + 20 && edge[0] < window_texel[0] - 20,
+        "the window's edge is blurred: {edge:?}"
+    );
+
+    compositor.render().unwrap();
+    assert!(
+        handed.borrow().iter().all(Option::is_none),
+        "nothing below changed, nothing is drawn again"
+    );
+    handed.borrow_mut().clear();
+
+    client.show(200, 100, [0, 0, 255, 255]);
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    compositor.render().unwrap();
+    let again = handed.borrow_mut().pop().flatten().expect("a new backdrop");
+    assert!(at(&again, 35, 15)[2] > 200, "now blue");
+}
+
+#[test]
+fn a_backdrop_follows_the_effects_the_windows_are_drawn_with() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let handed = Rc::new(RefCell::new(Vec::new()));
+    compositor.add_host(Box::new(Frosted(Rc::clone(&handed))));
+    compositor.render().unwrap();
+    handed.borrow_mut().clear();
+
+    // The desktop slides the window 200 px left: it now covers the left of
+    // the hosted surface's region, where nothing stood before.
+    let (info, _) = compositor.windows()[0].clone();
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            offset: (-200.0, 0.0),
+            ..WindowEffect::default()
+        }),
+    );
+    compositor.render().unwrap();
+    let moved = handed
+        .borrow_mut()
+        .pop()
+        .flatten()
+        .expect("a backdrop drawn again");
+    let at = |x: usize, y: usize| {
+        let i = (y * 40 + x) * 4;
+        [moved.rgba[i], moved.rgba[i + 1], moved.rgba[i + 2]]
+    };
+    let inside = at(2, 10);
+    let outside = at(35, 10);
+    assert!(
+        inside[0] > 200 && inside[1] < 60,
+        "the moved window lies below the left of it: {inside:?}"
+    );
+    assert!(outside[0] < 60, "and it left the right of it: {outside:?}");
+}
 
 #[test]
 fn a_window_that_asks_to_be_maximized_covers_its_output_and_comes_back() {
@@ -1217,4 +2189,112 @@ fn a_hosted_apps_copy_is_offered_under_every_text_name_and_read_back() {
             .is_err(),
         "nothing owns the primary selection"
     );
+}
+
+/// Each output and the monitor on it.
+type Told = Vec<(Rectangle<i32, Logical>, String)>;
+
+/// A policy that keeps the monitors it is told of.
+struct Monitors(Rc<RefCell<Told>>);
+
+impl WindowPolicy for Monitors {
+    fn initial_size(
+        &mut self,
+        _window: &WindowInfo,
+        _outputs: &[Rectangle<i32, Logical>],
+    ) -> Option<(i32, i32)> {
+        None
+    }
+
+    fn place(
+        &mut self,
+        _window: &WindowInfo,
+        _size: (i32, i32),
+        _outputs: &[Rectangle<i32, Logical>],
+    ) -> Point<i32, Logical> {
+        Point::from((0, 0))
+    }
+
+    fn monitors(&mut self, monitors: &[(Rectangle<i32, Logical>, String)]) {
+        *self.0.borrow_mut() = monitors.to_vec();
+    }
+}
+
+#[test]
+fn the_policy_knows_each_output_by_the_monitor_on_it() {
+    let told = Rc::new(RefCell::new(Vec::new()));
+    let mut compositor = Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).unwrap();
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .unwrap();
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-2", 320, 240).at(640, 0))
+        .unwrap();
+    compositor.render().unwrap();
+    // Without an EDID a monitor is known by its connector.
+    let names: Vec<String> = told.borrow().iter().map(|(_, name)| name.clone()).collect();
+    assert_eq!(names, ["HEADLESS-1", "HEADLESS-2"]);
+    assert_eq!(
+        told.borrow()[1].0,
+        Rectangle::new((640, 0).into(), (320, 240).into())
+    );
+    let outputs = compositor.outputs();
+    assert_eq!(outputs[1].monitor, "HEADLESS-2");
+    assert_eq!(outputs[1].label, "HEADLESS-2");
+}
+
+/// Click the left button at `(x, y)`.
+fn click(compositor: &mut Compositor, x: f64, y: f64) {
+    compositor
+        .input(InputEvent::PointerMotion { x, y })
+        .unwrap();
+    for pressed in [true, false] {
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed,
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_modal_dialog_keeps_the_keyboard_from_the_window_it_belongs_to() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "editor", (400, 300), [255, 0, 0, 255]);
+    let parent = client.toplevel.take().unwrap();
+    let parent_surface = client.surface.take().unwrap();
+    client.seen.configured = false;
+    client.open_window("save");
+    let dialog = client.toplevel.clone().unwrap();
+    dialog.set_parent(Some(&parent));
+    let qh = client.queue.handle();
+    let hint = client
+        .seen
+        .wm_dialog
+        .as_ref()
+        .expect("xdg_wm_dialog_v1")
+        .get_xdg_dialog(&dialog, &qh, ());
+    hint.set_modal();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.configured
+    });
+    client.show(100, 60, [0, 0, 255, 255]);
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.windows().len() == 2
+    });
+    let focused =
+        |compositor: &Compositor| compositor.focused_window().and_then(|info| info.app_id);
+    assert_eq!(focused(&compositor).as_deref(), Some("save"));
+
+    // A click on the window it belongs to leaves the keyboard with it.
+    click(&mut compositor, 130.0, 100.0);
+    assert_eq!(focused(&compositor).as_deref(), Some("save"));
+
+    // Not modal any more, the window takes the keyboard back.
+    hint.unset_modal();
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    click(&mut compositor, 130.0, 100.0);
+    assert_eq!(focused(&compositor).as_deref(), Some("editor"));
+    drop(parent_surface);
 }

@@ -103,6 +103,11 @@ pub fn application_dirs() -> Vec<PathBuf> {
         push(home.join(".local/share/flatpak/exports/share/applications"));
     }
     push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
+    // What apps installed through the portal frontend's DynamicLauncher
+    // (web apps, shortcuts into an app), after the person confirmed each.
+    if let Some(home) = tilo_paths::xdg::data_home() {
+        push(home.join("xdg-desktop-portal/applications"));
+    }
     dirs
 }
 

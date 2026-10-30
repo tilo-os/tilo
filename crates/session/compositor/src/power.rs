@@ -110,6 +110,37 @@ impl State {
             .collect()
     }
 
+    /// Every known output: its connector, whether it is on and, while it
+    /// is, its logical rectangle.
+    pub(crate) fn output_infos(&self) -> Vec<crate::output::OutputInfo> {
+        self.space
+            .outputs()
+            .map(|output| crate::output::OutputInfo {
+                name: output.name(),
+                monitor: crate::output::monitor_of(output).0,
+                label: crate::output::monitor_of(output).1,
+                enabled: true,
+                rect: self
+                    .space
+                    .output_geometry(output)
+                    .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)),
+                description: Some(output.description()),
+            })
+            .chain(
+                self.disabled_outputs
+                    .iter()
+                    .map(|output| crate::output::OutputInfo {
+                        name: output.name(),
+                        monitor: crate::output::monitor_of(output).0,
+                        label: crate::output::monitor_of(output).1,
+                        enabled: false,
+                        rect: None,
+                        description: Some(output.description()),
+                    }),
+            )
+            .collect()
+    }
+
     /// Turn `name` off: clients no longer see it and windows leave it.
     pub(crate) fn disable_output(&mut self, name: &str) {
         let Some(output) = self

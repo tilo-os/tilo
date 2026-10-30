@@ -13,7 +13,7 @@ use smithay::backend::input::{
     TabletToolTipEvent, TabletToolTipState, TouchEvent, TouchSlot,
 };
 use smithay::utils::{Logical, Size};
-use smithay::wayland::tablet_manager::TabletDescriptor;
+use smithay::wayland::tablet_manager::{TabletDescriptor, TabletPadDescriptor};
 
 /// The pointer button a pen's tip presses for apps that know no tablets.
 pub const BTN_LEFT: u32 = 0x110;
@@ -45,10 +45,61 @@ pub enum InputEvent {
     TouchCancel,
     /// A drawing tablet's tool (pen, eraser, ...) did something.
     Tablet(TabletEvent),
+    /// A drawing tablet's pad (its buttons, rings and strips) did something.
+    TabletPad(TabletPadEvent),
     /// A touchpad gesture.
     Gesture(GestureEvent),
     /// A switch (laptop lid, tablet mode) changed state.
     Switch { switch: Switch, on: bool },
+}
+
+/// Input on its way to the desktop, as a capture sees it: what an input
+/// capture decides on before the desktop does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ObservedInput {
+    /// The pointer at (`x`, `y`) in the layout, having moved by
+    /// (`dx`, `dy`).
+    PointerMotion { x: f64, y: f64, dx: f64, dy: f64 },
+    /// A pointer button (evdev code) changed state.
+    PointerButton { button: u32, pressed: bool },
+    /// Scrolling, in logical pixels.
+    Scroll { dx: f64, dy: f64 },
+    /// A key (evdev code) changed state.
+    Key { keycode: u32, pressed: bool },
+}
+
+impl InputEvent {
+    /// `event` as a capture sees it, the pointer having been at `pointer`;
+    /// `None` for what captures never see.
+    #[must_use]
+    pub(crate) fn observed(self, pointer: (f64, f64)) -> Option<ObservedInput> {
+        Some(match self {
+            Self::PointerMotion { x, y } => ObservedInput::PointerMotion {
+                x,
+                y,
+                dx: x - pointer.0,
+                dy: y - pointer.1,
+            },
+            Self::PointerMotionRelative { dx, dy } => ObservedInput::PointerMotion {
+                x: pointer.0 + dx,
+                y: pointer.1 + dy,
+                dx,
+                dy,
+            },
+            Self::PointerButton { button, pressed } => {
+                ObservedInput::PointerButton { button, pressed }
+            }
+            Self::PointerAxis {
+                horizontal,
+                vertical,
+            } => ObservedInput::Scroll {
+                dx: horizontal,
+                dy: vertical,
+            },
+            Self::Key { keycode, pressed } => ObservedInput::Key { keycode, pressed },
+            _ => return None,
+        })
+    }
 }
 
 /// A switch the compositor hears about.
@@ -158,6 +209,35 @@ pub struct TabletEvent {
     /// The pointer button the tip presses for apps that see a pointer;
     /// `None` clicks nothing.
     pub tip_button: Option<u32>,
+}
+
+/// What a tablet pad did.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PadAction {
+    /// The pad was plugged in.
+    Added,
+    /// The pad was unplugged.
+    Removed,
+    /// A button (numbered from zero) changed state.
+    Button { button: u32, pressed: bool },
+    /// A finger on a ring, at `degrees` (clockwise from the top), or lifted
+    /// (`None`).
+    Ring { ring: u32, degrees: Option<f64> },
+    /// A finger on a strip, at `position` (`0.0` top or left to `1.0`), or
+    /// lifted.
+    Strip { strip: u32, position: Option<f64> },
+    /// A group of the pad's controls switched to another mode.
+    Mode { group: u32, mode: u32 },
+}
+
+/// One tablet pad event.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabletPadEvent {
+    /// The pad, with its buttons, rings and strips in groups.
+    pub pad: TabletPadDescriptor,
+    /// The tablet the pad belongs to.
+    pub tablet: TabletDescriptor,
+    pub action: PadAction,
 }
 
 impl InputEvent {
@@ -342,7 +422,7 @@ impl TabletEvent {
 
 /// A touch slot as a plain number: single-touch devices have no slot
 /// concept (libinput reports none), all one finger, so slot 0 is honest.
-fn touch_slot(slot: TouchSlot) -> u32 {
+pub(crate) fn touch_slot(slot: TouchSlot) -> u32 {
     u32::try_from(i32::from(slot)).unwrap_or(0)
 }
 
@@ -370,6 +450,8 @@ pub struct HostKey {
     pub keycode: u32,
     /// Pressed or released.
     pub pressed: bool,
+    /// A press repeated while the key is held, not a new one.
+    pub repeat: bool,
     /// The keysym with the active modifiers and layout applied.
     pub keysym: u32,
     /// The keysym of the key's first level (no Shift), for shortcuts.

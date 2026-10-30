@@ -10,20 +10,41 @@
 //! the session bus as MPRIS describes them, and the answers to the commands
 //! the compositor sends those players. The helper stops when its standard
 //! input closes, so it never outlives the compositor that started it.
+//!
+//! Started with `--serve`, it is the session's audio service instead: it
+//! serves the [`sound`] resource over JSON lines ([`tilo_service::lines`])
+//! on the same pipes, reading the graph again whenever a device arrives or
+//! leaves, and the [`media`] resource: the players on the session bus and
+//! their controls, read again whenever one signals a change.
 
+pub mod client;
 pub mod handoff;
+pub mod media;
 #[cfg(feature = "service")]
 pub mod mpris;
 #[cfg(feature = "service")]
 pub mod policy;
+pub mod sound;
 
 use serde::{Deserialize, Serialize};
+
+/// The specs the readings a `tilo-audio --serve` publishes stand for: the
+/// session's side of it ([`tilo_service::lines::Process`]).
+#[must_use]
+pub fn publish(
+    readings: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Vec<tilo_actions::ResourceSpec> {
+    let mut specs = sound::publish(readings);
+    specs.extend(media::publish(readings));
+    specs
+}
 
 /// The most players the helper describes; a client claiming thousands of
 /// MPRIS names must not grow the compositor's copy without bound.
 pub const MAX_PLAYERS: usize = 16;
 
-/// An audio device arrived or left.
+/// An audio device arrived or left: the one thing the helper tells the
+/// compositor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceEvent {
     Connected,

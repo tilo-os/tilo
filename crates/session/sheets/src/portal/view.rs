@@ -354,6 +354,14 @@ pub(super) fn field_id(field: Field) -> String {
 /// A secret prompt: the toolkit's own, as a dialog, its fields kept in the
 /// seat's buffers so nothing typed is lost when the shell says more.
 fn secret(dialog: &Dialog, prompt: &Prompt, parts: &Parts) -> Element {
+    let mut built = secret_prompt(dialog, prompt, &parts.seat);
+    Widget::set_focus(&mut built, true);
+    Box::new(built.into_dialog().with_test_id(DIALOG_ID))
+}
+
+/// The toolkit's secret prompt for `prompt`, holding what the seat's
+/// buffers hold.
+pub(super) fn secret_prompt(dialog: &Dialog, prompt: &Prompt, seat: &PortalSeat) -> SecretPrompt {
     let built = match prompt.kind {
         PromptKind::Fields => SecretPrompt::with_fields(
             prompt
@@ -394,7 +402,7 @@ fn secret(dialog: &Dialog, prompt: &Prompt, parts: &Parts) -> Element {
         .with_resource(prompt.resource.clone())
         .with_primary_label(prompt.primary_label.clone())
         .with_cancel_label(dialog.cancel_label.clone())
-        .with_field_buffers(parts.seat.secrets())
+        .with_field_buffers(seat.secrets())
         .with_busy(prompt.busy.clone());
     if let Some(icon) = prompt.icon {
         built = built.with_icon(icon);
@@ -403,11 +411,10 @@ fn secret(dialog: &Dialog, prompt: &Prompt, parts: &Parts) -> Element {
         built = built.with_choices(label.clone(), choices.clone(), dialog.selected);
     }
     if let Some((label, on)) = &prompt.option {
-        built = built.with_option(label.clone(), parts.seat.option().unwrap_or(*on));
+        built = built.with_option(label.clone(), seat.option().unwrap_or(*on));
     }
     if let Some((at, error)) = &prompt.error {
         built = built.with_error_at(*at, Some(error.clone()));
     }
-    Widget::set_focus(&mut built, true);
-    Box::new(built.into_dialog().with_test_id(DIALOG_ID))
+    built
 }

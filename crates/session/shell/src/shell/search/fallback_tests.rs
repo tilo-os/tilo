@@ -12,7 +12,7 @@ use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::ActionArgs;
 use crate::shell::search::providers::ask_agent::PROVIDER_ID as ASK;
-use crate::shell::search::providers::web::PROVIDER_ID as WEB;
+use crate::shell::search::providers::desktop_sources::WEB_ID as WEB;
 use crate::shell::search::providers::{AskAgentProvider, WebProvider};
 use crate::shell::search::{
     QueryArgs, ResourceKind, SearchContext, SearchProvider, SearchRegistry, SearchResult,
@@ -143,7 +143,7 @@ fn ask_row(query: &str) -> String {
 }
 
 fn web_row(query: &str) -> String {
-    t_args("search-web-for", &[("query", query.into())])
+    format!("Search the web for {query}")
 }
 
 #[test]

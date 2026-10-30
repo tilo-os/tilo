@@ -144,6 +144,8 @@ CONTROL_CALLBACKS = frozenset(
 # widgets and the framework view is in one of the two sets, so a new one is
 # classified when it is added.
 NOT_CONTROL_CALLBACKS = {
+    "on_asked": "wakes the host's loop when an invocation arrives: it runs the app's own "
+    "frame, and activates no control",
     "on_effect": "activates a published native effect action",
     "on_own_device_effect": "activates a published native effect action",
     "on_view": "activates a published native view action",

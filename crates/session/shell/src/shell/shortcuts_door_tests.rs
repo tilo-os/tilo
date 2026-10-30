@@ -250,6 +250,7 @@ fn exported(
     result: ResultSpec,
 ) -> ExportedAction {
     ExportedAction {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         resource: INBOX.into(),
         action: action.into(),
@@ -362,6 +363,7 @@ impl FixtureApp {
                     ResultSpec::None,
                 ),
                 ExportedAction {
+                    state: tilo_actions::ActionState::default(),
                     contract: ActionContract {
                         confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                         ..ActionContract::default()
@@ -369,6 +371,7 @@ impl FixtureApp {
                     ..exported("archive", "Archive inbox", &[], ResultSpec::None)
                 },
                 ExportedAction {
+                    state: tilo_actions::ActionState::default(),
                     resource: OUTBOX.into(),
                     resource_kind: "fixture.outbox".into(),
                     resource_label: "Outbox".into(),

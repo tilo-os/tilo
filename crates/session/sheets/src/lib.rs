@@ -10,6 +10,8 @@
 pub mod directory;
 pub mod display_confirm;
 pub mod displays;
+pub mod file_picker;
+pub mod lock;
 pub mod portal;
 pub mod power;
 mod presentation;
@@ -19,3 +21,20 @@ pub mod workspace_settings;
 pub use presentation::{Phase, Presentation, Seat};
 
 ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
+
+/// The sheet's word for `key`, in the person's language: for what the
+/// session composes into a sheet it shows here.
+#[must_use]
+pub fn word(key: &str) -> String {
+    t(key)
+}
+
+/// The same, with `args` filled in.
+#[must_use]
+pub fn words(key: &str, args: &[(&str, &str)]) -> String {
+    let args: Vec<(&str, ui::i18n::ArgValue)> = args
+        .iter()
+        .map(|(name, value)| (*name, ui::i18n::ArgValue::from(*value)))
+        .collect();
+    t_args(key, &args)
+}

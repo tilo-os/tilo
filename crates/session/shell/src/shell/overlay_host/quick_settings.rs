@@ -811,6 +811,14 @@ impl ShellOverlayHost {
                 self.open_power_menu();
                 self.close_quick_settings();
             }
+            // This shell feeds the panel no player: its own card beside
+            // the panel steers what plays.
+            QsEffect::PlayPause
+            | QsEffect::PreviousTrack
+            | QsEffect::NextTrack
+            | QsEffect::Seek { .. }
+            | QsEffect::ChoosePlayer { .. }
+            | QsEffect::ChooseOutput { .. } => {}
         }
         chrome.borrow_mut().bump();
     }

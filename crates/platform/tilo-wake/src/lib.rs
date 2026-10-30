@@ -169,6 +169,16 @@ impl WakeScope {
         self.route.open.load(Ordering::Acquire) && self.route.destination.lock_recover().pending
     }
 
+    /// Whether the wake waiting for its owner asks for a model pass, read
+    /// without taking it. An owner that drains wakes mid-pass asks this so
+    /// the wake stays pending: the host prepares the pass that runs it.
+    pub fn sync_pending(&self) -> Option<bool> {
+        if !self.route.open.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(self.route.destination.lock_recover().pending_sync)
+    }
+
     /// Receiver-side validation remains mandatory after sender-side checks.
     pub fn accepts(&self, event: &WakeEvent) -> bool {
         self.route.open.load(Ordering::Acquire)

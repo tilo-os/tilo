@@ -12,7 +12,7 @@ use smithay::input::pointer::PointerHandle;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::content_type::ContentTypeState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
@@ -32,6 +32,7 @@ use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::primary_selection::{PrimarySelectionHandler, PrimarySelectionState};
 use smithay::wayland::shell::xdg::ToplevelSurface;
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
+use smithay::wayland::shell::xdg::dialog::{XdgDialogHandler, XdgDialogState};
 use smithay::wayland::tablet_manager::{TabletManagerState, TabletSeatHandler};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xdg_activation::{
@@ -64,6 +65,7 @@ pub(crate) struct Protocols {
     _tablet: TabletManagerState,
     _idle_inhibit: IdleInhibitManagerState,
     _content_type: ContentTypeState,
+    _dialog: XdgDialogState,
 }
 
 impl Protocols {
@@ -87,6 +89,7 @@ impl Protocols {
             _tablet: TabletManagerState::new::<State>(display),
             _idle_inhibit: IdleInhibitManagerState::new::<State>(display),
             _content_type: ContentTypeState::new::<State>(display),
+            _dialog: XdgDialogState::new::<State>(display),
         }
     }
 }
@@ -200,6 +203,22 @@ impl XdgDecorationHandler for State {
     }
 }
 
+impl Protocols {
+    /// A token for an activation the session itself caused (the person
+    /// chose a notification, so its app should come to the front): handing
+    /// it to that app lets it raise its window the way a click on a fresh
+    /// window would, without the app having to be linked to an input event
+    /// it never saw.
+    pub(crate) fn external_activation_token(&mut self) -> String {
+        let data = XdgActivationTokenData {
+            timestamp: std::time::Instant::now(),
+            ..XdgActivationTokenData::default()
+        };
+        let (token, _) = self.activation.create_external_token(Some(data));
+        token.as_str().to_owned()
+    }
+}
+
 impl XdgActivationHandler for State {
     fn activation_state(&mut self) -> &mut XdgActivationState {
         &mut self.protocols.activation
@@ -211,10 +230,9 @@ impl XdgActivationHandler for State {
         token_data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
-        if token_data.timestamp.elapsed() < ACTIVATION_TIMEOUT
-            && let Some(window) = self.window_of(&surface)
-        {
-            self.focus_window(&window, SERIAL_COUNTER.next_serial());
+        if let Some(window) = self.window_of(&surface) {
+            let fresh = token_data.timestamp.elapsed() < ACTIVATION_TIMEOUT;
+            self.activation_requested(&window, fresh);
         }
         self.protocols.activation.remove_token(&token);
     }
@@ -266,6 +284,33 @@ smithay::delegate_viewporter!(State);
 smithay::delegate_fractional_scale!(State);
 smithay::delegate_presentation!(State);
 smithay::delegate_xdg_decoration!(State);
+
+/// A dialog a client marks modal keeps the keyboard from the window it
+/// belongs to: focusing that window focuses the dialog instead.
+impl XdgDialogHandler for State {
+    fn modal_changed(&mut self, toplevel: ToplevelSurface, is_modal: bool) {
+        let Some(parent) = toplevel.parent() else {
+            return;
+        };
+        let focused = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        if !is_modal || focused.as_ref() != Some(&parent) {
+            return;
+        }
+        let window = self
+            .space
+            .elements()
+            .find(|window| window.toplevel().is_some_and(|own| own == &toplevel))
+            .cloned();
+        if let Some(window) = window {
+            self.focus_window(&window, smithay::utils::SERIAL_COUNTER.next_serial());
+        }
+    }
+}
+
+smithay::delegate_xdg_dialog!(State);
 smithay::delegate_xdg_activation!(State);
 smithay::delegate_primary_selection!(State);
 smithay::delegate_cursor_shape!(State);
@@ -285,6 +330,18 @@ smithay::reexports::wayland_server::delegate_dispatch!(State: [
 ] => TabletManagerState);
 smithay::reexports::wayland_server::delegate_dispatch!(State: [
     smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_v2::ZwpTabletV2: smithay::wayland::tablet_manager::TabletUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_v2::ZwpTabletPadV2: smithay::wayland::tablet_manager::TabletPadUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2: smithay::wayland::tablet_manager::TabletPadUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2: smithay::wayland::tablet_manager::TabletPadUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2: smithay::wayland::tablet_manager::TabletPadUserData
 ] => TabletManagerState);
 smithay::delegate_idle_inhibit!(State);
 smithay::delegate_keyboard_shortcuts_inhibit!(State);

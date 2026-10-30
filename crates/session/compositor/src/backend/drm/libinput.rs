@@ -5,6 +5,11 @@
 //! added and again whenever the configuration changes. Key edges pass the
 //! accessibility filters ([`AccessKeys`]); tablet tools are mapped by their
 //! tablet's own settings ([`super::tablet`]).
+//!
+//! Tablet pads go to the client of the focused surface when it takes them
+//! ([`State::pad_input`]). A pad button the person mapped to a shortcut
+//! presses that shortcut wherever the focus is, as GNOME does, and the
+//! client never sees it; a ring or strip no client takes scrolls.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -20,6 +25,9 @@ use smithay::reexports::input::{
     ScrollMethod as LibinputScrollMethod, SendEventsMode,
 };
 use smithay::utils::{Logical, Size};
+use smithay::wayland::tablet_manager::{
+    TabletDescriptor, TabletPadDescriptor, TabletPadGroupDescriptor,
+};
 
 use super::access_keys::AccessKeys;
 use super::input_config::{
@@ -31,7 +39,7 @@ use super::tablet::{
     eraser_route, map_tablet_position, pen_target, shape_normalised, stylus_button,
 };
 use crate::LoopData;
-use crate::input::{InputEvent, TabletEvent, TabletPhase};
+use crate::input::{InputEvent, PadAction, TabletEvent, TabletPadEvent, TabletPhase};
 use crate::state::State;
 
 /// An output as a tablet maps onto it: connector, position, logical size.
@@ -49,6 +57,17 @@ pub(super) struct Input {
     glide: Option<RegistrationToken>,
     /// The keymap shortcut chords are typed on.
     keymap: Option<xkb::Keymap>,
+    /// Pad rings and strips turned into scroll steps.
+    dials: super::input_source::DialSteps,
+    pads: Vec<Pad>,
+}
+
+/// A tablet pad as clients are told about it, and the mode its groups are
+/// in.
+struct Pad {
+    device: Device,
+    event: TabletPadEvent,
+    modes: Vec<u32>,
 }
 
 impl Input {
@@ -61,6 +80,8 @@ impl Input {
             access,
             glide: None,
             keymap: None,
+            dials: super::input_source::DialSteps::default(),
+            pads: Vec::new(),
         }
     }
 
@@ -69,15 +90,181 @@ impl Input {
         for event in self.access.configure(config.bounce_keys, config.mouse_keys) {
             state.handle_input(event);
         }
-        let (delay, rate) = config.key_repeat_params();
-        if let Some(keyboard) = state.seat.get_keyboard() {
-            keyboard.change_repeat_info(
-                i32::try_from(rate).unwrap_or(i32::MAX),
-                i32::try_from(delay.as_millis()).unwrap_or(i32::MAX),
-            );
-        }
         self.config = config;
         input_config::reconfigure_all(&self.config, &mut self.devices);
+    }
+}
+
+/// How far one ring or strip step scrolls, in logical pixels (a wheel
+/// notch).
+const DIAL_SCROLL: f64 = 15.0;
+
+/// Route one tablet pad event. `mode` is the mode group of the control
+/// and its mode, as libinput reports it with every event.
+pub(super) fn dispatch_pad(
+    input: &Rc<RefCell<Input>>,
+    device: &Device,
+    action: PadAction,
+    mode: (u32, u32),
+    state: &mut State,
+) {
+    let (switched, event, chord, steps) = {
+        let mut this = input.borrow_mut();
+        let this = &mut *this;
+        let Some(pad) = this.pads.iter_mut().find(|pad| &pad.device == device) else {
+            return;
+        };
+        let (group, mode) = mode;
+        let switched = match usize::try_from(group)
+            .ok()
+            .and_then(|index| pad.modes.get_mut(index))
+        {
+            Some(current) if *current != mode => {
+                *current = mode;
+                Some(PadAction::Mode { group, mode })
+            }
+            _ => None,
+        }
+        .map(|switch| pad.event(switch));
+        let event = pad.event(action);
+        let chord = match action {
+            PadAction::Button { button, pressed } => this.pad_chord(device, button).map(|chord| {
+                if pressed {
+                    this.chord(&chord)
+                } else {
+                    Vec::new()
+                }
+            }),
+            _ => None,
+        };
+        // Followed even while a client takes the control, so a scroll
+        // starts afresh where it is.
+        let steps = this.dials.steps(&action);
+        let scroll = f64::from(steps) * DIAL_SCROLL * this.config.scroll_speed;
+        (switched, event, chord, (steps != 0).then_some(scroll))
+    };
+    if let Some(switched) = switched {
+        state.pad_input(&switched);
+    }
+    if let Some(chord) = chord {
+        // The press typed the shortcut; its release goes nowhere.
+        for key in chord {
+            state.handle_input(key);
+        }
+        return;
+    }
+    if state.pad_input(&event) {
+        return;
+    }
+    if let Some(vertical) = steps {
+        state.handle_input(InputEvent::PointerAxis {
+            horizontal: 0.0,
+            vertical,
+        });
+    }
+}
+
+impl Pad {
+    fn event(&self, action: PadAction) -> TabletPadEvent {
+        TabletPadEvent {
+            action,
+            ..self.event.clone()
+        }
+    }
+}
+
+/// A pad's buttons, rings and strips in libinput's mode groups, and the
+/// mode each group is in.
+fn pad_layout(device: &Device) -> (TabletPadDescriptor, Vec<u32>) {
+    let count = |n: i32| u32::try_from(n).unwrap_or(0);
+    let buttons = count(device.tablet_pad_number_of_buttons());
+    let rings = count(device.tablet_pad_number_of_rings());
+    let strips = count(device.tablet_pad_number_of_strips());
+    let mut modes = Vec::new();
+    let groups = (0..count(device.tablet_pad_number_of_mode_groups()))
+        .filter_map(|index| device.tablet_pad_mode_group(index))
+        .map(|group| {
+            modes.push(group.mode());
+            TabletPadGroupDescriptor {
+                buttons: (0..buttons).filter(|&b| group.has_button(b)).collect(),
+                rings: (0..rings).filter(|&r| group.has_ring(r)).collect(),
+                strips: (0..strips).filter(|&s| group.has_strip(s)).collect(),
+                modes: group.number_of_modes(),
+            }
+        })
+        .collect();
+    let identity = TabletDescriptor::from(device);
+    let pad = TabletPadDescriptor {
+        name: identity.name,
+        syspath: identity.syspath,
+        buttons,
+        groups,
+    };
+    (pad, modes)
+}
+
+impl Input {
+    /// A new pad: clients are told about it, attached to the pen tablet of
+    /// its device group (the pad itself when that tablet is not known).
+    fn add_pad(&mut self, device: &Device) -> Vec<InputEvent> {
+        let (pad, modes) = pad_layout(device);
+        let group = device.device_group();
+        let tablet = self
+            .devices
+            .iter()
+            .find(|known| {
+                known.has_capability(DeviceCapability::TabletTool) && known.device_group() == group
+            })
+            .map_or_else(|| TabletDescriptor::from(device), TabletDescriptor::from);
+        let pad = Pad {
+            device: device.clone(),
+            event: TabletPadEvent {
+                pad,
+                tablet,
+                action: PadAction::Added,
+            },
+            modes,
+        };
+        let mut events = vec![InputEvent::TabletPad(pad.event.clone())];
+        events.extend(
+            (0_u32..)
+                .zip(&pad.modes)
+                .filter(|(_, mode)| **mode != 0)
+                .map(|(group, &mode)| {
+                    InputEvent::TabletPad(pad.event(PadAction::Mode { group, mode }))
+                }),
+        );
+        self.pads.push(pad);
+        events
+    }
+
+    /// A pad unplugged: clients are told.
+    fn remove_pad(&mut self, device: &Device) -> Vec<InputEvent> {
+        let Some(index) = self.pads.iter().position(|pad| &pad.device == device) else {
+            return Vec::new();
+        };
+        let pad = self.pads.swap_remove(index);
+        vec![InputEvent::TabletPad(pad.event(PadAction::Removed))]
+    }
+
+    /// The chord a pad button is mapped to in its tablet's settings.
+    fn pad_chord(&self, device: &Device, button: u32) -> Option<KeyChord> {
+        let key = device_key(device.id_vendor(), device.id_product(), device.name());
+        // A pad is its own libinput device; its tablet's settings are found
+        // by the pad's name, else by the tablet's model.
+        let model = format!("{:04x}:{:04x}:", device.id_vendor(), device.id_product());
+        self.config
+            .tablets
+            .get(&key)
+            .or_else(|| {
+                self.config
+                    .tablets
+                    .iter()
+                    .find(|(known, _)| known.starts_with(&model))
+                    .map(|(_, config)| config)
+            })
+            .and_then(|config| super::tablet::pad_button(config, button))
+            .cloned()
     }
 }
 
@@ -94,12 +281,17 @@ pub(super) fn dispatch(
         match event {
             DeviceEvent::DeviceAdded { mut device } => {
                 input_config::configure(&this.config, &mut device);
+                let pad = if device.has_capability(DeviceCapability::TabletPad) {
+                    this.add_pad(&device)
+                } else {
+                    Vec::new()
+                };
                 this.devices.push(device);
-                return;
+                pad
             }
             DeviceEvent::DeviceRemoved { device } => {
                 this.devices.retain(|known| known != &device);
-                return;
+                this.remove_pad(&device)
             }
             DeviceEvent::TabletToolAxis { event } => {
                 this.tablet(&event, TabletPhase::Motion, state)
@@ -128,6 +320,22 @@ pub(super) fn dispatch(
                 };
                 this.tablet(&event, phase, state)
             }
+            DeviceEvent::TouchDown { event } => {
+                let (x, y) = touch_position(&event, state);
+                vec![InputEvent::TouchDown {
+                    slot: touch_slot(&event),
+                    x,
+                    y,
+                }]
+            }
+            DeviceEvent::TouchMotion { event } => {
+                let (x, y) = touch_position(&event, state);
+                vec![InputEvent::TouchMotion {
+                    slot: touch_slot(&event),
+                    x,
+                    y,
+                }]
+            }
             other => InputEvent::from_device(other, extent)
                 .map(|event| match event {
                     // libinput has no scroll speed; the compositor scales.
@@ -147,6 +355,58 @@ pub(super) fn dispatch(
         state.handle_input(event);
     }
     arm_glide(input, handle);
+}
+
+/// A touch's place in the logical layout: on the touchscreen's own output
+/// (see [`super::touch_map`]).
+fn touch_position<E>(event: &E, state: &State) -> (f64, f64)
+where
+    E: smithay::backend::input::AbsolutePositionEvent<LibinputInputBackend>,
+{
+    // Normalised to the panel, at a resolution far finer than any output.
+    const SCALE: i32 = 1 << 16;
+    use super::touch_map::{TouchOutput, calibrate_touch_position, touch_output_for_name};
+    let outputs: Vec<(
+        String,
+        smithay::utils::Rectangle<i32, Logical>,
+        smithay::utils::Transform,
+    )> = state
+        .space
+        .outputs()
+        .filter_map(|output| {
+            let geometry = state.space.output_geometry(output)?;
+            Some((output.name(), geometry, output.current_transform()))
+        })
+        .collect();
+    let device = event.device();
+    let named = device.output_name();
+    let Some(output) = touch_output_for_name(
+        outputs
+            .iter()
+            .map(|(name, geometry, transform)| TouchOutput {
+                connector_name: name.rsplit('/').next().unwrap_or(name),
+                key: name,
+                position: (geometry.loc.x, geometry.loc.y),
+                size: (geometry.size.w, geometry.size.h),
+                transform: *transform,
+            }),
+        named,
+    ) else {
+        return (0.0, 0.0);
+    };
+    calibrate_touch_position(
+        output,
+        event.x_transformed(SCALE) / f64::from(SCALE),
+        event.y_transformed(SCALE) / f64::from(SCALE),
+    )
+}
+
+/// A touch's slot number.
+fn touch_slot<E>(event: &E) -> u32
+where
+    E: smithay::backend::input::TouchEvent<LibinputInputBackend>,
+{
+    crate::input::touch_slot(event.slot())
 }
 
 /// Keep the mouse-keys glide ticking while a direction key is held.

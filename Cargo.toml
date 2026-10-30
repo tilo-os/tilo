@@ -306,6 +306,7 @@ members = [
     "crates/platform/tilo-input-context",
     "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
+    "crates/platform/tilo-durable-writer",
     "crates/platform/tilolang-tilo",
     "crates/platform/tilolang-host",
     "crates/platform/tilolang-mail",
@@ -401,6 +402,7 @@ members = [
     "crates/session/color-pipeline",
     "crates/session/compositor",
     "crates/session/surface-host",
+    "crates/session/session",
     "crates/session/console-control",
     "crates/session/onboarding-walk",
     "crates/session/control-cli",
@@ -417,17 +419,24 @@ members = [
     "crates/session/network-actor",
     "crates/session/network-secret-agent",
     "crates/session/notification-banners",
+    "crates/session/notifications-service",
     "crates/session/onboarding",
     "crates/session/onboarding-host",
     "crates/session/output-passes",
     "crates/session/overview",
     "crates/session/polkit-agent",
+    "crates/session/portal",
     "crates/session/quick-settings",
     "crates/session/session-record",
     "crates/session/sheets",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
     "crates/session/audio-service",
+    "crates/session/bluetooth-agent",
+    "crates/session/service",
+    "crates/session/connectivity-service",
+    "crates/session/system-service",
+    "crates/session/settings-service",
     "crates/session/messaging-service",
     "crates/session/device-fabric",
     "crates/session/nearby-service",
@@ -1358,6 +1367,9 @@ rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 # compositor alive and treat the vanished object as a disconnected client.
 # See vendor/wayland-backend/TILO-PATCH.md.
 wayland-backend = { path = "vendor/wayland-backend" }
+# Tablet pads (zwp_tablet_pad_v2) for clients, which smithay 0.7 lacks.
+# See vendor/smithay/TILO-PATCH.md.
+smithay = { path = "vendor/smithay" }
 # The HTML5 entity table as offsets into two string literals instead of 2125
 # pairs of pointers the loader relocates in every app process (it is in the
 # shared runtime through the Markdown codec). See

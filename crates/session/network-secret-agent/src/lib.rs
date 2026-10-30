@@ -4,9 +4,10 @@
 //! the user's session whenever a connection needs a secret it does not hold:
 //! an 802.1X user name and password, a Wi-Fi password that changed, a VPN
 //! password, a SIM PIN. Without an agent nothing asks and the connection
-//! simply fails. The shell registers this agent ([`service`]), which asks in
-//! a sheet the compositor draws through the shell's [`service::Sheets`] —
-//! never in a window an application could imitate or read keystrokes from.
+//! simply fails. The session registers this agent ([`service`]), which asks
+//! in a sheet its host draws through [`service::Sheets`] — the session's
+//! questions ([`questions`]) — never in a window an application could
+//! imitate or read keystrokes from.
 //!
 //! Secrets go back to `NetworkManager` only. "Remember on this device" keeps
 //! them sealed ([`store`]): a WPA passphrase as the person's roaming Wi-Fi
@@ -21,6 +22,7 @@
 //! written against [`SecretPrompter`] and [`store::SecretStore`] so it can be
 //! tested without a bus or a screen.
 
+pub mod questions;
 pub mod service;
 pub mod store;
 #[cfg(any(test, feature = "test-support"))]

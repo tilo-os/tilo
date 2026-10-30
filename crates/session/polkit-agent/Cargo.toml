@@ -15,12 +15,19 @@ rustix = { workspace = true, features = ["process"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt"] }
 tokio-util.workspace = true
 tracing.workspace = true
+# Asks each prompt as one of the session's questions.
+tilo-service = { path = "../service" }
+serde.workspace = true
+serde_json.workspace = true
 zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+futures-util.workspace = true
 tilo-copy-lint = { path = "../../dev/copy-lint" }
-tokio = { workspace = true, features = ["io-util", "macros", "rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread"] }
+zbus = { workspace = true, features = ["p2p", "tokio"] }
+zeroize.workspace = true
 
 [lints]
 workspace = true

@@ -7,7 +7,6 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-durable-store = { path = "../../system/durable-store" }
 tilo-desktop = { path = "../desktop" }
 # A framework app: the banners' resource, effects and surface.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }

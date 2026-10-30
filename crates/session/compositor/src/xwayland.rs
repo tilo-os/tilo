@@ -42,8 +42,12 @@ pub(crate) fn start(handle: &LoopHandle<'static, LoopData>, state: &State) -> Re
     let wm_handle = handle.clone();
     handle
         .insert_source(xwayland, move |event, (), data| match event {
-            XWaylandEvent::Ready { x11_socket, .. } => {
+            XWaylandEvent::Ready {
+                x11_socket,
+                display_number,
+            } => {
                 start_wm(&wm_handle, data, x11_socket, client.clone());
+                data.state.start_xdnd(display_number);
             }
             XWaylandEvent::Error => tracing::warn!("Xwayland did not start"),
         })
@@ -88,6 +92,7 @@ impl State {
 
     fn unmap(&mut self, surface: &X11Surface) {
         if let Some(window) = self.element_of(surface) {
+            self.keep_closing(&window);
             self.space.unmap_elem(&window);
             self.rearrange();
         }
@@ -118,6 +123,10 @@ impl XwmHandler for State {
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, surface: X11Surface) {
+        // The drag-and-drop proxy takes X11 drags; it is never shown.
+        if self.dnd_proxy(&surface) {
+            return;
+        }
         let location = surface.geometry().loc;
         let window = Window::new_x11_window(surface);
         self.space.map_element(window, location, true);
@@ -132,6 +141,14 @@ impl XwmHandler for State {
 
     fn destroyed_window(&mut self, _xwm: XwmId, surface: X11Surface) {
         self.unmap(&surface);
+        // An X11 app has no client of its own here: its window going says
+        // it exited.
+        if !surface.is_override_redirect()
+            && let Some(pid) = surface.pid()
+            && let Ok(mut exited) = self.exited.lock()
+        {
+            exited.push(pid);
+        }
     }
 
     fn configure_request(

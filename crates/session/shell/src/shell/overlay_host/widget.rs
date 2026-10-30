@@ -319,6 +319,10 @@ impl Widget for ShellOverlayHost {
             let woken = launcher.take_woken();
             launcher.app.update(doc, path) | woken
         });
+        let shell_actions_dirty = self.chrome.clone().is_some_and(|chrome| {
+            crate::shell::actions::host::ShellActionsHost::keep(&mut self.shell_actions, &chrome)
+                .is_some_and(|host| host.pump(&chrome, doc, path))
+        });
         if search_rows_stale {
             // A worker published an index, or artwork arrived, after the
             // rows were built. Force one normal fanout this frame so the
@@ -457,6 +461,7 @@ impl Widget for ShellOverlayHost {
             || pairing_dirty
             || close_dirty
             || palette_dirty
+            || shell_actions_dirty
             || switcher_dirty
             || notifications_dropped
             || launch_dirty

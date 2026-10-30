@@ -1,0 +1,103 @@
+[package]
+name = "tilo-session"
+description = "The native Tilo session: the compositor hosting the desktop every host shows (the desk under the windows, the top bar, overview and menus above them), the window policy of its strips, and the desktop's surface apps."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tilo-session"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tilo-compositor = { path = "../compositor" }
+image = { workspace = true, features = ["png"] }
+# An application's themed icon is an SVG as often as a PNG.
+resvg = { version = "0.47", default-features = false }
+tilo-surface-host = { path = "../surface-host" }
+tilo-desktop = { path = "../desktop" }
+tilo-desktop-model = { path = "../desktop-model" }
+tilo-desktop-surface = { path = "../desktop-surface" }
+tilo-desktop-search = { path = "../desktop-search", features = ["indexes", "settings", "catalogue"] }
+app-catalogue = { path = "../../packaging/app-catalogue" }
+# What the session binary's search reads of the device: the installed apps,
+# the machine's own, the person's search choices.
+tilo-installed-apps = { path = "../../packaging/installed-apps" }
+desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
+settings-store = { path = "../../system/settings-store" }
+# The pictures the desk shows: the image's own, and the person's.
+tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
+# The registries' listing as this device last accepted it, for the apps a
+# person can get.
+app-cli = { path = "../../packaging/app-cli" }
+# Following the directories search's lists are read from.
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+tilo-paths.workspace = true
+tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-actions = { path = "../../collab/actions" }
+tilo-quick-settings = { path = "../quick-settings" }
+tilo-notification-banners = { path = "../notification-banners" }
+tilo-onboarding-host = { path = "../onboarding-host" }
+tilo-sheets = { path = "../sheets" }
+# Who is here: the session's own membership of each workspace's room, on the
+# collaboration plane's peer actor.
+tilo-network-actor = { path = "../network-actor" }
+# This device's relays wait in the collaboration endpoint until a workspace
+# it shows has someone else in it, and its key is published only then.
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+collab-types = { path = "../../collab/collab-types" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+iroh.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+hex.workspace = true
+os-actions = { path = "../../system/os-actions" }
+tilo-service = { path = "../service" }
+tilo-connectivity-service = { path = "../connectivity-service" }
+tilo-system-service = { path = "../system-service" }
+tilo-settings-service = { path = "../settings-service" }
+# The sound resource's specs, for the audio service the session starts.
+tilo-audio-service = { path = "../audio-service", default-features = false }
+# The desktop services the session starts on the buses; screen shares
+# stream the frames the session captured.
+tilo-portal = { path = "../portal", features = ["pipewire"] }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-notifications-service = { path = "../notifications-service" }
+tilo-polkit-agent = { path = "../polkit-agent" }
+tilo-network-secret-agent = { path = "../network-secret-agent" }
+tilo-bluetooth-agent = { path = "../bluetooth-agent" }
+tilo-tray-host = { path = "../tray-host" }
+tilo-bluez = { path = "../../system/tilo-bluez" }
+# The desktop's event sounds (a notification's ring, a screenshot's click).
+media = { package = "tilo-media", path = "../../platform/tilo-media" }
+# Checks a password for the lock screen, through the unlock helper.
+bounded-command = { path = "../../system/bounded-command" }
+zeroize.workspace = true
+chrono = { workspace = true, default-features = true }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tracing.workspace = true
+xkeysym = "0.2.1"
+zbus = { workspace = true, features = ["tokio"] }
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
+futures-util.workspace = true
+tempfile.workspace = true
+url.workspace = true
+tilo-audio-service = { path = "../audio-service" }
+rustix = { workspace = true, features = ["fs"] }
+tilo-onboarding = { path = "../onboarding" }
+tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+wayland-client.workspace = true
+wayland-protocols = { version = "0.32.12", features = ["client"] }
+
+[lints]
+workspace = true

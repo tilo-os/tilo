@@ -19,6 +19,16 @@ pub struct WindowInfo {
     pub app_id: Option<String>,
     /// `xdg_toplevel.set_title`, when the client set one.
     pub title: Option<String>,
+    /// The window it belongs to (`xdg_toplevel.set_parent`, an X11
+    /// window's `WM_TRANSIENT_FOR`): a dialog of that window.
+    pub parent: Option<u64>,
+    /// The smallest size the client accepts, when it set one.
+    pub min_size: Option<(i32, i32)>,
+    /// The largest size the client accepts, when it set one.
+    pub max_size: Option<(i32, i32)>,
+    /// The process that made the window: what it is asked of, the way a
+    /// portal request names the app it comes from.
+    pub pid: Option<u32>,
 }
 
 /// Where a window goes and the size it is asked to take.
@@ -90,6 +100,21 @@ pub trait WindowPolicy {
         None
     }
 
+    /// The outputs, each with the monitor on it: its identity from the
+    /// display's EDID (make, model and serial), else its connector, which
+    /// a layout follows between ports. Told when they change, before the
+    /// next arrangement.
+    fn monitors(&mut self, _monitors: &[(Rectangle<i32, Logical>, String)]) {}
+
+    /// The pointer moved to `(x, y)` in the logical layout, wherever it
+    /// went: over a window, a hosted surface or nothing.
+    fn pointer_moved(&mut self, _x: f64, _y: f64) {}
+
+    /// A window asked its size of ([`Self::initial_size`]) went away before
+    /// it showed a buffer, so it never maps: whatever place it was given
+    /// goes.
+    fn withdrawn(&mut self, _window: &WindowInfo) {}
+
     /// Whether a window takes keyboard focus when it first shows.
     fn focus_on_map(&mut self, _window: &WindowInfo) -> bool {
         true
@@ -123,6 +148,28 @@ pub trait WindowPolicy {
     /// back from, is granted.
     fn request(&mut self, _window: &WindowInfo, request: &WindowRequest) -> bool {
         !matches!(request, WindowRequest::Minimize)
+    }
+
+    /// The window the policy brought forward itself (a person switching
+    /// windows from the desktop's own controls), asked after every
+    /// arrangement: the compositor gives it the keyboard. `None` leaves
+    /// focus where it is.
+    fn focused(&mut self) -> Option<u64> {
+        None
+    }
+
+    /// `window` asked for the keyboard (an xdg-activation request).
+    /// `fresh` is whether its token is recent enough to come from what the
+    /// person just did. Whether it gets the keyboard; a window refused is
+    /// one waiting for the person, which a policy shows where they look.
+    fn activate(&mut self, _window: &WindowInfo, fresh: bool) -> bool {
+        fresh
+    }
+
+    /// The windows a person closed through the policy's own controls since
+    /// it was last asked: the compositor asks each client to close them.
+    fn take_close_requests(&mut self) -> Vec<u64> {
+        Vec::new()
     }
 }
 

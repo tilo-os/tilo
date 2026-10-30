@@ -147,6 +147,14 @@ impl NestedBackend {
             renderer.dmabuf_formats().iter().copied().collect(),
             Some(node),
         );
+        state.enable_dmabuf_capture(
+            node.dev_id(),
+            renderer
+                .egl_context()
+                .dmabuf_render_formats()
+                .iter()
+                .copied(),
+        );
 
         let size = window.size();
         let mut output_config = OutputConfig::new(
@@ -279,6 +287,32 @@ impl Backend for NestedBackend {
             ))
             .unwrap_or(now);
         Ok(())
+    }
+
+    fn backdrop(
+        &mut self,
+        state: &mut State,
+        region: (usize, usize),
+        request: &crate::BackdropRequest,
+    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        crate::backdrop::draw::<_, smithay::backend::renderer::gles::GlesTexture>(
+            &mut self.inner.borrow_mut().renderer,
+            state,
+            region,
+            request,
+        )
+    }
+
+    fn capture(
+        &mut self,
+        state: &mut State,
+        frame: &crate::capture::Frame,
+    ) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
+        crate::capture::copy::<_, smithay::backend::renderer::gles::GlesTexture>(
+            &mut self.inner.borrow_mut().renderer,
+            state,
+            frame,
+        )
     }
 
     fn configure(

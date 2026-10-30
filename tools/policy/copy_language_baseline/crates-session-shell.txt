@@ -32,7 +32,6 @@ de-DE notification-source-caption glyph
 de-DE qs-clipboard-mime-bytes glyph
 de-DE qs-devices-mic-level glyph
 de-DE qs-devices-mic-muted glyph
-de-DE search-answer-money-stale glyph
 de-DE search-app-job-reported-counts glyph
 de-DE state-notice-newer-detail glyph
 de-DE window-transfer-choice-copy glyph
@@ -50,7 +49,6 @@ en-US notification-source-caption glyph
 en-US qs-clipboard-mime-bytes glyph
 en-US qs-devices-mic-level glyph
 en-US qs-devices-mic-muted glyph
-en-US search-answer-money-stale glyph
 en-US search-app-job-reported-counts glyph
 en-US state-notice-newer-detail glyph
 en-US window-transfer-choice-copy glyph

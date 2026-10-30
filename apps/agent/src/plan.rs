@@ -322,6 +322,7 @@ mod tests {
             broker_peer_id: None,
             broker_provider: None,
             descriptor: tilo_actions::door::ActionDescriptor {
+                state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address: tilo_actions::door::ActionAddress::new(resource, action),
                 resource_kind: format!("{app}.thing"),

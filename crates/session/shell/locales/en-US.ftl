@@ -947,6 +947,8 @@ window-share-failed = Couldn’t share the window
 window-unshare-failed = Couldn’t stop sharing the window
 window-share-end-failed = A closed window is still shared
 shell-terminal-unavailable = Terminal: { $error }
+shell-action-not-offered = Not available here
+shell-action-nothing-to-act-on = There is nothing to act on right now
 shell-app-unavailable = Application unavailable
 shell-activity-title = Activity
 shell-activity-loading = Loading workspace activity…
@@ -1075,7 +1077,6 @@ search-kind-videos = Videos
 search-kind-playlists = Playlists
 search-kind-tabs = Tabs
 search-kind-window-groups = Window groups
-search-kind-answers = Answers
 search-kind-people = People
 
 # Search before anything is typed: the launcher
@@ -1131,8 +1132,6 @@ search-provider-records = Records
 search-provider-app-content = Content in your apps
 # A locked app's entries (a password vault's logins) match what was typed:
 # this row offers to unlock the app; Enter opens it to unlock.
-search-unlock-app = Unlock { $app } to search for “{ $query }”
-search-unlock-app-detail = { $app } is locked
 search-provider-session = Session
 search-provider-permission-prompts = Permission requests
 permission-request-expired = Permission request is no longer pending
@@ -1144,11 +1143,8 @@ search-provider-tray = Tray
 search-provider-files = Files
 search-provider-quick-answers = Quick answers
 search-provider-people = People
-search-answer-sum = { $expression } =
 search-answer-copied = Copied
-search-answer-money-stale = { $amount } = · rates from { $age }
 search-matches = Matches “{ $word }”
-search-answer-open-address = Open { $address }
 search-provider-ask-agent = Ask an agent
 search-kind-agent = Agent
 search-ask-agent = Ask an agent: { $query }
@@ -1165,11 +1161,6 @@ canvas-ask-stopped = Stopped.
 search-ask-agent-no-model = The agent has no AI model. Choose one in Settings.
 search-ask-agent-offline = You’re offline, and the agent’s model is on the internet.
 search-provider-web = Web
-search-kind-web = Web
-search-kind-websites = Websites
-search-web-for = Search the web for { $query }
-search-web-service-for = Search { $service } for { $query }
-search-web-subtitle = Web
 search-answer-no-browser = No app on this desktop opens web addresses.
 search-answer-bad-address = That address can’t be opened.
 search-people-invited = Invited
@@ -1663,37 +1654,19 @@ search-continuity-call-consent-subtitle = Resolve this exact call handoff consen
 # First-login identity setup: progress header
 
 # First-login identity setup: resuming after a restart
-onboarding-progress-unreadable = The saved setup position could not be read ({ $error }). Your identity is safe; setup resumed at the completion step.
-onboarding-progress-invalid-identity = Setup found unfinished progress but could not validate the existing identity: { $error }
-onboarding-progress-save-failed = Setup could not save its restart position: { $error }. No identity action was repeated.
-onboarding-progress-clear-failed = Setup finished, but its restart marker could not be removed: { $error }. Try Finish again so this screen does not return next login.
 
 # First-login identity setup: shared buttons
-onboarding-recovery-key-count = A recovery key has 24 words; this has { $found }.
-onboarding-recovery-key-unknown-word = Word { $position } isn't a recovery-key word. Check its spelling.
-onboarding-recovery-key-typo = Word { $position }, “{ $word }”, isn't a recovery-key word. Check its spelling.
-onboarding-recovery-key-suggestion = Word { $position }, “{ $word }”, isn't a recovery-key word. Did you mean “{ $suggestion }”?
-onboarding-recovery-key-checksum = These words don't form a recovery key. One is probably mistyped or out of order.
 
 # First-login identity setup: connecting an existing identity
-onboarding-connect-recovery-message = Your existing identity couldn't be verified. Unlock the desktop keyring and try again, or restore an encrypted backup. Your identity stays as it is until then.
-onboarding-connect-choose-file-first = Choose an encrypted backup or legacy identity file first.
-onboarding-keyring-unavailable = The desktop keyring is still unavailable. Unlock it and retry, or restore an encrypted backup: { $error }
 
 
 # First-login identity setup: encrypted backup
-onboarding-passphrase-too-short = Use at least 12 characters. Make it long and unique; length alone does not make a common passphrase safe.
-onboarding-passphrase-mismatch = The two passphrases do not match.
-onboarding-passphrase-unavailable = The passphrase fields are temporarily unavailable.
 
 # First-login identity setup: review renderer fixtures
-onboarding-snapshot-restore-error = That backup could not be opened. Check the file and passphrase, then try again.
-onboarding-snapshot-create-error = The identity could not be saved. Nothing was created; check available storage and try again.
 
 # First-login identity setup: identity ready
 
 # First-login setup: more video and audio formats
-onboarding-codecs-installer-failed = The download could not start: { $error }
 
 # Desktop tour
 
@@ -2350,8 +2323,6 @@ activity-morning-source = { $source }, last activity { $time } · may be out of 
 activity-morning-open = Open morning source
 
 # Canonical first-use action admission; never includes private identity material.
-onboarding-semantic-unavailable = This setup action is no longer available at this step.
-onboarding-semantic-failed = Setup could not complete this action. The desktop remains protected.
 activity-morning-payload-unavailable = Provider summary unavailable. Open the source to inspect or refresh it.
 
 activity-morning-refresh = Refresh source
@@ -2367,18 +2338,12 @@ activity-morning-next = Next chosen source
 
 # Installed prepared setup and original-file migration.
 
-onboarding-prepared-other-person = This computer already has another person’s identity, so the prepared setup was left untouched. Restore that person’s own backup or connect their account instead.
-
-onboarding-portable-home-unavailable = Your transfer is not available on this computer yet. Try again or continue without bringing your files over.
-
-onboarding-migration-resume-unavailable = There is no deferred file migration available for your current identity.
 
 
-onboarding-portable-applications-unavailable = Your apps could not be restored. You can retry without replacing your existing files.
 
-onboarding-browser-unavailable = Your browser data is still waiting. Try again or continue for now.
 
-onboarding-backup-unavailable = A personal identity backup can’t be created on this device.
+
+
 
 # Why the first-use copy stopped, reported with its status.
 onboarding-copy-cleanup-unavailable = Temporary file cleanup is unavailable.

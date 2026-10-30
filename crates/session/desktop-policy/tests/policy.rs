@@ -11,8 +11,10 @@ use std::cell::Cell;
 use std::time::Duration;
 
 use tilo_desktop_model::commands::DesktopCommand;
+use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::{DesktopPolicy, Layout, Window};
 use tilo_desktop_surface::navigation::Command;
+use ui::kurbo::Rect;
 
 const WIDTH: f64 = 1200.0;
 const FRAME: Duration = Duration::from_millis(16);
@@ -61,6 +63,7 @@ fn window(id: u64, app: &str) -> Window {
         id,
         app_id: Some(app.into()),
         title: Some(app.into()),
+        ..Window::default()
     }
 }
 
@@ -174,4 +177,70 @@ fn a_window_keeps_its_title_in_its_tab() {
             .collect::<Vec<_>>()
     });
     assert_eq!(titles, ["Report.odt"]);
+}
+
+fn displays(policy: &mut DesktopPolicy) {
+    let output = |monitor: &str, x: f64| Output {
+        monitor: monitor.into(),
+        rect: Rect::new(x, 0.0, x + WIDTH / 2.0, 800.0),
+    };
+    assert!(policy.set_displays(&[output("left", 0.0), output("right", WIDTH / 2.0)]));
+}
+
+#[test]
+fn each_display_holds_the_windows_opened_while_it_had_focus() {
+    let (mut driver, mut policy) = mount();
+    displays(&mut policy);
+    map(&mut driver, &mut policy, 1, "a");
+    let order = policy.displays();
+    assert_eq!(order.len(), 2);
+    assert_eq!(policy.display_of(1), Some(order[0]));
+    assert!(policy.handle().focus_display(order[1]));
+    settle(&mut driver);
+    map(&mut driver, &mut policy, 2, "b");
+    assert_eq!(policy.display_of(2), Some(order[1]));
+    let layout = policy.layout();
+    let place = |id| layout.shown.iter().find(|(w, _)| *w == id).unwrap().1;
+    assert!(place(1).x1 <= WIDTH / 2.0 + 0.5, "{layout:?}");
+    assert!(place(2).x0 >= WIDTH / 2.0, "{layout:?}");
+
+    assert!(policy.handle().step_focus(-1));
+    settle(&mut driver);
+    assert_eq!(policy.focused(), Some(1), "past the display's first window");
+    assert!(policy.handle().move_focused_to_display(1));
+    settle(&mut driver);
+    assert_eq!(policy.display_of(1), Some(order[1]));
+    assert_eq!(policy.focused(), Some(1));
+}
+
+#[test]
+fn a_dialog_floats_over_its_parent_and_answers_for_it() {
+    let (mut driver, mut policy) = mount();
+    displays(&mut policy);
+    map(&mut driver, &mut policy, 1, "a");
+    policy
+        .map(Window {
+            parent: Some(1),
+            ..window(2, "a")
+        })
+        .unwrap();
+    settle(&mut driver);
+    assert!(policy.is_floating(2));
+    let layout = policy.layout();
+    assert_eq!(shown(&layout), [1], "a dialog takes no tab");
+    let parent = layout.shown[0].1;
+    assert_eq!(layout.floating, [(2, parent)], "over its parent");
+    assert_eq!(policy.focused(), Some(2), "the dialog has the keyboard");
+    assert!(policy.focus(2), "focusing it brings its parent");
+
+    policy.unmap(1);
+    settle(&mut driver);
+    let layout = policy.layout();
+    assert_eq!(
+        layout.floating,
+        [(2, Rect::new(0.0, 0.0, WIDTH / 2.0, 800.0))],
+        "its parent gone, it floats on the display in use"
+    );
+    policy.unmap(2);
+    assert!(policy.layout().floating.is_empty());
 }

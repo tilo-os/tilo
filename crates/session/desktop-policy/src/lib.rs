@@ -12,14 +12,21 @@
 //! reads [`DesktopPolicy::layout`]: the windows to show and where, and those
 //! to hide (background tabs, other strips and workspaces).
 //!
+//! Dialogs float over the window they belong to instead of taking a tab
+//! ([`floating`]), and across several displays each display holds its own
+//! windows ([`DesktopPolicy::set_displays`]).
+//!
 //! Nothing here knows Wayland: windows are plain ids, places are rects in
 //! the surface's logical coordinates.
+
+pub mod displays;
+pub mod floating;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent, Workspace};
+use tilo_desktop_model::{DesktopTree, Display, IdMinter, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Command;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
 use ui::kurbo::Rect;
@@ -40,6 +47,12 @@ pub struct Window {
     pub app_id: Option<String>,
     /// Its title, when the client set one.
     pub title: Option<String>,
+    /// The window it is a dialog of, when the client named one.
+    pub parent: Option<u64>,
+    /// The smallest size the client accepts, when it set one.
+    pub min_size: Option<(i32, i32)>,
+    /// The largest size the client accepts, when it set one.
+    pub max_size: Option<(i32, i32)>,
 }
 
 /// Where the windows are as of the surface's last layout pass.
@@ -48,9 +61,12 @@ pub struct Layout {
     /// Each window shown, front tab of its group on the shown strip, and the
     /// rect its content fills, in surface coordinates.
     pub shown: Vec<(u64, Rect)>,
-    /// Every other window the desktop holds: a background tab, or on a
-    /// strip or workspace not shown.
+    /// Every other window the desktop holds: a background tab, on a strip
+    /// or workspace not shown, or a dialog of a window not shown.
     pub hidden: Vec<u64>,
+    /// Each dialog shown, and the area it floats centred over: its
+    /// parent's, or the display the person works on for one without.
+    pub floating: Vec<(u64, Rect)>,
 }
 
 /// Windows waiting for their tab, shared with the surface's tile source.
@@ -91,6 +107,10 @@ pub struct DesktopPolicy {
     /// Windows the desktop has given a tab, so a tab gone without
     /// [`Self::unmap`] is one the person closed.
     placed: BTreeSet<u64>,
+    /// The dialogs, oldest first, each with the window it belongs to.
+    floating: BTreeMap<u64, Option<u64>>,
+    /// The displays, primary first, a mirror set as one.
+    displays: Vec<Display>,
 }
 
 impl DesktopPolicy {
@@ -117,6 +137,8 @@ impl DesktopPolicy {
             handle,
             arriving,
             placed: BTreeSet::new(),
+            floating: BTreeMap::new(),
+            displays: Vec::new(),
         };
         (policy, surface)
     }
@@ -133,12 +155,71 @@ impl DesktopPolicy {
         self.handle.set_viewport_width(width);
     }
 
-    /// Give `window` a tab beside the focused window of the shown strip, on
-    /// the surface's next update pass, where it takes focus.
+    /// The outputs the desktop spreads over, primary first, in the
+    /// surface's coordinates: a mirror set is one display
+    /// ([`displays::distinct`]), and with several each display holds its
+    /// own windows, laid out on the surface's next pass. Whether anything
+    /// changed.
+    pub fn set_displays(&mut self, outputs: &[displays::Output]) -> bool {
+        let displays = displays::distinct(outputs);
+        let changed = self.displays != displays;
+        let moved = self.handle.set_displays(&displays);
+        self.displays = displays;
+        changed || moved
+    }
+
+    /// The display the person works on: the focused one across several,
+    /// else the primary.
+    fn working_display(&self) -> Option<&Display> {
+        let focused = self.handle.focused_display();
+        self.displays
+            .iter()
+            .find(|display| Some(display.id) == focused)
+            .or_else(|| self.displays.first())
+    }
+
+    /// The displays in reading order, left to right: empty on one.
+    #[must_use]
+    pub fn displays(&self) -> Vec<u32> {
+        self.handle.displays()
+    }
+
+    /// The display the window shows on, across several displays.
+    #[must_use]
+    pub fn display_of(&self, window: u64) -> Option<u32> {
+        let group = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .find(|group| group.tabs.iter().any(|tab| foreign(tab) == Some(window)))
+                .map(|group| group.id)
+        })?;
+        self.handle.display_of(group)
+    }
+
+    /// Whether `window` is a dialog floating over its parent.
+    #[must_use]
+    pub fn is_floating(&self, window: u64) -> bool {
+        self.floating.contains_key(&window)
+    }
+
+    /// Give `window` its place: a dialog ([`floating::floats`]) floats over
+    /// the window it belongs to; any other window gets a tab beside the
+    /// focused window of the shown strip, on the surface's next update
+    /// pass, where it takes focus.
     ///
     /// # Errors
     /// The desktop has no workspace or strip to open it in.
     pub fn map(&mut self, window: Window) -> Result<(), String> {
+        let display = self
+            .working_display()
+            .map(|display| (display.width, display.height));
+        if floating::floats(&window, display) {
+            let parent = window.parent.filter(|parent| self.holds(*parent));
+            self.floating.insert(window.id, parent);
+            return Ok(());
+        }
         let launch = Command::Launch {
             generation: GENERATION.into(),
             app: format!("{LAUNCH_PREFIX}{}", window.id),
@@ -153,6 +234,15 @@ impl DesktopPolicy {
     /// `window` went away: its tab closes, and focus goes back to the
     /// window the person had in front before it.
     pub fn unmap(&mut self, window: u64) {
+        // Its dialogs float on, over the display.
+        for parent in self.floating.values_mut() {
+            if *parent == Some(window) {
+                *parent = None;
+            }
+        }
+        if self.floating.remove(&window).is_some() {
+            return;
+        }
         self.arriving.borrow_mut().remove(&window);
         self.placed.remove(&window);
         let mut tree = self.handle.read(Clone::clone);
@@ -176,21 +266,66 @@ impl DesktopPolicy {
         }
     }
 
-    /// The window in front of the focused group of the shown strip.
+    /// The window in front of the focused group of the shown strip, or
+    /// its newest dialog: a window with a dialog open answers it first.
     #[must_use]
     pub fn focused(&self) -> Option<u64> {
-        self.handle.read(|tree| {
+        let mut window = self.handle.read(|tree| {
             let route = tilo_desktop_surface::navigation::active_route(tree)?;
             window_of(tree, route.tab)
-        })
+        })?;
+        while let Some(dialog) = self.newest_dialog_of(window) {
+            window = dialog;
+        }
+        Some(window)
+    }
+
+    fn newest_dialog_of(&self, window: u64) -> Option<u64> {
+        self.floating
+            .iter()
+            .rev()
+            .find(|(_, parent)| **parent == Some(window))
+            .map(|(dialog, _)| *dialog)
+    }
+
+    /// Whether the desktop holds `window`, as a tab or a dialog.
+    fn holds(&self, window: u64) -> bool {
+        self.floating.contains_key(&window)
+            || self.arriving.borrow().contains_key(&window)
+            || self.handle.read(|tree| tab_of(tree, window)).is_some()
     }
 
     /// Bring `window` forward and focus it, on the next update pass, as
-    /// clicking it does. False when the desktop holds no such window.
+    /// clicking it does; a dialog brings the window it belongs to. False
+    /// when the desktop holds no such window.
     pub fn focus(&mut self, window: u64) -> bool {
+        let mut window = window;
+        while let Some(parent) = self.floating.get(&window) {
+            match parent {
+                Some(parent) => window = *parent,
+                None => return true,
+            }
+        }
         self.handle
             .read(|tree| tab_of(tree, window))
             .is_some_and(|tab| self.handle.focus_tab(tab))
+    }
+
+    /// `window` is waiting for the person: its tab says so until they
+    /// look at it. False when the desktop holds no such window or it is
+    /// the one in front.
+    pub fn ask_attention(&mut self, window: u64) -> bool {
+        self.handle
+            .read(|tree| tab_of(tree, window))
+            .is_some_and(|tab| self.handle.ask_attention(tab))
+    }
+
+    /// Whether `window` is waiting for the person.
+    #[must_use]
+    pub fn asks_attention(&self, window: u64) -> bool {
+        self.handle
+            .read(|tree| tab_of(tree, window))
+            .is_some_and(|tab| self.handle.asks_attention(tab))
     }
 
     /// Where the windows are as of the surface's last layout pass.
@@ -203,13 +338,51 @@ impl DesktopPolicy {
                 .filter_map(|(tab, rect)| Some((window_of(tree, tab)?, rect)))
                 .collect()
         });
-        let hidden = self
+        let mut hidden: Vec<u64> = self
             .handle
             .read(windows)
             .into_iter()
             .filter(|window| !shown.iter().any(|(id, _)| id == window))
             .collect();
-        Layout { shown, hidden }
+        let display = self.working_display().map_or(Rect::ZERO, |display| {
+            Rect::new(
+                display.x,
+                display.y,
+                display.x + display.width,
+                display.y + display.height,
+            )
+        });
+        let mut floating = Vec::new();
+        for &dialog in self.floating.keys() {
+            // Up to the window the dialog (or the dialog it is a dialog of)
+            // belongs to.
+            let mut root = dialog;
+            let mut depth = 0usize;
+            while let Some(Some(parent)) = self.floating.get(&root) {
+                root = *parent;
+                depth = depth.saturating_add(1);
+                if depth > self.floating.len() {
+                    break;
+                }
+            }
+            let area = if self.floating.contains_key(&root) {
+                Some(display)
+            } else {
+                shown
+                    .iter()
+                    .find(|(id, _)| *id == root)
+                    .map(|(_, rect)| *rect)
+            };
+            match area {
+                Some(area) => floating.push((dialog, area)),
+                None => hidden.push(dialog),
+            }
+        }
+        Layout {
+            shown,
+            hidden,
+            floating,
+        }
     }
 
     /// The windows whose tabs the person closed since the last call: the

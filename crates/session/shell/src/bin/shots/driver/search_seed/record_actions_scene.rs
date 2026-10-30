@@ -48,6 +48,7 @@ impl ShellDriver {
             app_id: NOTES.into(),
             route: CrdtRoute::record(NOTES, &room, record),
             actions: vec![PublishedAction {
+                state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 resource: format!("note:{record}"),
                 action: "rename".into(),
