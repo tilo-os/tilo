@@ -6,6 +6,11 @@
 //! [`crate::backend::drm::access_keys`] puts them, with bounce keys and mouse
 //! keys, in front of the compositor's input routing.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "assist timing: instants and short delays, far from the end of Instant"
+)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
@@ -77,7 +82,7 @@ impl StickyKeys {
             // Hardware repeat of a held modifier is not a second press.
             return Vec::new();
         }
-        if let Some(Latched::Locked) = self.latched.get(&keycode).copied() {
+        if self.latched.get(&keycode).copied() == Some(Latched::Locked) {
             // Pressing a locked modifier lets it go; its own release then
             // belongs to a press that was never delivered.
             self.latched.remove(&keycode);
@@ -334,6 +339,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the window is a few hundred milliseconds"
+    )]
     fn a_slow_second_press_latches_once_and_not_twice() {
         let t0 = Instant::now();
         let mut sticky = StickyKeys::default();

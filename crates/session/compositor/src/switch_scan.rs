@@ -11,6 +11,11 @@
 //!
 //! The machine is pure: key edges and instants in, [`Scan`] steps out.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "scan timing: instants and short periods, far from the end of Instant"
+)]
+
 use std::time::{Duration, Instant};
 
 /// What scanning asks for.
@@ -85,21 +90,12 @@ impl SwitchPair {
 }
 
 /// The person's switch settings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SwitchConfig {
     pub pair: SwitchPair,
     /// How often the focus walks on by itself; `None` scans only when the
     /// first switch is pressed.
     pub period: Option<Duration>,
-}
-
-impl Default for SwitchConfig {
-    fn default() -> Self {
-        Self {
-            pair: SwitchPair::default(),
-            period: None,
-        }
-    }
 }
 
 /// Whether scanning is on, and when it next walks the focus on.
