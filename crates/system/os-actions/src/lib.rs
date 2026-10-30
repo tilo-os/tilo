@@ -1,15 +1,20 @@
 //! OS-level action wrappers (brightness, audio, Wi-Fi, Bluetooth, power-profile) shared
 //! between the Tilo compositor (`shell`) and the standalone Settings app (`apps/settings`).
-//! Both needed the same brightnessctl/powerprofilesctl bindings and network and
-//! Bluetooth clients, and
+//! Both needed the same hardware controls and network and Bluetooth clients, and
 //! the Settings app must not depend on the compositor (they're peers, not parent/child), so
 //! the bindings live here as a single source of truth for both.
 //!
 //! Design notes:
 //!
-//! - Every helper checks the binary's presence first via `which` and returns a clear
+//! - A control that has a D-Bus owner goes through it, never through the owner's CLI:
+//!   `tilo-nm` for networking, `tilo-bluez` for Bluetooth, `tilo-power-mgmt` for power
+//!   profiles, logind, the power-supply class and `UPower`, `tilo-media` for the audio graph.
+//!   The few remaining subprocesses are the ones with no library behind them
+//!   (`brightnessctl`, `wpctl`, `fwupdmgr`, `iw`'s station dump, `pw-cli`'s client stop),
+//!   plus `systemctl` starting the charge-cap service.
+//! - Every CLI helper checks the binary's presence first via `which` and returns a clear
 //!   `"<binary> not installed"` error otherwise, so the QS panel and Settings app stay
-//!   functional on machines missing a daemon (e.g. no `power-profiles-daemon`).
+//!   functional on machines missing a tool.
 //! - [`std::process::Command`] (sync) is deliberate: both call sites are user-driven (slider
 //!   drag, toggle click), so getter calls happen only on rising-edge open — no tokio needed.
 //! - Parsers are extracted into private free functions so they're unit-testable against
