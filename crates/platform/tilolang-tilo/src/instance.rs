@@ -60,6 +60,16 @@ pub enum Mode {
     Capture,
 }
 
+/// What the person asked of their history at the window: the record's undo or redo, as the one
+/// who runs the instance carries it out on the record (`ToApp::Undo`, `ToApp::Redo`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryAsk {
+    /// Take back their last step.
+    Undo,
+    /// Bring back what their last undo took back.
+    Redo,
+}
+
 /// A later build of the package, in a development session.
 #[derive(Clone)]
 pub struct Update {
@@ -272,8 +282,8 @@ pub struct Instance {
     /// The outside services the package's types with an origin are kept in step with.
     origins: crate::origin::Origins,
     pending: Pending,
-    /// The person chose Undo on a notice, and the undo is not yet taken.
-    undo: bool,
+    /// The undos and redos the person asked for, in order, not yet taken.
+    history: Vec<HistoryAsk>,
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
     started: bool,
@@ -352,7 +362,7 @@ impl Instance {
             ),
             origins: Rc::default(),
             pending: Pending::default(),
-            undo: false,
+            history: Vec::new(),
             staged: None,
             started: false,
             loading: false,
@@ -487,6 +497,29 @@ impl Instance {
         self.host.borrow().clone()
     }
 
+    /// How long from the platform's clock now until the time a view of the window read
+    /// (`today` in a query or a filter) next reads differently: the embedder wakes the instance
+    /// then (a frame's deadline, its wait's timeout), and that frame runs again exactly the
+    /// views that read it. Zero once it has. `None` when no view read the time: nothing about
+    /// the time ever wakes the instance.
+    #[must_use]
+    pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        let at = [self.root.as_ref(), self.detail.as_ref()]
+            .into_iter()
+            .flatten()
+            .filter_map(|shown| shown.view.borrow().wakes_at())
+            .min()?;
+        let clock = self.platform.now();
+        let Some(now) = tilolang::calendar::instant(&clock) else {
+            // The runtime read the same clock to answer the view: it could not have.
+            tracing::error!(clock, "the platform's clock reads no time");
+            return None;
+        };
+        Some(std::time::Duration::from_secs(
+            u64::try_from(at.saturating_sub(now)).unwrap_or(0),
+        ))
+    }
+
     /// The resource the root view shows.
     #[must_use]
     pub fn root_target(&self) -> Option<&ResourceRef> {
@@ -538,9 +571,10 @@ impl Instance {
         self.taken_build.take()
     }
 
-    /// Whether the person chose Undo on a notice since last asked.
-    pub fn take_undo(&mut self) -> bool {
-        std::mem::take(&mut self.undo)
+    /// The undos and redos the person asked for since last asked, in the order they asked: Undo
+    /// on a notice, and the window's undo and redo.
+    pub fn take_history(&mut self) -> Vec<HistoryAsk> {
+        std::mem::take(&mut self.history)
     }
 
     /// The bound control the window's keyboard focus is in, and whether an input method is
@@ -1206,6 +1240,13 @@ impl Instance {
         self.flush();
     }
 
+    /// The undo or redo the person asked for was refused, for `why` (somebody else changed what
+    /// it would take back since): the window says so.
+    pub fn history_refused(&mut self, why: String) {
+        self.notice(Words::Plain(why), ui::NoticeKind::Error);
+        self.flush();
+    }
+
     fn take_door_work(&mut self) -> bool {
         if !self.door_work.take() {
             return false;
@@ -1492,8 +1533,13 @@ impl Instance {
                 }
                 Ok(())
             }
-            ToApp::Undo => {
-                self.undo = true;
+            asked @ (ToApp::Undo | ToApp::Redo) => {
+                let redo = matches!(asked, ToApp::Redo);
+                self.history.push(if redo {
+                    HistoryAsk::Redo
+                } else {
+                    HistoryAsk::Undo
+                });
                 Ok(())
             }
             ToApp::Focus { at } => {
@@ -2022,8 +2068,17 @@ impl Instance {
         // Who is at a resource shows wherever a view reads its lenses.
         let lenses = std::mem::take(&mut self.lenses_changed);
         let members = self.follow_members();
-        let changed =
-            received || door || opened || pulled || settled || lenses || renamed || members;
+        // The time a view read moved on: the frame its embedder woke for it.
+        let timed = self.wakes_in().is_some_and(|wait| wait.is_zero());
+        let changed = received
+            || door
+            || opened
+            || pulled
+            || settled
+            || lenses
+            || renamed
+            || members
+            || timed;
         if changed {
             self.poll_views();
         }
