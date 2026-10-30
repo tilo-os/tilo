@@ -646,6 +646,19 @@ impl RoomRecord {
         changed
     }
 
+    /// The record's heads now: what [`Self::changes_since`] starts from.
+    #[must_use]
+    pub fn heads(&mut self) -> Vec<ChangeHash> {
+        self.doc.get_heads()
+    }
+
+    /// What the record holds past `heads`, as Automerge changes: what a change applied here
+    /// wrote, for its invoker to read back without waiting on the room.
+    #[must_use]
+    pub fn changes_since(&mut self, heads: &[ChangeHash]) -> Vec<u8> {
+        self.doc.save_after(heads)
+    }
+
     /// Take in what the record's route brought, with no instance to bring up to date: a record
     /// held only to apply changes at its origin. Events that are no change of the record are
     /// dropped. Whether the record changed.

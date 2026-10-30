@@ -525,7 +525,9 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
         .arg("--storage")
         .arg(&storage)
         .env("XDG_RUNTIME_DIR", super::runtime_dir())
-        .stdin(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null())
+        // Read here: what it said last is why it ended when it could not say so itself.
+        .stderr(std::process::Stdio::piped());
     let door = theirs.as_raw_fd();
     let slot = ::launcher::run::tilolang_host::DOOR_CHILD_FD;
     // SAFETY: only async-signal-safe calls between fork and exec: the door is placed at its
@@ -544,6 +546,22 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
     }
     let mut child = command.spawn()?;
     drop(theirs);
+    let said = child.stderr.take().map(|stderr| {
+        let tag = format!("{} {}", key.workspace, key.author);
+        std::thread::Builder::new()
+            .name("tilolang-host-err".into())
+            .spawn(move || {
+                let mut last = std::collections::VecDeque::with_capacity(SAID_LINES);
+                super::relay_capped_lines(stderr, |line| {
+                    eprintln!("[tilolang-host {tag}] {line}");
+                    if last.len() == SAID_LINES {
+                        last.pop_front();
+                    }
+                    last.push_back(line);
+                });
+                last
+            })
+    });
     let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let door = Arc::new(ours);
     tracing::info!(
@@ -577,7 +595,12 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
             }
             let status = child.wait();
             let clean = status.as_ref().is_ok_and(std::process::ExitStatus::success);
-            let reason = reason.unwrap_or_else(|| "it ended without saying why".to_owned());
+            // Its error output ends with it: what it said last is all read by now.
+            let last = said
+                .and_then(|reading| reading.ok())
+                .and_then(|reading| reading.join().ok())
+                .unwrap_or_default();
+            let reason = reason.unwrap_or_else(|| seen_end(&status, &last));
             if clean {
                 tracing::info!(workspace = %key.workspace, author = %key.author, ?status, reason, "tilolang host ended");
             } else {
@@ -604,6 +627,43 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
         instances: HashSet::new(),
         generation,
     })
+}
+
+/// How many of its last error lines a host that ended without saying why is reported by.
+const SAID_LINES: usize = 8;
+
+/// Why a host ended that did not say so itself: how it ended, as the session saw it, and the
+/// last lines of its error output.
+fn seen_end(
+    status: &std::io::Result<std::process::ExitStatus>,
+    last: &std::collections::VecDeque<String>,
+) -> String {
+    use std::os::unix::process::ExitStatusExt as _;
+    let how = match status {
+        Ok(status) => match (status.code(), status.signal()) {
+            (Some(code), _) => format!("it exited with status {code} without saying why"),
+            (None, Some(signal)) => {
+                let name = match signal {
+                    libc::SIGTERM => " (SIGTERM)",
+                    libc::SIGKILL => " (SIGKILL: killed, as memory pressure kills)",
+                    libc::SIGSEGV => " (SIGSEGV: it crashed)",
+                    libc::SIGABRT => " (SIGABRT: it aborted)",
+                    libc::SIGBUS => " (SIGBUS: it crashed)",
+                    libc::SIGILL => " (SIGILL: it crashed)",
+                    libc::SIGSYS => " (SIGSYS: its sandbox refused a system call)",
+                    _ => "",
+                };
+                format!("it was ended by signal {signal}{name} before it could say why")
+            }
+            (None, None) => format!("it ended ({status}) without saying why"),
+        },
+        Err(error) => format!("it ended, and waiting for it failed: {error}"),
+    };
+    if last.is_empty() {
+        return format!("{how}; it wrote no error output");
+    }
+    let said: Vec<&str> = last.iter().map(String::as_str).collect();
+    format!("{how}; it last wrote: {}", said.join(" | "))
 }
 
 /// The host `key` (its start `generation`) says the instance of the window `instance` ended.
@@ -636,6 +696,30 @@ fn ended(key: &HostKey, generation: u64, instance: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host that ended without saying why is reported by how it ended and what it last
+    /// wrote, never as "without saying why" alone.
+    #[test]
+    fn a_silent_hosts_end_is_told_as_the_session_saw_it() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let killed = Ok(std::process::ExitStatus::from_raw(libc::SIGKILL));
+        let said = std::collections::VecDeque::from(vec![
+            "loading the module".to_owned(),
+            "out of memory".to_owned(),
+        ]);
+        let told = seen_end(&killed, &said);
+        assert!(told.contains("signal 9 (SIGKILL"), "{told}");
+        assert!(
+            told.ends_with("loading the module | out of memory"),
+            "{told}"
+        );
+        let exited = Ok(std::process::ExitStatus::from_raw(3 << 8));
+        let told = seen_end(&exited, &std::collections::VecDeque::new());
+        assert_eq!(
+            told,
+            "it exited with status 3 without saying why; it wrote no error output"
+        );
+    }
 
     #[test]
     fn a_hosts_author_is_its_publisher_or_the_person_whose_own_build_it_is() {

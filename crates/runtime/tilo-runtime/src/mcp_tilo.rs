@@ -785,7 +785,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(Ok(answer)) => {
                 if let Some(output) = answer.get("ok") {
                     let differs = answer.get("differs").and_then(Value::as_bool) == Some(true);
-                    json!({"ok": output, "differs": differs})
+                    json!({"ok": output, "differs": differs, "change": answer.get("change")})
                 } else {
                     json!({"failed": answer.get("failed").and_then(Value::as_str).map_or_else(|| answer.to_string(), str::to_owned)})
                 }
