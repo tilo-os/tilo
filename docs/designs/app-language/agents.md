@@ -193,9 +193,10 @@ make first guesses mostly right.
 ## 8. Answering and the trail
 
 An answer composes views (agent-ux.md); the door checks it before the person sees it: quotes
-resolve, suggested actions are allowed, it fits. After a task, its result is checked against
-the request: on by default for small-model profiles, which skip or get parts of long requests
-wrong most often. `history task` lists the steps; `undo task` reverses them.
+resolve, suggested actions are allowed, it fits. A view answer is a `view` declaration that
+becomes one of the person's own views (agent-ux.md, "Answers as views"). After a task, its
+result is checked against the request: on by default for small-model profiles, which skip or
+get parts of long requests wrong most often. `history task` lists the steps; `undo task` reverses them.
 
 ## 9. Evals
 

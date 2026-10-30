@@ -29,6 +29,12 @@ pub enum AgentBlock {
     Rejected(Vec<String>),
     /// The block is a view: its rendered tree.
     View(Box<crate::view::UiNode>),
+    /// The source is a written view (`tilolang::written`): what it is, and its tree when it
+    /// takes nothing and so stands alone.
+    Definition {
+        info: crate::written::WrittenViewInfo,
+        tree: Option<Box<crate::view::UiNode>>,
+    },
     /// The block is a value: what an agent sees of it.
     Data(serde_json::Value),
     /// The block applies an action. The host ran it, or suggested it to a person, and recorded
@@ -139,6 +145,27 @@ impl Core {
         agent: &Principal,
         source: &str,
     ) -> Result<AgentBlock, RuntimeError> {
+        if tilolang::written::is_declaration(source) {
+            let info = match self.check_written_view(source, agent) {
+                Ok(info) => info,
+                Err(diagnostics) => {
+                    return Ok(AgentBlock::Rejected(
+                        diagnostics
+                            .iter()
+                            .map(crate::written::diagnostic_line)
+                            .collect(),
+                    ));
+                }
+            };
+            let tree = if info.params.is_empty() {
+                let rc = self.rc().map_err(RuntimeError::Package)?;
+                let view = rc.open_written_view(agent, source, agent, Vec::new())?;
+                Some(Box::new(view.tree().clone()))
+            } else {
+                None
+            };
+            return Ok(AgentBlock::Definition { info, tree });
+        }
         let block = match self.embed_block(source) {
             Ok(block) => block,
             Err(diagnostics) => {

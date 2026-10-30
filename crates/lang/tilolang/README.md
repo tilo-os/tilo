@@ -192,7 +192,13 @@ it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
 `Option<host.Version>` (`.who`, `.at`, `.what`, the action's label), `history(r)` all of them,
 oldest first. `v.is(edit)` asks whether the action `edit` made it, by the action itself, never
 its label: `history(m).any(v -> v.is(edit))`. An offered `host.Action` answers the same:
-`actions(m).any(a -> a.is(edit))`.
+`actions(m).any(a -> a.is(edit))`. A version also says which task run made it (`.task`, a
+`host.TaskRun`), what it did (`.kind`: `created`, `changed` or `removed`; a removed resource
+keeps its versions) and which `.fields` it changed. `changes(of: run)` is every version a run
+made, of every resource, and `unseen(r)` the versions of `r` an agent's run made that the
+person looking has not seen yet. The UI host marks those where views show them, with no code
+of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
+(task-legibility.md).
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
 `workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`

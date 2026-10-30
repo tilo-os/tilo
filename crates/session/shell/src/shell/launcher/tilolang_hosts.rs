@@ -197,7 +197,11 @@ fn hand_over_now(
         app_runtime: verified.app_runtime,
     };
     let verified_us = began.elapsed().as_micros();
-    let module = verified.module.encode();
+    let mut module = verified.module;
+    if app.package_id == PERSON_VIEWS_APP {
+        with_every_installed_app(&mut module, &key);
+    }
+    let module = module.encode();
     let module_len = module.len() as u64;
     let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
     let module_us = began.elapsed().as_micros();
@@ -251,6 +255,56 @@ fn hand_over_now(
         "tilolang instance handed over"
     );
     Ok(())
+}
+
+/// The app that keeps each person's own views (`apps/tl/views`): views they, their agents or
+/// others wrote, which name no app and read whatever the workspace has installed.
+const PERSON_VIEWS_APP: &str = "so.tilo.lang.views";
+
+/// Give `module`, the person's views, every installed tilolang app its host can run (`key`'s
+/// runtimes), each verified as a launch verifies it: a written view is checked against, and
+/// reads, any type the workspace has, so the host that draws them holds every app's package,
+/// not a list fixed when Views was built.
+fn with_every_installed_app(module: &mut runtime_portal::tilolang_host::Module, key: &HostKey) {
+    let apps = match super::installed_apps() {
+        Ok(apps) => apps,
+        Err(error) => {
+            tracing::error!(%error, "the person's views get no other app: the installed apps are not known");
+            return;
+        }
+    };
+    for app in apps
+        .iter()
+        .filter(|app| app.package_id != PERSON_VIEWS_APP && runs_in_host(app))
+    {
+        let Some(verified) = verified_installed(app) else {
+            tracing::warn!(package_id = %app.package_id, "the person's views leave out an app that could not be verified");
+            continue;
+        };
+        if verified.runtime != key.runtime || verified.app_runtime != key.app_runtime {
+            tracing::warn!(package_id = %app.package_id, "the person's views leave out an app on other runtimes");
+            continue;
+        }
+        if !module.imports.contains(&verified.module.wasm) {
+            module.imports.push(verified.module.wasm);
+        }
+    }
+}
+
+/// `app`, verified as a launch verifies it; `None` when it is not installed as listed or does
+/// not verify.
+fn verified_installed(
+    app: &InstalledApp,
+) -> Option<::launcher::run::tilolang_host::VerifiedInstance> {
+    let installed = super::installed_copy(app)?;
+    let evidence = super::original_application_creation(app, &installed)?;
+    ::launcher::run::tilolang_host::verified_instance(
+        &installed,
+        &app.manifest_path,
+        &app.payload_root,
+        &evidence.package_hash,
+    )
+    .ok()
 }
 
 /// The ids of changes applied at a record's origin: apart from every window's instance id.
@@ -370,17 +424,7 @@ pub(super) fn start_task(room: RoomId, task: &str) -> std::io::Result<OwnedFd> {
     let mut records_under = std::collections::BTreeMap::new();
     let mut runtimes: Option<(String, String)> = None;
     for app in apps.iter().filter(|app| runs_in_host(app)) {
-        let verified = super::installed_copy(app).and_then(|installed| {
-            let evidence = super::original_application_creation(app, &installed)?;
-            ::launcher::run::tilolang_host::verified_instance(
-                &installed,
-                &app.manifest_path,
-                &app.payload_root,
-                &evidence.package_hash,
-            )
-            .ok()
-        });
-        let Some(verified) = verified else {
+        let Some(verified) = verified_installed(app) else {
             tracing::warn!(package_id = %app.package_id, "a task's host leaves out an app it could not verify");
             continue;
         };

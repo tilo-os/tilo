@@ -29,6 +29,7 @@ use crate::widget::{
 };
 
 use super::{ListModel, ListModelChange, VirtualList};
+use crate::widget::ChangeMarkProps;
 
 /// The height a row is reckoned at before it is laid out: a row with a secondary line.
 // ratchet-allow(pixel_const): a height reckoned before layout measures it, not spacing
@@ -72,6 +73,10 @@ pub struct ListItemProps {
     /// while the row is hovered or holds focus; a swipe either way.
     #[component(slot)]
     pub attached: Attachments,
+    /// What someone else changed of the item that the person has not seen yet: the row shows
+    /// it, in their colour, on its trailing edge. The UI host places it (task-legibility §3).
+    #[component(slot)]
+    pub change: Option<ChangeMarkProps>,
     /// The row: a `ui.ListRow`, or any view.
     #[component(slot(default))]
     pub row: ItemRow,
@@ -306,6 +311,10 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         ItemRow::Row(row) => ItemRow::Row(Box::new(row.reusable()?)),
         ItemRow::View(_) => return None,
     };
+    // A row with a change mark holds its activation: it is built once, until it is seen.
+    if item.change.is_some() {
+        return None;
+    }
     Some(ListItemProps {
         key: item.key.clone(),
         item: item.item.clone(),
@@ -332,6 +341,7 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
                     .map(SwipeActionProps::again),
             },
         },
+        change: None,
         row,
     })
 }
@@ -517,25 +527,55 @@ fn bare_row(
             swipe,
             attached,
             row,
+            change,
             ..
         } = item;
+        // What someone else changed and the person has not seen: a pill in their colour.
+        let mark = change.and_then(|change| change.chip(&format!("{key}~change")));
         let row = match row {
             ItemRow::Row(mut props) => {
                 rows.row_props(&mut props, key);
                 // The list activates its rows itself, by key: a row of it is not a target of
                 // its own.
                 props.activate = Event::None;
+                // The mark stands on the trailing edge, unless the row holds a control there.
+                let beside = match mark {
+                    Some(mark) if props.trailing.is_none() => {
+                        props.trailing = Some(Box::new(mark));
+                        None
+                    }
+                    other => other,
+                };
                 let mut row = ListRow::from_props(key, *props);
                 if let Some(person) = presence {
                     row = row.presence(person.identity);
                 }
-                Box::new(row) as Element
+                with_mark(Box::new(row), beside)
             }
-            ItemRow::View(view) => view,
-            ItemRow::None => Box::new(ListRow::new(key.to_owned(), "")),
+            ItemRow::View(view) => with_mark(view, mark),
+            ItemRow::None => with_mark(Box::new(ListRow::new(key.to_owned(), "")), mark),
         };
         (row, swipe, attached)
     })
+}
+
+/// `row` with a change mark after it, on its line, when it has one.
+fn with_mark(row: Element, mark: Option<crate::widget::Chip>) -> Element {
+    match mark {
+        Some(mark) => {
+            let mut row = Slot::new(row);
+            row.fit =
+                crate::widget::arrange::Fit::hug().width(crate::widget::arrange::Sizing::fill(1.0));
+            Box::new(
+                Row::row()
+                    .fill_width()
+                    .align(Align::Center)
+                    .push_slot(row)
+                    .push(Box::new(mark)),
+            )
+        }
+        None => row,
+    }
 }
 
 /// `row` with the swipe and the hover toolbar its item has: the view's own swipe each way, the

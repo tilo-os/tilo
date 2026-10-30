@@ -14,7 +14,8 @@ use crate::session::Session;
 use crate::tools;
 use tilo_actions::remote::task_programs;
 
-/// The app a task's view answers are kept in until the person keeps or discards them.
+/// The app that keeps each person's own views, in their own record: a task's view answer is
+/// one of them, until the person keeps or discards it.
 pub(crate) const VIEWS_APP: &str = "so.tilo.lang.views";
 /// The Views action that keeps a view answer.
 const ANSWER_ACTION: &str = "answer";
@@ -181,8 +182,9 @@ impl Session {
     }
 
     /// Keep the view a finishing `plan` answers with: checked by the Views host first (it must
-    /// compile as a view over the apps it mounts), then kept by the Views app's `answer` action
-    /// as the task's, and recorded on the task's issue, which opens it beside the subject.
+    /// be one `view` declaration that compiles against the apps the workspace has installed),
+    /// then kept among the person's own views by Views' `answer` action, written by the task,
+    /// and recorded on the task's issue, which opens it beside the subject.
     ///
     /// `Err` is the refusal the model reads instead of finishing.
     pub(super) fn keep_view_answer(
@@ -223,17 +225,25 @@ impl Session {
         };
         let mut parameters = serde_json::Map::new();
         parameters.insert("source".into(), Value::String(view.source.clone()));
-        match self.host_call(run, state, &views.run_block, &parameters)? {
-            Ok(answer) if answer.get("kind").and_then(Value::as_str) == Some("view") => {}
-            Ok(_) => {
-                return Ok(Err(
-                    "Not finished: `view.source` is not a view (it is a value or an action). \
-                     Write a view block, such as `column { ... }`."
-                        .into(),
-                ));
-            }
+        let shows = match self.host_call(run, state, &views.run_block, &parameters)? {
+            Ok(answer) => match answer.get("definition") {
+                Some(definition) if answer.get("kind").and_then(Value::as_str) == Some("view") => {
+                    definition
+                        .get("shows")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                }
+                _ => {
+                    return Ok(Err(
+                        "Not finished: `view.source` is not a `view` declaration. Write one, \
+                         as an app declares a view: `view left() { column { ... } }`."
+                            .into(),
+                    ));
+                }
+            },
             Err(error) => return Ok(Err(format!("Not finished: the view {error}"))),
-        }
+        };
         let catalogue = self.task_catalogue();
         let Some(answer) = catalogue
             .offers
@@ -255,7 +265,8 @@ impl Session {
             "question".into(),
             Value::String(run.instruction().trim().to_owned()),
         );
-        parameters.insert("source".into(), Value::String(view.source.clone()));
+        parameters.insert("definition".into(), Value::String(view.source.clone()));
+        parameters.insert("shows".into(), Value::String(shows));
         let kept = match self.host_call(run, state, &answer, &parameters)? {
             Ok(kept) => kept,
             Err(error) => {

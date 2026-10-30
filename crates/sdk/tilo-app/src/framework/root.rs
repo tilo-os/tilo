@@ -2431,6 +2431,10 @@ impl RootApp for ResourceRoot {
             {
                 return Some(intent);
             }
+            // A view whose app runs elsewhere asks through its own door.
+            if let Some(intent) = ui_core::component_lifecycle::take_host_intent(widget) {
+                return Some(intent);
+            }
             widget
                 .children_mut()
                 .into_iter()
