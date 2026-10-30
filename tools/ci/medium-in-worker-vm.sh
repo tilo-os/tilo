@@ -10,7 +10,7 @@
 # IMAGE_DIR is the OCI layout and digest that os/image/build-layer.sh compose writes (oci/ and
 # digest); OUT receives disk.qcow2, its .sha256 and .hardware.json, and source.json. Run it from
 # a committed checkout; the medium names its commit. It needs podman, /dev/kvm and the tilo-vm
-# binary in $TILO_VM_BIN, which tools/ci/signin-e2e-builder.sh builds. The worker's disk is
+# binary in $TILO_VM_BIN, which tools/ci/build-os.sh builds. The worker's disk is
 # fetched once into $TILO_WORKER_DISK_CACHE (default /var/tmp/tilo-worker-disk) and checked
 # against its SHA-256.
 #

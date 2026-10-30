@@ -25,7 +25,7 @@ case $arch in
   x86_64|aarch64) ;;
   *) echo "signin-e2e runs on x86_64 or aarch64, not $arch" >&2; exit 2 ;;
 esac
-[[ -f $medium ]] || { echo "no installer medium at $medium: build one with tools/ci/signin-e2e-builder.sh" >&2; exit 2; }
+[[ -f $medium ]] || { echo "no installer medium at $medium: build one with tools/ci/build-os.sh medium" >&2; exit 2; }
 [[ -c /dev/kvm ]] || { echo 'no /dev/kvm: the guests need hardware virtualisation' >&2; exit 2; }
 
 # QEMU, firmware and swtpm for vm.sh; tesseract and ImageMagick read the boot screens. Where
