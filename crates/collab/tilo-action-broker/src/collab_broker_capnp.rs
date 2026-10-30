@@ -6969,51 +6969,98 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>();
             for id in ids {
                 if let Some(invocation) = pending.remove(&id) {
-                    invocation.cancellation_fence.store(true, Ordering::Release);
-                    let completion = InvocationCompletion {
-                        code: "action_failed".into(),
-                        message: "application disconnected before completing the action".into(),
-                    };
-                    let update = tilo_actions::InvocationUpdate::Failed {
-                        invocation: invocation.update.invocation(),
-                        error: tilo_actions::ActionFailure {
-                            code: completion.code.clone(),
-                            message: completion.message.clone(),
-                            details: None,
-                            retryable: invocation.retryable_on_disconnect,
-                        },
-                    };
-                    let (update, completion) = if invocation.journal_key.is_some() {
-                        (
-                            invocation_journal::unknown(invocation.update.invocation()),
-                            InvocationCompletion {
-                                code: "action_outcome_unknown".into(),
-                                message: "application outcome unknown after disconnect".into(),
-                            },
-                        )
-                    } else {
-                        (update, completion)
-                    };
-                    if self
-                        .persist_uncertain_outcome(&invocation, update.clone())
-                        .is_err()
-                    {
-                        self.execution_activity.publish_status(
-                            invocation.activity.as_ref(),
-                            ExecutionStatus::OutcomeUnknown,
-                        );
-                        continue;
-                    }
-                    self.publish_activity(invocation.activity.as_ref(), &update);
-                    self.record_completion(id, invocation.completion_owner(), update.clone());
-                    if let Ok(mut requests) = self.cancellation_requests.lock() {
-                        requests.remove(&id);
-                    }
-                    let _ = invocation.tx.send(completion);
-                    self.record_effect_receipt(&invocation, &update);
+                    self.answer_unfinished(
+                        id,
+                        &invocation,
+                        "application disconnected before completing the action",
+                        "application outcome unknown after disconnect",
+                    );
                 }
             }
         }
+    }
+
+    /// Answer invocation `id` of `peer_id`, whose terminal update could not
+    /// be recorded (`error`), with that reason: its asker hears why, never
+    /// that its peer went away. The peer goes on serving the others.
+    pub(super) fn fail_unrecorded_invocation(&self, peer_id: u64, id: u64, error: &str) {
+        let Some(invocation) = self
+            .pending_invocations
+            .lock()
+            .ok()
+            .and_then(|mut pending| {
+                pending
+                    .get(&id)
+                    .is_some_and(|invocation| invocation.peer_id == peer_id)
+                    .then(|| pending.remove(&id))
+                    .flatten()
+            })
+        else {
+            return;
+        };
+        let failed = format!("the action's outcome could not be recorded: {error}");
+        self.answer_unfinished(id, &invocation, &failed, &failed);
+    }
+
+    /// Answer `invocation`, taken out of the pending registry unfinished:
+    /// an unjournaled one fails with `failed`, a journaled one's outcome is
+    /// unknown, said as `unknown`.
+    fn answer_unfinished(
+        &self,
+        id: u64,
+        invocation: &PendingInvocation,
+        failed: &str,
+        unknown: &str,
+    ) {
+        invocation.cancellation_fence.store(true, Ordering::Release);
+        let (update, completion) = if invocation.journal_key.is_some() {
+            (
+                invocation_journal::unknown(invocation.update.invocation()),
+                InvocationCompletion {
+                    code: "action_outcome_unknown".into(),
+                    message: unknown.into(),
+                },
+            )
+        } else {
+            (
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation: invocation.update.invocation(),
+                    error: tilo_actions::ActionFailure {
+                        code: "action_failed".into(),
+                        message: failed.into(),
+                        details: None,
+                        retryable: invocation.retryable_on_disconnect,
+                    },
+                },
+                InvocationCompletion {
+                    code: "action_failed".into(),
+                    message: failed.into(),
+                },
+            )
+        };
+        if self
+            .persist_uncertain_outcome(invocation, update.clone())
+            .is_err()
+        {
+            // Its uncertainty is not durable either: its asker still hears
+            // that no outcome comes, rather than waiting on nobody.
+            self.execution_activity.publish_status(
+                invocation.activity.as_ref(),
+                ExecutionStatus::OutcomeUnknown,
+            );
+            let _ = invocation.tx.send(InvocationCompletion {
+                code: "action_outcome_unknown".into(),
+                message: unknown.into(),
+            });
+            return;
+        }
+        self.publish_activity(invocation.activity.as_ref(), &update);
+        self.record_completion(id, invocation.completion_owner(), update.clone());
+        if let Ok(mut requests) = self.cancellation_requests.lock() {
+            requests.remove(&id);
+        }
+        let _ = invocation.tx.send(completion);
+        self.record_effect_receipt(invocation, &update);
     }
 
     fn disconnect_file_transfers(&self, peer_id: u64) {

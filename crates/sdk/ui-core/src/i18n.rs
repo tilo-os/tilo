@@ -541,6 +541,22 @@ fn format_from_bundle(
     Some((value, errors.is_empty()))
 }
 
+/// Log, once per message and thread, that `key` formatted only with errors
+/// in every catalogue: its caller left a variable out, or the message
+/// references one that does not exist. The person sees a `{ $… }`.
+fn report_unformatted(key: &str) {
+    thread_local! {
+        static REPORTED: std::cell::RefCell<std::collections::HashSet<String>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
+    }
+    if REPORTED.with(|reported| reported.borrow_mut().insert(key.to_owned())) {
+        tracing::error!(
+            message_key = key,
+            "a message was shown with a placeable unfilled: its caller passed no value for a variable it names"
+        );
+    }
+}
+
 /// Formats a message through a chain of bundles. The first bundle that
 /// formats it cleanly wins; a bundle that formats it only with errors is
 /// remembered and returned if no later bundle does better.
@@ -923,7 +939,14 @@ impl I18nManager {
                         .and_then(|bundle| resolution.attempt(bundle))
                 })
             })
-            .or(resolution.partial)
+            .or_else(|| {
+                // Every catalogue formats it only with errors: a variable
+                // the caller did not pass, or a reference to no message.
+                // Shown as best it can be, and said once per message.
+                let partial = resolution.partial.take()?;
+                report_unformatted(key);
+                Some(partial)
+            })
             .unwrap_or_else(|| key.to_string());
         apply_pseudo_locale(resolved, args, pseudo_language)
     }

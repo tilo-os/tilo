@@ -292,3 +292,68 @@ fn store_at(data_home: &std::path::Path, package: &str) -> RecordStore {
         uuid::Uuid::nil().to_string(),
     ))
 }
+
+/// A window that did not open asks for its launch again when its Reopen is
+/// pressed in the desktop itself, not only in a harness of its own: the
+/// press reaches the session as a retry of that exact window.
+#[test]
+fn reopen_pressed_on_the_desktop_asks_for_the_launch_again() {
+    let tree = tree_with_two_document_tabs();
+    let detail = crate::shell::i18n::t("launch-failed-launcher-unavailable");
+    {
+        let mut state = tree.write();
+        let group = &mut state.desktop.workspaces[0].strips[0].window_groups[0];
+        group.tabs.truncate(1);
+        group.tabs[0].tile = StateTile::LocalApp {
+            app_id: "so.tilo.lang.notes".into(),
+            label: "Notes".into(),
+            note: detail,
+        };
+    }
+    let mut frame = crate::shell::frame::FrameBuilder::with_handle_and_records(
+        tree.clone(),
+        false,
+        (1000, 700),
+        RecordStore::in_memory(),
+    );
+    let mut document = AutoCommit::new();
+    for _ in 0..2 {
+        frame.pump_apps(&mut document, &automerge::ROOT);
+        frame.relayout();
+    }
+    assert!(!frame.paint().encoding().is_empty());
+    assert!(!crate::shell::peer_windows::retry_requested());
+    let target = format!("reopen-window:{TAB_A}");
+    let center = frame
+        .widget_registry()
+        .get(&target)
+        .expect("the card offers Reopen")
+        .center();
+    let mut focus = None;
+    for event in [
+        ui::synthetic_input::cursor_moved(center.x, center.y),
+        ui::synthetic_input::mouse_press(),
+        ui::synthetic_input::mouse_release(),
+    ] {
+        frame.dispatch_event(
+            &event,
+            &winit::event::Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &mut focus,
+        );
+    }
+    frame.pump_apps(&mut document, &automerge::ROOT);
+    assert!(
+        crate::shell::peer_windows::retry_requested(),
+        "pressing Reopen asks for the window's launch again"
+    );
+    assert!(crate::shell::peer_windows::examine(&mut tree.write()));
+    assert!(
+        matches!(
+            &tree.read().desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile,
+            StateTile::LocalApp { note, .. } if note != &crate::shell::i18n::t("launch-failed-launcher-unavailable")
+        ),
+        "the card gives way to the window's launch"
+    );
+}

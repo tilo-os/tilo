@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use super::*;
 
+mod failure_copy;
 mod host_windows;
 mod launch_records;
 
@@ -359,7 +360,10 @@ fn launch_failure_copy_and_logs_are_bounded_and_never_leak_detail() {
             })
             .failure_notice()
             .unwrap();
-            assert_eq!(notice.body, crate::shell::i18n::t(key));
+            assert_eq!(
+                notice.body,
+                crate::shell::i18n::t_args(key, &[("app", "Broken App".into())])
+            );
             assert_ne!(notice.body, unavailable);
             assert!(!notice.body.contains("raw detail"));
         }
@@ -377,7 +381,7 @@ fn launch_failure_copy_and_logs_are_bounded_and_never_leak_detail() {
         .unwrap();
         assert_eq!(
             not_listed.body,
-            crate::shell::i18n::t("launch-error-app-not-in-workspace")
+            "This workspace doesn't include Broken App. An administrator can add it."
         );
         assert!(!not_listed.body.contains("authorship"));
         assert_ne!(

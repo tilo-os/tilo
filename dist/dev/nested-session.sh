@@ -287,6 +287,11 @@ if [[ -f $tilolang_bin ]]; then
         printf '%s\n' "$tilolang_key" > "$runtimes/.tilolang-key"
     fi
     printf '%s\n' "$tilolang_version" > "$runtimes/.tilolang-version"
+    # Pinned (runtime_bundle::gc's .pins/<version>): no installed package names
+    # it until the first `tilolang dev`, and the collection after each app
+    # install below would otherwise take it away.
+    mkdir -p "$runtimes/.pins"
+    : > "$runtimes/.pins/$tilolang_version"
 fi
 
 # --- 5. Session environment ----------------------------------------------------
