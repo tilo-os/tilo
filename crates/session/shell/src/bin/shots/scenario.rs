@@ -33,6 +33,7 @@ use super::driver::ShellDriver;
 #[cfg(feature = "test-support")]
 mod catch_up;
 mod desk_gestures;
+mod display_brightness;
 mod file_chooser;
 pub mod film;
 mod keyboard;
@@ -1078,6 +1079,9 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::ClickAt(p) => driver.click_at(*p),
         Action::ClickNamed(name) => match driver.resolve_named_centre(name) {
             Some(p) => driver.click_at(p),
+            // A control the semantic tree names but places nowhere a click
+            // reaches is activated as assistive technology activates it.
+            None if driver.activate_named(name) => {}
             None => eprintln!(
                 "scenario: could not resolve named target '{name}' (rect not populated yet — paint first?)"
             ),
@@ -1949,6 +1953,9 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 st.quick_settings.status = status.clone();
                 st.bump();
             });
+        }
+        Action::SeedOsd(preset @ ("brightness_other_display" | "brightness_all_displays")) => {
+            display_brightness::seed(driver, preset);
         }
         Action::SeedOsd(preset) => {
             let osd = osd_preset(preset);
@@ -5407,6 +5414,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("08-no-backlight"),
             ],
         },
+        display_brightness::scenario(),
         Scenario {
             name: "wifi_password_prompt",
             description: "Quick settings' Wi-Fi pane asking for a passphrase, empty / typed / rejected.",

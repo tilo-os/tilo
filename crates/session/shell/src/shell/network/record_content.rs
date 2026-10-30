@@ -11,9 +11,7 @@
 //! the devices their root certified and nobody else, whichever room the
 //! window showing the record is in.
 
-use super::{
-    NetCmd, PersonalFabricPayload, ShellNetwork, personal_continuity_topic_id, room_topic_id,
-};
+use super::{NetCmd, PersonalFabricPayload, ShellNetwork, room_topic_id};
 use crate::shell::state::RoomId;
 use neighbour_wire::NeighbourMsg;
 use std::collections::{BTreeSet, HashMap};
@@ -27,6 +25,10 @@ const MAX_REMEMBERED_REQUESTERS: usize = 256;
 /// Messages waiting for the broker; past it, new ones are dropped and
 /// asked again later.
 const MAX_QUEUED: usize = 512;
+/// Where the devices that asked for a person record's content are
+/// remembered: on no room's topic, since they ask over their session with
+/// this device.
+const PERSON_CONTENT: u64 = tilo_network_actor::DEFAULT_WS_TOPIC;
 
 /// A request or answer from another device, for the broker's drainer.
 #[derive(Debug, Clone)]
@@ -116,10 +118,9 @@ impl ShellNetwork {
             if !self.personal_fabric_allowed() {
                 return ContentSources::default();
             }
-            let ws = personal_continuity_topic_id(&user);
             return ContentSources {
                 peers: self
-                    .personal_route_targets(ws, &user)
+                    .personal_route_targets(&user)
                     .iter()
                     .map(handle)
                     .collect(),
@@ -211,14 +212,13 @@ impl ShellNetwork {
     /// none of it.
     pub fn lacks_record_content(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str) {
         if self.is_local_person_room(&route.cluster_id) {
-            let Some((ws, user_public_key)) = self.person_fabric() else {
+            let Some(user_public_key) = self.person_fabric() else {
                 return;
             };
-            let Some(target) = self.requester(ws, peer) else {
+            let Some(target) = self.requester(PERSON_CONTENT, peer) else {
                 return;
             };
             let _ = self.cmd_tx.try_send(NetCmd::PublishPersonalFabricTarget {
-                ws,
                 user_public_key,
                 target,
                 payload: PersonalFabricPayload::RecordContentLacks {
@@ -378,24 +378,22 @@ impl ShellNetwork {
     }
 
     /// The person's fabric, when this device has a person and may use it.
-    fn person_fabric(&self) -> Option<(u64, [u8; 32])> {
+    fn person_fabric(&self) -> Option<[u8; 32]> {
         let user = self.local_person?;
-        let ws = personal_continuity_topic_id(&user);
-        (self.personal_fabric_allowed() && self.join_topic(ws)).then_some((ws, user))
+        self.personal_fabric_allowed().then_some(user)
     }
 
     /// Ask the person's other devices for content of one of their records.
     fn want_person_content(&self, route: &CrdtRoute, hash: &str) {
-        let Some((ws, user_public_key)) = self.person_fabric() else {
+        let Some(user_public_key) = self.person_fabric() else {
             return;
         };
         let payload = PersonalFabricPayload::RecordContentWant {
             app_id: route.app_id.clone(),
             hash: hash.to_owned(),
         };
-        for target in self.personal_route_targets(ws, &user_public_key) {
+        for target in self.personal_route_targets(&user_public_key) {
             let _ = self.cmd_tx.try_send(NetCmd::PublishPersonalFabricTarget {
-                ws,
                 user_public_key,
                 target,
                 payload: payload.clone(),
@@ -406,14 +404,13 @@ impl ShellNetwork {
     /// Send a piece of a person record's content to the device of the
     /// person that asked for it.
     fn answer_person_content(&self, route: &CrdtRoute, peer: ContentPeer, piece: ContentPiece) {
-        let Some((ws, user_public_key)) = self.person_fabric() else {
+        let Some(user_public_key) = self.person_fabric() else {
             return;
         };
-        let Some(target) = self.requester(ws, peer) else {
+        let Some(target) = self.requester(PERSON_CONTENT, peer) else {
             return;
         };
         let _ = self.cmd_tx.try_send(NetCmd::PublishPersonalFabricTarget {
-            ws,
             user_public_key,
             target,
             payload: PersonalFabricPayload::RecordContentPiece {
@@ -430,7 +427,6 @@ impl ShellNetwork {
     /// sent on the fabric, which already authenticated it as theirs.
     pub(super) fn dispatch_person_content(
         &self,
-        ws: u64,
         transport: iroh::EndpointId,
         payload: PersonalFabricPayload,
     ) {
@@ -440,7 +436,7 @@ impl ShellNetwork {
         let peer = tilo_network_actor::behaviour::peer_liveness_handle(&transport);
         let entry = match payload {
             PersonalFabricPayload::RecordContentWant { app_id, hash } => {
-                self.remember_requester(ws, peer, transport);
+                self.remember_requester(PERSON_CONTENT, peer, transport);
                 InboundRecordContent::Want {
                     route: route(app_id, room.to_string()),
                     peer,
@@ -655,25 +651,17 @@ pub(super) mod tests {
             .collect()
     }
 
-    /// `peer` connects to `device` on `room`'s topic, or leaves it, as the
-    /// transport reports; the broker drains what that changed.
+    /// `peer` joins `room` at the room's host as `device` reaches it, or
+    /// leaves it, as the host reports; the broker drains what that changed.
     fn link(device: &Device, peer: &Device, room: RoomId, up: bool) {
-        let ws = room_topic_id(room);
-        let epoch = tilo_network_actor::MembershipEpoch::for_test(1);
-        device.net.dispatch_net_event(if up {
-            super::super::NetEvent::PeerJoined {
-                ws,
-                peer: peer.transport,
-                membership_epoch: epoch,
-            }
-        } else {
-            super::super::NetEvent::PeerLeft {
-                ws,
-                peer: peer.transport,
-                cause: super::super::PeerDepartureCause::GossipNeighborDown,
-                membership_epoch: Some(epoch),
-            }
-        });
+        device
+            .net
+            .dispatch_net_event(super::super::NetEvent::HostMember {
+                ws: room_topic_id(room),
+                host: iroh::SecretKey::from_bytes(&[0x0A; 32]).public(),
+                device: peer.transport,
+                active: up,
+            });
         let inbound = device.net.inbound_record_content_handle();
         assert!(crate::shell::record_content::drain(
             &inbound,
@@ -773,15 +761,13 @@ pub(super) mod tests {
                 while let Ok(command) = sent.try_recv() {
                     match command {
                         NetCmd::PublishPersonalFabricTarget {
-                            ws,
+                            user_public_key,
                             target,
                             payload,
-                            ..
                         } => {
-                            assert_eq!(ws, personal_continuity_topic_id(&user));
+                            assert_eq!(user_public_key, user);
                             assert_ne!(target, from.public(), "never back to the sender");
                             to.dispatch_personal_fabric(
-                                ws,
                                 from.public(),
                                 tilo_network_actor::MembershipEpoch::for_test(1),
                                 user,

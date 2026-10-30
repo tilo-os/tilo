@@ -284,6 +284,8 @@ pub struct SemanticNode {
     pub name: Option<String>,
     /// A field's contents, a slider's readout, etc.
     pub value: Option<String>,
+    /// What is said after the name: a dialog's situation and keys.
+    pub description: Option<String>,
     pub state: AccessState,
     /// `None` for the root and resource nodes. Virtual rows and cells publish
     /// their viewport geometry even though they have no retained widget.
@@ -335,6 +337,7 @@ impl SemanticNode {
             && self.role == other.role
             && self.name == other.name
             && self.value == other.value
+            && self.description == other.description
             && self.state == other.state
             && self.bounds == other.bounds
             && self.actions == other.actions
@@ -418,6 +421,7 @@ impl SemanticTree {
                 role: Role::Window,
                 name: Some("Tilo application window".into()),
                 value: None,
+                description: None,
                 state: AccessState::default(),
                 bounds: None,
                 actions: Vec::new(),
@@ -664,6 +668,7 @@ impl SemanticTree {
                 role: Role::Window,
                 name: Some("Tilo application window".into()),
                 value: None,
+                description: None,
                 state: AccessState::default(),
                 bounds: None,
                 actions: Vec::new(),
@@ -1344,6 +1349,26 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         }
     }
 
+    /// `id`, or one of its own when an earlier sibling already took it
+    /// (two controls under one parent keyed alike): each stays a node a
+    /// reader names and focuses. The repeated id is reported, so neither
+    /// is offered as an action target, and the copy is never durable.
+    fn unrepeated(&mut self, id: SemanticId) -> (SemanticId, bool) {
+        if !self.nodes.contains_key(&id) {
+            return (id, false);
+        }
+        let mut n = 1usize;
+        let copy = loop {
+            let copy = SemanticId(format!("{}#{n}", id.0));
+            if !self.nodes.contains_key(&copy) {
+                break copy;
+            }
+            n = n.saturating_add(1);
+        };
+        self.duplicate_ids.push(id);
+        (copy, true)
+    }
+
     fn insert_node(&mut self, node: SemanticNode) {
         let id = node.id.clone();
         if self.nodes.insert(id.clone(), node).is_some() {
@@ -1505,7 +1530,8 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             let sibling = parent.children.last().unwrap_or(&root);
             SemanticId::synthetic(sibling, parent.children.len())
         };
-        let durable = access.semantic_key.is_some() && parent.durable;
+        let (id, repeated) = self.unrepeated(id);
+        let durable = access.semantic_key.is_some() && parent.durable && !repeated;
         self.ambiguous_projection |= durable
             && access
                 .semantic_key
@@ -1587,6 +1613,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             } else {
                 access.value.clone()
             },
+            description: access.description.clone(),
             state,
             bounds: Some(w.get_rect()),
             actions,
@@ -1659,6 +1686,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             } else {
                 access.value.clone()
             },
+            description: access.description.clone(),
             state: access.state,
             bounds: access.bounds.map(crate::a11y::AccessBounds::to_rect),
             actions: if semantic_target.is_some() {
@@ -1756,6 +1784,59 @@ mod tests {
     }
 
     #[test]
+    fn controls_keyed_alike_under_one_parent_stay_two_nodes() {
+        use crate::widget::Slider;
+        let first = crate::LocalState::new(0.2);
+        let second = crate::LocalState::new(0.7);
+        let mut col = Column::new()
+            .push(Box::new(Button::new("same", "First")))
+            .push(Box::new(Button::new("same", "Second")))
+            .push(Box::new(
+                Slider::from_state(&first).with_accessible_name("Brightness"),
+            ))
+            .push(Box::new(
+                Slider::from_state(&second).with_accessible_name("Volume"),
+            ));
+        let node_map = layout(&mut col);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&col, &node_map, None, &[]);
+        let root = tree.node(tree.root()).unwrap();
+        let names: Vec<_> = root
+            .children
+            .iter()
+            .map(|id| tree.node(id).and_then(|node| node.name.clone()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                Some("First".to_owned()),
+                Some("Second".to_owned()),
+                Some("Brightness".to_owned()),
+                Some("Volume".to_owned()),
+            ]
+        );
+        let unique: std::collections::HashSet<_> = root.children.iter().collect();
+        assert_eq!(unique.len(), root.children.len(), "each is its own node");
+        assert!(
+            tree.action_resources()
+                .iter()
+                .all(|resource| resource.label != "First" && resource.label != "Second"),
+            "a repeated key is no action target"
+        );
+    }
+
+    #[test]
+    fn sliders_given_ids_are_keyed_by_them() {
+        use crate::widget::Slider;
+        let level = crate::LocalState::new(0.5);
+        let slider = Slider::from_state(&level).with_id("qs-volume");
+        assert_eq!(
+            slider.accessibility().unwrap().semantic_key.as_deref(),
+            Some("qs-volume")
+        );
+    }
+
+    #[test]
     fn semantic_ids_are_durable_and_exported_only_when_stable() {
         {
             let mut col = Column::new()
@@ -1807,6 +1888,7 @@ mod tests {
                 role: Role::Button,
                 name: Some("Save".into()),
                 value: None,
+                description: None,
                 state: AccessState::default(),
                 bounds: Some(Rect::new(0.0, 0.0, 10.0, 10.0)),
                 actions: Vec::new(),

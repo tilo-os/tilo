@@ -1830,6 +1830,41 @@ mod accessibility_tests {
             .unwrap_or_else(|| panic!("the forecast exposes a {name:?} group"))
     }
 
+    /// A staged age is measured against the clock the page reads it back
+    /// with, so a capture says "4 minutes ago" or "out of date" as asked.
+    #[test]
+    fn a_staged_forecast_age_is_measured_against_the_clock_the_page_reads() {
+        let ages = |core: &Core| {
+            let now = ui::clock::local_now().naive_local();
+            core.model
+                .snapshots
+                .values()
+                .map(|snapshot| {
+                    crate::freshness::updated(snapshot.fetched_at, now)
+                        .expect("a staged forecast has an age")
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut core = Core::new(crate::sample::sample_model(), Units::METRIC);
+        core.seed_fetched(std::time::Duration::from_secs(4 * 60));
+        let fresh = ages(&core);
+        assert!(!fresh.is_empty());
+        assert!(
+            fresh.iter().all(|age| !age.stale),
+            "four minutes is current"
+        );
+        assert!(
+            fresh.iter().all(|age| age.text.starts_with("Updated 4")),
+            "the page says four minutes: {}",
+            fresh[0].text
+        );
+        core.seed_fetched(std::time::Duration::from_secs(5 * 60 * 60));
+        assert!(
+            ages(&core).iter().all(|age| age.stale),
+            "five hours is out of date"
+        );
+    }
+
     #[test]
     fn every_hour_and_day_is_a_row_a_screen_reader_can_read() {
         let (core, snapshot) = core(Units::IMPERIAL);

@@ -12,9 +12,8 @@
 //!   that record's channel and no other. A participant names the record from a
 //!   grant naming it ([`collab_types::named_record_of_channel`]) or from the
 //!   route a device proved with its request ([`collab_types::ChannelRoute`]);
-//!   a channel whose record it cannot name is withheld from whoever a Deny
-//!   over a pattern of records could keep out of it
-//!   ([`collab_types::pattern_read_witnesses`]);
+//!   a channel whose record it cannot name may be a member's own record and
+//!   is withheld from everyone until a device names it;
 //! - each allowed person reads through every certified device of theirs:
 //!   the devices the room's governor admitted (root-signed certificate,
 //!   unexpired, not revoked), plus, for this machine's own identity, the
@@ -175,14 +174,6 @@ pub fn fleet_devices(
 }
 
 impl ChannelDirectory for WorkspaceChannelDirectory {
-    fn governs(&self, room: RoomId) -> bool {
-        // A room this device governs is its own room host's, which takes part
-        // in its channels for this device.
-        self.hosted.is_none()
-            && self.tree.read().rooms().contains(&room)
-            && (self.governors)(room).is_some_and(|(here, governor)| here == governor)
-    }
-
     fn hosted_channel_keys(
         &self,
         room: RoomId,
@@ -203,9 +194,11 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
         channel: ChannelId,
         route: Option<&ChannelRoute>,
         now: u64,
-    ) -> BTreeSet<Ed25519PublicKey> {
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let own = (self.own_devices)(room);
-        allowed_devices(&self.tree.read(), (room, channel, route), now, &own)
+        let tree = self.tree.read();
+        names_record(&tree, room, channel, route)
+            .then(|| allowed_devices(&tree, (room, channel, route), now, &own))
     }
 
     fn policy_epoch(&self) -> Option<u64> {
@@ -266,11 +259,9 @@ pub type ChannelOf<'r> = (RoomId, ChannelId, Option<&'r ChannelRoute>);
 /// record's keys. The record is the one a grant names
 /// ([`collab_types::named_record_of_channel`]) or `route`, once it proves to
 /// be the channel's: then a Deny on the record, its app or any pattern over
-/// it withholds the channel. A channel whose record is neither is any record
-/// nothing names, so a reader must be allowed to read every record a Deny
-/// over a pattern stands for ([`collab_types::pattern_read_witnesses`]): a
-/// person denied one app's records reads no unnamed channel until a device
-/// names its record, and every other reader is unaffected.
+/// it withholds the channel. A channel whose record is neither may be any
+/// record, a member's own included, so no one reads it until a device names
+/// its record.
 pub fn allowed_devices(
     tree: &WorkspaceTree,
     (room, channel, route): ChannelOf<'_>,
@@ -303,16 +294,19 @@ pub fn allowed_devices(
             }),
     );
     let room_node = workspace.node();
-    let records = channel_records(workspace, channel, route);
+    // A channel whose record nobody named may be anyone's own record
+    // (`member:<root>:<kind>`), which its id does not tell: no one reads it
+    // until a device names the record.
+    let Some(record) = channel_record(workspace, channel, route) else {
+        return BTreeSet::new();
+    };
     let read = tilo_action_policy::ActionKind::Read;
     let allow = tilo_action_policy::Answer::Allow;
     let readers: BTreeSet<String> = people
         .into_iter()
         .filter(|person| {
             workspace.answer_at(person, &room_node, read, now) == allow
-                && records
-                    .iter()
-                    .all(|node| workspace.answer_at(person, node, read, now) == allow)
+                && workspace.answer_at(person, &record, read, now) == allow
         })
         .collect();
     let now_ns = now.saturating_mul(1_000_000_000);
@@ -343,12 +337,10 @@ pub fn allowed_devices(
             super::service_members::service_principal(&member.device),
         );
         let authority = workspace.subject_authority(subject);
-        let reads_record = records.iter().all(|node| {
-            authority
-                .decide(node, read, &tilo_desktop_model::context_at(now))
-                .answer
-                == allow
-        });
+        let reads_record = authority
+            .decide(&record, read, &tilo_desktop_model::context_at(now))
+            .answer
+            == allow;
         if member.kinds.contains(read) && reads_record {
             allowed.insert(member.device);
         }
@@ -356,29 +348,37 @@ pub fn allowed_devices(
     allowed
 }
 
-/// The record nodes a reader of `channel` must be allowed to read: its
-/// record's, when a grant names it or `route` proves to be its route, and
-/// otherwise one for each Deny over a pattern of records, standing for every
-/// record it covers that nothing names.
-fn channel_records(
+/// Whether a grant names `channel`'s record or `route` proves to be its
+/// route: only then can anyone tell who may read it. A room this device does
+/// not hold names nothing.
+fn names_record(
+    tree: &WorkspaceTree,
+    room: RoomId,
+    channel: ChannelId,
+    route: Option<&ChannelRoute>,
+) -> bool {
+    tree.desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room() == room)
+        .is_some_and(|workspace| channel_record(workspace, channel, route).is_some())
+}
+
+/// The node of `channel`'s record, when a grant names it or `route` proves
+/// to be its route.
+fn channel_record(
     workspace: &tilo_desktop_model::Workspace,
     channel: ChannelId,
     route: Option<&ChannelRoute>,
-) -> Vec<tilo_action_policy::TreePath> {
+) -> Option<tilo_action_policy::TreePath> {
     let room = &workspace.policy.room;
-    let named = collab_types::named_record_of_channel(&workspace.policy.grants, room, channel)
+    collab_types::named_record_of_channel(&workspace.policy.grants, room, channel)
         .or_else(|| {
             route
                 .filter(|route| route.proves(room, channel))
                 .map(|route| (route.app.as_str(), route.record.as_str()))
-        });
-    if let Some((app, record)) = named {
-        return vec![collab_types::document_node(room, app, record)];
-    }
-    collab_types::pattern_read_witnesses(&workspace.policy.grants, room)
-        .iter()
+        })
         .map(|(app, record)| collab_types::document_node(room, app, record))
-        .collect()
 }
 
 #[cfg(test)]
@@ -450,6 +450,18 @@ mod tests {
 
     fn person(root: &ed25519_dalek::SigningKey) -> String {
         hex::encode(root.verifying_key().to_bytes())
+    }
+
+    /// The channel of an ordinary record of `room`, and its route.
+    fn notes_of(tree: &WorkspaceTree, room: RoomId) -> (ChannelId, ChannelRoute) {
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .unwrap();
+        let route = ChannelRoute::new("so.tilo.notes", "plan");
+        (route.channel(&workspace.policy.room), route)
     }
 
     fn endpoint(cert: &tilo_user_identity::DeviceCert) -> String {
@@ -527,14 +539,13 @@ mod tests {
             (cert(&owner, 10, false), false),
             (cert(&owner, 11, false), true),
         ];
+        let (notes, route) = notes_of(&tree, room);
+        let notes = (room, notes, Some(&route));
         assert_eq!(
-            allowed_devices(&tree, (room, ChannelId::new(), None), 1_000, &own),
+            allowed_devices(&tree, notes, 1_000, &own),
             BTreeSet::from([device_key(10), device_key(20), device_key(21)])
         );
-        assert!(
-            allowed_devices(&tree, (room, ChannelId::new(), None), 100, &own)
-                .contains(&device_key(30))
-        );
+        assert!(allowed_devices(&tree, notes, 100, &own).contains(&device_key(30)));
 
         // Bob is removed from the room: his devices go with him.
         tree.desktop
@@ -544,12 +555,10 @@ mod tests {
             .unwrap()
             .dismiss(&person(&bob));
         assert_eq!(
-            allowed_devices(&tree, (room, ChannelId::new(), None), 1_000, &own),
+            allowed_devices(&tree, notes, 1_000, &own),
             BTreeSet::from([device_key(10)])
         );
-        assert!(
-            allowed_devices(&tree, (RoomId::new(), ChannelId::new(), None), 1_000, &own).is_empty()
-        );
+        assert!(allowed_devices(&tree, (RoomId::new(), notes.1, notes.2), 1_000, &own).is_empty());
     }
 
     /// A Read Deny on one record keeps the denied person's devices, and a
@@ -610,16 +619,17 @@ mod tests {
         let own = vec![(cert(&owner, 10, false), false)];
 
         let payroll = collab_types::document_channel_id(app, &room_id, "payroll");
-        let notes = collab_types::document_channel_id(app, &room_id, "notes");
-        let unwritten = collab_types::document_channel_id("so.tilo.notes", &room_id, "draft");
+        let notes = ChannelRoute::new(app, "notes");
+        let unwritten = ChannelRoute::new("so.tilo.notes", "draft");
         assert_eq!(
             allowed_devices(&tree, (room, payroll, None), 1_000, &own),
             BTreeSet::from([device_key(10), device_key(30)])
         );
         let everyone = BTreeSet::from([device_key(10), device_key(20), device_key(30), service]);
-        for channel in [notes, unwritten] {
+        for route in [notes, unwritten] {
+            let channel = route.channel(&room_id);
             assert_eq!(
-                allowed_devices(&tree, (room, channel, None), 1_000, &own),
+                allowed_devices(&tree, (room, channel, Some(&route)), 1_000, &own),
                 everyone
             );
         }
@@ -639,9 +649,9 @@ mod tests {
     /// "Finance: Deny Read; Finance › summary: Allow Read" for Bob, and
     /// "Finance: Deny Read" for a service member: a channel whose route proves
     /// a finance record is withheld from both, the summary's is not, another
-    /// app's is not, and a channel whose record is unknown is withheld from
-    /// them (it may be finance's) but from no other reader. A route that is
-    /// not the channel's names nothing.
+    /// app's is not. A channel whose record is unknown is withheld from
+    /// everyone (it may be a member's own record), and a route that is not
+    /// the channel's names nothing. A member's own record is theirs alone.
     #[test]
     fn a_read_deny_over_an_app_withholds_every_routed_channel_of_it() {
         let owner = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
@@ -721,21 +731,20 @@ mod tests {
         assert_eq!(routed(&tree, "finance", "summary"), summary);
         assert_eq!(routed(&tree, "so.tilo.notes", "draft"), everyone);
 
-        // A channel nobody named: it may be finance's.
-        let unknown = ChannelRoute::new("so.tilo.notes", "plan").channel(&room_id);
-        assert_eq!(
-            allowed_devices(&tree, (room, unknown, None), 1_000, &own),
-            without_bob_and_service
-        );
+        // A channel nobody named may be anyone's own record: no one reads it.
+        let carols = collab_types::member_record_id(&person(&carol), "chat.drafts");
+        let unknown = ChannelRoute::new("so.tilo.chat", carols.as_str()).channel(&room_id);
+        assert!(allowed_devices(&tree, (room, unknown, None), 1_000, &own).is_empty());
         // A route that is not the channel's is no route at all.
         let forged = ChannelRoute::new("so.tilo.notes", "other");
-        assert_eq!(
-            allowed_devices(&tree, (room, unknown, Some(&forged)), 1_000, &own),
-            without_bob_and_service
-        );
+        assert!(allowed_devices(&tree, (room, unknown, Some(&forged)), 1_000, &own).is_empty());
+        // Named, no other person's device reads it, the owner's included.
+        let named = routed(&tree, "so.tilo.chat", &carols);
+        assert!(named.contains(&device_key(30)));
+        assert!(!named.contains(&device_key(10)) && !named.contains(&device_key(20)));
 
         // Lifting Bob's Deny gives him every channel back; the service
-        // member stays out of finance's and of channels nobody named.
+        // member stays out of finance's.
         let entry = tree
             .desktop
             .workspaces
@@ -746,10 +755,6 @@ mod tests {
         let mut with_bob = without_bob_and_service;
         with_bob.insert(device_key(20));
         assert_eq!(routed(&tree, "finance", "payroll"), with_bob);
-        assert_eq!(
-            allowed_devices(&tree, (room, unknown, None), 1_000, &own),
-            with_bob
-        );
         assert_eq!(routed(&tree, "so.tilo.notes", "draft"), everyone);
     }
 
@@ -795,29 +800,16 @@ mod tests {
         tilo_user_identity::sign_device_cert(&mut second, &owner).unwrap();
         let own = vec![(cert(&owner, 10, false), false), (second, false)];
 
+        let (notes, route) = notes_of(&tree, room);
+        let notes = (room, notes, Some(&route));
         assert_eq!(next_policy_change(&tree, room, 100, &own), Some(300));
-        assert!(
-            allowed_devices(&tree, (room, ChannelId::new(), None), 299, &own)
-                .contains(&device_key(40))
-        );
-        assert!(
-            !allowed_devices(&tree, (room, ChannelId::new(), None), 300, &own)
-                .contains(&device_key(40))
-        );
+        assert!(allowed_devices(&tree, notes, 299, &own).contains(&device_key(40)));
+        assert!(!allowed_devices(&tree, notes, 300, &own).contains(&device_key(40)));
         assert_eq!(next_policy_change(&tree, room, 300, &own), Some(500));
-        assert!(
-            allowed_devices(&tree, (room, ChannelId::new(), None), 499, &own)
-                .contains(&device_key(30))
-        );
-        assert!(
-            !allowed_devices(&tree, (room, ChannelId::new(), None), 500, &own)
-                .contains(&device_key(30))
-        );
+        assert!(allowed_devices(&tree, notes, 499, &own).contains(&device_key(30)));
+        assert!(!allowed_devices(&tree, notes, 500, &own).contains(&device_key(30)));
         assert_eq!(next_policy_change(&tree, room, 500, &own), Some(800));
-        assert!(
-            !allowed_devices(&tree, (room, ChannelId::new(), None), 800, &own)
-                .contains(&device_key(11))
-        );
+        assert!(!allowed_devices(&tree, notes, 800, &own).contains(&device_key(11)));
         assert_eq!(next_policy_change(&tree, room, 800, &own), None);
         assert_eq!(next_policy_change(&tree, RoomId::new(), 100, &own), None);
     }

@@ -204,6 +204,13 @@ pub(crate) struct ToolbarRow {
     strip: strip::NoticeStrip,
     /// The window's reactions at the row's end, and their emoji picker.
     reactions: reactions::RowReactions,
+    /// The window can be carried by its bar (it stands on a canvas): a press
+    /// on the location acts when it ends, so a press that becomes a carry
+    /// never starts an edit or goes somewhere ([`Self::cancel_press`]).
+    carriable: bool,
+    /// Where a press on the location went down, while it waits for its
+    /// release on a carriable bar.
+    location_press: Option<Point>,
 }
 
 impl Default for ToolbarRow {
@@ -243,7 +250,54 @@ impl ToolbarRow {
             compact: false,
             strip: strip::NoticeStrip::default(),
             reactions: reactions::RowReactions::default(),
+            carriable: false,
+            location_press: None,
         }
+    }
+
+    /// Whether the window can be carried by its bar (it stands on a canvas).
+    pub(crate) fn set_carriable(&mut self, carriable: bool) {
+        self.carriable = carriable;
+        if !carriable {
+            self.location_press = None;
+        }
+    }
+
+    /// The press under way became a carry of the window: it does nothing
+    /// when it ends.
+    pub(crate) fn cancel_press(&mut self) {
+        self.pressed = None;
+        self.location_press = None;
+    }
+
+    /// Whether `p` is on one of the row's controls: any slot but the
+    /// location, which the window can be carried by.
+    pub(crate) fn control_hit(&self, p: Point) -> bool {
+        self.active_toolbar_shown() && self.hit_slot(p).is_some_and(|slot| slot != Slot::Location)
+    }
+
+    fn active_toolbar_shown(&self) -> bool {
+        self.toolbar().is_some()
+    }
+
+    /// Close whatever the row has open over the window (a menu, the emoji
+    /// picker, the suggestions under the edited location). Whether anything
+    /// was open.
+    pub(crate) fn close_popups(&mut self) -> bool {
+        let mut closed = false;
+        if self.menu.is_open() {
+            self.menu.close();
+            closed = true;
+        }
+        if self.picking() {
+            self.close_picker();
+            closed = true;
+        }
+        if self.suggestions_open() {
+            self.dismiss_suggestions();
+            closed = true;
+        }
+        closed
     }
 
     /// Show `tab`'s slots (`toolbar`), cross-fading from another tab's.
@@ -1513,6 +1567,13 @@ impl ToolbarRow {
             self.abandon_edit();
         }
         match slot {
+            Some(Slot::Location) if self.field.is_none() && self.carriable => {
+                // The window may be carried from here: what a click on the
+                // location does waits for the press to end there.
+                self.pressed = Some(Slot::Location);
+                self.location_press = Some(p);
+                true
+            }
             Some(Slot::Location) if self.field.is_none() => {
                 // A click on one of the location's levels goes there.
                 if let Some(value) = self.crumb_at(p) {
@@ -1566,6 +1627,21 @@ impl ToolbarRow {
         let Some(pressed) = self.pressed.take() else {
             return false;
         };
+        if let Some(at) = self.location_press.take()
+            && pressed == Slot::Location
+        {
+            // A click on a carriable bar's location: a level goes there,
+            // anywhere else does what a press there does on any bar.
+            if self.hit_slot(p).as_ref() == Some(&Slot::Location) {
+                match self.crumb_at(at) {
+                    Some(value) => self.push(ToolbarEvent::Commit { text: value }),
+                    None => {
+                        self.activate(&Slot::Location);
+                    }
+                }
+            }
+            return true;
+        }
         if self.hit_slot(p).as_ref() == Some(&pressed) {
             self.activate(&pressed);
         }

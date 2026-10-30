@@ -45,7 +45,6 @@ mod annotations;
 mod cells;
 mod chrome;
 mod commands;
-mod content_files;
 mod editing;
 mod exchange;
 mod find;
@@ -59,6 +58,7 @@ mod presence_tests;
 mod resource;
 mod selection;
 mod staging;
+mod store;
 mod window_bar;
 
 use chrome::{ChromeMetrics, CommandSlot, MenuRow};
@@ -522,21 +522,16 @@ pub struct SheetsApp {
     palette: CommandPalette,
     /// The workbook's dispatcher: every edit is a field edit or a verb
     /// submitted here, checked, applied, undone and replayed like the
-    /// palette's and an agent's. `None` until the framework attaches the
-    /// surface.
+    /// palette's and an agent's. `None` until the view attaches the
+    /// grid.
     dispatch: Option<ui::framework::Dispatcher<Workbook>>,
-    /// The store the host lends the window: workbooks imported from and
-    /// exported as content are read and kept there.
-    content: Option<ui::framework::content::ContentStore>,
     /// The participants' names, for the authors comments record.
     people: Option<ui::framework::People>,
     /// The search hit or `open` waiting for the next settle to show it.
     opening: Rc<std::cell::RefCell<Option<PendingReveal>>>,
-    /// The edits last bound to the selection, with what they were built
-    /// from: every publication asks for them, and they change only with the
-    /// workbook, the selection or the locale.
-    selection_decls:
-        std::cell::RefCell<Option<(SelectionKey, Vec<ui::tilo_resource::ActionDecl<Workbook>>)>>,
+    /// What the grid shares with the view's effect handler: what effects
+    /// ask of it, and the sheet, currency and selection it shows.
+    store: store::Shared,
 }
 
 /// A rectangle captured by copy/cut, retaining each cell's raw input and
@@ -675,6 +670,10 @@ impl Widget for SheetsApp {
         if let Some(locale) = &self.locale {
             self.global = locale.get();
         }
+        let asks = std::mem::take(&mut self.store.borrow_mut().asks);
+        for ask in asks {
+            self.take_ask(ask);
+        }
         self.reload();
         if self.pending_ensure_visible {
             self.pending_ensure_visible = false;
@@ -698,6 +697,15 @@ impl Widget for SheetsApp {
         self.status_notice.publish(|text| {
             ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
         });
+        self.share_view();
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn build_layout(
@@ -798,6 +806,7 @@ impl Widget for SheetsApp {
         });
         self.paint_damage
             .record(window, parts.finish(scene, vec![window], transform, theme));
+        self.share_view();
     }
 
     fn draw_overlay(
@@ -1409,6 +1418,8 @@ mod window_bar_tests;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+pub(crate) use store::window;
 
 /// What the edits bound to the selection are built from.
 #[derive(PartialEq)]

@@ -7,7 +7,7 @@ fn inserted_images_lay_out_draw_and_honour_their_size() {
     // out an `image` block and does not panic (decode → layout → draw).
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "caption above");
@@ -16,7 +16,7 @@ fn inserted_images_lay_out_draw_and_honour_their_size() {
         // Re-sync so the widget's block/blob caches see the new image block.
         wp.sync(&state.doc, &state.root);
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         assert!(
             wp.laid.iter().any(|l| l.kind == "image"),
             "an image block was laid out"
@@ -40,10 +40,10 @@ fn inserted_images_lay_out_draw_and_honour_their_size() {
             dm.set_attr(&img, "width", 200_i64);
             dm.set_attr(&img, "height", 120_i64);
         });
-        let wp = WordProcessorWidget::detached();
+        let wp = Editor::detached();
         wp.model().content_store().put(TEST_PNG).unwrap();
         let mut framed = mount(state, wp, 1100, 900);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         let img = wp
             .laid
@@ -96,10 +96,10 @@ fn floated_images_narrow_and_offset_the_following_paragraph() {
                 "this paragraph should flow beside the floated image to its left",
             );
         });
-        let wp = WordProcessorWidget::detached();
+        let wp = Editor::detached();
         wp.model().content_store().put(TEST_PNG).unwrap();
         let mut framed = mount(state, wp, 1100, 900);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         let reference = wp
             .laid
@@ -176,10 +176,10 @@ fn floated_images_narrow_and_offset_the_following_paragraph() {
                 "this paragraph should flow to the right of the floated image",
             );
         });
-        let wp = WordProcessorWidget::detached();
+        let wp = Editor::detached();
         wp.model().content_store().put(TEST_PNG).unwrap();
         let mut framed = mount(state, wp, 1100, 900);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         let reference = wp
             .laid
@@ -246,7 +246,7 @@ fn pick_titles(recorder: &ui::host::HostRecorder) -> Vec<String> {
         .collect()
 }
 
-fn image_block_count(wp: &WordProcessorWidget, state: &ui::State) -> usize {
+fn image_block_count(wp: &Editor, state: &ui::State) -> usize {
     let c = wp.model().containers.clone().unwrap();
     tilo_doc::model::materialize(&state.doc, &c)
         .blocks
@@ -369,7 +369,7 @@ fn dropped_and_selected_images_expose_their_controls() {
         // Move the pointer over the drop target (as a real drag-hover would), then
         // drop the file there.
         let hovered = Dispatch::new().doc(&mut state.doc).path(&state.root).send(
-            wp,
+            &mut Lent(wp),
             &WindowEvent::CursorMoved {
                 device_id: winit::event::DeviceId::dummy(),
                 position: (drop_pt.x, drop_pt.y).into(),
@@ -381,7 +381,7 @@ fn dropped_and_selected_images_expose_their_controls() {
             .path(&state.root)
             .handled(hovered.handled)
             .focus_target(hovered.focus_target)
-            .send(wp, &WindowEvent::DroppedFile(path.clone()));
+            .send(&mut Lent(wp), &WindowEvent::DroppedFile(path.clone()));
         let _ = std::fs::remove_file(&path);
         assert_eq!(
             image_block_count(wp, state),
@@ -415,7 +415,8 @@ fn dropped_and_selected_images_expose_their_controls() {
     // Phase: selected_image_shows_resize_and_flip_controls.
     // A selected image exposes resize + flip controls in the panel.
     {
-        let (wp, _id) = doc_with_selected_image();
+        let (mut wp, _id) = doc_with_selected_image();
+        let wp = editor(&mut wp);
         assert!(wp.selected_image_id().is_some(), "the image is selected");
         let has = |want: &PanelHit| wp.panel_hits.iter().any(|(_, h)| h == want);
         assert!(
@@ -483,7 +484,7 @@ fn image_controls_are_named_and_resize_and_flip() {
 
         crate::i18n::set_locale("en-US");
         let (mut framed, _id) = doc_with_selected_image();
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         let tree = wp.accessibility_tree();
         let group = tree
             .children
@@ -513,8 +514,7 @@ fn image_controls_are_named_and_resize_and_flip() {
         }));
 
         let target = "word-processor.image-placement:left".to_string();
-        assert!(Widget::perform_action(
-            wp,
+        assert!(wp.perform_access_action(
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&target)],
             &mut edits(&mut state.doc),
@@ -541,7 +541,7 @@ fn image_controls_are_named_and_resize_and_flip() {
     // explicit width grows), driven through the production panel-hit path.
     {
         let (mut framed, id) = doc_with_selected_image();
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         let (larger_rect, _) = wp
             .panel_hits
             .iter()
@@ -568,7 +568,7 @@ fn image_controls_are_named_and_resize_and_flip() {
     // (sets its `flip_h` attr) through the production path.
     {
         let (mut framed, id) = doc_with_selected_image();
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         let (flip_rect, _) = wp
             .panel_hits
             .iter()

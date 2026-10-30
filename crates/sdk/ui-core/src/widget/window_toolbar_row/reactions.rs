@@ -280,6 +280,12 @@ impl ToolbarRow {
         self.reactions.opening.is_some() || self.reactions.picker.is_open()
     }
 
+    /// Close the emoji picker, open or opening.
+    pub(super) fn close_picker(&mut self) {
+        self.reactions.opening = None;
+        self.reactions.picker.close();
+    }
+
     /// The picker takes `event` while it is open: a pick reacts, Escape or
     /// a press off it closes it. Returns whether it took the event.
     pub(super) fn picker_event(

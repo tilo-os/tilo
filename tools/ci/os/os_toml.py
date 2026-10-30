@@ -65,7 +65,7 @@ def signing_tools_check():
                   ("run", f'"TILO_GITHUB_ASSET_CACHE={SIGNING_TOOLS} TILO_ASSET_STORE= bash os/dev/cache-github-assets.sh {" ".join(COSIGN_ASSETS)}"'),
                   ("outputs", arr([f"{SIGNING_TOOLS}/**"])),
                   ("requires", arr(["arch=any"])),
-                  ("cost", '"minutes"'), ("requirement", requirement(1, "1GiB")), ("default", "false")])
+                  ("default", "false")])
 
 
 def test_assets_check():
@@ -74,7 +74,7 @@ def test_assets_check():
                   ("run", f'"python3 tools/test-assets.py --cache-root {TEST_ASSET_SEED} {" ".join(manifests)}"'),
                   ("outputs", arr([f"{TEST_ASSET_SEED}/**"])),
                   ("requires", arr(["arch=any"])),
-                  ("cost", '"minutes"'), ("requirement", requirement(1, "1GiB")), ("default", "false")])
+                  ("default", "false")])
 
 
 def arr(items):
@@ -86,10 +86,6 @@ def check(fields):
     for k, v in fields:
         out.append(f"{k} = {v}")
     return "\n".join(out) + "\n"
-
-
-def requirement(cores, memory):
-    return f'{{ cores = {cores}, memory = "{memory}" }}'
 
 
 def board_arch(board):
@@ -153,7 +149,7 @@ def flavour_checks(plan, arch, req, flavour, layer):
             fields.append(("git", "true"))
         out.append(check(fields + [
             ("requires", req), ("isolation", '"vm"'),
-            ("cost", '"heavy"'), ("requirement", requirement(8, "16GiB")), ("timeout_secs", "7200"),
+            ("timeout_secs", "7200"),
             ("default", "false")]))
         layer[lname] = f"os-layer-{lname}{suffix if board else suffix + '-' + arch}"
         below.append(layer[lname])
@@ -165,7 +161,7 @@ def flavour_checks(plan, arch, req, flavour, layer):
         ("outputs", arr([f"/target/os/{arch}/{image_dir}/**"])),
         *([("env", env)] if env else []),
         ("requires", arr(["arch=any"])),
-        ("cost", '"minutes"'), ("requirement", requirement(1, "2GiB")), ("default", "false")]))
+        ("default", "false")]))
     # The composed image's /usr against its budget: every check that ships or boots the image
     # needs this one, so an image over budget goes nowhere. A board's is held to the board's.
     size = {"dev": "size", "release": "release-size"}.get(flavour, f"release-size-{board}")
@@ -177,7 +173,7 @@ def flavour_checks(plan, arch, req, flavour, layer):
         ("needs", arr([f"{name}-{tail}"])),
         ("outputs", arr([f"/target/os/{arch}/{size}/**"])),
         ("requires", arr(["arch=any"])),
-        ("cost", '"minutes"'), ("requirement", requirement(2, "4GiB")), ("default", "false")]))
+        ("default", "false")]))
     return out
 
 
@@ -199,7 +195,7 @@ def block():
            check([("name", '"os-assets"'),
                   ("run", '"bash os/dev/cache-github-assets.sh"'),
                   ("outputs", arr(["os/external-assets/cache/**"])),
-                  ("cost", '"minutes"'), ("default", "false")]),
+                  ("default", "false")]),
            signing_tools_check(),
            test_assets_check()]
     for arch, node in ARCHES:
@@ -209,15 +205,14 @@ def block():
             ("run", f'"bash os/image/assembler.sh {arch} /target/os/{arch}/assembler"'),
             ("needs", arr([f"image-rpms-{arch}"])),
             ("outputs", arr([f"/target/os/{arch}/assembler/**"])),
-            ("requires", req), ("isolation", '"vm"'), ("cost", '"minutes"'),
-            ("requirement", requirement(4, "8GiB")), ("default", "false")]))
+            ("requires", req), ("isolation", '"vm"'), ("default", "false")]))
         out.append(check([
             ("name", f'"os-base-{arch}"'),
             ("image", f'"{SKOPEO}"'),
             ("run", f'"bash os/image/build-layer.sh base {arch} /target/os/{arch}/base"'),
             ("outputs", arr([f"/target/os/{arch}/base/**"])),
             ("requires", arr(["arch=any"])),
-            ("cost", '"minutes"'), ("requirement", requirement(1, "2GiB")), ("default", "false")]))
+            ("default", "false")]))
         for img in plan.get("image", []):
             name = img["name"]
             out.append(check([
@@ -227,7 +222,7 @@ def block():
                 ("needs", arr([f"os-base-{arch}", "os-assets", "signing-tools", f"image-rpms-{arch}"])),
                 ("outputs", arr([f"/target/os/{arch}/{name}/**"])),
                 ("requires", req), ("isolation", '"vm"'),
-                ("cost", '"heavy"'), ("requirement", requirement(8, "16GiB")), ("timeout_secs", "7200"),
+                ("timeout_secs", "7200"),
                 ("default", "false")]))
         # The browser's engine: the compiles take it as it is, so a changed crate it doesn't read
         # never builds it again.
@@ -240,7 +235,7 @@ def block():
                     'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }'),
             ("outputs", arr([f"/target/os/{arch}/chromium/**"])),
             ("requires", arr([node])),
-            ("cost", '"heavy"'), ("requirement", requirement(8, "16GiB")), ("timeout_secs", "10800"),
+            ("timeout_secs", "10800"),
             ("default", "false")]))
         # The development image's compile: no LTO and no line tables. A build to ship, not a
         # lint gate: warnings stay warnings, as in every image build. It needs the verified
@@ -248,8 +243,7 @@ def block():
         # os-chromium-<arch> itself: it starts once the OS builder is there, not after the
         # engine's own build. A release's: thin LTO, whose links of the large binaries take up
         # to 8 GiB each, so 8 at a time, with the engine in its tree.
-        for suffix, lto, debuginfo, memory, jobs in (("", "off", "0", "32GiB", ""),
-                                                     ("-release", "thin", "line-tables-only", "64GiB", "8")):
+        for suffix, lto, debuginfo, jobs in (("", "off", "0", ""), ("-release", "thin", "line-tables-only", "8")):
             release = bool(suffix)
             out.append(check([
                 ("name", f'"os-compile{suffix}-{arch}"'),
@@ -267,7 +261,7 @@ def block():
                 # The greeter's initramfs build resolves with the empty workspace-hack and
                 # writes that resolve to Cargo.lock before compile.sh puts it back.
                 ("requires", arr([node])),
-                ("cost", '"heavy"'), ("requirement", requirement(16, memory)), ("timeout_secs", "10800"),
+                ("timeout_secs", "10800"),
                 ("default", "false")]))
         out.append(check([
             ("name", f'"os-compile-dev-{arch}"'),
@@ -281,7 +275,7 @@ def block():
                     'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }'),
             ("outputs", arr([f"/target/os/{arch}/compiled-dev/**"])),
             ("requires", arr([node])),
-            ("cost", '"heavy"'), ("requirement", requirement(16, "32GiB")), ("timeout_secs", "10800"),
+            ("timeout_secs", "10800"),
             ("default", "false")]))
         # The development image's layers, then the release image's (TILO_OS_FLAVOUR=release):
         # its `release` layers again, over the development image's below them; then each board

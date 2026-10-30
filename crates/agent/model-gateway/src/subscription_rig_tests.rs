@@ -86,7 +86,7 @@ fn responses_stream(text: &str) -> String {
 async fn a_chatgpt_sign_in_asks_its_accounts_backend_in_responses() {
     use std::io::Write as _;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let mut profile = agent_provider_config::presets::Preset::ChatGpt.profile();
+    let mut profile = agent_provider_config::presets::Preset::CHATGPT.profile();
     profile.endpoint = format!(
         "http://{}/backend-api/codex",
         listener.local_addr().unwrap()
@@ -152,7 +152,7 @@ async fn a_chatgpt_sign_in_asks_its_accounts_backend_in_responses() {
 async fn a_copilot_sign_in_names_the_editor_and_speaks_chat() {
     use std::io::Write as _;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let mut profile = agent_provider_config::presets::Preset::Copilot.profile();
+    let mut profile = agent_provider_config::presets::Preset::COPILOT.profile();
     profile.endpoint = format!("http://{}", listener.local_addr().unwrap());
     let peer = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();

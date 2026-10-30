@@ -1,14 +1,14 @@
 //! This device's side of every encrypted channel the profile takes part in.
 //!
-//! The runtime governs its own room and is its only reader, so it creates
-//! that room's channels and its apps get their route keys without any
-//! network. In a joined room it is one participant among the room's member
-//! devices: it asks them for access over the room's relay session, follows
-//! and checks their commits against the room's governance, and commits
-//! itself when the group falls behind the membership. While nobody who can
-//! admit it is online, channels this device already reads keep their keys
-//! and a new request waits, sent again until a participant answers; no host
-//! ever holds a channel key.
+//! In the profile's own room, which the room host this runtime runs hosts,
+//! that host takes part in the channels with this device's own leaf, and
+//! its apps get their route keys from it without any network. In a room
+//! hosted elsewhere it is one participant among the room's member devices:
+//! it asks them for access over the room's relay session, follows and
+//! checks their commits against the room's governance, and commits itself
+//! when the group falls behind the membership. While nobody who can admit
+//! it is online, channels this device already reads keep their keys and a
+//! new request waits, sent again until a participant answers.
 use super::joined::Joined;
 use channel_crypto::VaultKey;
 use collab_types::Ed25519PublicKey;
@@ -119,26 +119,24 @@ fn spawn_pump(
     Ok(Pump { wake, stop })
 }
 
-/// Open this device's channel state in `profile` and run its governance
-/// over the joined rooms' sessions.
+/// Open this device's channel state in `profile`, whose room `profile_room`
+/// names the state's key, and run its governance over the joined rooms'
+/// sessions.
 pub(super) fn open(
     profile: &Path,
-    own_room: RoomId,
+    profile_room: RoomId,
     storage: IdentityStorage,
     device_key: ed25519_dalek::SigningKey,
     joined: Arc<Joined>,
     broker: Arc<Mutex<BrokerChannels>>,
 ) -> io::Result<Channels> {
-    let device = Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: profile.join(CHANNEL_STATE),
-            vault: vault_key(profile, own_room, storage)?,
+            vault: vault_key(profile, profile_room, storage)?,
             device_key,
         },
         Box::new(Directory {
-            own_room,
-            device,
             joined: Arc::clone(&joined),
         }),
         broker,
@@ -153,38 +151,35 @@ pub(super) fn open(
 }
 
 struct Directory {
-    own_room: RoomId,
-    device: Ed25519PublicKey,
     joined: Arc<Joined>,
 }
 
 impl ChannelDirectory for Directory {
-    fn governs(&self, room: RoomId) -> bool {
-        room == self.own_room
-    }
-
     fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
-        if room == self.own_room {
-            return Some(self.device);
-        }
         self.joined.governor_of(room)
     }
 
-    /// This device alone reads its own room, every record of it: no other
-    /// person is in it to be denied one. A joined room's channel is read by
-    /// the member devices its governance lets read the channel's record.
+    fn hosted_channel_keys(
+        &self,
+        room: RoomId,
+        channel: collab_types::ChannelId,
+        route: Option<&collab_types::ChannelRoute>,
+        create: bool,
+    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
+        self.joined
+            .hosted_channel_keys(room, channel, route, create)
+    }
+
+    /// The member devices the room's governance lets read the channel's
+    /// record.
     fn allowed_devices(
         &self,
         room: RoomId,
         channel: collab_types::ChannelId,
         route: Option<&collab_types::ChannelRoute>,
         now: u64,
-    ) -> BTreeSet<Ed25519PublicKey> {
-        if room == self.own_room {
-            BTreeSet::from([self.device])
-        } else {
-            self.joined.channel_readers(room, channel, route, now)
-        }
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        self.joined.channel_readers(room, channel, route, now)
     }
 }
 

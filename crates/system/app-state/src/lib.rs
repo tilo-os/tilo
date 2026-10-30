@@ -301,23 +301,6 @@ impl DocStore {
         Self::open_for(&cli::package_id())
     }
 
-    /// Open the store, falling back to `manifest_id` when `TILO_PACKAGE_ID` is
-    /// unset. The env var always wins; the fallback only covers launcher-less
-    /// runs (dev binary, tests) that would otherwise share one directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the resolved id is not a valid single directory
-    /// name (see `validate_package_id`), or if the package's state
-    /// directory can't be created, inspected or locked.
-    pub fn open_with_manifest_id(manifest_id: &str) -> Result<Self, StoreError> {
-        let id = std::env::var("TILO_PACKAGE_ID")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| manifest_id.to_string());
-        Self::open_for(&id)
-    }
-
     /// The store the native host keeps launch-environment documents in: an
     /// [`FsStore`] over the platform data directory (`$XDG_DATA_HOME`, else
     /// `~/.local/share`).
@@ -2018,7 +2001,7 @@ mod tests {
             );
 
             // `seed` runs on the freshly loaded document, exactly as
-            // `ui::persist::open` sequences it, so the later edit reads as a change.
+            // an app host sequences it, so the later edit reads as a change.
             let mut run1 =
                 DocStore::open_for(pkg).expect("first open must succeed when the dir exists");
             let mut doc = run1.load_or_new();

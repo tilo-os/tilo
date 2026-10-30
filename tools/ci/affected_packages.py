@@ -89,6 +89,10 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/compiler_cache_metrics.py": "tools/tests/test_ci_compiler_cache_metrics.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
     "tools/ci/current_source_metadata.py": "tools/tests/test_current_source_metadata.py",
+    "tools/ci/local_affected.py": "tools/tests/test_local_affected.py",
+    "tools/ci/local-affected.sh": "tools/tests/test_local_affected.py",
+    "tools/ci/test-changed.sh": "tools/tests/test_local_affected.py",
+    "tools/ci/lint-affected.sh": "tools/tests/test_local_affected.py",
     "tools/ci/macos_apps.py": "tools/tests/test_dev_macos_workflows.py",
     "tools/ci/prewarm_test_binaries.py": "tools/tests/test_prewarm_test_binaries.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
@@ -148,7 +152,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     ),
     ".forgejo/workflows/build-ci-builder.yml": (
         "os/tests/test_builder_candidate_workflow.py",
-        "os/tests/release_pipeline_invariants.sh",
         "os/tests/workflow_dependency_invariants.sh",
         "tools/tests/test_cargo_download_cache_action.py",
         "tools/tests/test_ci_native_mold.py",

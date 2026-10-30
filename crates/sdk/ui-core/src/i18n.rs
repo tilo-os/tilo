@@ -1657,13 +1657,10 @@ mod tests {
         let _restore = RestoreLookupState::capture();
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
         TOOLKIT_SOURCE.with(|source| assert!(source.is_ok(), "bundled toolkit catalog must parse"));
+        assert_eq!(I18nManager::lookup_plain("history-mode-title"), "History");
         assert_eq!(
-            I18nManager::lookup_plain("standalone-history-title"),
-            "History"
-        );
-        assert_eq!(
-            I18nManager::lookup_plain("standalone-history-close"),
-            "Close history"
+            I18nManager::lookup_plain("standalone-search-title"),
+            "Search"
         );
 
         type Catalogs = &'static [(&'static str, &'static str)];
@@ -1674,14 +1671,14 @@ mod tests {
                 &[
                     (
                         "en-US",
-                        "standalone-history-title = App history\nstandalone-history-close = App close",
+                        "history-mode-title = App history\nstandalone-search-title = App search",
                     ),
-                    ("de", "standalone-history-title = Verlauf"),
+                    ("de", "history-mode-title = Verlauf"),
                 ],
                 &[
-                    ("standalone-history-title", "Verlauf"),
-                    ("standalone-history-close", "App close"),
-                    ("standalone-history-selected-details", "Selected changes"),
+                    ("history-mode-title", "Verlauf"),
+                    ("standalone-search-title", "App search"),
+                    ("proposal-accept", "Apply"),
                 ],
             ),
             (

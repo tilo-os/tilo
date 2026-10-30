@@ -2002,154 +2002,147 @@ fn launch_refuses_unknown_cli_only_escaping_or_socketless_requests() {
     a_package_id_that_could_escape_the_directory_is_refused();
 }
 
+/// The production `launch` path end to end, with `tilo-launcher`
+/// replaced by a recorder that fails and is quoted back as a
+/// `LaunchEvent`.
+#[cfg(target_os = "linux")]
 #[test]
 #[serial_test::serial(process_env)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn launched_apps_exec_with_the_compositor_socket_and_match_back_by_app_id() {
-    /// The production `launch` path end to end, with `tilo-launcher`
-    /// replaced by a recorder that fails and is quoted back as a
-    /// `LaunchEvent`.
-    #[cfg(target_os = "linux")]
-    fn launch_execs_the_launcher_binary_with_the_compositor_socket() {
-        let tmp = tempfile::tempdir().unwrap();
-        install_fixture(tmp.path(), "so.tilo.hello", "gui");
-        let record = tmp.path().join("argv.txt");
-        let fake = tmp.path().join("tilo-launcher");
-        {
-            let mut f = std::fs::File::create(&fake).unwrap();
-            writeln!(f, "#!/bin/sh").unwrap();
-            writeln!(f, "printf '%s\\n' \"$@\" > {}", record.display()).unwrap();
-            writeln!(f, "echo \"launch refused by fixture\" >&2").unwrap();
-            writeln!(f, "exit 3").unwrap();
-        }
-        let mut perms = std::fs::metadata(&fake).unwrap().permissions();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            perms.set_mode(0o755);
-        }
-        std::fs::set_permissions(&fake, perms).unwrap();
+#[cfg(target_os = "linux")]
+fn launch_execs_the_launcher_binary_with_the_compositor_socket() {
+    let tmp = tempfile::tempdir().unwrap();
+    install_fixture(tmp.path(), "so.tilo.hello", "gui");
+    let record = tmp.path().join("argv.txt");
+    let fake = tmp.path().join("tilo-launcher");
+    {
+        let mut f = std::fs::File::create(&fake).unwrap();
+        writeln!(f, "#!/bin/sh").unwrap();
+        writeln!(f, "printf '%s\\n' \"$@\" > {}", record.display()).unwrap();
+        writeln!(f, "echo \"launch refused by fixture\" >&2").unwrap();
+        writeln!(f, "exit 3").unwrap();
+    }
+    let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+    }
+    std::fs::set_permissions(&fake, perms).unwrap();
 
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_APPS_DATA_DIR", tmp.path());
-        env.set("TILO_LAUNCHER_BIN", &fake);
-        invalidate_app_cache();
-        set_wayland_socket_path(Some(PathBuf::from("/run/user/1000/wayland-7")));
-        let _ = drain_events();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_APPS_DATA_DIR", tmp.path());
+    env.set("TILO_LAUNCHER_BIN", &fake);
+    invalidate_app_cache();
+    set_wayland_socket_path(Some(PathBuf::from("/run/user/1000/wayland-7")));
+    let _ = drain_events();
 
-        let app = launch("so.tilo.hello", RoomId::new()).expect("launch accepted");
-        assert_eq!(app.display_name, "Hello");
+    let app = launch("so.tilo.hello", RoomId::new()).expect("launch accepted");
+    assert_eq!(app.display_name, "Hello");
 
-        // wait for the worker to report the child's exit
-        let deadline = tilo_test_env::hang_deadline();
-        let mut failed = None;
-        let mut saw_started = false;
-        while Instant::now() < deadline && failed.is_none() {
-            for event in drain_events() {
-                match event.kind {
-                    LaunchEventKind::Started { pid } => {
-                        assert!(pid > 0, "a real child pid is reported");
-                        saw_started = true;
-                    }
-                    LaunchEventKind::Failed { .. } => failed = Some(event),
-                    other => panic!("unexpected launch event: {other:?}"),
+    // wait for the worker to report the child's exit
+    let deadline = tilo_test_env::hang_deadline();
+    let mut failed = None;
+    let mut saw_started = false;
+    while Instant::now() < deadline && failed.is_none() {
+        for event in drain_events() {
+            match event.kind {
+                LaunchEventKind::Started { pid } => {
+                    assert!(pid > 0, "a real child pid is reported");
+                    saw_started = true;
                 }
+                LaunchEventKind::Failed { .. } => failed = Some(event),
+                other => panic!("unexpected launch event: {other:?}"),
             }
-            std::thread::sleep(Duration::from_millis(20));
         }
-
-        env.remove("TILO_APPS_DATA_DIR");
-        env.remove("TILO_LAUNCHER_BIN");
-        invalidate_app_cache();
-        set_wayland_socket_path(None);
-
-        assert!(saw_started, "the launch must report a started child");
-        let failed = failed.expect("the failing child must surface a Failed event");
-        match failed.kind {
-            LaunchEventKind::Failed { code, stderr_tail } => {
-                assert_eq!(code, Some(3), "the child's exit code is reported");
-                assert!(
-                    stderr_tail.contains("launch refused by fixture"),
-                    "the child's stderr is quoted back: {stderr_tail:?}"
-                );
-            }
-            other => panic!("expected Failed, got {other:?}"),
-        }
-
-        let argv = std::fs::read_to_string(&record).expect("the launcher binary really ran");
-        let argv: Vec<&str> = argv.lines().collect();
-        assert_eq!(argv[0], "run");
-        assert!(
-            argv.contains(&"--wayland-socket") && argv.contains(&"/run/user/1000/wayland-7"),
-            "the spawned launcher is pointed at the compositor's socket: {argv:?}"
-        );
-        assert!(
-            argv.iter()
-                .any(|a| a.ends_with("payloads/so.tilo.hello/manifest.toml")),
-            "the resolved manifest path is passed through: {argv:?}"
-        );
-        // The GPU choice must reach the launcher through the real
-        // `launch()` path here, not just the pure builder.
-        match crate::compositor::render_node::resolved() {
-            Some(node) => {
-                let pos = argv
-                    .iter()
-                    .position(|a| *a == "--render-node")
-                    .unwrap_or_else(|| panic!("--render-node missing from {argv:?}"));
-                assert_eq!(
-                    argv[pos + 1],
-                    node.display().to_string(),
-                    "the app must be launched on the compositor's own node"
-                );
-            }
-            None => assert!(
-                !argv.contains(&"--render-node"),
-                "no node resolved must mean no flag: {argv:?}"
-            ),
-        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 
-    /// The launch history is process-global, so this test uses ids no
-    /// other test registers rather than clearing shared state.
-    fn launched_apps_are_matched_back_by_app_id() {
-        remember_launch(&InstalledApp {
-            package_id: "so.tilo.matchfixture".into(),
-            display_name: "Match Fixture".into(),
-            localized_names: BTreeMap::default(),
-            keywords: Vec::new(),
-            category: None,
-            version: "0.1.0".into(),
-            manifest_path: PathBuf::new(),
-            payload_root: PathBuf::new(),
-            has_gui: true,
-            opens_extensions: Vec::new(),
-            opens_mime_types: Vec::new(),
-            opens_uri_schemes: Vec::new(),
-            opens_secondary: false,
-            offers: Vec::new(),
-        });
-        // full package id, trailing component, case-insensitivity
-        assert_eq!(
-            display_name_for_app_id("so.tilo.matchfixture").as_deref(),
-            Some("Match Fixture")
-        );
-        assert_eq!(
-            display_name_for_app_id("matchfixture").as_deref(),
-            Some("Match Fixture")
-        );
-        assert_eq!(
-            display_name_for_app_id("MATCHFIXTURE").as_deref(),
-            Some("Match Fixture")
-        );
-        // an unrelated client keeps its own label
-        assert_eq!(display_name_for_app_id("org.gnome.NeverLaunched"), None);
+    env.remove("TILO_APPS_DATA_DIR");
+    env.remove("TILO_LAUNCHER_BIN");
+    invalidate_app_cache();
+    set_wayland_socket_path(None);
+
+    assert!(saw_started, "the launch must report a started child");
+    let failed = failed.expect("the failing child must surface a Failed event");
+    match failed.kind {
+        LaunchEventKind::Failed { code, stderr_tail } => {
+            assert_eq!(code, Some(3), "the child's exit code is reported");
+            assert!(
+                stderr_tail.contains("launch refused by fixture"),
+                "the child's stderr is quoted back: {stderr_tail:?}"
+            );
+        }
+        other => panic!("expected Failed, got {other:?}"),
     }
 
-    #[cfg(target_os = "linux")]
-    launch_execs_the_launcher_binary_with_the_compositor_socket();
-    launched_apps_are_matched_back_by_app_id();
+    let argv = std::fs::read_to_string(&record).expect("the launcher binary really ran");
+    let argv: Vec<&str> = argv.lines().collect();
+    assert_eq!(argv[0], "run");
+    assert!(
+        argv.contains(&"--wayland-socket") && argv.contains(&"/run/user/1000/wayland-7"),
+        "the spawned launcher is pointed at the compositor's socket: {argv:?}"
+    );
+    assert!(
+        argv.iter()
+            .any(|a| a.ends_with("payloads/so.tilo.hello/manifest.toml")),
+        "the resolved manifest path is passed through: {argv:?}"
+    );
+    // The GPU choice must reach the launcher through the real
+    // `launch()` path here, not just the pure builder.
+    match crate::compositor::render_node::resolved() {
+        Some(node) => {
+            let pos = argv
+                .iter()
+                .position(|a| *a == "--render-node")
+                .unwrap_or_else(|| panic!("--render-node missing from {argv:?}"));
+            assert_eq!(
+                argv[pos + 1],
+                node.display().to_string(),
+                "the app must be launched on the compositor's own node"
+            );
+        }
+        None => assert!(
+            !argv.contains(&"--render-node"),
+            "no node resolved must mean no flag: {argv:?}"
+        ),
+    }
+}
+
+/// The launch history is process-global, so this test uses ids no
+/// other test registers rather than clearing shared state.
+#[test]
+#[serial_test::serial(process_env)]
+fn launched_apps_are_matched_back_by_app_id() {
+    remember_launch(&InstalledApp {
+        package_id: "so.tilo.matchfixture".into(),
+        display_name: "Match Fixture".into(),
+        localized_names: BTreeMap::default(),
+        keywords: Vec::new(),
+        category: None,
+        version: "0.1.0".into(),
+        manifest_path: PathBuf::new(),
+        payload_root: PathBuf::new(),
+        has_gui: true,
+        opens_extensions: Vec::new(),
+        opens_mime_types: Vec::new(),
+        opens_uri_schemes: Vec::new(),
+        opens_secondary: false,
+        offers: Vec::new(),
+    });
+    // full package id, trailing component, case-insensitivity
+    assert_eq!(
+        display_name_for_app_id("so.tilo.matchfixture").as_deref(),
+        Some("Match Fixture")
+    );
+    assert_eq!(
+        display_name_for_app_id("matchfixture").as_deref(),
+        Some("Match Fixture")
+    );
+    assert_eq!(
+        display_name_for_app_id("MATCHFIXTURE").as_deref(),
+        Some("Match Fixture")
+    );
+    // an unrelated client keeps its own label
+    assert_eq!(display_name_for_app_id("org.gnome.NeverLaunched"), None);
 }
 
 use crate::shell::state::{Access, CapOverride, Scope, Subject};
@@ -2808,166 +2801,164 @@ fn retiring_writer_whose_launcher_exited_holds_no_replacement() {
 
 #[test]
 #[serial_test::serial(process_env)]
-fn launch_projections_are_atomic_owner_only_and_staged() {
-    fn governance_projection_is_atomic_bounded_and_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
+fn governance_projection_is_atomic_bounded_and_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
 
-        let tmp = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_RUNTIME_DIR", tmp.path());
+    let tmp = tempfile::tempdir().unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_RUNTIME_DIR", tmp.path());
 
-        let room = RoomId::new();
-        let path = write_trusted_identities_projection(
-            room,
-            &tilo_user_identity::TrustedIdentityProjectionV2::empty(),
-        )
-        .expect("stage projection");
-        let bytes = std::fs::read(&path).unwrap();
-        let decoded: tilo_user_identity::TrustedIdentityProjectionV2 =
-            serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            decoded,
-            tilo_user_identity::TrustedIdentityProjectionV2::empty()
-        );
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
-            std::fs::metadata(path.parent().unwrap())
+    let room = RoomId::new();
+    let path = write_trusted_identities_projection(
+        room,
+        &tilo_user_identity::TrustedIdentityProjectionV2::empty(),
+    )
+    .expect("stage projection");
+    let bytes = std::fs::read(&path).unwrap();
+    let decoded: tilo_user_identity::TrustedIdentityProjectionV2 =
+        serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        decoded,
+        tilo_user_identity::TrustedIdentityProjectionV2::empty()
+    );
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    assert!(
+        std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .all(|entry| !entry
                 .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-        assert!(
-            std::fs::read_dir(path.parent().unwrap())
-                .unwrap()
-                .all(|entry| !entry
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .ends_with(".tmp")),
-            "an atomic publish leaves no staging inode"
-        );
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+        "an atomic publish leaves no staging inode"
+    );
 
-        // Replacing a complete snapshot keeps the stable path and remains a
-        // complete decodable document.
-        let again = write_trusted_identities_projection(
-            room,
-            &tilo_user_identity::TrustedIdentityProjectionV2::empty(),
-        )
+    // Replacing a complete snapshot keeps the stable path and remains a
+    // complete decodable document.
+    let again = write_trusted_identities_projection(
+        room,
+        &tilo_user_identity::TrustedIdentityProjectionV2::empty(),
+    )
+    .unwrap();
+    assert_eq!(again, path);
+    serde_json::from_slice::<tilo_user_identity::TrustedIdentityProjectionV2>(
+        &std::fs::read(&again).unwrap(),
+    )
+    .unwrap();
+
+    // A network/governance update publishes immediately; it is not merely
+    // cached for the next application launch.
+    std::fs::remove_file(&again).unwrap();
+    set_trusted_identity_projection(
+        room,
+        &tilo_user_identity::TrustedIdentityProjectionV2::empty(),
+    );
+    assert!(again.exists());
+}
+
+#[test]
+#[serial_test::serial(process_env)]
+fn files_launch_receives_only_the_staged_projection_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_RUNTIME_DIR", tmp.path());
+    let room = RoomId::new();
+    let files = test_app(FILES_PACKAGE_ID);
+    let mut command = build_launch_command(
+        &files,
+        Path::new("/usr/libexec/tilo/tilo-launcher"),
+        Path::new("/run/user/1000/wayland-3"),
+        room,
+        None,
+        None,
+        None,
+        None,
+    );
+    attach_trusted_identities_projection(&files, room, &mut command).unwrap();
+    let position = command
+        .args
+        .iter()
+        .position(|arg| arg == "--trusted-identities")
         .unwrap();
-        assert_eq!(again, path);
-        serde_json::from_slice::<tilo_user_identity::TrustedIdentityProjectionV2>(
-            &std::fs::read(&again).unwrap(),
-        )
-        .unwrap();
+    let projection = PathBuf::from(&command.args[position + 1]);
+    assert_eq!(projection.file_name().unwrap(), TRUSTED_IDENTITIES_FILE);
+    assert!(projection.starts_with(tmp.path()));
 
-        // A network/governance update publishes immediately; it is not merely
-        // cached for the next application launch.
-        std::fs::remove_file(&again).unwrap();
-        set_trusted_identity_projection(
-            room,
-            &tilo_user_identity::TrustedIdentityProjectionV2::empty(),
-        );
-        assert!(again.exists());
-    }
-
-    fn files_launch_receives_only_the_staged_projection_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_RUNTIME_DIR", tmp.path());
-        let room = RoomId::new();
-        let files = test_app(FILES_PACKAGE_ID);
-        let mut command = build_launch_command(
-            &files,
-            Path::new("/usr/libexec/tilo/tilo-launcher"),
-            Path::new("/run/user/1000/wayland-3"),
-            room,
-            None,
-            None,
-            None,
-            None,
-        );
-        attach_trusted_identities_projection(&files, room, &mut command).unwrap();
-        let position = command
+    let other = test_app("so.tilo.contacts");
+    let mut other_command = command.clone();
+    other_command.args.truncate(position);
+    attach_trusted_identities_projection(&other, room, &mut other_command).unwrap();
+    assert!(
+        !other_command
             .args
             .iter()
-            .position(|arg| arg == "--trusted-identities")
-            .unwrap();
-        let projection = PathBuf::from(&command.args[position + 1]);
-        assert_eq!(projection.file_name().unwrap(), TRUSTED_IDENTITIES_FILE);
-        assert!(projection.starts_with(tmp.path()));
+            .any(|arg| arg == "--trusted-identities"),
+        "the member directory is scoped to Files"
+    );
+}
 
-        let other = test_app("so.tilo.contacts");
-        let mut other_command = command.clone();
-        other_command.args.truncate(position);
-        attach_trusted_identities_projection(&other, room, &mut other_command).unwrap();
-        assert!(
-            !other_command
-                .args
-                .iter()
-                .any(|arg| arg == "--trusted-identities"),
-            "the member directory is scoped to Files"
-        );
-    }
-
-    /// Peer syncs publish the projection and synchronous launches stage
-    /// the capability file from the compositor's loop. Both live in the
-    /// runtime tmpfs and must never wait for the disk there.
-    #[cfg(target_os = "linux")]
-    fn runtime_files_never_wait_for_the_disk() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_RUNTIME_DIR", tmp.path());
-        let room = RoomId::new();
-        let grants = sandbox(vec![fs_grant(
-            "so.tilo.hello",
-            "/var/workspace/books",
-            Access::Read,
-        )]);
-        let (projection, capabilities) =
-            crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
-                let projection = write_trusted_identities_projection(
-                    room,
-                    &tilo_user_identity::TrustedIdentityProjectionV2::empty(),
-                )
-                .expect("staging the projection needs no disk sync");
-                let capabilities = write_capabilities_file("so.tilo.hello", &grants)
-                    .expect("staging the capabilities needs no disk sync")
-                    .expect("grants need a file");
-                (projection, capabilities)
-            });
-        assert_eq!(
-            serde_json::from_slice::<tilo_user_identity::TrustedIdentityProjectionV2>(
-                &std::fs::read(&projection).unwrap(),
+/// Peer syncs publish the projection and synchronous launches stage
+/// the capability file from the compositor's loop. Both live in the
+/// runtime tmpfs and must never wait for the disk there.
+#[cfg(target_os = "linux")]
+#[test]
+#[serial_test::serial(process_env)]
+#[cfg(target_os = "linux")]
+fn runtime_files_never_wait_for_the_disk() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_RUNTIME_DIR", tmp.path());
+    let room = RoomId::new();
+    let grants = sandbox(vec![fs_grant(
+        "so.tilo.hello",
+        "/var/workspace/books",
+        Access::Read,
+    )]);
+    let (projection, capabilities) =
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            let projection = write_trusted_identities_projection(
+                room,
+                &tilo_user_identity::TrustedIdentityProjectionV2::empty(),
             )
-            .unwrap(),
-            tilo_user_identity::TrustedIdentityProjectionV2::empty()
-        );
-        assert_eq!(
-            std::fs::metadata(&projection).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
-            std::fs::read(capabilities.path()).unwrap(),
-            serde_json::to_vec(&grants).unwrap()
-        );
-        assert_eq!(
-            std::fs::metadata(capabilities.path())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-    }
-
-    governance_projection_is_atomic_bounded_and_owner_only();
-    files_launch_receives_only_the_staged_projection_path();
-    #[cfg(target_os = "linux")]
-    runtime_files_never_wait_for_the_disk();
+            .expect("staging the projection needs no disk sync");
+            let capabilities = write_capabilities_file("so.tilo.hello", &grants)
+                .expect("staging the capabilities needs no disk sync")
+                .expect("grants need a file");
+            (projection, capabilities)
+        });
+    assert_eq!(
+        serde_json::from_slice::<tilo_user_identity::TrustedIdentityProjectionV2>(
+            &std::fs::read(&projection).unwrap(),
+        )
+        .unwrap(),
+        tilo_user_identity::TrustedIdentityProjectionV2::empty()
+    );
+    assert_eq!(
+        std::fs::metadata(&projection).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::read(capabilities.path()).unwrap(),
+        serde_json::to_vec(&grants).unwrap()
+    );
+    assert_eq!(
+        std::fs::metadata(capabilities.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
 }

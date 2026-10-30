@@ -122,75 +122,74 @@ const REQUIRED_AT_CONSTRUCTION: &[&str] = &[
 ];
 
 #[test]
-fn every_toolkit_interface_and_the_clipboard_global_is_advertised() {
-    // Phase `every_interface_a_toolkit_requires_is_advertised`.
-    {
-        let globals = advertised_globals();
-        assert!(
-            !globals.is_empty(),
-            "the client saw no globals at all — the harness failed to talk to \
-             the compositor, so this test proved nothing. Fix the harness \
-             rather than the assertion."
-        );
-        let missing: Vec<&str> = REQUIRED_AT_CONSTRUCTION
-            .iter()
-            .copied()
-            .filter(|want| !globals.iter().any(|g| g == want))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "missing {missing:?}. A toolkit that requires these refuses the \
-             display outright rather than degrading, so an application using \
-             it cannot start. Advertised: {globals:?}"
-        );
-    }
+fn every_interface_a_toolkit_requires_is_advertised() {
+    let globals = advertised_globals();
+    assert!(
+        !globals.is_empty(),
+        "the client saw no globals at all — the harness failed to talk to \
+         the compositor, so this test proved nothing. Fix the harness \
+         rather than the assertion."
+    );
+    let missing: Vec<&str> = REQUIRED_AT_CONSTRUCTION
+        .iter()
+        .copied()
+        .filter(|want| !globals.iter().any(|g| g == want))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "missing {missing:?}. A toolkit that requires these refuses the \
+         display outright rather than degrading, so an application using \
+         it cannot start. Advertised: {globals:?}"
+    );
+}
 
-    // Phase `the_idle_inhibit_global_is_advertised`.
-    // Video players and presentations keep the screen on with this; without it
-    // they fall back to nothing and the session locks mid-film.
-    {
-        let globals = advertised_globals();
-        assert!(
-            globals.iter().any(|g| g == "zwp_idle_inhibit_manager_v1"),
-            "zwp_idle_inhibit_manager_v1 is not advertised. Advertised: {globals:?}"
-        );
-    }
+// Video players and presentations keep the screen on with this; without it
+// they fall back to nothing and the session locks mid-film.
+#[test]
+fn the_idle_inhibit_global_is_advertised() {
+    let globals = advertised_globals();
+    assert!(
+        globals.iter().any(|g| g == "zwp_idle_inhibit_manager_v1"),
+        "zwp_idle_inhibit_manager_v1 is not advertised. Advertised: {globals:?}"
+    );
+}
 
-    // Phase `the_toplevel_icon_global_is_advertised`.
-    // Windows no desktop entry describes set their own tab icon through it.
-    {
-        let globals = advertised_globals();
-        assert!(
-            globals.iter().any(|g| g == "xdg_toplevel_icon_manager_v1"),
-            "xdg_toplevel_icon_manager_v1 is not advertised. Advertised: {globals:?}"
-        );
-    }
-    // Phase `window_handles_are_exported_but_never_imported`.
-    // A portal request names its window by an exported handle; no client
-    // may parent its surfaces to another client's window.
-    {
-        let globals = advertised_globals();
-        assert!(
-            globals.iter().any(|g| g == "zxdg_exporter_v2"),
-            "zxdg_exporter_v2 is not advertised. Advertised: {globals:?}"
-        );
-        assert!(
-            !globals.iter().any(|g| g == "zxdg_importer_v2"),
-            "zxdg_importer_v2 must not be advertised. Advertised: {globals:?}"
-        );
-    }
-    // Phase `the_clipboard_global_is_advertised`.
-    // Keep this check separate so its failure identifies the clipboard global.
-    {
-        let globals = advertised_globals();
-        assert!(
-            globals.iter().any(|g| g == "wl_data_device_manager"),
-            "wl_data_device_manager is not advertised. GTK checks for it \
-             alongside wl_compositor and wl_shm and refuses the display when \
-             it is absent, so every GTK application — which is most Flatpaks \
-             — fails to open a window. Advertised: {globals:?}"
-        );
-    }
+// Windows no desktop entry describes set their own tab icon through it.
+#[test]
+fn the_toplevel_icon_global_is_advertised() {
+    let globals = advertised_globals();
+    assert!(
+        globals.iter().any(|g| g == "xdg_toplevel_icon_manager_v1"),
+        "xdg_toplevel_icon_manager_v1 is not advertised. Advertised: {globals:?}"
+    );
+}
+
+// A portal request names its window by an exported handle; no client
+// may parent its surfaces to another client's window.
+#[test]
+fn window_handles_are_exported_but_never_imported() {
+    let globals = advertised_globals();
+    assert!(
+        globals.iter().any(|g| g == "zxdg_exporter_v2"),
+        "zxdg_exporter_v2 is not advertised. Advertised: {globals:?}"
+    );
+    assert!(
+        !globals.iter().any(|g| g == "zxdg_importer_v2"),
+        "zxdg_importer_v2 must not be advertised. Advertised: {globals:?}"
+    );
+}
+
+// Keep this check separate so its failure identifies the clipboard global.
+#[test]
+fn the_clipboard_global_is_advertised() {
+    let globals = advertised_globals();
+    assert!(
+        globals.iter().any(|g| g == "wl_data_device_manager"),
+        "wl_data_device_manager is not advertised. GTK checks for it \
+         alongside wl_compositor and wl_shm and refuses the display when \
+         it is absent, so every GTK application — which is most Flatpaks \
+         — fails to open a window. Advertised: {globals:?}"
+    );
 }
 
 /// Display configuration and panel power can black out every screen, so

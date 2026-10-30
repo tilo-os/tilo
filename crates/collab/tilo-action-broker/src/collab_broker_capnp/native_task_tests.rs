@@ -21,6 +21,8 @@ mod confirmation;
 mod cross_app;
 #[path = "native_store_witness_tests.rs"]
 mod store_witness;
+#[path = "native_task_agent_tests.rs"]
+mod task_agents;
 
 struct Native {
     owner: tilo_joined_room::NativeWorkspaceOwner,
@@ -133,7 +135,6 @@ impl OwnerCommitService for Native {
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
         let owner = self.owner.clone();
         let key = self.key.clone();
-        let cert = self.certificate.clone();
         let receipts_refused = self
             .receipts_refused
             .load(std::sync::atomic::Ordering::SeqCst);
@@ -146,7 +147,7 @@ impl OwnerCommitService for Native {
                     Err("the room's governor records no receipt".into())
                 }
                 CommitOperation::EffectReceipt { .. } => {
-                    owner.commit_effect_receipt(&request, &cert, &key, std::time::SystemTime::now())
+                    owner.commit_effect_receipt(&request, &key, std::time::SystemTime::now())
                 }
                 CommitOperation::WorkspaceMembershipCommand { .. } => owner
                     .commit_workspace_membership_command(
@@ -214,14 +215,16 @@ impl TrackerRuns for Native {
         }
         Ok(self.runs.lock().unwrap().clone())
     }
-    fn check_agent(&self, requested: &str, agent: &str) -> Result<(), String> {
+    fn check_agent(&self, requested: &str, run: &TrackerRun) -> Result<(), String> {
         if !OwnerCommitService::requires_room(self, requested) {
             return Err("foreign tracker room".into());
         }
         self.owner.with_current(room(), |view| {
-            view.peer()
-                .workspace()
-                .check_admitted_agent(agent, std::time::SystemTime::now())
+            view.peer().workspace().check_admitted_agent(
+                &run.agent,
+                run.delegation.as_deref(),
+                std::time::SystemTime::now(),
+            )
         })
     }
     fn authorize_action(
@@ -235,9 +238,11 @@ impl TrackerRuns for Native {
         }
         self.owner.with_current(room(), |view| {
             let now = std::time::SystemTime::now();
-            view.peer()
-                .workspace()
-                .check_admitted_agent(&run.agent, now)?;
+            view.peer().workspace().check_admitted_agent(
+                &run.agent,
+                run.delegation.as_deref(),
+                now,
+            )?;
             requirement.check_tracker(view.peer(), requested, run, now)
         })
     }
@@ -444,6 +449,7 @@ impl Fixture {
                 model: None,
                 directions: Vec::new(),
                 question: None,
+                delegation: None,
             });
         }
         self.state.refresh_native_task_delivery();

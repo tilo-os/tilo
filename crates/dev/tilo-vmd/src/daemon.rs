@@ -92,6 +92,21 @@ fn onboarding_target_names(reply: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether a `state_dump` answer says the desktop is between two
+/// arrangements; an answer that does not say counts as settled.
+fn desktop_in_transition(reply: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(reply) else {
+        return false;
+    };
+    let answer = value.get("answer").unwrap_or(&value);
+    answer
+        .get("state")
+        .unwrap_or(answer)
+        .pointer("/chrome/in_transition")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// A slot's session, as the onboarding walk sees it: its controls listed
 /// and pressed by name through the control socket.
 struct OnboardingScreen<'a> {
@@ -121,6 +136,22 @@ impl onboarding_walk::Screen for OnboardingScreen<'_> {
             });
         }
         Ok(())
+    }
+
+    /// The state dump's `chrome.in_transition`, the fact a press is refused with.
+    fn settled(&mut self) -> Result<bool, DaemonError> {
+        let request = serde_json::json!({ "op": "state_dump" });
+        let reply = self
+            .daemon
+            .apply
+            .control(self.session, &["raw".to_owned(), request.to_string()])?;
+        if reply.exit_code != 0 {
+            return Err(DaemonError::DeviceIdentity {
+                slot: self.session.slot.clone(),
+                detail: format!("reading the session's state: {}", reply.stderr.trim()),
+            });
+        }
+        Ok(!desktop_in_transition(reply.stdout.trim()))
     }
 
     /// Onboarding is gone and its identity has certified the machine.

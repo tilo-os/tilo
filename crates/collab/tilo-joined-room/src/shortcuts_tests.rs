@@ -41,7 +41,7 @@ fn saved(owner: &NativeWorkspaceOwner) -> Vec<Shortcut> {
 }
 
 #[test]
-fn a_saved_shortcut_is_a_governed_room_write_that_survives_a_reopen() {
+fn a_saved_shortcut_is_a_room_write_that_survives_a_reopen() {
     let fixture = fixture();
     let mut water = shortcut("water");
     tilo_peer_state::room::sign_saved_shortcut(
@@ -54,14 +54,14 @@ fn a_saved_shortcut_is_a_governed_room_write_that_survives_a_reopen() {
     let save = request(&fixture, &ShortcutChange::Save(Box::new(water.clone())));
     let receipt = fixture
         .owner
-        .commit_shortcut_change(&save, &fixture.certificate, &fixture.key, fixture.now)
+        .commit_shortcut_change(&save, &fixture.key, fixture.now)
         .unwrap();
     receipt.validate_for(&save).unwrap();
     assert_eq!(saved(&fixture.owner), vec![water.clone()]);
     let reopened = crate::open_file(&fixture.directory.path().join("owner.json")).unwrap();
     assert_eq!(saved(&reopened), vec![water]);
     let again = reopened
-        .commit_shortcut_change(&save, &fixture.certificate, &fixture.key, fixture.now)
+        .commit_shortcut_change(&save, &fixture.key, fixture.now)
         .unwrap();
     assert_eq!(
         again.generation, receipt.generation,
@@ -70,13 +70,13 @@ fn a_saved_shortcut_is_a_governed_room_write_that_survives_a_reopen() {
 
     let delete = request(&fixture, &ShortcutChange::Delete("water".into()));
     reopened
-        .commit_shortcut_change(&delete, &fixture.certificate, &fixture.key, fixture.now)
+        .commit_shortcut_change(&delete, &fixture.key, fixture.now)
         .unwrap();
     assert!(saved(&reopened).is_empty());
 }
 
 #[test]
-fn the_governor_cannot_save_a_shortcut_as_someone_else() {
+fn no_device_saves_a_shortcut_as_someone_else() {
     let fixture = fixture();
     let mut forged = shortcut("water");
     forged.saved_by = Some("42".repeat(32));
@@ -84,7 +84,7 @@ fn the_governor_cannot_save_a_shortcut_as_someone_else() {
     assert!(
         fixture
             .owner
-            .commit_shortcut_change(&save, &fixture.certificate, &fixture.key, fixture.now)
+            .commit_shortcut_change(&save, &fixture.key, fixture.now)
             .is_err()
     );
     assert!(saved(&fixture.owner).is_empty());

@@ -151,19 +151,18 @@ impl ShellOverlayHost {
     /// modal for its whole lifetime.
     ///
     /// Every shell-owned menu or flyout claims the seat while it is open,
-    /// as Quick Settings does: the stacked popovers (the tab menu, the power
-    /// menu) and the screenshot receipt's "Send…" picker. Each hangs over
+    /// as Quick Settings does ([`Self::popover_open`]): the stacked popovers,
+    /// the top bar's, the screenshot receipt's "Send…" picker and each
+    /// window bar's menus. Each hangs over
     /// application windows; were the window under it given the pointer, the
     /// menu would show no hover and judge its next press against the last
     /// pointer position the shell saw — outside the menu — and close.
     pub(crate) fn inner_surface_captures_input(&self) -> bool {
-        self.layers.popover_open()
+        self.popover_open()
             || self.screenshot_markup.is_some()
             || self.capture_studio.modal_capture().is_some()
-            || self.capture_studio.send_menu_open()
             || self.agent_quick_composer.modal_capture().is_some()
             || self.person_quick_composer.modal_capture().is_some()
-            || self.bar_popovers.any_open()
     }
 
     /// How many marks the open screenshot editor holds, if it is open.
@@ -250,7 +249,7 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return;
         };
-        if !self.notification_stack.rect().contains(p) {
+        if !self.banner_stack_rect().contains(p) {
             self.release_banner_keyboard();
         }
         // A press on a window, wherever it lands (an app's own surface

@@ -1,4 +1,6 @@
 mod actions;
+#[cfg(feature = "live")]
+mod agent_review;
 mod attachments;
 mod compose;
 mod presentation;

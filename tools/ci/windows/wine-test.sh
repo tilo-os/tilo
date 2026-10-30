@@ -41,11 +41,7 @@ case "$mode" in
     # One test at a time and uncaptured, so each failure's message follows its
     # name and a test that hangs or crashes Wine is the last one started; a
     # hard limit so a hang fails instead of holding the node.
-    # The stack the workspace gives tests (.cargo/config.toml [env]), which
-    # cargo would set if it ran them.
-    stack="$(sed -n 's/^RUST_MIN_STACK = { value = "\([0-9]*\)".*/\1/p' "$here/../../../.cargo/config.toml")"
-    RUST_MIN_STACK="${stack:?no RUST_MIN_STACK in .cargo/config.toml}" \
-      timeout --kill-after=30 "${TILO_WINE_TEST_TIMEOUT:-1800}" \
+    timeout --kill-after=30 "${TILO_WINE_TEST_TIMEOUT:-1800}" \
       wine "$tests" --test-threads 1 --nocapture "${skips[@]}"
     ;;
   install)

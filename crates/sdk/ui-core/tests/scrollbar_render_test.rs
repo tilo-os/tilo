@@ -4,7 +4,7 @@
 //! along the right edge. A differential render with the scrollbar disabled proves the
 //! painted pixels come from the bar, not from the content.
 //!
-//! Skips gracefully when no wgpu adapter is available, matching the other
+//! Skips without a wgpu adapter, unless `TILO_REQUIRE_GPU=1` promises one, matching the other
 //! offscreen tests. Set `TILO_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
 #![allow(
@@ -97,10 +97,11 @@ fn right_edge_non_bg(rgba: &[u8], strip: u32) -> usize {
 
 #[test]
 fn scrollbar_paints_along_right_edge() {
-    let Some(mut renderer) = OffscreenRenderer::try_new(W, H).ok() else {
-        eprintln!("no wgpu adapter — skipping scrollbar_paints_along_right_edge");
-        return;
-    };
+    let mut renderer = tilo_test_env::require_capability!(
+        Gpu,
+        OffscreenRenderer::try_new(W, H),
+        "scrollbar_paints_along_right_edge"
+    );
 
     // With the scrollbar (default on).
     let mut with_bar = Scrollable::new_vertical().with_child(tall_child());

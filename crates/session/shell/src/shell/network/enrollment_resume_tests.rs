@@ -257,6 +257,29 @@ fn read_json(path: &Path) -> serde_json::Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
+/// The state file at `path`, with the owner's record beside it as its
+/// `native_authority`.
+fn read_state(path: &Path) -> serde_json::Value {
+    let mut state = read_json(path);
+    state["native_authority"] = read_json(&crate::shell::native_workspace_owner::owner_file(path));
+    state
+}
+
+/// Write `state` as [`read_state`] reads it: the owner's record to its own
+/// file, the rest to the state file at `path`.
+fn write_state(path: &Path, mut state: serde_json::Value) {
+    let authority = state
+        .as_object_mut()
+        .and_then(|fields| fields.remove("native_authority"))
+        .expect("the state carries the owner's record");
+    std::fs::write(
+        crate::shell::native_workspace_owner::owner_file(path),
+        serde_json::to_vec(&authority).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+}
+
 fn workspace_of(tree: &WorkspaceTreeHandle, room: RoomId) -> WorkspaceId {
     tree.read()
         .desktop
@@ -345,7 +368,7 @@ fn leave_a_join_pending(left: Left) -> Shape {
 
     // The state file as such a session leaves it.
     let path = state_path(&root);
-    let mut state = read_json(&path);
+    let mut state = read_state(&path);
     let lounge_key = lounge.to_string();
     {
         let authority = &mut state["native_authority"];
@@ -380,7 +403,7 @@ fn leave_a_join_pending(left: Left) -> Shape {
         ]
     );
     state["room_authority"] = serde_json::json!({ lounge_key.clone(): "Unpinned" });
-    std::fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+    write_state(&path, state);
 
     // The site's room as the hosted-rooms record holds it.
     let peer_sync = root.join("peer-sync");
@@ -469,7 +492,7 @@ fn a_pending_join_resumes_on_start(left: Left, cert: Cert) {
         drop(shape.site.browser(&key(2), key(3), "Grace"));
     }
     let files = files_under(&shape.root);
-    let before = read_json(&state_path(&shape.root));
+    let before = read_state(&state_path(&shape.root));
     let proof = pending_proof(&before, &lounge.to_string());
 
     let (net, tree) = computer_again(&shape.root, cert);
@@ -542,7 +565,7 @@ fn assert_only_the_enrollment_completed(
     files: &[PathBuf],
     proof: &[u8],
 ) {
-    let after = read_json(&state_path(&shape.root));
+    let after = read_state(&state_path(&shape.root));
     let room = shape.lounge.to_string();
     assert!(
         after["native_authority"]["pending"].get(&room).is_none(),

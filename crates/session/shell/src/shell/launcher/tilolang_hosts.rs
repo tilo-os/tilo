@@ -222,6 +222,7 @@ fn hand_over_now(
                 .to_owned(),
         )
         .filter(|id| *id != app.package_id),
+        applies_change: false,
     };
     // An app whose types hold an outside service's resources reaches its connector, which
     // holds the network and custody the host has none of.
@@ -252,6 +253,108 @@ fn hand_over_now(
     Ok(())
 }
 
+/// The ids of changes applied at a record's origin: apart from every window's instance id.
+static NEXT_CHANGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 62);
+
+/// Apply `change`, an agent task's invocation of the app `app_id` the broker admitted, at the
+/// origin of its record in `room` (`docs/designs/app-language/agents.md`, "Reading records
+/// outside their app"): the host of the app's workspace and author runs the action's code
+/// against the record as it is then, with no instance and no window, on a collaboration
+/// connection attested as that app's exactly as a window's instance's is. Waits for the host's
+/// answer, which ends the wait whether it applied, refused or failed; the host closing the
+/// connection without one ends it too.
+///
+/// # Errors
+/// The app is not an installed tilolang app, its connections cannot be opened, or the host
+/// left without answering.
+pub(crate) fn apply_change(
+    app_id: &str,
+    room: RoomId,
+    change: &runtime_portal::tilolang_host::Change,
+) -> std::io::Result<serde_json::Value> {
+    use std::io::{BufRead as _, Write as _};
+    let refused = |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
+    let apps = super::installed_apps().map_err(|error| std::io::Error::other(error.to_string()))?;
+    let app = apps
+        .iter()
+        .find(|app| app.package_id == app_id && runs_in_host(app))
+        .ok_or_else(|| refused(format!("{app_id} is no installed tilolang app")))?;
+    let workspace = room.to_string();
+    let installed =
+        super::installed_copy(app).ok_or_else(|| refused("the app is not installed".to_owned()))?;
+    let evidence = super::original_application_creation(app, &installed)
+        .ok_or_else(|| refused("the app has no verified creation record".to_owned()))?;
+    let verified = ::launcher::run::tilolang_host::verified_instance(
+        &installed,
+        &app.manifest_path,
+        &app.payload_root,
+        &evidence.package_hash,
+    )
+    .map_err(|error| refused(error.to_string()))?;
+    let person = crate::shell::state::local_user_id_for_room(&room);
+    let key = HostKey {
+        workspace: workspace.clone(),
+        author: Author::of(verified.publisher, &person).key(),
+        runtime: verified.runtime,
+        app_runtime: verified.app_runtime,
+    };
+    let module = verified.module.encode();
+    let module_len = module.len() as u64;
+    let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
+    // The app's own connection, recorded as the session's for that app with its creation
+    // record, as a window's instance's is: the broker attributes it from that record.
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(::launcher::services::collab_socket())?;
+    super::register_tilolang_change(&app.package_id, &workspace, evidence);
+    if let Err(error) =
+        ::launcher::services::write_collab_handoff(&mut stream, &app.package_id, &workspace)
+    {
+        super::withdraw_in_process_launch(&app.package_id, &workspace, None);
+        return Err(error);
+    }
+    let identity =
+        ::launcher::services::resolve_identity_bind(&app.package_id, Some(&workspace), false)
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .ok_or_else(|| refused("the identity service is unavailable".to_owned()))?
+            .host;
+    let instance = NEXT_CHANGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let request = InstanceRequest {
+        app: app.package_id.clone(),
+        room: workspace,
+        instance,
+        person,
+        module_len,
+        records_under: Some(
+            super::installed_earlier_ids()
+                .records_under(&app.package_id)
+                .to_owned(),
+        )
+        .filter(|id| *id != app.package_id),
+        applies_change: true,
+    };
+    let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+    let fds = InstanceFds {
+        broker: stream.into(),
+        identity,
+        module,
+        window: theirs.into(),
+        origin: None,
+    };
+    send_to_host(&key, &request, &fds)?;
+    drop(fds);
+    let mut line = serde_json::to_vec(change).map_err(std::io::Error::other)?;
+    line.push(b'\n');
+    (&ours).write_all(&line)?;
+    let mut answer = String::new();
+    std::io::BufReader::new(&ours).read_line(&mut answer)?;
+    if answer.trim().is_empty() {
+        return Err(std::io::Error::other(
+            "the app's host ended the change without answering it (see its log)",
+        ));
+    }
+    serde_json::from_str(&answer).map_err(std::io::Error::other)
+}
+
 /// Start the host of the agent task `task` in `room` (`docs/designs/app-language/agents.md`,
 /// "How a program runs"): a tilolang host whose author is the task, through the same launch kind
 /// and sandbox as every other, handed the task's program connection and the module of every
@@ -264,6 +367,7 @@ pub(super) fn start_task(room: RoomId, task: &str) -> std::io::Result<OwnedFd> {
     let refused = |what: String| std::io::Error::new(std::io::ErrorKind::NotFound, what);
     let apps = super::installed_apps().map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut modules = Vec::new();
+    let mut records_under = std::collections::BTreeMap::new();
     let mut runtimes: Option<(String, String)> = None;
     for app in apps.iter().filter(|app| runs_in_host(app)) {
         let verified = super::installed_copy(app).and_then(|installed| {
@@ -289,6 +393,12 @@ pub(super) fn start_task(room: RoomId, task: &str) -> std::io::Result<OwnedFd> {
             Some(_) => {}
             None => runtimes = Some(pair),
         }
+        let under = super::installed_earlier_ids()
+            .records_under(&app.package_id)
+            .to_owned();
+        if under != app.package_id {
+            records_under.insert(app.package_id.clone(), under);
+        }
         modules.push(verified.module);
     }
     let (runtime, app_runtime) =
@@ -305,6 +415,7 @@ pub(super) fn start_task(room: RoomId, task: &str) -> std::io::Result<OwnedFd> {
         room: room.to_string(),
         person: Some(crate::shell::state::local_user_id_for_room(&room)),
         modules_len: encoded.len() as u64,
+        records_under,
     };
     let modules = tilo_render_protocol::shm::sealed_blob("tilolang-modules", &encoded)?;
     let (door_end, host_end) = std::os::unix::net::UnixStream::pair()?;

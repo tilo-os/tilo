@@ -102,6 +102,9 @@ pub enum RoomRefusal {
     Membership(String),
     /// The batch rewrites an effect receipt.
     ReceiptImmutable,
+    /// The batch records an effect receipt, or anchors archived ones,
+    /// outside its writer's own slice ([`super::effect_slices_kept`]).
+    ReceiptWriter,
     Coverage(String),
     /// The batch rewinds a durable receipt.
     Durability(String),
@@ -124,6 +127,7 @@ impl std::fmt::Display for RoomRefusal {
             Self::DeclaredRoomMismatch => f.write_str("declared room mismatch"),
             Self::GovernanceWriter => f.write_str("governance writer is not the owner's device"),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
+            Self::ReceiptWriter => f.write_str("effect receipt is not its writer's own"),
             Self::Media(error) => write!(f, "{error}"),
             Self::ShortcutAuthorship(shortcut) => write!(
                 f,
@@ -151,9 +155,7 @@ pub fn admit_room_changes(
     changes: &[Vec<u8>],
 ) -> Result<AdmittedRoom, RoomRefusal> {
     let governs = input.source.governs(input.owner);
-    if !governs {
-        may_write(input.before, input.room, &input.source, input.now_ns)?;
-    }
+    let writes = governs || may_write(input.before, input.room, &input.source, input.now_ns)?;
     match super::base::lineage(input.before, changes) {
         super::base::Lineage::Same { changes, replaced } => {
             // Changes waiting in the document that the batch shows to be of
@@ -161,6 +163,11 @@ pub fn admit_room_changes(
             let pruned = super::base::pruned(input.before, replaced);
             let candidate = super::candidate(pruned.as_ref().or(input.before), &changes)
                 .map_err(RoomRefusal::Malformed)?;
+            // One who only reads the room records only their own receipts
+            // and gives only their own shares.
+            if !writes && !super::only_reader_writes_differ(input.before, &candidate) {
+                return Err(RoomRefusal::WriteForbidden);
+            }
             let membership = !governs
                 && !super::governance_unchanged(input.before, &candidate)
                 && membership_authorized(&input, &changes)?;
@@ -196,7 +203,9 @@ pub fn admit_room_changes(
 ///    coverage, receipts, durability or import proposals — comes from the
 ///    owner's devices ([`super::governance_unchanged`]).
 /// 3. The room's layout scope changes only by the owner's devices.
-/// 4. Effect receipts are immutable ([`super::immutable_receipts`]).
+/// 4. Effect receipts are immutable ([`super::immutable_receipts`]), and
+///    one not from the owner's devices records only its writer's own
+///    ([`super::effect_slices_kept`]).
 /// 5. Coverage and durable receipts never rewind
 ///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]).
 /// 6. The media policy is well formed and its transition is permitted
@@ -225,8 +234,14 @@ fn membership_authorized(
         return Err(RoomRefusal::GovernanceWriter);
     };
     let (at, after) = super::membership::position(before, changes).map_err(membership)?;
-    super::membership::authorize(input.room, &person, foreign, &at, &after, input.now_ns)
-        .map_err(membership)?;
+    super::membership::authorize(
+        input.room,
+        (&person, input.source.key, foreign),
+        &at,
+        &after,
+        input.now_ns,
+    )
+    .map_err(membership)?;
     Ok(true)
 }
 
@@ -266,6 +281,11 @@ fn checked(
         if before.map_or_else(Vec::new, crate::room_hosts_of) != crate::room_hosts_of(candidate) {
             // The room's hosts are its owner's to name.
             return Err(RoomRefusal::GovernanceWriter);
+        }
+        // The owner's devices relay what members recorded; anyone else
+        // records only their own.
+        if !super::effect_slices_kept(before, candidate, source.person()) {
+            return Err(RoomRefusal::ReceiptWriter);
         }
     }
     // Every writer, the owner's devices included: it relays and merges what members
@@ -318,17 +338,18 @@ fn saved_shortcuts_proven(
     Ok(())
 }
 
-/// Undoable changes on the room for a sender that is not the governance
-/// writer, decided against the policy already held — never the one the batch
-/// brings.
+/// Whether a sender that is not the governance writer may make undoable
+/// changes on the room (`true`), or only read it and so record its own
+/// effect receipts and give its own shares (`false`), decided against the
+/// policy already held — never the one the batch brings.
 fn may_write(
     before: Option<&AutoCommit>,
     room: &str,
     source: &Writer<'_>,
     now_ns: u64,
-) -> Result<(), RoomRefusal> {
+) -> Result<bool, RoomRefusal> {
     let Standing::Member { person, foreign } = source.standing else {
-        return Ok(());
+        return Ok(true);
     };
     let before = before.ok_or(RoomRefusal::GovernanceMissing)?;
     let policy = tilo_desktop_model::projection::room_policy_of(before, room);
@@ -339,12 +360,11 @@ fn may_write(
     let bound = tilo_action_policy::roles::foreign_device_bound();
     let authority = policy.person_on_device(&person, foreign, &bound);
     let cx = Context::at_secs(now_ns / 1_000_000_000);
-    if authority
-        .decide(&TreePath::room(room), ActionKind::Undoable, &cx)
-        .answer
-        == Answer::Allow
-    {
-        Ok(())
+    let allows = |kind| authority.decide(&TreePath::room(room), kind, &cx).answer == Answer::Allow;
+    if allows(ActionKind::Undoable) {
+        Ok(true)
+    } else if allows(ActionKind::Read) {
+        Ok(false)
     } else {
         Err(RoomRefusal::WriteForbidden)
     }

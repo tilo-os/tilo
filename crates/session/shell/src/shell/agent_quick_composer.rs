@@ -432,6 +432,9 @@ struct View {
     waiting: LocalState<bool>,
     running: LocalState<bool>,
     enabled: LocalState<bool>,
+    /// What keeps the chosen agent from being asked, said in place.
+    blocked: LocalState<bool>,
+    blocked_text: LocalState<String>,
 }
 
 impl Default for View {
@@ -461,7 +464,29 @@ impl Default for View {
             waiting: LocalState::new(false),
             running: LocalState::new(false),
             enabled: LocalState::new(false),
+            blocked: LocalState::new(false),
+            blocked_text: LocalState::new(String::new()),
         }
+    }
+}
+
+/// What keeps a new agent made for a task from being asked here: no agent
+/// runtime can be launched, no model is configured, or the model is on the
+/// internet and this device is offline. Each has its fix, offered in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AskBlocker {
+    NoRuntime,
+    NoModel,
+    Offline,
+}
+
+impl AskBlocker {
+    fn text(self) -> String {
+        t(match self {
+            Self::NoRuntime => "agent-quick-blocked-no-runtime",
+            Self::NoModel => "agent-quick-blocked-no-model",
+            Self::Offline => "agent-quick-blocked-offline",
+        })
     }
 }
 
@@ -474,6 +499,8 @@ struct Presses {
     insert: LocalState<bool>,
     save: LocalState<bool>,
     open_run: LocalState<bool>,
+    /// The fix for what keeps a new agent from being asked.
+    fix: LocalState<bool>,
 }
 
 impl Default for Presses {
@@ -485,6 +512,7 @@ impl Default for Presses {
             insert: LocalState::new(false),
             save: LocalState::new(false),
             open_run: LocalState::new(false),
+            fix: LocalState::new(false),
         }
     }
 }
@@ -576,6 +604,10 @@ pub(crate) struct AgentQuickComposer {
     answer_to_open: Option<ResourceAt>,
     /// What the composer keeps clear of: where its subject is drawn.
     anchor: Option<Rect>,
+    /// What keeps the chosen agent from being asked, while something does.
+    blocker: Option<AskBlocker>,
+    /// The fix the person pressed, until the host takes it.
+    fix: Option<AskBlocker>,
 }
 
 impl Default for AgentQuickComposer {
@@ -617,6 +649,8 @@ impl Default for AgentQuickComposer {
             opened_answers: HashSet::new(),
             answer_to_open: None,
             anchor: None,
+            blocker: None,
+            fix: None,
         };
         composer.popover = composer.controls(slots);
         composer
@@ -777,6 +811,28 @@ impl AgentQuickComposer {
             ))
     }
 
+    /// What keeps the agent from being asked, and the button that fixes it.
+    fn blocked_row(&self) -> Row {
+        let fix = self.presses.fix.clone();
+        Row::new()
+            .no_wrap()
+            .with_justify(taffy::JustifyContent::SpaceBetween)
+            .push(wrapped(
+                Text::from_state(&self.view.blocked_text, Clone::clone)
+                    .with_id("agent-quick-blocked")
+                    .with_role(ui::TextRole::Caption),
+            ))
+            .push(Box::new(
+                Button::new("agent-quick-fix", &t("agent-quick-fix"))
+                    .role(ButtonRole::Secondary)
+                    .on_click(move || fix.set(true)),
+            ))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the composer's one column of rows, top to bottom, reads as one layout"
+    )]
     fn controls(&self, slots: WorkSlots) -> Popover<Container> {
         let view = &self.view;
         // The work: the steps, the answer view and the reply, following the end while the run
@@ -866,6 +922,11 @@ impl AgentQuickComposer {
                 |shown| *shown,
                 Box::new(run_line),
             )))
+            .push(Box::new(When::from_state(
+                &view.blocked,
+                |shown| *shown,
+                Box::new(self.blocked_row()),
+            )))
             .push(Box::new(editor))
             .push(Box::new(self.footer()));
         Popover::with_content(
@@ -892,7 +953,9 @@ impl AgentQuickComposer {
         self.agents.clear();
         self.agent_switch = None;
         self.view.picks_agent.set(false);
-        self.view.agent.set(owner.agent.clone());
+        self.view.agent.set(agent_label(&owner.agent));
+        self.blocker = None;
+        self.fix = None;
         self.view.mode.set(t("agent-quick-mode-decides"));
         self.offer_models(models_of());
         label.clone_into(&mut self.label);
@@ -1118,7 +1181,15 @@ impl AgentQuickComposer {
             self.mode_picker = PickerListing::Listed;
         }
         if self.agent_picker == PickerListing::Unlisted
-            && set_picker_options(&mut self.popover, AGENT_PICKER, &self.agents)
+            && set_picker_options(
+                &mut self.popover,
+                AGENT_PICKER,
+                &self
+                    .agents
+                    .iter()
+                    .map(|agent| agent_label(agent))
+                    .collect::<Vec<_>>(),
+            )
         {
             self.agent_picker = PickerListing::Listed;
         }
@@ -1159,6 +1230,21 @@ impl AgentQuickComposer {
     /// opens the composer again for it, about the same thing.
     pub(crate) fn take_agent_switch(&mut self) -> Option<String> {
         self.agent_switch.take()
+    }
+
+    /// Say in place what keeps the chosen agent from being asked, and offer
+    /// its fix; `None` once nothing does. Sending waits until then.
+    pub(crate) fn block(&mut self, blocker: Option<AskBlocker>) {
+        if self.blocker != blocker {
+            self.blocker = blocker;
+            self.refresh();
+        }
+    }
+
+    /// The fix the person pressed, exactly once.
+    pub(crate) fn take_fix(&mut self) -> Option<AskBlocker> {
+        self.tick();
+        self.fix.take()
     }
 
     /// Whether the composer is open about a selection rather than beside an
@@ -1585,9 +1671,13 @@ impl AgentQuickComposer {
                 && !busy,
         );
         self.view.running.set(running && !starting && !busy);
+        self.view.enabled.set(
+            !busy && !starting && self.blocker.is_none() && !self.draft.get().trim().is_empty(),
+        );
+        self.view.blocked.set(self.blocker.is_some());
         self.view
-            .enabled
-            .set(!busy && !starting && !self.draft.get().trim().is_empty());
+            .blocked_text
+            .set(self.blocker.map(AskBlocker::text).unwrap_or_default());
         let status = self.notice.clone().or_else(|| {
             run.map(|run| {
                 let key = match run.phase {
@@ -1625,14 +1715,20 @@ impl AgentQuickComposer {
         {
             self.open_run = Some(run.task.task_id.clone());
         }
+        if take(&self.presses.fix) {
+            self.fix = self.blocker;
+        }
         let picked = self.view.agent.get();
-        if self
-            .owner
-            .as_ref()
-            .is_some_and(|owner| owner.agent != picked)
-            && self.agents.contains(&picked)
+        if let Some(agent) = self
+            .agents
+            .iter()
+            .find(|agent| agent_label(agent) == picked)
+            && self
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.agent != *agent)
         {
-            self.agent_switch = Some(picked);
+            self.agent_switch = Some(agent.clone());
         }
         let answer = self.view.answer.get();
         if take(&self.presses.insert) && self.view.can_use_answer.get() {
@@ -1707,6 +1803,16 @@ fn editor_state(widget: &dyn Widget) -> Option<String> {
 
 /// The test id of the composer's agent picker.
 const AGENT_PICKER: &str = "agent-quick-agent";
+
+/// How the agent picker names `agent`: a new agent made for the task, or a
+/// collaborator by its id.
+fn agent_label(agent: &str) -> String {
+    if agent == crate::shell::task_agents::NEW_TASK_AGENT {
+        t("agent-quick-new-agent")
+    } else {
+        agent.to_owned()
+    }
+}
 
 /// The test id of the composer's model picker.
 const MODEL_PICKER: &str = "agent-quick-model";

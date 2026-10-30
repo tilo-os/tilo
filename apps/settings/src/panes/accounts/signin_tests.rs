@@ -152,7 +152,7 @@ fn published_google_mail_reauth_uses_browser_and_preserves_the_mailbox() {
                     .with_gmail_profile_endpoint(format!("{}/profile", gmail.url())),
             )
             .with_browser_opener(browser.clone());
-        app.surface::<crate::SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             *crate::panes::accounts::area(settings)
                 .unwrap()
                 .model()
@@ -168,7 +168,7 @@ fn published_google_mail_reauth_uses_browser_and_preserves_the_mailbox() {
         .unwrap();
         app.call_on("settings.root", "save-account-form", serde_json::json!({}))
             .unwrap();
-        app.surface::<crate::SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             let shared = crate::panes::accounts::area(settings).unwrap().model();
             let mut pane = shared.borrow_mut();
             assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
@@ -256,16 +256,18 @@ fn connected_account_files_handoff_is_typed_and_matches_files_resource() {
             launch.argument(),
             ui::tilo_actions::remote::InvokeArgument::None
         ));
-        let profile = tempfile::tempdir().unwrap();
-        let area = AccountsArea::new(&PaneCx::in_profile(profile.path().to_path_buf()))
-            .with_account_root(root.clone());
-        let _ = area.model.set(Rc::new(std::cell::RefCell::new(pane)));
-        let row = area
-            .rows()
-            .into_iter()
-            .find(|row| row.id() == format!("settings.account:{id}"))
-            .unwrap()
-            .into_resource();
+        let mut app = super::tests::window_showing(pane);
+        let row = app
+            .with_widget::<crate::window::Inspected, _>(|settings| {
+                area(settings)
+                    .unwrap()
+                    .rows()
+                    .into_iter()
+                    .find(|row| row.id() == format!("settings.account:{id}"))
+                    .unwrap()
+                    .into_resource()
+            })
+            .unwrap();
         let published = row
             .actions
             .iter()
@@ -273,8 +275,11 @@ fn connected_account_files_handoff_is_typed_and_matches_files_resource() {
             .unwrap();
         assert_eq!(published.build_args([]).unwrap(), encoded);
         let mut labels = Vec::new();
-        let composed = super::tests::lay_out(&area.model().borrow());
-        crate::host::testing::labels_of(composed.as_ref(), "Button", &mut labels);
+        crate::testing::labels_of(
+            crate::effects::page_of(app.harness().root_widget()),
+            "Button",
+            &mut labels,
+        );
         assert!(labels.contains(&spec.label));
         account.enabled = false;
         store.upsert(account.clone());
@@ -302,7 +307,7 @@ fn published_service_choices_use_the_same_sign_in_form() {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
     let mut pane = AccountsPane::in_root(root.clone());
     command(&mut pane, AccountViewCommand::Add(AccountKind::GoogleDrive));
-    app.surface::<crate::SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         *crate::panes::accounts::area(settings)
             .unwrap()
             .model()
@@ -318,7 +323,7 @@ fn published_service_choices_use_the_same_sign_in_form() {
         }),
     )
     .unwrap();
-    app.surface::<crate::SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         let shared = crate::panes::accounts::area(settings).unwrap().model();
         let mut pane = shared.borrow_mut();
         assert!(pane.sign_in_open());
@@ -376,7 +381,7 @@ fn oauth_sign_in_through_the_pane_seals_the_grant() {
     assert!(pane.sign_in_open());
     command(&mut pane, AccountViewCommand::Submit);
     assert!(
-        PaneModel::busy(&pane),
+        pane.busy(),
         "the pane keeps polling while the browser is out"
     );
     assert!(
@@ -679,7 +684,7 @@ fn a_provider_without_a_client_id_explains_instead_of_starting() {
         message.contains("TILO_OAUTH_DROPBOX_CLIENT_ID"),
         "{message}"
     );
-    assert!(!PaneModel::busy(&pane), "nothing was started");
+    assert!(!pane.busy(), "nothing was started");
     assert!(browser.opened.lock().unwrap().is_empty());
 }
 
@@ -890,7 +895,7 @@ fn icloud_without_a_provider_is_not_available_rather_than_broken() {
         pane.sign_in_message_for_test()
             .is_some_and(|message| message.contains("not available")),
     );
-    assert!(!PaneModel::busy(&pane));
+    assert!(!pane.busy());
 }
 
 #[test]
@@ -929,15 +934,11 @@ fn icloud_rows_are_marked_best_effort_and_offer_reauthentication() {
     root.save_store(&store).unwrap();
     root.sync_reporter(id).needs_authentication().unwrap();
 
-    let pane = AccountsPane::in_root(root);
-    let theme = ui::Theme::dark();
-    let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-    let mut node_map = std::collections::HashMap::new();
-    let mut composed = pane.build_composition();
-    let _ = composed.build_layout(&mut taffy, &theme, &mut node_map);
-
-    let mut texts = Vec::new();
-    collect(composed.as_ref(), &mut texts);
+    let texts = super::tests::on_page(AccountsPane::in_root(root), |page| {
+        let mut texts = Vec::new();
+        collect(page, &mut texts);
+        texts
+    });
     assert!(
         texts.iter().any(|text| text == "Re-authenticate — Files"),
         "{texts:?}"

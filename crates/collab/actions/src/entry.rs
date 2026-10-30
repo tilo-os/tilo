@@ -31,9 +31,40 @@ pub enum Did {
     History(HistoryStep),
 }
 
-read_through_json_value!(Did, custom);
+// Written through its JSON text: the derived writer is compiled once, for
+// JSON bytes, and every serializer an entry goes to (bytes, a value, a size
+// count) takes that text as it is, rather than holding a copy of the derived
+// writer of its own. The bytes are the derive's, tag first. Like its reading,
+// this is for JSON only (see `read_through_json_value!`).
+impl serde::Serialize for Did {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_json_text()
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Did {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+        Self::from_json_value(value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl Did {
+    /// Its JSON text, as the derived writer writes it.
+    #[inline(never)]
+    fn to_json_text(&self) -> Result<Box<serde_json::value::RawValue>, serde_json::Error> {
+        /// The derived writer, as a value to serialize.
+        struct Derived<'a>(&'a Did);
+        impl serde::Serialize for Derived<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                Did::serialize(self.0, serializer)
+            }
+        }
+        serde_json::value::to_raw_value(&Derived(self))
+    }
+
     /// Read by its `did` tag, each variant's fields straight from the
     /// object: no buffered copy of the entry.
     #[inline(never)]

@@ -109,13 +109,8 @@ fn every_page_keeps_its_controls_inside_their_rows_at_the_laptop_size_and_in_sma
             let mut app = TestApp::<SettingsShell>::capture_at(Some(slug), (width, height))
                 .unwrap_or_else(|error| panic!("{slug} at {width}x{height} opens: {error:?}"));
             app.settle();
-            let problems = app
-                .surface::<settings::SettingsApp, _>(|settings| {
-                    let mut problems = Vec::new();
-                    walk(&*settings, f64::from(width), &mut problems);
-                    problems
-                })
-                .expect("the settings surface is mounted");
+            let mut problems = Vec::new();
+            walk(app.harness().root_widget(), f64::from(width), &mut problems);
             if !problems.is_empty() {
                 failures.push(format!(
                     "{slug} at {width}x{height}:\n  {}",

@@ -162,10 +162,31 @@ fn point_at_empty_canvas_and_type_select_pan_zoom_and_keep_places_across_a_resta
         json!(true),
         "the caret has the keyboard"
     );
+    // Enter with no agent in the workspace says so at the caret, and keeps
+    // what was typed; typing again takes the reason away.
+    desktop.key("Enter");
+    wait(&desktop, "the caret says no agent works here", || {
+        let caret = &canvas(&desktop)["caret"];
+        caret["refused"] == json!("canvas-ask-no-agent")
+            && caret["text"] == json!("show me this week's release work")
+    });
+    desktop.type_text("!");
+    wait(&desktop, "typing again takes the reason away", || {
+        canvas(&desktop)["caret"]["refused"].is_null()
+    });
     desktop.key("Escape");
     wait(&desktop, "Escape puts the caret away", || {
         canvas(&desktop)["caret"].is_null()
     });
+    // Enter with nothing typed says what to do, too.
+    desktop.click_at(empty.0, empty.1);
+    desktop.key("Enter");
+    wait(&desktop, "the empty caret says to type first", || {
+        canvas(&desktop)["caret"]["refused"] == json!("canvas-ask-nothing-typed")
+    });
+    desktop.key("Escape");
+    // The strips' ribbon and rail never show over a canvas.
+    assert_eq!(canvas(&desktop)["strip_indicators"], json!(false));
 
     // A band over the first window selects it, and typing about it starts
     // under it.
@@ -205,8 +226,9 @@ fn point_at_empty_canvas_and_type_select_pan_zoom_and_keep_places_across_a_resta
 
     // The strips come back, and the canvas finds everything where it was.
     desktop.invoke_action("actions", "workspace.show-strips");
-    wait(&desktop, "the strips show", || {
-        canvas(&desktop)["shown"] == json!(false)
+    wait(&desktop, "the strips show, with their ribbon", || {
+        let state = canvas(&desktop);
+        state["shown"] == json!(false) && state["strip_indicators"] == json!(true)
     });
     desktop.invoke_action("actions", "workspace.show-canvas");
     wait(&desktop, "the canvas shows again", || {

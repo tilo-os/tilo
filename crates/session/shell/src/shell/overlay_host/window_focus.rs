@@ -371,12 +371,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The modifiers held changed: the palette's selected row previews
-    /// what Enter would do with them. Whether that needs a new frame.
-    pub fn note_held_modifiers(&mut self, modifiers: winit::keyboard::ModifiersState) -> bool {
-        self.palette.set_held_modifiers(modifiers) && self.palette_visible
-    }
-
     /// The modifier state changed with no key event to carry it (the
     /// control socket's modifier command, a backend's `ModifiersChanged`).
     /// A switcher held open by Alt commits once Alt is up.
@@ -734,17 +728,38 @@ impl ShellOverlayHost {
         let Some((source, heir, destination, before)) = planned else {
             return false;
         };
-        let carry = tilo_desktop::intents::SessionIntent::MoveGroup {
-            group,
-            to: destination,
-            before,
-        };
-        if Self::dispatch_desktop_intents(
-            &chrome,
-            [tilo_desktop::intents::DesktopIntent::Session(carry)],
-        ) == 0
         {
-            return false;
+            // The same move an agent's `move-group` makes, by the same ids.
+            let mut st = chrome.borrow_mut();
+            let moved = (|| {
+                let room = crate::shell::desktop_layout::shown_room(&st)?;
+                let index = before.and_then(|before| {
+                    let tree = st.tree();
+                    let index = tree
+                        .desktop
+                        .workspaces
+                        .iter()
+                        .flat_map(|workspace| &workspace.strips)
+                        .find(|strip| strip.id == destination)?
+                        .window_groups
+                        .iter()
+                        .position(|g| g.id == before);
+                    drop(tree);
+                    index
+                });
+                let person = crate::shell::desktop_layout::Actor::person(&st, room);
+                crate::shell::desktop_layout::move_group(
+                    &mut st,
+                    room,
+                    group,
+                    destination,
+                    index,
+                    &person,
+                )
+            })();
+            if !matches!(moved, Ok(true)) {
+                return false;
+            }
         }
         {
             let mut st = chrome.borrow_mut();

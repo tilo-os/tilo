@@ -114,16 +114,6 @@ mod pending_requests;
 use pending_requests::RecordRequest;
 pub use pending_requests::{PendingPrompt, PromptRequest};
 
-/// A popover the top bar opens, asked for by the bar that was pressed.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum BarPopoverRequest {
-    /// Open or close the workspace menu under `anchor`, the workspace name
-    /// on the bar that asked.
-    WorkspaceMenu { anchor: vello::kurbo::Rect },
-    /// Open or close the profile card under the person's own avatar.
-    Profile,
-}
-
 /// Snapshot of which shell overlays are currently on screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(
@@ -371,6 +361,10 @@ pub struct ChromeState {
     identity_source: IdentitySource,
     pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
     pub(crate) native_app_opening: super::launcher::NativeAppOpening,
+    /// Layout changes to take back by run, and windows opened for a
+    /// resource that are still to be opened at it
+    /// ([`super::desktop_layout`]).
+    pub(crate) desktop_layout: super::desktop_layout::Journal,
     /// Shared with the portal (grants) and peer-sync (replica), all
     /// holding clones of the same [`WorkspaceTreeHandle`]. Named `tree_handle`
     /// (not `tree`) so unmigrated call-sites get a type-mismatch error
@@ -411,9 +405,6 @@ pub struct ChromeState {
     /// top bar without bumping revision so the workspace lens can animate
     /// from the exact context that opened it.
     pub workspace_settings_anchor: vello::kurbo::Rect,
-    /// The popover a top bar asked for and the overlay host has not opened
-    /// (or closed) yet: the workspace menu or the profile card.
-    pub bar_popover_request: Option<BarPopoverRequest>,
     /// The Permissions tab's in-progress grant. Lives here (not the
     /// overlay host) so it survives a re-render, and holds picker
     /// indices rather than a resolved capability so a subject leaving
@@ -779,6 +770,7 @@ impl ChromeState {
             tree_handle,
             hosted_inputs,
             native_app_opening: super::launcher::NativeAppOpening::default(),
+            desktop_layout: super::desktop_layout::Journal::default(),
             identity_source,
             overlays: OverlayFlags::default(),
             projection_follow: ProjectionFollow::Person,
@@ -795,7 +787,6 @@ impl ChromeState {
             pad_map: None,
             ws_settings_tab: WsTab::default(),
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
-            bar_popover_request: None,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
             instance: next_chrome_instance(),
@@ -2811,12 +2802,9 @@ impl ChromeState {
     /// The model's refusal: no active workspace, or a name that is empty, too
     /// long or holds control characters.
     pub fn create_strip(&mut self, name: &str) -> Result<crate::shell::state::StripId, String> {
-        let command = tilo_desktop_model::commands::DesktopCommand::CreateStrip {
-            name: name.to_owned(),
-        };
-        let strip = self.tree_mut().commit_strip_command(&command)?;
-        self.bump();
-        Ok(strip)
+        let room = super::desktop_layout::shown_room(self)?;
+        let person = super::desktop_layout::Actor::person(self, room);
+        super::desktop_layout::create_strip(self, room, name, &person, true)
     }
 
     /// Rename `strip` of the active workspace.
@@ -2830,13 +2818,9 @@ impl ChromeState {
         strip: crate::shell::state::StripId,
         name: &str,
     ) -> Result<(), String> {
-        let command = tilo_desktop_model::commands::DesktopCommand::RenameStrip {
-            strip: strip.raw(),
-            name: name.to_owned(),
-        };
-        self.tree_mut().commit_strip_command(&command)?;
-        self.bump();
-        Ok(())
+        let room = super::desktop_layout::shown_room(self)?;
+        let person = super::desktop_layout::Actor::person(self, room);
+        super::desktop_layout::rename_strip(self, room, strip, name, &person)
     }
 
     /// Move `strip` of the active workspace to just before `before`, or to
@@ -3543,6 +3527,27 @@ impl ChromeState {
     /// another device routes that action back to exactly that device. An
     /// entry restored after a restart has no sender left, so the caller opens
     /// the verified app instead. Acted-on entries leave the history.
+    /// Whether opening kept notification `id` reaches something: its sender,
+    /// another device, a scheduled launch or its app. One nothing reaches is
+    /// read in full where it is kept instead.
+    pub fn history_notification_opens(&self, id: u64) -> bool {
+        let Some(notification) = self.notification_log.history_entry(id) else {
+            return false;
+        };
+        let key = notification.default_action_key();
+        crate::shell::notification::scheduled_launch(notification).is_some()
+            || (notification.remote_route.is_some()
+                && key
+                    .clone()
+                    .and_then(|key| remote_action_command(notification, &key))
+                    .is_some())
+            || (notification.remote_route.is_none()
+                && self.notification_bridge.is_some()
+                && notification.sender_id.is_some()
+                && key.is_some())
+            || (notification.remote_route.is_none() && notification.app_id.is_some())
+    }
+
     pub fn activate_history_notification(&mut self, id: u64) -> HistoryActivation {
         let Some(notification) = self.notification_log.history_entry(id) else {
             return HistoryActivation::Missing;
@@ -4234,6 +4239,9 @@ mod remote_continuity;
 
 #[path = "chrome_state_desk_undo.rs"]
 mod desk_undo;
+
+#[path = "chrome_state_banner_answers.rs"]
+mod banner_answers;
 
 #[cfg(test)]
 mod panel_exclusion_tests {

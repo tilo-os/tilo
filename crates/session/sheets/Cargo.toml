@@ -1,6 +1,6 @@
 [package]
 name = "tilo-sheets"
-description = "The sheets the desktop shows over everything, as ordinary apps the shell hosts: the power menu, the question about a display change and the shortcut guide."
+description = "The sheets the desktop shows over everything, as ordinary apps the shell hosts: the power menu, the question about a display change, the Super+P display sheet, the shortcut guide, the public workspace directory and workspace settings."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true

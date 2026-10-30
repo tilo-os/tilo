@@ -299,7 +299,7 @@ impl ShellOverlayHost {
     /// permission prompt, or credential error and then return to it intact.
     pub(super) fn dismiss_transient_chrome_for_capture(&mut self) {
         self.palette_visible = false;
-        self.palette.close();
+        self.search.close();
         if self.shortcut_rebind.is_none() {
             self.shortcut_rebind_message = None;
         }

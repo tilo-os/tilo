@@ -913,7 +913,7 @@ mod tests {
                 .is_err()
         );
         let mut custody = wire;
-        custody["custody"] = serde_json::json!({"relative":{"platform":"Unix","units":b".local/state/tilo/installer/preparations".as_slice()},"stable":[1,16832,1000,1001]});
+        custody["custody"] = serde_json::json!({"preparation":{"relative":{"platform":"Unix","units":b".local/state/tilo/installer/preparations".as_slice()},"stable":[1,16832,1000,1001]},"settings_lock":null});
         let custody: Request = serde_json::from_value(custody).unwrap();
         assert!(custody.validate_protocol().is_err());
     }

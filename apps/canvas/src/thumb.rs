@@ -1,13 +1,13 @@
 //! A small picture of the artwork, or of one layer of it, as a layers
 //! panel shows it. It draws through the renderer the canvas draws with, so
 //! a painted layer's simulation is reused, never run again for its
-//! thumbnail.
+//! thumbnail. It follows the document the view reads, as the canvas does.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ui::framework::ResourceSurface;
+use ui::framework::Live;
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Rect, RoundedRect};
@@ -27,7 +27,11 @@ pub type Framing = Rc<dyn Fn(&Rc<Artwork>) -> Option<(Rc<Artwork>, Rect, bool)>>
 pub struct Thumb {
     rect: Rect,
     size: (f32, f32),
+    live: Live<Artwork>,
+    /// The artwork as this picture last showed it, and what of the document
+    /// it was (see [`Live::changed_since`]).
     art: Rc<Artwork>,
+    presented: Option<(u64, u64)>,
     layer: Option<String>,
     renderer: Rc<RefCell<Renderer>>,
     /// The chosen layer, and this picture's: ringed while they agree, so a
@@ -39,8 +43,9 @@ pub struct Thumb {
 
 impl Thumb {
     /// A `width` × `height` picture of `layer` (the whole artwork when
-    /// `None`).
+    /// `None`) of the artwork `live` holds.
     pub fn new(
+        live: Live<Artwork>,
         renderer: Rc<RefCell<Renderer>>,
         layer: Option<String>,
         width: f32,
@@ -49,7 +54,9 @@ impl Thumb {
         Self {
             rect: Rect::ZERO,
             size: (width, height),
-            art: Rc::new(Artwork::default()),
+            art: live.get(),
+            live,
+            presented: None,
             layer,
             renderer,
             target: None,
@@ -69,6 +76,15 @@ impl Thumb {
     pub fn ringed_while(mut self, chosen: &LocalState<String>, id: &str) -> Self {
         self.target = Some((chosen.clone(), id.to_owned()));
         self
+    }
+
+    /// Show the artwork as the document holds it now: whether it changed.
+    fn follow(&mut self) -> bool {
+        let Some(art) = self.live.changed_since(&mut self.presented) else {
+            return false;
+        };
+        self.art = art;
+        true
     }
 }
 
@@ -169,7 +185,13 @@ impl Widget for Thumb {
             .draw(scene, transform, self.rect, theme);
     }
 
-    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.follow();
+    }
+
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        self.follow()
+    }
 
     fn name(&self) -> &'static str {
         "Thumb"
@@ -213,11 +235,5 @@ fn checker(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme) {
                 &square,
             );
         }
-    }
-}
-
-impl ResourceSurface<Artwork> for Thumb {
-    fn present(&mut self, state: &Rc<Artwork>) {
-        self.art = Rc::clone(state);
     }
 }

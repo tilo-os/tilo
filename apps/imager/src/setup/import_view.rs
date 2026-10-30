@@ -38,10 +38,8 @@ use imager_backend::migration_worker::{
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
 use crate::resource::Imager;
 
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LiveRow, ResourceSurface,
-    SurfaceCx, ViewCx,
-};
+use crate::window_view::{Published, PublishingWindow};
+use ui::framework::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LiveRow, ViewCx};
 use ui::widget::Element;
 
 static NEXT_OPERATION: AtomicU64 = AtomicU64::new(0);
@@ -185,8 +183,10 @@ pub struct ImportApp {
     shot_temp: Option<tempfile::TempDir>,
     /// The caller of the running job, answered when it settles.
     reply: Option<EffectReply>,
-    /// Not opened yet: a live window opens it on attach.
+    /// Not opened yet: a live window opens it when its view is built.
     opens_when_live: bool,
+    /// What the window shares with the view it stands in.
+    published: Rc<RefCell<Published>>,
 }
 
 impl Default for ImportApp {
@@ -254,6 +254,7 @@ impl ImportApp {
             shot_temp: None,
             reply: None,
             opens_when_live: false,
+            published: Rc::default(),
         }
     }
 
@@ -604,6 +605,7 @@ impl ImportApp {
             shot_temp: None,
             reply: None,
             opens_when_live: false,
+            published: Rc::default(),
         })
     }
 
@@ -2705,15 +2707,29 @@ fn state_summary(state: OperationState) -> &'static str {
 }
 
 impl Widget for ImportApp {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let staged = self.published.borrow_mut().take_staged();
+        if let Some(crate::window_view::Staged(scenario)) = staged {
+            self.stage(scenario.as_deref());
+        }
         self.poll_background();
         self.drain_commands();
         self.answer_job();
         self.composed.sync(state, path);
+        self.publish();
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let mut changed = self.poll_background() || self.drain_commands();
+        let mut changed =
+            self.published.borrow().staging() || self.poll_background() || self.drain_commands();
         self.answer_job();
         if let Some(composed) = self.composed.element_mut() {
             changed |= composed.update(state, path);
@@ -3134,27 +3150,20 @@ pub const SCENARIOS: &[&str] = &[
     "import-issue-pages",
 ];
 
-impl ResourceSurface<Imager, ImportEffect> for ImportApp {
-    fn present(&mut self, _state: &Rc<Imager>) {}
-
-    fn attach(&mut self, cx: SurfaceCx<Imager>) {
-        if cx.mode().is_live() && self.opens_when_live {
-            self.open_live();
-        }
-        self.actions = Some(cx.actions());
-    }
-
+impl ImportApp {
     /// Pose the scenario's imports from real worker runs over disposable
     /// fixture folders; nothing of this computer's own imports is read.
     fn stage(&mut self, scenario: Option<&str>) {
         if let Some(scenario) = scenario.filter(|name| SCENARIOS.contains(name)) {
             let actions = self.actions.take();
+            let published = Rc::clone(&self.published);
             *self = Self::for_shot(scenario);
             self.actions = actions;
+            self.published = published;
         }
     }
 
-    fn effect(&mut self, effect: ImportEffect, cx: &mut EffectCx<Imager, Self>) -> EffectAnswer {
+    fn effect(&mut self, effect: ImportEffect, cx: &mut EffectCx<Imager>) -> EffectAnswer {
         match self.admit(effect)? {
             Admitted::Done(output) => Ok(Effected::Done(output)),
             Admitted::Job => {
@@ -3163,21 +3172,37 @@ impl ResourceSurface<Imager, ImportEffect> for ImportApp {
             }
         }
     }
+}
 
-    fn effects(&self) -> Vec<EffectStatus> {
-        import_actions::statuses(&self.import_projection())
+impl PublishingWindow for ImportApp {
+    fn published(&self) -> &Rc<RefCell<Published>> {
+        &self.published
     }
 
-    fn live_rows(&self) -> Vec<LiveRow> {
+    fn rows(&self) -> Vec<LiveRow> {
         vec![import_actions::row(&self.import_projection())]
     }
+
+    fn statuses(&self) -> Vec<EffectStatus> {
+        import_actions::statuses(&self.import_projection())
+    }
+}
+
+/// `app` as a view of the imager resource: a live window opens this
+/// computer's imports first.
+pub(crate) fn import_window(cx: &ViewCx<Imager>, mut app: ImportApp) -> Element {
+    if cx.mode().is_live() && app.opens_when_live {
+        app.open_live();
+    }
+    app.actions = Some(cx.actions());
+    crate::window_view::window_view(cx, app, ImportApp::effect)
 }
 
 /// Folder imports in a view of the imager resource. A live window opens
 /// this computer's imports; a capture or a past version reads nothing of
 /// them.
 pub fn view(cx: &mut ViewCx<Imager>) -> Element {
-    cx.surface(ImportApp::new())
+    import_window(cx, ImportApp::new())
 }
 
 /// A fresh directory for disposable screenshot and test fixtures, in a place
@@ -3256,7 +3281,7 @@ mod tests {
     /// The imports as the imager resource publishes them: the live row,
     /// carrying the effects as callers see them now.
     fn root_resource(app: &ImportApp) -> tilo_actions::ResourceSpec {
-        let mut root = app.live_rows().remove(0).into_resource();
+        let mut root = app.rows().remove(0).into_resource();
         let blocked = import_actions::blocked(&app.import_projection());
         root.actions = ImportEffect::specs()
             .into_iter()

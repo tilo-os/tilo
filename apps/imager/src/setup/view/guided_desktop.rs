@@ -261,7 +261,7 @@ mod tests {
             },
             DesktopFlowState::Ready(fixture_desktop_selection(false)),
         );
-        assert!(app.live_rows().iter().any(|row| {
+        assert!(app.rows().iter().any(|row| {
             row.clone()
                 .into_resource()
                 .children

@@ -207,7 +207,7 @@ impl NavList {
         let (reads, chooses, acts) = (feed.clone(), feed.clone(), feed.clone());
         let (checks, folds) = (feed.clone(), feed.clone());
         // The list's id names its published selection.
-        let id = crate::widget::Widget::test_id(&self.tree)
+        let id = crate::widget::Widget::test_id(&*self.tree)
             .unwrap_or("navigation")
             .to_owned();
         let mut list = self

@@ -72,7 +72,6 @@ impl Widget for ShellOverlayHost {
             return;
         }
         self.content.sync(s, p);
-        self.palette.sync(s, p);
         // Mounted before the first layout, so search's place in the tree
         // never changes under the keyboard focus that opens it.
         self.mount_launcher();
@@ -84,9 +83,6 @@ impl Widget for ShellOverlayHost {
         self.person_quick_composer.sync(s, p);
         if self.peer_sync_overlay.visible() {
             self.peer_sync_overlay.sync(s, p);
-        }
-        if self.bar_popovers.profile.is_open() {
-            self.bar_popovers.profile.sync(s, p);
         }
         self.capture_studio.sync(s, p);
         for (_, mirror) in &mut self.capture_mirrors {
@@ -117,11 +113,9 @@ impl Widget for ShellOverlayHost {
         // the dates and numbers it formats never reads the settings file.
         let _ = ui::format::region::current();
         let mut steps = UpdateSteps::start();
-        // The roster, the display sheet's list and the quick settings page
-        // glide on after a flick, repainted as a wheel's scroll is.
-        let glided = self.collaborators_overlay.advance_scroll()
-            | self.projection_overlay.advance_scroll()
-            | self.advance_qs_root_scroll();
+        // The roster glides on after a flick, repainted as a wheel's scroll
+        // is.
+        let glided = self.collaborators_overlay.advance_scroll();
         if glided && let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
         }
@@ -144,6 +138,9 @@ impl Widget for ShellOverlayHost {
             });
         let action_dirty = action_dirty
             | self.pump_agent_asks()
+            | self.launch_task_agents()
+            | self.fix_composer_blocker()
+            | self.pump_canvas_asks()
             | self.switch_composer_agent()
             | self.open_composer_answer();
         if action_dirty {
@@ -157,8 +154,6 @@ impl Widget for ShellOverlayHost {
             | person_activation
             | person_context_dirty
             | person_action_dirty;
-        let bar_popover_dirty =
-            self.bar_popovers.profile.is_open() && self.bar_popovers.profile.update(doc, path);
         let marker_dirty = self
             .agent_markers
             .retain(|source| source.is_fresh(Instant::now()));
@@ -174,6 +169,7 @@ impl Widget for ShellOverlayHost {
         }
         self.pump_room_activity();
         self.serve_activity();
+        self.serve_desktop_jobs();
         if let Some(chrome) = &self.chrome
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
         {
@@ -207,10 +203,9 @@ impl Widget for ShellOverlayHost {
         // Devices and the Clipboard follow the fabric and the history while
         // they show.
         self.refresh_qs_hosted_rows();
-        let quick_settings_dirty = self.apply_quick_settings_readings();
-        let projection_open = self.overlay_flags().projection;
-        let display_storage_dirty =
-            self.projection_overlay.poll_storage(projection_open) | self.close_settled_projection();
+        let quick_settings_dirty =
+            self.apply_quick_settings_readings() | self.pump_quick_settings(doc, path);
+        let display_storage_dirty = self.pump_display_sheet(doc, path);
         steps.mark("settings-readings");
         // Runs first so an invite token / prompt is in chrome before draw.
         let peer_sync_dirty = self.pump_peer_sync();
@@ -233,7 +228,7 @@ impl Widget for ShellOverlayHost {
         if self.palette_visible
             && let Some(chrome) = self.chrome.clone()
         {
-            let current_query = self.palette.query().to_string();
+            let current_query = self.search.query().to_string();
             let (scope, active_provider) = {
                 let state = chrome.borrow();
                 (
@@ -312,18 +307,17 @@ impl Widget for ShellOverlayHost {
         // pointer dispatch; and drop a menu whose tab has since gone.
         self.harvest_pending_tab_context_menus();
         self.prune_stale_tab_context_menu();
-        // Same for a popover the bar asked for, and what was chosen in one.
-        self.harvest_bar_popover_request();
-        self.settle_bar_popovers();
+        // The top bar takes what the chrome knows now, its presence
+        // included, and what it asked is carried out.
+        let topbar_dirty = self.update_topbar(doc, path);
         self.harvest_floating_surface_requests();
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
         steps.mark("harvest-requests");
-        let palette_dirty = self.palette.update(doc, path)
-            | self.launcher.as_mut().is_some_and(|launcher| {
-                let woken = launcher.take_woken();
-                launcher.app.update(doc, path) | woken
-            });
+        let palette_dirty = self.launcher.as_mut().is_some_and(|launcher| {
+            let woken = launcher.take_woken();
+            launcher.app.update(doc, path) | woken
+        });
         if search_rows_stale {
             // A worker published an index, or artwork arrived, after the
             // rows were built. Force one normal fanout this frame so the
@@ -370,7 +364,6 @@ impl Widget for ShellOverlayHost {
         }
         steps.mark("harvest-changes");
         self.clear_stale_open_target();
-        self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
         let presence_dirty = self.pump_presence_requests();
         let presence_dirty = self.sync_self_presence() | presence_dirty;
@@ -422,7 +415,9 @@ impl Widget for ShellOverlayHost {
         }
         let power_menu_dirty = self.pump_power_menu(doc, path)
             | self.pump_display_confirmation(doc, path)
-            | self.pump_shortcut_guide(doc, path);
+            | self.pump_shortcut_guide(doc, path)
+            | self.pump_directory(doc, path);
+        let overview_dirty = self.pump_overview(doc, path);
         let session_action_dirty = self.drain_session_action_results();
         steps.mark("launches-and-session-actions");
         // Also driven by the widget's own `update`, but routed here too so
@@ -448,16 +443,19 @@ impl Widget for ShellOverlayHost {
             }
         }
         let desk_dirty = self.update_desk(ui::time::now());
+        // The banners run what their wake or a published action brought.
+        let banners_dirty = self.update_banners(doc, path);
         // A window bar's tooltip whose dwell ran out shows on this tick: its
         // deadline woke the loop, and a deadline alone paints nothing.
         let tooltip_dirty = self.bar_tooltip.tick(ui::time::now());
         steps.mark("commit");
         drop(steps);
         desk_dirty
+            || banners_dirty
             || tooltip_dirty
             || agent_quick_dirty
             || person_quick_dirty
-            || bar_popover_dirty
+            || topbar_dirty
             || marker_dirty
             || content_dirty
             || quick_settings_dirty
@@ -470,6 +468,7 @@ impl Widget for ShellOverlayHost {
             || notifications_dropped
             || launch_dirty
             || power_menu_dirty
+            || overview_dirty
             || session_action_dirty
             || chrome_dirty
             || canvas_dirty
@@ -526,10 +525,9 @@ impl Widget for ShellOverlayHost {
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             return node;
         }
-        // The overview's row heights follow the theme's type sizes; resolve
-        // them here, where the theme is in hand, so this pass's hit-testing
-        // and paint share one answer.
-        self.resolve_overview_layout(theme);
+        // What is decided with no theme in hand (motion, the compact-modal
+        // rule) reads the theme of this pass.
+        self.layout_theme.clone_from(theme);
         self.onboarding_node = None;
         // A pass that lays out the guide has it up as the flag asks.
         self.follow_shortcut_guide();
@@ -571,9 +569,6 @@ impl Widget for ShellOverlayHost {
         // (or of the window an app's search stands in), then scrolls; what
         // fits decides how many rows each group shows.
         let (palette_frame, palette_list_max) = self.palette_place(theme);
-        if self.overlay_area().height() > 0.0 {
-            self.palette.set_max_list_height(palette_list_max);
-        }
         let palette_node = self.build_search_layout(taffy, theme, node_map, palette_list_max);
         // Match children(): a closed composer has no live controls to measure
         // or query. Visibility changes retire/rebuild the map below.
@@ -597,6 +592,13 @@ impl Widget for ShellOverlayHost {
             self.rect,
             self.rect.origin(),
         );
+        let directory_window = self.layers.directory.build_layout(
+            taffy,
+            theme,
+            node_map,
+            self.overlay_area(),
+            self.rect.origin(),
+        );
         let shortcut_guide_window = self.layers.shortcut_guide.build_layout(
             taffy,
             theme,
@@ -605,6 +607,20 @@ impl Widget for ShellOverlayHost {
             self.rect.origin(),
         );
         let power_menu_window = self.layers.power_menu.build_layout(
+            taffy,
+            theme,
+            node_map,
+            self.overlay_area(),
+            self.rect.origin(),
+        );
+        let overview_window = self.layers.overview.build_layout(
+            taffy,
+            theme,
+            node_map,
+            self.overview_output_rect(),
+            self.rect.origin(),
+        );
+        let display_sheet_window = self.layers.display_sheet.build_layout(
             taffy,
             theme,
             node_map,
@@ -677,7 +693,7 @@ impl Widget for ShellOverlayHost {
             self.person_markers
                 .build(taffy, theme, node_map, self.rect.origin()),
         );
-        children.extend(self.build_bar_popovers(taffy, theme, node_map));
+        children.extend(self.build_topbar_layout(taffy, theme, node_map));
         children.extend(
             self.agent_markers
                 .build(taffy, theme, node_map, self.rect.origin()),
@@ -713,6 +729,9 @@ impl Widget for ShellOverlayHost {
         children.extend(power_menu_window);
         children.extend(display_confirm_window);
         children.extend(shortcut_guide_window);
+        children.extend(directory_window);
+        children.extend(overview_window);
+        children.extend(display_sheet_window);
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -768,7 +787,7 @@ impl Widget for ShellOverlayHost {
             self.agent_quick_composer
                 .apply_layout(taffy, agent_node, self.rect.origin());
         }
-        self.apply_bar_popovers_layout(taffy);
+        self.apply_topbar_layout(taffy);
         self.agent_markers.apply(taffy, self.rect.origin());
         self.person_markers.apply(taffy, self.rect.origin());
         if let Some(node) = self.person_quick_composer_node {
@@ -812,17 +831,8 @@ impl Widget for ShellOverlayHost {
         }
         if let Some(&palette_child) = children.get(1) {
             let origin = Point::new(self.rect.x0, self.rect.y0);
-            match self.launcher.as_mut() {
-                Some(launcher) => {
-                    launcher.app.apply_layout(taffy, palette_child, origin);
-                    // Search's own state keeps the card's geometry, so a
-                    // press is told inside the card from one outside it.
-                    let card = launcher.app.get_rect();
-                    let height = self.palette.desired_size().1.min(card.height());
-                    self.palette
-                        .set_rect(Rect::new(card.x0, card.y0, card.x1, card.y0 + height));
-                }
-                None => self.palette.apply_layout(taffy, palette_child, origin),
+            if let Some(launcher) = self.launcher.as_mut() {
+                launcher.app.apply_layout(taffy, palette_child, origin);
             }
         }
         if let Some(capture_node) = self.capture_node {
@@ -866,6 +876,13 @@ impl Widget for ShellOverlayHost {
         self.layers
             .shortcut_guide
             .apply_layout(taffy, self.rect.origin());
+        self.layers
+            .directory
+            .apply_layout(taffy, self.rect.origin());
+        self.layers.overview.apply_layout(taffy, self.rect.origin());
+        self.layers
+            .display_sheet
+            .apply_layout(taffy, self.rect.origin());
         if let Some(node) = self.peer_sync_node {
             // The sheet centres on, and measures itself against, the
             // display it opens on.
@@ -908,16 +925,7 @@ impl Widget for ShellOverlayHost {
         if st.overlays.collaborators {
             return self.collaborators_overlay.primary_vertical_scroll();
         }
-        if st.overlays.quick_settings
-            && matches!(
-                st.quick_settings.current_level(),
-                tilo_quick_settings::QsLevel::Notifications
-            )
-        {
-            self.notification_center.reading_scroll()
-        } else {
-            None
-        }
+        None
     }
 
     fn apply_primary_vertical_scroll(
@@ -931,11 +939,9 @@ impl Widget for ShellOverlayHost {
             self.layers
                 .emoji_picker
                 .apply_primary_vertical_scroll(action)
-        } else if self.overlay_flags().collaborators {
+        } else {
             self.collaborators_overlay
                 .apply_primary_vertical_scroll(action)
-        } else {
-            self.notification_center.apply_reading_scroll(action)
         };
         if matches!(result, ui::widget::PrimaryScrollResult::Changed(_))
             && let Some(chrome) = &self.chrome
@@ -949,8 +955,9 @@ impl Widget for ShellOverlayHost {
         self.route_window_event(event, ctx);
         // An event that opened the display sheet (Super+P, its action) has
         // it take what it shows now, before anything reads or draws it.
-        let projection_open = self.overlay_flags().projection;
-        self.projection_overlay.take_open_state(projection_open);
+        if self.overlay_flags().projection != self.layers.display_sheet.requested() {
+            self.follow_display_sheet();
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -993,6 +1000,10 @@ impl Widget for ShellOverlayHost {
         if target.starts_with("desk.widget:") {
             return self.desk_semantic_action(action, target);
         }
+        // A banner's control, pressed as a click on it presses it.
+        if matches!(action, ui::a11y::Action::Activate) && self.perform_banner_target(target) {
+            return true;
+        }
         if target.starts_with("participant:") && target.ends_with(":chat") {
             if self.person_cursor_controls_suppressed() {
                 return true;
@@ -1014,25 +1025,6 @@ impl Widget for ShellOverlayHost {
             return self
                 .agent_markers
                 .semantic_action(target, action, state, path);
-        }
-        // The palette is published inside this host's tree (see
-        // `accessibility_represents_child`), so its query's semantic target
-        // arrives here, not at the palette widget. Setting it is typing it:
-        // the results are recomputed for the new text.
-        if target == PALETTE_QUERY_TARGET && self.palette_visible {
-            let before = self.palette.query().to_string();
-            let handled = self
-                .palette
-                .perform_semantic_action(target, action, state, path);
-            if handled
-                && self.palette.query() != before
-                && self.param_flow.is_none()
-                && self.secondary_flow.is_none()
-            {
-                let (doc, root) = ui::doc::document(state, path);
-                self.refresh_search_results(doc.doc(), root);
-            }
-            return handled;
         }
         if let Some(handled) = self.perform_sheet_action(target, action, state, path) {
             // A sheet's target never falls back to a pointer click: a stale
@@ -1059,18 +1051,6 @@ impl Widget for ShellOverlayHost {
         self.host_focus_synthetic_accessibility(path)
     }
 
-    /// Expose content + palette as direct children so trait walkers can
-    /// recurse into the live tree, in `build_layout`'s child-node order.
-    /// The open palette is published once, by [`Self::accessibility`] under the
-    /// command-palette layer with the host's filter band inside it; its widget
-    /// (the [`Self::children`] entry after the content) is not exported again.
-    fn accessibility_represents_child(&self, child_index: usize) -> bool {
-        self.onboarding.is_none()
-            && self.palette_visible
-            && child_index == 1
-            && !self.launcher_shown()
-    }
-
     fn test_rects(&self) -> Vec<(String, Rect)> {
         let mut targets = self
             .layers
@@ -1078,15 +1058,9 @@ impl Widget for ShellOverlayHost {
             .preview_target()
             .map(|rect| vec![("dictation.live-preview".into(), rect)])
             .unwrap_or_default();
-        if self.onboarding.is_none() && self.palette_visible && self.palette.is_open() {
-            // The legacy widget id covers the result card. A touch aimed at
-            // the query must use the same row as its editable semantic node.
-            targets.push((PALETTE_QUERY_TARGET.into(), self.palette.input_row_rect()));
-        }
         if self.onboarding.is_none() {
             targets.extend(self.desk_test_rects());
             targets.extend(self.strip_switcher_test_rects());
-            targets.extend(self.directory_sheet.test_rects());
         }
         targets
     }
@@ -1111,13 +1085,15 @@ impl Widget for ShellOverlayHost {
             return vec![onboarding, &self.capture_studio];
         }
         let mut out: Vec<&dyn Widget> =
-            Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
+            Vec::with_capacity(6_usize.saturating_add(self.capture_mirrors.len()));
+        // The top bar reads first, as it stands above the windows: Tab
+        // reaches it before them, as it did when the desktop drew it.
+        out.extend(self.topbar.child());
         out.push(self.content.as_ref());
-        if self.palette_visible {
-            match self.launcher.as_ref() {
-                Some(launcher) => out.push(launcher.app.as_ref()),
-                None => out.push(&self.palette),
-            }
+        if self.palette_visible
+            && let Some(launcher) = self.launcher.as_ref()
+        {
+            out.push(launcher.app.as_ref());
         }
         out.push(&self.capture_studio);
         if let Some(markup) = self.screenshot_markup.as_ref() {
@@ -1134,12 +1110,6 @@ impl Widget for ShellOverlayHost {
         if self.agent_quick_composer.is_open() {
             out.push(&*self.agent_quick_composer);
         }
-        if self.bar_popovers.workspace_menu.is_open() {
-            out.push(&self.bar_popovers.workspace_menu);
-        }
-        if self.bar_popovers.profile.is_open() {
-            out.push(&self.bar_popovers.profile);
-        }
         out.extend(self.agent_markers.children());
         if self.person_quick_composer.is_open() {
             out.push(&*self.person_quick_composer);
@@ -1154,6 +1124,9 @@ impl Widget for ShellOverlayHost {
         out.extend(self.layers.power_menu.widget());
         out.extend(self.layers.display_confirm.widget());
         out.extend(self.layers.shortcut_guide.widget());
+        out.extend(self.layers.directory.widget());
+        out.extend(self.layers.overview.widget());
+        out.extend(self.layers.display_sheet.widget());
         out
     }
 
@@ -1162,13 +1135,13 @@ impl Widget for ShellOverlayHost {
             return vec![onboarding, &mut self.capture_studio];
         }
         let mut out: Vec<&mut (dyn Widget + '_)> =
-            Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
+            Vec::with_capacity(6_usize.saturating_add(self.capture_mirrors.len()));
+        out.extend(self.topbar.child_mut());
         out.push(self.content.as_mut());
-        if self.palette_visible {
-            match self.launcher.as_mut() {
-                Some(launcher) => out.push(launcher.app.as_mut()),
-                None => out.push(&mut self.palette),
-            }
+        if self.palette_visible
+            && let Some(launcher) = self.launcher.as_mut()
+        {
+            out.push(launcher.app.as_mut());
         }
         out.push(&mut self.capture_studio);
         if let Some(markup) = self.screenshot_markup.as_mut() {
@@ -1185,12 +1158,6 @@ impl Widget for ShellOverlayHost {
         if self.agent_quick_composer.is_open() {
             out.push(&mut *self.agent_quick_composer);
         }
-        if self.bar_popovers.workspace_menu.is_open() {
-            out.push(&mut self.bar_popovers.workspace_menu);
-        }
-        if self.bar_popovers.profile.is_open() {
-            out.push(&mut self.bar_popovers.profile);
-        }
         out.extend(self.agent_markers.children_mut());
         if self.person_quick_composer.is_open() {
             out.push(&mut *self.person_quick_composer);
@@ -1205,6 +1172,9 @@ impl Widget for ShellOverlayHost {
         out.extend(self.layers.power_menu.widget_mut());
         out.extend(self.layers.display_confirm.widget_mut());
         out.extend(self.layers.shortcut_guide.widget_mut());
+        out.extend(self.layers.directory.widget_mut());
+        out.extend(self.layers.overview.widget_mut());
+        out.extend(self.layers.display_sheet.widget_mut());
         out
     }
 
@@ -1216,7 +1186,6 @@ impl Widget for ShellOverlayHost {
                 .app_sheet
                 .as_mut()
                 .is_some_and(|sheet| sheet.dialog_mut().take_focus_reset())
-            | self.bar_popovers.profile.take_focus_reset()
             | self.pairing.take_focus_reset()
             | std::mem::take(&mut self.onboarding_focus_reset)
             | self
@@ -1229,13 +1198,18 @@ impl Widget for ShellOverlayHost {
         self.rect
     }
 
-    /// A finger on a Quick Settings slider holds it, as the pointer does;
-    /// it never turns into a scroll of the page.
+    /// A finger on the open Quick Settings panel is the panel's: its own
+    /// sliders and lists decide what the finger does.
     fn claims_raw_touch(&self, point: Point) -> bool {
-        // A finger on empty canvas is read raw too: a drag draws a band
-        // and a still hold opens its menu, which pointer emulation cannot
-        // tell apart from a scroll.
-        self.qs_slider_face_at(point) || self.canvas_on_empty_space(point)
+        self.overlay_flags().quick_settings
+            && self
+                .quick_settings
+                .rect()
+                .contains(self.untransform_quick_settings_pointer(point, Instant::now()))
+            // A finger on empty canvas is read raw too: a drag draws a band
+            // and a still hold opens its menu, which pointer emulation cannot
+            // tell apart from a scroll.
+            || self.canvas_on_empty_space(point)
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -1273,8 +1247,12 @@ impl Widget for ShellOverlayHost {
         let ws_swapped = self.resync_workspace_content();
         self.follow_brought_forward();
         let resynced = self.resync_strips_from_tree() | ws_swapped;
-        // The guide comes up on the frame that asks for it.
+        // The guide and the display sheet come up on the frame that asks
+        // for them.
         self.follow_shortcut_guide();
+        if self.overlay_flags().projection != self.layers.display_sheet.requested() {
+            self.follow_display_sheet();
+        }
         let workspace_layout = std::mem::take(&mut self.workspace_content_layout_dirty);
         let content = self.content.take_structure_dirty();
         let palette = std::mem::take(&mut self.palette_layout_dirty)
@@ -1300,10 +1278,12 @@ impl Widget for ShellOverlayHost {
             | self.layers.power_menu.structure_changed()
             | self.layers.display_confirm.structure_changed()
             | self.layers.shortcut_guide.structure_changed()
+            | self.layers.directory.structure_changed()
+            | self.layers.overview.structure_changed()
+            | self.layers.display_sheet.structure_changed()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
-            | self.bar_popovers.structure_stale()
-            | self.bar_popovers.profile.take_structure_dirty()
+            | self.take_topbar_structure_dirty()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1730,7 +1710,7 @@ impl ShellOverlayHost {
         if self.route_capture_mirror_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
-        if self.route_bar_popover_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
+        if self.route_topbar_modal_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
         if self.agent_quick_composer.is_open()
@@ -1761,44 +1741,7 @@ impl ShellOverlayHost {
         if *ctx.handled {
             return;
         }
-        if let Some(chrome) = self.chrome.clone() {
-            let reading = {
-                let st = chrome.borrow();
-                st.overlays.quick_settings
-                    && matches!(
-                        st.quick_settings.current_level(),
-                        tilo_quick_settings::QsLevel::Notifications
-                    )
-                    && self.notification_center.is_reading()
-            };
-            if reading
-                && self
-                    .notification_center
-                    .reader_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
-            {
-                chrome.borrow_mut().bump();
-            }
-            if *ctx.handled {
-                return;
-            }
-        }
-        if self.route_qs_pointer_capture(event, ctx.scale_factor, ctx.handled) {
-            return;
-        }
-        if self.route_qs_root_scroll(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
-            return;
-        }
-        if let WindowEvent::MouseWheel { delta, .. } = event
-            && (self.handle_qs_notification_wheel(*delta, ctx.scale_factor)
-                || self.handle_qs_clipboard_wheel(*delta, ctx.scale_factor)
-                || self.handle_qs_device_fabric_wheel(*delta, ctx.scale_factor))
-        {
-            *ctx.handled = true;
-            return;
-        }
-        if Self::is_pointer_event(event)
-            && self.route_wifi_password_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
-        {
+        if self.route_quick_settings_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
         if (Self::is_pointer_event(event) || matches!(event, WindowEvent::Focused(false)))
@@ -1869,14 +1812,6 @@ impl ShellOverlayHost {
         if self.route_tab_rename_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
-        // Ahead of every chord: a password can contain any character, and
-        // a `k` in one must not open search instead.
-        if !Self::is_pointer_event(event)
-            && !self.keyboard_held_ahead_of_wifi_password()
-            && self.route_wifi_password_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
-        {
-            return;
-        }
         if !Self::is_pointer_event(event)
             && !matches!(event, WindowEvent::Focused(false))
             && self.route_people_overlay_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
@@ -1890,6 +1825,13 @@ impl ShellOverlayHost {
         }
         if self.route_window_search_input(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             *ctx.handled = true;
+            return;
+        }
+        // The overview's keys, and a strip's name typed in it, ahead of the
+        // shell's chords.
+        if !Self::is_pointer_event(event)
+            && self.route_overview_key(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
             return;
         }
         if let WindowEvent::Ime(winit::event::Ime::Commit(text)) = event
@@ -1964,7 +1906,9 @@ impl ShellOverlayHost {
         if self.handle_shell_mouse_click_event(event, ctx.handled) {
             return;
         }
-        if self.handle_shell_overview_pointer_event(event, ctx.scale_factor, ctx.handled) {
+        if Self::is_pointer_event(event)
+            && self.route_overview_pointer(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
             return;
         }
 

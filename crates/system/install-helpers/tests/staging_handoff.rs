@@ -1,5 +1,4 @@
-//! Live-installer internal mode (USB-free install, design spec §6), formerly
-//! `os/tests/staging_handoff_test.py`.
+//! Live-installer internal mode (USB-free install, design spec §6).
 //!
 //! Drives the helper's command line against fixture efivars, a fixture
 //! staging ESP, fixture lsblk output and an in-process efibootmgr. Nothing

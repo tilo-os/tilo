@@ -346,6 +346,19 @@ pub enum WorkspaceMembershipCommand {
     /// ([`SettingsChange`]): decided against the caller's own grants where
     /// they made it, on every device that receives it.
     Settings(SettingsChange),
+    /// Share `node`, one record or one item of it, with the room's members
+    /// as `access` gives, under the share id `share`: grants the caller
+    /// gives of what they hold ([`crate::room::share`]).
+    Share {
+        share: String,
+        node: TreePath,
+        access: tilo_action_policy::share::ShareAccess,
+    },
+    /// End the share `share`: the grants of it the caller gave, or all of
+    /// them when they may revoke in the room.
+    Unshare {
+        share: String,
+    },
 }
 
 /// A change to the room's own settings: its name, its saved grant sets and
@@ -475,7 +488,9 @@ impl WorkspaceMembershipCommand {
             | Self::InstallApp(_)
             | Self::UninstallApp { .. }
             | Self::Member { .. }
-            | Self::Settings(_) => None,
+            | Self::Settings(_)
+            | Self::Share { .. }
+            | Self::Unshare { .. } => None,
         }
     }
 
@@ -555,6 +570,10 @@ impl WorkspaceMembershipCommand {
         if let Self::GrantAppAuthorship { app } = self {
             return validate_app_id(app);
         }
+        if matches!(self, Self::Share { .. } | Self::Unshare { .. }) {
+            // The share's id and node are checked as its grants are made.
+            return Ok(());
+        }
         let agent = self.agent().ok_or("missing canonical agent identifier")?;
         if agent.is_empty()
             || agent.len() > 128
@@ -563,6 +582,13 @@ impl WorkspaceMembershipCommand {
             || agent.chars().any(char::is_control)
         {
             return Err("invalid canonical workspace agent identifier".into());
+        }
+        // A task agent is made for one task under a device's delegation and
+        // is never a collaborator: its id is never admitted as one.
+        if matches!(self, Self::AddAgent { .. })
+            && crate::join::task_delegation::is_task_agent(agent)
+        {
+            return Err("a task agent's id is never a collaborator's".into());
         }
         Ok(())
     }

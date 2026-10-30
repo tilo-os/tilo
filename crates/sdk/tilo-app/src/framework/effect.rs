@@ -1304,8 +1304,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
 /// still running stops the earlier one, so the latest request wins. A job
 /// is started like an effect's ([`EffectCx::thread`], [`EffectCx::spawn`])
 /// and finishes the same way, on the UI thread, with ordinary actions; a
-/// surface's completion gets `&mut` the surface. Jobs run only in a window
-/// someone uses: a past version and a capture start none.
+/// surface's completion gets `&mut` the surface, and a window's the window
+/// ([`ViewCx::window_jobs`](super::ViewCx::window_jobs)). Jobs run only in a
+/// window someone uses: a past version and a capture start none.
 ///
 /// Get one from [`SurfaceCx::jobs`](super::SurfaceCx::jobs) or
 /// [`ViewCx::jobs`](super::ViewCx::jobs). Clones share the jobs.
@@ -1352,8 +1353,10 @@ impl<R: Resource> Jobs<R> {
 
     /// Start the job `key` as `start` does it, through an [`EffectCx`] whose
     /// completions get `&mut H`: the surface itself for a surface's jobs
-    /// (`jobs.start::<Self>(…)`), `()` for a view's. Work it finishes at
-    /// once needs no job; a failure is logged, as nobody waits for it.
+    /// (`jobs.start::<Self>(…)`), the window for a window's
+    /// ([`ViewCx::window_jobs`](super::ViewCx::window_jobs)), `()` for a
+    /// view's. Work it finishes at once needs no job; a failure is logged,
+    /// as nobody waits for it.
     pub fn start<H: 'static>(
         &self,
         key: impl Into<String>,
@@ -2244,7 +2247,14 @@ trait ViewHandler {
         doc: &tilo_resource::Doc,
         view: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String>;
-    fn poll(&mut self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate>;
+    fn poll(
+        &mut self,
+        invocation: InvocationId,
+        cancel: bool,
+        view: &mut dyn ui_core::widget::Widget,
+    ) -> Option<InvocationUpdate>;
+    /// Finish the jobs a window started on its own.
+    fn poll_jobs(&mut self, _view: &mut dyn ui_core::widget::Widget) {}
 }
 
 type Handle<R, E> = Box<dyn FnMut(E, &mut EffectCx<R>) -> EffectAnswer>;
@@ -2268,7 +2278,12 @@ impl<R: Resource, E: Effect> ViewHandler for Handler<R, E> {
             .start(op, &mut (), Some(doc), |(), effect, cx| handle(effect, cx))
     }
 
-    fn poll(&mut self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate> {
+    fn poll(
+        &mut self,
+        invocation: InvocationId,
+        cancel: bool,
+        _view: &mut dyn ui_core::widget::Widget,
+    ) -> Option<InvocationUpdate> {
         self.runner.poll(invocation, cancel, &mut ())
     }
 }
@@ -2715,24 +2730,6 @@ impl<R: Resource> Effects<R> {
         });
     }
 
-    pub(crate) fn handle_in_window<E: Effect, W: 'static>(
-        &self,
-        alive: Weak<()>,
-        handle: impl FnMut(&mut W, E, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) {
-        let Some(env) = self.env.clone() else {
-            return;
-        };
-        self.inner.borrow_mut().handlers.push(Registered {
-            alive,
-            operation: E::OPERATION,
-            handler: Box::new(window::WindowHandler {
-                runner: EffectRunner::<R, (), E>::new(env),
-                handle: Box::new(handle),
-            }),
-        });
-    }
-
     pub(crate) fn outbox<T, O>(
         &self,
         alive: Weak<()>,
@@ -2843,11 +2840,64 @@ impl<R: Resource> Effects<R> {
         doc: &tilo_resource::Doc,
         view: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner.borrow_mut().start(op, doc, view)
+        let operation = op.with_custody().0.type_id;
+        self.with_handlers(|handlers| {
+            for entry in handlers {
+                if operation == entry.operation
+                    && let Some(started) = entry.handler.start(op, doc, view)?
+                {
+                    return Ok(Some(started));
+                }
+            }
+            Ok(None)
+        })
     }
 
-    pub(crate) fn poll(&self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate> {
-        self.inner.borrow_mut().poll(invocation, cancel)
+    pub(crate) fn poll(
+        &self,
+        invocation: InvocationId,
+        cancel: bool,
+        view: &mut dyn ui_core::widget::Widget,
+    ) -> Option<InvocationUpdate> {
+        let causal = self
+            .inner
+            .borrow_mut()
+            .causal
+            .poll_invocation(invocation, cancel);
+        causal.or_else(|| {
+            self.with_handlers(|handlers| {
+                handlers
+                    .iter_mut()
+                    .find_map(|entry| entry.handler.poll(invocation, cancel, view))
+            })
+        })
+    }
+
+    /// Finish the jobs the view's windows started
+    /// ([`ViewCx::window_jobs`](super::ViewCx::window_jobs)).
+    #[inline(never)]
+    pub(crate) fn poll_window_jobs(&self, view: &mut dyn ui_core::widget::Widget) {
+        self.with_handlers(|handlers| {
+            for entry in handlers {
+                entry.handler.poll_jobs(view);
+            }
+        });
+    }
+
+    /// Run `run` over the live handlers, taken out of the registry so a
+    /// handler may build view parts that register handlers of their own (a
+    /// window mounting a child window as an effect or job finishes).
+    fn with_handlers<T>(&self, run: impl FnOnce(&mut Vec<Registered>) -> T) -> T {
+        let mut handlers = {
+            let mut inner = self.inner.borrow_mut();
+            inner.prune();
+            std::mem::take(&mut inner.handlers)
+        };
+        let ran = run(&mut handlers);
+        let mut inner = self.inner.borrow_mut();
+        handlers.append(&mut inner.handlers);
+        inner.handlers = handlers;
+        ran
     }
 
     pub(crate) fn has_causal_drains(&self) -> bool {
@@ -2907,32 +2957,6 @@ impl Inner {
             .iter()
             .flat_map(|entry| (entry.specs)())
             .collect()
-    }
-
-    fn start(
-        &mut self,
-        op: &ResourceOperation<'_>,
-        doc: &tilo_resource::Doc,
-        view: &mut dyn ui_core::widget::Widget,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        self.prune();
-        for entry in &mut self.handlers {
-            if op.with_custody().0.type_id == entry.operation
-                && let Some(started) = entry.handler.start(op, doc, view)?
-            {
-                return Ok(Some(started));
-            }
-        }
-        Ok(None)
-    }
-
-    fn poll(&mut self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate> {
-        if let Some(update) = self.causal.poll_invocation(invocation, cancel) {
-            return Some(update);
-        }
-        self.handlers
-            .iter_mut()
-            .find_map(|entry| entry.handler.poll(invocation, cancel))
     }
 
     fn drain_projections(&mut self, state: &dyn Any, revision: u64) {

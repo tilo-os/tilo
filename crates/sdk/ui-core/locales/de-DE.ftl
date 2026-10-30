@@ -6,19 +6,12 @@ tab-controls-desktop = Steuert deinen Desktop
 tab-dev-build = Entwicklungsversion von { $installer }
 tab-shared-with = Geteilt mit { $place }
 
-standalone-history-title = Verlauf
-standalone-history-restore = Diese Version wiederherstellen…
-standalone-history-restore-title = Diese Version wiederherstellen?
-standalone-history-restore-body = Das Dokument kehrt zum Stand nach „{ $version }“ zurück. Dabei entsteht eine neue Änderung: Spätere Versionen bleiben im Verlauf, und Rückgängig macht die Wiederherstellung rückgängig.
-standalone-history-restore-confirm = Version wiederherstellen
-standalone-history-restore-cancel = Abbrechen
-standalone-history-restore-action = Version wiederherstellen
-standalone-history-restore-done = Version wiederhergestellt. Rückgängig macht es rückgängig.
-standalone-history-restore-stale = Das Dokument hat sich während der Prüfung geändert. Wähle die Version erneut aus, um sie wiederherzustellen.
-standalone-history-restore-pending = Schließe die aktuelle Bearbeitung ab und stelle die Version dann wieder her.
-standalone-history-restore-denied = Nur Bearbeitende können eine Version wiederherstellen.
-standalone-history-restore-unavailable = Diese Version kann hier nicht wiederhergestellt werden.
-standalone-history-preview-resource = Dokument
+history-mode-title = Verlauf
+history-mode-close = Verlauf schließen
+history-mode-select-hint = Wähle eine Änderung aus, um Details zu sehen.
+history-mode-entry-ids = Änderungen
+history-mode-selected-details = Ausgewählte Änderungen
+history-mode-preview-resource = Dokument
 host-search = Suchen…
 host-search-placeholder = Suchen
 dropdown-search-placeholder = Auswahl durchsuchen
@@ -32,10 +25,8 @@ host-zoom-out = Verkleinern
 host-zoom-reset = Originalgröße
 host-history-show = Verlauf einblenden
 host-history-hide = Verlauf ausblenden
-host-history-compare = Auswahl vergleichen
 host-history-recent = { $author } · { $change } — { $when }
 host-history-unavailable = Es gibt kein Dokument, dessen Verlauf angezeigt werden kann.
-host-history-compare-unavailable = Wähle zwei oder mehr Änderungen aus, um sie zu vergleichen.
 host-menu-file = Ablage
 host-menu-edit = Bearbeiten
 host-menu-view = Darstellung
@@ -74,22 +65,7 @@ window-stop-sharing-in = Teilen in { $place } beenden
 history-loading = Verlauf wird geladen…
 lazy-loading = Wird geladen…
 history-genesis = Erstellt
-history-edited-field = { $more ->
-    [0] { $path } bearbeitet
-   *[other] { $path } und { $more } weitere bearbeitet
-}
-history-removed-field = { $more ->
-    [0] { $path } entfernt
-   *[other] { $path } und { $more } weitere entfernt
-}
-history-edited-fields = { $count ->
-    [one] 1 Feld bearbeitet
-   *[other] { $count } Felder bearbeitet
-}
-history-removed-fields = { $count ->
-    [one] 1 Feld entfernt
-   *[other] { $count } Felder entfernt
-}
+history-moved = Zwischen Arbeitsbereichen verschoben
 history-review-title = { $resource } wiederherstellen
 history-review-confirm = Version wiederherstellen
 history-review-refresh = Prüfung aktualisieren
@@ -104,7 +80,6 @@ history-restore-unsupported = Diese Version kann mit dem Inhaltsformat dieser Ap
 history-preview-description = { $resource } in dieser Version
 
 # The History host's own controls and status, beside the live app.
-history-mode-title = Verlauf
 history-mode-unavailable = Verlauf nicht verfügbar
 history-mode-content-unavailable = Früherer Inhalt nicht verfügbar
 history-mode-back-to-activity = Zurück zur Aktivität
@@ -627,30 +602,6 @@ interaction-cancelled = Abgebrochen
 interaction-progress = { $label } - { $done }/{ $total }
 participant-unknown-agent = Unbekannter Agent
 
-# Der Verlauf als veröffentlichte Aktionen, für Palette, Skripte, Agenten und Hilfstechnologien.
-history-action-resource = Dokumentverlauf
-history-action-open = Verlauf öffnen
-history-action-list = Änderungen auflisten
-history-action-view-at = Version ansehen
-history-action-compare = Änderungen vergleichen
-history-action-close = Vorschau schließen
-history-action-restore = Version wiederherstellen
-history-action-name = Änderungen benennen
-history-action-param-resource = Das Dokument, dessen Verlauf verwendet wird, wie der Verlauf es aufführt. Standardmäßig das geöffnete Dokument.
-history-action-param-cursor = Wo die vorherige Seite endete.
-history-action-param-entry = Eine Änderung, wie der Verlauf sie aufführt.
-history-action-param-entries = Änderungen, wie der Verlauf sie aufführt.
-history-action-param-session = Eine mit „Version ansehen“ geöffnete Vorschau.
-history-action-param-heads = Die Live-Heads, die die Vorschau gemeldet hat. Die Wiederherstellung wird abgelehnt, wenn sich das Dokument seitdem geändert hat.
-history-action-param-first = Die erste Änderung der Reihe, wie der Verlauf sie aufführt.
-history-action-param-last = Die letzte Änderung der Reihe, wie der Verlauf sie aufführt.
-history-action-param-label = Der Name der Reihe. Leer lassen, um den Namen zu entfernen.
-history-action-denied = Du hast für diesen Teil des Dokumentverlaufs keine Berechtigung.
-history-action-stale-document = Dieses Dokument ist nicht mehr geöffnet.
-history-action-stale-cursor = Der Verlauf hat sich seit dieser Seite geändert. Liste ihn erneut von vorne auf.
-history-action-unknown-entry = Diese Änderung ist nicht im Verlauf dieses Dokuments.
-history-action-unknown-session = Diese Vorschau ist nicht geöffnet.
-history-action-invalid = Diese Verlaufsanfrage ist ungültig.
 
 # Befehlspalette: Tastenhinweise, Ergebniszahl und leere Zustände.
 palette-name = Befehlspalette

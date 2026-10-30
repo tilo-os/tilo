@@ -3615,11 +3615,14 @@ impl GroupRow {
         // A finger may carry the window from anywhere on its tab bar,
         // tabs included: a tab is too small a target to have to avoid.
         let at = self.last_cursor;
-        if let Some(idx) = self
-            .groups
-            .iter()
-            .position(|g| g.bar_grab_hit(at) || (touch.is_some() && g.touch_grab_hit(at)))
-            && let Some((group_id, held)) = self.groups.get(idx).map(|g| (g.id, g.is_held()))
+        if let Some(idx) = self.groups.iter().position(|g| {
+            if self.canvas.is_some() {
+                // On a canvas the window is carried from anywhere on its
+                // bar that is not a control, its title and location too.
+                return g.carry_grab_hit(at) || (touch.is_some() && g.touch_grab_hit(at));
+            }
+            g.bar_grab_hit(at) || (touch.is_some() && g.touch_grab_hit(at))
+        }) && let Some((group_id, held)) = self.groups.get(idx).map(|g| (g.id, g.is_held()))
         {
             self.group_drag = Some(GroupDrag {
                 src_idx: idx,
@@ -3639,11 +3642,13 @@ impl GroupRow {
         let Some(mut drag) = self.group_drag else {
             return false;
         };
+        let mut lifted = false;
         if !drag.moved {
             let dx = self.last_cursor.x - drag.start.x;
             let dy = self.last_cursor.y - drag.start.y;
             if (dx * dx + dy * dy).sqrt() > GROUP_DRAG_THRESHOLD {
                 drag.moved = true;
+                lifted = true;
             }
         }
         self.group_drag = Some(drag);
@@ -3652,6 +3657,10 @@ impl GroupRow {
             return true;
         }
         if drag.moved && self.canvas.is_some() {
+            if lifted && let Some(group) = self.groups.iter_mut().find(|g| g.id == drag.group_id) {
+                // The press on its title or location is a carry now.
+                group.cancel_press_for_carry();
+            }
             self.carry_on_canvas(drag.group_id, self.last_cursor - drag.start);
             return true;
         }
@@ -3726,7 +3735,10 @@ impl GroupRow {
 
     /// A finger on the tab bar (pills or ground) may become a strip pan.
     fn begin_touch_pan_candidate(&mut self, id: u64, at: Point) {
+        // On a canvas a finger on a bar carries the window; there is no
+        // strip to pan.
         if self.touch_pan.is_none()
+            && self.canvas.is_none()
             && self
                 .groups
                 .iter()
@@ -3841,7 +3853,10 @@ impl GroupRow {
                 button: MouseButton::Left,
                 ..
             } => {
+                // A canvas has no strip to pan: a drag on its empty space is
+                // the canvas's (a band, or the canvas's own pan).
                 self.pointer_pan = (self.group_drag.is_none()
+                    && self.canvas.is_none()
                     && !self.groups.iter().any(|g| g.maximized)
                     && self.over_background(self.last_cursor))
                 .then_some(PointerPan {
@@ -5095,9 +5110,17 @@ impl Widget for GroupRow {
             }
             // The stretch of the canvas this draw's pan shows: the
             // viewport, moved by the shift that took the groups there.
+            // On a canvas, windows stand anywhere, panned past the deck's
+            // edges too: what is drawn stops at the deck, never over the
+            // top bar above it.
+            let bounds = if self.canvas.is_some() {
+                viewport
+            } else {
+                Self::drawn_bounds(viewport)
+            };
             let clip = Rect {
                 x1: clip_right,
-                ..Self::drawn_bounds(viewport)
+                ..bounds
             };
             self.apart_window =
                 unbake.then(|| self.apart_window_of_lane(k, viewport, shift, (clip.y0, clip.y1)));
@@ -5287,7 +5310,11 @@ impl Widget for GroupRow {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.pointer_pan.is_some_and(|pan| pan.engaged)
+        // A window carried on a canvas owns the pointer until it is let
+        // go: the deck lays every strip's row over the canvas, and none of
+        // the others may take the motion or the release from it.
+        (self.canvas.is_some() && self.group_drag.is_some_and(|drag| drag.moved))
+            || self.pointer_pan.is_some_and(|pan| pan.engaged)
             || self.edge_drag.is_some()
             || self.groups.iter().any(super::Widget::wants_pointer_capture)
     }

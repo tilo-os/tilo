@@ -305,12 +305,6 @@ pub fn authority_limit(storage: &record::NativeAuthorityStorage) -> Result<usize
         .checked_sub(extra(storage, false)?)
         .ok_or_else(|| "native authority recovery reserve exceeds capacity".into())
 }
-/// Bytes a host file that embeds `storage` one level deeper than the record
-/// itself (the desktop session's state file) must keep free for the
-/// recovery its rooms reserved.
-pub fn reserved_file_bytes(storage: &record::NativeAuthorityStorage) -> Result<usize, String> {
-    extra(storage, true)
-}
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn check_actual_projection_bound(view: &NativeCommittedView) -> Result<(), String> {
     let state = state(view)?;

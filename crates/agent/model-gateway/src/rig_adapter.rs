@@ -13,6 +13,9 @@ use rig_core::providers::{anthropic, chatgpt, openai};
 use rig_core::streaming::{Item, PartKind, StreamEvent};
 
 #[cfg(test)]
+#[path = "catalogue_rig_tests.rs"]
+mod catalogue_tests;
+#[cfg(test)]
 #[path = "google_rig_tests.rs"]
 mod google_tests;
 #[cfg(test)]
@@ -127,7 +130,6 @@ struct GatewayHttp {
     target: crate::openai::Target,
     retry_refusals: bool,
     stream_end: StreamEnd,
-    authenticated: bool,
     profile_headers: Vec<(&'static str, reqwest::header::HeaderValue)>,
     budget: Duration,
     /// Exact legacy body, after gateway policy. Neutral requests use Rig's
@@ -141,9 +143,11 @@ struct GatewayHttp {
 impl GatewayHttp {
     async fn dispatch(&self, request: http::Request<Bytes>) -> http::Result<reqwest::Response> {
         let (mut head, bytes) = request.into_parts();
-        if !self.authenticated {
-            head.headers.remove(reqwest::header::AUTHORIZATION);
-        }
+        // The key travels only in the header the profile names
+        // (`profile_headers`): Azure's `api-key`, a bearer token at an
+        // Anthropic-compatible endpoint. Rig's own key header goes.
+        head.headers.remove(reqwest::header::AUTHORIZATION);
+        head.headers.remove("x-api-key");
         for (name, value) in &self.profile_headers {
             head.headers.insert(*name, value.clone());
         }
@@ -539,7 +543,6 @@ pub(super) async fn legacy(
         target: crate::openai::Target::Standard,
         retry_refusals,
         stream_end: Arc::default(),
-        authenticated: secret.is_some(),
         budget,
         body: Some(body),
         failure: Arc::default(),
@@ -932,7 +935,6 @@ pub(super) async fn host_complete(
             target,
             retry_refusals: false,
             stream_end: Arc::default(),
-            authenticated: secret.is_some(),
             budget,
             body: None,
             failure: Arc::default(),
@@ -1219,7 +1221,6 @@ pub(super) async fn complete(
         streaming: call.stream,
         api: provider_transform::openai_api(&profile),
         target: crate::openai::Target::Standard,
-        authenticated: secret.is_some(),
         budget,
         body: None,
         retry_refusals: false,

@@ -1183,29 +1183,6 @@ impl UndoLog {
         )
     }
 
-    /// See the toolkit's `State::restore_to_heads_with_context`.
-    pub fn restore_to_heads_with_message(
-        &mut self,
-        doc: &mut AutoCommit,
-        target_heads: &[ChangeHash],
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-        message: Option<String>,
-    ) -> bool {
-        self.restore_to_heads_owned(
-            doc,
-            target_heads,
-            OwnedActionAttribution {
-                author,
-                instance_id: None,
-                focused_node_idx,
-                widget_metadata: metadata,
-                message,
-            },
-        )
-    }
-
     pub fn restore_to_heads_in(
         &mut self,
         doc: &mut AutoCommit,

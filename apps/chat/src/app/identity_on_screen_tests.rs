@@ -45,6 +45,62 @@ fn a_live_peer_joins_through_the_user_action() {
     );
 }
 
+/// A record that does not read is not an empty chat: the window's person
+/// is introduced once it reads, not lost to the read that failed, and what
+/// last read whole stays.
+#[test]
+fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
+    use automerge::transaction::Transactable as _;
+    let mut app = ChatApp::new(
+        crate::identity::LocalIdentity::for_participant("person-1"),
+        ChatRuntime::Unavailable,
+        ContentStore::memory(),
+    )
+    .announcing();
+    app.attach_framework(ui::framework::Dispatcher::detached(
+        "so.tilo.chat",
+        "person-1",
+    ));
+    let mut state = ui::State::new();
+    crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");
+    let mut broken = state.doc.clone();
+    broken
+        .put(automerge::ROOT, "people", "not a roster")
+        .expect("the field is written");
+    assert!(<crate::record::Chat as ui::tilo_resource::Resource>::read(&broken).is_err());
+
+    app.reload(&state.doc);
+    let channels = app.channels.len();
+    assert!(channels > 0, "the starter holds a channel");
+    app.dispatched.borrow_mut().clear();
+
+    Widget::sync(&mut app, &broken, &state.root);
+    assert!(
+        app.last_dispatched().is_none(),
+        "nothing is derived from a failed read"
+    );
+    assert_eq!(
+        app.channels.len(),
+        channels,
+        "the channels that last read stay"
+    );
+
+    Widget::sync(&mut app, &state.doc, &state.root);
+    let recorded = app
+        .last_dispatched()
+        .expect("the introduction waited for a record that reads");
+    assert_eq!(
+        serde_json::to_value(&recorded).unwrap(),
+        crate::testing::operation(&crate::resource::Chat::INTRODUCE.with(
+            crate::record::chat::Introduce {
+                name: app.me.name.clone(),
+                initials: app.me.initials.clone(),
+                color: u32::try_from(app.me.color_idx).unwrap(),
+            }
+        ))
+    );
+}
+
 #[test]
 fn primary_scroll_maps_bottom_anchor_and_clamps_without_editing() {
     use ui::widget::PrimaryScrollAction;

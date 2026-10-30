@@ -70,10 +70,43 @@ fn size(r: Rect) -> String {
     format!("{:.0}×{:.0}", r.width(), r.height())
 }
 
-/// Whether a widget scrolls its content.
-fn scrolls(widget: &str) -> bool {
-    let lower = widget.to_ascii_lowercase();
-    lower.contains("scroll") || lower.contains("virtuallist") || lower.contains("describedlist")
+/// Which ways a box lets its content go on past it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Scrolls {
+    /// Content may go on past its bottom (a column's body, a list).
+    down: bool,
+    /// Content may go on past its sides (a board's lanes in `ui.Scroll(across: true)`).
+    across: bool,
+}
+
+/// Which ways `node` scrolls its content: as a scroll view says of its axis, else down for a
+/// widget that scrolls by its kind (a long list).
+fn scrolls(node: &InspectionNode) -> Scrolls {
+    use ui::widget::{LayoutInfo, ScrollDirection};
+    if let Some(LayoutInfo::Scroll(scroll)) = &node.layout {
+        return match scroll.direction {
+            ScrollDirection::Vertical => Scrolls {
+                down: true,
+                across: false,
+            },
+            ScrollDirection::Horizontal => Scrolls {
+                down: false,
+                across: true,
+            },
+            ScrollDirection::Both => Scrolls {
+                down: true,
+                across: true,
+            },
+        };
+    }
+    let lower = node.widget.to_ascii_lowercase();
+    let down = lower.contains("scroll")
+        || lower.contains("virtuallist")
+        || lower.contains("describedlist");
+    Scrolls {
+        down,
+        across: false,
+    }
 }
 
 /// Whether a widget hangs part of itself outside the column it is in by design: the body
@@ -137,6 +170,8 @@ struct Walk<'a> {
     viewport: Rect,
     /// Inside a box already found reaching past the window's sides.
     beyond: bool,
+    /// Inside a view that scrolls sideways: its content reaches past the window by design.
+    across: bool,
     /// The smallest a target may be, where the face is the target (on touch).
     min_target: Option<f64>,
     out: &'a mut Vec<Problem>,
@@ -156,23 +191,30 @@ pub fn inspect(
     let mut walk = Walk {
         viewport,
         beyond: false,
+        across: false,
         min_target,
         out: &mut out,
     };
-    walk.node(root, &mut Vec::new(), viewport, viewport, false);
+    walk.node(
+        root,
+        &mut Vec::new(),
+        viewport,
+        viewport,
+        Scrolls::default(),
+    );
     out
 }
 
 impl Walk<'_> {
     /// `parent`: the nearest box above with geometry. `clip`: what of the window the node can show in. `scroller`:
-    /// whether a scroll view above lets content go on past its container's bottom.
+    /// which ways the box above lets content go on past it.
     fn node(
         &mut self,
         node: &InspectionNode,
         keys: &mut Vec<String>,
         parent: Rect,
         clip: Rect,
-        scroller: bool,
+        scroller: Scrolls,
     ) {
         let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
         self.visit(node, keys, parent, clip, scroller);
@@ -187,7 +229,7 @@ impl Walk<'_> {
         keys: &mut Vec<String>,
         parent: Rect,
         clip: Rect,
-        scroller: bool,
+        scroller: Scrolls,
     ) {
         let own = rect(node.rect);
         let geometric = has_area(own);
@@ -197,19 +239,24 @@ impl Walk<'_> {
             return;
         }
         let was_beyond = self.beyond;
+        let was_across = self.across;
         if geometric && !hangs(&node.widget) {
             self.reach(node, keys, own, parent, scroller);
             if let Some(min) = self.min_target {
                 self.target(node, keys, own, min);
             }
         }
-        let scrolling = scrolls(&node.widget);
-        // The box children are measured against, and whether it scrolls them.
+        let scrolls = scrolls(node);
+        let scrolling = scrolls.down || scrolls.across;
+        // The box children are measured against, and which ways it scrolls them.
         let (inner_parent, inner_scroller) = if geometric {
-            (own, scrolling)
+            (own, scrolls)
         } else {
             (parent, scroller)
         };
+        if scrolls.across && geometric {
+            self.across = true;
+        }
         // A scroll view shows its content within its own box, whether or not it reports a clip.
         let mut inner_clip = clip;
         if let Some(child_clip) = node.child_clip {
@@ -217,7 +264,9 @@ impl Walk<'_> {
         } else if scrolling && geometric {
             inner_clip = clip.intersect(own);
         }
-        if scrolling && geometric {
+        // A view that scrolls sideways holds wider content by design; one that scrolls only down
+        // and holds it scrolls the page sideways.
+        if scrolling && !scrolls.across && geometric {
             self.sideways(node, keys, node.child_clip.map_or(own, rect));
         }
         if geometric {
@@ -230,6 +279,7 @@ impl Walk<'_> {
             self.node(child, keys, inner_parent, inner_clip, inner_scroller);
         }
         self.beyond = was_beyond;
+        self.across = was_across;
     }
 
     /// A box past its container's, or past the window's sides.
@@ -239,11 +289,11 @@ impl Walk<'_> {
         keys: &[String],
         own: Rect,
         parent: Rect,
-        scroller: bool,
+        scroller: Scrolls,
     ) {
         let past_window =
             own.x0 < self.viewport.x0 - EPSILON || own.x1 > self.viewport.x1 + EPSILON;
-        if past_window {
+        if past_window && !self.across {
             if self.beyond {
                 return;
             }
@@ -262,10 +312,10 @@ impl Walk<'_> {
             );
             return;
         }
-        // In a scroll view, content goes on past it on its axis: only its sides count.
+        // In a scroll view, content goes on past it on its axis: only the other axis counts.
         let across = own.x0 < parent.x0 - EPSILON || own.x1 > parent.x1 + EPSILON;
         let along = own.y0 < parent.y0 - EPSILON || own.y1 > parent.y1 + EPSILON;
-        if across || (along && !scroller) {
+        if (across && !scroller.across) || (along && !scroller.down) {
             self.push(
                 Kind::Overflow,
                 node,

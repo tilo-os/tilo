@@ -34,6 +34,23 @@ pub const OPEN_APP_RESOURCE_PREFIX: &str = "desktop:app:";
 /// Action id of the per-application open action.
 pub const OPEN_APP_ACTION: &str = "open";
 
+/// The desktop's layout actions on this device's broker, on [`RESOURCE`]:
+/// what an agent opens and arranges windows with, by id.
+pub mod layout {
+    /// The provider the session's broker answers them under.
+    pub const PROVIDER: &str = "tilo.desktop";
+    /// Open a resource, content or web address in a new window.
+    pub const OPEN: &str = "open";
+    pub const CREATE_STRIP: &str = "create-strip";
+    pub const RENAME_STRIP: &str = "rename-strip";
+    pub const MOVE_GROUP: &str = "move-group";
+    pub const ARRANGE: &str = "arrange";
+    pub const LIST_WINDOWS: &str = "list-windows";
+    /// Take a run of layout changes back (`{"run": …}`), as every
+    /// history's `undo` does.
+    pub const UNDO: &str = "undo";
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DesktopCommandError {
     /// Rejected before any canonical state or durable identity changed.
@@ -182,15 +199,6 @@ pub enum DesktopCommand {
         subject: String,
         expires_unix: u64,
     },
-    /// Record the effect receipt of an invocation that a member's app served
-    /// in this room, as the redacted
-    /// [`WorkspaceEffectReceipt`](crate::WorkspaceEffectReceipt) JSON the
-    /// member's broker produced. Only a native owner applies it; a receipt,
-    /// once recorded, never changes. Appended last: existing encodings are
-    /// unchanged.
-    RecordEffectReceipt {
-        receipt_json: String,
-    },
     /// Let application `app` use `action` on `target_app`'s `resource` here, for
     /// `lifetime` `always` (a hosted workspace has no session to end a
     /// `session` grant with). Only a native owner applies it, with the
@@ -237,8 +245,8 @@ pub enum DesktopCommand {
 impl DesktopCommand {
     /// Whether the owner applies this against its own current desktop, so it
     /// needs no source revision: an [`Self::OpenApp`] it places itself, a
-    /// namespace claim that changes only the registry, or a governance or
-    /// receipt command that touches no topology.
+    /// namespace claim that changes only the registry, or a governance
+    /// command that touches no topology.
     pub fn is_placement_independent(&self) -> bool {
         matches!(
             self,
@@ -246,7 +254,6 @@ impl DesktopCommand {
                 | Self::ClaimNamespace { .. }
                 | Self::SavePreset { .. }
                 | Self::AssignPreset { .. }
-                | Self::RecordEffectReceipt { .. }
                 | Self::GrantAppAction { .. }
                 | Self::RevokeAppAction { .. }
         )
@@ -817,7 +824,6 @@ pub fn apply_command(
         }
         DesktopCommand::SavePreset { .. }
         | DesktopCommand::AssignPreset { .. }
-        | DesktopCommand::RecordEffectReceipt { .. }
         | DesktopCommand::GrantAppAction { .. }
         | DesktopCommand::RevokeAppAction { .. } => {
             return Err("only the workspace's native owner applies this command".into());
@@ -964,6 +970,22 @@ pub fn apply_to_active_workspace(
     command: &DesktopCommand,
     mint: &mut impl FnMut() -> Result<u64, String>,
 ) -> Result<Option<StripId>, String> {
+    let active = tree.active;
+    apply_to_workspace(tree, active, command, mint)
+}
+
+/// [`apply_to_active_workspace`] for the workspace `id`, shown or not: an
+/// agent arranging the workspace it works in edits that one.
+///
+/// # Errors
+///
+/// As [`apply_to_active_workspace`], or the workspace is gone.
+pub fn apply_to_workspace(
+    tree: &mut DesktopTree,
+    id: crate::ids::WorkspaceId,
+    command: &DesktopCommand,
+    mint: &mut impl FnMut() -> Result<u64, String>,
+) -> Result<Option<StripId>, String> {
     if !matches!(
         command,
         DesktopCommand::CreateStrip { .. }
@@ -974,12 +996,12 @@ pub fn apply_to_active_workspace(
     ) {
         return Err("not a strip or workspace edit".into());
     }
-    let active = tree.active;
+    let active = id;
     let workspace = tree
         .workspaces
         .iter_mut()
         .find(|workspace| workspace.id == active)
-        .ok_or("there is no active workspace")?;
+        .ok_or("the workspace is gone")?;
     let before = workspace.strips.len();
     apply_command(workspace, command, mint, &mut |_, _| {
         Err("a strip or workspace edit creates no record".into())

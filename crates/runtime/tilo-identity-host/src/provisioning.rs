@@ -984,8 +984,6 @@ fn copy_home_peers(
     if local_cert.capabilities.can_act_as_host {
         let device_id = hex::encode(local_cert.device_public_key);
         let service_id = hex::encode(relay_service_node_id);
-        let topic =
-            tilo_relay_protocol::personal_continuity_workspace_id(&local_cert.user_public_key);
         let registration = tilo_relay_protocol::HomePeerRegistration {
             schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: device_id,
@@ -998,7 +996,8 @@ fn copy_home_peers(
             },
             user_public_key: identity_id.clone(),
             device_cert: Some(local_cert.clone()),
-            relay_workspace_ids: vec![topic],
+            // It serves its person, whichever workspaces it holds.
+            relay_workspace_ids: Vec::new(),
             environments: tilo_relay_protocol::RelayEnvironments::default(),
         };
         if !relay_is_dialable(&entries, &registration) {
@@ -1264,6 +1263,11 @@ fn ensure_collaboration_identity_in_context(
             if runtime_identity::resolve_active_identity(identity_dir).is_none() {
                 complete_enrolled_device(identity_dir, paths, now_ns)?;
             }
+            if let Some(record) = runtime_identity::resolve_active_identity(identity_dir)
+                && let Ok(signer) = runtime_identity::load_from_path(record)
+            {
+                prove_local_person(identity_dir, &signer, paths);
+            }
             return Ok(ProvisionOutcome::Existing);
         }
         Ok(false) => {}
@@ -1306,6 +1310,7 @@ fn ensure_collaboration_identity_in_context(
     // The device's certificate for this identity: the owner's is also the
     // device's system-facing certificate, one certificate in both places.
     ensure_device_certificate_for_identity(&signer, paths, device_label, class)?;
+    prove_local_person(identity_dir, &signer, paths);
 
     // Register the primary record in the multi-identity registry. A registry
     // write failure is a provisioning failure: silently creating a key that no
@@ -1317,6 +1322,23 @@ fn ensure_collaboration_identity_in_context(
     }
 
     Ok(outcome)
+}
+
+/// Keep this account's proof that it is the device's person
+/// ([`crate::local_person`]) when `signer` is the identity the device is
+/// bound to: written with the binding, and at the next sign-in on a device
+/// bound before proofs existed. One that cannot be signed here (the key is
+/// held on another device) is logged; the device's services then fall back
+/// to who is signed in.
+fn prove_local_person(
+    identity_dir: &Path,
+    signer: &runtime_identity::SigningIdentity,
+    paths: &IdentityPaths,
+) {
+    let uid = rustix::process::geteuid().as_raw();
+    if let Err(error) = crate::local_person::ensure_proof(identity_dir, signer, paths, uid) {
+        tracing::warn!(%error, "could not prove this account is the device's person");
+    }
 }
 
 /// Atomically elect the legacy system-facing identity owner.

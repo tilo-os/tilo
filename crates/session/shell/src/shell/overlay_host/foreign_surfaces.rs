@@ -39,7 +39,7 @@ impl ShellOverlayHost {
             // point of its open/close scale.
             rects.push(self.quick_settings_rect().inflate(8.0, 16.0));
         }
-        rects.extend(self.projection_overlay.secret_prompt_rect(now));
+        rects.extend(self.display_sheet_secret_rect());
         rects.extend(self.pairing.secret_rect());
         rects
     }

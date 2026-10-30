@@ -43,8 +43,8 @@ pub(super) struct Asking {
 impl NetworkModel {
     /// Ask with `prompt` for `what`.
     fn ask(&mut self, what: Asked, prompt: SecretPrompt) {
-        self.cx
-            .secrets()
+        self.reach
+            .secrets
             .ask(KEY, prompt.with_id("settings.network.prompt"));
         self.asking = Some(Asking { what, busy: false });
         self.changed = true;
@@ -132,7 +132,7 @@ impl NetworkModel {
     /// Close the prompt, whatever it asked.
     pub(super) fn close_prompt(&mut self) {
         if self.asking.take().is_some() {
-            self.cx.secrets().close(KEY);
+            self.reach.secrets.close(KEY);
             self.changed = true;
         }
     }
@@ -141,7 +141,7 @@ impl NetworkModel {
     fn refuse_prompt(&mut self, why: String) {
         if let Some(asking) = &mut self.asking {
             asking.busy = false;
-            self.cx.secrets().reject(KEY, why);
+            self.reach.secrets.reject(KEY, why);
         }
     }
 
@@ -159,7 +159,7 @@ impl NetworkModel {
 
     /// Take in what the person answered, and start what it asks for.
     pub(super) fn poll_prompt(&mut self) {
-        let Some(outcome) = self.cx.secrets().take_answer(KEY) else {
+        let Some(outcome) = self.reach.secrets.take_answer(KEY) else {
             return;
         };
         match outcome {
@@ -185,7 +185,7 @@ impl NetworkModel {
             if let Some(asking) = &mut model.asking {
                 asking.busy = true;
             }
-            model.cx.secrets().busy(KEY, Some(words));
+            model.reach.secrets.busy(KEY, Some(words));
         };
         match &asking.what {
             Asked::Join(ssid) => {

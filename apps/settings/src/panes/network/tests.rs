@@ -16,10 +16,81 @@ use super::*;
 mod device_vpn;
 mod vpn_kill_switch;
 
+/// A Settings window whose Network area holds `model`, open on the
+/// Network page at `size`, and the model as the window holds it. The
+/// window's modem is one without a modem, so the page shows the model's own
+/// networks only.
+fn window_showing(
+    model: NetworkModel,
+    size: (u32, u32),
+) -> (
+    ui::framework::testing::TestApp<crate::SettingsShell>,
+    Rc<RefCell<NetworkModel>>,
+) {
+    without_a_modem();
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+    app.harness().resize(size).unwrap();
+    away_from_network(&mut app);
+    let held = app
+        .with_widget::<crate::window::Inspected, _>(|settings| {
+            Rc::clone(area(settings).unwrap().model())
+        })
+        .unwrap();
+    *held.borrow_mut() = model;
+    crate::effects::show_pane(&mut app, Category::Network);
+    app.settle();
+    (app, held)
+}
+
+/// Show another pane than Network in `app`, so the Network page is built
+/// anew when it opens again.
+fn away_from_network(app: &mut ui::framework::testing::TestApp<crate::SettingsShell>) {
+    crate::effects::show_pane(app, Category::Appearance);
+}
+
+/// The next window's modem: none.
+fn without_a_modem() {
+    crate::area::replace_in_next_window(|context| {
+        mobile::MobileArea::over(
+            context,
+            Arc::new(mobile::ScriptedModem::with(
+                os_actions::MobileReading::default(),
+                None,
+            )),
+        )
+    });
+}
+
+/// What `read` finds in a Settings window showing `model` on its Network
+/// page as the model is now: the page the window builds over it, its
+/// controls bound to the actions the window publishes. The model is lent
+/// to the window's Network area meanwhile and handed back as the window
+/// left it, but for the modem the window hosts and a scan it would start.
+fn rendered<T>(model: &mut NetworkModel, read: impl FnOnce(&dyn Widget) -> T) -> T {
+    without_a_modem();
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+    away_from_network(&mut app);
+    let held = app
+        .with_widget::<crate::window::Inspected, _>(|settings| {
+            Rc::clone(area(settings).unwrap().model())
+        })
+        .unwrap();
+    let (mobile, changed, scanned_at) = (model.mobile.take(), model.changed, model.scanned_at);
+    model.scanned_at = Some(ui::time::now());
+    std::mem::swap(&mut *held.borrow_mut(), model);
+    crate::effects::show_pane(&mut app, Category::Network);
+    app.settle();
+    let found = read(app.harness().root_widget());
+    std::mem::swap(&mut *held.borrow_mut(), model);
+    model.mobile = mobile;
+    model.changed = changed;
+    model.scanned_at = scanned_at;
+    found
+}
+
 #[test]
 fn network_pane_relabels_retained_controls_when_locale_changes() -> Result<(), String> {
-    use crate::panes::model::ModelPane;
-    use ui::headless::{Framed, viewport};
+    use ui::headless::viewport;
     use ui::i18n::I18nManager;
 
     let fake = Arc::new(FakeNetwork::default());
@@ -27,25 +98,21 @@ fn network_pane_relabels_retained_controls_when_locale_changes() -> Result<(), S
     network.open_page(PAGE_ADVANCED, t("net-advanced"));
     let _ = t("net-run-diagnostics");
     I18nManager::set_locale("en-US");
-    let root = ModelPane::new(Rc::new(RefCell::new(network)));
-    let mut app = Framed::new(
-        ui::State::new(),
-        root,
-        viewport((1200.0, 1800.0)),
-        ui::Theme::dark(),
-    );
-    let host = Framed::harness_mut(&mut app);
+    let (mut app, _network) = window_showing(network, (1200, 1800));
     for (locale, expected) in [
         ("en-US", "Run diagnostics"),
         ("de-DE", "Diagnose ausführen"),
         ("en-US", "Run diagnostics"),
     ] {
         I18nManager::set_locale(locale);
-        host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+        app.harness()
+            .relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
             .map_err(|error| error.to_string())?;
-        let name = ui::widget::find_test_id(host.root_widget(), "settings.network.diagnostics")
-            .and_then(Widget::accessibility)
-            .and_then(|node| node.name);
+        app.settle();
+        let name =
+            ui::widget::find_test_id(app.harness().root_widget(), "settings.network.diagnostics")
+                .and_then(Widget::accessibility)
+                .and_then(|node| node.name);
         if name.as_deref() != Some(expected) {
             return Err(format!(
                 "the actual network diagnostics control must follow {locale}: {name:?}"
@@ -57,22 +124,18 @@ fn network_pane_relabels_retained_controls_when_locale_changes() -> Result<(), S
 
 #[test]
 fn network_editor_retains_caret_through_window_resize() -> Result<(), String> {
-    use crate::panes::model::ModelPane;
-    use ui::headless::{Framed, viewport};
+    use ui::headless::viewport;
 
     let fake = Arc::new(FakeNetwork::default());
     let mut network = model(&fake);
     network.open_page(PAGE_ADVANCED, t("net-advanced"));
     network.enterprise_setup.set_open(true);
+    // The networks were just looked for: no periodic scan rebuilds the
+    // page between the keys.
+    network.scanned_at = Some(ui::time::now());
     let profile = network.enterprise.profile.clone();
-    let root = ModelPane::new(Rc::new(RefCell::new(network)));
-    let mut app = Framed::new(
-        ui::State::new(),
-        root,
-        viewport((1200.0, 1800.0)),
-        ui::Theme::dark(),
-    );
-    let host = Framed::harness_mut(&mut app);
+    let (mut app, _network) = window_showing(network, (1200, 1800));
+    let host = app.harness();
     host.click_named("network.enterprise.profile")?;
     host.type_text("abcd");
     if profile.get() != "abcd" {
@@ -113,44 +176,35 @@ fn enterprise_setup_open(widget: &dyn Widget) -> Option<(bool, vello::kurbo::Rec
 /// same row: an agent and a person land in the same place.
 #[test]
 fn the_work_or_school_setup_opens_under_its_row() -> Result<(), String> {
-    use crate::panes::model::ModelPane;
-    use ui::headless::{Framed, viewport};
+    use ui::headless::viewport;
 
     let fake = Arc::new(FakeNetwork::default());
-    let network = Rc::new(RefCell::new(model(&fake)));
-    network
-        .borrow_mut()
-        .open_page(PAGE_ADVANCED, t("net-advanced"));
-    let shown_open = |network: &Rc<RefCell<NetworkModel>>| {
-        let composed = network.borrow().build_composition();
-        enterprise_setup_open(composed.as_ref()).map(|(open, _)| open)
+    let mut network = model(&fake);
+    network.open_page(PAGE_ADVANCED, t("net-advanced"));
+    // The networks were just looked for: no periodic scan rebuilds the
+    // page between the presses.
+    network.scanned_at = Some(ui::time::now());
+    let (mut app, network) = window_showing(network, (1000, 1800));
+    let shown_open = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>| {
+        app.settle();
+        enterprise_setup_open(app.harness().root_widget()).map(|(open, _)| open)
     };
-    if shown_open(&network) != Some(false) {
+    if shown_open(&mut app) != Some(false) {
         return Err("the setup starts closed, under a disclosure row".into());
     }
-    run(
-        &mut network.borrow_mut(),
-        NetworkEffect::ShowEnterpriseSetup,
-    )?;
-    if shown_open(&network) != Some(true) {
+    app.effect(&SettingsEffect::from(NetworkEffect::ShowEnterpriseSetup))
+        .map_err(|error| error.to_string())?;
+    if shown_open(&mut app) != Some(true) {
         return Err("the action opens the row".into());
     }
-    run(
-        &mut network.borrow_mut(),
-        NetworkEffect::ShowEnterpriseSetup,
-    )?;
+    app.effect(&SettingsEffect::from(NetworkEffect::ShowEnterpriseSetup))
+        .map_err(|error| error.to_string())?;
+    app.settle();
     if network.borrow().enterprise_setup.is_open() {
         return Err("the action closes the row again".into());
     }
 
-    let root = ModelPane::new(Rc::clone(&network));
-    let mut app = Framed::new(
-        ui::State::new(),
-        root,
-        viewport((1000.0, 1800.0)),
-        ui::Theme::dark(),
-    );
-    let host = Framed::harness_mut(&mut app);
+    let host = app.harness();
     let (open, rect) =
         enterprise_setup_open(host.root_widget()).ok_or("the setup's row is on the page")?;
     if open {
@@ -171,42 +225,8 @@ fn the_work_or_school_setup_opens_under_its_row() -> Result<(), String> {
 }
 
 #[test]
-fn network_pane_adopts_model_changes_after_layout_reuse() -> Result<(), String> {
-    use crate::panes::model::ModelPane;
-    use ui::headless::{Framed, viewport};
-
-    let fake = Arc::new(FakeNetwork::default());
-    let network = Rc::new(RefCell::new(model(&fake)));
-    let root = ModelPane::new(Rc::clone(&network));
-    let mut app = Framed::new(
-        ui::State::new(),
-        root,
-        viewport((1200.0, 1800.0)),
-        ui::Theme::dark(),
-    );
-    let host = Framed::harness_mut(&mut app);
-    host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
-        .map_err(|error| error.to_string())?;
-    {
-        let mut model = network.borrow_mut();
-        model.open_page(PAGE_ADVANCED, t("net-advanced"));
-        model.enterprise_setup.set_open(true);
-        model.changed = true;
-    }
-    host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
-        .map_err(|error| error.to_string())?;
-    host.click_named("network.enterprise.profile")?;
-    host.type_text("New profile");
-    if network.borrow().enterprise.profile.get() != "New profile" {
-        return Err("a changed model must expose its newly composed controls".into());
-    }
-    Ok(())
-}
-
-#[test]
 fn network_picker_remains_open_through_window_resize() -> Result<(), String> {
-    use crate::panes::model::ModelPane;
-    use ui::headless::{Framed, viewport};
+    use ui::headless::viewport;
 
     fn expanded(host: &ui::headless::FrameHarness) -> Result<bool, String> {
         ui::widget::find_test_id(host.root_widget(), "network.hotspot.band")
@@ -223,14 +243,8 @@ fn network_picker_remains_open_through_window_resize() -> Result<(), String> {
     let held = ui::time::now();
     network.scanned_at = Some(held);
     ui::time::testing::with_monotonic_time(held, || {
-        let root = ModelPane::new(Rc::new(RefCell::new(network)));
-        let mut app = Framed::new(
-            ui::State::new(),
-            root,
-            viewport((1200.0, 1800.0)),
-            ui::Theme::dark(),
-        );
-        let host = Framed::harness_mut(&mut app);
+        let (mut app, _network) = window_showing(network, (1200, 1800));
+        let host = app.harness();
         host.click_named("network.hotspot.band")?;
         if !expanded(host)? {
             return Err("the real network band picker must open".into());
@@ -259,7 +273,7 @@ impl Drop for ReleaseSnapshot {
     }
 }
 
-fn pending_network() -> Result<(Shared<NetworkModel>, ReleaseSnapshot), String> {
+fn pending_network() -> Result<(NetworkModel, ReleaseSnapshot), String> {
     let (started, starts) = crate::channel::channel();
     let (release, releases) = crate::channel::channel();
     let fake = Arc::new(FakeNetwork::default());
@@ -268,30 +282,25 @@ fn pending_network() -> Result<(Shared<NetworkModel>, ReleaseSnapshot), String> 
         release: releases,
     });
     let profile = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let mut network =
-        NetworkModel::with_service(PaneCx::in_profile(profile.path().to_path_buf()), fake);
+    let mut network = NetworkModel::with_service(
+        Reach::of(&crate::area::AreaContext::in_profile(
+            profile.path().to_path_buf(),
+        )),
+        fake,
+    );
     let release = ReleaseSnapshot(Some(release));
     network.start_snapshot();
     starts
         .recv_timeout(tilo_test_env::hang_bound())
         .map_err(|error| format!("the actual network read must start: {error}"))?;
-    Ok((Rc::new(RefCell::new(network)), release))
+    Ok((network, release))
 }
 
 #[test]
 fn pending_network_read_does_not_animate_the_pane() -> Result<(), String> {
-    use crate::panes::model::ModelPane;
-    use ui::headless::{Framed, viewport};
-
     let (network, _release) = pending_network()?;
-    let pane = ModelPane::new(network);
-    let app = Framed::new(
-        ui::State::new(),
-        pane,
-        viewport((1200.0, 1800.0)),
-        ui::Theme::dark(),
-    );
-    if Framed::harness(&app).frame_schedule().needs_animation_frame {
+    let (mut app, _network) = window_showing(network, (1200, 1800));
+    if app.harness().frame_schedule().needs_animation_frame {
         return Err(
             "waiting for a network read must not request continuous animation frames".into(),
         );
@@ -301,9 +310,6 @@ fn pending_network_read_does_not_animate_the_pane() -> Result<(), String> {
 
 #[test]
 fn completed_network_read_wakes_the_owner_and_updates_the_pane() -> Result<(), String> {
-    use crate::panes::model::ModelPane;
-    use ui::headless::{Framed, viewport};
-
     let mut scope = ui::WakeScope::new();
     let (woke, wakes) = crate::channel::channel();
     scope
@@ -313,22 +319,21 @@ fn completed_network_read_wakes_the_owner_and_updates_the_pane() -> Result<(), S
         .map_err(|error| error.to_string())?;
     let _entry = scope.enter();
     let (network, release) = pending_network()?;
-    let pane = ModelPane::new(Rc::clone(&network));
-    let mut app = Framed::new(
-        ui::State::new(),
-        pane,
-        viewport((1200.0, 1800.0)),
-        ui::Theme::dark(),
-    );
     drop(release);
     wakes
         .recv_timeout(tilo_test_env::hang_bound())
         .map_err(|error| format!("a completed network read must wake its real owner: {error}"))?;
-    Framed::harness_mut(&mut app)
-        .relayout_at(viewport((1200.0, 1800.0)))
-        .map_err(|error| error.to_string())?;
+    let (mut app, network) = window_showing(network, (1200, 1800));
+    app.settle();
     if !network.borrow().loaded {
         return Err("the awakened production pane must adopt its completed snapshot".into());
+    }
+    let frame = app
+        .harness()
+        .inspection_json()
+        .map_err(|error| error.to_string())?;
+    if frame.contains(&t("net-pending")) {
+        return Err("the page must show the completed snapshot, not the pending note".into());
     }
     Ok(())
 }
@@ -703,7 +708,7 @@ fn saved(uuid: &str, name: &str, last_used: u64) -> SavedNetworkProfile {
 fn model(fake: &Arc<FakeNetwork>) -> NetworkModel {
     let profile = tempfile::tempdir().unwrap().keep();
     NetworkModel::loaded_from(
-        PaneCx::in_profile(profile),
+        Reach::of(&crate::area::AreaContext::in_profile(profile)),
         Arc::clone(fake) as Arc<dyn NetworkService>,
     )
 }
@@ -715,18 +720,22 @@ fn hosted_model(
     service: Arc<dyn NetworkService>,
 ) -> NetworkModel {
     let cx = app
-        .surface::<SettingsApp, _>(|settings| {
-            crate::panes::network::area(settings).unwrap().cx.clone()
+        .with_widget::<crate::window::Inspected, _>(|settings| {
+            crate::panes::network::area(settings).unwrap().reach.clone()
         })
         .unwrap();
     NetworkModel::loaded_from(cx, service)
 }
 
+/// Put `observed` in place of the window's Network model, the window
+/// away from Network meanwhile: the page is built over it, and follows its
+/// device, once Network opens.
 fn mount_network(
     app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
     observed: NetworkModel,
 ) -> Option<()> {
-    app.with_surface::<SettingsApp, _>(|settings| {
+    away_from_network(app);
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         *crate::panes::network::area(settings)
             .unwrap()
             .model()
@@ -743,7 +752,7 @@ fn settle_until(
     loop {
         app.settle();
         let reached = app
-            .surface::<SettingsApp, _>(|settings| {
+            .with_widget::<crate::window::Inspected, _>(|settings| {
                 let model = crate::panes::network::area(settings)
                     .unwrap()
                     .model()
@@ -786,7 +795,7 @@ fn declared_network_inspection_reads_the_mounted_model_without_rescanning() {
         "test stand-ins cannot masquerade as device observations"
     );
     let row_ids = app
-        .surface::<SettingsApp, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             settings
                 .areas()
                 .find::<crate::panes::network::NetworkArea>()
@@ -804,7 +813,7 @@ fn declared_network_inspection_reads_the_mounted_model_without_rescanning() {
                 .any(|id| id == network["resource"].as_str().unwrap())
         );
     }
-    let shown = crate::widgets::announced_text(app.harness().root_widget());
+    let shown = provider_settings_ui::widgets::announced_text(app.harness().root_widget());
     let show_all = before["labels"]["show_all"].as_str().unwrap().to_owned();
     assert!(
         shown.iter().any(|line| line.contains(&show_all)),
@@ -918,7 +927,7 @@ fn network_inspection_observes_the_actual_pending_refresh_and_failed_snapshot() 
 #[test]
 fn network_inspection_does_not_initialize_an_unopened_area_and_bounds_private_reads() {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
+    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
     let area = NetworkArea::new(&cx);
     assert_eq!(area.inspection().unwrap()["state"], "unopened");
     assert!(
@@ -926,7 +935,7 @@ fn network_inspection_does_not_initialize_an_unopened_area_and_bounds_private_re
         "Read must not lazily start a device scan"
     );
     let fake = Arc::new(FakeNetwork::default());
-    let mut observed = NetworkModel::with_service(cx, fake);
+    let mut observed = NetworkModel::with_service(Reach::of(&cx), fake);
     let initial = observed.inspection().unwrap();
     assert_eq!(initial["state"], "loading");
     assert!(initial["wifi"]["enabled"].is_null());
@@ -1013,7 +1022,7 @@ fn network_workers_complete_their_published_unit_jobs() -> Result<(), String> {
         if model.notice.as_deref() != Some(notice.as_str()) {
             return Err("the completed job must retain its status notice".into());
         }
-        if !shown(&model).contains(&notice) {
+        if !shown(&mut model).contains(&notice) {
             return Err("the completed job's notice must remain visible".into());
         }
     }
@@ -1032,12 +1041,12 @@ fn network_workers_complete_their_published_unit_jobs() -> Result<(), String> {
     Ok(())
 }
 
-fn shown(model: &NetworkModel) -> Vec<String> {
-    crate::widgets::announced_text(model.build_composition().as_ref())
+fn shown(model: &mut NetworkModel) -> Vec<String> {
+    rendered(model, provider_settings_ui::widgets::announced_text)
 }
 
-/// The titles of the network rows composed, top to bottom.
-fn network_rows(model: &NetworkModel) -> Vec<String> {
+/// The titles of the network rows shown, top to bottom.
+fn network_rows(model: &mut NetworkModel) -> Vec<String> {
     fn walk(widget: &dyn Widget, out: &mut Vec<String>) {
         if let Some(id) = widget.test_id()
             && let Some(ssid) = id.strip_prefix("settings.network.connect.")
@@ -1057,10 +1066,11 @@ fn network_rows(model: &NetworkModel) -> Vec<String> {
             walk(child, out);
         }
     }
-    let composed = model.build_composition();
-    let mut out = Vec::new();
-    walk(composed.as_ref(), &mut out);
-    out
+    rendered(model, |root| {
+        let mut out = Vec::new();
+        walk(root, &mut out);
+        out
+    })
 }
 
 /// Wait for the read a landed change started, as the pane's poll does.
@@ -1079,13 +1089,13 @@ fn settle(model: &mut NetworkModel) {
     }
 }
 
-/// The Wi-Fi switch as composed: whether it is on, and whether it can be
+/// The Wi-Fi switch as shown: whether it is on, and whether it can be
 /// used.
-fn wifi_switch(model: &NetworkModel) -> (Option<bool>, bool) {
-    let composed = model.build_composition();
-    let node = ui::widget::find_test_id(composed.as_ref(), "network.wifi")
-        .and_then(Widget::accessibility)
-        .expect("the Wi-Fi switch is composed");
+fn wifi_switch(model: &mut NetworkModel) -> (Option<bool>, bool) {
+    let node = rendered(model, |root| {
+        ui::widget::find_test_id(root, "network.wifi").and_then(Widget::accessibility)
+    })
+    .expect("the Wi-Fi switch is shown");
     (node.state.checked, !node.state.disabled)
 }
 
@@ -1152,8 +1162,8 @@ fn the_wifi_switch_follows_the_radio_and_not_the_request() {
     let nm = Arc::new(NmRadio::default());
     let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
     let mut model = hosted_model(&mut app, Arc::clone(&nm) as Arc<dyn NetworkService>);
-    assert_eq!(wifi_switch(&model), (Some(false), true));
-    let text = shown(&model).join("\n");
+    assert_eq!(wifi_switch(&mut model), (Some(false), true));
+    let text = shown(&mut model).join("\n");
     assert!(
         text.contains(&t("net-wifi-off")),
         "the Wi-Fi card says it is off, its switch the fix: {text}"
@@ -1162,11 +1172,15 @@ fn the_wifi_switch_follows_the_radio_and_not_the_request() {
     for on in [true, false, true] {
         run(&mut model, NetworkEffect::SetWifi { on }).unwrap();
         settle(&mut model);
-        assert_eq!(wifi_switch(&model), (Some(on), true), "after turning {on}");
+        assert_eq!(
+            wifi_switch(&mut model),
+            (Some(on), true),
+            "after turning {on}"
+        );
         assert_eq!(*nm.on.lock().unwrap(), on);
     }
     assert!(
-        shown(&model).join("\n").contains("Home_Network"),
+        shown(&mut model).join("\n").contains("Home_Network"),
         "on, the networks in range are listed"
     );
 
@@ -1177,12 +1191,12 @@ fn the_wifi_switch_follows_the_radio_and_not_the_request() {
     assert!(refused.is_err());
     settle(&mut model);
     assert_eq!(
-        wifi_switch(&model),
+        wifi_switch(&mut model),
         (Some(false), false),
         "the radio's state, not the request; nothing to switch"
     );
     assert!(
-        shown(&model)
+        shown(&mut model)
             .join("\n")
             .contains(&t("net-wifi-hardware-switch"))
     );
@@ -1197,7 +1211,7 @@ fn the_wifi_list_shows_the_known_and_five_others_and_show_all_counts_the_rest() 
     *fake.networks.lock().unwrap() = networks();
     *fake.profiles.lock().unwrap() = vec![saved("library-uuid", "Library", 1)];
     let mut model = model(&fake);
-    let first = network_rows(&model);
+    let first = network_rows(&mut model);
     assert_eq!(
         first,
         [
@@ -1212,21 +1226,25 @@ fn the_wifi_list_shows_the_known_and_five_others_and_show_all_counts_the_rest() 
         "in use, known, then the five strongest others, equal strengths by name"
     );
     let show_all = t_args("net-show-all", &[("count", networks().len().into())]);
-    assert!(shown(&model).contains(&show_all), "{:#?}", shown(&model));
+    assert!(
+        shown(&mut model).contains(&show_all),
+        "{:#?}",
+        shown(&mut model)
+    );
 
     run(&mut model, NetworkEffect::ShowAllNetworks).unwrap();
-    let all = network_rows(&model);
+    let all = network_rows(&mut model);
     assert_eq!(all.len(), networks().len(), "every network: {all:?}");
     assert_eq!(&all[..2], ["Home_Network", "Library"]);
     assert!(
-        shown(&model)
+        shown(&mut model)
             .iter()
             .any(|line| line.contains(&t("net-hidden-entry"))),
         "the way into a hidden network is on the full list"
     );
     model.set_filter("5");
-    assert_eq!(network_rows(&model), ["Office_5G", "Studio_5"]);
-    assert!(model.cx.pages().back());
+    assert_eq!(network_rows(&mut model), ["Office_5G", "Studio_5"]);
+    assert!(model.reach.pages.back());
     let _ = model.poll();
     assert!(model.filter.is_empty(), "leaving the page drops its search");
 }
@@ -1238,18 +1256,21 @@ fn a_held_list_keeps_its_rows_until_the_pointer_leaves() {
     let fake = Arc::new(FakeNetwork::default());
     *fake.networks.lock().unwrap() = networks();
     let mut model = model(&fake);
-    let before = network_rows(&model);
+    // The networks were just looked for: no periodic scan reads them again
+    // between the looks.
+    model.scanned_at = Some(ui::time::now());
+    let before = network_rows(&mut model);
     model.held_short.set(true);
     let mut stronger = networks();
     if let Some(bakery) = stronger.iter_mut().find(|net| net.ssid == "Bakery") {
         bakery.signal = 4;
     }
     let _ = model.adopt_snapshot(NetworkSnapshot::networks_only(Ok(stronger)));
-    assert_eq!(network_rows(&model), before, "held, nothing moves");
+    assert_eq!(network_rows(&mut model), before, "held, nothing moves");
     model.held_short.set(false);
     assert!(model.poll(), "letting go recomposes");
     assert_eq!(
-        network_rows(&model)[2],
+        network_rows(&mut model)[2],
         "Bakery",
         "let go, the stronger network moves up to lead the unknown ones"
     );
@@ -1275,7 +1296,7 @@ fn a_network_page_shows_its_status_and_settings_and_forget_closes_it() {
         },
     )
     .unwrap();
-    let text = shown(&model).join("\n");
+    let text = shown(&mut model).join("\n");
     for expected in [
         t("net-security-type-wpa3"),
         "866 Mbit/s".to_owned(),
@@ -1309,7 +1330,7 @@ fn a_network_page_shows_its_status_and_settings_and_forget_closes_it() {
         },
     )
     .unwrap();
-    assert!(shown(&model).join("\n").contains("saved-secret"));
+    assert!(shown(&mut model).join("\n").contains("saved-secret"));
     run(
         &mut model,
         NetworkEffect::ShowNetworkCode {
@@ -1380,7 +1401,7 @@ fn profile_settings_round_trip_through_the_effect_layer() {
     }
     let held = fake.settings.lock().unwrap()["home-uuid"].clone();
     let read = app
-        .surface::<SettingsApp, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             crate::panes::network::area(settings)
                 .unwrap()
                 .model()
@@ -1591,9 +1612,9 @@ fn known_networks_list_every_saved_network_by_last_use_and_forget_one() {
     ];
     let mut model = model(&fake);
     let count = t_args("net-known-count", &[("count", 3.into())]);
-    assert!(shown(&model).contains(&count), "the row says how many");
+    assert!(shown(&mut model).contains(&count), "the row says how many");
     run(&mut model, NetworkEffect::ShowKnownNetworks).unwrap();
-    let text = shown(&model);
+    let text = shown(&mut model);
     let at = |name: &str| {
         text.iter()
             .position(|line| line.starts_with(name))
@@ -1615,7 +1636,7 @@ fn known_networks_list_every_saved_network_by_last_use_and_forget_one() {
     )
     .unwrap();
     assert!(
-        !shown(&model)
+        !shown(&mut model)
             .iter()
             .any(|line| line.starts_with("Hotel_Lisbon")),
         "the forgotten network's row is gone"
@@ -1638,7 +1659,7 @@ fn a_machine_without_wifi_says_so_instead_of_reporting_a_read_error() {
     snapshot.wifi_enabled = Some(wifi_enabled_from(&radios));
     snapshot.radios = Some(radios);
     model.adopt_snapshot(snapshot).unwrap();
-    let text = shown(&model);
+    let text = shown(&mut model);
     assert!(
         text.iter()
             .any(|line| line == "No Wi-Fi adapter on this device"),
@@ -1660,7 +1681,7 @@ fn unreadable_network_state_is_shown_as_an_error_not_as_a_state() {
     let fake = Arc::new(FakeNetwork::default());
     *fake.unreadable.lock().unwrap() = Some("org.freedesktop.NetworkManager is gone".into());
     let mut model = model(&fake);
-    let text = shown(&model).join("\n");
+    let text = shown(&mut model).join("\n");
     assert!(
         text.contains("org.freedesktop.NetworkManager is gone"),
         "{text}"
@@ -1702,7 +1723,7 @@ fn network_status_never_waits_for_a_scan_and_refresh_scans_first() {
         "opening Network must not scan"
     );
     let connected = t("net-connected");
-    let text = shown(&model).join("\n");
+    let text = shown(&mut model).join("\n");
     assert!(
         text.contains("Home_Network") && text.contains(&connected),
         "{text}"
@@ -1728,7 +1749,7 @@ fn network_status_never_waits_for_a_scan_and_refresh_scans_first() {
     assert_eq!(model.read_errors, NetworkReadErrors::default());
     assert_eq!(model.wifi_status_error(), None);
     assert_eq!(model.networks().len(), networks().len());
-    let text = shown(&model).join("\n");
+    let text = shown(&mut model).join("\n");
     assert!(
         text.contains("Home_Network") && text.contains(&connected),
         "{text}"
@@ -1932,7 +1953,7 @@ fn networks_saved_profiles_and_vpns_are_rows() {
         },
     ];
     let profile = tempfile::tempdir().unwrap().keep();
-    let cx = PaneCx::in_profile(profile);
+    let cx = crate::area::AreaContext::in_profile(profile);
     let area = NetworkArea::new(&cx);
     let _ = area.model.set(Rc::new(RefCell::new(model(&fake))));
     let ids: Vec<String> = area.rows().iter().map(|row| row.id().to_owned()).collect();
@@ -1976,7 +1997,10 @@ fn supported_network_wake_is_named_and_routes_through_the_worker() {
             problem: None,
         }),
     );
-    let area = NetworkArea::new(&model.cx);
+    let profile = tempfile::tempdir().unwrap();
+    let area = NetworkArea::new(&crate::area::AreaContext::in_profile(
+        profile.path().to_path_buf(),
+    ));
     let _ = area.model.set(Rc::new(RefCell::new(model)));
     let row = area
         .rows()
@@ -2004,10 +2028,10 @@ fn supported_network_wake_is_named_and_routes_through_the_worker() {
         },
     )
     .unwrap();
-    assert!(named_switch(
-        model.build_composition().as_ref(),
+    assert!(rendered(&mut model, |root| named_switch(
+        root,
         "Wake over Home"
-    ));
+    )));
     run(
         &mut model,
         NetworkEffect::SetNetworkWake {
@@ -2188,7 +2212,7 @@ fn a_wireguard_tunnel_is_made_from_generated_keys_or_a_pasted_file() {
     run_vpn(&mut model, VpnEffect::ShowAddWireguard).unwrap();
     run_vpn(&mut model, VpnEffect::GenerateWireguardKeys).unwrap();
     let public = model.vpn_public_key().expect("the public key is shown");
-    assert!(shown(&model).contains(&public), "to give the server");
+    assert!(shown(&mut model).contains(&public), "to give the server");
     model.fill_wireguard_form(
         "Cabin",
         "10.9.0.2/32",
@@ -2253,7 +2277,7 @@ fn a_vpn_is_switched_edited_and_deleted() {
     );
     let mut model = model(&fake);
     run_vpn(&mut model, VpnEffect::ShowVpns).unwrap();
-    assert!(shown(&model).join("\n").contains("Work"));
+    assert!(shown(&mut model).join("\n").contains("Work"));
     run_vpn(
         &mut model,
         VpnEffect::SetVpnConnected {
@@ -2271,7 +2295,7 @@ fn a_vpn_is_switched_edited_and_deleted() {
     )
     .unwrap();
     settle(&mut model);
-    let text = shown(&model).join("\n");
+    let text = shown(&mut model).join("\n");
     assert!(text.contains("home.example.net:51820"), "{text}");
     let row = model.vpn_rows().remove(0).into_resource();
     for id in [
@@ -2352,7 +2376,7 @@ fn a_vpns_settings_stay_offered_while_a_change_is_read_back() {
                 .any(|action| action.id == "add-vpn-dns-server"),
             "the row still offers its name servers after adding {server}"
         );
-        let text = shown(&model);
+        let text = shown(&mut model);
         assert!(
             !text.contains(&t("net-pending")),
             "the page keeps its settings: {text:#?}"
@@ -2383,7 +2407,7 @@ fn a_plugin_vpn_is_called_by_its_protocol() {
     }];
     let mut model = model(&fake);
     run_vpn(&mut model, VpnEffect::ShowVpns).unwrap();
-    let text = shown(&model).join("\n");
+    let text = shown(&mut model).join("\n");
     assert!(text.contains("OpenVPN"), "{text}");
     assert!(model.vpn.settings.is_empty(), "no profile was read for it");
 }
@@ -2490,7 +2514,9 @@ fn without_a_wifi_radio_wifi_is_unavailable_until_one_is_plugged_in() {
     snapshot.wifi_enabled = Some(Ok(false));
     wired_only.adopt_snapshot(snapshot).unwrap();
     mount_network(&mut app, wired_only).unwrap();
-    let radios = app.surface_mut::<SettingsApp>().host().radios().clone();
+    let radios = app
+        .with_widget::<crate::window::Inspected, _>(|settings| settings.radios().clone())
+        .expect("the Settings window is mounted");
 
     radios.set(Present::NONE);
     app.settle();
@@ -2545,7 +2571,7 @@ fn a_radio_either_source_sees_is_offered() {
     use crate::radios::Present;
 
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
+    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
     let area = NetworkArea::new(&cx);
     assert!(
         area.statuses().is_empty(),
@@ -2553,7 +2579,7 @@ fn a_radio_either_source_sees_is_offered() {
     );
     assert!(!area.is_open(), "the networks were not read");
 
-    cx.radios().set(Present::ALL);
+    cx.radios.set(Present::ALL);
     assert!(
         area.statuses().is_empty(),
         "with every radio nothing changes"
@@ -2563,16 +2589,16 @@ fn a_radio_either_source_sees_is_offered() {
         wwan_available: true,
         ..os_actions::RadioState::default()
     };
-    cx.radios().set(Present::NONE);
+    cx.radios.set(Present::NONE);
     assert_eq!(
-        NetworkRadios::of(&cx, Some(&reported)),
+        NetworkRadios::of(&cx.radios, Some(&reported)),
         NetworkRadios {
             wifi: Some(false),
             wwan: Some(true),
         }
     );
     assert_eq!(
-        NetworkRadios::of(&PaneCx::in_profile(profile.path().join("other")), None),
+        NetworkRadios::of(&crate::radios::Radios::unread(), None),
         NetworkRadios::default(),
         "neither has said"
     );
@@ -2651,7 +2677,7 @@ fn the_vpn_tool_opens_settings_where_it_asks() {
     *fake.vpns.lock().unwrap() = vec![work_vpn()];
     let profile = tempfile::tempdir().unwrap().keep();
     let mut model = NetworkModel::with_service(
-        PaneCx::in_profile(profile),
+        Reach::of(&crate::area::AreaContext::in_profile(profile)),
         Arc::clone(&fake) as Arc<dyn NetworkService>,
     );
     run_vpn(
@@ -2708,7 +2734,7 @@ fn a_change_the_device_reports_shows_while_network_is_open() {
 
     // Brought up while no pane showed the model.
     fake.vpns.lock().unwrap()[0].active = true;
-    let following = PaneModel::follow(&mut network).expect("a shown pane follows the device");
+    let following = network.follow();
     let changed = fake
         .follower
         .lock()
@@ -2754,7 +2780,7 @@ fn a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open() {
     let mut network = model(&fake);
     // The networks were just looked for: no periodic scan comes between.
     network.scanned_at = Some(ui::time::now());
-    let _following = PaneModel::follow(&mut network).expect("a shown pane follows the device");
+    let _following = network.follow();
     let changed = fake
         .follower
         .lock()

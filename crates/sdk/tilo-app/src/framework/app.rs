@@ -1122,6 +1122,13 @@ fn unopened(app: &AppHooks, context: HostContext, reason: &str) -> AppComponent 
     );
     let mut component = AppComponent::new(context, unopened.boxed(), (app.action_registry)());
     component.set_behaviour(app.behaviour);
+    // An earlier version of the record may still read as the resource:
+    // History shows its versions and restores one, as in the app's own window.
+    if app.document_history
+        && let Err(error) = component.register_document_history((app.history)())
+    {
+        tracing::warn!(%error, "the unopened record shows without its History");
+    }
     component
 }
 

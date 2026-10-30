@@ -11,7 +11,7 @@ use super::ShellOverlayHost;
 use crate::shell::agent_quick_composer::{AgentQuickComposerOrigin, ComposerOwner};
 use crate::shell::certified_action_session::ActionSessionSource;
 use crate::shell::collab_broker::AppActionBroker;
-use crate::shell::selection_agent::{AgentStart, ChordRoute, SelectionSeed};
+use crate::shell::selection_agent::{ChordRoute, SelectionSeed};
 
 impl ShellOverlayHost {
     /// `app_id` on shell-ui `connection` answers selection requests.
@@ -50,7 +50,6 @@ impl ShellOverlayHost {
     /// app let its moment pass, the composer opens with what the desktop
     /// knows itself.
     pub(crate) fn route_ask_agent_chord(&mut self, now: Instant) -> Vec<u64> {
-        self.follow_agent_start(now);
         let focused = self.focused_app_id();
         match self.selection_requests.route(focused.as_deref(), now) {
             Some(ChordRoute::Ask(connections)) => connections,
@@ -136,11 +135,16 @@ impl ShellOverlayHost {
         self.open_ask_agent(SelectionSeed::new(app_id, label, selection))
     }
 
-    /// Open the quick composer about `seed`, for the agent asked last in the
-    /// focused workspace (or its first live one) when that agent is admitted
-    /// and holds a live task subscription. Says so when none does.
+    /// Open the quick composer about `seed`. Its agent defaults to a new
+    /// agent made for the task the asking creates
+    /// ([`crate::shell::task_agents`]); the workspace's collaborators that
+    /// take tasks now are offered beside it, and picking one assigns the
+    /// task to it. When a new agent cannot be asked here (no agent runtime,
+    /// no model, offline) the composer says which and offers the fix in
+    /// place: it never waits on an agent that is not coming.
     pub(crate) fn open_ask_agent(&mut self, mut seed: SelectionSeed) -> bool {
         use crate::shell::state::WorkspaceAuthority as _;
+        use crate::shell::task_agents::NEW_TASK_AGENT;
         // On a canvas a question's answer is a window where it was asked.
         if self.canvas_shown() && seed.ask.is_some() {
             return self.ask_about_on_canvas(&seed);
@@ -165,19 +169,15 @@ impl ShellOverlayHost {
         }) else {
             return false;
         };
-        let (source, live) = self
-            .live_agents(&room, members.clone())
-            .map_or((None, Vec::new()), |(source, live)| (Some(source), live));
-        let chosen = self.selection_requests.choose_agent(&room, &live);
-        let (Some(source), Some(agent)) = (source, chosen) else {
-            let osd = if self.start_admitted_agent(&room, &members, seed) {
-                crate::shell::osd::Osd::starting_agent()
-            } else {
-                crate::shell::osd::Osd::no_agent()
-            };
-            chrome.borrow_mut().show_osd(osd);
+        let Some((source, collaborators)) = self.live_agents(&room, members) else {
             return false;
         };
+        let mut choices = vec![NEW_TASK_AGENT.to_owned()];
+        choices.extend(collaborators);
+        let agent = self
+            .selection_requests
+            .choose_agent(&room, &choices)
+            .unwrap_or_else(|| NEW_TASK_AGENT.to_owned());
         let Some(identity_revision) = source.identity_revision(&room) else {
             return false;
         };
@@ -211,9 +211,14 @@ impl ShellOverlayHost {
             .take()
             .or_else(|| self.selection_requests.take_asking());
         let draft = seed.draft.take();
+        let label = if agent == NEW_TASK_AGENT {
+            crate::shell::i18n::t("agent-quick-new-agent")
+        } else {
+            agent.clone()
+        };
         self.agent_quick_composer.open_about(
             owner,
-            &agent,
+            &label,
             &AgentQuickComposerOrigin {
                 marker: at,
                 protected,
@@ -222,8 +227,19 @@ impl ShellOverlayHost {
             viewport,
             seed,
         );
-        self.agent_quick_composer.offer_agents(live);
-        if let Some(text) = ask {
+        self.agent_quick_composer.offer_agents(choices);
+        let blocker = (agent == NEW_TASK_AGENT)
+            .then(|| {
+                crate::shell::search::providers::ask_agent::task_agent_blocker(&chrome.borrow())
+            })
+            .flatten();
+        self.agent_quick_composer.block(blocker);
+        if blocker.is_some() {
+            // What was asked waits in the field until asking is possible.
+            if let Some(text) = ask.or(draft) {
+                self.agent_quick_composer.begin_typing(&text);
+            }
+        } else if let Some(text) = ask {
             self.agent_quick_composer.ask(&text);
         } else if let Some(text) = draft {
             self.agent_quick_composer.begin_typing(&text);
@@ -248,76 +264,61 @@ impl ShellOverlayHost {
         self.open_ask_agent(seed)
     }
 
-    /// No agent of the focused workspace takes tasks: start the one asked
-    /// last there (else its first admitted agent), and open the composer about `seed` once it takes them.
-    /// Whether one is starting. Only someone who may administer the
-    /// workspace starts its agents.
-    fn start_admitted_agent(
-        &mut self,
-        room: &str,
-        members: &[String],
-        seed: SelectionSeed,
-    ) -> bool {
-        let Some(agent) = self.selection_requests.choose_agent(room, members) else {
+    /// The person pressed the composer's fix for what keeps a new agent from
+    /// being asked: open its place, as the palette's row does. Whether one
+    /// was pressed.
+    pub(super) fn fix_composer_blocker(&mut self) -> bool {
+        let Some(blocker) = self.agent_quick_composer.take_fix() else {
             return false;
         };
-        // A chord pressed again while the agent comes up asks about the
-        // newer selection; the agent is not started twice.
-        if self.selection_requests.is_starting(room, &agent) {
-            self.selection_requests
-                .starting(room, &agent, seed, Instant::now());
-            return true;
+        if let Some(chrome) = self.chrome.as_ref()
+            && let Err(error) =
+                crate::shell::search::providers::ask_agent::open_fix(blocker, chrome)
+        {
+            tracing::warn!(?blocker, ?error, "the composer's fix could not be opened");
         }
-        let Some(workspace) = self
-            .chrome
-            .as_ref()
-            .and_then(|chrome| chrome.borrow().tree().desktop.active_workspace().cloned())
-        else {
-            return false;
-        };
-        if let Err(error) = crate::shell::launcher::launch_workspace_agent(&agent, &workspace) {
-            tracing::info!(%agent, error = %error.user_message(), "the ask-agent chord could not start the agent");
-            return false;
-        }
-        tracing::info!(%agent, "the ask-agent chord started the workspace's agent");
-        self.selection_requests
-            .starting(room, &agent, seed, Instant::now());
         true
     }
 
-    /// Open the composer once an agent the chord started takes tasks, or
-    /// say there is no agent when it did not come up.
-    fn follow_agent_start(&mut self, now: Instant) {
-        let broker = self.shortcut_triggers.broker();
-        // Ready means exactly what `open_ask_agent` asks for. On 2026-10-19
-        // this waited only for the task subscription: an agent that had one
-        // but no certified identity was "ready", `open_ask_agent` found no
-        // agent to ask and started another, every frame, until the shell
-        // ran out of file descriptors (87 agents in a second).
-        let outcome = self.selection_requests.started(now, |room, agent| {
-            broker
-                .as_ref()
-                .is_some_and(|broker| askable(broker, room, agent))
-        });
-        match outcome {
-            Some(AgentStart::Ready(seed)) => {
-                self.open_ask_agent(*seed);
-            }
-            Some(AgentStart::GaveUp) => {
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome
-                        .borrow_mut()
-                        .show_osd(crate::shell::osd::Osd::no_agent());
-                }
-                self.bump_chrome();
-            }
-            None => {}
+    /// Launch the agents made for tasks that now exist, each under its own
+    /// key in its task's workspace. A launch that fails is said in the
+    /// composer. Whether any was asked.
+    pub(super) fn launch_task_agents(&mut self) -> bool {
+        let launches: Vec<_> = self
+            .agent_actions
+            .values_mut()
+            .flat_map(super::agent_actions::AgentActions::take_launches)
+            .collect();
+        if launches.is_empty() {
+            return false;
         }
+        for (room, minted) in launches {
+            let workspace = self.chrome.as_ref().and_then(|chrome| {
+                chrome
+                    .borrow()
+                    .tree()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.room().to_string() == room)
+                    .cloned()
+            });
+            let outcome = workspace
+                .ok_or_else(|| "the task's workspace is gone".to_owned())
+                .and_then(|workspace| minted.launch(&workspace));
+            match outcome {
+                Ok(()) => {
+                    tracing::info!(agent = %minted.agent_id, "launched the agent made for the task")
+                }
+                Err(error) => {
+                    tracing::warn!(agent = %minted.agent_id, %error, "the agent made for the task could not be launched");
+                    self.agent_quick_composer.tell(error);
+                }
+            }
+        }
+        true
     }
 
-    /// The session source for the workspace, and those of its agent
-    /// `members` that are admitted (certified under their own key) and hold
-    /// a live task subscription, so a queued task reaches them.
     /// Ask agents the work the chrome handed them (a notification, a query
     /// from search), each as an issue in its workspace's Tasks, and open the
     /// issue's page when the ask says so. An agent that is not running is
@@ -359,14 +360,17 @@ impl ShellOverlayHost {
             if !live && actions.start_once(Instant::now()) {
                 starts.push((ask.room, owner.agent.clone()));
             }
-            if actions.open_and_ask(
-                source,
-                &owner,
-                (&ask.title, &ask.body),
-                None,
-                ask.show,
-                ask.quick,
-            ) {
+            if actions
+                .open_and_ask(
+                    source,
+                    &owner,
+                    (&ask.title, &ask.body),
+                    None,
+                    ask.show,
+                    ask.quick,
+                )
+                .is_some()
+            {
                 asked = true;
             } else {
                 tracing::warn!(agent = %owner.agent, "work could not be handed to the agent");
@@ -402,6 +406,9 @@ impl ShellOverlayHost {
         }
     }
 
+    /// The session source for the workspace, and those of its collaborator
+    /// `members` that are admitted (certified under their own key) and hold
+    /// a live task subscription, so a task assigned to them reaches them.
     fn live_agents(
         &self,
         room: &str,
@@ -454,9 +461,9 @@ impl ShellOverlayHost {
     }
 }
 
-/// Whether `agent` takes asks in `room`: admitted (certified under its own
-/// key) and holding a live task subscription. The one test both the chord
-/// and the start it waits for use.
+/// Whether the collaborator `agent` takes asks in `room` now: admitted
+/// (certified under its own key) and holding a live task subscription. A new
+/// agent made for a task needs neither: it is launched for its task.
 pub(super) fn askable(broker: &AppActionBroker, room: &str, agent: &str) -> bool {
     broker.agent_is_live_task_capable(room, agent)
         && broker

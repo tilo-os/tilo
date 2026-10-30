@@ -438,7 +438,6 @@ pub(super) struct ActionRuntime {
     pub(super) next_broker_request_id: Option<u64>,
     /// Dirty tracking for the hosted worker pump (no window event loop).
     pub(super) hosted: super::model_lifecycle::HostedPumpState,
-    pub(super) history_previews: super::history_actions::HistoryPreviews,
 }
 
 /// Which answer from the session action host a request is waiting for.
@@ -502,7 +501,6 @@ impl ActionRuntime {
             refused_broker_receipt: None,
             next_broker_request_id: Some(0),
             hosted: super::model_lifecycle::HostedPumpState::default(),
-            history_previews: super::history_actions::HistoryPreviews::default(),
         }
     }
 }
@@ -594,7 +592,7 @@ impl AccessibilityRuntime {
 
 /// Persistence and record-checkout state.
 pub(super) struct PersistenceRuntime {
-    pub(super) autosave: Option<crate::persist::DocWriter>,
+    pub(super) autosave: Option<app_state::DocWriter>,
     /// The live document belongs to the record selected by the root widget.
     pub(super) records: Option<crate::record::RecordSet>,
     pub(super) room_index: Option<crate::state::DocumentReplica>,

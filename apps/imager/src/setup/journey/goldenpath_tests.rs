@@ -73,6 +73,8 @@ fn paint(app: &mut App, scenario: &str, ids: &[&str]) {
 fn private_environment(root: &Path) -> tilo_test_env::ScopedEnv {
     use std::os::unix::fs::PermissionsExt as _;
     let home = root.join("home");
+    // The setup keeps its own settings profile in this Home, as it does on
+    // a live medium; its runtime files must not count as data to carry over.
     let config = home.join(".config");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -145,7 +147,7 @@ fn assert_prepared_draft(app: &mut App, target_model: Option<&str>) {
 /// native source provider.
 #[test]
 fn live_another_new_identity_prepares_before_your_data_and_review() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::setup::test_support::qualified_tempdir();
     let root = root.path().canonicalize().unwrap();
     let (mut app, _environment) = launch(&root);
 
@@ -231,7 +233,7 @@ fn live_another_new_identity_prepares_before_your_data_and_review() {
 /// data and the storage decision to Review.
 #[test]
 fn live_computer_new_identity_keeps_storage_and_review_after_profile() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::setup::test_support::qualified_tempdir();
     let root = root.path().canonicalize().unwrap();
     let (mut app, _environment) = launch(&root);
 

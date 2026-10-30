@@ -298,8 +298,42 @@ impl private_messages::Account for PrivateAccount {
     }
 }
 
+/// The session's handle on the running service, as the in-process apps
+/// hold it.
+///
+/// They hold it as a trait object so that what runs the service (its door,
+/// its process and the person's admitted session) stays out of the types
+/// of the chrome state that holds them: the admitted session reaches the
+/// session broker's state, down to the permits its queued requests hold,
+/// and every borrow of the chrome state would otherwise count as holding
+/// those permits.
+pub(crate) trait Service {
+    /// Ask the person through `prompts` before Messages reaches a host.
+    fn bind_prompts(&self, prompts: crate::portal::PromptQueueHandle);
+    /// Carry private Tilo texts on `network`'s endpoint.
+    fn bind_network(&mut self, network: &crate::shell::network::ShellNetwork);
+    /// On the session's loop: follow the person's session, take the
+    /// endpoint once it is ready and answer what asks for their records.
+    fn pump(&mut self, person: &crate::shell::settings_records::Holder);
+}
+
+/// Start the service for `author` on SDK device `device`, keeping its
+/// accounts under `profile`. `socket` is the session broker whose admission
+/// of the person the service follows. `None` when the service is not
+/// installed here or did not start.
+pub(crate) fn start(
+    author: &str,
+    device: &str,
+    profile: &std::path::Path,
+    socket: PathBuf,
+    wake: crate::session_runtime::Wake,
+) -> Option<Box<dyn Service>> {
+    MessagingService::start(author, device, profile, socket, wake)
+        .map(|service| Box::new(service) as Box<dyn Service>)
+}
+
 /// The running service and the session's side of its door.
-pub(crate) struct MessagingService {
+struct MessagingService {
     child: Child,
     link: DoorLink,
     shared: Arc<Shared>,
@@ -313,11 +347,7 @@ pub(crate) struct MessagingService {
 }
 
 impl MessagingService {
-    /// Start the service for `author` on SDK device `device`, keeping its
-    /// accounts under `profile`. `socket` is the session broker whose
-    /// admission of the person the service follows. `None` when the service
-    /// is not installed here or did not start.
-    pub(crate) fn start(
+    fn start(
         author: &str,
         device: &str,
         profile: &std::path::Path,
@@ -366,8 +396,10 @@ impl MessagingService {
             author: author.into(),
         })
     }
+}
 
-    pub(crate) fn bind_prompts(&self, prompts: crate::portal::PromptQueueHandle) {
+impl Service for MessagingService {
+    fn bind_prompts(&self, prompts: crate::portal::PromptQueueHandle) {
         *self
             .shared
             .prompts
@@ -375,8 +407,7 @@ impl MessagingService {
             .unwrap_or_else(PoisonError::into_inner) = Some(prompts);
     }
 
-    /// Carry private Tilo texts on `network`'s endpoint.
-    pub(crate) fn bind_network(&mut self, network: &crate::shell::network::ShellNetwork) {
+    fn bind_network(&mut self, network: &crate::shell::network::ShellNetwork) {
         if self.network.is_some()
             || self
                 .shared
@@ -402,9 +433,7 @@ impl MessagingService {
         }
     }
 
-    /// On the session's loop: follow the person's session, take the
-    /// endpoint once it is ready and answer what asks for their records.
-    pub(crate) fn pump(&mut self, person: &crate::shell::settings_records::Holder) {
+    fn pump(&mut self, person: &crate::shell::settings_records::Holder) {
         if let Some(receiver) = self.network.as_mut() {
             match receiver.try_recv() {
                 Ok(transport) => {
@@ -424,7 +453,9 @@ impl MessagingService {
             reply.send(answer(person, call, self.session.is_some()));
         }
     }
+}
 
+impl MessagingService {
     fn follow_session(&mut self) {
         if self
             .session
