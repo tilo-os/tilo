@@ -50,7 +50,7 @@ collab-types = { path = "../../../crates/collab/collab-types" }
 tilo-test-env = { path = "../../../crates/dev/test-env" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-secrets = { path = "../../../crates/platform/tilo-secrets" }
-# The bridge end to end: its program on a room's host, with this binary.
+# The bridge end to end: its program on a workspace's host, with this binary.
 tilo-relay = { path = "../../../crates/hosting/tilo-relay", features = ["agents"] }
 tilo-agent-participant = { path = "../../../crates/agent/agent-participant" }
 tilo-automation = { path = "../../../crates/collab/automation" }

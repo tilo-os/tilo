@@ -1,6 +1,6 @@
 # Discord — Tilo connector manifest.
 #
-# Installed on a room's host. The app itself only shows and plans the
+# Installed on a workspace's host. The app itself only shows and plans the
 # bridged server; its outside worker (`bin/discord-worker`) talks to
 # Discord, so egress is pinned to Discord's API, gateway, CDN and voice
 # servers and nothing else. The bot token lives in the host's secret store
@@ -14,7 +14,7 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
 platforms = ["linux"]
-platform-reason = "A connector runs on a room's host: it keeps the bot token in the host's secret store and starts the worker that talks to Discord."
+platform-reason = "A connector runs on a workspace's host: it keeps the bot token in the host's secret store and starts the worker that talks to Discord."
 
 [package.isa]
 x86_64 = "v3"
@@ -23,7 +23,7 @@ aarch64 = "aarch64"
 [capabilities]
 required = ["network.http", "secrets"]
 
-# Bridging a server asks the room's host through its governance actions.
+# Bridging a server asks the workspace's host through its governance actions.
 [actions]
 invoke = true
 

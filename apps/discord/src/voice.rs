@@ -1,6 +1,6 @@
 //! What a call bridge reads of a guild: which Discord voice channel pairs
-//! with which Tilo one, who an account is in the room, and what an avatar
-//! is stored as. The room's host carries the calls; the record only says
+//! with which Tilo one, who an account is in the workspace, and what an avatar
+//! is stored as. The workspace's host carries the calls; the record only says
 //! where they go.
 
 use ui::tilo_resource::Id;
@@ -47,7 +47,7 @@ impl Guild {
         pairs
     }
 
-    /// The room member (their root, hex) Discord account `account` is
+    /// The workspace member (their root, hex) Discord account `account` is
     /// linked to.
     #[must_use]
     pub fn linked_person(&self, account: &str) -> Option<&str> {
@@ -56,7 +56,7 @@ impl Guild {
             .map(|link| link.person.as_str())
     }
 
-    /// Whether `account` is kept out of the room.
+    /// Whether `account` is kept out of the workspace.
     #[must_use]
     pub fn blocks(&self, account: &str) -> bool {
         self.blocked_personas.contains(&account.to_owned())

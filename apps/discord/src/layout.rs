@@ -16,7 +16,7 @@ use ui::tilo_resource::{self, Id, JsonSchema};
 
 use crate::record::{DChannel, Guild, MappedKind, Mapping, Origin, Ownership};
 use crate::slug;
-use crate::tilo::{Channel, RoomChat};
+use crate::tilo::{Channel, WorkspaceChat};
 
 /// Create or correct one Discord channel, then map the result as `kind`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -60,9 +60,9 @@ fn observed<'g>(guild: &'g Guild, id: &str) -> Option<&'g DChannel> {
     guild.channels.find(&Id::from_raw(id))
 }
 
-/// The plan for an adopted server, given `room`.
+/// The plan for an adopted server, given `workspace`.
 #[must_use]
-pub fn plan(guild: &Guild, room: &RoomChat) -> LayoutPlan {
+pub fn plan(guild: &Guild, workspace: &WorkspaceChat) -> LayoutPlan {
     let mut plan = LayoutPlan::default();
     if guild.ownership != Ownership::Adopted {
         return plan;
@@ -71,10 +71,10 @@ pub fn plan(guild: &Guild, room: &RoomChat) -> LayoutPlan {
         plan_one(&mut plan, guild, only);
         return plan;
     }
-    plan_parted(&mut plan, guild, room);
+    plan_parted(&mut plan, guild, workspace);
     plan_webhooks(&mut plan, guild);
     if guild.mirror_channels {
-        plan_mirror(&mut plan, guild, room);
+        plan_mirror(&mut plan, guild, workspace);
     }
     plan
 }
@@ -110,11 +110,11 @@ fn plan_webhooks(plan: &mut LayoutPlan, guild: &Guild) {
 /// Pairs one side of which was deleted: the bridge lets go of them and
 /// keeps the side left over to itself. Only a channel the bridge made in
 /// Discord goes with its Tilo side.
-fn plan_parted(plan: &mut LayoutPlan, guild: &Guild, room: &RoomChat) {
+fn plan_parted(plan: &mut LayoutPlan, guild: &Guild, workspace: &WorkspaceChat) {
     for mapping in &guild.map {
         let tilo_gone = match mapping.kind {
-            MappedKind::Category => !room.categories.iter().any(|c| c.id == mapping.tilo),
-            MappedKind::Channel => room.channel(&mapping.tilo).is_none(),
+            MappedKind::Category => !workspace.categories.iter().any(|c| c.id == mapping.tilo),
+            MappedKind::Channel => workspace.channel(&mapping.tilo).is_none(),
             _ => continue,
         };
         let discord_gone = guild.vanished.contains(&mapping.discord);
@@ -158,9 +158,9 @@ fn ours(mapping: &Mapping) -> bool {
 /// made last in its list, those made together in Tilo's order; where it
 /// sits among the rest, and which category a channel is listed under, is
 /// the order's to set ([`crate::order`]).
-fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, room: &RoomChat) {
+fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, workspace: &WorkspaceChat) {
     let mut next = Next::default();
-    for category in &room.categories {
+    for category in &workspace.categories {
         if guild.tilo_only.contains(&category.id) || queued(guild, &category.id) {
             continue;
         }
@@ -194,7 +194,7 @@ fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, room: &RoomChat) {
             Some(_) => {}
         }
     }
-    for channel in room.channels.iter().filter(|c| !c.archived) {
+    for channel in workspace.channels.iter().filter(|c| !c.archived) {
         if guild.tilo_only.contains(&channel.id) || queued(guild, &channel.id) {
             continue;
         }

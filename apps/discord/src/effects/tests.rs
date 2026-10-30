@@ -21,7 +21,7 @@ fn connected() -> TestApp<Discord> {
 }
 
 const PAGE: &str = "https://discord.com/oauth2/authorize?response_type=code&client_id=1234&scope=identify\
-                    &redirect_uri=https%3A%2F%2Frooms.example%2Fdiscord%2Fcallback&prompt=none";
+                    &redirect_uri=https%3A%2F%2Fworkspaces.example%2Fdiscord%2Fcallback&prompt=none";
 
 #[test]
 fn connect_goes_to_the_page_the_host_offers_and_binds_the_state_to_the_person() {
@@ -72,7 +72,7 @@ fn the_consent_page_asks_for_identify_only_and_comes_back_to_the_host() {
     let page = discord_wire::event::sign_in_page(
         "https://discord.com/oauth2/authorize",
         "1234",
-        "https://rooms.example/discord/callback",
+        "https://workspaces.example/discord/callback",
     );
     assert_eq!(page, PAGE);
     assert_eq!(consent_url(&page, "st/te"), format!("{PAGE}&state=st%2Fte"));

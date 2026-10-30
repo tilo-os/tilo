@@ -168,8 +168,12 @@ fn map_and_unmap_by_the_bot_with_reverse_lookup() {
         state.knows_channel("d_general2"),
         "a mapped channel is known before the next layout event"
     );
-    bot.apply(map(MappedKind::Message, "chat.room/messages/m1", "d_m1"))
-        .unwrap();
+    bot.apply(map(
+        MappedKind::Message,
+        "chat.workspace/messages/m1",
+        "d_m1",
+    ))
+    .unwrap();
     assert_eq!(
         bot.state()
             .unwrap()
