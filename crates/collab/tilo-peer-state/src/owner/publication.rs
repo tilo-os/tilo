@@ -2,6 +2,7 @@
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, RoomId, enrollment, record};
 use crate::owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
 use crate::{Reseal, StatePeer};
+use collab_types::{EncryptionMetadata, OpKind, SignedOp};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::Retention;
@@ -251,7 +252,7 @@ fn allowed(
     }
     let governance_len = publication.governance.len();
     for (index, entry) in publication.entries.iter().enumerate() {
-        if !entry.incremental || !fresh(entry, now) {
+        if !fresh(entry, now) {
             continue;
         }
         let message: NeighbourMsg =
@@ -265,6 +266,12 @@ fn allowed(
         else {
             return Err("invalid native outgoing document".into());
         };
+        // An entry whose class is a checkpoint is published only when it is
+        // this device's sealed compaction: a cleartext snapshot is the
+        // governor's baseline, which a member never releases.
+        if !entry.incremental && envelope.kind != OpKind::Compaction {
+            continue;
+        }
         if let Some(slot) = allowed.get_mut(governance_len.saturating_add(index)) {
             *slot = envelope.author.as_bytes() == &view.device().device_public_key
                 && view
@@ -390,24 +397,27 @@ pub(crate) fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), 
     Ok((
         enrollment::ns(envelope.timestamp)?,
         channel,
-        member_publishes_as_delta(kind, envelope.encryption.is_some()),
+        member_publishes_as_delta(kind, envelope.encryption.is_some(), envelope.kind),
     ))
 }
 /// Whether a member publishes this document as a retained delta.
 ///
 /// A member never replaces a record's retained checkpoint under its own
-/// relay author: a cleartext snapshot is the governor's baseline and stays a
-/// checkpoint, which [`allowed`] never releases and the session refuses.
+/// relay author, except by compacting: a cleartext snapshot is the
+/// governor's baseline and stays a checkpoint, which [`allowed`] never
+/// releases and the session refuses.
 ///
-/// A content-key ciphertext the classifier calls a checkpoint (a sealed
-/// snapshot or compaction) is published as a delta instead: the host appends
-/// it after the record's checkpoint rather than letting a member's write
-/// replace it. This is the conservative choice and keeps the class
-/// every sealed write had before the classifiers were unified, so stored
-/// outgoing entries still validate. Letting a member's sealed checkpoint
-/// compact the host's tail is a protocol decision this does not make.
-fn member_publishes_as_delta(kind: Retention, sealed: bool) -> bool {
-    kind == Retention::Delta || sealed
+/// A content-key ciphertext the classifier calls a checkpoint is published
+/// as a delta instead, unless it is a compaction: the host then appends it
+/// after the record's checkpoint rather than letting a member's ordinary
+/// write replace it. A sealed compaction is the one member checkpoint that
+/// leaves as itself, because it is the one that covers the sealed history
+/// before it, which every store then drops.
+fn member_publishes_as_delta(kind: Retention, sealed: bool, op: OpKind) -> bool {
+    match kind {
+        Retention::Delta => true,
+        Retention::Checkpoint => !sealed || op != OpKind::Compaction,
+    }
 }
 struct Count {
     bytes: usize,
@@ -1190,6 +1200,83 @@ impl NativeWorkspaceOwner {
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
         self.publish_room(room, candidate, None)
+    }
+    /// Compact every sealed record history of `room` that has used most of
+    /// its bound into one sealed checkpoint, and commit the compactions
+    /// into this device's outgoing custody, where they publish as the
+    /// checkpoints they are. `open` opens any write of a history this
+    /// device can read, and `seal` seals a record's merged snapshot under
+    /// its channel's current epoch, both from the channel keys this device
+    /// holds as a writer of the record
+    /// ([`PeerPublicationMut::compact_sealed_history`]). A record whose
+    /// keys are not here, or whose history does not merge yet, waits for a
+    /// later call.
+    ///
+    /// Answers how many histories were compacted. Every device taking part
+    /// maintains its own copy this way; no host compacts for it.
+    ///
+    /// # Errors
+    /// `key` is not the enrolled device, it may no longer write, the room
+    /// is fenced, or a compaction cannot be committed.
+    pub fn compact_outgoing(
+        &self,
+        room: RoomId,
+        key: &SigningKey,
+        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+        seal: &mut dyn FnMut(&str, &str, &[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String>,
+        now: SystemTime,
+    ) -> Result<usize, String> {
+        if self.with_current(room, |view| {
+            Ok(view
+                .peer
+                .publication()
+                .sealed_records_to_compact()
+                .is_empty())
+        })? {
+            return Ok(0);
+        }
+        let _turn = self.0.mutation.lock();
+        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
+            return Err("native compaction signer differs from selected device".into());
+        }
+        candidate
+            .peer
+            .permissions(candidate.device().device_public_key, now)?;
+        let due = candidate.peer.publication().sealed_records_to_compact();
+        let mut compacted = 0usize;
+        for (app, record) in &due {
+            // Compacted on a copy: a history that cannot be committed as one
+            // custody entry stays where it is rather than folding here only.
+            let mut attempt = candidate.peer.clone();
+            let mut seal = |snapshot: &[u8]| seal(app, record, snapshot);
+            let made = attempt
+                .publication_mut()
+                .compact_sealed_history(app, record, open, &mut seal, key, now)
+                .and_then(|message| encode(&message, MAX_BYTES));
+            match made {
+                Ok(bytes) => {
+                    candidate.peer = attempt;
+                    append(&mut candidate, bytes, false)?;
+                    compacted = compacted.saturating_add(1);
+                }
+                Err(error) => {
+                    tracing::debug!(%error, %app, %record,
+                        "sealed record history stays uncompacted here");
+                }
+            }
+        }
+        if compacted == 0 {
+            return Ok(0);
+        }
+        reservation::refresh(&mut candidate)?;
+        candidate.record.peer = candidate.peer.durable()?;
+        candidate.record.generation = candidate
+            .generation()
+            .checked_add(1)
+            .ok_or("native owner generation exhausted")?;
+        self.publish_room(room, candidate, None)?;
+        Ok(compacted)
     }
 }
 #[cfg(test)]

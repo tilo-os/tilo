@@ -32,8 +32,9 @@ impl PeerPublicationMut<'_> {
     /// compaction. `seal` seals that document's snapshot under the channel's
     /// current epoch with [`ContentRetention::Checkpoint`] retention. The
     /// compaction is signed by `key` and admitted here through the same
-    /// checks every keyless replica applies, so `key` must hold the room's
-    /// owner role.
+    /// checks every keyless replica applies, so `key` must be a device the
+    /// record admits as a writer of it (or the room's governor, compacting
+    /// by its `compact` governance action).
     ///
     /// # Errors
     ///

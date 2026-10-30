@@ -740,6 +740,68 @@ fn native_sealed_checkpoint_is_classified_like_browser() {
     );
 }
 
+/// A member's sealed compaction is the one checkpoint it publishes as itself:
+/// the host replaces that member's retained history of the record with it,
+/// where a sealed snapshot would only be appended after the checkpoint a
+/// member never releases.
+#[test]
+fn a_members_sealed_compaction_is_published_as_a_checkpoint() {
+    use neighbour_wire::{Retention, retention};
+    let joined = enrolled();
+    let (keys, _) = rotated_channel();
+    let sealed = commit_sealed_as(&joined, &keys, collab_types::ContentRetention::Checkpoint);
+    let [bytes] = sent(&joined.owner, joined.room, joined.now)
+        .try_into()
+        .expect("the committed sealed checkpoint is released");
+    let mut message: NeighbourMsg = postcard::from_bytes(&bytes).unwrap();
+    let NeighbourMsg::AppDocument { envelope: op, .. } = &mut message else {
+        panic!("a document write")
+    };
+    op.kind = collab_types::OpKind::Compaction;
+    collab_types::sign_op(op, &member()).unwrap();
+    assert_eq!(
+        op.seq, sealed.seq,
+        "the same write, published as a compaction"
+    );
+
+    assert_eq!(
+        retention(&message, false).map(|(_, class)| class),
+        Some(Retention::Checkpoint)
+    );
+    let (_, _, incremental) = crate::owner::publication::metadata(&message).unwrap();
+    assert!(
+        !incremental,
+        "a member's sealed compaction replaces the record's retained history"
+    );
+}
+
+#[test]
+fn a_member_with_no_sealed_history_past_its_bound_compacts_nothing() {
+    let joined = enrolled();
+    let (keys, _) = rotated_channel();
+    commit_sealed(&joined, &keys);
+    let (mut opened, mut sealed) = (0, 0);
+    let compacted = joined
+        .owner
+        .compact_outgoing(
+            joined.room,
+            &member(),
+            &mut |_| {
+                opened += 1;
+                Err("no history is due".to_owned())
+            },
+            &mut |_, _, _| {
+                sealed += 1;
+                Err("no history is due".to_owned())
+            },
+            joined.now,
+        )
+        .unwrap();
+    assert_eq!(compacted, 0);
+    assert_eq!((opened, sealed), (0, 0), "nothing is opened or sealed");
+    assert_eq!(sent(&joined.owner, joined.room, joined.now).len(), 1);
+}
+
 #[test]
 fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_original() {
     let joined = enrolled();

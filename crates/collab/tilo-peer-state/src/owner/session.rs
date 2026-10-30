@@ -302,6 +302,39 @@ impl Scope {
             Ok(())
         })
     }
+    /// Compact the sealed record histories of this room that have used most
+    /// of their bound into one checkpoint each, through `open` and `seal`,
+    /// this device's channel keys, so the compactions publish with the
+    /// device's own custody (see
+    /// [`NativeWorkspaceOwner::compact_outgoing`]). Answers how many
+    /// histories were compacted.
+    ///
+    /// # Errors
+    /// This device is no longer the session's, or a compaction cannot be
+    /// committed.
+    pub fn compact(
+        &self,
+        identity: &HostIdentity,
+        open: &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>,
+        seal: &mut dyn FnMut(
+            &str,
+            &str,
+            &[u8],
+        )
+            -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String>,
+    ) -> Result<usize, String> {
+        let (hint, device, _, continuity) = self.connect.material(identity)?;
+        if !self.pinned_to(&hint, &device, continuity) {
+            return Err("native compaction scope changed".into());
+        }
+        self.connect.owner.compact_outgoing(
+            self.connect.room,
+            &identity.device_signing_key,
+            open,
+            seal,
+            std::time::SystemTime::now(),
+        )
+    }
     /// Reconcile the owner's outgoing custody and send, once per session,
     /// every entry it may send now. Sealed writes that expired in custody
     /// are not renewed: see [`Self::publish_renewing`].
