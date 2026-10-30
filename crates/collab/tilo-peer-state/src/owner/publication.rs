@@ -15,6 +15,13 @@ mod reservation;
 pub(crate) use reservation::check_actual_projection_bound;
 pub use reservation::{authority_limit, preflight_storage};
 
+/// A key holder sealing a record's merged history — `seal(app, record,
+/// snapshot)` — under that record's channel's current epoch, with checkpoint
+/// retention: what a device folding the sealed history it holds publishes in
+/// its place.
+pub type SealRecord<'a> =
+    dyn FnMut(&str, &str, &[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a;
+
 pub(crate) const MAX_ENTRIES: usize = 64;
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES * 2 + 1;
@@ -1234,7 +1241,7 @@ impl NativeWorkspaceOwner {
         room: RoomId,
         key: &SigningKey,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
-        seal: &mut dyn FnMut(&str, &str, &[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String>,
+        seal: &mut SealRecord<'_>,
         now: SystemTime,
     ) -> Result<usize, String> {
         if self.with_current(room, |view| {

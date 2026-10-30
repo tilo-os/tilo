@@ -9,6 +9,7 @@ mod reach;
 pub use hold::{Holder, Link, hold};
 pub use reach::{OwnHost, Reach};
 
+use super::publication::SealRecord;
 use crate::owner::{NativeWorkspaceOwner, RoomId};
 use crate::{Reseal, TransportOrigin, join::TransportHint};
 use ed25519_dalek::SigningKey;
@@ -316,12 +317,7 @@ impl Scope {
         &self,
         identity: &HostIdentity,
         open: &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>,
-        seal: &mut dyn FnMut(
-            &str,
-            &str,
-            &[u8],
-        )
-            -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String>,
+        seal: &mut SealRecord<'_>,
     ) -> Result<usize, String> {
         let (hint, device, _, continuity) = self.connect.material(identity)?;
         if !self.pinned_to(&hint, &device, continuity) {
