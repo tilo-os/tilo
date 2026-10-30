@@ -1,4 +1,4 @@
-//! Peer-relay federation, the dialing side: a host keeps a session to an
+//! The dialing side of host attachment: a host keeps a session to an
 //! upstream host of its own person and holds the workspaces both host in
 //! step with it.
 //!
@@ -13,15 +13,15 @@
 //! materialized heads lack) runs on events only: once when the session
 //! starts, again for as long as an answer still brings something new, and
 //! whenever the upstream says it withheld a change from this host. An
-//! upstream does not forward a change another federated host sent it to a
-//! third (that would loop a mesh), so a change crossing two hops reaches the
-//! far host this way. A converged session does nothing until a change
+//! upstream does not forward a change another host attached to it sent it
+//! back to a third (that would loop), so a change crossing two hops reaches
+//! the far host this way. A converged session does nothing until a change
 //! arrives: no timer runs while it is connected.
 //!
 //! A session carries changes one way, from the host dialed to the host
 //! dialing. A device governing a room another host of its person serves
 //! dials nothing on its own: when that host's session arrives, the device
-//! answers it with one back ([`PeerRelayDialer::answer`]) that lasts as long
+//! answers it with one back ([`HostDialer::answer`]) that lasts as long
 //! as it does.
 
 use std::collections::HashMap;
@@ -36,13 +36,12 @@ use tilo_relay_session::client::RelayClient;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::auth::PeerRole;
 use crate::handshake::LiveIdentity;
 use crate::metrics::Metrics;
 use crate::peer::WorkspaceRegistry;
 use crate::transport::Envelope;
 
-/// Which host a federation session dials, and how its identity is pinned.
+/// Which host an attach session dials, and how its identity is pinned.
 #[derive(Clone, Debug)]
 pub enum Upstream {
     /// The device `device` of this host's own person, hosting its rooms at
@@ -118,12 +117,12 @@ async fn arrival(arrivals: &mut tokio::sync::broadcast::Receiver<[u8; 32]>, devi
     }
 }
 
-/// What an outbound federation session carries: the local endpoint, this
-/// host's own identity (its revocation list read afresh for every dial and
+/// What an outbound attach session carries: the local endpoint, this host's
+/// own identity (its revocation list read afresh for every dial and
 /// session), the workspaces it hosts and its metrics. `scope`, when given,
 /// is the only workspaces the session offers: a host serving one room for
-/// its governor federates that room alone.
-pub struct PeerRelayDialer {
+/// its governor attaches that room alone.
+pub struct HostDialer {
     pub endpoint: Endpoint,
     pub identity: LiveIdentity,
     pub workspaces: WorkspaceRegistry,
@@ -131,7 +130,7 @@ pub struct PeerRelayDialer {
     pub scope: Option<Vec<u64>>,
 }
 
-impl PeerRelayDialer {
+impl HostDialer {
     /// Spawn the reconnect-with-backoff task for `upstream`. The task runs
     /// until its handle is aborted. While connected it holds one session;
     /// after a session ends or a dial fails it waits `1s, 2s, 4s, …` up to
@@ -162,17 +161,17 @@ impl PeerRelayDialer {
             };
             match dialed {
                 Some(Ok(client)) => {
-                    tracing::info!(%label, "peer relay federated");
+                    tracing::info!(%label, "attached to the upstream host");
                     backoff_ms = 1_000;
                     if let Err(error) = self.run_session(&client, true).await {
-                        tracing::debug!(%label, "peer relay session ended: {error}");
+                        tracing::debug!(%label, "attach session ended: {error}");
                     }
                     // What arrived while the session lasted says nothing
                     // of the device now.
                     arrivals = arrivals.resubscribe();
                 }
                 Some(Err(error)) => {
-                    tracing::debug!(%label, "peer relay dial failed: {error}");
+                    tracing::debug!(%label, "attach dial failed: {error}");
                 }
                 None => {
                     tracing::debug!(%label, "the upstream's device is back; dialing it again");
@@ -253,10 +252,14 @@ impl PeerRelayDialer {
         })
     }
 
-    /// One federated session: agree on the workspaces both host (by
-    /// `hello`, or this host's scope when the upstream serves a room this
-    /// device governs), subscribe to them, then follow the upstream until
-    /// the session ends.
+    /// One attach session: agree on the workspaces both host (by `hello`,
+    /// or this host's scope when the upstream serves a room this device
+    /// governs), subscribe to them, then follow the upstream until the
+    /// session ends.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the session borrows the client and the workspaces and is driven by the select until it ends; it holds no lock"
+    )]
     async fn run_session(&self, client: &RelayClient, hello: bool) -> Result<(), String> {
         let hosted_local = self.carried().await;
         let intersection = if hello {
@@ -274,9 +277,9 @@ impl PeerRelayDialer {
                 .send(Envelope::Subscribe { workspace_id: *id })
                 .map_err(|_| "outbound closed on subscribe".to_string())?;
         }
-        let lease = FederationLease(Arc::new(AtomicBool::new(true)));
+        let lease = AttachLease(Arc::new(AtomicBool::new(true)));
         let (failed, mut failures) = tokio::sync::mpsc::channel(1);
-        let source = crate::peer::StateSource::federated(
+        let source = crate::peer::StateSource::leased(
             client.relay_peer.clone(),
             client.outbound.clone(),
             failed,
@@ -288,9 +291,9 @@ impl PeerRelayDialer {
             let workspace = self.workspaces.lock().await.get(id).cloned();
             if let Some(workspace) = workspace {
                 let mut runtime = workspace.lock().await;
-                runtime.record_peer_relay(client.relay_peer.device_public_key);
+                runtime.note_attached_host(client.relay_peer.device_public_key);
                 if let Some(previous) = runtime
-                    .outbound_federation
+                    .outbound_leases
                     .insert(client.relay_peer.device_public_key, lease.0.clone())
                 {
                     previous.store(false, Ordering::SeqCst);
@@ -305,7 +308,7 @@ impl PeerRelayDialer {
         };
         tokio::select! {
             result = session.follow(&intersection) => result,
-            _ = failures.recv() => Err("federated state persistence/authorization failed".into()),
+            _ = failures.recv() => Err("state from an attached host failed persistence/authorization".into()),
         }
     }
 
@@ -324,11 +327,11 @@ impl PeerRelayDialer {
     }
 }
 
-/// Clears a federation session's lease on every workspace it registered
-/// with once the session ends, so nothing is sent on it after.
-struct FederationLease(Arc<AtomicBool>);
+/// Clears an attach session's lease on every workspace it registered with
+/// once the session ends, so nothing is sent on it after.
+struct AttachLease(Arc<AtomicBool>);
 
-impl Drop for FederationLease {
+impl Drop for AttachLease {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
     }
@@ -351,14 +354,14 @@ async fn negotiate_intersection(
                     .collect());
             }
             Some(other) => {
-                tracing::debug!("peer-relay session got unexpected pre-hello envelope: {other:?}");
+                tracing::debug!("attach session got unexpected pre-hello envelope: {other:?}");
             }
             None => return Err("connection closed pre-hello".into()),
         }
     }
 }
 
-/// A connected federation session.
+/// A connected attach session.
 struct Session<'a> {
     client: &'a RelayClient,
     workspaces: &'a WorkspaceRegistry,
@@ -398,7 +401,7 @@ impl Session<'_> {
                     }
                 }
                 // From an upstream, a request means this host is behind: it
-                // withheld a change another federated host sent it.
+                // withheld a change another attached host sent it.
                 Envelope::SyncRequest { workspace_id, .. } => {
                     if intersection.contains(&workspace_id) {
                         self.ask(workspace_id).await?;
@@ -433,7 +436,7 @@ impl Session<'_> {
                     let (_, _, body) = crate::coedit::retention_view(delta)?;
                     Some((tap, *author_device_public_key, body.to_vec()))
                 });
-                crate::peer::enqueue_federated(
+                crate::peer::enqueue_from_host(
                     &workspace,
                     envelope,
                     self.source.clone(),
@@ -448,22 +451,20 @@ impl Session<'_> {
             }
             Envelope::Presence { workspace_id, .. } => {
                 if let Some(workspace) = self.workspace(*workspace_id).await {
-                    // Presence carries no author on the wire; zero stands in.
-                    // Fan-out only compares it to subscribers and keeps it
-                    // from other federated hosts.
-                    workspace.lock().await.fanout_presence(
-                        &[0u8; 32],
-                        PeerRole::PeerRelay,
-                        &envelope,
-                        None,
-                    );
+                    // Presence carries no author on the wire; zero stands
+                    // in. Fan-out only compares it to subscribers and keeps
+                    // it from other attached hosts.
+                    workspace
+                        .lock()
+                        .await
+                        .fanout_presence(&[0u8; 32], &envelope, None);
                 }
             }
             Envelope::NotAuthorised {
                 workspace_id,
                 reason,
             } => {
-                tracing::warn!(workspace_id, %reason, "peer relay refused subscribe");
+                tracing::warn!(workspace_id, %reason, "attach session refused subscribe");
             }
             Envelope::Ping => {
                 let _ = self.client.send(Envelope::Pong);
@@ -486,7 +487,7 @@ impl Session<'_> {
             delta: delta_since,
             signature: [0; 64],
         };
-        crate::peer::enqueue_federated(
+        crate::peer::enqueue_from_host(
             &workspace,
             envelope,
             self.source.clone(),
@@ -516,7 +517,7 @@ impl Session<'_> {
                         let heads = result?;
                         let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
                         if !source.authorized(&runtime) {
-                            return Err(crate::persistence::error("federation session changed"));
+                            return Err(crate::persistence::error("attach session changed"));
                         }
                         outbound
                             .try_send(Envelope::SyncRequest {
@@ -524,7 +525,7 @@ impl Session<'_> {
                                 have_heads: heads.clone(),
                             })
                             .map_err(|_| {
-                                crate::persistence::error("federation outbound backpressure")
+                                crate::persistence::error("attach outbound backpressure")
                             })?;
                         Ok(heads)
                     }

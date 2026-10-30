@@ -497,6 +497,10 @@ mod tests {
 
 #[cfg(test)]
 mod door_tests {
+    #![expect(
+        clippy::significant_drop_tightening,
+        reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+    )]
     use ed25519_dalek::Signer as _;
     use tilo_actions::remote::{
         ActionHost as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,

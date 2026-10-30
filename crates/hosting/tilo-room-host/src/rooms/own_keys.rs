@@ -75,7 +75,6 @@ impl Rooms {
             cert: self.inner.host.cert.clone(),
             user_public_key: self.inner.host.cert.user_public_key,
             device_public_key: self.inner.host.cert.device_public_key,
-            role: crate::auth::PeerRole::from_cert(&self.inner.host.cert),
         };
         let trust = RelayTrust {
             revocations: &self.inner.host.revocations,

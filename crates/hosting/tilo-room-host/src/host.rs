@@ -178,6 +178,10 @@ impl HostSessions {
     ///
     /// The identity is invalid or, for a certified host, not host-capable;
     /// the state root cannot be created; or the rooms cannot be opened.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the handler is a set of shared handles moved into the sessions it becomes part of; dropping it earlier releases no lock"
+    )]
     pub async fn open(
         cfg: HostConfig,
         identity: HostIdentity,
@@ -242,7 +246,7 @@ impl HostSessions {
             member_limits: cfg
                 .member_limits
                 .map(|limits| Arc::new(crate::member_limits::MemberLimits::new(limits))),
-            arrivals: crate::federation::Arrivals::default(),
+            arrivals: crate::attach::Arrivals::default(),
         };
         let sessions = Self {
             endpoint: endpoint.clone(),
@@ -954,8 +958,8 @@ pub struct RelayProtocol {
     pub compactor: crate::compaction::Compactor,
     pub(crate) member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
     /// Told each device whose session here authenticated
-    /// ([`crate::federation::Arrivals`]).
-    pub(crate) arrivals: crate::federation::Arrivals,
+    /// ([`crate::attach::Arrivals`]).
+    pub(crate) arrivals: crate::attach::Arrivals,
 }
 
 impl RelayProtocol {
@@ -1065,6 +1069,10 @@ async fn serve_streams(
 /// under the live policy (the owner and every user the host currently
 /// admits), then the peer loop until the stream ends or `closed` resolves.
 /// Every carrier runs this: an iroh stream, and an in-process stream.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the context is a set of shared handles moved into the peer session it runs"
+)]
 async fn serve_session<R, W>(
     ctx: RelayProtocol,
     mut recv: R,

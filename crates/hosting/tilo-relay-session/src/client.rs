@@ -1257,8 +1257,8 @@ impl RelayClient {
     /// This closes the endpoint the client was built on, which
     /// [`RelayClient::connect`] takes by value on the understanding that the
     /// client owns it. A caller that kept a clone and is still using it — the
-    /// daemon's federation dial loop passes the relay's own endpoint — must
-    /// drop the handle instead.
+    /// daemon's attach dial loop passes the relay's own endpoint — must drop
+    /// the handle instead.
     /// Close this connection and its owned endpoint. Do not use with a shared endpoint.
     pub async fn close(self) {
         self.carrier.close_owned().await;

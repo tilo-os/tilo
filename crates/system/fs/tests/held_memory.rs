@@ -1,8 +1,9 @@
 //! What a namespace replica holds after applying a long run of remote deltas.
 //!
 //! A peer creates 2,000 files in 20 rounds; the receiver applies each
-//! round's delta as it would from gossip. Its growth is compared with the same namespace loaded
-//! from a full save, which holds the document and the indexes built from it and nothing else.
+//! round's delta as it would from a peer. Its growth is compared with the same
+//! namespace loaded from a full save, which holds the document and the indexes
+//! built from it and nothing else.
 
 use fs::{Namespace, ROOT_INO};
 use tilo_automerge::heap::{self, ThreadCounting};

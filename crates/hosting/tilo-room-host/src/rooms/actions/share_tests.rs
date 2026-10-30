@@ -2,6 +2,11 @@
 //! as a page asks it (`crate::rooms::shares`): the same rule every receiver
 //! holds a device's own share to (`tilo_peer_state::room::share`).
 
+#![expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+)]
+
 use serde_json::{Value, json};
 use tilo_user_identity::DeviceCert;
 

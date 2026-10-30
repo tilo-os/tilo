@@ -24,7 +24,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::authority::RoomOp;
 use super::{CollaborationError, Rooms};
-use crate::federation::{PeerRelayDialer, Upstream};
+use crate::attach::{HostDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use crate::host_authority::HostOperation;
 use tilo_lock::RwLockRecover as _;
@@ -133,8 +133,8 @@ impl Rooms {
                 governed
                     .governed()
                     .bootstrap([0; 32], member.clone(), MemberRole::Editor);
-            // The host follows governance alone: records reach it through the
-            // room's federation, and leaving them here keeps the hand-over
+            // The host follows governance alone: records reach it over the
+            // attach session, and leaving them here keeps the hand-over
             // within one action frame.
             bootstrap.records.clear();
             bootstrap.governance_messages.retain(|bytes| {
@@ -176,7 +176,7 @@ impl Rooms {
         // The host dials this device as it takes the room up, perhaps before
         // its address was recorded above: a session it opened already is
         // answered here, one it opens later when it says hello.
-        if let Some(inbound) = self.peer_relay_session(workspace_id, device).await {
+        if let Some(inbound) = self.attach_session(workspace_id, device).await {
             self.answer_host(room, device, inbound).await;
         }
         tracing::info!(%room, host = %hex::encode(device), "a host of this person serves the room");
@@ -247,7 +247,7 @@ impl Rooms {
 
     /// Answer the host `device` serving `room` as well, over the session
     /// `inbound` it opened here, with a session back to it
-    /// ([`PeerRelayDialer::answer`]): once for each session it opens.
+    /// ([`HostDialer::answer`]): once for each session it opens.
     /// Nothing when `device` does not serve the room.
     pub(crate) async fn answer_host(
         &self,
@@ -280,7 +280,7 @@ impl Rooms {
         };
         let workspace_id = governed.workspace_id();
         let host = &self.inner.host;
-        let session = PeerRelayDialer {
+        let session = HostDialer {
             endpoint: host.endpoint.clone(),
             identity: LiveIdentity {
                 user_public_key: host.cert.user_public_key,
@@ -313,9 +313,9 @@ impl Rooms {
         }
     }
 
-    /// The session the federated host `device` last opened to `workspace_id`
+    /// The session the attached host `device` last opened to `workspace_id`
     /// here, while it lasts.
-    async fn peer_relay_session(
+    async fn attach_session(
         &self,
         workspace_id: u64,
         device: [u8; 32],
@@ -331,7 +331,7 @@ impl Rooms {
         workspace
             .lock()
             .await
-            .peer_relay_sessions
+            .attach_sessions
             .get(&device)
             .filter(|session| !session.is_closed())
             .cloned()

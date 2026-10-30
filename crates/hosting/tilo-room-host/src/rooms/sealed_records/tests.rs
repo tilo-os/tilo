@@ -676,7 +676,6 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
         cert: member_cert.clone(),
         user_public_key: member_cert.user_public_key,
         device_public_key: member_cert.device_public_key,
-        role: tilo_relay_protocol::PeerRole::Device,
     };
     let (outbound, _inbox) = tokio::sync::mpsc::channel(4);
     let calls = rooms

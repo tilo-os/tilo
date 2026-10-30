@@ -39,7 +39,6 @@ fn letter(decision: Decision) -> char {
         Decision::Admit => 'A',
         Decision::AdmitAndEnrol => 'E',
         Decision::Deny(DenyReason::NotAMember) => 'N',
-        Decision::Deny(DenyReason::CrossUserFederation) => 'F',
         Decision::Deny(DenyReason::CertExpired) => 'x',
         Decision::Deny(DenyReason::Revoked) => 'r',
         Decision::Deny(DenyReason::NotTrusted) => 't',
@@ -145,11 +144,6 @@ fn peer(
     AuthenticatedPeer {
         user_public_key: user,
         device_public_key: device,
-        role: if host {
-            PeerRole::PeerRelay
-        } else {
-            PeerRole::Device
-        },
         cert: DeviceCert {
             user_public_key: user,
             device_public_key: device,
@@ -248,27 +242,24 @@ fn decide_matrix() {
             expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
         },
         Case {
-            name: "same-user peer relay this room federates with",
+            name: "same-user host this room is attached to",
             peer: peer(owner, [30; 32], true, None),
             setup: Box::new(|runtime, _| {
-                runtime.known_peer_relays.insert([30; 32]);
+                runtime.attached_hosts.insert([30; 32]);
             }),
             expected: ["AAANNNNNsdANO", "AAAAAEANsdAAO", "AAANNNNNsdANO"],
         },
         Case {
-            name: "same-user peer relay this room does not know",
+            name: "same-user host this room is not attached to",
             peer: peer(owner, [31; 32], true, None),
             setup: none(),
             expected: ["NNNNNNNNsdNNO", "ENNAAEANsdNAO", "NNNNNNNNsdNNO"],
         },
         Case {
-            name: "cross-user host certificate, even listed and known",
+            name: "cross-user host certificate, listed as a member",
             peer: peer(bob, [32; 32], true, None),
-            setup: Box::new(|runtime, _| {
-                runtime.membership.devices.push([32; 32]);
-                runtime.known_peer_relays.insert([32; 32]);
-            }),
-            expected: ["FFFFFFFFFFFFF", "FFFFFFFFFFFFF", "FFFFFFFFFFFFF"],
+            setup: listed([32; 32]),
+            expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
         },
         Case {
             name: "agent delegated this room",
@@ -453,7 +444,7 @@ fn decide_matrix() {
             runtime.membership = Membership::default();
             runtime.membership_ceiling = None;
             runtime.governed_user_roots.clear();
-            runtime.known_peer_relays.clear();
+            runtime.attached_hosts.clear();
             runtime.room_authority = None;
             runtime.spectators = None;
             runtime.state_sessions.clear();
@@ -621,10 +612,10 @@ fn only_the_current_governor_takes_its_own_channel_keys() {
     runtime.room_authority = Some(crate::rooms::RoomAuthority::governed_by(ROOM, [80; 32]));
     assert_eq!(decide(&runtime, &governor), Decision::Admit);
     // Not the same device: another host of the owner, even a listed member
-    // or a federated relay of this room.
+    // or a host this room is attached to.
     let other = peer(relay.owner, [81; 32], true, None);
     runtime.membership.devices.push([81; 32]);
-    runtime.known_peer_relays.insert([81; 32]);
+    runtime.attached_hosts.insert([81; 32]);
     assert_eq!(
         decide(&runtime, &other),
         Decision::Deny(DenyReason::NotTheGovernor)

@@ -54,11 +54,11 @@ for the persistent-volume and identity requirements.
 
 ## Shell configuration
 
-The shell keeps direct Iroh gossip enabled even when a durable host is
-attached. Configure one host with `TILO_COLLAB_HOST` (an endpoint id or JSON
-`EndpointAddr`) or several with `TILO_COLLAB_HOSTS` (a JSON array of
-`EndpointAddr`s). Newly minted invite tokens carry these host addresses so the
-guest is not dependent on the inviter staying online.
+The shell dials its workspace host directly, whether or not that host is one
+of the person's own devices. Configure one host with `TILO_COLLAB_HOST` (an
+endpoint id or JSON `EndpointAddr`) or several with `TILO_COLLAB_HOSTS` (a
+JSON array of `EndpointAddr`s). Newly minted invite tokens carry these host
+addresses so the guest is not dependent on the inviter staying online.
 
 `tilo-relay init` writes configuration; it does not mint an identity. Before
 `run`, the host must already have an enrolled, host-capable device key and cert

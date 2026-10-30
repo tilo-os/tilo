@@ -10,7 +10,6 @@ use tilo_automerge::ApplyIncoming;
 use automerge::{AutoCommit, ChangeHash};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
-use crate::auth::PeerRole;
 use crate::store::{CommitRecord, WorkspaceStore};
 use crate::transport::Envelope;
 use tilo_lock::MutexRecover as _;
@@ -60,10 +59,6 @@ pub struct Subscriber {
     /// subscriber; if a peer opens a second connection its
     /// pubkey collides and the older subscription is replaced.
     pub device_public_key: [u8; 32],
-    /// Role of the subscriber. A `PeerRelay` subscriber is treated
-    /// as a federated relay — the fan-out rule skips it when the
-    /// author is itself a `PeerRelay`, to prevent echo loops.
-    pub role: PeerRole,
     /// Bounded outbound envelope channel. Closed or full means the peer can
     /// no longer keep up and is pruned immediately.
     pub tx: mpsc::Sender<Envelope>,
@@ -133,19 +128,19 @@ pub struct WorkspaceRuntime {
     pub spectators: Option<crate::room_access::Spectators>,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
-    pub outbound_federation: HashMap<[u8; 32], Arc<std::sync::atomic::AtomicBool>>,
+    pub outbound_leases: HashMap<[u8; 32], Arc<std::sync::atomic::AtomicBool>>,
     pub(crate) state_sessions: HashMap<[u8; 32], crate::peer::StateSession>,
     pub(crate) action_targets: HashMap<[u8; 32], crate::peer::ActionTarget>,
-    /// Device pubkeys of peer relays this workspace has federated
-    /// with at least once since the daemon started. Ops arriving
-    /// while such a relay is offline are queued via the same
-    /// store-and-forward path as offline devices — reuses
-    /// `store.enqueue_pending` verbatim; no new persistence code.
-    pub known_peer_relays: HashSet<[u8; 32]>,
-    /// The session each federated host that dialed here last opened, by its
+    /// Device pubkeys of the hosts this workspace is attached to: the hosts
+    /// of its person that serve it, recorded as each announces what it
+    /// carries (its hello). A change one of them sent is not carried on to
+    /// another, and it carries its members' changes under the members' own
+    /// keys.
+    pub attached_hosts: HashSet<[u8; 32]>,
+    /// The session each attached host that dialed here last opened, by its
     /// device: what ends it, so an answer to it ends with it
-    /// ([`crate::federation::PeerRelayDialer::answer`]).
-    pub(crate) peer_relay_sessions: HashMap<[u8; 32], mpsc::Sender<()>>,
+    /// ([`crate::attach::HostDialer::answer`]).
+    pub(crate) attach_sessions: HashMap<[u8; 32], mpsc::Sender<()>>,
     /// What services beside the session stack keep for this workspace (a
     /// relay's compute routing), one value per type.
     pub extensions: Extensions,
@@ -420,12 +415,12 @@ impl WorkspaceRuntime {
             governed_user_roots,
             spectators: None,
             subscribers: HashMap::new(),
-            known_peer_relays: HashSet::new(),
-            peer_relay_sessions: HashMap::new(),
+            attached_hosts: HashSet::new(),
+            attach_sessions: HashMap::new(),
             extensions: Extensions::default(),
             action_targets: HashMap::new(),
             state_sessions: HashMap::new(),
-            outbound_federation: HashMap::new(),
+            outbound_leases: HashMap::new(),
             checkpoint_served: HashMap::new(),
             held_records: HashMap::new(),
             subscribing: HashMap::new(),
@@ -604,20 +599,16 @@ impl WorkspaceRuntime {
         }
     }
 
-    /// Note that `device` is a peer relay we federate with for this
-    /// workspace. Idempotent; called on every `PeerRelayHello` that
-    /// mentions this workspace so subsequent offline arrivals are
-    /// queued via the existing per-peer pending path.
-    pub fn record_peer_relay(&mut self, device: [u8; 32]) {
-        self.known_peer_relays.insert(device);
+    /// Note that `device` is a host this workspace is attached to.
+    /// Idempotent; called as a host announces what it carries, and as a
+    /// device hands one of its rooms to a host to serve.
+    pub fn note_attached_host(&mut self, device: [u8; 32]) {
+        self.attached_hosts.insert(device);
     }
 
-    /// Whether the subscriber `device` is a host this workspace federates
-    /// with: a peer relay, or the device governing a room this host serves,
-    /// whose session here answers this host's own. What one such host sent
-    /// is not carried on to another.
-    pub(crate) fn federated(&self, device: &[u8; 32], subscriber: &Subscriber) -> bool {
-        subscriber.role == PeerRole::PeerRelay || self.known_peer_relays.contains(device)
+    /// Whether `device` is a host this workspace is attached to.
+    pub(crate) fn attached(&self, device: &[u8; 32]) -> bool {
+        self.attached_hosts.contains(device)
     }
 
     /// Register a subscription. Replaces any prior subscription
@@ -836,11 +827,8 @@ impl WorkspaceRuntime {
     /// author, AND enqueue for offline members. Returns how many
     /// live subscribers were fanned out to.
     ///
-    /// `from_role` is the role of the sending peer. A `PeerRelay`
-    /// origin is not re-forwarded to other peer relays — that filter
-    /// is the ONE line federation adds to the fan-out; the rest of
-    /// the routing (author exclusion, live subscriber loop, offline
-    /// store-and-forward via `store.enqueue_pending`) is unchanged.
+    /// What an attached host sent is not carried on to another attached
+    /// host, nor queued for one: two hosts serving one room would loop.
     ///
     /// # Errors
     ///
@@ -850,7 +838,6 @@ impl WorkspaceRuntime {
     pub fn fanout_delta(
         &mut self,
         author: &[u8; 32],
-        from_role: PeerRole,
         envelope: &Envelope,
         raw_delta_bytes: &[u8],
         seq: u64,
@@ -904,8 +891,8 @@ impl WorkspaceRuntime {
         // >100 ms frame for a browser that must rebuild its room doc — is fanned
         // live to a device only while that device needs one: on subscribe (its
         // retained replay may be stale) and after it asks again via presence
-        // (hello / SyncReq / rejected checkpoint). Peer relays always receive
-        // it so they can federate; retention and offline queues are unchanged.
+        // (hello / SyncReq / rejected checkpoint). An attached host always
+        // receives it so it can carry the room; retention and queues stay.
         let checkpoint_channel = match &retained {
             Some((channel, crate::coedit::RetentionKind::Checkpoint)) => Some(*channel),
             _ => None,
@@ -918,14 +905,13 @@ impl WorkspaceRuntime {
             if peer == author {
                 continue;
             }
-            // Federation echo-suppression: a message originating on a
-            // peer relay must not bounce onto other peer relays.
-            if from_role == PeerRole::PeerRelay && self.federated(peer, sub) {
+            // A change an attached host sent is not carried on to another.
+            if self.attached(author) && self.attached(peer) {
                 continue;
             }
-            let gated_checkpoint = checkpoint_channel.is_some() && sub.role == PeerRole::Device;
+            let gated_checkpoint = checkpoint_channel.is_some() && !self.attached(author);
             if let Some(channel) = checkpoint_channel
-                && sub.role == PeerRole::Device
+                && !self.attached(peer)
                 && !self.needs_checkpoint(peer, &channel)
             {
                 continue;
@@ -970,12 +956,11 @@ impl WorkspaceRuntime {
                 self.store.enqueue_pending(member, seq, &raw)?;
             }
         }
-        // 3. Store-and-forward for offline peer relays — reuses the
+        // 3. Store-and-forward for offline attached hosts — reuses the
         //    same `store.enqueue_pending` path keyed by device pubkey.
-        //    Suppressed when the origin is itself a peer relay (echo
-        //    prevention across a chain of federated relays).
-        if retained.is_none() && from_role == PeerRole::Device {
-            for pr in &self.known_peer_relays {
+        //    Suppressed when the origin is itself an attached host.
+        if retained.is_none() && !self.attached(author) {
+            for pr in &self.attached_hosts {
                 if pr == author {
                     continue;
                 }
@@ -1072,7 +1057,7 @@ impl WorkspaceRuntime {
     }
 
     /// Route a presence envelope (no persistence, drop-on-empty).
-    /// Same echo-suppression rule as `fanout_delta`. A subscriber whose
+    /// Same attached-host rule as `fanout_delta`. A subscriber whose
     /// connection has a presence mailbox gets it there, coalesced under
     /// `slot` with the author's later presence; the payload is shared by every
     /// such subscriber, not copied. Presence from an author who sent a delta
@@ -1081,13 +1066,13 @@ impl WorkspaceRuntime {
     pub fn fanout_presence(
         &mut self,
         author: &[u8; 32],
-        from_role: PeerRole,
         envelope: &Envelope,
         slot: Option<neighbour_wire::PresenceSlot>,
     ) -> usize {
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
         let mut shared: Option<Arc<[u8]>> = None;
+        let from_attached = self.attached(author);
         let now = tokio::time::Instant::now();
         let held = self.recent_deltas.get(author).is_some_and(|at| {
             now.saturating_duration_since(*at) < crate::presence_mailbox::DELTA_HOLD
@@ -1096,7 +1081,7 @@ impl WorkspaceRuntime {
             if peer == author {
                 continue;
             }
-            if from_role == PeerRole::PeerRelay && self.federated(peer, sub) {
+            if from_attached && self.attached(peer) {
                 continue;
             }
             if let (
@@ -1221,14 +1206,8 @@ mod tests {
         let errors = Arc::new(AtomicUsize::new(0));
         let subscriber = tracing_subscriber::registry().with(Errors(Arc::clone(&errors)));
         tracing::subscriber::with_default(subscriber, || {
-            rt.fanout_delta(
-                &[6u8; 32],
-                PeerRole::Device,
-                &env_delta(57, [6u8; 32]),
-                &payload,
-                1,
-            )
-            .unwrap();
+            rt.fanout_delta(&[6u8; 32], &env_delta(57, [6u8; 32]), &payload, 1)
+                .unwrap();
         });
         assert_eq!(errors.load(Ordering::SeqCst), 0);
         assert!(rt.current_heads().is_empty());
@@ -1303,20 +1282,16 @@ mod tests {
             let (disconnect2, _disconnect_rx2) = mpsc::channel(1);
             rt.add_subscriber(Subscriber {
                 device_public_key: [1u8; 32],
-                role: PeerRole::Device,
                 tx: tx1,
                 disconnect: disconnect1,
             });
             rt.add_subscriber(Subscriber {
                 device_public_key: [2u8; 32],
-                role: PeerRole::Device,
                 tx: tx2,
                 disconnect: disconnect2,
             });
             let env = env_delta(42, [1u8; 32]);
-            let delivered = rt
-                .fanout_delta(&[1u8; 32], PeerRole::Device, &env, b"1 2 3", 111)
-                .unwrap();
+            let delivered = rt.fanout_delta(&[1u8; 32], &env, b"1 2 3", 111).unwrap();
             assert_eq!(delivered, 1);
             // Peer 2 saw the delta live.
             assert_eq!(rx2.try_recv().unwrap(), env);
@@ -1334,77 +1309,74 @@ mod tests {
             drop(rx); // channel closed immediately
             rt.add_subscriber(Subscriber {
                 device_public_key: [9u8; 32],
-                role: PeerRole::Device,
                 tx,
                 disconnect,
             });
             let env = env_delta(5, [1u8; 32]);
-            let delivered = rt
-                .fanout_delta(&[1u8; 32], PeerRole::Device, &env, b"", 1)
-                .unwrap();
+            let delivered = rt.fanout_delta(&[1u8; 32], &env, b"", 1).unwrap();
             assert_eq!(delivered, 0);
             assert!(rt.subscribers.is_empty());
         }
-        // Phase `fanout_from_peer_relay_skips_other_peer_relays`.
+        // Phase `fanout_from_attached_host_skips_other_attached_hosts`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let mut rt =
                 WorkspaceRuntime::open(tmp.path(), 8, false, Membership::default()).unwrap();
-            // A local device + two peer-relay subscribers.
+            // A local device + an attached host, both subscribed.
             let (tx_dev, mut rx_dev) = mpsc::channel(8);
-            let (tx_pr, mut rx_pr) = mpsc::channel(8);
+            let (tx_host, mut rx_host) = mpsc::channel(8);
             let (disconnect_dev, _disconnect_rx_dev) = mpsc::channel(1);
-            let (disconnect_pr, _disconnect_rx_pr) = mpsc::channel(1);
+            let (disconnect_host, _disconnect_rx_host) = mpsc::channel(1);
             rt.add_subscriber(Subscriber {
                 device_public_key: [1u8; 32],
-                role: PeerRole::Device,
                 tx: tx_dev,
                 disconnect: disconnect_dev,
             });
+            rt.note_attached_host([2u8; 32]);
             rt.add_subscriber(Subscriber {
                 device_public_key: [2u8; 32],
-                role: PeerRole::PeerRelay,
-                tx: tx_pr,
-                disconnect: disconnect_pr,
+                tx: tx_host,
+                disconnect: disconnect_host,
             });
-            // The originating peer relay (author, offline here).
+            // An attached host authored it (offline here).
             let author = [3u8; 32];
+            rt.note_attached_host(author);
             let env = env_delta(8, author);
-            let delivered = rt
-                .fanout_delta(&author, PeerRole::PeerRelay, &env, b"x", 1)
-                .unwrap();
+            let delivered = rt.fanout_delta(&author, &env, b"x", 1).unwrap();
             // Only the local device saw it.
             assert_eq!(delivered, 1);
             assert_eq!(rx_dev.try_recv().unwrap(), env);
-            assert!(rx_pr.try_recv().is_err(), "peer relay must not echo");
+            assert!(
+                rx_host.try_recv().is_err(),
+                "an attached host is not echoed to"
+            );
         }
-        // Phase `known_peer_relay_gets_pending_when_offline_and_origin_is_device`.
+        // Phase `attached_host_gets_pending_when_offline_and_origin_is_device`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let mut rt =
                 WorkspaceRuntime::open(tmp.path(), 12, false, Membership::default()).unwrap();
             let pr_pk = [7u8; 32];
-            rt.record_peer_relay(pr_pk);
-            // A local device authors — pr is offline, should be queued.
+            rt.note_attached_host(pr_pk);
+            // A local device authors — the host is offline, so it is queued.
             let author = [1u8; 32];
             let env = env_delta(12, author);
-            rt.fanout_delta(&author, PeerRole::Device, &env, b"x", 42)
-                .unwrap();
+            rt.fanout_delta(&author, &env, b"x", 42).unwrap();
             assert_eq!(rt.store.count_pending(&pr_pk).unwrap(), 1);
         }
-        // Phase `known_peer_relay_pending_suppressed_when_origin_is_peer_relay`.
+        // Phase `attached_host_pending_suppressed_when_origin_is_attached_host`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let mut rt =
                 WorkspaceRuntime::open(tmp.path(), 13, false, Membership::default()).unwrap();
             let pr_pk = [7u8; 32];
-            rt.record_peer_relay(pr_pk);
-            // Another peer relay is the origin — offline pr must NOT be
-            // queued (that's the echo across a chain of relays).
+            rt.note_attached_host(pr_pk);
+            // An attached host is the origin — the offline one must NOT be
+            // queued for it.
             let author = [2u8; 32];
+            rt.note_attached_host(author);
             let env = env_delta(13, author);
-            rt.fanout_delta(&author, PeerRole::PeerRelay, &env, b"x", 42)
-                .unwrap();
+            rt.fanout_delta(&author, &env, b"x", 42).unwrap();
             assert_eq!(rt.store.count_pending(&pr_pk).unwrap(), 0);
         }
     }
@@ -1429,8 +1401,7 @@ mod tests {
             let d1 = doc_a.save_incremental();
 
             let env = env_delta(55, [1u8; 32]);
-            rt.fanout_delta(&[1u8; 32], PeerRole::Device, &env, &d1, 1)
-                .unwrap();
+            rt.fanout_delta(&[1u8; 32], &env, &d1, 1).unwrap();
 
             // Host materialized the change — its heads match the author's.
             let host_heads: Vec<[u8; 32]> = doc_a.get_heads().into_iter().map(|h| h.0).collect();
@@ -1457,7 +1428,7 @@ mod tests {
                 WorkspaceRuntime::open(tmp.path(), 56, true, Membership::default()).unwrap();
             let env = env_delta(56, [5u8; 32]);
             // fanout still succeeds (routing is unaffected)...
-            rt.fanout_delta(&[5u8; 32], PeerRole::Device, &env, b"not-automerge", 1)
+            rt.fanout_delta(&[5u8; 32], &env, b"not-automerge", 1)
                 .unwrap();
             // ...but the doc did not advance and no snapshot was written.
             assert!(rt.current_heads().is_empty());
@@ -1492,7 +1463,6 @@ mod tests {
             let (disconnect_b, _disconnect_rx_b) = mpsc::channel(1);
             rt.add_subscriber(Subscriber {
                 device_public_key: b,
-                role: PeerRole::Device,
                 tx: tx_b,
                 disconnect: disconnect_b,
             });
@@ -1509,9 +1479,7 @@ mod tests {
                 delta: d1.clone(),
                 signature: [0u8; 64],
             };
-            let delivered = rt
-                .fanout_delta(&a, PeerRole::Device, &env, &d1, 111)
-                .unwrap();
+            let delivered = rt.fanout_delta(&a, &env, &d1, 111).unwrap();
             assert_eq!(delivered, 1, "delta fanned out to the live subscriber B");
 
             // The gap: a delivered delta is NOT queued, so the pending tier
@@ -1579,7 +1547,7 @@ mod tests {
         else {
             panic!("delta")
         };
-        rt.fanout_delta(author_device_public_key, PeerRole::Device, env, delta, seq)
+        rt.fanout_delta(author_device_public_key, env, delta, seq)
             .unwrap();
     }
 
@@ -1713,7 +1681,6 @@ mod tests {
         let (disconnect, _) = mpsc::channel(1);
         rt.add_subscriber(Subscriber {
             device_public_key: [8; 32],
-            role: PeerRole::Device,
             tx,
             disconnect,
         });
@@ -1723,10 +1690,7 @@ mod tests {
         let Envelope::Delta { delta, .. } = &env else {
             panic!("delta")
         };
-        assert!(
-            rt.fanout_delta(&[1; 32], PeerRole::Device, &env, delta, 1)
-                .is_err()
-        );
+        assert!(rt.fanout_delta(&[1; 32], &env, delta, 1).is_err());
         assert!(
             rx.try_recv().is_err(),
             "uncommitted checkpoint reached live queue"
@@ -1752,21 +1716,14 @@ mod tests {
         tx.try_send(env_delta(6, [9u8; 32])).unwrap();
         rt.add_subscriber(Subscriber {
             device_public_key: slow_peer,
-            role: PeerRole::Device,
             tx,
             disconnect,
         });
 
         // Fan out several durable deltas past the queue bound.
         for seq in 2..5 {
-            rt.fanout_delta(
-                &author,
-                PeerRole::Device,
-                &env_delta(6, author),
-                b"durable",
-                seq,
-            )
-            .unwrap();
+            rt.fanout_delta(&author, &env_delta(6, author), b"durable", seq)
+                .unwrap();
         }
 
         // Never dropped, never told to disconnect, and every missed durable
@@ -1848,7 +1805,6 @@ mod tests {
         let (disconnect, _drx) = mpsc::channel(1);
         rt.add_subscriber(Subscriber {
             device_public_key: device,
-            role: PeerRole::Device,
             tx,
             disconnect,
         });
@@ -1862,17 +1818,9 @@ mod tests {
         // The native publishes its checkpoint as one message per channel (the
         // room plus each record); the whole first set after subscribe passes.
         let (env, raw) = checkpoint_on(author, 2, room, vec![1]);
-        assert_eq!(
-            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 2)
-                .unwrap(),
-            1
-        );
+        assert_eq!(rt.fanout_delta(&author, &env, &raw, 2).unwrap(), 1);
         let (env, raw) = checkpoint_on(author, 3, record, vec![1]);
-        assert_eq!(
-            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 3)
-                .unwrap(),
-            1
-        );
+        assert_eq!(rt.fanout_delta(&author, &env, &raw, 3).unwrap(), 1);
         assert!(
             rx.try_recv().is_ok() && rx.try_recv().is_ok(),
             "every channel of the first set is delivered live"
@@ -1885,17 +1833,9 @@ mod tests {
 
         // The next (idle) set on the same channels is NOT fanned to the still-connected device.
         let (env, raw) = checkpoint_on(author, 4, room, vec![2]);
-        assert_eq!(
-            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 4)
-                .unwrap(),
-            0
-        );
+        assert_eq!(rt.fanout_delta(&author, &env, &raw, 4).unwrap(), 0);
         let (env, raw) = checkpoint_on(author, 5, record, vec![2]);
-        assert_eq!(
-            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 5)
-                .unwrap(),
-            0
-        );
+        assert_eq!(rt.fanout_delta(&author, &env, &raw, 5).unwrap(), 0);
         assert!(
             rx.try_recv().is_err(),
             "an idle checkpoint must not reach a device that holds every delta"
@@ -1910,20 +1850,12 @@ mod tests {
         assert_eq!(rt.store.load_retained().unwrap().len(), 4);
         // A checkpoint on a channel this device has never been served passes.
         let (env, raw) = checkpoint_on(author, 6, [11u8; 32], vec![3]);
-        assert_eq!(
-            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 6)
-                .unwrap(),
-            1
-        );
+        assert_eq!(rt.fanout_delta(&author, &env, &raw, 6).unwrap(), 1);
         rx.try_recv().unwrap();
 
         // Retained deltas keep flowing live regardless.
         let (env, raw) = retained_delta_envelope(author, 4);
-        assert_eq!(
-            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 4)
-                .unwrap(),
-            1
-        );
+        assert_eq!(rt.fanout_delta(&author, &env, &raw, 4).unwrap(), 1);
         assert!(
             rx.try_recv().is_ok(),
             "retained deltas are always delivered live"
@@ -1934,21 +1866,13 @@ mod tests {
         rt.request_checkpoint(&device);
         assert!(rt.needs_checkpoint(&device, &room));
         let (env, raw) = checkpoint_on(author, 7, room, vec![3]);
-        assert_eq!(
-            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 7)
-                .unwrap(),
-            1
-        );
+        assert_eq!(rt.fanout_delta(&author, &env, &raw, 7).unwrap(), 1);
         assert!(
             rx.try_recv().is_ok(),
             "a requested checkpoint is delivered once"
         );
         let (env, raw) = checkpoint_on(author, 8, room, vec![4]);
-        assert_eq!(
-            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 8)
-                .unwrap(),
-            0
-        );
+        assert_eq!(rt.fanout_delta(&author, &env, &raw, 8).unwrap(), 0);
         assert!(
             rx.try_recv().is_err(),
             "the request is satisfied by one checkpoint per channel"
@@ -1973,7 +1897,6 @@ mod tests {
         let (disconnect, _drx) = mpsc::channel(1);
         rt.add_subscriber(Subscriber {
             device_public_key: browser,
-            role: PeerRole::Device,
             tx,
             disconnect,
         });
@@ -1981,8 +1904,7 @@ mod tests {
         // The stale baseline set was replayed on subscribe and rejected by the browser.
         for (seq, ch) in [(1u64, room), (2, record)] {
             let (env, raw) = checkpoint_on(native, seq, ch, b"stale".to_vec());
-            rt.fanout_delta(&native, PeerRole::Device, &env, &raw, seq)
-                .unwrap();
+            rt.fanout_delta(&native, &env, &raw, seq).unwrap();
             rx.try_recv().unwrap();
         }
         assert!(!rt.needs_checkpoint(&browser, &room) && !rt.needs_checkpoint(&browser, &record));
@@ -1992,8 +1914,7 @@ mod tests {
         for (seq, ch) in [(3u64, room), (4, record)] {
             let (env, raw) = checkpoint_on(native, seq, ch, b"fresh".to_vec());
             assert_eq!(
-                rt.fanout_delta(&native, PeerRole::Device, &env, &raw, seq)
-                    .unwrap(),
+                rt.fanout_delta(&native, &env, &raw, seq).unwrap(),
                 1,
                 "every channel of the fresh set reaches the requester"
             );
@@ -2007,40 +1928,32 @@ mod tests {
         // The native's next idle set is not fanned to the now-current browser.
         for (seq, ch) in [(5u64, room), (6, record)] {
             let (env, raw) = checkpoint_on(native, seq, ch, b"idle".to_vec());
-            assert_eq!(
-                rt.fanout_delta(&native, PeerRole::Device, &env, &raw, seq)
-                    .unwrap(),
-                0
-            );
+            assert_eq!(rt.fanout_delta(&native, &env, &raw, seq).unwrap(), 0);
         }
         assert!(rx.try_recv().is_err());
     }
 
     #[test]
-    fn peer_relays_keep_receiving_every_checkpoint_live() {
-        // Federation is unchanged: a peer relay must be able to forward every
+    fn attached_hosts_keep_receiving_every_checkpoint_live() {
+        // A host serving the workspace must be able to forward every
         // checkpoint onward, so the device-only gate does not apply to it.
         let tmp = tempfile::tempdir().unwrap();
         let author = [1u8; 32];
-        let relay_peer = [3u8; 32];
+        let host = [3u8; 32];
         let mut membership = Membership::default();
-        membership.set(vec![author, relay_peer]);
+        membership.set(vec![author, host]);
         let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
         let (tx, mut rx) = mpsc::channel(8);
         let (disconnect, _drx) = mpsc::channel(1);
+        rt.note_attached_host(host);
         rt.add_subscriber(Subscriber {
-            device_public_key: relay_peer,
-            role: PeerRole::PeerRelay,
+            device_public_key: host,
             tx,
             disconnect,
         });
         for seq in 2..5u64 {
             let (env, raw) = checkpoint_envelope(author, seq, vec![u8::try_from(seq).unwrap()]);
-            assert_eq!(
-                rt.fanout_delta(&author, PeerRole::Device, &env, &raw, seq)
-                    .unwrap(),
-                1
-            );
+            assert_eq!(rt.fanout_delta(&author, &env, &raw, seq).unwrap(), 1);
             assert!(rx.try_recv().is_ok());
         }
     }
@@ -2061,18 +1974,11 @@ mod tests {
         drop(rx); // the receiving task is gone
         rt.add_subscriber(Subscriber {
             device_public_key: dead_peer,
-            role: PeerRole::Device,
             tx,
             disconnect,
         });
-        rt.fanout_delta(
-            &author,
-            PeerRole::Device,
-            &env_delta(6, author),
-            b"durable",
-            2,
-        )
-        .unwrap();
+        rt.fanout_delta(&author, &env_delta(6, author), b"durable", 2)
+            .unwrap();
         assert!(!rt.subscribers.contains_key(&dead_peer));
         assert_eq!(rt.store.count_pending(&dead_peer).unwrap(), 1);
     }
@@ -2092,7 +1998,6 @@ mod tests {
         let (disconnect, _disconnect_rx) = mpsc::channel(1);
         rt.add_subscriber(Subscriber {
             device_public_key: RECIPIENT,
-            role: PeerRole::Device,
             tx,
             disconnect,
         });
@@ -2108,19 +2013,13 @@ mod tests {
         };
 
         // No delta: the caret goes after the batch window.
-        assert_eq!(
-            rt.fanout_presence(&AUTHOR, PeerRole::Device, &presence, caret),
-            1
-        );
+        assert_eq!(rt.fanout_presence(&AUTHOR, &presence, caret), 1);
         assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
 
         // Right after the author's delta: held for it.
         let before = Instant::now();
         rt.note_delta(AUTHOR, before);
-        assert_eq!(
-            rt.fanout_presence(&AUTHOR, PeerRole::Device, &presence, caret),
-            1
-        );
+        assert_eq!(rt.fanout_presence(&AUTHOR, &presence, caret), 1);
         assert!(
             mailbox
                 .next_due()
@@ -2135,20 +2034,14 @@ mod tests {
         // Once the delta is published, nothing waits for it.
         rt.note_delta(AUTHOR, Instant::now());
         rt.delta_published(&AUTHOR);
-        assert_eq!(
-            rt.fanout_presence(&AUTHOR, PeerRole::Device, &presence, caret),
-            1
-        );
+        assert_eq!(rt.fanout_presence(&AUTHOR, &presence, caret), 1);
         assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
 
         // Another author's delta holds nothing of this author's.
         rt.note_delta([3; 32], Instant::now());
         let other = Instant::now() - DELTA_HOLD;
         rt.note_delta(AUTHOR, other);
-        assert_eq!(
-            rt.fanout_presence(&AUTHOR, PeerRole::Device, &presence, caret),
-            1
-        );
+        assert_eq!(rt.fanout_presence(&AUTHOR, &presence, caret), 1);
         assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
     }
 

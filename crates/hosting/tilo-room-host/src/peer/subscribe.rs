@@ -151,17 +151,9 @@ pub(super) async fn handle_subscribe(
     let waited = crate::timing::start();
     let mut ticket =
         ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned()).await?;
-    // A host keeps all of the room; a device opens on-demand records. The
-    // device governing a room this host serves is one of those hosts: its
-    // session here answers this host's own, and its certificate need not
-    // be host-capable to govern.
-    if peer.role == crate::auth::PeerRole::PeerRelay
-        || ws
-            .lock()
-            .await
-            .known_peer_relays
-            .contains(&peer.device_public_key)
-    {
+    // A host this workspace is attached to keeps all of the room; a device
+    // opens on-demand records.
+    if ws.lock().await.attached(&peer.device_public_key) {
         ticket = ticket.with_every_record();
     }
     crate::timing::event("join.ticket_wait", waited, 0);
@@ -261,8 +253,8 @@ async fn admit_subscription(
     if subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound) {
         return Err(lost_session(&wr, peer, session, RoomOperation::Subscribe));
     }
-    // Same-owner peer relays are gated by their active federation lease, so
-    // they don't need to appear in the workspace membership list.
+    // A host attached to this one holds its session under an active lease,
+    // so it doesn't need to appear in the workspace membership list.
     match session.decide(&wr, peer, RoomOperation::Subscribe) {
         Decision::Admit => {}
         Decision::AdmitAndEnrol => {
@@ -396,7 +388,6 @@ async fn register_subscriber(
     bind.bind(live.clone())?;
     wr.add_subscriber(Subscriber {
         device_public_key: source.peer.device_public_key,
-        role: source.peer.role,
         tx: source.tx,
         disconnect: source.disconnect,
     });

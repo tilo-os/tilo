@@ -148,7 +148,6 @@ impl Member {
             user_public_key: cert.user_public_key,
             device_public_key: cert.device_public_key,
             cert,
-            role: tilo_relay_protocol::PeerRole::Device,
         }
     }
 

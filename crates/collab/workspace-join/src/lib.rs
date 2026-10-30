@@ -900,7 +900,7 @@ fn tagged_digest(value: &[u8], body: &impl Serialize) -> Result<[u8; 32], String
     Ok(*hasher.finalize().as_bytes())
 }
 
-/// Derive the stable numeric host/gossip shard for a room UUID. This is shared
+/// Derive the stable numeric workspace shard for a room UUID. This is shared
 /// by the shell and admin CLI so local workspace handles never leak onto the
 /// wire and operators cannot accidentally bind a different shard.
 pub fn room_workspace_id(room: &str) -> Result<u64, uuid::Error> {

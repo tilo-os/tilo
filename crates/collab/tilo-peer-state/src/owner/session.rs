@@ -452,8 +452,9 @@ impl Scope {
         )
     }
 }
-/// Only the authenticated relay pump can construct this. Generic gossip messages
-/// cannot become `RelayDelta` evidence through a host's event dispatcher.
+/// Only the authenticated relay pump can construct this. A message from any
+/// other path cannot become `RelayDelta` evidence through a host's event
+/// dispatcher.
 #[derive(Clone)]
 pub struct Input {
     scope: Arc<Scope>,

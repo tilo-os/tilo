@@ -860,7 +860,7 @@ pub(crate) struct RoomServices {
     pub(crate) mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode,
     /// Each device whose session to this host authenticated: a host it
     /// dials and could not reach is dialled again then.
-    pub(crate) arrivals: crate::federation::Arrivals,
+    pub(crate) arrivals: crate::attach::Arrivals,
 }
 
 /// The rooms this relay governs.

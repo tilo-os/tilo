@@ -73,7 +73,7 @@ pub use tilo_workspace_join::delegation;
 /// The stable relay shard of a room UUID, defined beside [`delegation`].
 pub use tilo_workspace_join::room_workspace_id;
 
-pub use auth::{AuthError, AuthenticatedPeer, PeerRole};
+pub use auth::{AuthError, AuthenticatedPeer};
 pub use config::{ConfigError, EnvironmentsConfig, RelayConfig};
 pub use home_peer::{
     HomePeerRegistration, RELAY_OFFERS_FILE, RelayEnvironments, RelayOffer, RelayOffers,

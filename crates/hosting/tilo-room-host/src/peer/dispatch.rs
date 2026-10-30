@@ -5,11 +5,10 @@
 use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
     ReplayHandle, ReplayTicket, SessionCtx, Subscription, enable_actions, enable_broker_client,
-    handle_commit, handle_compaction, handle_delta, handle_host_action, handle_live,
-    handle_live_join, handle_live_leave, handle_open_record, handle_peer_relay_hello,
-    handle_presence, handle_remote_action, handle_subscribe, handle_sync_request,
-    handle_unsubscribe, handle_voice, register_broker, route_private, route_record_content,
-    route_signed_directed,
+    handle_commit, handle_compaction, handle_delta, handle_host_action, handle_host_hello,
+    handle_live, handle_live_join, handle_live_leave, handle_open_record, handle_presence,
+    handle_remote_action, handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice,
+    register_broker, route_private, route_record_content, route_signed_directed,
 };
 #[cfg(test)]
 use super::{ReplayWrite, finish_replay_write, mpsc};
@@ -96,7 +95,7 @@ pub(super) async fn handle_envelope(
         env @ Envelope::Delta { .. } => handle_delta(peer, session, subscribed, env).await,
         env @ Envelope::Presence { .. } => handle_presence(peer, session, subscribed, env).await,
         Envelope::PeerRelayHello { hosted_workspaces } => {
-            handle_peer_relay_hello(peer, session, hosted_workspaces).await
+            handle_host_hello(peer, session, hosted_workspaces).await
         }
         Envelope::SyncRequest {
             workspace_id,

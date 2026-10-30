@@ -28,7 +28,7 @@
 use tilo_user_identity::DeviceCert;
 
 use super::{GovernedRoom, Rooms, system_time};
-use crate::auth::{AuthenticatedPeer, PeerRole};
+use crate::auth::AuthenticatedPeer;
 use crate::room_access::{self, Decision, DenyReason, RelayTrust, RoomOperation};
 
 impl Rooms {
@@ -115,7 +115,6 @@ impl Rooms {
         let peer = AuthenticatedPeer {
             user_public_key: cert.user_public_key,
             device_public_key: cert.device_public_key,
-            role: PeerRole::from_cert(&cert),
             cert,
         };
         let now_ns = tilo_clock::unix_now_ns();

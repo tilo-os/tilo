@@ -190,7 +190,7 @@ impl Relay {
 }
 
 /// A tokio `JoinHandle` that aborts on drop — used so that dropping
-/// `Relay` tears down every outbound peer-relay reconnect task.
+/// `Relay` tears down every outbound attach reconnect task.
 struct AbortOnDrop(JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
@@ -289,8 +289,8 @@ impl Relay {
     /// Start relay services on an already-bound endpoint and compose any
     /// number of caller-owned protocols into the same router. This is the
     /// production shell path: relay state/action traffic, workspace joining,
-    /// surfaces, gossip, and personal-fabric protocols retain one stable node
-    /// address and one shutdown lifecycle.
+    /// surfaces, and personal-fabric protocols retain one stable node address
+    /// and one shutdown lifecycle.
     ///
     /// Ownership of `endpoint` transfers to the returned relay. Calling
     /// [`Self::shutdown`] closes the router and invokes every additional
@@ -1102,7 +1102,7 @@ fn spawn_metrics_persist_task(state_root: PathBuf, live_metrics: Arc<Metrics>) -
     })
 }
 
-/// Lock the peer-relay task list, recovering the inner `Vec` if the
+/// Lock the attach task list, recovering the inner `Vec` if the
 /// mutex was poisoned by an earlier panic rather than propagating one
 /// here — losing track of a reconnect task would leak it past the
 /// owning `Relay`'s lifetime.
@@ -1112,7 +1112,7 @@ fn lock_background_tasks(
     tasks.lock_recover()
 }
 
-/// Register a spawned task on the peer-relay task list (see
+/// Register a spawned task on the attach task list (see
 /// [`lock_background_tasks`]).
 fn push_background_task(tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>, task: JoinHandle<()>) {
     lock_background_tasks(tasks).push(AbortOnDrop(task));
