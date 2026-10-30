@@ -214,8 +214,8 @@ section (`theme_layers::user_document`):
 | `light_theme` | the theme light mode shows; default `"light"` |
 | `custom_themes` | the documents a `custom:<id>` names (Theme Studio writes them when it applies one) |
 | `density` | the person's spacing over whichever theme is shown (Compact 0.85, Regular 1, Roomy 1.2) |
-| `ui_face` | the face the person reads best, over the theme's (`Default`, `Hyperlegible`, any family name); absent follows the theme |
-| `translucency` | how much of the theme's translucency they keep: 1 as the theme sets it, 0 opaque floating chrome; absent follows the theme |
+| `ui_face` | the face the person reads best, over the theme's (`Default`, `Hyperlegible`, any family name); absent or `null` follows the theme |
+| `translucency` | how much of the theme's translucency they keep: 1 as the theme sets it, 0 opaque floating chrome; absent or `null` follows the theme |
 
 Neither `ui_face` nor `translucency` is a new role: both name a role the
 theme already has (`type`, `material`), so a person who cannot read the
