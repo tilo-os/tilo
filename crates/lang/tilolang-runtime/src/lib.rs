@@ -46,6 +46,7 @@ pub mod registry;
 mod render;
 pub mod rich;
 pub mod runtime;
+pub mod seen;
 mod settle;
 pub mod space;
 pub mod store;

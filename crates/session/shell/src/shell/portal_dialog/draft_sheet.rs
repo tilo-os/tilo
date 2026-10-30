@@ -43,34 +43,39 @@ impl PortalDialogQueue {
     }
 }
 
-/// Above the detail: the title and who asks.
-const TITLE: f64 = 74.0;
+/// The sheet's sizes, in the base theme's spacing and metrics.
+const SPACING: ui::tokens::Spacing = ui::tokens::Spacing::BASE;
+const METRICS: ui::tokens::Metrics = ui::tokens::Metrics::BASE;
+/// A text line: the label above a field, a line of the detail.
+const TEXT_LINE: f64 = (SPACING.s4 + SPACING.s1) as f64;
+/// Above the detail: the title and who asks, a header and its air.
+const TITLE: f64 = (METRICS.header_height + SPACING.s4) as f64;
 /// A line of the detail, and what follows it before the rows.
-const DETAIL_LINE: f64 = 20.0;
-const DETAIL_GAP: f64 = 14.0;
+const DETAIL_LINE: f64 = TEXT_LINE;
+const DETAIL_GAP: f64 = SPACING.s3 as f64;
 /// An average glyph of the detail, for a wrap not yet measured.
 const DETAIL_GLYPH: f64 = 7.5;
 /// Between the rows and the answers.
-const ANSWERS_GAP: f64 = 16.0;
+const ANSWERS_GAP: f64 = SPACING.s4 as f64;
+/// A one-line control: a Control row (HIG §9.6).
+const LINE_CONTROL: f64 = METRICS.panel_row_height as f64;
 /// Below the answers: the notice line, kept free so a refusal moves
-/// nothing, then the buttons.
-const FOOTER: f64 = 84.0;
-/// The pitch of an answer row.
-const ANSWER_PITCH: f64 = 48.0;
+/// nothing, then the buttons' row.
+const FOOTER: f64 = SPACING.s8 as f64 + SPACING.s2 as f64 + LINE_CONTROL;
+/// The pitch of an answer row: a control row and the air under it.
+const ANSWER_PITCH: f64 = LINE_CONTROL + SPACING.s1 as f64;
 /// Kept clear around the sheet.
-const MARGIN: f64 = 16.0;
-/// The widest the sheet grows, and its side gutter.
-const WIDTH: f64 = 560.0;
-const GUTTER: f64 = 24.0;
+const MARGIN: f64 = SPACING.s4 as f64;
+/// The widest the sheet grows, a sheet panel's width, and its side gutter.
+const WIDTH: f64 = METRICS.panel_width_sheet as f64;
+const GUTTER: f64 = SPACING.s6 as f64;
 
 /// A field's label line, above its control.
-pub(super) const LABEL_HEIGHT: f64 = 22.0;
+pub(super) const LABEL_HEIGHT: f64 = TEXT_LINE;
 /// Between two rows.
-pub(super) const ROW_GAP: f64 = 8.0;
-/// A one-line control: a Control row (HIG §9.6: 44).
-const LINE_CONTROL: f64 = 44.0;
-/// A prose field: room for about three lines.
-const PROSE_CONTROL: f64 = 88.0;
+pub(super) const ROW_GAP: f64 = SPACING.s2 as f64;
+/// A prose field: room for about three lines, two control rows.
+const PROSE_CONTROL: f64 = 2.0 * LINE_CONTROL;
 
 /// How a row shows its value.
 pub(super) enum Control {

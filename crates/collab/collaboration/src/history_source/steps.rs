@@ -41,7 +41,7 @@ pub const MAX_CHECKPOINT_NAME: usize = 80;
 pub const AGENT_RUN: &str = "agent-run";
 /// The group kind of a workspace task's invocations: an agent working a
 /// native task stamps its steps with the task, so that is the run undo names.
-pub const TASK_RUN: &str = "task";
+pub const TASK_RUN: &str = tilo_actions::context::TASK_RUN_GROUP;
 /// The group kind of one command line a shell ran: every file action it and
 /// the commands it dispatched carried out, undone as one.
 pub const COMMAND_RUN: &str = "command-run";

@@ -1,202 +1,96 @@
-//! [`StatusLog`] — a fixed-height, auto-tailing status view.
+//! The install's status log: what the installer reports, newest last.
 //!
-//! Renders the **tail** of a list of log lines inside a bordered, clipped
-//! box: as new lines arrive the newest stay visible (like `tail -f`). It
-//! is a *leaf* widget — no children — so it trivially mirrors the taffy
-//! tree for the App's focusable-order traversal. It is not focusable and
-//! consumes no events.
-//!
-//! Why a bespoke widget rather than `ui::Scrollable`? The install output
-//! arrives in one synchronous batch (see [`imager_backend::destination::install`]) and we want
-//! a bounded box that always shows the latest progress without any
-//! viewport/content-size wiring. Tailing is exactly the installer's need.
+//! The log is a card holding the reported lines as text, in a scroll region
+//! a few lines tall that keeps to its end as lines arrive, so the newest
+//! progress is always in view and the person can scroll back through the
+//! rest. The newest line is a live region: assistive technology hears each
+//! step as it is reported, at once for an error or a request to touch the
+//! security key.
 
-use std::collections::HashMap;
-use ui::widget::TaffyTreeExt;
-
-use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::{BlendMode, Fill};
-
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::a11y::Politeness;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::tokens::{Rhythm, TextRole};
+use ui::widget::{Card, Column, Element, Scrollable, Text};
 
-/// Font size for log lines.
-const LINE_SIZE: f32 = 13.0;
-/// Extra vertical gap between lines.
-const LINE_GAP: f32 = 4.0;
-/// Inner padding inside the log box.
-const PAD: f64 = 8.0;
+/// How many lines of the log are in view.
+const VISIBLE_LINES: u16 = 8;
 
-pub struct StatusLog {
-    lines: Vec<String>,
-    height: f32,
-    rect: Rect,
-}
-
-impl StatusLog {
-    /// Build a log box `height` logical px tall showing `lines` (tailed).
-    pub fn new(lines: Vec<String>, height: f32) -> Self {
-        Self {
-            lines,
-            height,
-            rect: Rect::ZERO,
-        }
-    }
-
-    fn latest_announcement(&self) -> Option<&str> {
-        self.lines
-            .iter()
-            .rev()
-            .map(String::as_str)
-            .find(|line| !line.trim().is_empty())
+/// The politeness the newest `line` is announced with.
+fn politeness(line: &str) -> Politeness {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("error")
+        || lower.contains("failed")
+        || lower.contains("touch your security key")
+    {
+        Politeness::Assertive
+    } else {
+        Politeness::Polite
     }
 }
 
-impl Widget for StatusLog {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        taffy.widget_leaf(
-            crate::setup::destination::full_width_row(self.height),
-            node_map,
-            self,
-        )
-    }
-
-    ui::rect_geometry!();
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.content,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &shape,
-        );
-
-        // Clip glyphs to the box so long lines never bleed out.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
-        let max_w = ui::num::f32_of_f64(self.rect.width() - PAD * 2.0);
-        let inner_h = self.rect.height() - PAD * 2.0;
-
-        // Tail: walk from the newest line upward, summing each line's WRAPPED
-        // height (measured at the box width) until the box is full. A line that
-        // wraps to N visual rows must advance y by all N — otherwise the next
-        // line overdraws the wrapped continuation (the cause of the overlap).
-        let mut first = self.lines.len();
-        let mut used = 0.0_f64;
-        for (i, line) in self.lines.iter().enumerate().rev() {
-            let (_, h) = text_renderer.measure(line, LINE_SIZE, Some(max_w));
-            let need = f64::from(h) + f64::from(LINE_GAP);
-            if used + need > inner_h && first != self.lines.len() {
-                break;
-            }
-            used += need;
-            first = i;
+/// The log of `lines`, laid out for `theme`.
+pub fn status_log(lines: &[String], theme: &Theme) -> Element {
+    let newest = lines.iter().rposition(|line| !line.trim().is_empty());
+    let mut column = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_rhythm(Rhythm::Related);
+    for (index, line) in lines.iter().enumerate() {
+        let mut text = Text::new(line).with_role(TextRole::Caption);
+        if Some(index) == newest {
+            text = text
+                .with_id("installer.install-status")
+                .with_live(politeness(line));
         }
-
-        let mut y = self.rect.y0 + PAD;
-        for line in self.lines.iter().skip(first) {
-            let (_, h) = text_renderer.measure(line, LINE_SIZE, Some(max_w));
-            text_renderer.draw_text(
-                scene,
-                line,
-                LINE_SIZE,
-                theme.text_primary,
-                transform.pre_translate(Vec2::new(self.rect.x0 + PAD, y)),
-                Some(max_w),
-            );
-            y += f64::from(h) + f64::from(LINE_GAP);
-        }
-        scene.pop_layer();
+        column = column.push(Box::new(text));
     }
-
-    fn name(&self) -> &'static str {
-        "StatusLog"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("install_status_log")
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, Politeness, Role};
-
-        let latest = self.latest_announcement()?;
-        let lower = latest.to_ascii_lowercase();
-        let politeness = if lower.contains("error")
-            || lower.contains("failed")
-            || lower.contains("touch your security key")
-        {
-            Politeness::Assertive
-        } else {
-            Politeness::Polite
-        };
-        Some(
-            AccessNode::new(Role::StaticText)
-                .with_semantic_key("installer.install-status")
-                .with_name(latest)
-                .with_live(politeness),
-        )
-    }
+    let line_height = theme.text(TextRole::Caption).line_height_px();
+    Box::new(Card::new(Box::new(
+        Scrollable::new_vertical()
+            .following_end()
+            .with_semantic_key("install_status_log")
+            .with_max_height(line_height * f32::from(VISIBLE_LINES))
+            .with_child(Box::new(column)),
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn announced(widget: &dyn ui::widget::Widget) -> Option<ui::a11y::AccessNode> {
+        if widget.test_id() == Some("installer.install-status") {
+            return widget.accessibility();
+        }
+        widget.children().into_iter().find_map(announced)
+    }
+
     #[test]
-    fn status_log_live_region_politeness_follows_severity() {
+    fn the_newest_line_is_announced_by_its_severity() {
+        let theme = Theme::dark();
         {
-            let log = StatusLog::new(
-                vec![
+            let log = status_log(
+                &[
                     "Preparing encrypted storage…".into(),
                     "Creating your account…".into(),
+                    String::new(),
                 ],
-                200.0,
+                &theme,
             );
-            let node = log.accessibility().expect("status semantics");
+            let node = announced(log.as_ref()).expect("status semantics");
             assert_eq!(node.name.as_deref(), Some("Creating your account…"));
-            assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
-            assert_eq!(
-                node.semantic_key.as_deref(),
-                Some("installer.install-status")
-            );
+            assert_eq!(node.live, Some(Politeness::Polite));
         }
-        {
-            for line in [
-                "error: target identity changed",
-                "Touch your security key to continue…",
-            ] {
-                let log = StatusLog::new(vec![line.into()], 200.0);
-                assert_eq!(
-                    log.accessibility().and_then(|node| node.live),
-                    Some(ui::a11y::Politeness::Assertive),
-                    "did not announce {line:?} immediately"
-                );
-            }
+        for line in [
+            "error: target identity changed",
+            "Touch your security key to continue…",
+        ] {
+            let log = status_log(&[line.into()], &theme);
+            assert_eq!(
+                announced(log.as_ref()).and_then(|node| node.live),
+                Some(Politeness::Assertive),
+                "did not announce {line:?} immediately"
+            );
         }
     }
 }

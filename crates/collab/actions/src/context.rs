@@ -1309,6 +1309,11 @@ pub struct Cause {
     pub depth: u8,
 }
 
+/// The [`WorkGroup::kind`] of an agent's run of a workspace task: every change
+/// the run makes carries its group (`runtime_collab::task_run_group`), so
+/// history keeps and undoes the run whole and each version names its run.
+pub const TASK_RUN_GROUP: &str = "task";
+
 /// The unit of work an action belongs to: an issue, a task, an agent run.
 /// Not a group of actions applied as one; that is `tilo_resource::ActionGroup`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -31,8 +31,8 @@
 //! * [`control`] — what a control does when used: queue its effect.
 //! * [`unattended`] — an installation from a private recipe, through the
 //!   same effects.
-//! * [`status_log`], [`disk_row`], [`step_indicator`], [`action_button`],
-//!   [`seg_choice`], [`keyboard_view`] — the wizard's widgets.
+//! * [`status_log`], [`disk_row`], [`action_button`], [`seg_choice`],
+//!   [`keyboard_view`] — the wizard's controls, composed from ui widgets.
 //! * [`accounts_view`], [`accounts_hints`] — the private account form and
 //!   the hints read from the old system.
 //! * [`hardware_report`] — the compatibility report Review shows.
@@ -57,23 +57,9 @@ pub mod installer_app;
 pub mod keyboard_view;
 pub mod seg_choice;
 pub mod status_log;
-pub mod step_indicator;
 pub mod unattended;
 
 pub use installer_app::{InstallState, InstallerApp, Step};
-
-/// Layout of a full-width wizard row that keeps its `height` instead of
-/// shrinking when the column runs short.
-fn full_width_row(height: f32) -> taffy::Style {
-    taffy::Style {
-        size: taffy::Size {
-            width: taffy::Dimension::percent(1.0),
-            height: taffy::Dimension::length(height),
-        },
-        flex_shrink: 0.0,
-        ..Default::default()
-    }
-}
 
 /// Whether this process is the installer on the live medium.
 static LIVE_INSTALLER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

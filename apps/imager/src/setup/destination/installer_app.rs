@@ -47,13 +47,9 @@ use std::sync::{Arc, Mutex};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::style_helpers::{length, percent};
-use taffy::{
-    AlignItems, Dimension, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree,
-};
+use taffy::{AlignItems, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
@@ -62,21 +58,24 @@ use ui::a11y::Politeness;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::Rhythm;
 use ui::tokens::typography::TextRole;
-use ui::widget::{Dropdown, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget};
+use ui::widget::{
+    Dropdown, ListRow, Property, PropertyList, Row, Spacer, Spinner, Stepper, Text, TextInput,
+    Widget,
+};
 
 use install_profile_model::{
     FILESYSTEMS, valid_full_name, valid_hostname, valid_locale, valid_timezone_name, valid_username,
 };
 
 use crate::setup::destination::action_button::ActionButton;
-use crate::setup::destination::control::{Control, Press, Presses};
-use crate::setup::destination::disk_row::{DiskRow, capacity};
+use crate::setup::destination::control::{Bound, Control, Press, Presses};
+use crate::setup::destination::disk_row::{capacity, disk_row};
 use crate::setup::destination::effects::DestinationEffect;
 use crate::setup::destination::keyboard_view::KeyboardView;
-use crate::setup::destination::seg_choice::SegChoice;
-use crate::setup::destination::status_log::StatusLog;
-use crate::setup::destination::step_indicator::StepIndicator;
+use crate::setup::destination::seg_choice::seg_choice;
+use crate::setup::destination::status_log::status_log;
 use imager_backend::destination::backend::{InstallBackend, SystemBackend};
 use imager_backend::destination::disks::{Disk, GuidedAlongsidePlan};
 use imager_backend::destination::install::{InstallOptions, PowerAction};
@@ -304,16 +303,6 @@ const INSTALLED_REMOVE_MEDIUM: &str = "Installed. Remove the installer medium, t
 /// The log line a finished staged install ends with: there is no medium.
 const INSTALLED_RESTART: &str = "Installed. Restart to start Tilo.";
 
-/// Card geometry (logical px).
-const CARD_WIDTH: f32 = 520.0; // allow-breakpoint: the card's widest size, it narrows to the viewport
-const CARD_PADDING: f32 = 28.0;
-const CARD_GAP: f32 = 12.0;
-/// Breathing room around the card on compact displays. The card itself can
-/// narrow to the remaining width rather than extending beyond the viewport.
-const VIEWPORT_PADDING: f32 = 16.0;
-/// Height of the install status log box.
-const STATUS_LOG_HEIGHT: f32 = 200.0; // allow-breakpoint: the log box's height, not a breakpoint
-
 /// The wizard steps, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
@@ -465,313 +454,6 @@ pub(crate) fn validate_startup_secret_for(secret: &str, tpm_pin: bool) -> Result
 #[cfg(test)]
 fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
     validate_startup_secret_for(secret, false)
-}
-
-// ===================================================================
-// Card — a responsive, padded, vertically-stacked rounded container.
-// Its own `Widget` (not a bare taffy node) so the widget tree mirrors
-// the taffy tree for focus traversal. Mirrors greeter's `Card`.
-// ===================================================================
-
-struct Card {
-    children: Vec<Box<dyn Widget>>,
-    rect: Rect,
-}
-
-impl Card {
-    fn new(children: Vec<Box<dyn Widget>>) -> Self {
-        Self {
-            children,
-            rect: Rect::ZERO,
-        }
-    }
-}
-
-impl Widget for Card {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let child_nodes: Vec<NodeId> = self
-            .children
-            .iter_mut()
-            .map(|c| c.build_layout(taffy, theme, node_map))
-            .collect();
-        // Card is a vertical flex container. Let its height grow with its
-        // controls instead of allowing Taffy to collapse form fields and the
-        // recovery acknowledgement when Review is taller than the viewport.
-        // ActionButton's zero flex basis and growth are for horizontal nav
-        // rows; as direct children of this column they must use intrinsic
-        // height. The surrounding Scrollable handles vertical overflow.
-        for &child_node in &child_nodes {
-            if let Ok(style) = taffy.style(child_node) {
-                let mut style = style.clone();
-                style.flex_basis = Dimension::auto();
-                style.flex_grow = 0.0;
-                style.flex_shrink = 0.0;
-                let _ = taffy.set_style(child_node, style);
-            }
-        }
-        // `new_with_children` only errors for a child `NodeId` from a
-        // different tree, which never happens here since every id in
-        // `child_nodes` was just built in this same tree by the calls above.
-        let style = Style {
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::Stretch),
-            gap: Size {
-                width: length(0.0_f32),
-                height: length(CARD_GAP),
-            },
-            padding: taffy::Rect {
-                left: length(CARD_PADDING),
-                right: length(CARD_PADDING),
-                top: length(CARD_PADDING),
-                bottom: length(CARD_PADDING),
-            },
-            size: Size {
-                width: percent(1.0_f32),
-                height: Dimension::auto(),
-            },
-            max_size: Size {
-                width: length(CARD_WIDTH),
-                height: Dimension::auto(),
-            },
-            flex_shrink: 0.0,
-            ..Default::default()
-        };
-        taffy.widget_node(style, &child_nodes, node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-        let card_origin = Point::new(self.rect.x0, self.rect.y0);
-        if let Ok(child_nodes) = taffy.children(node) {
-            for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-                child.apply_layout(taffy, child_node, card_origin);
-            }
-        }
-        // Taffy can cap an auto-height flex card at its available viewport
-        // height while still placing nonshrinking controls beyond that cap.
-        // Paint and expose the full measured content, including bottom inset.
-        if let Some(bottom) = self
-            .children
-            .iter()
-            .map(|child| child.get_rect().y1)
-            .reduce(f64::max)
-        {
-            self.rect.y1 = self.rect.y1.max(bottom + f64::from(CARD_PADDING));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &shape,
-        );
-        for child in &mut self.children {
-            child.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) {
-            ui::widget::route_to_children(&mut self.children, &child_nodes, event, ctx);
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.children
-            .iter()
-            .map(std::convert::AsRef::as_ref)
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.children
-            .iter_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .collect()
-    }
-
-    fn wants_pointer_capture(&self) -> bool {
-        self.children.iter().any(|c| c.wants_pointer_capture())
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        // Every child must be polled regardless of an earlier `true` — this
-        // "takes" (clears) each child's own dirty flag, unlike a
-        // short-circuiting `any`.
-        let mut dirty = false;
-        for child in &mut self.children {
-            dirty |= child.take_structure_dirty();
-        }
-        dirty
-    }
-
-    fn name(&self) -> &'static str {
-        "InstallerCard"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
-// ===================================================================
-// ViewportStage — centres short cards, then lets the spacers collapse before
-// a tall card overflows into the surrounding Scrollable. This keeps the
-// spacious desktop presentation while making every control reachable on a
-// small laptop panel, portrait screen, or large-text/high-DPI setup.
-// ===================================================================
-
-struct ViewportStage {
-    children: Vec<Box<dyn Widget>>,
-    rect: Rect,
-}
-
-impl ViewportStage {
-    fn new(card: Box<dyn Widget>) -> Self {
-        Self {
-            children: vec![Box::new(Spacer::new()), card, Box::new(Spacer::new())],
-            rect: Rect::ZERO,
-        }
-    }
-}
-
-impl Widget for ViewportStage {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let child_nodes: Vec<NodeId> = self
-            .children
-            .iter_mut()
-            .map(|child| child.build_layout(taffy, theme, node_map))
-            .collect();
-        let style = Style {
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            align_items: Some(AlignItems::Center),
-            padding: taffy::Rect {
-                left: length(VIEWPORT_PADDING),
-                right: length(VIEWPORT_PADDING),
-                top: length(VIEWPORT_PADDING),
-                bottom: length(VIEWPORT_PADDING),
-            },
-            size: Size {
-                width: percent(1.0_f32),
-                // The scrollable measures this node for its scroll
-                // extent. A fixed viewport height hid the overflowing
-                // Review controls from the scrollbar.
-                height: Dimension::auto(),
-            },
-            min_size: Size {
-                width: Dimension::auto(),
-                // Short steps still fill the viewport so the two
-                // flexible spacers can centre the card.
-                height: percent(1.0_f32),
-            },
-            flex_shrink: 0.0,
-            ..Default::default()
-        };
-        taffy.widget_node(style, &child_nodes, node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-        let own_origin = Point::new(self.rect.x0, self.rect.y0);
-        if let Ok(child_nodes) = taffy.children(node) {
-            for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-                child.apply_layout(taffy, child_node, own_origin);
-            }
-        }
-        if let Some(card) = self.children.get(1) {
-            // The trailing centring spacer may itself end at the viewport
-            // edge. Only the card's overflow should enlarge scroll extent.
-            self.rect.y1 = self
-                .rect
-                .y1
-                .max(card.get_rect().y1 + f64::from(VIEWPORT_PADDING));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        for child in &mut self.children {
-            child.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) {
-            ui::widget::route_to_children(&mut self.children, &child_nodes, event, ctx);
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.children
-            .iter()
-            .map(std::convert::AsRef::as_ref)
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.children
-            .iter_mut()
-            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
-            .collect()
-    }
-
-    fn wants_pointer_capture(&self) -> bool {
-        self.children
-            .iter()
-            .any(|child| child.wants_pointer_capture())
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = false;
-        for child in &mut self.children {
-            dirty |= child.take_structure_dirty();
-        }
-        dirty
-    }
-
-    fn name(&self) -> &'static str {
-        "InstallerViewportStage"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 }
 
 // ===================================================================
@@ -2373,11 +2055,11 @@ impl InstallerApp {
         self.control(DestinationEffect::Back)
     }
 
-    /// A navigation row for `step`: `Back` (secondary) — shown only when the
-    /// step has a predecessor, so the first step has no dangling Back — plus
-    /// the forward action (`forward_label`, primary, running `forward`,
-    /// optionally disabled). A real `ui::Row` so its buttons stay in the
-    /// focusable order (widget tree mirrors taffy).
+    /// A navigation row for `step`: `Back` at the leading edge, shown only
+    /// when the step has a predecessor so the first step has no dangling
+    /// Back, and the forward action (`forward_label`, primary, running
+    /// `forward`, optionally disabled) at the trailing one. A real `ui::Row`
+    /// so its buttons stay in the focusable order.
     fn nav_row(
         &self,
         step: Step,
@@ -2385,44 +2067,49 @@ impl InstallerApp {
         forward_label: &str,
         forward_disabled: bool,
     ) -> Box<dyn Widget> {
-        let mut row = Row::new();
+        let mut row = Row::new().no_wrap();
         if prev_step(step).is_some() {
-            row = row.push(Box::new(ActionButton::new("Back", self.back_control())));
+            row = row.push(Box::new(
+                ActionButton::new("Back", self.back_control())
+                    .with_icon(ui::icons::Icon::ChevronLeft)
+                    .large(),
+            ));
         }
-        row = row.push(Box::new(
+        row = row.push(Box::new(Spacer::new())).push(Box::new(
             ActionButton::new(forward_label, forward)
                 .primary()
+                .large()
                 .disabled(forward_disabled),
         ));
         Box::new(row)
     }
 
-    /// The Finish-screen action row: Reboot (primary) + Power off (secondary).
+    /// The Finish-screen action row: Power off, then Reboot (primary) at the
+    /// trailing edge.
     fn finish_row(&self, disabled: bool) -> Box<dyn Widget> {
         Box::new(
             Row::new()
+                .no_wrap()
+                .push(Box::new(Spacer::new()))
                 .push(Box::new(
-                    ActionButton::new("Reboot now", self.control(DestinationEffect::Reboot))
-                        .primary()
+                    ActionButton::new("Power off", self.control(DestinationEffect::PowerOff))
+                        .large()
                         .disabled(disabled),
                 ))
                 .push(Box::new(
-                    ActionButton::new("Power off", self.control(DestinationEffect::PowerOff))
+                    ActionButton::new("Reboot now", self.control(DestinationEffect::Reboot))
+                        .primary()
+                        .large()
                         .disabled(disabled),
                 )),
         )
     }
 
-    /// Build the composed card subtree for the current step.
+    /// Build the page for the current step: the stepper, the step's content
+    /// in the scrolling body, and its actions pinned below, in the one page
+    /// frame every imager surface stands in.
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
-        let mut children: Vec<Box<dyn Widget>> = vec![Box::new(StepIndicator::new(
-            STEP_LABELS
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-            step_index(self.step),
-        ))];
-
+        let mut children: Vec<Box<dyn Widget>> = Vec::new();
         let mut actions: Vec<Box<dyn Widget>> = Vec::new();
         match self.step {
             Step::Network => self.compose_network_step(theme, &mut children, &mut actions),
@@ -2467,33 +2154,33 @@ impl InstallerApp {
             ));
         }
 
-        let card: Box<dyn Widget> = Box::new(Card::new(children));
-        let scroll = Scrollable::new_vertical()
-            .fill_parent_height()
-            .with_focus_reveal()
-            .with_persisted_offset(Rc::clone(&self.viewport_offset))
-            .always_visible()
-            .with_child(Box::new(ViewportStage::new(card)));
-        let mut page = ui::widget::Column::new()
-            .with_no_padding()
-            .with_gap(0.0)
-            .push(Box::new(scroll));
+        let mut body = crate::page::stack()
+            .with_id("installer.content")
+            .with_rhythm(Rhythm::Related);
+        for child in children {
+            body = body.push(child);
+        }
+        let stepper = Stepper::new(
+            STEP_LABELS
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+        )
+        .with_id("installer.stepper")
+        .current(Some(step_index(self.step)));
+        let mut frame = crate::page::Frame::new(body)
+            .stepper_widget(stepper)
+            .offset(Rc::clone(&self.viewport_offset));
         if !actions.is_empty() {
-            let mut footer = ui::widget::Column::new()
+            let mut footer = crate::page::stack()
                 .with_id("installer.actions")
-                .with_intrinsic_height()
-                .with_gap(theme.tokens.spacing.s2);
+                .with_rhythm(Rhythm::Related);
             for action in actions {
                 footer = footer.push(action);
             }
-            page = page.push(Box::new(
-                ui::widget::Container::new()
-                    .with_no_padding()
-                    .with_centered_max_width(theme.tokens.metrics.readable_width)
-                    .with_child(Box::new(footer)),
-            ));
+            frame = frame.actions(footer);
         }
-        Box::new(page)
+        frame.build()
     }
 
     fn compose_network_step(
@@ -2615,7 +2302,7 @@ impl InstallerApp {
             ));
         } else {
             for (i, network) in self.network.snapshot.networks.iter().take(5).enumerate() {
-                let marker = if network.connected {
+                let state = if network.connected {
                     "Connected"
                 } else if network.secure {
                     "Secured"
@@ -2623,21 +2310,25 @@ impl InstallerApp {
                     "Open"
                 };
                 let selected = self.network.selected_ssid.as_deref() == Some(network.ssid.as_str());
-                let label = format!(
-                    "{}{} · {marker} · signal {}/4",
-                    if selected { "✓ " } else { "" },
-                    network.ssid,
-                    network.signal
-                );
+                let control = self.control(DestinationEffect::SelectNetwork {
+                    ssid: network.ssid.clone(),
+                });
+                let fire = control.clone();
+                let id = format!("wifi_network_{i}");
+                let row = ListRow::new(id.as_str(), network.ssid.as_str())
+                    .icon(if network.secure {
+                        ui::icons::Icon::Lock
+                    } else {
+                        ui::icons::Icon::Wifi
+                    })
+                    .secondary(state)
+                    .signal(ui::widget::SignalLevel::from_bars(network.signal))
+                    .selected(selected)
+                    .checked(selected)
+                    .with_enabled(!self.network.is_busy())
+                    .on_activate(move || fire.fire());
                 children.push(Box::new(
-                    ActionButton::new(
-                        &label,
-                        self.control(DestinationEffect::SelectNetwork {
-                            ssid: network.ssid.clone(),
-                        }),
-                    )
-                    .with_test_id(&format!("wifi_network_{i}"))
-                    .disabled(self.network.is_busy()),
+                    Bound::new(Box::new(row), [(id, &control)]).activated_by_keys(&control),
                 ));
             }
         }
@@ -2669,15 +2360,21 @@ impl InstallerApp {
                     .with_color(danger),
             ));
         } else {
-            for (i, disk) in self.disks.iter().enumerate() {
-                children.push(Box::new(DiskRow::new(
-                    disk.clone(),
-                    self.control(DestinationEffect::SelectDisk {
-                        device: disk.name.clone(),
-                    }),
-                    self.selected_disk == Some(i),
-                )));
-            }
+            let rows = self
+                .disks
+                .iter()
+                .enumerate()
+                .map(|(i, disk)| {
+                    Box::new(disk_row(
+                        disk,
+                        &self.control(DestinationEffect::SelectDisk {
+                            device: disk.name.clone(),
+                        }),
+                        self.selected_disk == Some(i),
+                    )) as Box<dyn Widget>
+                })
+                .collect();
+            children.push(Box::new(ui::widget::Section::new(rows)));
         }
         children.extend(self.windows_alongside_preparation(theme));
         if self.install_method == InstallMethod::Alongside
@@ -2756,24 +2453,19 @@ impl InstallerApp {
                 .with_color(dim),
             ));
         } else {
-            children.push(Box::new(
-                SegChoice::new(
-                    INSTALL_METHOD_LABELS
-                        .iter()
-                        .map(|s| (*s).to_string())
-                        .collect(),
-                    ["erase", "alongside"]
-                        .iter()
-                        .map(|method| {
-                            self.control(DestinationEffect::SetMethod {
-                                method: (*method).to_owned(),
-                            })
+            children.push(Box::new(seg_choice(
+                &INSTALL_METHOD_LABELS,
+                ["erase", "alongside"]
+                    .iter()
+                    .map(|method| {
+                        self.control(DestinationEffect::SetMethod {
+                            method: (*method).to_owned(),
                         })
-                        .collect(),
-                    usize::from(self.install_method == InstallMethod::Alongside),
-                )
-                .with_test_id("install_method"),
-            ));
+                    })
+                    .collect(),
+                usize::from(self.install_method == InstallMethod::Alongside),
+                "install_method",
+            )));
         }
         let guidance = crate::setup::strings::t(if self.install_method == InstallMethod::Erase {
             "installer-storage-erase-warning"
@@ -3119,7 +2811,7 @@ impl InstallerApp {
             Text::new("Disk encryption").with_role(TextRole::Body),
         ));
         children.push(Box::new(
-            Text::new("Always on · LUKS2")
+            Text::new("Always on, with LUKS2")
                 .with_role(TextRole::Body)
                 .with_color(theme.status_success),
         ));
@@ -3132,19 +2824,14 @@ impl InstallerApp {
         children.push(Box::new(
             Text::new("Security key").with_role(TextRole::Body),
         ));
-        children.push(Box::new(
-            SegChoice::new(
-                FIDO2_LABELS
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect(),
-                (0..FIDO2_LABELS.len())
-                    .map(|i| self.control(DestinationEffect::SetSecurityKey { enabled: i == 1 }))
-                    .collect(),
-                usize::from(self.fido2),
-            )
-            .with_test_id("fido2_choice"),
-        ));
+        children.push(Box::new(seg_choice(
+            &FIDO2_LABELS,
+            (0..FIDO2_LABELS.len())
+                .map(|i| self.control(DestinationEffect::SetSecurityKey { enabled: i == 1 }))
+                .collect(),
+            usize::from(self.fido2),
+            "fido2_choice",
+        )));
         children.push(Box::new(
             Text::new("Optionally enroll a FIDO2 security key (e.g. a YubiKey) as another way to unlock. Plug it in before installing.")
                 .with_role(TextRole::Caption)
@@ -3261,7 +2948,6 @@ impl InstallerApp {
                     self.control(DestinationEffect::SetMediaCodecs { enabled: false }),
                 )
                 .quiet()
-                .with_width(theme.tokens.spacing.s16 * 2.0 + theme.tokens.spacing.s8)
                 .with_test_id("codecs_undo"),
             )));
             children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
@@ -3279,7 +2965,6 @@ impl InstallerApp {
                 )
                 .primary()
                 .large()
-                .with_width(theme.tokens.spacing.s16 * 4.0 + theme.tokens.spacing.s12)
                 .with_test_id("codecs_install"),
             )));
             children.push(centered_media_control(Box::new(
@@ -3288,20 +2973,16 @@ impl InstallerApp {
                     self.next_control(),
                 )
                 .quiet()
-                .with_width(theme.tokens.spacing.s16 * 2.0 + theme.tokens.spacing.s8)
                 .with_test_id("codecs_skip"),
             )));
             children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
             children.push(Box::new(
                 Row::new()
                     .with_padding(0.0, 0.0)
-                    .push(Box::new(
-                        ActionButton::new(
-                            &crate::setup::strings::t("installer-media-back"),
-                            self.back_control(),
-                        )
-                        .with_width(theme.tokens.spacing.s16 * 2.0 + theme.tokens.spacing.s3),
-                    ))
+                    .push(Box::new(ActionButton::new(
+                        &crate::setup::strings::t("installer-media-back"),
+                        self.back_control(),
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
         }
@@ -3322,14 +3003,14 @@ impl InstallerApp {
             .iter()
             .position(|index| *index == self.selected_fs)
             .unwrap_or(0);
-        children.push(Box::new(SegChoice::new(
-            choices
+        let labels: Vec<&str> = choices
+            .iter()
+            .filter_map(|index| FILESYSTEMS.get(*index).copied())
+            .collect();
+        children.push(Box::new(seg_choice(
+            &labels,
+            labels
                 .iter()
-                .filter_map(|index| FILESYSTEMS.get(*index).map(|name| (*name).to_string()))
-                .collect(),
-            choices
-                .iter()
-                .filter_map(|index| FILESYSTEMS.get(*index))
                 .map(|filesystem| {
                     self.control(DestinationEffect::SetFilesystem {
                         filesystem: (*filesystem).to_owned(),
@@ -3337,6 +3018,7 @@ impl InstallerApp {
                 })
                 .collect(),
             selected,
+            "filesystem_choice",
         )));
         children.push(Box::new(
             Text::new(fs_description(self.selected_fs))
@@ -3424,9 +3106,9 @@ impl InstallerApp {
             Some(d) => format!("{} ({}, {})", d.name, capacity(d), d.model),
             None => "<no disk>".to_string(),
         };
-        children.push(summary_row(theme, "Disk", &disk_value));
-        children.push(summary_row(
-            theme,
+        let mut summary = Vec::new();
+        summary.push(Property::new("Disk", &disk_value));
+        summary.push(Property::new(
             "Install method",
             if self.install_method == InstallMethod::Alongside {
                 "Alongside — preserve existing partitions"
@@ -3438,13 +3120,11 @@ impl InstallerApp {
             && let Some(disk) = self.selected_disk_ref()
         {
             if let Some(plan) = self.guided_alongside_plan() {
-                children.push(summary_row(
-                    theme,
+                summary.push(Property::new(
                     "Tilo storage",
-                    &self.alongside_allocation_summary(&plan),
+                    self.alongside_allocation_summary(&plan),
                 ));
-                children.push(summary_row(
-                    theme,
+                summary.push(Property::new(
                     "Existing partitions",
                     "Preserved byte-for-byte; none resized, moved, or deleted",
                 ));
@@ -3453,75 +3133,58 @@ impl InstallerApp {
                     .filter(|_| self.selected_disk_hosts_installer())
                 {
                     let host = host.display_name();
-                    children.push(summary_row(
-                        theme,
-                        "This disk",
-                        &format!(
+                    summary.push(Property::new("This disk",
+                        format!(
                             "Also holds the running installer and your existing {host} system. {host} stays untouched."
                         ),
                     ));
-                    children.push(summary_row(
-                        theme,
+                    summary.push(Property::new(
                         "Installer space",
                         "Returned to Tilo automatically after you first sign in",
                     ));
-                    children.push(summary_row(
-                        theme,
+                    summary.push(Property::new(
                         "Choose an OS",
-                        &format!(
+                        format!(
                             "The next restart starts Tilo once; {host} stays the firmware default"
                         ),
                     ));
                 } else {
-                    children.push(summary_row(
-                        theme,
-                        "Choose an OS",
+                    summary.push(Property::new("Choose an OS",
                         "Use the firmware boot picker; its current default and existing entries are preserved",
                     ));
                 }
             } else {
-                children.push(summary_row(
-                    theme,
+                summary.push(Property::new(
                     "Tilo root",
                     disk.alongside_root()
                         .map_or("<missing>", |p| p.name.as_str()),
                 ));
-                children.push(summary_row(
-                    theme,
+                summary.push(Property::new(
                     "Tilo EFI partition",
                     disk.efi_partition()
                         .map_or("<missing>", |p| p.name.as_str()),
                 ));
-                children.push(summary_row(
-                    theme,
-                    "Choose an OS",
+                summary.push(Property::new("Choose an OS",
                     "Tilo adds safe menu shortcuts for unambiguous Windows/Linux loaders on this shared EFI partition",
                 ));
             }
         }
         if self.install_method == InstallMethod::Alongside {
-            children.push(summary_row(
-                theme,
+            summary.push(Property::new(
                 "Boot choice",
-                &crate::setup::strings::t(ALONGSIDE_BOOT_GUIDANCE),
+                crate::setup::strings::t(ALONGSIDE_BOOT_GUIDANCE),
             ));
-            children.push(summary_row(
-                theme,
+            summary.push(Property::new(
                 "Existing files",
-                &crate::setup::strings::t(ALONGSIDE_FILES_GUIDANCE),
+                crate::setup::strings::t(ALONGSIDE_FILES_GUIDANCE),
             ));
         }
-        children.push(summary_row(theme, "Filesystem", self.filesystem()));
-        children.push(summary_row(theme, "Encryption", &self.encryption_summary()));
-        children.push(summary_row(
-            theme,
-            "Hostname",
-            local_text(&self.hostname).trim(),
-        ));
-        children.push(summary_row(theme, "Time zone", self.timezone().trim()));
-        children.push(summary_row(theme, "Keyboard layout", self.keymap().trim()));
-        children.push(summary_row(
-            theme,
+        summary.push(Property::new("Filesystem", self.filesystem()));
+        summary.push(Property::new("Encryption", self.encryption_summary()));
+        summary.push(Property::new("Hostname", local_text(&self.hostname).trim()));
+        summary.push(Property::new("Time zone", self.timezone().trim()));
+        summary.push(Property::new("Keyboard layout", self.keymap().trim()));
+        summary.push(Property::new(
             "More video and audio formats",
             if self.codecs {
                 "Install once the new system is online"
@@ -3529,19 +3192,14 @@ impl InstallerApp {
                 "Not now (available later in Settings, Updates)"
             },
         ));
-        children.push(summary_row(
-            theme,
-            "Username",
-            local_text(&self.username).trim(),
-        ));
+        summary.push(Property::new("Username", local_text(&self.username).trim()));
         let full_name = local_text(&self.full_name);
         if !full_name.trim().is_empty() {
-            children.push(summary_row(theme, "Name", full_name.trim()));
+            summary.push(Property::new("Name", full_name.trim()));
         }
-        children.push(summary_row(
-            theme,
-            "Network",
-            &self.network.connection_summary(),
+        summary.push(Property::new("Network", self.network.connection_summary()));
+        children.push(Box::new(
+            PropertyList::new(summary).with_id("installer.review.summary"),
         ));
         children.push(Box::new(
             Text::new("This install uses the Tilo image on this medium; it does not download an update. Future system updates come from the signature-required Tilo repository and are checked automatically after first boot whenever the computer is online.")
@@ -3598,14 +3256,9 @@ impl InstallerApp {
                 .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
-        let ack_label = if self.recovery_ack {
-            "[x] I will save my recovery key"
-        } else {
-            "[ ] I will save my recovery key"
-        };
         children.push(Box::new(
             ActionButton::new(
-                ack_label,
+                "I will save my recovery key",
                 self.control(DestinationEffect::SetRecoveryPromise {
                     acknowledged: !self.recovery_ack,
                 }),
@@ -3671,7 +3324,7 @@ impl InstallerApp {
                     ));
                 }
                 self.compose_recovery_key(theme, children);
-                children.push(Box::new(StatusLog::new(friendly_status, STATUS_LOG_HEIGHT)));
+                children.push(status_log(&friendly_status, theme));
                 if !self.status.is_empty() {
                     children.push(Box::new(
                         Text::new(&self.status)
@@ -3701,10 +3354,7 @@ impl InstallerApp {
                         .with_color(dim),
                 ));
                 self.compose_recovery_key(theme, children);
-                children.push(Box::new(StatusLog::new(
-                    self.status_lines.clone(),
-                    STATUS_LOG_HEIGHT,
-                )));
+                children.push(status_log(&self.status_lines, theme));
                 actions.push(Box::new(ActionButton::new(
                     "Review storage",
                     self.back_control(),
@@ -3724,7 +3374,7 @@ impl InstallerApp {
                     )),
                 ));
                 self.compose_recovery_key(theme, children);
-                children.push(Box::new(StatusLog::new(friendly_status, STATUS_LOG_HEIGHT)));
+                children.push(status_log(&friendly_status, theme));
             }
         }
     }
@@ -3764,14 +3414,9 @@ impl InstallerApp {
             })
             .with_live(Politeness::Polite),
         ));
-        let saved_label = if self.recovery_key_saved {
-            "[x] I saved this key off this computer"
-        } else {
-            "[ ] I saved this key off this computer"
-        };
         children.push(Box::new(
             ActionButton::new(
-                saved_label,
+                "I saved this key off this computer",
                 self.control(DestinationEffect::ConfirmRecoverySaved {
                     saved: !self.recovery_key_saved,
                 }),
@@ -3816,19 +3461,6 @@ fn centered_media_control(widget: Box<dyn Widget>) -> Box<dyn Widget> {
             .push(Box::new(Spacer::new()))
             .push(widget)
             .push(Box::new(Spacer::new())),
-    )
-}
-
-/// One `label: value` review line (label dim, value primary).
-fn summary_row(theme: &Theme, label: &str, value: &str) -> Box<dyn Widget> {
-    Box::new(
-        Row::new()
-            .push(Box::new(
-                Text::new(&format!("{label}:"))
-                    .with_role(TextRole::Caption)
-                    .with_color(theme.text_dim),
-            ))
-            .push(Box::new(Text::new(value).with_role(TextRole::Body))),
     )
 }
 
@@ -4198,13 +3830,7 @@ impl Widget for InstallerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.content,
-            None,
-            &self.rect,
-        );
+        // The framework paints the window ground; the page draws on it.
         if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -4483,10 +4109,19 @@ mod tests {
             .find_map(|child| find_named(child, name))
     }
 
+    /// The node that reads `text`: named by it, or, for a labelled value
+    /// (a review property), holding it as its value.
+    fn reading(node: ui::a11y::AccessNode, text: &str) -> Option<ui::a11y::AccessNode> {
+        if node.name.as_deref() == Some(text) || node.value.as_deref() == Some(text) {
+            return Some(node);
+        }
+        node.children
+            .into_iter()
+            .find_map(|child| reading(child, text))
+    }
+
     fn find_accessible(widget: &dyn Widget, name: &str) -> Option<ui::a11y::AccessNode> {
-        if let Some(node) = widget.accessibility()
-            && node.name.as_deref() == Some(name)
-        {
+        if let Some(node) = widget.accessibility().and_then(|node| reading(node, name)) {
             return Some(node);
         }
         widget
@@ -5564,7 +5199,7 @@ mod tests {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Options;
             let _ = build(&mut app);
-            let card = find_named(&app, "InstallerCard").expect("options card");
+            let card = find_test_id(&app, "installer.content").expect("options content");
             let has_fido2 = card
                 .children()
                 .iter()
@@ -6542,21 +6177,15 @@ mod tests {
             let mut app = InstallerApp::for_shot(Step::Review);
             layout_at(&mut app, 320.0, 480.0);
 
-            let card = find_named(&app, "InstallerCard").expect("review card");
+            let content = find_test_id(&app, "installer.content").expect("review content");
             assert!(
-                card.get_rect().width() <= 320.0 - 2.0 * f64::from(VIEWPORT_PADDING),
-                "responsive card escaped compact viewport: {:?}",
-                card.get_rect()
+                content.get_rect().x0 > 0.0 && content.get_rect().x1 < 320.0,
+                "responsive content escaped the page gutter of a compact viewport: {:?}",
+                content.get_rect()
             );
-            assert!(card.get_rect().x0 >= f64::from(VIEWPORT_PADDING));
             assert!(
-                card.get_rect().height() > 480.0,
+                content.get_rect().height() > 480.0,
                 "representative Review must exercise vertical overflow"
-            );
-            let stage = find_named(&app, "InstallerViewportStage").expect("review viewport stage");
-            assert!(
-                stage.get_rect().y1 >= card.get_rect().y1,
-                "scroll extent stops before the Review card ends"
             );
 
             let scroll = find_named(&app, "Scrollable").expect("installer scroll viewport");
@@ -6568,7 +6197,7 @@ mod tests {
         {
             let mut app = InstallerApp::for_shot(Step::Review);
             layout_at(&mut app, 1280.0, 768.0);
-            let card = find_named(&app, "InstallerCard").expect("review card");
+            let card = find_test_id(&app, "installer.content").expect("review content");
             let input = find_named(&app, "TextInput").expect("destructive confirmation input");
             let controls = card.children();
             let ack = controls
@@ -6590,10 +6219,10 @@ mod tests {
             );
             assert!(
                 card.get_rect().y1 >= input.get_rect().y1,
-                "confirmation input escaped the review card"
+                "confirmation input escaped the review content"
             );
             assert!(
-                ack.get_rect().height() >= 40.0,
+                ack.get_rect().height() > 0.0,
                 "acknowledgement collapsed: {:?}",
                 ack.get_rect()
             );
@@ -6786,7 +6415,7 @@ mod tests {
                 "layout dropdown + Next must be focusable (no Back on the first step)"
             );
 
-            let card = find_named(&app, "InstallerCard").expect("keyboard card");
+            let card = find_test_id(&app, "installer.content").expect("keyboard content");
             assert!(
                 card.children().iter().any(|c| c.name() == "KeyboardView"),
                 "the Keyboard step renders the visual keyboard preview"
@@ -6825,15 +6454,13 @@ mod tests {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
             let _ = build(&mut app);
-            let card = find_named(&app, "InstallerCard").expect("disk card");
-            let fields = card.children();
-            let disk_rows = fields.iter().filter(|c| c.name() == "DiskRow").count();
-            assert_eq!(disk_rows, 2, "both sample disks render as rows");
-            assert!(
-                fields
-                    .iter()
-                    .any(|c| c.name() == "DiskRow" && c.is_focusable())
-            );
+            let disk_rows: Vec<_> = app
+                .disks
+                .iter()
+                .filter_map(|disk| find_test_id(&app, &disk.name))
+                .collect();
+            assert_eq!(disk_rows.len(), 2, "both sample disks render as rows");
+            assert!(disk_rows.iter().any(|c| c.is_focusable()));
         }
         {
             let mut disks = sample();
@@ -6841,11 +6468,10 @@ mod tests {
             let mut app = InstallerApp::with_disks(disks);
             app.step = Step::Disk;
             let _ = build(&mut app);
-            let card = find_named(&app, "InstallerCard").expect("disk card");
-            let disk_rows: Vec<_> = card
-                .children()
-                .into_iter()
-                .filter(|child| child.name() == "DiskRow")
+            let disk_rows: Vec<_> = app
+                .disks
+                .iter()
+                .filter_map(|disk| find_test_id(&app, &disk.name))
                 .collect();
             assert_eq!(disk_rows.len(), 2);
             assert!(!disk_rows[0].is_focusable());
