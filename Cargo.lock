@@ -21596,6 +21596,7 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-desktop-policy",
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-device-fabric",

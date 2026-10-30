@@ -14,6 +14,12 @@
 //! - a document or a link, which goes to the app that claims its type or
 //!   scheme ([`routing`]).
 //!
+//! An app may already be running: one that keeps a single window is raised
+//! instead of started again, and one that opens another window each time is
+//! asked for it through its own New Window action ([`instance`]). A launch
+//! carrying a document or a link always starts the app's own command line,
+//! which hands it to the process it already runs.
+//!
 //! Everything the session knows that the plan needs — the room and what was
 //! granted in it ([`Room`]), the displays and the person's session variables
 //! ([`env`]) — is passed in as data, so a plan is assertable without a
@@ -21,6 +27,7 @@
 //! reports how it ended so a crash can be told from a normal exit.
 
 pub mod env;
+pub mod instance;
 pub mod launch;
 pub mod plan;
 pub mod room;
@@ -28,6 +35,7 @@ pub mod routing;
 pub mod spawner;
 
 pub use env::SessionEnvironment;
+pub use instance::{Answer, Instance, Shown, Windows};
 pub use launch::{Launch, Open};
 pub use plan::{Kind, PlanContext, PlanError, Planned};
 pub use room::Room;

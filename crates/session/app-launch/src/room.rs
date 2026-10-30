@@ -200,9 +200,8 @@ mod tests {
                 "{app:?} must not name a path"
             );
         }
-        assert_eq!(
-            Room::under(directory.path(), "").is_workspace(),
-            false,
+        assert!(
+            !Room::under(directory.path(), "").is_workspace(),
             "a launch outside a workspace names no room"
         );
     }

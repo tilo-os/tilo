@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use desktop_entry::launch::{HostLaunch, LaunchEnv};
 
 use crate::env::SessionEnvironment;
+use crate::instance::package_identities;
 use crate::launch::{Launch, Open};
 use crate::room::Room;
 
@@ -126,6 +127,10 @@ pub struct PlanContext<'a> {
     /// The DRM render node the compositor renders on, so an app renders on
     /// the same GPU.
     pub render_node: Option<PathBuf>,
+    /// A window of the app is already showing and it opens another on
+    /// request ([`crate::Answer::Start`]): ask for the new one the way its
+    /// entry declares, through its New Window action where it has one.
+    pub new_window: bool,
 }
 
 impl PlanContext<'_> {
@@ -295,7 +300,11 @@ impl Planned {
                 desktop_id.to_owned(),
             ))
         })?;
-        let launch_env = opening(context.environment.host_launch_env(), open);
+        let launch_env = opening(
+            context.environment.host_launch_env(),
+            open,
+            context.new_window,
+        );
         let planned = desktop_entry::launch::plan(entry, &launch_env)?;
         Ok(from_host_launch(planned, Kind::of_entry(entry)))
     }
@@ -329,9 +338,12 @@ impl Planned {
     }
 }
 
-/// A host app's launch environment with what it opens: a document reaches
-/// the entry's `%f`/`%F` as a path, a link its `%u`/`%U` as it is.
-fn opening(mut env: LaunchEnv, open: Option<&Open>) -> LaunchEnv {
+/// A host app's launch environment with what it opens and whether a window
+/// of it is already showing: a document reaches the entry's `%f`/`%F` as a
+/// path, a link its `%u`/`%U` as it is, and an app that opens another window
+/// on request is asked for it through its own New Window action.
+fn opening(mut env: LaunchEnv, open: Option<&Open>, new_window: bool) -> LaunchEnv {
+    env.prefer_new_window = new_window;
     match open {
         Some(Open::File(path)) => env.files.push(path.display().to_string()),
         Some(Open::Uri(uri)) => env.urls.push(uri.clone()),
@@ -353,20 +365,6 @@ fn from_host_launch(planned: HostLaunch, kind: Kind) -> Planned {
     }
 }
 
-/// The strings a package's window may announce itself by: its id, and its
-/// trailing component, which is what a toolkit defaults a Wayland `app_id`
-/// to when the manifest does not say.
-fn package_identities(package_id: &str) -> Vec<String> {
-    let mut identities = vec![package_id.to_owned()];
-    if let Some(tail) = package_id.rsplit('.').next()
-        && tail != package_id
-        && !tail.is_empty()
-    {
-        identities.push(tail.to_owned());
-    }
-    identities
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +376,7 @@ mod tests {
             launcher: Some(PathBuf::from("/usr/libexec/tilo/tilo-launcher")),
             identity: None,
             render_node: None,
+            new_window: false,
         }
     }
 
@@ -494,6 +493,7 @@ mod tests {
         let launch_env = opening(
             displays().host_launch_env(),
             Some(&Open::File("/home/you/track.flac".into())),
+            false,
         );
         let planned = desktop_entry::launch::plan(&entry, &launch_env).expect("plans");
         let planned = from_host_launch(planned, Kind::of_entry(&entry));
@@ -532,6 +532,37 @@ mod tests {
                 "com.spotify.Client.desktop",
                 "com.spotify.Client"
             ]
+        );
+    }
+
+    #[test]
+    fn an_app_already_showing_is_asked_for_a_new_window_its_entry_declares() {
+        let editor = desktop_entry::entry::parse(
+            "[Desktop Entry]\nType=Application\nName=Editor\nExec=/usr/bin/editor %F\n\
+             Actions=new-window;\n\n[Desktop Action new-window]\nName=New Window\n\
+             Exec=/usr/bin/editor --new-window %F\n",
+            "org.example.Editor.desktop",
+            Path::new("/usr/share/applications/org.example.Editor.desktop"),
+            &[],
+        )
+        .expect("parses");
+        let opened = |new_window| {
+            let planned = desktop_entry::launch::plan(
+                &editor,
+                &opening(displays().host_launch_env(), None, new_window),
+            )
+            .expect("plans");
+            from_host_launch(planned, Kind::of_entry(&editor)).args
+        };
+        assert_eq!(
+            opened(false),
+            Vec::<String>::new(),
+            "a cold launch runs the entry's own command line"
+        );
+        assert_eq!(
+            opened(true),
+            ["--new-window"],
+            "one already showing gets another through the action the entry declares"
         );
     }
 
