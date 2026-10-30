@@ -293,30 +293,37 @@ pub(super) struct AgentActions {
 }
 
 impl AgentActions {
-    pub(super) fn open(&mut self, source: ActionSessionSource, owner: ComposerOwner) -> bool {
+    ///
+    /// # Errors
+    /// Why it could not: requests of another owner still going, this
+    /// device's identity in the room not settled or changed, or the
+    /// session refused.
+    pub(super) fn open(
+        &mut self,
+        source: ActionSessionSource,
+        owner: ComposerOwner,
+    ) -> Result<(), String> {
         // Opening chrome must not retire a still-observable request or a
         // saved message. It is never a cancellation or a retry.
         if self.owner.as_ref() == Some(&owner) && self.session.is_some() {
-            return true;
+            return Ok(());
         }
         if !self.calls.is_empty() || !self.sent.is_empty() {
-            return false;
+            return Err("requests asked before are still going".into());
         }
-        let Some(revision) = source.identity_revision(&owner.room) else {
-            return false;
-        };
+        let revision = source
+            .identity_revision(&owner.room)
+            .ok_or("this device's identity in the room is not settled yet")?;
         if revision != owner.identity_revision {
-            return false;
+            return Err("this device's identity in the room changed".into());
         }
-        let Ok(session) = source.open(&owner.room, Some(&owner.person)) else {
-            return false;
-        };
+        let session = source.open(&owner.room, Some(&owner.person))?;
         self.owner = Some(owner);
         self.source = Some(source);
         self.session = Some(session);
         self.followed = None;
         self.fresh.mark();
-        true
+        Ok(())
     }
 
     fn begin(&mut self, operation: Operation) {
@@ -573,7 +580,8 @@ impl AgentActions {
         show: bool,
         quick: bool,
     ) -> Option<AskTicket> {
-        if !self.open(source, owner.clone()) {
+        if let Err(error) = self.open(source, owner.clone()) {
+            tracing::warn!(%error, "the agent's session could not be opened for the ask");
             return None;
         }
         // Unique across every owner's asks, so a ticket names one ask.
@@ -2141,13 +2149,15 @@ mod tests {
     fn composer_in(room: &Arc<Room>) -> (AgentActions, AgentQuickComposer, ComposerOwner) {
         let owner = owner(&room.id);
         let mut actions = AgentActions::default();
-        assert!(actions.open(
-            ActionSessionSource::with_mock(
-                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
-                room.clone(),
-            ),
-            owner.clone(),
-        ));
+        actions
+            .open(
+                ActionSessionSource::with_mock(
+                    crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+                    room.clone(),
+                ),
+                owner.clone(),
+            )
+            .expect("opened");
         let mut composer = AgentQuickComposer::default();
         composer.open(
             owner.clone(),

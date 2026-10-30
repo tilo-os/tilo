@@ -344,6 +344,9 @@ pub(crate) struct SelectionRequests {
     /// composer the press opens asks about the focused selection or window.
     asking: Option<String>,
     waiting: Option<Waiting>,
+    /// A composer that could not open yet, opened at this moment: when this
+    /// device's identity in the room settles ([`Self::defer_open`]).
+    deferred: Option<Instant>,
     /// The agent last asked in each room, asked again while it is live.
     last_agent: HashMap<String, String>,
 }
@@ -422,6 +425,13 @@ impl SelectionRequests {
     /// Route a pressed chord for the focused app: ask it when it can
     /// answer, otherwise open now. `None` when nothing was pressed.
     pub(crate) fn route(&mut self, focused_app: Option<&str>, now: Instant) -> Option<ChordRoute> {
+        if let Some(at) = self.deferred {
+            if now < at {
+                return None;
+            }
+            self.deferred = None;
+            return Some(ChordRoute::Open);
+        }
         if !std::mem::take(&mut self.pressed) {
             return None;
         }
@@ -476,7 +486,18 @@ impl SelectionRequests {
         if self.pressed {
             return Some(now);
         }
-        self.waiting.as_ref().map(|waiting| waiting.deadline)
+        self.deferred
+            .into_iter()
+            .chain(self.waiting.as_ref().map(|waiting| waiting.deadline))
+            .min()
+    }
+
+    /// The composer the press opens cannot open before `at` (this device's
+    /// identity in the room settles then): route it again then, as an open,
+    /// with what the palette asked kept.
+    pub(crate) fn defer_open(&mut self, at: Instant) {
+        self.waiting = None;
+        self.deferred = Some(at);
     }
 
     /// The agent to ask in `room`: the one asked last while it is still
@@ -646,6 +667,30 @@ mod tests {
         assert_eq!(
             requests.route(Some("so.tilo.notes"), now),
             Some(ChordRoute::Open)
+        );
+    }
+
+    #[test]
+    fn a_composer_that_cannot_open_yet_opens_at_the_moment_it_can_with_what_was_asked() {
+        let mut requests = SelectionRequests::default();
+        let now = Instant::now();
+        let settles = now + Duration::from_millis(1500);
+        requests.press_asking("Tidy up the release tasks".into());
+        assert_eq!(requests.route(None, now), Some(ChordRoute::Open));
+        // This device's identity in the room settles later: the open waits for it.
+        requests.defer_open(settles);
+        assert_eq!(
+            requests.deadline(now),
+            Some(settles),
+            "woken at that moment"
+        );
+        assert_eq!(requests.route(None, now), None, "not before");
+        assert_eq!(requests.route(None, settles), Some(ChordRoute::Open));
+        assert_eq!(requests.deadline(settles), None, "routed once");
+        assert_eq!(
+            requests.take_asking().as_deref(),
+            Some("Tidy up the release tasks"),
+            "what the palette asked is still asked"
         );
     }
 
