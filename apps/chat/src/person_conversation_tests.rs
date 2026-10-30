@@ -23,6 +23,14 @@ fn registered_person_effect_ids_match_the_native_broker_protocol() {
     assert_eq!(ChatEffect::SEND_DIRECT_MESSAGE.id, "send-direct-message");
 }
 
+/// What the person typed and did not send is kept in their draft record under
+/// this key, so the key outlives any rename of the scope it carries.
+#[test]
+fn a_private_draft_is_kept_under_the_key_it_was_stored_under() {
+    let key = crate::app::ChatApp::person_conversation_key("peer");
+    assert_eq!(key.draft_key(), "person:4:room:4:peer");
+}
+
 #[test]
 fn accepted_person_send_cannot_clear_a_newer_editor_revision() {
     let mut workspace = AutoCommit::new();
