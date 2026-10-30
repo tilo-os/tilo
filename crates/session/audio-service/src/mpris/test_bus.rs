@@ -16,22 +16,48 @@ pub(super) const PROBE: &str = "org.mpris.MediaPlayer2.probe";
 
 /// A session bus of its own, as `dbus-run-session` starts one, stopped
 /// on drop. The observer under test never sees the caller's real bus.
+///
+/// The daemon gets an explicit configuration instead of `--session`: the
+/// session configuration expands the standard service directories, which
+/// reads the caller's home directory out of the user database, and a
+/// container can run the tests as a user ID that database does not know.
 pub(super) struct PrivateBus {
     daemon: std::process::Child,
     pub(super) address: String,
     _directory: tempfile::TempDir,
 }
 
+/// The daemon's policy when it is not a session bus of a real desktop: any
+/// connection may own names and monitor messages, as on a session bus.
+const CONFIG: &str = r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:path=SOCKET</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+"#;
+
 impl PrivateBus {
     pub(super) fn start() -> Self {
         use std::io::BufRead;
         let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("bus");
+        let config = directory.path().join("bus.conf");
+        std::fs::write(
+            &config,
+            CONFIG.replace("SOCKET", &socket.display().to_string()),
+        )
+        .unwrap();
         let mut daemon = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!(
-                "--address=unix:path={}",
-                directory.path().join("bus").display()
-            ))
+            .arg("--config-file")
+            .arg(&config)
+            .args(["--nofork", "--print-address=1"])
             .stdout(std::process::Stdio::piped())
             .spawn()
             .expect("the session bus needs dbus-daemon, which the builder image installs");
