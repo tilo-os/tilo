@@ -32,6 +32,9 @@ pub struct Apps {
     pub unreachable: Vec<(&'static str, &'static str)>,
     /// The apps whose record a task fetched, in order.
     pub fetched: RefCell<Vec<String>>,
+    /// The copy of an app's record the door hands over while it lags the app's host: the
+    /// record as it was when [`Self::lag`] froze it.
+    lagging: RefCell<HashMap<String, Vec<u8>>>,
 }
 
 impl Apps {
@@ -76,7 +79,15 @@ impl Apps {
             refused: Vec::new(),
             unreachable: Vec::new(),
             fetched: RefCell::default(),
+            lagging: RefCell::default(),
         }
+    }
+
+    /// From now on the door hands over `app`'s record as it is now, whatever its host applies
+    /// later: the room's copy lagging the record's origin.
+    pub fn lag(&self, app: &str) {
+        let copy = self.replica(app).doc.save();
+        self.lagging.borrow_mut().insert(app.to_owned(), copy);
     }
 
     /// The host of `app`.
@@ -130,6 +141,9 @@ impl RecordSource for Apps {
             return Err((*why).to_owned());
         }
         self.fetched.borrow_mut().push(app.to_owned());
+        if let Some(copy) = self.lagging.borrow().get(app) {
+            return Ok(Some(copy.clone()));
+        }
         let index = *self.by_app.get(app).ok_or("no such app")?;
         Ok(Some(self.replicas[index].borrow_mut().doc.save()))
     }
@@ -155,9 +169,17 @@ impl TaskDoor for RecordsDoor {
     }
 
     fn invoke(&self, call: &Json) -> Answered {
+        let app = call["app"].as_str().unwrap();
+        let before = self.apps.replica(app).doc.get_heads();
         let answered = self.apps.invoke(call);
-        if let Some(app) = call["app"].as_str() {
-            self.reads.forget_app(app);
+        // The record's origin says what it wrote, which the task's reads take in, as the
+        // session's task host does.
+        let wrote = self.apps.replica(app).doc.save_after(&before);
+        if let Err(why) = (!wrote.is_empty())
+            .then(|| self.reads.take_in(app, &wrote))
+            .transpose()
+        {
+            panic!("what the origin wrote applies to the record the task read: {why}");
         }
         answered
     }
@@ -202,6 +224,19 @@ impl TaskDoor for Apps {
         let prefix = resource_id(app, "");
         let resource = call["resource"].as_str().unwrap().strip_prefix(&prefix);
         let arguments = call["arguments"].as_object().unwrap();
+        // The broker binds the arguments to the action's published parameters before it
+        // delivers: what does not bind never reaches the app.
+        if let Some(package) = replica.host.package(app)
+            && let Some(declared) = package.meta.actions.iter().find(|a| a.id == action)
+        {
+            let params: Vec<_> = tilolang_tilo::surface::arguments(&package.meta, &declared.params)
+                .iter()
+                .map(|param| tilolang_tilo::surface::published_param(&package.meta, param))
+                .collect();
+            if let Err(error) = tilo_actions::ActionArgs::bind_json(&params, arguments) {
+                return Answered::Failed(format!("invoke: {action}: {error}"));
+            }
+        }
         let planned = if action == "edit-text" || action == "edit-flag" {
             let package = replica.host.package(app).unwrap();
             let id = resource.unwrap();

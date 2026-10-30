@@ -1889,22 +1889,20 @@ impl AgentModelsModel {
             actions,
             body,
             package,
-            (
-                "agent-models-confirm-install",
-                "agent-models-cancel-install",
-            ),
+            "install",
             AgentModelsEffect::ReviewModelDownload { show: false },
         );
     }
 
     /// The download, storage, source, revision and licence a person accepts,
-    /// with the accept and cancel controls (widget ids `controls`); cancel
-    /// invokes `cancel`.
+    /// with the accept and cancel controls (widget ids
+    /// `agent-models-confirm-{widget}` and `agent-models-cancel-{widget}`);
+    /// cancel invokes `cancel_effect`.
     fn push_confirm(
         actions: &Actions<Settings>,
         body: &mut Vec<Item>,
         package: &LocalModelPackage,
-        controls: (&str, &str),
+        widget: &str,
         cancel_effect: AgentModelsEffect,
     ) {
         let download = t("agent-download");
@@ -1931,7 +1929,7 @@ impl AgentModelsModel {
                 Row::new()
                     .push(Box::new(invoking(
                         actions,
-                        Button::new(controls.0, &accept_btn),
+                        Button::new(&format!("agent-models-confirm-{widget}"), &accept_btn),
                         AgentModelsEffect::InstallModel {
                             model: package.id.clone(),
                             revision: package.revision.clone(),
@@ -1939,7 +1937,7 @@ impl AgentModelsModel {
                     )))
                     .push(Box::new(invoking(
                         actions,
-                        Button::new(controls.1, &cancel),
+                        Button::new(&format!("agent-models-cancel-{widget}"), &cancel),
                         cancel_effect,
                     ))),
             )),
@@ -2044,13 +2042,11 @@ impl AgentModelsModel {
             .reviewing_local
             .with(|reviewing| reviewing.as_deref() == Some(package.id.as_str()));
         if confirming && model.installable() {
-            let confirm_id = format!("agent-models-inprocess-confirm-{widget_token}");
-            let cancel_id = format!("agent-models-inprocess-cancel-{widget_token}");
             Self::push_confirm(
                 actions,
                 &mut body,
                 package,
-                (&confirm_id, &cancel_id),
+                &format!("inprocess-{widget_token}"),
                 AgentModelsEffect::ReviewLocalModel {
                     model: package.id.clone(),
                     show: false,

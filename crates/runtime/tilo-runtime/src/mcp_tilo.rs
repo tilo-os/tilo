@@ -587,13 +587,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .cloned()
                 .ok_or_else(|| format!("the task's host answered the catalogue with {answer}"))
         };
-        match asked.await {
-            Ok(catalogue) => Ok(Reply::ok(catalogue.to_string())),
-            Err(why) => {
-                *link = None;
-                Err(why)
-            }
+        let asked = asked.await;
+        if asked.is_err() {
+            // A host that failed to answer is started afresh next time.
+            *link = None;
         }
+        drop(link);
+        asked.map(|catalogue| Reply::ok(catalogue.to_string()))
     }
 
     /// Run `source` in the task's host, doing what it reads and invokes as the task, until it

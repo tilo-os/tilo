@@ -29,16 +29,6 @@
 # the check says so, so an entry cannot outlive the code it was written for.
 
 [[deletion]]
-action = "restore"
-file = "crates/sdk/ui-core/src/standalone_history_host.rs"
-reason = """
-Restoring a checkpoint discards whatever the document now holds beyond it, and
-the discarded edits are in no document Undo holds: the history being restored
-is the one that would have to take that back. The question names the moment it
-returns to.
-"""
-
-[[deletion]]
 action = "format"
 file = "apps/disks/src/resource.rs"
 effect = "Format"

@@ -2657,6 +2657,9 @@ agent-quick-run-done = { $agent } is done.
 agent-quick-run-attention = { $agent } stopped and needs you.
 agent-quick-run-stopped = Stopped.
 agent-quick-outcome-unknown = No reply yet. Your message is still here.
+agent-quick-outcome-unknown-because = It is not known whether that went through: { $reason }. Your message is still here.
+agent-quick-refused-because = That could not be asked: { $reason }. Your message is still here.
+agent-quick-task-agent-stopped = The agent made for this task stopped: { $reason }
 agent-quick-refused = { $agent } couldn't take that. Your message is still here.
 agent-quick-stop-refused = Couldn't stop it. Try again.
 ## Search vocabulary: the words people use for actions and settings pages.

@@ -771,6 +771,36 @@ pub(crate) fn open(
         .cloned()
         .ok_or("this workspace is not open on this device")?;
     let launch = resolve(state, room, &mut workspace, target, publisher)?;
+    if let Some(document) = &launch.document {
+        // The app reads the staged content under a grant the live tree
+        // holds, as a document opened from Files is: the launch's sandbox
+        // is judged against the policy the tree publishes, which a grant
+        // made only on this copy of the workspace never reaches.
+        let folder = document
+            .parent()
+            .ok_or("the staged content has no folder")?
+            .to_path_buf();
+        let granted = crate::shell::doc_open::grant_document_read(
+            &mut state.tree_mut(),
+            workspace_id,
+            &launch.app,
+            &folder,
+        );
+        if granted != Some(true) {
+            return Err(format!(
+                "{} could not be granted the content to read",
+                crate::shell::launcher::display_name_for_package_id(&launch.app)
+            ));
+        }
+        workspace = state
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .cloned()
+            .ok_or("this workspace is not open on this device")?;
+    }
     let label = crate::shell::launcher::display_name_for_package_id(&launch.app);
     let kept = background.then(|| KeptFocus::of(state, workspace_id));
     let tab = {

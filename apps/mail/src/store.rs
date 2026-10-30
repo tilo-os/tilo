@@ -182,15 +182,6 @@ impl Store {
         std::fs::read(self.attachment_file(account, message, index)?).ok()
     }
 
-    /// A file to hand an attachment to another app through: `name` in a
-    /// folder of this app's own, emptied of what an earlier opening left.
-    pub(crate) fn opening(&self, name: &str) -> Option<PathBuf> {
-        let folder = self.root.as_ref()?.join("opened");
-        let _ = std::fs::remove_dir_all(&folder);
-        std::fs::create_dir_all(&folder).ok()?;
-        Some(folder.join(file_stem(name)))
-    }
-
     /// Forget what is kept for `account` (the account was removed).
     pub(crate) fn forget(&self, account: &str) {
         if let Some(path) = self.file(account)

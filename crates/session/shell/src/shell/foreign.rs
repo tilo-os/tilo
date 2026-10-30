@@ -6242,9 +6242,7 @@ mod tests {
 
     #[test]
     fn half_float_rows_keep_their_values() {
-        use tilo_color_pipeline::hdr_surface::{HdrTexelFormat, SignalTransfer};
-        let pq = neighbour_wire::colorimetry::Colorimetry::hdr10();
-        let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
+        use tilo_color_pipeline::hdr_surface::HdrTexelFormat;
         let px: Vec<u8> = [0x4400_u16, 0x3C00, 0x3800, 0x0000]
             .iter()
             .flat_map(|h| h.to_le_bytes())
@@ -6272,7 +6270,6 @@ mod tests {
     #[test]
     fn snapshots_carry_the_plane_cropped_and_drop_it_under_subsurfaces() {
         let pq = neighbour_wire::colorimetry::Colorimetry::hdr10();
-        let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
         let frames = ForeignFrameStore::default();
         let root = sid(80);
         let signal = tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(

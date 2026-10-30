@@ -283,16 +283,162 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             .as_f64()
             .map(Value::Float)
             .ok_or_else(|| "number out of range".to_owned()),
+        // A union of records: the reference's kind says which of them it is.
+        (Ty::Union(keys), _) => union_value(host, meta, json, keys),
         _ => from_json(json),
     }
 }
 
-/// A value as an invocation records its argument: a resource by its id, as the door takes it
-/// ([`value_of`]), anything else as its JSON.
-fn json_of(value: &Value) -> Json {
-    match value {
-        Value::Ref(reference) => Json::String(reference.target.id_string()),
-        other => tilolang_runtime::value::to_json(other).unwrap_or(Json::Null),
+/// The record of one of the types `keys` that the reference `json` names by its kind.
+fn union_value(
+    host: &HostInner,
+    meta: &Meta,
+    json: &Json,
+    keys: &[tilolang_runtime::meta::TypeKey],
+) -> Result<Value, String> {
+    let Json::Object(reference) = json else {
+        return Err(format!(
+            "a {} is given by a reference naming its kind",
+            union_label(keys)
+        ));
+    };
+    let kind = reference.get("kind").and_then(Json::as_str);
+    let key = keys
+        .iter()
+        .find(|key| Some(crate::surface::record_kind(key).as_str()) == kind)
+        .ok_or_else(|| {
+            format!(
+                "a {} is a resource of kind {}, not {}",
+                union_label(keys),
+                keys.iter()
+                    .map(crate::surface::record_kind)
+                    .collect::<Vec<_>>()
+                    .join(" or "),
+                kind.unwrap_or("none")
+            )
+        })?;
+    value_of_ty(host, meta, json, &Ty::Record(key.clone()))
+}
+
+fn union_label(keys: &[tilolang_runtime::meta::TypeKey]) -> String {
+    keys.iter()
+        .map(|key| key.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// The argument `value` of the type `ty`, as the door takes it: in the shape the action's
+/// published parameter declares ([`crate::surface::published_param`]), which the broker binds
+/// before it delivers, and which [`value_of`] reads back as the same value. A record by the
+/// catalogue's reference to it, of its own type, so a union or a type of another app says which
+/// it is; a plain enum by its case's name; a principal as the workspace subject it is; an option
+/// as its value, or null; lists and tuples item by item; rich text as its text, or encoded
+/// whole when it holds more than text. `owner` finds the package of an app the type names.
+///
+/// # Errors
+/// A value that is not of `ty`, or names a type no package declares.
+pub fn argument_json(
+    owner: &dyn Fn(&str) -> Result<Meta, String>,
+    meta: &Meta,
+    value: &Value,
+    ty: &Ty,
+) -> Result<Json, String> {
+    use tilolang_runtime::value::to_json;
+    let reference = |key: &tilolang_runtime::meta::TypeKey,
+                     target: &ResourceRef|
+     -> Result<Option<Json>, String> {
+        let found = if key.app == meta.app {
+            meta.type_named(&key.name).cloned()
+        } else {
+            owner(&key.app)?.type_named(&key.name).cloned()
+        };
+        let declared = found.ok_or_else(|| format!("unknown type `{}`", key.name))?;
+        Ok((declared.id == target.ty).then(|| {
+            serde_json::json!({
+                "app": key.app,
+                "kind": crate::surface::record_kind(key),
+                "id": target.id_string(),
+                "label": "",
+            })
+        }))
+    };
+    match (ty, value) {
+        (Ty::Record(key), Value::Ref(r)) => reference(key, &r.target)?
+            .ok_or_else(|| format!("the resource {} is no {}", r.target.id_string(), key.name)),
+        (Ty::Union(keys), Value::Ref(r)) => {
+            for key in keys {
+                if let Some(json) = reference(key, &r.target)? {
+                    return Ok(json);
+                }
+            }
+            Err(format!(
+                "the resource {} is no {}",
+                r.target.id_string(),
+                union_label(keys)
+            ))
+        }
+        (Ty::Option(_), Value::Opt(None)) => Ok(Json::Null),
+        (Ty::Option(inner), Value::Opt(Some(present))) => {
+            argument_json(owner, meta, present, inner)
+        }
+        (Ty::Option(inner), present) => argument_json(owner, meta, present, inner),
+        (Ty::List(inner) | Ty::Set(inner) | Ty::Collection(inner), Value::List(items)) => items
+            .iter()
+            .map(|item| argument_json(owner, meta, item, inner))
+            .collect::<Result<_, _>>()
+            .map(Json::Array),
+        (Ty::Tuple(types), Value::Tuple(items)) if types.len() == items.len() => types
+            .iter()
+            .zip(items)
+            .map(|(ty, item)| argument_json(owner, meta, item, ty))
+            .collect::<Result<_, _>>()
+            .map(Json::Array),
+        // A flag travels as the integer the guest boxed it as.
+        (Ty::Bool, Value::Int(n)) => Ok(Json::Bool(*n != 0)),
+        // A plain enum's parameter chooses among its cases by name
+        // ([`crate::surface::published_param`]); one with payloads takes the value encoded.
+        (Ty::Enum(key), Value::Enum(chosen)) if key.app == meta.app => {
+            let declared = meta
+                .enums
+                .iter()
+                .find(|declared| declared.name == key.name)
+                .ok_or_else(|| format!("unknown enum `{}`", key.name))?;
+            let plain = declared
+                .variants
+                .iter()
+                .all(|variant| variant.fields.is_empty());
+            match declared
+                .variants
+                .iter()
+                .find(|variant| variant.id == chosen.variant)
+            {
+                Some(variant) if plain => Ok(Json::String(variant.name.clone())),
+                Some(_) => to_json(value),
+                None => Err(format!(
+                    "`{}` is not a case of {}",
+                    chosen.variant, key.name
+                )),
+            }
+        }
+        (Ty::Principal, Value::Principal(principal)) => {
+            Ok(match principal.0.strip_prefix("agent:") {
+                Some(agent) => serde_json::json!({ "agent": agent }),
+                None => serde_json::json!({ "person": principal.0 }),
+            })
+        }
+        (Ty::RichText, Value::Rich(rich)) => {
+            let text = rich.written_text();
+            if tilolang_runtime::rich::RichValue::from_text(&text) == *rich {
+                Ok(Json::String(text))
+            } else {
+                to_json(value)
+            }
+        }
+        (Ty::Record(_) | Ty::Union(_), other) => Err(format!(
+            "a resource is given by a reference to it, not {}",
+            to_json(other).unwrap_or(Json::Null)
+        )),
+        _ => to_json(value),
     }
 }
 
@@ -318,6 +464,22 @@ impl HostInner {
         let planned = self.plan_in_mirror(request);
         self.store.rewind(checkpoint);
         planned
+    }
+
+    /// The argument `value` of `param` as an invocation records it: as the door takes it, so
+    /// the recorded invocation reads back as it ran ([`argument_json`]).
+    fn recorded(
+        &self,
+        meta: &Meta,
+        param: &tilolang::meta::ParamMeta,
+        value: &Value,
+    ) -> Result<Json, String> {
+        argument_json(
+            &|app| self.package_of(app).map(|package| package.meta),
+            meta,
+            value,
+            &parse_ty(&param.ty, &meta.app)?,
+        )
     }
 
     /// What `action` returned, for its invocation's answer.
@@ -374,7 +536,8 @@ impl HostInner {
                 .iter()
                 .position(|declared| declared.name == param.name);
             if let Some(value) = index.and_then(|index| args.get(index)) {
-                recorded.insert(param.name.clone(), json_of(value));
+                let json = self.recorded(&package.meta, param, value)?;
+                recorded.insert(param.name.clone(), json);
             }
         }
         // The runtime sees the invoker the door admitted: an agent's task delegate for itself,

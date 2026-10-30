@@ -255,14 +255,7 @@ pub fn check_claims(
     surface: Option<&dyn ReceiptSurface>,
     allows: &dyn Fn(&TreePath, ActionKind) -> bool,
 ) -> Result<Receipt, ReceiptRefusal> {
-    let claimed: BTreeSet<&[u8; 32]> = claims.iter().map(|claim| &claim.change).collect();
-    if claimed.len() != claims.len()
-        || changes.is_some_and(|changes| {
-            changes.len() != claims.len() || changes.iter().any(|hash| !claimed.contains(hash))
-        })
-    {
-        return Err(ReceiptRefusal::Unclaimed);
-    }
+    check_claimed_changes(claims, changes)?;
     let Some(surface) = surface else {
         return Ok(Receipt::Hold);
     };
@@ -398,17 +391,25 @@ impl Surfaces {
         record: &Record<'_>,
         kind: Option<&str>,
         named: Option<&[u8; 32]>,
-        mut claims: Vec<ChangeClaim>,
+        claims: Vec<ChangeClaim>,
     ) -> Vec<ChangeClaim> {
         let Some(source) = &self.0 else {
             return claims;
         };
-        let kind = kind.or_else(|| claimed_kind(&claims)).map(str::to_owned);
-        let Some(surface) = source.surface(record, kind.as_deref(), named) else {
-            return claims;
-        };
-        for claim in &mut claims {
-            claim.units = surface.footprint(&claim.action);
+        // Each claim by the resource it is decided against ([`by_kind`]), in its place.
+        let mut claims = claims;
+        for (group_kind, group) in by_kind(kind, claims.clone()) {
+            let Some(surface) = source.surface(record, group_kind.as_deref(), named) else {
+                continue;
+            };
+            for member in group {
+                for claim in claims
+                    .iter_mut()
+                    .filter(|claim| claim.change == member.change)
+                {
+                    claim.units = surface.footprint(&claim.action);
+                }
+            }
         }
         claims
     }
@@ -543,18 +544,12 @@ pub fn decide_op_pinned(
                     })
                 };
             };
-            let surface_for = |claims: &[ChangeClaim]| {
-                source.surface(
-                    record,
-                    kind.or_else(|| claimed_kind(claims)),
-                    op.surface.as_ref(),
-                )
-            };
+            let surface_for =
+                |kind: Option<&str>| source.surface(record, kind, op.surface.as_ref());
             let Some(changes) = cleartext_changes(op)? else {
                 // A sealed op: the relay decides the claims its envelope
                 // carries; devices check the changes once they open them.
-                let surface = surface_for(&op.claims);
-                return check_claims(&op.claims, record, None, None, surface.as_deref(), allows);
+                return check_claims_by_kind(&op.claims, record, kind, &surface_for, allows);
             };
             // A cleartext change names its action in itself, under the op's
             // signature: the envelope carries no second copy.
@@ -585,41 +580,116 @@ pub fn decide_op_pinned(
             {
                 return Err(ReceiptRefusal::OtherSurface);
             }
-            let surface = surface_for(&claims);
-            let claims = unread_claims(surface.as_deref().filter(|_| !reads), claims);
-            // What this receiver read from the changes itself: what says a
-            // change queued nothing in an outbox. A record whose index does
-            // not name its outboxes (indexed before they were units), or a
-            // change this receiver could not apply, is taken as queueing.
-            let outboxes = surface
-                .as_deref()
-                .map(ReceiptSurface::outboxes)
-                .unwrap_or_default();
-            let told_apart = written
-                .as_ref()
-                .is_some_and(|written| outboxes.iter().all(|outbox| written.indexes(outbox)));
-            let read = |hash: &[u8; 32]| match written
-                .as_ref()
-                .and_then(|written| written.written.get(hash))
-            {
-                Some(read) if told_apart => read.clone(),
-                read => crate::units::Written {
-                    units: read.map(|read| read.units.clone()).unwrap_or_default(),
-                    added: outboxes.clone(),
-                },
-            };
-            let read: Option<WrittenUnits<'_>> =
-                written.is_some().then_some(&read as WrittenUnits<'_>);
-            check_claims(
-                &claims,
-                record,
-                Some(&hashes),
-                read,
-                surface.as_deref(),
-                allows,
-            )
+            check_claimed_changes(&claims, Some(&hashes))?;
+            for (group_kind, claims) in by_kind(kind, claims) {
+                let Some(surface) = surface_for(group_kind.as_deref()) else {
+                    return Ok(Receipt::Hold);
+                };
+                let claims = unread_claims((!reads).then_some(&*surface), claims);
+                // What this receiver read from the changes itself: what says a
+                // change queued nothing in an outbox. A record whose index does
+                // not name its outboxes (indexed before they were units), or a
+                // change this receiver could not apply, is taken as queueing.
+                let outboxes = surface.outboxes();
+                let told_apart = written
+                    .as_ref()
+                    .is_some_and(|written| outboxes.iter().all(|outbox| written.indexes(outbox)));
+                let read = |hash: &[u8; 32]| match written
+                    .as_ref()
+                    .and_then(|written| written.written.get(hash))
+                {
+                    Some(read) if told_apart => read.clone(),
+                    read => crate::units::Written {
+                        units: read.map(|read| read.units.clone()).unwrap_or_default(),
+                        added: outboxes.clone(),
+                    },
+                };
+                let read: Option<WrittenUnits<'_>> =
+                    written.is_some().then_some(&read as WrittenUnits<'_>);
+                check_claims(&claims, record, None, read, Some(&*surface), allows)?;
+            }
+            Ok(Receipt::Admit)
         }
     }
+}
+
+/// Finds the app surface of a resource kind (the app's own resource for
+/// `None`), or `None` while it is not here.
+pub type SurfaceFor<'a> = dyn Fn(Option<&str>) -> Option<std::sync::Arc<dyn ReceiptSurface>> + 'a;
+
+/// Decide `claims`, each against the resource of the app's surface it is
+/// decided against ([`by_kind`]), as a receiver that reads none of their
+/// changes does: a relay deciding a sealed op, or its author checking what
+/// it is about to send. `surface_for` finds the surface of a resource kind
+/// (the app's own resource for `None`); one that is not here holds the op.
+///
+/// # Errors
+/// The first [`ReceiptRefusal`] of any claim.
+pub fn check_claims_by_kind(
+    claims: &[ChangeClaim],
+    record: &Record<'_>,
+    kind: Option<&str>,
+    surface_for: &SurfaceFor<'_>,
+    allows: &dyn Fn(&TreePath, ActionKind) -> bool,
+) -> Result<Receipt, ReceiptRefusal> {
+    check_claimed_changes(claims, None)?;
+    for (group_kind, claims) in by_kind(kind, claims.to_vec()) {
+        let Some(surface) = surface_for(group_kind.as_deref()) else {
+            return Ok(Receipt::Hold);
+        };
+        check_claims(&claims, record, None, None, Some(&*surface), allows)?;
+    }
+    Ok(Receipt::Admit)
+}
+
+/// Refuse claims that do not name exactly the op's changes: a change with
+/// no claim, a claim naming no change (`changes`, when the receiver read
+/// them), or one change claimed twice.
+fn check_claimed_changes(
+    claims: &[ChangeClaim],
+    changes: Option<&[[u8; 32]]>,
+) -> Result<(), ReceiptRefusal> {
+    let claimed: BTreeSet<&[u8; 32]> = claims.iter().map(|claim| &claim.change).collect();
+    if claimed.len() != claims.len()
+        || changes.is_some_and(|changes| {
+            changes.len() != claims.len() || changes.iter().any(|hash| !claimed.contains(hash))
+        })
+    {
+        return Err(ReceiptRefusal::Unclaimed);
+    }
+    Ok(())
+}
+
+/// `claims` grouped by the resource kind of the app's surface each is
+/// decided against, in the order they come: `kind`, when the record says
+/// which resource it is; else the kind each claim's own action names, as a
+/// record that holds items of several kinds (a tilolang app's root, whose
+/// categories and channels each have their own actions) carries them. A
+/// claim that names no kind (a record's creation, an undo) goes with the
+/// first kind the op names.
+fn by_kind(
+    kind: Option<&str>,
+    claims: Vec<ChangeClaim>,
+) -> Vec<(Option<String>, Vec<ChangeClaim>)> {
+    if let Some(kind) = kind {
+        return vec![(Some(kind.to_owned()), claims)];
+    }
+    let first = claimed_kind(&claims).map(str::to_owned);
+    let mut groups: Vec<(Option<String>, Vec<ChangeClaim>)> = Vec::new();
+    for claim in claims {
+        let own = claimed_kind(std::slice::from_ref(&claim))
+            .map(str::to_owned)
+            .or_else(|| first.clone());
+        match groups.iter_mut().find(|(group, _)| *group == own) {
+            Some((_, members)) => members.push(claim),
+            None => groups.push((own, vec![claim])),
+        }
+    }
+    if groups.is_empty() {
+        // An op of no change is decided as it was: against the app's own resource.
+        groups.push((None, Vec::new()));
+    }
+    groups
 }
 
 /// `claims` as a receiver that holds no copy of the record to read their
