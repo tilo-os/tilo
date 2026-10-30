@@ -18,6 +18,8 @@ path = "src/lib.rs"
 serde.workspace = true
 serde_bytes.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
+# The 4-byte length prefix of every frame, from the one framing crate.
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
 # Domain-separated digests of every signed or bound value.
 blake3.workspace = true
 # Boot keys and the person's root sign with Ed25519.

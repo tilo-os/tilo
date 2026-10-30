@@ -294,6 +294,9 @@ pub enum FrameError {
     Malformed,
 }
 
+/// Every frame of this protocol: a big-endian `u32` length, then the body.
+const FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(MAX_FRAME_BYTES);
+
 /// Encode one frame: a big-endian `u32` length, then the postcard body.
 ///
 /// # Errors
@@ -301,14 +304,7 @@ pub enum FrameError {
 /// [`FrameError::TooLarge`] past [`MAX_FRAME_BYTES`].
 pub fn encode_frame<T: Serialize>(value: &T) -> Result<Vec<u8>, FrameError> {
     let body = postcard::to_allocvec(value).map_err(|_| FrameError::Malformed)?;
-    if body.len() > MAX_FRAME_BYTES {
-        return Err(FrameError::TooLarge);
-    }
-    let len = u32::try_from(body.len()).map_err(|_| FrameError::TooLarge)?;
-    let mut out = Vec::with_capacity(body.len().saturating_add(4));
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(&body);
-    Ok(out)
+    FRAMING.encode(&body).map_err(|_| FrameError::TooLarge)
 }
 
 /// The body length announced by a frame's 4-byte prefix, checked against
@@ -318,11 +314,9 @@ pub fn encode_frame<T: Serialize>(value: &T) -> Result<Vec<u8>, FrameError> {
 ///
 /// [`FrameError::TooLarge`] past the bound.
 pub fn frame_len(prefix: [u8; 4]) -> Result<usize, FrameError> {
-    let len = usize::try_from(u32::from_be_bytes(prefix)).map_err(|_| FrameError::TooLarge)?;
-    if len > MAX_FRAME_BYTES {
-        return Err(FrameError::TooLarge);
-    }
-    Ok(len)
+    FRAMING
+        .decode_prefix(prefix)
+        .map_err(|_| FrameError::TooLarge)
 }
 
 /// Decode one frame body (without its length prefix).
