@@ -1569,6 +1569,12 @@ fn a_tasks_change_runs_at_the_records_origin_as_its_step_with_no_instance() {
     assert!(answer.get("ok").is_some(), "{answer}");
     assert_eq!(answer["differs"], false, "{answer}");
     assert!(
+        answer["change"]
+            .as_str()
+            .is_some_and(|change| !change.is_empty()),
+        "it says what it wrote, for the task to read back: {answer}"
+    );
+    assert!(
         documents_sent(&sent) > 0,
         "what it wrote was handed to the room"
     );
@@ -1612,4 +1618,41 @@ fn a_change_the_record_cannot_take_is_refused_with_why() {
         .unwrap_or_else(|| panic!("{answer}"));
     assert!(!why.is_empty());
     assert_eq!(documents_sent(&sent), 0, "nothing was written");
+}
+
+#[test]
+fn a_change_of_the_root_no_window_made_yet_makes_it_first() {
+    let (address, _window_record) = increment();
+    assert!(address.resource.contains(":root-"), "{}", address.resource);
+    // No window ever opened the app here: its record holds no root.
+    let (mut applier, connection, sent) = applier("ada", automerge::AutoCommit::new());
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: address.resource,
+            action: address.action,
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: None,
+        },
+    );
+    assert!(answer.get("ok").is_some(), "{answer}");
+    let wrote = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(answer["change"].as_str().unwrap())
+            .unwrap()
+    };
+    let mut read = automerge::AutoCommit::new();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut read, &wrote).unwrap();
+    assert!(
+        read.get_missing_deps(&[]).is_empty(),
+        "what it says it wrote holds the root it made, for a task that read no record"
+    );
+    assert!(
+        documents_sent(&sent) > 0,
+        "the root and the change went to the room"
+    );
 }

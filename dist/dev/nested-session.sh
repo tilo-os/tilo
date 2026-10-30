@@ -226,6 +226,10 @@ if [[ -n $model_provider ]]; then
     if [[ $model_provider == host ]]; then
         provider_record=$("$bin/tilo-model-gateway" export-provider) \
             || die "this machine's Tilo configuration has no default provider to give the session"
+    elif [[ $model_provider == record:?* ]]; then
+        # A provider record (profile and key) in a file only the developer can read, for an
+        # endpoint no preset names: `record:FILE`.
+        provider_record=$(<"${model_provider#record:}") || die "cannot read ${model_provider#record:}"
     else
         [[ $model_provider == *:?* ]] || die "--model-provider takes PRESET:MODEL or host"
         provider_preset=${model_provider%%:*}
@@ -332,6 +336,11 @@ if [[ -f $tilolang_bin ]]; then
         printf '%s\n' "$tilolang_key" > "$runtimes/.tilolang-key"
     fi
     printf '%s\n' "$tilolang_version" > "$runtimes/.tilolang-version"
+    # Pinned (runtime_bundle::gc's .pins/<version>): no installed package names
+    # it until the first `tilolang dev`, and the collection after each app
+    # install below would otherwise take it away.
+    mkdir -p "$runtimes/.pins"
+    : > "$runtimes/.pins/$tilolang_version"
 fi
 
 # --- 5. Session environment ----------------------------------------------------

@@ -176,6 +176,13 @@ pub trait NativeDocumentReads: Send + Sync {
             RecordRead::Own
         }
     }
+    /// Whether this device holds anything of `app`'s `record` in `room`: what its owner commits
+    /// or holds, or sealed writes of it. A sealed room's record it holds nothing of is new to
+    /// this device: the room has none yet, once its host's replay landed
+    /// ([`Self::await_sealed_history`]).
+    fn holds_record(&self, room: &str, app: &str, record: &str) -> bool {
+        self.record_read(room, app, record) != RecordRead::Own
+    }
     /// Prepare only a missing record for a live, original-package-attested
     /// person launch. This is not a read/capture fallback or a wire capability.
     fn prepare_application(

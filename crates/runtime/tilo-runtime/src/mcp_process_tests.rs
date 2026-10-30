@@ -25,6 +25,11 @@ fn admission_profile_uses_readonly_existing_directories_without_repair_or_provis
         );
         return;
     }
+    tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap(),
+        "the admission profile's readonly sandbox"
+    );
     let root = tempfile::tempdir().unwrap();
     let profile = root.path().join("profile");
     super::prepare_profile_environment(&profile).unwrap();

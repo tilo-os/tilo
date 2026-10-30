@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # signin-e2e-<arch> without t, on one x86_64 or aarch64 machine with podman and /dev/kvm, such as
-# an rcargo builder (`rcargo builder ssh`): this commit's dev OS image, its installer medium and
+# a remote build host: this commit's dev OS image, its installer medium and
 # the sign-in run over it, each as its t.toml check does.
 #
 #   signin-e2e-builder.sh --target DIR --out DIR [--jobs N] [--variant V]...
@@ -19,8 +19,8 @@
 #      medium of this commit and image already in DIR is kept.
 #   3. run-checks.py runs signin-e2e-<arch> over it, with the medium given.
 #
-# Needs python3 (3.11 or later) and git beside podman; on an rcargo builder,
-# `sudo dnf install -y python3` once.
+# Needs python3 (3.11 or later) and git beside podman (on a minimal Fedora host,
+# `sudo dnf install -y python3` once).
 set -euo pipefail
 cd "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 

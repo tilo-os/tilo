@@ -295,7 +295,7 @@ fn kept_resource(kept: &Value, naming: &Naming<'_>, title: &str) -> Option<Resou
 pub(super) fn where_section(
     run: &runtime_collab::TaskRunEnvelope,
     world: &ProgramWorld,
-    most_steps: usize,
+    most_turns: Option<usize>,
 ) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -310,13 +310,18 @@ pub(super) fn where_section(
     }
     let seconds = run
         .execution_budget
-        .map_or(super::MAX_LOOP_TIME.as_secs(), |budget| {
+        .map_or(super::DEFAULT_LOOP_TIME.as_secs(), |budget| {
             u64::from(budget.total_ms) / 1000
         });
-    let _ = writeln!(
-        out,
-        "Limits: at most {most_steps} steps and {seconds} seconds for the whole task."
-    );
+    // The run's budget, as the loop enforces it: its turns when it has a
+    // turn ceiling, and its time.
+    let _ = match most_turns {
+        Some(turns) => writeln!(
+            out,
+            "Limits: at most {turns} model turns and {seconds} seconds for the whole task."
+        ),
+        None => writeln!(out, "Limits: at most {seconds} seconds for the whole task."),
+    };
     if let Some(subject) = run
         .subject
         .as_ref()

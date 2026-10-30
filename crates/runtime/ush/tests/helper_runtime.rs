@@ -36,6 +36,11 @@ fn plan(root: &Path) -> std::io::Result<ush::guest::GuestPlan> {
 
 #[test]
 fn dynamic_helper_starts_from_private_closure_without_host_usr_and_keeps_shim_dispatch() {
+    tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap(),
+        "the helper's private sandbox"
+    );
     let dir = tempfile::tempdir().unwrap();
     let mut plan = plan(dir.path()).unwrap();
     std::fs::write(&plan.broker_socket, "").unwrap();

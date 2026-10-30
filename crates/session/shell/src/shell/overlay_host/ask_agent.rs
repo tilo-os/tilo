@@ -212,7 +212,7 @@ impl ShellOverlayHost {
             .or_else(|| self.selection_requests.take_asking());
         let draft = seed.draft.take();
         let label = if agent == NEW_TASK_AGENT {
-            crate::shell::i18n::t("agent-quick-new-agent")
+            crate::shell::i18n::t("agent-quick-new-agent-addressed")
         } else {
             agent.clone()
         };
@@ -268,6 +268,16 @@ impl ShellOverlayHost {
     /// being asked: open its place, as the palette's row does. Whether one
     /// was pressed.
     pub(super) fn fix_composer_blocker(&mut self) -> bool {
+        // Set up in place: once the provider settings change, ask again
+        // whether a new agent can be asked, so the composer unblocks.
+        if self.agent_quick_composer.block_stale()
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            let blocker =
+                crate::shell::search::providers::ask_agent::task_agent_blocker(&chrome.borrow());
+            self.agent_quick_composer.block(blocker);
+            return true;
+        }
         let Some(blocker) = self.agent_quick_composer.take_fix() else {
             return false;
         };
@@ -409,7 +419,7 @@ impl ShellOverlayHost {
     /// The session source for the workspace, and those of its collaborator
     /// `members` that are admitted (certified under their own key) and hold
     /// a live task subscription, so a task assigned to them reaches them.
-    fn live_agents(
+    pub(super) fn live_agents(
         &self,
         room: &str,
         members: Vec<String>,

@@ -197,6 +197,11 @@ impl std::borrow::Borrow<str> for SemanticId {
     }
 }
 
+/// What a keyed node's id carries before its key ([`SemanticId::keyed`]).
+const KEYED: &str = "~k:";
+/// What a repeated node's id carries before its number ([`SemanticId::repeat`]).
+const REPEATED: char = '#';
+
 impl SemanticId {
     fn root() -> Self {
         SemanticId("root".into())
@@ -208,7 +213,23 @@ impl SemanticId {
         SemanticId(format!("{}~{}", parent.0, index))
     }
     fn keyed(parent: &SemanticId, key: impl std::fmt::Display) -> Self {
-        SemanticId(format!("{}~k:{}", parent.0, key))
+        SemanticId(format!("{}{KEYED}{}", parent.0, key))
+    }
+    /// The `n`th node after the first that took `id` under the same parent
+    /// ([`Build::unrepeated`]).
+    fn repeat(id: &SemanticId, n: usize) -> Self {
+        SemanticId(format!("{}{REPEATED}{n}", id.0))
+    }
+    /// The control key the node is keyed by, a repeat of a keyed node
+    /// included: what [`SemanticTree::control_paths`] finds it by.
+    fn control_key(&self) -> Option<&str> {
+        let (_, keyed) = self.0.rsplit_once(KEYED)?;
+        Some(
+            keyed
+                .rsplit_once(REPEATED)
+                .filter(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+                .map_or(keyed, |(key, _)| key),
+        )
     }
     fn resource(id: &str) -> Self {
         SemanticId(format!("r:{id}"))
@@ -924,9 +945,10 @@ impl SemanticTree {
                 parents.insert(child.clone(), node.id.clone());
             }
         }
-        let marker = format!("~k:{control_id}");
         self.iter()
-            .filter(|node| !node.id.0.starts_with("r:") && node.id.0.ends_with(&marker))
+            .filter(|node| {
+                !node.id.0.starts_with("r:") && node.id.control_key() == Some(control_id)
+            })
             .filter_map(|node| {
                 let mut path = vec![node.id.clone()];
                 let mut cursor = node.id.clone();
@@ -1359,7 +1381,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         }
         let mut n = 1usize;
         let copy = loop {
-            let copy = SemanticId(format!("{}#{n}", id.0));
+            let copy = SemanticId::repeat(&id, n);
             if !self.nodes.contains_key(&copy) {
                 break copy;
             }

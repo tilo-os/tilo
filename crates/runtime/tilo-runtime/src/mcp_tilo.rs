@@ -663,13 +663,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if let Some(found) = known.get(app) {
             return Ok(found.clone());
         }
-        let (_, running) = self.instances().await?;
+        let (_, running) = self.providers().await?;
         let found = running
             .iter()
             .rev()
             .find(|(_, instance)| instance["app_id"].as_str() == Some(app))
             .map(|(peer, _)| Addressed {
-                provider: peer.to_string(),
+                provider: peer.clone(),
                 app_id: Some(app.to_owned()),
             })
             .ok_or_else(|| {
@@ -785,7 +785,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(Ok(answer)) => {
                 if let Some(output) = answer.get("ok") {
                     let differs = answer.get("differs").and_then(Value::as_bool) == Some(true);
-                    json!({"ok": output, "differs": differs})
+                    json!({"ok": output, "differs": differs, "change": answer.get("change")})
                 } else {
                     json!({"failed": answer.get("failed").and_then(Value::as_str).map_or_else(|| answer.to_string(), str::to_owned)})
                 }

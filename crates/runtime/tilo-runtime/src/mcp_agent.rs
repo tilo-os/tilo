@@ -3,7 +3,11 @@
 //! `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find` and `tilo_status` address
 //! everything by **path**: `notes/Todo/body#append-paragraph` is the app
 //! (`notes`), the resource by its title, kind or key (`Todo`, `body`) and the
-//! action after `#`. A path names things as a person would and survives a
+//! action after `#`. `browser@4711/page#read-page` names one window of an
+//! app by its provider (what the desktop's `open` answers, what `tilo_ls`
+//! lists); without it the app's newest window answers. The host's own
+//! services answer to their app too: `desktop#list-windows` is the desktop's
+//! layout. A path names things as a person would and survives a
 //! compositor restart; the opaque ids a broker mints per publication
 //! (`tilo-ui-bound:v1:<uuid>:<uuid>:<hex>`) stay inside this module, which
 //! resolves a path against the live directory on every call.
@@ -87,7 +91,7 @@ fn tools() -> Vec<Value> {
     [
         (
             "tilo_ls",
-            "List apps, then what is in them. No path: the apps. `notes`: that app's resources and actions. `notes/Todo`: a note's children and actions. `notes/Todo#rename`: one action's parameters. A path is app/resource names (a title, kind or key, any case), stable across restarts; an action follows `#`. kind narrows to resources or actions; limit and cursor page.",
+            "List apps, then what is in them. No path: the apps. `notes`: that app's resources and actions. `notes/Todo`: a note's children and actions. `notes/Todo#rename`: one action's parameters. A path is app[@window]/resource names (a title, kind or key, any case), stable across restarts; an action follows `#`. kind narrows to resources or actions; limit and cursor page.",
             json!({"path":string,"kind":{"enum":["resources","actions"]},"limit":integer,"cursor":string}),
             json!([]),
             read.clone(),
@@ -1123,15 +1127,16 @@ fn next_cursor(value: &Value) -> Option<String> {
 
 /// What an app name names.
 enum AppRef {
+    /// A running publisher of the app: its newest window, the window the
+    /// path named (`browser@4711`, `pinned`), or the host's own service
+    /// answering for it (`desktop`).
     Running {
         app_id: String,
         provider: String,
+        pinned: bool,
     },
     /// `opens` when this caller may start it.
-    Installed {
-        app_id: String,
-        opens: bool,
-    },
+    Installed { app_id: String, opens: bool },
 }
 
 /// An app installed for the workspace, as the workspace lists it.
@@ -1248,27 +1253,69 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// The app `name` means: a running one by its id or last part, else an
     /// installed one the workspace offers to open.
     async fn app_ref(&self, name: &str) -> Result<AppRef, String> {
-        let (_, running) = self.instances().await?;
-        let ids = running
-            .iter()
-            .filter_map(|(_, app)| app["app_id"].as_str())
-            .collect::<Vec<_>>();
-        match page::app_named(name, &ids) {
+        let (name, instance) = match name.rsplit_once('@') {
+            Some((app, instance)) if !instance.trim().is_empty() => {
+                (app.trim(), Some(instance.trim()))
+            }
+            _ => (name, None),
+        };
+        let (_, running) = self.providers().await?;
+        if let Some(instance) = instance {
+            return pinned_window(&running, name, instance);
+        }
+        let is_window = |provider: &str| provider.parse::<u64>().is_ok();
+        let ids_where = |window: bool| {
+            running
+                .iter()
+                .filter(|(provider, _)| is_window(provider) == window)
+                .filter_map(|(_, app)| app["app_id"].as_str())
+                .collect::<Vec<_>>()
+        };
+        let newest = |app_id: &str, window: bool| {
+            running
+                .iter()
+                .rev()
+                .filter(|(provider, _)| is_window(provider) == window)
+                .find(|(_, app)| app["app_id"].as_str() == Some(app_id))
+                .map(|(provider, _)| provider.clone())
+        };
+        let windows = ids_where(true);
+        match page::app_named(name, &windows) {
             Ok(app_id) => {
-                let provider = running
-                    .iter()
-                    .rev()
-                    .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
-                    .map(|(peer, _)| peer.to_string())
-                    .ok_or_else(|| page::not_running(&app_id, &ids))?;
-                return Ok(AppRef::Running { app_id, provider });
+                let provider =
+                    newest(&app_id, true).ok_or_else(|| page::not_running(&app_id, &windows))?;
+                return Ok(AppRef::Running {
+                    app_id,
+                    provider,
+                    pinned: false,
+                });
             }
             Err(error) if error.contains("names several") => return Err(error),
             Err(_) => {}
         }
+        // The host's own services (the desktop's layout, the workspace's
+        // activity) answer for app ids no app installs: the app itself,
+        // when it is installed, is what its name opens.
+        let installed = self.installed().await;
+        let services = ids_where(false);
+        let service = page::app_named(name, &services).ok().filter(|app_id| {
+            installed
+                .as_ref()
+                .is_ok_and(|installed| !installed.iter().any(|app| app.app_id == *app_id))
+                || installed.is_err()
+        });
+        if let Some(app_id) = service
+            && let Some(provider) = newest(&app_id, false)
+        {
+            return Ok(AppRef::Running {
+                app_id,
+                provider,
+                pinned: false,
+            });
+        }
         // An installed list that could not be read is said, never taken for
         // an empty one: the agent would conclude the app does not exist.
-        let installed = self.installed().await.map_err(|reason| {
+        let installed = installed.map_err(|reason| {
             format!(
                 "no running app is named {name}, and the installed apps could not be read: {reason}"
             )
@@ -1587,7 +1634,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// Resolve a whole path.
     async fn resolve(&self, parsed: &ParsedPath) -> Result<Result<Resolved, String>, String> {
         match self.app_ref(&parsed.app).await? {
-            AppRef::Running { app_id, provider } => Ok(Ok(self
+            AppRef::Running {
+                app_id,
+                provider,
+                pinned: true,
+            } => Ok(Ok(self.resolve_in(parsed, app_id, provider, true).await?)),
+            AppRef::Running {
+                app_id, provider, ..
+            } => Ok(Ok(self
                 .resolve_published(parsed, app_id, provider, true)
                 .await?)),
             AppRef::Installed { opens, .. } => Ok(Err(Self::not_running_note(&parsed.app, opens))),
@@ -1618,13 +1672,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         // Only then are the running apps asked again, for the older instances.
         let older: Vec<String> = self
-            .instances()
+            .providers()
             .await?
             .1
             .iter()
             .rev()
             .filter(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
-            .map(|(peer, _)| peer.to_string())
+            .map(|(peer, _)| peer.clone())
             .filter(|peer| *peer != newest)
             .collect();
         for provider in older {
@@ -1667,7 +1721,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let mut here = match chain.last() {
             Some(_) if !list => Level::default(),
             Some(node) => self.level(&provider, &node.id, &mut levels).await?,
-            None => self.app_children(&provider, &mut levels).await?,
+            None => {
+                let mut root = self.app_children(&provider, &mut levels).await?;
+                // A host service (the desktop's layout, on `desktop:session`)
+                // publishes everything on its one resource: its actions are
+                // the service's own, `desktop#list-windows`.
+                if provider.parse::<u64>().is_err()
+                    && root.own.is_empty()
+                    && let [only] = root.children.as_slice()
+                {
+                    root.own = only.actions.clone();
+                }
+                root
+            }
         };
         let mut written = app;
         if let Some(owner) = chain.last() {
@@ -1921,7 +1987,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// installed list that could not be read is said, with why: read as
     /// empty it would tell the agent there are no apps.
     async fn list_apps(&self, offset: usize, limit: usize) -> Result<Reply, String> {
-        let (_, running) = self.instances().await?;
+        let (_, running) = self.providers().await?;
         let mut lines: Vec<String> = Vec::new();
         let mut running_ids: Vec<String> = Vec::new();
         for (_, app) in &running {
@@ -1941,9 +2007,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .iter()
                 .find(|app| app.app_id == *app_id)
                 .map_or("", |app| app.label.as_str());
+            // A host service (the desktop's layout) runs with the session,
+            // and has no window.
+            let windowed = running.iter().any(|(provider, app)| {
+                provider.parse::<u64>().is_ok() && app["app_id"].as_str() == Some(app_id)
+            });
             lines.push(format!(
-                "{}  {label}  running",
-                app_names(std::slice::from_ref(app_id)).join("")
+                "{}  {label}  {}",
+                app_names(std::slice::from_ref(app_id)).join(""),
+                if windowed { "running" } else { "service" }
             ));
         }
         let mut unopened = false;
@@ -2192,7 +2264,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         })?;
         // The app is looked up once: resolving the path in it does not ask
         // again which apps run.
-        let (app_id, provider) = match self.app_ref(&parsed.app).await? {
+        let (app_id, provider, pinned) = match self.app_ref(&parsed.app).await? {
             AppRef::Installed { app_id, opens } => {
                 if !opens {
                     return Err(Self::not_running_note(&parsed.app, false));
@@ -2202,11 +2274,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     .await
                     .map(Done::Launched);
             }
-            AppRef::Running { app_id, provider } => (app_id, provider),
+            AppRef::Running {
+                app_id,
+                provider,
+                pinned,
+            } => (app_id, provider, pinned),
         };
-        let mut resolved = self
-            .resolve_published(&parsed, app_id, provider, false)
-            .await?;
+        let mut resolved = if pinned {
+            self.resolve_in(&parsed, app_id, provider, false).await?
+        } else {
+            self.resolve_published(&parsed, app_id, provider, false)
+                .await?
+        };
         let descriptor = if let Some(descriptor) = self.action_named(&resolved, &action).await? {
             descriptor
         } else {
@@ -2352,7 +2431,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             return Err("query needs a word to look for".into());
         }
         let limit = args.limit.unwrap_or(FIND_HITS).clamp(1, 100);
-        let (_, running) = self.instances().await?;
+        let (_, running) = self.providers().await?;
         // Apps are found by name among those the workspace lists; a list
         // that could not be read leaves them out but still searches the
         // running apps.
@@ -2447,7 +2526,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     async fn search_running(
         &self,
         seen: &[String],
-        running: &[(u64, Value)],
+        running: &[(String, Value)],
         wanted: Option<&[String]>,
         words: &[String],
     ) -> (Vec<Hit>, Vec<String>, usize) {
@@ -2461,7 +2540,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .iter()
                 .rev()
                 .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
-                .map(|(peer, _)| peer.to_string())
+                .map(|(peer, _)| peer.clone())
             {
                 searched.push((name, provider));
             }
@@ -2706,6 +2785,38 @@ struct Hit {
     line: String,
 }
 
+/// The one window `instance` (a provider an `open` or `tilo_ls` named) among `running`, which
+/// must be of the app `name`: the agent means that window, never another of the app's.
+fn pinned_window(
+    running: &[(String, Value)],
+    name: &str,
+    instance: &str,
+) -> Result<AppRef, String> {
+    let (provider, entry) = running
+        .iter()
+        .find(|(provider, _)| provider == instance)
+        .ok_or_else(|| format!("no running window {instance}; tilo_ls lists the running apps"))?;
+    let app_id = entry["app_id"]
+        .as_str()
+        .ok_or_else(|| format!("window {instance} names no app"))?
+        .to_owned();
+    if page::app_named(name, &[app_id.as_str()]).is_err() {
+        return Err(format!(
+            "window {instance} is {}, not {name}",
+            app_names(std::slice::from_ref(&app_id)).join("")
+        ));
+    }
+    Ok(AppRef::Running {
+        app_id,
+        provider: provider.clone(),
+        pinned: true,
+    })
+}
+
 #[cfg(test)]
 #[path = "mcp_agent_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mcp_agent_publisher_tests.rs"]
+mod publisher_tests;

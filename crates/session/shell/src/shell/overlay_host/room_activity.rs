@@ -98,6 +98,7 @@ impl ShellOverlayHost {
             &workspace,
             document,
             uri,
+            false,
         );
         if let Err(error) = result {
             // A previous document/app launch can have staged a one-shot

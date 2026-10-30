@@ -22,8 +22,14 @@ pub const READ_RESULT: &str = "read_result";
 
 /// The most characters of one page.
 pub const PAGE_CHARS: usize = 4_000;
-/// Results one task keeps for paging; past it the oldest is forgotten.
-pub const MOST_KEPT: usize = 16;
+/// The most characters one task keeps for reading again, all its kept
+/// results together; past it the oldest is forgotten. Results are kept by
+/// size, not by count, so a long run whose earlier results were compacted
+/// to their handles ([`crate::session`]'s compaction) can still read each
+/// of them again.
+pub const MOST_KEPT_TOTAL_CHARS: usize = 8 * MOST_KEPT_CHARS;
+/// The most kept result ids an unknown-id answer lists, the newest.
+const MOST_NAMED: usize = 16;
 /// The most characters of one result that are kept. Past it the rest is
 /// dropped, and the last page says so.
 pub const MOST_KEPT_CHARS: usize = 512 * 1024;
@@ -42,6 +48,8 @@ struct Kept {
 pub struct Pages {
     kept: VecDeque<Kept>,
     issued: usize,
+    /// Characters kept, all results together.
+    kept_chars: usize,
 }
 
 impl Pages {
@@ -113,6 +121,13 @@ impl Pages {
         )
     }
 
+    /// Keep `text` whole for reading again with [`READ_RESULT`] from 0,
+    /// returning its id: a result put aside to keep a long conversation
+    /// within its model's context.
+    pub fn keep_aside(&mut self, text: &str) -> String {
+        self.keep(text)
+    }
+
     /// Keep `text`, returning the id the observation names it by.
     fn keep(&mut self, text: &str) -> String {
         self.issued += 1;
@@ -124,12 +139,16 @@ impl Pages {
         } else {
             text.to_owned()
         };
-        if self.kept.len() >= MOST_KEPT {
-            self.kept.pop_front();
+        let kept = chars.min(MOST_KEPT_CHARS);
+        while self.kept_chars + kept > MOST_KEPT_TOTAL_CHARS
+            && let Some(oldest) = self.kept.pop_front()
+        {
+            self.kept_chars -= oldest.chars;
         }
+        self.kept_chars += kept;
         self.kept.push_back(Kept {
             id: id.clone(),
-            chars: chars.min(MOST_KEPT_CHARS),
+            chars: kept,
             text,
             cut,
         });
@@ -143,7 +162,13 @@ impl Pages {
             return format!("`{READ_RESULT}` needs the `result` id a `continues` gave.");
         };
         let Some(kept) = self.kept.iter().find(|kept| kept.id == id) else {
-            let known: Vec<&str> = self.kept.iter().map(|kept| kept.id.as_str()).collect();
+            let known: Vec<&str> = self
+                .kept
+                .iter()
+                .rev()
+                .take(MOST_NAMED)
+                .map(|kept| kept.id.as_str())
+                .collect();
             return if known.is_empty() {
                 format!("There is no result {id:?}: no long result is kept in this task.")
             } else {
@@ -315,18 +340,30 @@ mod tests {
         );
     }
 
+    /// Results are kept by size: many small ones stay readable, and only
+    /// past the size bound is the oldest forgotten.
     #[test]
     fn only_the_latest_results_are_kept() {
         let mut pages = Pages::new();
-        for _ in 0..=MOST_KEPT {
+        for _ in 0..200 {
             pages.first_page(&Value::String("x".repeat(PAGE_CHARS + 1)));
+        }
+        assert!(
+            pages
+                .read(&json!({"result": "r1", "from": 0}))
+                .contains("\"text\""),
+            "two hundred short results are all kept"
+        );
+        let whole = MOST_KEPT_TOTAL_CHARS / MOST_KEPT_CHARS;
+        for _ in 0..=whole {
+            pages.first_page(&Value::String("x".repeat(MOST_KEPT_CHARS)));
         }
         assert!(
             pages
                 .read(&json!({"result": "r1", "from": 0}))
                 .contains("no result")
         );
-        let last = format!("r{}", MOST_KEPT + 1);
+        let last = format!("r{}", 200 + whole + 1);
         assert!(
             pages
                 .read(&json!({"result": last, "from": 0}))

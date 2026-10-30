@@ -254,6 +254,55 @@ fn inherited_model(tracker: &Tracker, issue: &Issue) -> Option<ModelChoice> {
     }
 }
 
+/// The most characters of earlier conversation a run's instruction carries,
+/// all messages together: the newest are kept and the older ones counted,
+/// so a long chat stays within what a run's instruction may hold.
+const CONVERSATION_CHARS: usize = 12 * 1024;
+/// The most characters of one earlier message a run is told.
+const SAID_CHARS: usize = 1_500;
+
+/// `instruction` with the conversation before the run appended, as the
+/// agent reads a request that continues one
+/// ([`runtime_collab::INSTRUCTION_CONVERSATION`]): one line per message,
+/// the person's and the agent's own told apart. A follow-up in a chat
+/// ("now do the same for the other two") is understood through it.
+fn with_conversation(instruction: String, said: &[tasks::model::Said]) -> String {
+    if said.is_empty() {
+        return instruction;
+    }
+    let mut kept = Vec::new();
+    let mut room = CONVERSATION_CHARS;
+    for message in said.iter().rev() {
+        let mut text: String = message.text.chars().take(SAID_CHARS).collect();
+        if text.len() < message.text.len() {
+            text.push('…');
+        }
+        let line = format!(
+            "\n{}{}",
+            if message.agent { "You: " } else { "Person: " },
+            text.replace('\n', "\n  ")
+        );
+        if line.len() > room {
+            break;
+        }
+        room -= line.len();
+        kept.push(line);
+    }
+    let mut out = instruction;
+    out.push_str(runtime_collab::INSTRUCTION_CONVERSATION);
+    let left_out = said.len() - kept.len();
+    if left_out > 0 {
+        let _ = std::fmt::Write::write_fmt(
+            &mut out,
+            format_args!("\n({left_out} earlier messages left out)"),
+        );
+    }
+    for line in kept.into_iter().rev() {
+        out.push_str(&line);
+    }
+    out
+}
+
 fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
     let run = issue.run.as_ref()?;
     let agent = run.agent.0.strip_prefix("agent:").unwrap_or(&run.agent.0);
@@ -290,7 +339,7 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
     Some(TrackerRun {
         issue: issue_resource(id),
         title: issue.title.clone(),
-        instruction: issue.instruction(),
+        instruction: with_conversation(issue.instruction(), &issue.conversation_before(run.epoch)),
         agent: agent.to_owned(),
         epoch: run.epoch,
         starter: run.starter.clone(),
@@ -300,6 +349,9 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
             collab_types::task_budget::TaskExecutionBudget {
                 turn_ms: u32::try_from(budget.turn_ms).unwrap_or(u32::MAX),
                 total_ms: u32::try_from(budget.total_ms).unwrap_or(u32::MAX),
+                max_turns: budget
+                    .max_turns
+                    .map(|turns| u32::try_from(turns).unwrap_or(u32::MAX)),
             }
         }),
         subject: issue
@@ -463,6 +515,197 @@ mod tests {
         assert!(run.instruction.contains("Keep the headings"));
         assert_eq!(run.directions.len(), 1);
         assert_eq!((run.applied_revision(), run.latest_revision()), (0, 1));
+    }
+
+    /// A chat's run reaches its agent with the chat's whole budget: its turn
+    /// ceiling as well as its time, and the tracker admits no more turns
+    /// than the run's envelope does.
+    #[test]
+    fn a_chats_run_carries_its_turn_ceiling_to_the_agent() {
+        assert_eq!(
+            tasks::model::MAX_TURNS,
+            u64::from(collab_types::task_budget::MAX_RUN_TURNS)
+        );
+        let mut person = Replica::<Tracker>::new().as_author("ada");
+        person
+            .apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
+                ask: tasks::model::AgentRequest {
+                    id: tilo_resource::Id::from_raw("chat"),
+                    title: "Review today's applications".into(),
+                    body: None,
+                    agent: "claude".into(),
+                    model: None,
+                    subject: None,
+                    quick: false,
+                    chat: true,
+                    delegation: None,
+                },
+            }))
+            .unwrap();
+        let runs = runs_of(&person.state().unwrap());
+        let [run] = runs.as_slice() else {
+            panic!("one run: {runs:?}");
+        };
+        let budget = run.budget.expect("a chat has a budget");
+        budget.validate().unwrap();
+        assert_eq!(
+            budget.max_turns.map(u64::from),
+            Some(tasks::model::CHAT_TURNS)
+        );
+        assert_eq!(u64::from(budget.total_ms), tasks::model::MAX_TOTAL_MS);
+    }
+
+    /// A conversation goes on after a run ended: what the person tells the
+    /// agent then starts the next run, and the broker hands that run the
+    /// message as its one direction, never the earlier run's.
+    #[test]
+    fn a_message_after_a_run_ended_is_the_next_runs_direction() {
+        let mut person = Replica::<Tracker>::new().as_author("ada");
+        person
+            .apply(Tracker::CREATE.with(tracker::Create {
+                title: "Review the applications".parse().expect("not blank"),
+                parent: None,
+                body: None,
+                status: None,
+                assignee: Some("agent:claude".into()),
+            }))
+            .unwrap();
+        let issue = person
+            .state()
+            .unwrap()
+            .issues
+            .ids()
+            .next()
+            .cloned()
+            .unwrap();
+        let tell = |text: &str| {
+            Tracker::TELL_AGENT.with(tracker::TellAgent {
+                issue: issue.clone(),
+                text: text.parse().expect("not blank"),
+            })
+        };
+        person.apply(tell("Start with the newest")).unwrap();
+        let mut agent = person.fork().as_agent_for("agent:claude", "ada");
+        agent
+            .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+                issue: issue.clone(),
+                outcome: tasks::model::RunOutcome::Done,
+                summary: None,
+            }))
+            .unwrap();
+        person.sync_with(&mut agent).unwrap();
+        assert!(
+            runs_of(&person.state().unwrap())
+                .iter()
+                .all(|run| !run.active)
+        );
+
+        person.apply(tell("Now draft the replies")).unwrap();
+        let runs = runs_of(&person.state().unwrap());
+        let [run] = runs.as_slice() else {
+            panic!("one run: {runs:?}");
+        };
+        assert_eq!((run.epoch, run.active), (2, true));
+        let directions: Vec<&str> = run
+            .directions
+            .iter()
+            .map(|direction| direction.text.as_str())
+            .collect();
+        assert_eq!(directions, ["Now draft the replies"]);
+    }
+
+    /// A follow-up run is told the conversation before it: what the person
+    /// asked and what the agent answered and did, oldest first, and not the
+    /// message it is to act on now, which is its direction. A long chat is
+    /// told its newest messages, the older ones counted.
+    #[test]
+    fn a_follow_up_run_is_told_the_conversation_before_it() {
+        let mut person = Replica::<Tracker>::new().as_author("ada");
+        person
+            .apply(Tracker::CREATE.with(tracker::Create {
+                title: "Review the applications".parse().expect("not blank"),
+                parent: None,
+                body: Some("Jane Doe, Ravi Patel and Mei Lin applied today".into()),
+                status: None,
+                assignee: Some("agent:claude".into()),
+            }))
+            .unwrap();
+        let issue = person
+            .state()
+            .unwrap()
+            .issues
+            .ids()
+            .next()
+            .cloned()
+            .unwrap();
+        let tell = |text: &str| {
+            Tracker::TELL_AGENT.with(tracker::TellAgent {
+                issue: issue.clone(),
+                text: text.parse().expect("not blank"),
+            })
+        };
+        person.apply(tell("Start with Jane Doe")).unwrap();
+        let mut agent = person.fork().as_agent_for("agent:claude", "ada");
+        agent
+            .apply(Tracker::REPORT_RUN.with(tracker::ReportRun {
+                issue: issue.clone(),
+                phase: tasks::model::RunPhase::Executing,
+                text: Some("1 of 1: reviewed Jane Doe".parse().expect("not blank")),
+            }))
+            .unwrap();
+        agent
+            .apply(
+                Tracker::FINISH_RUN.with(tracker::FinishRun {
+                    issue: issue.clone(),
+                    outcome: tasks::model::RunOutcome::Done,
+                    summary: Some(
+                        "Reviewed Jane Doe and drafted a reply"
+                            .parse()
+                            .expect("not blank"),
+                    ),
+                }),
+            )
+            .unwrap();
+        person.sync_with(&mut agent).unwrap();
+        person
+            .apply(tell("Now do the same for the other two"))
+            .unwrap();
+        let runs = runs_of(&person.state().unwrap());
+        let [run] = runs.as_slice() else {
+            panic!("one run: {runs:?}");
+        };
+        let conversation = run
+            .instruction
+            .split(runtime_collab::INSTRUCTION_CONVERSATION)
+            .nth(1)
+            .expect("the run is told the conversation");
+        assert_eq!(
+            conversation,
+            "\nPerson: Start with Jane Doe\nYou: 1 of 1: reviewed Jane Doe\nYou: Reviewed Jane Doe and drafted a reply"
+        );
+        assert!(
+            run.instruction
+                .starts_with("Review the applications\n\nJane Doe, Ravi Patel")
+        );
+        assert!(
+            !conversation.contains("other two"),
+            "its own message is its direction"
+        );
+
+        let many: Vec<tasks::model::Said> = (0..400)
+            .map(|index| tasks::model::Said {
+                agent: index % 2 == 1,
+                text: format!("message {index} {}", "x".repeat(100)),
+            })
+            .collect();
+        let told = super::with_conversation("Go on".into(), &many);
+        assert!(
+            told.len() < super::CONVERSATION_CHARS + 200,
+            "{}",
+            told.len()
+        );
+        assert!(told.contains("earlier messages left out"));
+        assert!(told.ends_with(&many[399].text), "the newest is kept");
     }
 
     /// A part of a task works on the model the task was set to, so every step

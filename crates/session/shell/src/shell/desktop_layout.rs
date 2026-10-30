@@ -37,8 +37,14 @@ pub(crate) enum Target {
     /// Workspace content, by its BLAKE3 hash, opened in the app registered
     /// for its media type.
     Content(String),
-    /// A web address, opened in the browser.
+    /// A web address, opened in the browser with the person's sign-ins.
     Url(String),
+    /// A web address, opened in the browser as any visitor sees it: in a
+    /// window of its own profile, without the person's cookies, sign-ins
+    /// or saved passwords. What an agent opens unless it asks for the
+    /// person's sign-ins; reading its page takes no authority beyond a
+    /// visitor's.
+    Visit(String),
 }
 
 impl Target {
@@ -70,10 +76,20 @@ impl Target {
         }
     }
 
+    /// The same web address, opened as a visitor ([`Self::Visit`]);
+    /// anything else as it is.
+    #[must_use]
+    pub(crate) fn as_visitor(self) -> Self {
+        match self {
+            Self::Url(url) => Self::Visit(url),
+            other => other,
+        }
+    }
+
     /// The address as the caller named it.
     pub(crate) fn address(&self) -> String {
         match self {
-            Self::Resource(address) | Self::Url(address) => address.clone(),
+            Self::Resource(address) | Self::Url(address) | Self::Visit(address) => address.clone(),
             Self::Content(hash) => format!("tilo.content:{hash}"),
         }
     }
@@ -588,6 +604,8 @@ struct Launch {
     uri: Option<String>,
     /// The resource to open the window at once it publishes its `open`.
     resource: Option<String>,
+    /// The browser window browses as a visitor ([`Target::Visit`]).
+    visitor: bool,
 }
 
 fn resolve(
@@ -598,20 +616,33 @@ fn resolve(
     publisher: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Launch, String> {
     match target {
-        Target::Url(url) => {
+        Target::Url(url) | Target::Visit(url) => {
             let resource = crate::shell::uri_open::resource_for_uri(url)
                 .map_err(|error| error.user_message())?;
-            let app = crate::shell::launcher::app_for_resource_with_policy(
-                &resource,
-                &state.local_user_for_room(&room),
-                Some(&workspace.default_apps),
-            )
-            .ok_or("no installed app opens web addresses")?;
+            let visitor = matches!(target, Target::Visit(_));
+            // Only Browser opens a window without the person's sign-ins: a
+            // visit is never handed to another app that might use them.
+            let app = if visitor {
+                crate::shell::launcher::gui_apps()
+                    .into_iter()
+                    .find(|app| app.package_id == ui::webview::BROWSER_APP_ID)
+                    .ok_or("Browser is not installed, so nothing here opens web addresses as a visitor")?
+                    .package_id
+            } else {
+                crate::shell::launcher::app_for_resource_with_policy(
+                    &resource,
+                    &state.local_user_for_room(&room),
+                    Some(&workspace.default_apps),
+                )
+                .ok_or("no installed app opens web addresses")?
+                .package_id
+            };
             Ok(Launch {
-                app: app.package_id,
+                app,
                 document: None,
                 uri: Some(url.clone()),
                 resource: None,
+                visitor,
             })
         }
         Target::Content(hash) => {
@@ -636,20 +667,40 @@ fn resolve(
                 document: Some(path),
                 uri: None,
                 resource: None,
+                visitor: false,
             })
         }
         Target::Resource(resource) => {
-            let app = publisher(resource).ok_or_else(|| {
+            if let Some(app) = publisher(resource) {
+                return Ok(Launch {
+                    app,
+                    document: None,
+                    uri: None,
+                    resource: Some(resource.clone()),
+                    visitor: false,
+                });
+            }
+            // An address in a scheme an installed app claims (its manifest's
+            // `[providers] schemes`, such as Tasks' `tilo-tasks:chat/<issue>`)
+            // launches that app on it, as opening the address anywhere does:
+            // one window, opened at what the address names.
+            let app = crate::shell::uri_open::resolve_for(
+                resource,
+                &state.local_user_for_room(&room),
+                Some(&workspace.default_apps),
+            )
+            .map_err(|_| {
                 format!(
-                    "no app in this workspace publishes {resource}: find it in the action \
-                     catalogue first"
+                    "no app in this workspace publishes {resource} or opens its address: find \
+                     it in the action catalogue first"
                 )
             })?;
             Ok(Launch {
-                app,
+                app: app.package_id,
                 document: None,
-                uri: None,
-                resource: Some(resource.clone()),
+                uri: Some(resource.clone()),
+                resource: None,
+                visitor: false,
             })
         }
     }
@@ -783,6 +834,7 @@ pub(crate) fn open(
         &workspace,
         launch.document,
         launch.uri,
+        launch.visitor,
     ) {
         // Nothing will arrive for the place: it goes, as a refused launch's does.
         if let Err(gone) = crate::shell::window_actions::close_tab(state, tab) {

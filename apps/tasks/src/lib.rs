@@ -26,6 +26,7 @@ pub const APP_ID: &str = crate::model::APP_ID;
 pub const APP_TITLE: &str = "Tasks";
 
 mod board;
+mod chat;
 mod filter;
 mod issue;
 mod list;
@@ -48,6 +49,7 @@ use ui::i18n::I18nManager;
 use ui::prelude::*;
 use ui::widget::{NavItem, NavSection};
 
+pub use chat::{SCHEME as CHAT_SCHEME, uri as chat_uri};
 pub use model::Tracker;
 use model::area_resource;
 pub use note::{NOTES, TasksEffect};
@@ -94,6 +96,9 @@ pub(crate) struct Nav {
     pub(crate) asking: LocalState<bool>,
     /// The new project's name, while the dialog asks.
     pub(crate) named: LocalState<String>,
+    /// The issue this window shows as a chat: the one its launch named
+    /// ([`chat_uri`]). A chat window shows that conversation alone.
+    pub(crate) chat: LocalState<Option<Id>>,
 }
 
 impl Nav {
@@ -133,6 +138,9 @@ impl ResourceApp for App {
     type Resource = Tracker;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+    /// A window is launched on nothing, or on the chat of one issue
+    /// ([`chat_uri`]).
+    const ARGUMENTS: usize = 1;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
@@ -157,6 +165,10 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Tracker>) -> Element {
+        let launched = cx
+            .launch_arguments()
+            .first()
+            .and_then(|argument| chat::target(argument));
         let (asking, named) = (cx.local(false), cx.local(String::new()));
         let nav = Nav {
             place: cx.local(Place::List),
@@ -165,67 +177,78 @@ impl ResourceApp for App {
             project: cx.local(None),
             asking,
             named,
+            chat: cx.local(launched),
         };
         let addresses = router(cx, &nav);
-        let sidebar = sidebar(cx, &nav, &addresses);
-        let content_nav = nav.clone();
-        let content = cx.switch(&nav.open, move |cx, open| {
-            if let Some(issue) = open {
-                return issue::page(cx, issue.clone(), &content_nav);
-            }
-            let nav = content_nav.clone();
-            cx.switch(&content_nav.project, move |cx, project| {
-                if let Some(project) = project {
-                    return project::page(cx, project.clone());
-                }
-                let nav = nav.clone();
-                let content_nav = nav.clone();
-                cx.switch(&content_nav.place, move |cx, place| match place {
-                    Place::List => list::view(cx, &nav),
-                    Place::Board => board::view(cx, &nav),
-                    Place::Thread => thread::view(cx, &nav),
-                    Place::Tasks => runs::view(cx, &nav),
-                })
-            })
-        });
-        let dialog = project::NewProject::new(cx, nav.asking.clone(), &nav.named);
-
-        let (back, closer) = (nav.clone(), nav.clone());
-        let shell = ui::widget::NavShell::new()
-            .content_kind(ui::widget::ContentKind::Page)
-            .with_id("tasks.shell")
-            .mode(ui::widget::NavMode::Push)
-            .with_window_toolbar()
-            .with_pane_state(&cx.local(ui::widget::NavPane::Content))
-            .sidebar(sidebar)
-            // The button that makes a project is the app's own published
-            // effect, so a screen reader, a script and an agent open the form
-            // as the press does. The window shows it when the effect lands.
-            .sidebar_header(
-                tr("tasks-title"),
-                vec![Box::new(
-                    cx.effect_button("tasks-new-project", &TasksEffect::NewProject)
-                        .with_icon(ui::icons::Icon::Plus)
-                        .role(ui::widget::ButtonRole::Plain),
-                )],
-            )
-            .content(content)
-            // The window bar's Back closes the open issue, and a narrow
-            // window's own Back does too.
-            .on_back(
-                move || back.open.with(Option::is_some) || back.project.with(Option::is_some),
-                move || {
-                    closer.open.set(None);
-                    closer.project.set(None);
-                },
-            );
-        Box::new(window_bar::TasksWindow::new(
-            shell,
-            nav,
-            addresses,
-            Box::new(dialog),
-        ))
+        let chat = nav.chat.clone();
+        cx.switch(&chat, move |cx, chat| match chat {
+            Some(issue) => chat::window(cx, issue.clone(), &addresses),
+            None => tracker_window(cx, &nav, &addresses),
+        })
     }
+}
+
+/// The window over the whole tracker: the sidebar, the list, the board and
+/// the issue pages.
+fn tracker_window(cx: &ViewCx<Tracker>, nav: &Nav, addresses: &LocalState<Tracker>) -> Element {
+    let sidebar = sidebar(cx, nav, addresses);
+    let content_nav = nav.clone();
+    let content = cx.switch(&nav.open, move |cx, open| {
+        if let Some(issue) = open {
+            return issue::page(cx, issue.clone(), &content_nav);
+        }
+        let nav = content_nav.clone();
+        cx.switch(&content_nav.project, move |cx, project| {
+            if let Some(project) = project {
+                return project::page(cx, project.clone());
+            }
+            let nav = nav.clone();
+            let content_nav = nav.clone();
+            cx.switch(&content_nav.place, move |cx, place| match place {
+                Place::List => list::view(cx, &nav),
+                Place::Board => board::view(cx, &nav),
+                Place::Thread => thread::view(cx, &nav),
+                Place::Tasks => runs::view(cx, &nav),
+            })
+        })
+    });
+    let dialog = project::NewProject::new(cx, nav.asking.clone(), &nav.named);
+
+    let (back, closer) = (nav.clone(), nav.clone());
+    let shell = ui::widget::NavShell::new()
+        .content_kind(ui::widget::ContentKind::Page)
+        .with_id("tasks.shell")
+        .mode(ui::widget::NavMode::Push)
+        .with_window_toolbar()
+        .with_pane_state(&cx.local(ui::widget::NavPane::Content))
+        .sidebar(sidebar)
+        // The button that makes a project is the app's own published
+        // effect, so a screen reader, a script and an agent open the form
+        // as the press does. The window shows it when the effect lands.
+        .sidebar_header(
+            tr("tasks-title"),
+            vec![Box::new(
+                cx.effect_button("tasks-new-project", &TasksEffect::NewProject)
+                    .with_icon(ui::icons::Icon::Plus)
+                    .role(ui::widget::ButtonRole::Plain),
+            )],
+        )
+        .content(content)
+        // The window bar's Back closes the open issue, and a narrow
+        // window's own Back does too.
+        .on_back(
+            move || back.open.with(Option::is_some) || back.project.with(Option::is_some),
+            move || {
+                closer.open.set(None);
+                closer.project.set(None);
+            },
+        );
+    Box::new(window_bar::TasksWindow::new(
+        shell,
+        nav.clone(),
+        addresses.clone(),
+        Box::new(dialog),
+    ))
 }
 
 /// The sidebar's rows: what narrows the tracker, and the labels it carries.
@@ -391,6 +414,18 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav) -> LocalState<Tracker> {
             }
             TasksEffect::OpenIssue { issue } => {
                 open.open(&issue);
+                Ok(Effected::done())
+            }
+            // A chat is a window of its own: the desktop opens another
+            // window of Tasks beside this one, launched on the issue's chat.
+            // A window that already is that chat shows it.
+            TasksEffect::OpenChat { issue } => {
+                if !cx.live().with(|tracker| tracker.issues.contains(&issue)) {
+                    return Err("There is no such issue".to_owned());
+                }
+                if open.chat.with(|chat| chat.as_ref() != Some(&issue)) {
+                    ui::shell_tabs::open_beside(Some(chat::uri(&issue)), false);
+                }
                 Ok(Effected::done())
             }
             effect @ TasksEffect::WriteNote { .. } => note::handle(effect, cx),

@@ -160,6 +160,17 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             RecordRead::Own
         }
     }
+    fn holds_record(&self, room: &str, app: &str, record: &str) -> bool {
+        use tilo_action_broker::services::RecordRead;
+        if self.record_read(room, app, record) != RecordRead::Own {
+            return true;
+        }
+        let Some(room_id) = super::super::state::RoomId::parse(room) else {
+            return false;
+        };
+        let route = tilo_action_broker::route::CrdtRoute::record(app, room.to_owned(), record);
+        self.owner_holds(room_id, app, record) || self.holds_sealed_writes(&route)
+    }
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
         context.revalidate()?;
         let route = context.route();
