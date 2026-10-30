@@ -669,7 +669,7 @@ impl CompositionFocus {
             let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
                 return;
             };
-            let reset = widget.resets_callback_binding();
+            let reset = widget.resets_binding_inheritance();
             let own_binding = widget.callback_binding();
             let binding = if reset {
                 own_binding

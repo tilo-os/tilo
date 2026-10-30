@@ -27,7 +27,7 @@ struct Boundaries {
 impl Boundaries {
     /// Add the boundaries `widget` and its descendants declare.
     fn collect(&mut self, widget: &dyn Widget) {
-        if let Some(node) = widget.inactive_callback_boundary() {
+        if let Some(node) = widget.inactive_bound_dispatch_boundary() {
             self.inactive.insert(node);
         }
         for child in widget.children() {
@@ -232,7 +232,7 @@ impl BoundNodeMap {
             let binding = if let Some(&pointer) = nodes.get(&node) {
                 // SAFETY: rebuild's owner guarantees all admitted pointers are live.
                 let widget = unsafe { &*pointer };
-                let binding = if widget.resets_callback_binding() {
+                let binding = if widget.resets_binding_inheritance() {
                     None
                 } else {
                     widget.callback_binding().map(Rc::new).or(inherited)
