@@ -2,8 +2,13 @@
 //! output shows only that client's lock surfaces and all input goes to them.
 //! No window, hosted surface or other client sees a pixel or a key.
 
-use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+use smithay::backend::renderer::element::{Kind, RenderElementStates};
+use smithay::desktop::utils::{
+    OutputPresentationFeedback, send_frames_surface_tree,
+    surface_presentation_feedback_flags_from_states, take_presentation_feedback_surface_tree,
+};
+use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as FeedbackKind;
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
@@ -59,6 +64,59 @@ impl State {
         }
     }
 
+    /// Tell the lock screen its frame was shown: a client draws its next
+    /// frame after the one it committed is on screen.
+    pub(crate) fn lock_frame_drawn(
+        &self,
+        output: &Output,
+        time: std::time::Duration,
+        feedback: &mut OutputPresentationFeedback,
+        states: Option<&RenderElementStates>,
+    ) {
+        for surface in self.lock_surfaces_on(output) {
+            let surface = surface.wl_surface();
+            send_frames_surface_tree(
+                surface,
+                output,
+                time,
+                Some(std::time::Duration::ZERO),
+                |_, _| Some(output.clone()),
+            );
+            take_presentation_feedback_surface_tree(
+                surface,
+                feedback,
+                |_, _| Some(output.clone()),
+                |surface, _| {
+                    states.map_or_else(FeedbackKind::empty, |states| {
+                        surface_presentation_feedback_flags_from_states(surface, states)
+                    })
+                },
+            );
+        }
+    }
+
+    /// The lock surfaces `output` shows: its own, or the first one's when it
+    /// has none of its own.
+    fn lock_surfaces_on(&self, output: &Output) -> Vec<&LockSurface> {
+        let own: Vec<&LockSurface> = self
+            .lock
+            .surfaces
+            .iter()
+            .filter(|(of, _)| of == output)
+            .map(|(_, surface)| surface)
+            .collect();
+        if own.is_empty() {
+            self.lock
+                .surfaces
+                .first()
+                .map(|(_, surface)| surface)
+                .into_iter()
+                .collect()
+        } else {
+            own
+        }
+    }
+
     /// The lock surface under a logical point and its origin.
     pub(crate) fn lock_surface_under(
         &self,
@@ -87,24 +145,7 @@ impl State {
         R::TextureId: Clone + Send + 'static,
     {
         let scale = Scale::from(output.current_scale().fractional_scale());
-        let own: Vec<&LockSurface> = self
-            .lock
-            .surfaces
-            .iter()
-            .filter(|(of, _)| of == output)
-            .map(|(_, surface)| surface)
-            .collect();
-        let shown = if own.is_empty() {
-            self.lock
-                .surfaces
-                .first()
-                .map(|(_, surface)| surface)
-                .into_iter()
-                .collect()
-        } else {
-            own
-        };
-        shown
+        self.lock_surfaces_on(output)
             .into_iter()
             .flat_map(|surface| {
                 render_elements_from_surface_tree(
