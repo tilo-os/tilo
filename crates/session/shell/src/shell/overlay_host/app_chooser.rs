@@ -111,7 +111,18 @@ impl ShellOverlayHost {
         if result.kind != ResourceKind::Application {
             return None;
         }
-        if result.provider_id == crate::shell::search::providers::host_applications::PROVIDER_ID {
+        let installed = crate::shell::launcher::installed_apps_without_waiting()
+            .iter()
+            .any(|app| app.package_id == result.id)
+            || self.chrome.as_ref().is_some_and(|chrome| {
+                chrome
+                    .borrow()
+                    .hosted_inputs
+                    .native_apps()
+                    .iter()
+                    .any(|app| app.package_id == result.id)
+            });
+        if !installed {
             let app = crate::shell::host_apps::find(&result.id)?;
             let mut window_ids = vec![app.desktop_id.clone()];
             for id in app.window_identities {
@@ -125,18 +136,7 @@ impl ShellOverlayHost {
                 window_ids,
             });
         }
-        let installed = crate::shell::launcher::installed_apps_without_waiting()
-            .iter()
-            .any(|app| app.package_id == result.id)
-            || self.chrome.as_ref().is_some_and(|chrome| {
-                chrome
-                    .borrow()
-                    .hosted_inputs
-                    .native_apps()
-                    .iter()
-                    .any(|app| app.package_id == result.id)
-            });
-        installed.then(|| ChosenApp {
+        Some(ChosenApp {
             id: result.id.clone(),
             name: result.title.clone(),
             window_ids: vec![result.id.clone()],

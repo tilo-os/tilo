@@ -59,7 +59,7 @@ impl SpatialInputState {
         now: u64,
     ) -> bool {
         self.issued_routes.get(&input.0) == Some(route)
-            && crate::shell::device_fabric::permits_spatial_input(
+            && tilo_device_fabric::permits_spatial_input(
                 self.issued.get(&input.0),
                 route.device(),
                 target,
@@ -177,7 +177,7 @@ impl SpatialInputState {
         now: u64,
     ) -> Result<PersonalFabricAction, String> {
         let permitted = self.received.get(&input.target).is_some_and(|lease| {
-            crate::shell::device_fabric::permits_spatial_input(
+            tilo_device_fabric::permits_spatial_input(
                 Some(lease),
                 &lease.controller,
                 &input.target,

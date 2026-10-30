@@ -8,8 +8,12 @@ use ui::widget::toggle_group::Segment;
 use ui::widget::{Column, ModelPath, NumberInput, Text, ToggleGroup, Widget};
 use winit::event::WindowEvent;
 
+use ui::framework::Actions;
+
 use crate::app::{Request, Requests};
+use crate::model::Library;
 use crate::model::{ReadFont, ReadSettings, ReadTheme};
+use crate::resource::FeedsEffect;
 
 /// A number field that reports each change it makes as a request.
 struct ScaleField {
@@ -58,8 +62,14 @@ impl ui::widget::Decorator for ScaleField {
     }
 }
 
-/// The reading settings: text size, the reading face and the paper.
-pub(crate) fn reader_settings_panel(settings: ReadSettings, requests: &Requests) -> Column {
+/// The reading settings: text size, the reading face and the paper. The
+/// face and the paper run Feeds' published `reader-font` and `reader-paper`
+/// effects through `actions`.
+pub(crate) fn reader_settings_panel(
+    settings: ReadSettings,
+    requests: &Requests,
+    actions: Option<&Actions<Library>>,
+) -> Column {
     let label = |text: &str| Box::new(Text::new(text).with_role(TextRole::Subheading));
     let scale = ScaleField {
         input: NumberInput::new(settings.percent())
@@ -74,45 +84,50 @@ pub(crate) fn reader_settings_panel(settings: ReadSettings, requests: &Requests)
             .compact(),
         requests: Rc::clone(requests),
     };
-    let fonts = {
-        let requests = Rc::clone(requests);
-        ToggleGroup::new(
-            ReadFont::ALL
-                .iter()
-                .map(|f| Segment::new(f.label()))
-                .collect(),
-            ReadFont::ALL
-                .iter()
-                .position(|f| *f == settings.font)
-                .unwrap_or(0),
-        )
-        .with_id("feeds.reading-face")
-        .fill()
-        .on_change(move |index| {
-            if let Some(font) = ReadFont::ALL.get(index) {
-                requests.borrow_mut().push(Request::SetFont(*font));
-            }
-        })
-    };
-    let papers = {
-        let requests = Rc::clone(requests);
-        ToggleGroup::new(
-            ReadTheme::ALL
-                .iter()
-                .map(|t| Segment::new(t.label()))
-                .collect(),
-            ReadTheme::ALL
-                .iter()
-                .position(|t| *t == settings.theme)
-                .unwrap_or(0),
-        )
-        .with_id("feeds.reading-paper")
-        .fill()
-        .on_change(move |index| {
-            if let Some(paper) = ReadTheme::ALL.get(index) {
-                requests.borrow_mut().push(Request::SetPaper(*paper));
-            }
-        })
+    let fonts = ToggleGroup::new(
+        ReadFont::ALL
+            .iter()
+            .map(|f| Segment::new(f.label()))
+            .collect(),
+        ReadFont::ALL
+            .iter()
+            .position(|f| *f == settings.font)
+            .unwrap_or(0),
+    )
+    .with_id("feeds.reading-face")
+    .fill();
+    let papers = ToggleGroup::new(
+        ReadTheme::ALL
+            .iter()
+            .map(|t| Segment::new(t.label()))
+            .collect(),
+        ReadTheme::ALL
+            .iter()
+            .position(|t| *t == settings.theme)
+            .unwrap_or(0),
+    )
+    .with_id("feeds.reading-paper")
+    .fill();
+    let (fonts, papers) = match actions {
+        Some(actions) => (
+            actions.bind_effect(
+                fonts,
+                FeedsEffect::READER_FONT.map(|index: usize| {
+                    ReadFont::ALL
+                        .get(index)
+                        .map_or_else(String::new, |font| font.as_str().to_owned())
+                }),
+            ),
+            actions.bind_effect(
+                papers,
+                FeedsEffect::READER_PAPER.map(|index: usize| {
+                    ReadTheme::ALL
+                        .get(index)
+                        .map_or_else(String::new, |paper| paper.as_str().to_owned())
+                }),
+            ),
+        ),
+        None => (fonts.with_enabled(false), papers.with_enabled(false)),
     };
     Column::new()
         .with_no_padding()

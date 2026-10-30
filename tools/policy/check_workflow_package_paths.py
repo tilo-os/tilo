@@ -2,8 +2,7 @@
 """Ensure path-filtered workflows follow workspace dependency closures.
 
 A workflow's `paths` lists decide when it runs, so they must cover every directory of the
-package's dependency closure. (t keys its checks by what their jobs read, so a t check has no
-such list to keep.)
+package's dependency closure.
 """
 
 from __future__ import annotations

@@ -190,7 +190,7 @@ fn a_scenario_drives_the_app_and_the_record_changes_it_made_are_what_it_asserts_
                     Some(&author),
                     "the change is attributed to the person who asked for it",
                 );
-                history.undo_in(doc, &author, 11, None, None, None).unwrap();
+                history.undo_in(doc, &author, 11, None, None).unwrap();
                 assert!(history.next_undo_in(doc, &author, 11).is_none());
                 assert_eq!(
                     doc.get(automerge::ROOT, "body")

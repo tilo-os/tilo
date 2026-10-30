@@ -12,7 +12,7 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
 
 ## 1. One tool, programs, sessions
 
-- The door (Tilo's MCP server, `docs/runtime-mcp.md`) has a tool `tilo` that takes a
+- The door (Tilo's MCP server, `tilo-runtime-mcp`) has a tool `tilo` that takes a
   **program**. Everything sent and received is tilolang, and output pastes back as input.
 - Only what the task may use is mounted: installed apps' types, views and the actions the task
   is allowed. Anything else is a compile error that names what is allowed, so nothing denied is
@@ -194,9 +194,9 @@ make first guesses mostly right.
 
 An answer composes views (agent-ux.md); the door checks it before the person sees it: quotes
 resolve, suggested actions are allowed, it fits. A view answer is a `view` declaration that
-becomes one of the person's own views (agent-ux.md, "Answers as views"). After a task, its result is checked against
-the request: on by default for small-model profiles, which skip or get parts of long requests
-wrong most often. `history task` lists the steps; `undo task` reverses them.
+becomes one of the person's own views (agent-ux.md, "Answers as views"). After a task, its
+result is checked against the request: on by default for small-model profiles, which skip or
+get parts of long requests wrong most often. `history task` lists the steps; `undo task` reverses them.
 
 ## 9. Evals
 

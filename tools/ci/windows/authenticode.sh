@@ -2,12 +2,12 @@
 # Sign one Windows executable with Authenticode in place, timestamp it, and
 # check the signer: jsign signs with a key that never leaves AWS KMS (it asks
 # KMS to sign the digest) and embeds the certificate chain it is given. The
-# signature itself is verified where Windows checks it (docs/publishing-on-t.md,
-# Windows); this image has no OpenSSL to do it with.
+# signature itself is verified where Windows checks it; this image has no
+# OpenSSL to do it with.
 #
 #   authenticode.sh <file.exe>
 #
-# Environment (t.toml, t's secrets and sign.sh; docs/publishing-on-t.md, Windows):
+# Environment (set by sign.sh and the job's secrets):
 #   TILO_AUTHENTICODE_KMS_KEY     arn:aws:kms:<region>:<account>:alias/<name> (or key ARN)
 #   TILO_AUTHENTICODE_CERT_CHAIN  the code-signing certificate and its intermediates, PEM
 #   TILO_WINDOWS_PUBLISHER        the certificate subject every signature must carry,

@@ -268,6 +268,9 @@ impl Store {
                     None => Err("no such variable".into()),
                 }
             }
+            ApiTesterEffect::RenameCollection { collection } => {
+                self.rename_collection(&Id::from_raw(collection), cx)
+            }
             ApiTesterEffect::RequestMenu { action } => {
                 let cmd = match action.as_str() {
                     "Save request…" => {
@@ -295,6 +298,21 @@ impl Store {
                 Ok(Effected::done())
             }
         }
+    }
+
+    fn rename_collection(&self, collection: &Id, cx: &EffectCx<Workspace>) -> EffectAnswer {
+        if !cx.live().get().collections.contains(collection) {
+            return Err("no such collection".into());
+        }
+        self.sink.borrow_mut().push(Cmd::OpenForm(
+            FormMode::RenameCollection,
+            FormTarget {
+                collection: Some(collection.clone()),
+                sent: None,
+                request: None,
+            },
+        ));
+        Ok(Effected::done())
     }
 
     fn import_legacy(&self, snapshot: String, cx: &mut EffectCx<Workspace>) -> EffectAnswer {

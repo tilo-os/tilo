@@ -12,7 +12,7 @@ use vello::peniko::Color;
 
 use ui::offscreen::OffscreenRenderer;
 
-use super::driver::ShellDriver;
+use super::driver::{LockVisualState, ShellDriver};
 use super::scenario::{self, JsonDirSink, NullSink, Scenario, SnapshotSink};
 
 /// Round a logical-pixel viewport dimension (from [`ShellDriver::viewport`]) to the
@@ -52,7 +52,8 @@ fn frames_per_step_for(fps: u32, step_duration_secs: f32) -> u32 {
 
 pub mod offscreen {
     use super::{
-        Color, OffscreenRenderer, Path, Scenario, ShellDriver, SnapshotSink, dim_to_u32, scenario,
+        Color, LockVisualState, OffscreenRenderer, Path, Scenario, ShellDriver, SnapshotSink,
+        dim_to_u32, scenario,
     };
 
     /// `SnapshotSink` that renders into a PNG file per snapshot under
@@ -172,10 +173,16 @@ pub mod offscreen {
         dir: &Path,
         viewport: (u32, u32),
         outputs: Option<&[shell::compositor::backend::Output]>,
+        cpu: bool,
     ) -> Result<(), String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("create offscreen output dir '{}': {e}", dir.display()))?;
-        let mut renderer = OffscreenRenderer::new(viewport.0, viewport.1);
+        // A CPU capture never looks for an adapter: the same scene is
+        // rasterized by vello_cpu, the rasterizer a CPU-drawing host uses.
+        if cpu {
+            ui::offscreen::disable_gpu();
+        }
+        let mut renderer = (!cpu).then(|| OffscreenRenderer::new(viewport.0, viewport.1));
         println!(
             "shots: offscreen scene-set ({} scenes) at {}x{} → {}",
             scenes.len(),
@@ -185,17 +192,47 @@ pub mod offscreen {
         );
         let mut first_paint_seen = false;
         for name in scenes {
-            let mut driver = ShellDriver::for_scene(name, viewport);
+            // `empty-desk` is the tree a real boot reaches (no windows yet);
+            // `lock` is the session's own lock screen, which no demo scene
+            // shows. Everything else is a `scene_setup` row.
+            let mut driver = if name == "empty-desk" {
+                ShellDriver::with_tree(
+                    shell::shell::state::WorkspaceTree::bootstrap_default(),
+                    viewport,
+                )
+            } else {
+                ShellDriver::for_scene(name, viewport)
+            };
             if let Some(outputs) = outputs {
                 driver.set_outputs(outputs);
             }
-            driver
-                .scene_setup(name)
-                .map_err(|e| format!("scene_setup({name}) failed: {e}"))?;
+            if name == "lock" {
+                driver.set_lock_visual_state(LockVisualState::Default);
+            } else if name != "empty-desk" {
+                driver
+                    .scene_setup(name)
+                    .map_err(|e| format!("scene_setup({name}) failed: {e}"))?;
+            }
             let scene = driver.paint_settled();
             let path = dir.join(format!("{name}.png"));
-            renderer.set_backdrop(driver.take_backdrop());
-            renderer.render_png(&scene, Color::TRANSPARENT, &path);
+            let backdrop = driver.take_backdrop();
+            // The ground the live compositor clears to before drawing the
+            // shell, so the capture is opaque and reads as the screen did.
+            let ground = driver.ground();
+            if let Some(renderer) = renderer.as_mut() {
+                renderer.set_backdrop(backdrop);
+                renderer.render_png(&scene, ground, &path);
+            } else {
+                let rgba = ui::offscreen::render_picture(&scene, viewport.0, viewport.1, ground)?;
+                image::save_buffer(
+                    &path,
+                    &rgba,
+                    viewport.0,
+                    viewport.1,
+                    image::ColorType::Rgba8,
+                )
+                .map_err(|e| format!("write {}: {e}", path.display()))?;
+            }
             if !first_paint_seen {
                 // Mark AFTER render_png returns so the metric captures
                 // vello's ~30-pipeline cold compile, not just the
@@ -720,6 +757,7 @@ mod tests {
                 &dir,
                 viewport,
                 Some(&outputs),
+                false,
             )
             .expect("the scenes render");
             for scene in ["qs-wifi", "desktop"] {

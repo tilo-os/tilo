@@ -24,7 +24,7 @@
 #
 # When the disk is large enough (tilo-store-volume plan), the root is followed
 # by the room store: a LUKS2 + Btrfs partition of its own, which the storage
-# daemon's native data plane needs (docs/architecture/storage.md §6.2). Its
+# daemon's native data plane needs. Its
 # key file is persistent — the installer moves it into the encrypted root,
 # from where the store unlocks without a second prompt — and `enrol
 # --store-part` adds the recovery key to it. `prepare` then also prints:

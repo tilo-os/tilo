@@ -85,14 +85,10 @@ pub struct RelayConfig {
     #[serde(default = "default_services")]
     pub services: ServiceCapabilities,
 
-    /// Other relays this one federates with. Each entry becomes an
-    /// outbound dial on startup; the pair mutually auths using the
-    /// existing device-cert challenge/response, and thereafter looks
-    /// exactly like any other peer session — same fan-out, same
-    /// store-and-forward, one filter line for echo suppression. An
-    /// empty list keeps the relay standalone (current behaviour).
-    #[serde(default, rename = "peer_relays")]
-    pub peer_relays: Vec<PeerRelayConfig>,
+    /// The `[[peer_relays]]` (or empty `peer_relays = []`) older
+    /// configurations listed. Read only to be ignored, never written.
+    #[serde(default, rename = "peer_relays", skip_serializing)]
+    pub retired_peer_relays: Option<toml::Value>,
 
     /// Interactive environment sessions this relay's own compute worker
     /// runs for members. Absent: it runs none. Needs `services.compute`.
@@ -269,30 +265,6 @@ const fn default_idle_timeout_secs() -> u64 {
     30 * 60
 }
 
-/// A configured federated peer relay. Two relays that list each
-/// other here converge on their shared workspaces via the same CRDT
-/// merge that any two devices already do — no new transport, no new
-/// fan-out.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PeerRelayConfig {
-    /// Iroh endpoint id (Ed25519 public key) of the peer relay,
-    /// hex-encoded (64 chars).
-    pub iroh_node_id: String,
-    /// Human-readable label — appears in status output / logs.
-    #[serde(default)]
-    pub label: String,
-    /// Preference weight for peer-selection strategies; larger =
-    /// preferred. Currently only surfaced in status; a client will
-    /// use it once the wheel-disc chooses a nearest host.
-    #[serde(default = "default_priority")]
-    pub priority: i32,
-}
-
-fn default_priority() -> i32 {
-    0
-}
-
 fn default_device_role() -> DeviceRole {
     DeviceRole::AlwaysOnServer
 }
@@ -334,7 +306,7 @@ impl Default for RelayConfig {
             trust_policy: TrustPolicy::default(),
             device_role: default_device_role(),
             services: default_services(),
-            peer_relays: Vec::new(),
+            retired_peer_relays: None,
             environments: None,
             web_entry: None,
             member_limits: None,
@@ -411,25 +383,6 @@ impl RelayConfig {
         std::fs::write(path, text)?;
         Ok(())
     }
-
-    /// Ensure a peer-relay entry exists; returns `true` if it was
-    /// added. Uniqueness is by iroh node id (case-insensitive hex).
-    pub fn add_peer_relay(&mut self, iroh_node_id: &str, label: &str, priority: i32) -> bool {
-        let norm = iroh_node_id.to_ascii_lowercase();
-        if self
-            .peer_relays
-            .iter()
-            .any(|r| r.iroh_node_id.eq_ignore_ascii_case(&norm))
-        {
-            return false;
-        }
-        self.peer_relays.push(PeerRelayConfig {
-            iroh_node_id: norm,
-            label: label.to_string(),
-            priority,
-        });
-        true
-    }
 }
 
 #[cfg(test)]
@@ -456,18 +409,18 @@ mod tests {
 
         // A minimal file names only the two roots.
         let cfg: RelayConfig = toml::from_str(PRELUDE).unwrap();
-        assert!(cfg.peer_relays.is_empty());
+        assert!(cfg.retired_peer_relays.is_none());
 
-        // Peer relays parse, with priority defaulting to 0.
-        let cfg: RelayConfig = toml::from_str(&format!(
-            "{PRELUDE}\n[[peer_relays]]\niroh_node_id = \"aa\"\nlabel = \"west\"\npriority = 100\n\n\
-             [[peer_relays]]\niroh_node_id = \"bb\"\nlabel = \"east\"\n"
-        ))
-        .unwrap();
-        assert_eq!(cfg.peer_relays.len(), 2);
-        assert_eq!(cfg.peer_relays[0].label, "west");
-        assert_eq!(cfg.peer_relays[0].priority, 100);
-        assert_eq!(cfg.peer_relays[1].priority, 0);
+        // The peer relays older configurations listed still load, and are
+        // never written back.
+        for listed in [
+            "peer_relays = []\n",
+            "[[peer_relays]]\niroh_node_id = \"aa\"\n",
+        ] {
+            let cfg: RelayConfig = toml::from_str(&format!("{PRELUDE}\n{listed}")).unwrap();
+            assert!(cfg.retired_peer_relays.is_some());
+            assert!(!toml::to_string(&cfg).unwrap().contains("peer_relays"));
+        }
 
         // An unknown field is rejected rather than ignored.
         assert!(toml::from_str::<RelayConfig>(&format!("{PRELUDE}surprise = 3\n")).is_err());
@@ -489,15 +442,9 @@ mod tests {
 
     #[test]
     fn relay_config_edits_are_idempotent_and_persist() {
-        let mut cfg = RelayConfig::default();
-        assert!(cfg.add_peer_relay("ABCD", "a", 1));
-        assert!(!cfg.add_peer_relay("abcd", "again", 2));
-        assert_eq!(cfg.peer_relays.len(), 1);
-
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("relay.toml");
-        let mut cfg = RelayConfig::default();
-        cfg.add_peer_relay("ef", "west", 100);
+        let cfg = RelayConfig::default();
         cfg.save(&path).unwrap();
         assert_eq!(cfg, RelayConfig::load(&path).unwrap());
     }

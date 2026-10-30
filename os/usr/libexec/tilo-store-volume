@@ -1,6 +1,6 @@
 #!/bin/bash
 # tilo-store-volume — the dedicated Btrfs volume the storage daemon serves its
-# native data plane from (docs/architecture/storage.md §6.2).
+# native data plane from.
 #
 # fanotify filesystem marks are per superblock, so the room trees need a
 # filesystem of their own: never a subvolume of the root filesystem, whose

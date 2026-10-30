@@ -20,9 +20,6 @@
 //! [`health`] derives `PeerSnapshot` and `SessionHealth` v1 from it. With the
 //! `toolkit` feature, [`transport::RelayCollabTransport`] plugs the session
 //! into `CollaborationManager::with_transport`.
-//!
-//! See `docs/architecture/browser-runtime.md`, "Transport from browser to
-//! machine".
 
 #![deny(rust_2018_idioms)]
 

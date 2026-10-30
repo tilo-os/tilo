@@ -9,7 +9,7 @@
 # ostree host the supported way to add to /usr is a layered package.
 # `rpm-ostree install ./tilo-session-[0-9]*.rpm` puts this in the next deployment;
 # `rpm-ostree usroverlay` plus unpacking it is the same file layout without a
-# reboot, for trying it out (see DEVELOPMENT.md).
+# reboot, for trying it out.
 #
 # The payload is prebuilt. `%build` compiles nothing: the workspace pins a
 # pre-release crypto stack in Cargo.lock, needs a container full of native
@@ -190,7 +190,7 @@ Install this only on a machine you develop Tilo on. It decides which program
 runs as a login session, from a file in the user's home directory. It is kept
 to a sub-package precisely so that decision is visible in `rpm -q` and absent
 by default; see the header of /usr/libexec/tilo-session-dev for the checks it
-makes before it execs anything, and DEVELOPMENT.md for the threat model.
+makes before it execs anything.
 
 %prep
 %setup -q

@@ -538,7 +538,7 @@ impl<K: Clone + PartialEq> CrossFade<K> {
 /// old place to its new one (`base`), an arriving row fades in and a leaving
 /// one fades out while their slots open and close (`fast`). Reduced motion:
 /// rows land; arrivals fade at `fast`. A shortcut: at once. Driven by
-/// [`crate::collection_transition::KeyedTransitionSet`] for virtualized
+/// [`crate::collection_transition::RowMotions`] for virtualized
 /// lists; a change that would move the row under an aiming pointer waits
 /// ([`held_by_aim`]).
 pub struct ListChange;

@@ -165,7 +165,7 @@ fn media() -> Element {
                 MediaCard::new(*title, MediaSource::Placeholder)
                     .title(*title)
                     .meta(*artist)
-                    .hover_action(Icon::Play, "Play", || {})
+                    .hover_action_view(Icon::Play, "Play", || {})
                     .on_activate(|| {})
             })
             .collect(),

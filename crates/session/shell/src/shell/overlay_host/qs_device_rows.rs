@@ -110,9 +110,9 @@ impl ShellOverlayHost {
     /// person acts on (its power). Reachability is already the status, and
     /// latency or route counts are diagnostics.
     pub(super) fn fabric_health_detail(
-        health: &crate::shell::spatial_calibration::DeviceHealthView,
+        health: &tilo_device_fabric::spatial_calibration::DeviceHealthView,
     ) -> Option<String> {
-        use crate::shell::spatial_calibration::DevicePower;
+        use tilo_device_fabric::spatial_calibration::DevicePower;
         let power = match health.power {
             DevicePower::Unknown => return None,
             DevicePower::External => t("qs-devices-external-power"),
@@ -150,10 +150,10 @@ impl ShellOverlayHost {
                     .find(|device| device.id == proposal.peer)
                     .map_or_else(|| t("a11y-certified-display"), |device| device.label.clone());
                 let side = match proposal.edge {
-                    crate::shell::device_fabric::DisplayEdge::Left => "left",
-                    crate::shell::device_fabric::DisplayEdge::Right => "right",
-                    crate::shell::device_fabric::DisplayEdge::Top => "above",
-                    crate::shell::device_fabric::DisplayEdge::Bottom => "below",
+                    tilo_device_fabric::DisplayEdge::Left => "left",
+                    tilo_device_fabric::DisplayEdge::Right => "right",
+                    tilo_device_fabric::DisplayEdge::Top => "above",
+                    tilo_device_fabric::DisplayEdge::Bottom => "below",
                 };
                 (
                     t_args("qs-devices-place", &[("display", label.into()), ("side", side.into())]),
@@ -184,10 +184,10 @@ impl ShellOverlayHost {
                 consent.prompt(),
                 consent.note(),
                 match consent.scope {
-                    crate::shell::speaker_group_runtime::SpeakerConsentScope::Play(_) => {
+                    tilo_speaker_service::groups::SpeakerConsentScope::Play(_) => {
                         ui::icons::Icon::Volume2
                     }
-                    crate::shell::speaker_group_runtime::SpeakerConsentScope::Listen => {
+                    tilo_speaker_service::groups::SpeakerConsentScope::Listen => {
                         ui::icons::Icon::Mic
                     }
                 },
@@ -200,7 +200,7 @@ impl ShellOverlayHost {
                     &[("group", session.name.as_str().into())],
                 ),
                 match session.status() {
-                    crate::shell::speaker_group_runtime::SpeakerSessionStatus::ClockFailed(
+                    tilo_speaker_service::groups::SpeakerSessionStatus::ClockFailed(
                         reason,
                     ) => t_args(
                         "qs-devices-speaker-clock-failed",
@@ -209,7 +209,7 @@ impl ShellOverlayHost {
                             ("reason", t(reason.message_key()).into()),
                         ],
                     ),
-                    crate::shell::speaker_group_runtime::SpeakerSessionStatus::SyncingClocks => {
+                    tilo_speaker_service::groups::SpeakerSessionStatus::SyncingClocks => {
                         t_args(
                             "qs-devices-speaker-syncing",
                             &[
@@ -229,7 +229,7 @@ impl ShellOverlayHost {
                                 .into(),
                         )],
                     ),
-                    crate::shell::speaker_group_runtime::SpeakerSessionStatus::Connecting => {
+                    tilo_speaker_service::groups::SpeakerSessionStatus::Connecting => {
                         t_args(
                             "qs-devices-speaker-connecting",
                             &[
@@ -238,7 +238,7 @@ impl ShellOverlayHost {
                             ],
                         )
                     }
-                    crate::shell::speaker_group_runtime::SpeakerSessionStatus::Playing => {
+                    tilo_speaker_service::groups::SpeakerSessionStatus::Playing => {
                         t_args(
                             "qs-devices-speakers-playing",
                             &[("count", session.playing_members.into())],
@@ -312,23 +312,23 @@ impl ShellOverlayHost {
                     .find(|device| device.id == route.peer)
                     .map_or_else(|| t("qs-devices-certified-device"), |device| device.label.clone());
                 let detail = match route.phase {
-                    crate::shell::remote_audio::RemoteAudioPhase::AwaitingConsent => {
+                    tilo_speaker_service::remote_audio::RemoteAudioPhase::AwaitingConsent => {
                         t_args("qs-devices-audio-awaiting", &[("peer", peer.into())])
                     }
-                    crate::shell::remote_audio::RemoteAudioPhase::SyncingClock => {
+                    tilo_speaker_service::remote_audio::RemoteAudioPhase::SyncingClock => {
                         t_args("qs-devices-audio-syncing", &[("peer", peer.into())])
                     }
-                    crate::shell::remote_audio::RemoteAudioPhase::ClockFailed(reason) => t_args(
+                    tilo_speaker_service::remote_audio::RemoteAudioPhase::ClockFailed(reason) => t_args(
                         "qs-devices-audio-clock-failed",
                         &[
                             ("peer", peer.into()),
                             ("reason", t(reason.message_key()).into()),
                         ],
                     ),
-                    crate::shell::remote_audio::RemoteAudioPhase::Streaming => {
+                    tilo_speaker_service::remote_audio::RemoteAudioPhase::Streaming => {
                         t_args("qs-devices-audio-streaming", &[("peer", peer.into())])
                     }
-                    crate::shell::remote_audio::RemoteAudioPhase::Interrupted => {
+                    tilo_speaker_service::remote_audio::RemoteAudioPhase::Interrupted => {
                         t_args("qs-devices-audio-interrupted", &[("peer", peer.into())])
                     }
                 };
@@ -618,7 +618,7 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::Device(device) => {
                 let enabled = !device.is_local
                     && device.online
-                    && (device.kind == crate::shell::device_fabric::DeviceKind::Phone
+                    && (device.kind == tilo_device_fabric::DeviceKind::Phone
                         || matches!(
                             self.qs_selected_source,
                             Some(
@@ -630,7 +630,7 @@ impl ShellOverlayHost {
                         )
                         || selected.is_some_and(|media| media.targets.contains(&device.id)));
                 let mut detail = if device.kind
-                    == crate::shell::device_fabric::DeviceKind::Phone
+                    == tilo_device_fabric::DeviceKind::Phone
                     && !device.is_local
                     && device.online
                     && self.qs_selected_source.is_none()

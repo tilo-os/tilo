@@ -5,7 +5,7 @@
 identities and the OS releases t published that they install (signature and
 SLSA provenance), runs the generic full-boot and Lenovo install-only WHPX
 cycles, then creates the source receipt. Physical writes require separate `copy` and
-`bootnext` invocations. See docs/windows-direct-final-install.md.
+`bootnext` invocations.
 """
 
 import argparse

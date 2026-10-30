@@ -2,7 +2,7 @@
 //! those services alive.
 //!
 //! Toolkit apps do not draw on the GPU themselves; the render service of
-//! their room does (`tilo-render-service`, `docs/architecture/app-rendering.md`).
+//! their room does (`tilo-render-service`).
 //! The broker is where that is decided and supervised:
 //!
 //! - **Attribution.** The launcher connects every app it starts to the

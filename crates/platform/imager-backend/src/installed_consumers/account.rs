@@ -13,10 +13,10 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    fs::{File, Metadata, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-    path::{Path, PathBuf},
+    fs::{File, Metadata},
+    io::{self, Read, Seek, SeekFrom},
+    os::unix::fs::MetadataExt,
+    path::Path,
     time::Duration,
 };
 
@@ -497,25 +497,7 @@ pub fn publish() -> io::Result<Value> {
 }
 
 fn write_atomically(target: &Path, receipt: &Value) -> io::Result<()> {
-    let parent: PathBuf = target
-        .parent()
-        .ok_or_else(|| invalid("account receipt has no directory"))?
-        .into();
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".account-consumer-")
-        .tempfile_in(&parent)?;
     let mut bytes = json::canonical_ascii(receipt);
     bytes.push(b'\n');
-    temporary.write_all(&bytes)?;
-    temporary.flush()?;
-    temporary
-        .as_file()
-        .set_permissions(std::fs::Permissions::from_mode(0o644))?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(target).map_err(|error| error.error)?;
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY)
-        .open(&parent)?
-        .sync_all()
+    tilo_files::native::atomic::write_with_mode(target, &bytes, 0o644)
 }

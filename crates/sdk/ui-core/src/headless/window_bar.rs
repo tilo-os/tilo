@@ -11,8 +11,7 @@
 //! laid out under the bar, and every capture paints the bar above it with
 //! the shell's own [`TabBar`] and [`WindowSearch`].
 
-use crate::host_core::HostCore as _;
-use taffy::NodeId;
+use crate::host_core::KeyHost as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -87,23 +86,6 @@ impl FrameHarness {
             .map_err(|error| error.to_string())?;
         self.relayout();
         Ok(())
-    }
-
-    /// The control of `order` that takes the keyboard when its app does
-    /// without one of its own choosing ([`crate::widget::keyboard_entry_rank`]).
-    pub(super) fn keyboard_entry(&self, order: &[NodeId]) -> Option<NodeId> {
-        order
-            .iter()
-            .copied()
-            .filter_map(|node| {
-                let rank = self
-                    .inspect_node(node, crate::widget::keyboard_entry_rank)
-                    .ok()
-                    .flatten()?;
-                Some((rank, node))
-            })
-            .min_by_key(|(rank, _)| *rank)
-            .map(|(_, node)| node)
     }
 
     /// Type `query` into the window bar's search, opened with Find or
@@ -315,33 +297,6 @@ impl FrameHarness {
         let id = found.ok_or_else(|| format!("the bar has no `{name}`, only {offered:?}"))?;
         self.press_window_slot(crate::window_toolbar::ToolbarEvent::Action { id });
         Ok(())
-    }
-
-    /// The window took the keyboard (it opened, was brought forward —
-    /// `WindowEvent::Focused(true)` — or the person pressed one of the app's
-    /// slots in its bar): when nothing in it holds the keyboard, the app's
-    /// keyboard entry ([`crate::widget::keyboard_entry_rank`]) takes it, as
-    /// in the native window.
-    pub(super) fn hand_keyboard_to_app(&mut self) {
-        if self.focused.is_some() {
-            return;
-        }
-        let instance = self.component_instance_id();
-        let order: Vec<_> = self
-            .focus_order()
-            .into_iter()
-            .filter(|&node| {
-                self.app_focus_eligible(node)
-                    && instance.is_none_or(|instance| {
-                        self.bindings
-                            .binding_for(node)
-                            .is_some_and(|binding| binding.instance_id == instance)
-                    })
-            })
-            .collect();
-        if let Some(target) = self.keyboard_entry(&order) {
-            self.set_focused(Some(target));
-        }
     }
 
     /// The app's frame for a window of `viewport`: the part under the bar.

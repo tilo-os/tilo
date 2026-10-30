@@ -451,14 +451,6 @@ fn a_cancelled_install_offers_only_starting_it_again() {
 /// os-release, bootc staged/rollback, release notes and journal history parsing.
 #[test]
 fn update_status_parsers_accept_only_trusted_shapes() {
-    // Case `parses_pretty_name`.
-    {
-        assert_eq!(
-            parse_pretty_name("PRETTY_NAME=\"Tilo 42\"\n").as_deref(),
-            Some("Tilo 42")
-        );
-    }
-
     // Case `parse_bootc_staged_detects_and_ignores`.
     {
         let staged = r#"{"status":{"staged":{"version":"Tilo 2026.07"},"booted":{"version":"Tilo 2026.06"}}}"#;

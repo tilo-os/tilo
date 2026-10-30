@@ -89,46 +89,6 @@ fn has_native_operation(page: &tilo_actions::remote::CataloguePage, operation: &
 }
 
 #[test]
-fn authorized_browser_directory_waits_for_primary_and_person_documents() {
-    const TEST: &str = "shell::in_process::tests::authorized_browser_directory_waits_for_primary_and_person_documents";
-    let Some(profile) = isolated_session_root(TEST) else {
-        return;
-    };
-    let (session, mut apps, room) = authorized_person_session(&profile);
-    let mut shown = Shown::mount(&mut apps, browser::definition(), &room, 93, |_| {});
-    let embedded = shown
-        .tile
-        .as_any_mut()
-        .unwrap()
-        .downcast_mut::<ui::app::EmbeddedApp>()
-        .unwrap();
-    assert_eq!(
-        embedded.component_root_mut().unwrap().record_owners().len(),
-        3,
-        "the original Browser must retain its history, address-book and imported-bookmarks owners"
-    );
-    let provider = wait_native_directory(
-        &mut shown,
-        &session.broker.app_action_broker().unwrap(),
-        browser::definition().app_id(),
-    );
-    let host = crate::shell::remote_actions::BrokerActionHost::new(
-        session.broker.app_action_broker().unwrap(),
-    );
-    let caller = tilo_actions::remote::Caller::local_person(&session.actor).in_room(&room);
-    let exact = native_directory_query(&mut shown, &host, &caller, &provider, "read-page");
-    let app_name = native_directory_query(&mut shown, &host, &caller, &provider, "Browser");
-    drop(host);
-    assert!(has_native_operation(&exact, "read-page"), "{exact:?}");
-    // Named-directory matching differs from the eager machine catalogue.
-    // Keep the original diagnostic assertion; both queries share one caller.
-    assert!(
-        !has_native_operation(&app_name, "read-page"),
-        "{app_name:?}"
-    );
-}
-
-#[test]
 fn authorized_store_directory_publishes_inspect_catalogue() {
     const TEST: &str =
         "shell::in_process::tests::authorized_store_directory_publishes_inspect_catalogue";

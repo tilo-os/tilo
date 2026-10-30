@@ -1103,7 +1103,14 @@ impl Music {
         hits: &[ui::framework::views::ActionHit],
     ) -> f64 {
         use ui::framework::views::ControlKind;
-        let rows: Vec<(String, String, ui::framework::views::ControlDecl, Action)> = hits
+        type ControlRow = (
+            String,
+            String,
+            ui::framework::views::ControlDecl,
+            Action,
+            ui::tilo_actions::ActionSpec,
+        );
+        let rows: Vec<ControlRow> = hits
             .iter()
             .filter_map(|hit| {
                 let action = self.control_action(&hit.spec.id)?;
@@ -1112,13 +1119,18 @@ impl Music {
                     hit.label().to_owned(),
                     hit.control.clone(),
                     action,
+                    hit.spec.clone(),
                 ))
             })
             .collect();
         if rows.is_empty() {
             return y;
         }
-        let key = format!("controls:{rows:?}");
+        let shown: Vec<_> = rows
+            .iter()
+            .map(|(id, label, decl, action, _)| (id, label, decl, action))
+            .collect();
+        let key = format!("controls:{shown:?}");
         let gap = ui::num::f32_of_f64(look.related);
         let actions = self.actions.clone();
         self.page_part(ctx, span, y, key, move |asked| {
@@ -1131,7 +1143,7 @@ impl Music {
                 .push(Box::new(
                     ui::widget::Text::new("In this app").with_role(ui::tokens::TextRole::Heading),
                 ));
-            for (id, label, decl, action) in rows {
+            for (id, label, decl, action, spec) in rows {
                 let (icon, home) = (decl.icon, decl.home);
                 let control: ui::widget::Element = match decl.kind {
                     ControlKind::Button => {
@@ -1144,11 +1156,16 @@ impl Music {
                         Box::new(press(button, action.clone()))
                     }
                     ControlKind::Switch { on } => {
-                        let sink = Rc::clone(asked);
-                        let flip = action.clone();
+                        // The switch runs the published action itself,
+                        // whichever way it is flipped.
                         let mut toggle = Toggle::new(&format!("music.control.{id}"), "")
-                            .with_accessible_name(&label)
-                            .on_change(move |_| sink.borrow_mut().push(flip.clone()));
+                            .with_accessible_name(&label);
+                        if let Some(binding) = actions
+                            .as_ref()
+                            .and_then(|actions| actions.spec_switch_binding(&spec))
+                        {
+                            toggle = toggle.on_action(binding);
+                        }
                         toggle.set_checked(on);
                         Box::new(
                             Row::new()

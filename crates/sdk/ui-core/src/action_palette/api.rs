@@ -51,12 +51,9 @@ pub(crate) trait ActionPaletteApi: crate::widget::Widget {
         snapshots: Vec<crate::bound_dispatch::BoundResourceSnapshot>,
     );
     fn open(&mut self);
-    fn set_scope(&mut self, scope: Option<ScopeDecl>);
-    fn select_query(&mut self);
+    fn open_on(&mut self, request: &crate::search::SearchRequest) -> bool;
     fn set_query(&mut self, q: &str);
     fn advance_search_page(&mut self) -> SearchAdvance;
-    fn select_resource(&mut self, resource: &str) -> bool;
-    fn activate_address(&mut self, resource: &str, action: &str) -> bool;
     fn take_operation(&mut self) -> Option<PendingOperation>;
     fn take_scoped_navigation(
         &mut self,
@@ -181,23 +178,14 @@ impl ActionPaletteApi for ActionPalette {
     fn open(&mut self) {
         ActionPalette::open(self)
     }
-    fn set_scope(&mut self, scope: Option<ScopeDecl>) {
-        ActionPalette::set_scope(self, scope)
-    }
-    fn select_query(&mut self) {
-        ActionPalette::select_query(self)
+    fn open_on(&mut self, request: &crate::search::SearchRequest) -> bool {
+        ActionPalette::open_on(self, request)
     }
     fn set_query(&mut self, q: &str) {
         ActionPalette::set_query(self, q)
     }
     fn advance_search_page(&mut self) -> SearchAdvance {
         ActionPalette::advance_search_page(self)
-    }
-    fn select_resource(&mut self, resource: &str) -> bool {
-        ActionPalette::select_resource(self, resource)
-    }
-    fn activate_address(&mut self, resource: &str, action: &str) -> bool {
-        ActionPalette::activate_address(self, resource, action)
     }
     fn take_operation(&mut self) -> Option<PendingOperation> {
         ActionPalette::take_operation(self)

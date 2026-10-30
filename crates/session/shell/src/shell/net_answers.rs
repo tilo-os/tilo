@@ -196,23 +196,6 @@ fn fetch_in_background(source: Source) {
     }
 }
 
-/// Keep `rates` as if fetched at `fetched_at`, for tests of what search
-/// answers from them.
-#[cfg(test)]
-pub(crate) fn keep_rates_for_test(rates: Rates, fetched_at: u64) {
-    {
-        let mut held = STORE.lock_recover();
-        let store = held.get_or_insert_with(Store::default);
-        store.loaded_from_disk = true;
-        store.rates = Some(Kept {
-            fetched_at,
-            value: rates,
-        });
-        drop(held);
-    }
-    REVISION.fetch_add(1, Ordering::AcqRel);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,14 +9,13 @@ entrypoint="$root/tilo-agent-mcp"
 containerfile="$root/Containerfile"
 dockerignore="$root/Containerfile.dockerignore"
 arch_doc="$root/../../../docs/architecture/agent-host.md"
-runtime_mcp="$root/../../../docs/runtime-mcp.md"
 relay_readme="$root/../tilo-relay/README.md"
 
 fail() { echo "tilo-agent-host contract: FAIL: $*" >&2; exit 1; }
 need() { grep -Fq -- "$2" "$1" || fail "$(basename "$1") lacks: $2"; }
 forbid() { if grep -Fq -- "$2" "$1"; then fail "$(basename "$1") must not contain: $2"; fi; }
 
-for path in "$compose" "$readme" "$entrypoint" "$containerfile" "$dockerignore" "$arch_doc" "$runtime_mcp" "$relay_readme"; do
+for path in "$compose" "$readme" "$entrypoint" "$containerfile" "$dockerignore" "$arch_doc" "$relay_readme"; do
   [ -f "$path" ] || fail "missing ${path#"$root/../../../"}"
 done
 
@@ -27,7 +26,7 @@ need "$arch_doc" "loopback"
 need "$readme" "Pair home server"
 need "$readme" "pair-device --headless"
 need "$relay_readme" "agent host"
-need "$runtime_mcp" "Agent host"
+need "Agent host"
 
 # Compose: relay + MCP sidecar, host network for LAN pair, loopback MCP.
 need "$compose" "tilo-relay:"

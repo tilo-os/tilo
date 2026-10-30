@@ -1,4 +1,4 @@
-"""Check package/target names in the development book's literal Cargo examples."""
+"""Check package/target names in the published docs' literal Cargo examples."""
 import re
 from pathlib import Path
 import shlex
@@ -6,7 +6,7 @@ import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = "docs/development/pages.toml"
+MANIFESTS = ("docs/development/pages.toml", "docs/developers/pages.toml")
 SELECTORS = {"-p": "package", "--package": "package", "--bin": "bin", "--test": "test", "--example": "example"}
 
 
@@ -90,17 +90,17 @@ def check_command(words, inventory):
 
 def main():
     inventory = packages(ROOT)
-    book = tomllib.loads((ROOT / MANIFEST).read_text())
+    pages = [page for manifest in MANIFESTS for page in tomllib.loads((ROOT / manifest).read_text())["page"]]
     errors = []
     checked = 0
-    for page in book["page"]:
+    for page in pages:
         source = page["source"]
         for number, command in cargo_examples((ROOT / source).read_text()):
             problems, observed = check_command(command, inventory)
             checked += observed
             errors.extend(f"{source}:{number}: {problem}" for problem in problems)
     if not checked:
-        errors.append("development book has no literal package/target examples to audit")
+        errors.append("the published docs have no literal package/target examples to audit")
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1

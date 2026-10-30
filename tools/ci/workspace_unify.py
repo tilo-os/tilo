@@ -11,7 +11,7 @@ package's tests and lints, which reach a cargo family's build through it alone):
 built for the host (proc macros, build scripts' dependencies) as its build-dependencies, each
 architecture's under a table of its own, resolved on a machine of that architecture as the cargo
 families run cargo there, with no `--target`. Nothing depends on it. A cargo family's command names it besides its packages
-(tools/ci/t_cargo_compile.py, tools/ci/t-nextest.sh), and every member then resolves as in a
+(tools/ci/nextest.sh), and every member then resolves as in a
 whole-workspace build. Its one target needs a feature nothing enables, so it adds no unit: it only
 takes part in resolving features.
 

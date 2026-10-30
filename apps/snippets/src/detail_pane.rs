@@ -27,12 +27,11 @@ use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
 use crate::app::{Action, Core, Requests, Shared};
-use crate::model::Snippets;
-use crate::model::{Language, SnippetId};
+use crate::model::{Language, SnippetId, SnippetPaths, Snippets};
 use crate::resource::SnippetsView;
 use crate::tr;
 use ui::tilo_actions::ActionBinding;
-use ui::tilo_resource::{Derived, Effect};
+use ui::tilo_resource::{Atom, Derived, Edit, Effect, Path};
 
 /// What the content column shows. A change rebuilds the column.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,34 +71,43 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         return Box::new(EmptyState::new(tr("snippets-none-selected")).with_icon(Icon::Code));
     };
 
-    let facts = facts_row(core, requests, &id, language, &folder, &tags);
+    let facts = facts_row(core, &id, language, &folder, &tags);
     let about = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .push(Box::new(name_field(core, requests, &id)))
+        .push(Box::new(name_field(core, &id)))
         .push(Box::new(facts))
         // What the snippet is for, and which folder it is filed under: both
         // are the library's organising model, so both are editable where the
         // snippet is read rather than only when it is created.
         .push(Box::new(field(
-            core,
-            requests,
             &id,
             "description",
             "snippets-description",
             "snippets-description-placeholder",
             &description,
-            Action::SetDescription as fn(SnippetId, String) -> Action,
+            edit(
+                core,
+                &id,
+                |paths| paths.description,
+                |field, text: String| Ok(field.set(text)),
+            ),
         )))
+        // The name is what the sidebar lists, so it is trimmed and a blank
+        // name files the snippet nowhere: the rule the record holds a folder
+        // name to.
         .push(Box::new(field(
-            core,
-            requests,
             &id,
             "folder",
             "snippets-folder",
             "snippets-folder-placeholder",
             &folder,
-            Action::SetFolder as fn(SnippetId, String) -> Action,
+            edit(
+                core,
+                &id,
+                |paths| paths.folder,
+                |field, text: String| Ok(field.set(Atom(text.trim().to_owned()))),
+            ),
         )))
         .push(Box::new(tag_editor(core, requests, &id, &tags)));
     let about = about.with_rhythm(Rhythm::Sibling);
@@ -138,30 +146,33 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
 /// its folder and tags, each revealing the snippets filed there.
 fn facts_row(
     core: &Shared,
-    requests: &Requests,
     id: &SnippetId,
     language: Language,
     folder: &str,
     tags: &[String],
 ) -> Row {
-    let picker = {
-        let requests = Rc::clone(requests);
-        let id = id.clone();
-        Dropdown::from_state(
-            Language::ALL.into_iter().map(Language::name).collect(),
-            &ui::LocalState::new(language.name()),
-        )
-        .with_id(&format!("snippets.snippet:{id}.language"))
-        .with_resolved_accessible_name(tr("snippets-language"))
-        .leading_icon(Icon::Code)
-        .control_size(ControlSize::Small)
-        .on_change(move |name| {
-            if let Some(language) = Language::ALL.into_iter().find(|l| l.name() == name) {
-                requests
-                    .borrow_mut()
-                    .push(Action::SetLanguage(id.clone(), language));
-            }
-        })
+    let picker = Dropdown::from_state(
+        Language::ALL.into_iter().map(Language::name).collect(),
+        &ui::LocalState::new(language.name()),
+    )
+    .with_id(&format!("snippets.snippet:{id}.language"))
+    .with_resolved_accessible_name(tr("snippets-language"))
+    .leading_icon(Icon::Code)
+    .control_size(ControlSize::Small);
+    let picker = match edit(
+        core,
+        id,
+        |paths| paths.language,
+        |language, name: String| {
+            Language::ALL
+                .into_iter()
+                .find(|known| known.name() == name)
+                .map(|known| language.set(known))
+                .ok_or_else(|| format!("no language `{name}`"))
+        },
+    ) {
+        Some(binding) => picker.on_action(binding),
+        None => picker,
     };
     let mut facts = Row::new().push(Box::new(LanguagePicker {
         dropdown: picker,
@@ -215,55 +226,77 @@ fn empty_library(requests: &Requests) -> Element {
     })
 }
 
+/// The binding of the open snippet `id`'s field `field` (of `paths`) for a
+/// control with input `I`, through `make`; none before the framework
+/// attaches the view.
+fn edit<V: 'static, I: 'static>(
+    core: &Shared,
+    id: &SnippetId,
+    field: impl FnOnce(SnippetPaths<Snippets>) -> Path<Snippets, V>,
+    make: impl Fn(&Path<Snippets, V>, I) -> Result<Edit<Snippets>, String> + Send + Sync + 'static,
+) -> Option<ActionBinding<I>> {
+    let actions = core.borrow().actions.clone()?;
+    actions.edit_binding_with(field(Snippets::paths().snippets.item(id)), make)
+}
+
+/// `input`, committing each change through `binding` where there is one.
+fn bound(input: TextInput, binding: Option<ActionBinding<String>>) -> TextInput {
+    match binding {
+        Some(binding) => input.on_action(binding),
+        None => input,
+    }
+}
+
 /// The open snippet's name, edited in place: a new snippet starts
-/// untitled, and nothing else renames it.
-fn name_field(core: &Shared, requests: &Requests, id: &SnippetId) -> TextInput {
+/// untitled, and nothing else renames it. A cleared field keeps the old
+/// name until something is typed.
+fn name_field(core: &Shared, id: &SnippetId) -> TextInput {
     let title = core
         .borrow()
         .library
         .get(id)
         .map(|snippet| snippet.title.clone())
         .unwrap_or_default();
-    let requests = Rc::clone(requests);
-    let renamed = id.clone();
-    TextInput::local()
+    let input = TextInput::local()
         .with_id(&format!("snippets.snippet:{id}.title"))
         .with_accessible_name(tr("snippets-name"))
         .with_placeholder("snippets-untitled")
-        .with_initial_value(&title)
-        .on_change(move |title| {
-            requests
-                .borrow_mut()
-                .push(Action::Rename(renamed.clone(), title.to_owned()));
-        })
+        .with_initial_value(&title);
+    bound(
+        input,
+        edit(
+            core,
+            id,
+            |paths| paths.title,
+            |field, title: String| {
+                let title = title.trim();
+                if title.is_empty() {
+                    return Err("a snippet keeps its name until another is typed".into());
+                }
+                Ok(field.set(title.to_owned()))
+            },
+        ),
+    )
 }
 
 /// A single-line field of the snippet's own facts, committing on every
 /// change: the title's editor, for the fields that are not the title.
 fn field(
-    core: &Shared,
-    requests: &Requests,
     id: &SnippetId,
     name: &str,
     accessible: &str,
     placeholder: &str,
     value: &str,
-    make: fn(SnippetId, String) -> Action,
+    binding: Option<ActionBinding<String>>,
 ) -> TextInput {
-    let initial = value.to_owned();
-    let requests = Rc::clone(requests);
-    let changed = id.clone();
-    let _ = core;
-    TextInput::local()
-        .with_id(&format!("snippets.snippet:{id}.{name}"))
-        .with_accessible_name(tr(accessible))
-        .with_placeholder(placeholder)
-        .with_initial_value(&initial)
-        .on_change(move |text| {
-            requests
-                .borrow_mut()
-                .push(make(changed.clone(), text.to_owned()));
-        })
+    bound(
+        TextInput::local()
+            .with_id(&format!("snippets.snippet:{id}.{name}"))
+            .with_accessible_name(tr(accessible))
+            .with_placeholder(placeholder)
+            .with_initial_value(value),
+        binding,
+    )
 }
 
 /// The snippet's tags, each removable, and a field to add one: the sidebar
@@ -296,23 +329,26 @@ fn tag_editor(core: &Shared, requests: &Requests, id: &SnippetId, tags: &[String
                 .push(Box::new(remove)),
         ));
     }
-    let requests_add = Rc::clone(requests);
-    let added = id.clone();
-    let add = TextInput::local()
-        .with_id(&format!("snippets.snippet:{id}.new-tag"))
-        .with_accessible_name(tr("snippets-add-tag"))
-        .with_placeholder(tr("snippets-add-tag-placeholder"))
-        .on_change(move |text| {
-            // Committed as the field is typed into and cleared by the app
-            // once the tag is in, the way a tag entry field behaves.
-            let tag = text.trim();
-            if !tag.is_empty() {
-                requests_add
-                    .borrow_mut()
-                    .push(Action::AddTag(added.clone(), tag.to_owned()));
-            }
-        });
-    let _ = core;
+    // Committed as the field is typed into and cleared once the tag is in,
+    // the way a tag entry field behaves: blank and padded tags are nothing.
+    let add = bound(
+        TextInput::local()
+            .with_id(&format!("snippets.snippet:{id}.new-tag"))
+            .with_accessible_name(tr("snippets-add-tag"))
+            .with_placeholder(tr("snippets-add-tag-placeholder")),
+        edit(
+            core,
+            id,
+            |paths| paths.tags,
+            |tags, text: String| {
+                let tag = text.trim();
+                if tag.is_empty() {
+                    return Err("a tag says something".into());
+                }
+                Ok(tags.insert(&tag.to_owned()))
+            },
+        ),
+    );
     row.push(Box::new(add))
 }
 

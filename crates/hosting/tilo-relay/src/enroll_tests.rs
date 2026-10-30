@@ -113,7 +113,6 @@ fn a_held_root_certifies_an_administrator_into_the_fleet() {
         device: &device,
         label: "workstation (tilo-vm)",
         capabilities,
-        home_peer: None,
         out: &out,
     };
     let shell = ["shell".to_owned()];
@@ -134,85 +133,6 @@ fn a_held_root_certifies_an_administrator_into_the_fleet() {
     )
     .unwrap();
     assert_eq!(fleet.certificates, vec![cert]);
-}
-
-/// A host certified out of band becomes one of the person's home peers:
-/// the registry names its relay and where that relay listens, and no
-/// workspace before it holds one. A device that may not host is never
-/// registered.
-#[test]
-fn a_host_certified_out_of_band_is_registered_as_a_home_peer() {
-    let identity_root = tempfile::tempdir().unwrap();
-    let identity_dir = tempfile::tempdir().unwrap();
-    let paths = IdentityPaths::under(identity_root.path());
-    paths.ensure_directories().unwrap();
-    let root = ed25519_dalek::SigningKey::from_bytes(&[45; 32]);
-    tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
-    let host = ed25519_dalek::SigningKey::from_bytes(&[46; 32]);
-    let device = hex::encode(host.verifying_key().to_bytes());
-    let service = tilo_relay::daemon::relay_service_node_id(&host);
-    let addr: std::net::SocketAddr = "127.0.0.1:41234".parse().unwrap();
-    let out = identity_dir.path().join("host.cert");
-    let registry = tilo_relay::home_peer_registry_path(identity_root.path());
-
-    assert!(OutOfBandHomePeer::parse("not hex", &[addr]).is_err());
-    let home_peer = OutOfBandHomePeer::parse(&hex::encode(service), &[addr]).unwrap();
-    let options = |capabilities| CertifyOptions {
-        root_key: None,
-        identity_root: identity_root.path(),
-        identity_dir: Some(identity_dir.path()),
-        device: &device,
-        label: "Home relay",
-        capabilities,
-        home_peer: Some(&home_peer),
-        out: &out,
-    };
-    let member = ["read-all".to_owned()];
-    let refused = certify(&options(&member)).unwrap_err();
-    assert!(refused.to_string().contains("host capability"), "{refused}");
-    assert!(!registry.exists() && !out.exists());
-
-    let host_capabilities = ["host".to_owned(), "read-all".to_owned()];
-    certify(&options(&host_capabilities)).unwrap();
-    let cert = tilo_user_identity::persist::read_device_cert(&out).unwrap();
-    assert_eq!(cert.capabilities, DeviceCapabilities::host());
-    let peers: Vec<HomePeerRegistration> =
-        serde_json::from_slice(&std::fs::read(&registry).unwrap()).unwrap();
-    assert_eq!(peers.len(), 1);
-    let peer = &peers[0];
-    assert_eq!(peer.device_node_id, device);
-    assert_eq!(peer.relay_service_node_id, hex::encode(service));
-    assert_eq!(
-        peer.user_public_key,
-        hex::encode(root.verifying_key().to_bytes())
-    );
-    assert!(
-        peer.relay_workspace_ids.is_empty(),
-        "a new home peer holds none of the person's workspaces yet"
-    );
-    let endpoint = peer.relay_endpoint.as_ref().expect("the dial hint is kept");
-    assert_eq!(endpoint.id.as_bytes(), &service);
-    assert_eq!(endpoint.ip_addrs().copied().collect::<Vec<_>>(), vec![addr]);
-    assert_eq!(peer.device_cert.as_ref(), Some(&cert));
-    assert!(valid_home_peer_registration(peer));
-
-    // Certified again (a relay restarted on another port): one entry,
-    // the newest hint.
-    let moved: std::net::SocketAddr = "127.0.0.1:41235".parse().unwrap();
-    let home_peer = OutOfBandHomePeer::parse(&hex::encode(service), &[moved]).unwrap();
-    certify(&CertifyOptions {
-        home_peer: Some(&home_peer),
-        ..options(&host_capabilities)
-    })
-    .unwrap();
-    let peers: Vec<HomePeerRegistration> =
-        serde_json::from_slice(&std::fs::read(&registry).unwrap()).unwrap();
-    assert_eq!(peers.len(), 1);
-    let endpoint = peers[0].relay_endpoint.as_ref().unwrap();
-    assert_eq!(
-        endpoint.ip_addrs().copied().collect::<Vec<_>>(),
-        vec![moved]
-    );
 }
 
 #[test]
@@ -258,7 +178,6 @@ fn an_out_of_band_certificate_joins_its_identity() {
         device: &hex::encode(device.verifying_key().to_bytes()),
         label: "Node",
         capabilities: &capabilities,
-        home_peer: None,
         out: &own,
     })
     .unwrap();

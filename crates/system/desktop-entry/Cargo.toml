@@ -10,10 +10,6 @@ description = "freedesktop.org desktop-entry parser and application scanner"
 name = "desktop_entry"
 path = "src/lib.rs"
 
-[[bin]]
-name = "tilo-desktop-scan"
-path = "src/bin/tilo-desktop-scan.rs"
-
 [features]
 # Read a downloaded AppImage's embedded entry and icon. The compositor, which
 # notices downloaded programs, enables it; the app runtime, which links this

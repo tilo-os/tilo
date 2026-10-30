@@ -169,17 +169,22 @@ impl DbClientApp {
     /// The app opens on the workspace's saved connections (empty on a fresh
     /// record) and never fabricates a sample database or profiles.
     pub fn new() -> Self {
-        Self::build(Session::new())
+        Self::build(Session::new(), None)
+    }
+
+    /// [`Self::new`], its controls bound to the workspace's `actions`.
+    pub(crate) fn with_actions(actions: &ui::framework::Actions<Record>) -> Self {
+        Self::build(Session::new(), Some(actions))
     }
 
     /// A client on the bundled sample catalog, connected, beside two
     /// remotes: the populated widget the tests drive.
     #[cfg(test)]
     pub(crate) fn sampled() -> Self {
-        Self::build(Session::with_sample())
+        Self::build(Session::with_sample(), None)
     }
 
-    fn build(session: Session) -> Self {
+    fn build(session: Session, actions: Option<&ui::framework::Actions<Record>>) -> Self {
         let link = Link::new();
         // The window bar's search narrows the tables (the navigator's
         // filterable section); its views are the workspace's tabs.
@@ -187,7 +192,7 @@ impl DbClientApp {
             .content_kind(ui::widget::ContentKind::Document)
             .with_id("db-client")
             .with_window_toolbar()
-            .sidebar(Box::new(Navigator::new(&link)))
+            .sidebar(Box::new(Navigator::new(&link, actions)))
             .content(Box::new(Workspace::new(&link)));
         let mut store = Store {
             link,
@@ -439,11 +444,6 @@ impl Store {
                 });
             }
             Intent::OpenItem(id) => self.open_item(id),
-            Intent::RemoveConnection(id) => {
-                if let Some(index) = self.session.connections.iter().position(|c| c.id == id) {
-                    self.remove_connection(index);
-                }
-            }
             Intent::NewConnection => self.dialog = Some(Dialog::Connect),
             Intent::SaveConnection(profile) => {
                 self.save_connection(*profile);
@@ -814,7 +814,19 @@ impl Store {
                         && incoming.file_path == local.file_path
                 });
         if !same {
+            // A removed connection is gone for good, whoever removed it:
+            // this device forgets the password it kept for it.
+            let removed: Vec<Uuid> = self
+                .session
+                .connections
+                .iter()
+                .map(|profile| profile.id)
+                .filter(|id| !connections.iter().any(|profile| profile.id == *id))
+                .collect();
             self.session.set_connections(connections);
+            for id in removed {
+                self.forget_password(id);
+            }
         }
         if let Some(id) = self.pending_connect_id
             && let Some(idx) = self.session.connections.iter().position(|c| c.id == id)
@@ -946,16 +958,10 @@ impl Store {
         self.pending_connect_id = Some(id);
     }
 
-    /// Remove a saved connection by its index in the sidebar list, and the
-    /// password this device kept for it.
-    fn remove_connection(&self, idx: usize) {
-        let Some(profile) = self.session.connections.get(idx).cloned() else {
-            return;
-        };
-        if let Some(connection) = self.record.connection_id(profile.id) {
-            self.submit(Record::REMOVE_CONNECTION.with(connection));
-        }
-        if let Some(secret) = self.password_secret(profile.id)
+    /// Forget the password this device kept for saved connection `id`.
+    fn forget_password(&self, id: Uuid) {
+        if let Some(secret) = self.password_secret(id)
+            && secret.present_blocking()
             && let Err(error) = secret.delete_blocking()
         {
             tracing::warn!(%error, "forgetting the connection password failed");
@@ -1587,6 +1593,7 @@ const READ_RESULT_ROWS: usize = 200;
 impl Store {
     fn execute_effect(&mut self, effect: DbEffect) -> Result<(), String> {
         match effect {
+            DbEffect::NewConnection => self.dialog = Some(Dialog::Connect),
             DbEffect::FocusDatabase { connection } => {
                 self.focus_catalog(&connection.to_string(), None)?;
             }
@@ -1712,7 +1719,8 @@ impl Store {
         self.changed = true;
         if matches!(
             effect,
-            DbEffect::FocusDatabase { .. }
+            DbEffect::NewConnection
+                | DbEffect::FocusDatabase { .. }
                 | DbEffect::FocusSchema { .. }
                 | DbEffect::ShowResult { .. }
         ) {
@@ -2228,7 +2236,8 @@ mod tests {
             1,
             "and the views are told about it"
         );
-        app.state().remove_connection(0);
+        app.state()
+            .adopt_resource_state(&Rc::new(Record::default()));
         assert!(
             !secret.present_blocking(),
             "removing it forgets the password"

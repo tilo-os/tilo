@@ -15,10 +15,7 @@ impl FrameHarness {
     /// of the node map.
     #[must_use]
     pub fn cursor_at(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        let mut pick = crate::widget::cursor::CursorPick::default();
-        for &node in self.node_map.keys() {
-            let _ = self.inspect_node(node, |widget| pick.offer(widget, point));
-        }
+        let mut pick = self.tree().cursor_pick_at(point);
         for root in self.presentation_roots() {
             let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
                 continue;

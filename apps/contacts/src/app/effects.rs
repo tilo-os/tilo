@@ -27,6 +27,12 @@ pub(crate) enum Ask {
     OpenGroup(String),
     /// Show the favorites.
     OpenFavorites,
+    /// Sort the list by the order the list's order picker names so.
+    Sort(String),
+    /// Open a contact's form on one of their details.
+    EditField(ContactId, crate::form::Slot),
+    /// Open a website in this device's browser.
+    OpenWebsite(String),
     /// Review whether the second contact is a duplicate of the first.
     Review(ContactId, ContactId),
     /// Choose the format a contact is exported in.
@@ -117,31 +123,29 @@ fn answer(
             Ask::OpenGroup(group)
         }
         ContactsEffect::OpenFavorites => Ask::OpenFavorites,
+        ContactsEffect::SortContacts { order } => Ask::Sort(order),
+        ContactsEffect::EditField { contact, field } => {
+            if book.contact(contact).is_none() {
+                return Err("contact no longer exists".into());
+            }
+            let slot = crate::form::Slot::of_detail_key(&field)
+                .ok_or_else(|| format!("no detail `{field}` to edit"))?;
+            Ask::EditField(contact, slot)
+        }
+        ContactsEffect::OpenWebsite { contact } => {
+            let website = book
+                .contact(contact)
+                .ok_or_else(|| "contact no longer exists".to_string())?
+                .website
+                .trim()
+                .to_owned();
+            if website.is_empty() {
+                return Err("the contact has no website".into());
+            }
+            Ask::OpenWebsite(website)
+        }
         ContactsEffect::ReadDuplicate { survivor, source } => {
-            let kept = book
-                .contact(survivor)
-                .ok_or_else(|| "surviving contact no longer exists".to_string())?;
-            let other = book
-                .contact(source)
-                .ok_or_else(|| "source contact no longer exists".to_string())?;
-            let candidate = crate::actions::duplicate_candidate(kept, other)
-                .ok_or_else(|| "contacts are no longer a likely duplicate".to_string())?;
-            let person = |contact: &crate::model::Contact| {
-                serde_json::json!({
-                    "item": crate::resource::contact_resource_id(contact.id),
-                    "name": contact.display_name(),
-                })
-            };
-            return Ok(Effected::value(serde_json::json!({
-                "kind": "contacts.duplicate",
-                "survivor": person(kept),
-                "source": person(other),
-                "shared": candidate.reasons.iter().map(|reason| match reason {
-                    crate::actions::DuplicateReason::Email => "email",
-                    crate::actions::DuplicateReason::Phone => "phone",
-                    crate::actions::DuplicateReason::Name => "name",
-                }).collect::<Vec<_>>(),
-            })));
+            return Ok(Effected::value(read_duplicate(&book, survivor, source)?));
         }
         ContactsEffect::OpenReview { survivor, source } => {
             let kept = book
@@ -170,6 +174,39 @@ fn answer(
     Ok(Effected::done())
 }
 
+/// The possible duplicate `source` of `survivor`: both contacts, by item and
+/// name, and what they share.
+fn read_duplicate(
+    book: &Contacts,
+    survivor: ContactId,
+    source: ContactId,
+) -> Result<serde_json::Value, String> {
+    let kept = book
+        .contact(survivor)
+        .ok_or_else(|| "surviving contact no longer exists".to_string())?;
+    let other = book
+        .contact(source)
+        .ok_or_else(|| "source contact no longer exists".to_string())?;
+    let candidate = crate::actions::duplicate_candidate(kept, other)
+        .ok_or_else(|| "contacts are no longer a likely duplicate".to_string())?;
+    let person = |contact: &crate::model::Contact| {
+        serde_json::json!({
+            "item": crate::resource::contact_resource_id(contact.id),
+            "name": contact.display_name(),
+        })
+    };
+    Ok(serde_json::json!({
+        "kind": "contacts.duplicate",
+        "survivor": person(kept),
+        "source": person(other),
+        "shared": candidate.reasons.iter().map(|reason| match reason {
+            crate::actions::DuplicateReason::Email => "email",
+            crate::actions::DuplicateReason::Phone => "phone",
+            crate::actions::DuplicateReason::Name => "name",
+        }).collect::<Vec<_>>(),
+    }))
+}
+
 /// Settle the pending import review `token`, when it is still pending.
 fn resolve(asked: &Asked, token: String, import_as_new: bool) -> Result<Ask, String> {
     if !asked
@@ -192,6 +229,15 @@ impl ContactsApp {
                 Ask::OpenGroup(group) => self.reveal_group(&group),
                 Ask::OpenFavorites => {
                     self.set_group_filter(Some(FAVORITES_FILTER.into()));
+                    Ok(())
+                }
+                Ask::Sort(order) => self.sort_by(&order),
+                Ask::EditField(contact, slot) => {
+                    self.edit_field(contact, slot);
+                    Ok(())
+                }
+                Ask::OpenWebsite(url) => {
+                    self.open_website(url);
                     Ok(())
                 }
                 Ask::Review(survivor, source) => self.open_duplicate_review(survivor, source),
@@ -228,7 +274,9 @@ impl ContactsApp {
 /// account reviews beside it.
 pub(crate) fn window(cx: &ViewCx<Contacts>, mut app: ContactsApp) -> Element {
     app.document = Some(cx.live().clone());
+    app.actions = Some(cx.actions());
     app.attach_dispatcher(cx.dispatcher());
+    app.attach_actions(&cx.actions());
     app.jobs = Some(cx.jobs());
     if cx.mode().is_live() {
         app.identity_directory = cx.shared_person::<tilo_contact_directory::ContactDirectory>();

@@ -226,12 +226,10 @@ pub const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Wait until `relay` has accepted `peer`'s subscription to `workspace`.
 ///
-/// For a federation link this is the moment from which a delta published on
-/// `relay` is forwarded to the relay that dialled it; a delta published
-/// earlier is not, so a test waits for it instead of sleeping and hoping the
-/// handshake finished in time.
+/// From then on a delta published on `relay` reaches `peer`; a test waits for
+/// it instead of sleeping and hoping the handshake finished in time.
 pub async fn wait_until_subscribed(relay: &Relay, workspace: u64, peer: &[u8; 32]) {
-    tilo_test_env::within("the federated peer subscribed to the workspace", async {
+    tilo_test_env::within("the peer subscribed to the workspace", async {
         while !relay.is_subscribed(workspace, peer).await {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }

@@ -55,8 +55,6 @@ checks that host address-bar edits retain the WebView rather than resizing a new
 one per character, while opening Find still changes the composition. The host's
 protocol tests pin the single-copy frame packet to the existing wire format,
 including tab routing; shared-host frame tests verify forwarding without conversion.
-`t outputs chromium-host` builds and tests the engine remotely and retrieves its
-complete runnable directory for a local browser launch.
 
 ## Actual browser-window presentation diagnostics
 

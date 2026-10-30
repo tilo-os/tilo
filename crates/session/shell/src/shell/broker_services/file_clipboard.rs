@@ -63,7 +63,6 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use super::super::nearby_transfer::{SecureNearbyDestination, SecureNearbySource};
 use super::super::state::{Capability, FsMode, WorkspaceTreeHandle};
 use runtime_collab::file_clipboard::{
     Command, Conflict, Offer as Offered, Reply, SelectedDescriptor,
@@ -71,6 +70,7 @@ use runtime_collab::file_clipboard::{
 use tilo_action_broker::services::{FileClipboardContext, FileClipboardServices};
 use tilo_actions::ActionKind as Permission;
 use tilo_lock::MutexRecover as _;
+use tilo_nearby_service::{SecureNearbyDestination, SecureNearbySource};
 
 const OFFER_LIFETIME: Duration = Duration::from_secs(10 * 60);
 const MAX_OPERATIONS: usize = 256;
@@ -2961,10 +2961,8 @@ mod tests {
         {
             let mut tree = tree.write();
             let workspace = tree.workspaces.first_mut().expect("test workspace");
-            let grants = workspace.app_grant_ids_at(
-                super::super::nearby_transfer::FILES_APP_ID,
-                tilo_clock::unix_now(),
-            );
+            let grants = workspace
+                .app_grant_ids_at(super::super::nearby_transfer::FILES_APP_ID, tilo_clock::unix_now());
             assert!(!grants.is_empty());
             for grant in grants {
                 assert!(workspace.revoke_sandbox(&grant));

@@ -579,7 +579,7 @@ fn switch_live(
         .flatten()
     });
     SearchResult {
-        badge: badge.map(super::actions::on_off_badge),
+        badge: badge.map(crate::shell::actions::on_off_badge),
         ..row.clone()
     }
 }
@@ -737,7 +737,10 @@ mod switch_tests {
     /// Every yes-or-no setting the index names is a section's field the
     /// session keeps: the palette offers each as the switch it is.
     /// Every value of a choice the session keeps is a row: its name finds
-    /// it, choosing it sets the field, and it reads as the current one.
+    /// it, choosing it sets the field, and it reads as the current one. A
+    /// setting that is also a typed value offers its typed row instead
+    /// (`setting:appearance.style` takes a `mode`), so its values are not
+    /// rows of their own: the palette's actions lead for "dark mode".
     #[test]
     #[serial_test::serial(process_env)]
     fn every_choice_value_is_found_by_its_name_and_sets_its_field() {
@@ -753,7 +756,10 @@ mod switch_tests {
         let wanted = [provider.kinds[0].clone()];
         let mut options = 0;
         for setting in index::SETTINGS {
-            let Some(choice) = setting.choice else {
+            let Some(choice) = setting
+                .choice
+                .filter(|_| values::Kind::of(setting.id).is_none())
+            else {
                 continue;
             };
             for option in choice.options {
@@ -938,7 +944,7 @@ mod switch_tests {
             let original = stored(switch);
             assert_eq!(
                 row.badge,
-                Some(super::super::actions::on_off_badge(original))
+                Some(crate::shell::actions::on_off_badge(original))
             );
             if let Some(listed) = listed(setting) {
                 assert_eq!(listed.badge, row.badge, "{id}: listed as resolved");
@@ -969,7 +975,7 @@ mod switch_tests {
             let row = resolved(setting).expect("still offered");
             assert_eq!(
                 row.badge,
-                Some(super::super::actions::on_off_badge(!original)),
+                Some(crate::shell::actions::on_off_badge(!original)),
                 "{id}: the row shows the state it was just switched to"
             );
 
@@ -984,7 +990,7 @@ mod switch_tests {
             let row = resolved(setting).expect("still offered");
             assert_eq!(
                 row.badge,
-                Some(super::super::actions::on_off_badge(original)),
+                Some(crate::shell::actions::on_off_badge(original)),
                 "{id}: the row follows a change made elsewhere"
             );
             activate(&row, switch);

@@ -2,10 +2,11 @@
 use super::*;
 use crate::owner_migration::{ChromiumBrand, ChromiumKey};
 use std::{
-    io::BufRead,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
+
+use tilo_test_env::PrivateBus;
 
 const ITEM: &str = "/org/freedesktop/secrets/item/selected";
 const SESSION: &str = "/org/freedesktop/secrets/session/selected";
@@ -27,44 +28,14 @@ struct Evidence {
     opens: usize,
     closes: usize,
 }
-struct Bus {
-    child: std::process::Child,
-    address: String,
-    socket: PathBuf,
-}
-impl Bus {
-    fn start() -> Self {
-        let owner = unsafe { libc::getuid() };
-        assert_ne!(owner, 0);
-        assert_eq!(owner, unsafe { libc::geteuid() });
-        let socket = PathBuf::from(format!("/run/user/{owner}/bus"));
-        assert!(!socket.exists(), "requires a fresh isolated owner bus");
-        let mut child = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!("--address=unix:path={}", socket.display()))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut address = String::new();
-        std::io::BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut address)
-            .unwrap();
-        assert!(!address.trim().is_empty());
-        Self {
-            child,
-            address: address.trim().into(),
-            socket,
-        }
-    }
-}
-impl Drop for Bus {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if self.socket.exists() {
-            std::fs::remove_file(&self.socket).unwrap();
-        }
-    }
+/// The owner bus path itself, which the fixture binds.
+fn start_owner_bus() -> PrivateBus {
+    let owner = unsafe { libc::getuid() };
+    assert_ne!(owner, 0);
+    assert_eq!(owner, unsafe { libc::geteuid() });
+    let socket = PathBuf::from(format!("/run/user/{owner}/bus"));
+    assert!(!socket.exists(), "requires a fresh isolated owner bus");
+    PrivateBus::start_at(&socket)
 }
 struct Service {
     case: Case,
@@ -167,15 +138,15 @@ impl Session {
         self.0.lock().unwrap().closes += 1;
     }
 }
-fn server(bus: &Bus, case: Case, evidence: &Arc<Mutex<Evidence>>) -> zbus::Connection {
+fn server(bus: &PrivateBus, case: Case, evidence: &Arc<Mutex<Evidence>>) -> zbus::Connection {
     tilo_rt::app()
         .block_on(async {
-            let replacement = zbus::connection::Builder::address(bus.address.as_str())
+            let replacement = zbus::connection::Builder::address(bus.address())
                 .unwrap()
                 .build()
                 .await
                 .unwrap();
-            zbus::connection::Builder::address(bus.address.as_str())
+            zbus::connection::Builder::address(bus.address())
                 .unwrap()
                 .name(SERVICE)
                 .unwrap()
@@ -225,7 +196,7 @@ fn native_selected_slack_key_qualifies_only_on_isolated_real_secret_service() {
         Case::WrongSession,
         Case::LockedDenied,
     ] {
-        let bus = Bus::start();
+        let bus = start_owner_bus();
         let evidence = Arc::new(Mutex::new(Evidence::default()));
         let service = server(&bus, case, &evidence);
         let root = tempfile::tempdir().unwrap();

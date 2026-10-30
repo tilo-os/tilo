@@ -158,22 +158,17 @@ fn bracket(doc: &AutoCommit, step: &[Version]) -> (Vec<ChangeHash>, Vec<ChangeHa
     (before, after)
 }
 
-/// A verified inverse: the changes it takes back, and the action.
-type Compensating = (Vec<ChangeHash>, steps::Inverse);
-
 /// What a history may take back: not the open step, only this device's.
 struct Reach {
     open: HashSet<ChangeHash>,
     device: authors::DeviceActors,
 }
 
-/// Where a history move was taken (the window and its caret), and what
-/// undoing it applies when that is an action.
+/// Where a history move was taken: the window and its caret.
 struct Placement {
     instance: Option<InstanceId>,
     focus: Option<usize>,
     metadata: Option<String>,
-    compensation: Option<tilo_actions::EncodedAction>,
 }
 
 /// Whether an entry is an undo or redo through history.
@@ -484,19 +479,6 @@ impl UndoLog {
             .len()
     }
 
-    /// How many undos of this session redo can bring back.
-    pub fn redo_depth(&self, doc: &AutoCommit) -> usize {
-        let open = self.open_changes(doc);
-        self.index
-            .borrow_mut()
-            .undos(
-                doc,
-                &|version| self.claims(version, None, None, &open),
-                usize::MAX,
-            )
-            .len()
-    }
-
     /// The brackets of this session's steps in effect and of its undos redo
     /// would bring back, newest first.
     #[doc(hidden)]
@@ -614,12 +596,6 @@ impl UndoLog {
         self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None)
     }
 
-    /// Observe the recorded committed frontier without closing pending work.
-    #[doc(hidden)]
-    pub fn matches_recorded_frontier(&self, doc: &AutoCommit) -> bool {
-        same_frontier(&self.last_heads, &doc.base_heads())
-    }
-
     /// As [`Self::record_committed_action`], naming who performed it — for a
     /// change that reached this document from outside the window (an agent,
     /// a collaborator's published operation) under the caller's own actor.
@@ -699,9 +675,7 @@ impl UndoLog {
 
     /// Take back the step `author` (from `instance`) would undo, as one new
     /// change that marks it undone. `focus` / `metadata` are where the caret
-    /// is now, for the redo to return to. With `registry`, a step that
-    /// queued an outside consequence is taken back through its verified
-    /// inverse action.
+    /// is now, for the redo to return to.
     fn undo_step(
         &mut self,
         doc: &mut AutoCommit,
@@ -709,7 +683,6 @@ impl UndoLog {
         instance: Option<InstanceId>,
         focus: Option<usize>,
         metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
         if !self.can_bump() {
             return None;
@@ -717,40 +690,15 @@ impl UndoLog {
         doc.get_heads();
         let step = self.next_undo_step(doc, author, instance)?;
         let entry = self.step_entry(doc, &step);
-        let compensation = registry.and_then(|registry| self.compensation(doc, &step, registry));
         // Undoing a redo takes back again the steps it brought back.
         let step = self.taken_back_by(doc, step);
-        // An inverse that queues an outside consequence counts as done only
-        // once its receipt settles it; until then the step stays in effect.
-        let mut pending: HashSet<ChangeHash> = HashSet::new();
-        let applied = compensation.is_some_and(|actions| {
-            actions.iter().all(|(marks, action)| {
-                // An outside consequence the inverse queues settles these
-                // steps when it settles.
-                let compensating = tilo_actions::CompensatingScope::enter(
-                    marks.iter().map(ToString::to_string).collect(),
-                );
-                let applied = action.apply(doc).is_ok();
-                if compensating.awaited() {
-                    pending.extend(marks.iter().copied());
-                }
-                applied
-            })
-        });
-        if !applied {
-            pending.clear();
-            super::write_revert_patches(doc, &entry.after, &entry.before);
-        }
+        super::write_revert_patches(doc, &entry.after, &entry.before);
         for version in &step {
             if version.context.as_ref().and_then(moves_history) == Some(&HistoryOp::Undo) {
                 continue;
             }
-            if pending.contains(&version.hash) {
-                let _ = tilo_actions::await_settlement(doc, &version.hash.to_string(), false);
-            } else {
-                let key = format!("{UNDONE_KEY}{}", version.hash);
-                let _ = doc.put(automerge::ROOT, key, ScalarValue::Boolean(true));
-            }
+            let key = format!("{UNDONE_KEY}{}", version.hash);
+            let _ = doc.put(automerge::ROOT, key, ScalarValue::Boolean(true));
         }
         let by = entry.author.clone().or_else(|| author.cloned());
         self.commit_move(
@@ -762,7 +710,6 @@ impl UndoLog {
                 instance,
                 focus,
                 metadata,
-                compensation: None,
             },
         );
         Some(entry)
@@ -789,121 +736,6 @@ impl UndoLog {
             .collect()
     }
 
-    /// The verified inverse actions of a step that queued an outside
-    /// consequence, newest first: every change's recorded compensation,
-    /// each replaying exactly, with the changes it takes back. A redo's is
-    /// the inverse of the restoration it applied.
-    /// `None` when any change has none.
-    fn compensation(
-        &self,
-        doc: &mut AutoCommit,
-        step: &[Version],
-        registry: &tilo_actions::ActionRegistry,
-    ) -> Option<Vec<Compensating>> {
-        // Only a step every change of which recorded an inverse has a
-        // compensation (a redo records the inverse of its restoration on
-        // itself): anything else is reverted by patches, without copying the
-        // document or diffing a redo to verify a replay.
-        if !step.iter().all(|change| {
-            change
-                .context
-                .as_ref()
-                .is_some_and(|context| context.compensation.is_some())
-        }) {
-            return None;
-        }
-        // The document as it stands, to verify a recorded inverse against:
-        // copied only once a change needs it.
-        let mut original: Option<AutoCommit> = None;
-        step.iter()
-            .map(|change| {
-                let brought_back: Vec<ChangeHash> = self
-                    .index
-                    .borrow_mut()
-                    .brought_back(doc, change)
-                    .iter()
-                    .filter_map(|hash| steps::recorded_hash(hash))
-                    .collect();
-                if !brought_back.is_empty() {
-                    let action = self.redo_compensation(doc, change, &brought_back, registry)?;
-                    return Some((brought_back, action));
-                }
-                let original = original.get_or_insert_with(|| doc.fork());
-                let inverse =
-                    tilo_actions::executor::verified_compensation(original, change.hash, registry)
-                        .ok()
-                        .flatten()?;
-                Some((vec![change.hash], inverse))
-            })
-            .collect()
-    }
-
-    /// The inverse of the restoration the redo standing for `originals`
-    /// applied, verified: the original replays, and the recorded inverse is
-    /// the original action's, run again at the redo's own state, as the
-    /// redo's writer computes it there.
-    fn redo_compensation(
-        &self,
-        doc: &mut AutoCommit,
-        standing: &Version,
-        originals: &[ChangeHash],
-        registry: &tilo_actions::ActionRegistry,
-    ) -> Option<steps::Inverse> {
-        let [original] = originals else {
-            return None;
-        };
-        let keys: Vec<String> = originals
-            .iter()
-            .map(|hash| format!("{UNDONE_KEY}{hash}"))
-            .collect();
-        // Newest first from the change standing for the redo: the redo move
-        // that brought the original back (a settle may have followed it).
-        let candidates: Vec<ChangeHash> = {
-            let mut index = self.index.borrow_mut();
-            index.refresh(doc);
-            let from = index.position(&standing.hash)?;
-            (0..=from)
-                .rev()
-                .filter_map(|position| index.hash(position))
-                .collect()
-        };
-        let moved = candidates.into_iter().find_map(|hash| {
-            let document = doc.committed_document();
-            let meta = document.get_change_meta_by_hash(&hash)?;
-            let marks = document.diff(&meta.deps, &[hash]).iter().any(|patch| {
-                patch.path.is_empty()
-                    && matches!(&patch.action,
-                            automerge::PatchAction::PutMap { key, .. }
-                            | automerge::PatchAction::DeleteMap { key } if keys.contains(key))
-            });
-            // The index keeps only what finds steps; the redo's entry is
-            // read whole.
-            marks.then(|| tilo_resource::history::version_of(document, &meta))
-        })?;
-        let context = moved.context.as_ref()?;
-        if moves_history(context) != Some(&HistoryOp::Redo) {
-            // An undo or a settle came first: nothing records the redo's run.
-            return None;
-        }
-        let recorded = context.compensation.clone()?;
-        let (deps, actor) = {
-            let meta = doc
-                .committed_document()
-                .get_change_meta_by_hash(&moved.hash)?;
-            (meta.deps.clone(), meta.actor.clone().into_owned())
-        };
-        let mut replica = doc.fork();
-        tilo_actions::executor::verified_compensation(&mut replica, *original, registry).ok()??;
-        let restoration = decode_recorded(registry, &self.recorded_action(doc, original)?)?;
-        // Its inverse there, as the redo's writer.
-        let mut at = doc.fork_at(&deps).ok()?;
-        let inverse = tilo_actions::executor::inverse_as(&mut at, restoration.as_ref(), actor)?;
-        if inverse != recorded {
-            return None;
-        }
-        decode_recorded(registry, &recorded)
-    }
-
     /// Commit an undo or redo of `step` by `by`, as its own step, from
     /// where `place` says it was taken.
     fn commit_move(
@@ -918,7 +750,6 @@ impl UndoLog {
             instance,
             focus,
             metadata,
-            compensation,
         } = place;
         let entry = ActionContext {
             what: Some(Did::history(op, 1, step.and_then(ActionContext::described))),
@@ -930,7 +761,6 @@ impl UndoLog {
                 .map(|by| tilo_actions::ActionInvoker::actor(by.0.clone()))
                 .or_else(|| step.and_then(|step| step.invoker.clone())),
             gesture: Some(ActionId::new()),
-            compensation,
             ..ActionContext::default()
         };
         let moved =
@@ -963,7 +793,6 @@ impl UndoLog {
         instance: Option<InstanceId>,
         focus: Option<usize>,
         metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
         if !self.can_bump() {
             return None;
@@ -971,37 +800,7 @@ impl UndoLog {
         doc.get_heads();
         let undo = self.next_redo_undo(doc, author, instance)?;
         let entry = self.redo_entry(doc, &undo);
-        // A step that queued an outside consequence comes back through its
-        // declared restoration; any other by reverting the undo.
-        let restoration = registry.and_then(|registry| self.restoration(doc, &undo, registry));
-        // What undoing this redo applies: the inverse of the restoration as
-        // this writer runs it now (what it mints is its own).
-        let restored = restoration.and_then(|(action, originals)| {
-            let actor = doc.get_actor().clone();
-            let inverse = tilo_actions::executor::inverse_as(doc, action.as_ref(), actor);
-            let compensating = tilo_actions::CompensatingScope::enter(
-                originals.iter().map(ToString::to_string).collect(),
-            );
-            let applied = action.apply(doc).is_ok();
-            let settles = compensating.awaited();
-            drop(compensating);
-            applied.then_some((originals, settles, inverse))
-        });
-        let mut compensation = None;
-        match restored {
-            Some((originals, settles, inverse)) => {
-                compensation = inverse;
-                for original in originals {
-                    if settles {
-                        // Brought back only once its receipt settles it.
-                        let _ = tilo_actions::await_settlement(doc, &original, true);
-                    } else {
-                        let _ = doc.delete(automerge::ROOT, format!("{UNDONE_KEY}{original}"));
-                    }
-                }
-            }
-            None => super::write_revert_patches(doc, &entry.after, &entry.before),
-        }
+        super::write_revert_patches(doc, &entry.after, &entry.before);
         let by = entry.author.clone().or_else(|| author.cloned());
         self.commit_move(
             doc,
@@ -1012,41 +811,9 @@ impl UndoLog {
                 instance,
                 focus,
                 metadata,
-                compensation,
             },
         );
         Some(entry)
-    }
-
-    /// How a redo brings back the one outside step an undo took back: its
-    /// verified action, run again, and the step.
-    fn restoration(
-        &self,
-        doc: &mut AutoCommit,
-        undo: &Version,
-        registry: &tilo_actions::ActionRegistry,
-    ) -> Option<(steps::Inverse, Vec<String>)> {
-        let originals = steps::took_back(doc, undo);
-        let [original] = originals.as_slice() else {
-            return None;
-        };
-        let hash = steps::recorded_hash(original)?;
-        let mut replica = doc.fork();
-        tilo_actions::executor::verified_compensation(&mut replica, hash, registry).ok()??;
-        let action = decode_recorded(registry, &self.recorded_action(doc, &hash)?)?;
-        Some((action, originals))
-    }
-
-    /// The action the change `hash` recorded.
-    fn recorded_action(
-        &self,
-        doc: &AutoCommit,
-        hash: &ChangeHash,
-    ) -> Option<tilo_actions::EncodedAction> {
-        let mut index = self.index.borrow_mut();
-        index.refresh(doc);
-        let position = index.position(hash)?;
-        index.full(doc, position)?.context?.action
     }
 
     /// Take back the step `author` would undo (see
@@ -1057,9 +824,8 @@ impl UndoLog {
         author: Option<&UserId>,
         focus: Option<usize>,
         metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
-        self.undo_step(doc, author, None, focus, metadata, registry)
+        self.undo_step(doc, author, None, focus, metadata)
     }
 
     /// Bring back the undo `author` would redo.
@@ -1069,9 +835,8 @@ impl UndoLog {
         author: Option<&UserId>,
         focus: Option<usize>,
         metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
-        self.redo_step(doc, author, None, focus, metadata, registry)
+        self.redo_step(doc, author, None, focus, metadata)
     }
 
     /// The step `author`'s window `instance` would undo.
@@ -1143,9 +908,8 @@ impl UndoLog {
         instance: InstanceId,
         focus: Option<usize>,
         metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
-        self.undo_step(doc, Some(author), Some(instance), focus, metadata, registry)
+        self.undo_step(doc, Some(author), Some(instance), focus, metadata)
     }
 
     /// Bring back the undo `author`'s window `instance` would redo.
@@ -1156,9 +920,8 @@ impl UndoLog {
         instance: InstanceId,
         focus: Option<usize>,
         metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
-        self.redo_step(doc, Some(author), Some(instance), focus, metadata, registry)
+        self.redo_step(doc, Some(author), Some(instance), focus, metadata)
     }
 
     /// See the toolkit's `State::restore_to_heads`.
@@ -1286,21 +1049,6 @@ impl UndoLog {
         OwnedActionReceipt {
             after,
             changed: committed,
-        }
-    }
-}
-
-/// The action `encoded` records, as `registry` decodes it. One this build
-/// cannot decode is logged: the step then has no verified inverse.
-fn decode_recorded(
-    registry: &tilo_actions::ActionRegistry,
-    encoded: &tilo_actions::EncodedAction,
-) -> Option<steps::Inverse> {
-    match registry.decode(encoded) {
-        Ok(action) => Some(action),
-        Err(error) => {
-            tracing::warn!(action = %encoded.type_id, %error, "history: a recorded action does not decode");
-            None
         }
     }
 }

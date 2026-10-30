@@ -491,6 +491,7 @@ fn descriptor(step: &str) -> tilo_actions::ActionDescriptor {
         )
     };
     tilo_actions::ActionDescriptor {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: tilo_actions::ActionAddress::new(wire::RESOURCE, step),
         resource_kind: wire::RESOURCE.into(),

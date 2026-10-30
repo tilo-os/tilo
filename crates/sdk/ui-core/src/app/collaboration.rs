@@ -895,8 +895,6 @@ impl App {
                 | CollabEvent::DrivesChanged
                 | CollabEvent::ApplicationsChanged
                 | CollabEvent::ActionCatalogue { .. }
-                | CollabEvent::ActionDirectoryPage { .. }
-                | CollabEvent::PublishedActionResolution { .. }
                 | CollabEvent::NativeMediaCommandResult { .. }
                 | CollabEvent::TaskRun(_)
                 | CollabEvent::TaskActionInvocationResult { .. }
@@ -992,14 +990,6 @@ impl App {
                 self.request_invocation_cancellation(id);
             }
             CollabEvent::RemoteAction { message } => self.apply_remote_action_answer(message),
-            CollabEvent::PublishedInvocationResult {
-                request_id, result, ..
-            } => {
-                let result = result.map(|(_id, update)| (update.invocation(), update));
-                self.apply_published_invocation_result(request_id, result);
-            }
-            #[cfg(unix)]
-            CollabEvent::ManagedInvocationObservation { .. } => {}
             CollabEvent::ChannelAccess { route, state } => {
                 if self.collaboration.manager.requested_primary_route() == Some(&route) {
                     self.collaboration.channel_access = Some(state);
@@ -1010,8 +1000,6 @@ impl App {
             // application has no local state to apply.
             CollabEvent::InstalledApplicationLaunchResult { .. }
             | CollabEvent::ActionCatalogue { .. }
-            | CollabEvent::ActionDirectoryPage { .. }
-            | CollabEvent::PublishedActionResolution { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }

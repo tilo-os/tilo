@@ -1,31 +1,32 @@
 #!/usr/bin/env bash
-# signin-e2e-<arch> without t, on one x86_64 or aarch64 machine with podman and /dev/kvm, such as
-# a remote build host: this commit's dev OS image, its installer medium and
-# the sign-in run over it, each as its t.toml check does.
+# signin-e2e on one x86_64 or aarch64 machine with podman and /dev/kvm: this commit's OS image,
+# the installer medium built from it, and the sign-in run over that medium
+# (tools/ci/signin_e2e.py), in that order.
 #
 #   signin-e2e-builder.sh --target DIR --out DIR [--jobs N] [--variant V]...
-#                         [--pre-pam-tilo-image REF|ARCHIVE]
+#                         [--pre-pam-tilo-image REF|ARCHIVE] [--dry-run]
 #
-# Run it from a committed checkout of the commit to test. DIR for --target holds what the checks
-# share and keep between runs (tools/ci/run-checks.py's /target: the image's layers, the cargo
-# builds, the medium); give each checkout one of its own. --out receives signin-e2e's report.md,
-# report.json, screenshots and logs. --variant picks signin_e2e.py's variants (default: one-secret
-# and separate-disk-secret); the rollback variant takes the image from before pam_tilo as a
-# reference the guest can pull or as an OCI archive here.
+# Run it from a committed checkout of the commit to test: the medium names its commit. The image,
+# tilo-vm and the medium come from tools/ci/build-os.sh, with its --target DIR, which holds what
+# the steps share and keep between runs; remove one with `podman unshare rm -rf DIR`. --out
+# receives signin-e2e's report.md, report.json, screenshots and logs, which it clears first.
+# --variant picks signin_e2e.py's variants (default: one-secret and separate-disk-secret); the
+# rollback variant takes the image from before pam_tilo as a reference the guest can pull (a
+# sealed release) or as an OCI archive below --target (a dev build, which
+# tools/ci/seal-dev-image.sh seals first). --jobs caps the compile's cargo jobs (default: cargo's
+# own count). --dry-run prints the steps and their commands instead of running them.
 #
-#   1. tools/ci/run-checks.py builds os-image-<arch> and tilo-vm-binary-<arch>.
-#   2. tools/ci/medium-in-worker-vm.sh runs dev-installer-medium-<arch>'s script in a worker VM,
-#      as a machine whose kernel lacks EROFS, btrfs or loop devices can't build the medium; a
-#      medium of this commit and image already in DIR is kept.
-#   3. run-checks.py runs signin-e2e-<arch> over it, with the medium given.
-#
-# Needs python3 (3.11 or later) and git beside podman (on a minimal Fedora host,
-# `sudo dnf install -y python3` once).
+# What it runs, in order:
+#   1. tools/ci/build-os.sh image tilo-vm medium: this commit's OS image, the host's tilo-vm and
+#      the installer medium built from the image.
+#   2. The sign-in run over that medium (tools/ci/signin-e2e.sh), as root in the project's
+#      builder image (tools/ci/resolve_builder.py) with /dev/kvm. The machine needs podman,
+#      python3, git and /dev/kvm.
 set -euo pipefail
 cd "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
-usage() { sed -n '6,7p' "$0" | sed 's/^# *//' >&2; exit 2; }
-target='' out='' jobs=6 variants=() old_image=''
+usage() { sed -n '6,8p' "$0" | sed 's/^# \?//' >&2; exit 2; }
+target='' out='' jobs='' variants=() old_image='' dry_run=0
 while (($#)); do
   case $1 in
     --target) target=${2:?}; shift 2 ;;
@@ -33,58 +34,83 @@ while (($#)); do
     --jobs) jobs=${2:?}; shift 2 ;;
     --variant) variants+=("${2:?}"); shift 2 ;;
     --pre-pam-tilo-image) old_image=${2:?}; shift 2 ;;
+    --dry-run) dry_run=1; shift ;;
     *) usage ;;
   esac
 done
 [[ -n $target && -n $out ]] || usage
-command -v python3 >/dev/null || { echo "signin-e2e-builder needs python3 (sudo dnf install -y python3)" >&2; exit 2; }
+[[ -z $jobs || $jobs =~ ^[1-9][0-9]*$ ]] || { echo "--jobs takes a count" >&2; exit 2; }
+for tool in python3 git $( ((dry_run)) || echo podman); do
+  command -v "$tool" >/dev/null || { echo "signin-e2e-builder needs $tool" >&2; exit 2; }
+done
 arch=$(uname -m)
 case $arch in
-  x86_64) vm_check=tilo-vm-binary-x86_64 ;;
-  aarch64) vm_check=tilo-vm-binary-arm64 ;;
+  x86_64|aarch64) ;;
   *) echo "signin-e2e runs on x86_64 or aarch64, not $arch" >&2; exit 2 ;;
 esac
 mkdir -p "$target" "$out"
 target=$(realpath "$target")
 out=$(realpath "$out")
-run_checks=(python3 tools/ci/run-checks.py --target "$target" --ref main --jobs "$jobs")
-
-echo "signin-e2e-builder: $(git log --oneline -1) on $arch"
-"${run_checks[@]}" "os-image-$arch" "$vm_check"
-
-image=$target/os/$arch/image
+repo=$PWD
 medium=$target/publish/dev-installer-medium/$arch
-commit=$(git rev-parse HEAD)
-digest=$(tr -d '[:space:]' < "$image/digest")
-if [[ -f $medium/disk.qcow2 ]] && python3 - "$medium/source.json" "$commit" "$digest" <<'EOF'
-import json, sys
-source = json.load(open(sys.argv[1]))
-sys.exit(0 if (source["source_commit"], source["source_image_digest"]) == tuple(sys.argv[2:]) else 1)
-EOF
-then
-  echo "signin-e2e-builder: keeping the medium of $commit and $digest"
-else
-  TILO_VM_BIN=$target/tilo-vm-bin/tilo-vm bash tools/ci/medium-in-worker-vm.sh "$arch" "$image" "$medium"
-fi
+work=$target/step-scratch
+mkdir -p "$work/tmp" "$work/var-tmp" "$work/runtime"
+chmod 700 "$work/runtime"
+say() { printf 'signin-e2e-builder: %s\n' "$*" >&2; }
+# A step: run it, or with --dry-run print what would run.
+step() {
+  if ((dry_run)); then printf '  %s\n' "$*" >&2; return 0; fi
+  "$@"
+}
 
-inputs=(--input "variants=${variants[*]}")
-if [[ -n $old_image ]]; then
-  if [[ -f $old_image ]]; then
-    # The check sees /target only: the archive goes there, a reflink where the filesystem has them.
-    mkdir -p "$target/signin-e2e-inputs"
-    cp --reflink=auto "$old_image" "$target/signin-e2e-inputs/pre-pam-tilo.ociarchive"
-    inputs+=(--input pre_pam_tilo_image=/target/signin-e2e-inputs/pre-pam-tilo.ociarchive)
-  else
-    inputs+=(--input "pre_pam_tilo_image=$old_image")
-  fi
+# The sign-in run over the medium, in the project's builder image: root, with /dev/kvm for the
+# guests, the tree read-only, and TARGET for the medium, tilo-vm and the report.
+signin() {
+  local args=() command
+  for variant in "${variants[@]}"; do args+=(--variant "$variant"); done
+  [[ -z $old_image ]] || args+=(--pre-pam-tilo-image "$old_image")
+  command="bash tools/ci/signin-e2e.sh /target/publish/dev-installer-medium/$arch/disk.qcow2 /target/signin-e2e"
+  ((${#args[@]} == 0)) || command+=" $(printf '%q ' "${args[@]}")"
+  say "the sign-in run"
+  step podman run --rm --privileged --security-opt label=disable --device /dev/kvm --workdir /src \
+    -v "$repo:/src:ro" -v "$target:/target" -v "$work/tmp:/tmp" -v "$work/var-tmp:/var/tmp" \
+    -v "$work/runtime:/tmp/tilo-xdg-runtime" -e HOME=/tmp -e TMPDIR=/tmp \
+    -e XDG_RUNTIME_DIR=/tmp/tilo-xdg-runtime -e TILO_VM_BIN=/target/tilo-vm-bin/tilo-vm \
+    --entrypoint bash "$1" -eo pipefail -c "$command"
+}
+
+build=(bash tools/ci/build-os.sh --target "$target")
+[[ -z $jobs ]] || build+=(--jobs "$jobs")
+((!dry_run)) || build+=(--dry-run)
+"${build[@]}" image tilo-vm medium
+if ((dry_run)); then
+  builder=BUILDER-IMAGE
+else
+  builder=$(python3 -c 'import sys; sys.path.insert(0, "tools/ci"); import resolve_builder; print(resolve_builder.resolve(""))')
+fi
+if [[ -n $old_image && -f $old_image ]]; then
+  # A dev build of the old commit is unsealed, which the installed machine's bootc refuses to
+  # switch to: sealed as a release is, into TARGET, which the run reads at /target.
+  old_image=$(realpath "$old_image")
+  say "sealing $old_image"
+  mkdir -p "$target/signin-e2e-inputs"
+  step bash tools/ci/seal-dev-image.sh "$old_image" "$target/signin-e2e-inputs/pre-pam-tilo.ociarchive"
+  old_image=$target/signin-e2e-inputs/pre-pam-tilo.ociarchive
+elif [[ $old_image == /* || $old_image == ./* ]]; then
+  echo "no OCI archive at $old_image" >&2
+  exit 1
+fi
+# The run's container sees TARGET at /target, and nothing of this machine's tree elsewhere.
+if [[ $old_image == "$target"/* ]]; then
+  old_image=/target/${old_image#"$target"/}
 fi
 status=0
-"${run_checks[@]}" --given "dev-installer-medium-$arch" "${inputs[@]}" "signin-e2e-$arch" || status=$?
+signin "$builder" || status=$?
 rm -rf "$target/signin-e2e-inputs"
 if [[ -d $target/signin-e2e ]]; then
   find "$out" -mindepth 1 -delete
   cp -a "$target/signin-e2e/." "$out/"
   cp "$medium/source.json" "$out/medium-source.json"
-  echo "signin-e2e-builder: report in $out/report.md"
+  say "report in $out/report.md"
 fi
 exit "$status"

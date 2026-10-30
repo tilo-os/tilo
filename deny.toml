@@ -112,8 +112,7 @@ deny = [
     { crate = "openssl", reason = "rustls is the only TLS stack" },
     { crate = "openssl-sys", reason = "rustls is the only TLS stack" },
     { crate = "native-tls", reason = "rustls is the only TLS stack (native-tls is OpenSSL on Linux)" },
-    # Tilo's own components carry no telemetry, analytics or crash-upload client
-    # (docs/architecture/security.md, "What leaves the device by default"):
+    # Tilo's own components carry no telemetry, analytics or crash-upload client:
     # panics stay in ~/.cache/tilo/crashes and feedback leaves only as a report
     # the person approved. Local tracing never leaves the device by itself, so
     # `tracing` and an exporter-less `opentelemetry` are fine.

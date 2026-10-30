@@ -98,11 +98,6 @@ impl DocumentHistory {
             .map(fetch)
     }
 
-    /// Paging state for `artifact`, if any history was requested.
-    pub fn pager_for(&self, artifact: ArtifactId) -> Option<&HistoryPager> {
-        self.pagers.get(&artifact)
-    }
-
     /// Forget outstanding requests after a transport reset.
     pub fn reset_in_flight(&mut self) {
         for pager in self.pagers.values_mut() {
@@ -142,7 +137,7 @@ mod tests {
             );
             assert_eq!(before_seq(history.on_viewport(artifact, 10)), Some(4_950));
             history.on_batch(artifact, Some(4_900), true);
-            assert!(history.pager_for(artifact).unwrap().is_exhausted());
+            assert!(history.pagers[&artifact].is_exhausted());
             assert_eq!(before_seq(history.on_viewport(artifact, 0)), None);
         }
 

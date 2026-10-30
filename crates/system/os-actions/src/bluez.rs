@@ -28,7 +28,8 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use tilo_bluez::{BluezClient, DeviceInfo};
+use tilo_bluez::BluezClient;
+pub use tilo_bluez::DeviceInfo;
 
 /// The shared client, and with it the connection whose lifetime a scan is
 /// bound to. It is kept once opened: a connection per call would end
@@ -256,10 +257,173 @@ pub fn set_discoverable(on: bool) -> Result<(), String> {
     block(async { c.set_discoverable(&adapter, on).await })
 }
 
+/// Local evidence available for a cross-device accessory handoff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandoffTarget {
+    /// This adapter already owns a bond and may connect without creating trust.
+    Paired,
+    /// The exact address was discovered locally but still requires local user
+    /// authorization before pairing can create a bond.
+    Pairable,
+}
+
+fn unique_device_by_address<'a>(
+    devices: &'a [DeviceInfo],
+    address: &str,
+) -> Result<Option<&'a DeviceInfo>, String> {
+    let mut matches = devices
+        .iter()
+        .filter(|device| device.address.eq_ignore_ascii_case(address));
+    let first = matches.next();
+    if matches.next().is_some() {
+        return Err(format!(
+            "Bluetooth address {address} is ambiguous across local adapters"
+        ));
+    }
+    Ok(first)
+}
+
+/// Whether `address` is a Bluetooth address: six colon-separated hex octets.
+#[must_use]
+pub fn valid_address(address: &str) -> bool {
+    address.len() == 17
+        && address.split(':').count() == 6
+        && address
+            .split(':')
+            .all(|octet| octet.len() == 2 && octet.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+/// Verify an accessory against this device's own `BlueZ` inventory, performing
+/// one bounded discovery when it is not already known.
+///
+/// A peer-provided name or object path is never accepted as evidence. Address
+/// ambiguity across adapters fails closed because `BlueZ` object paths, unlike
+/// Bluetooth addresses, are the locally authoritative operation handles.
+pub fn inspect_handoff_target(
+    address: &str,
+    discovery_window: Duration,
+) -> Result<HandoffTarget, String> {
+    if !valid_address(address) {
+        return Err("invalid Bluetooth address".into());
+    }
+    let known = devices()?;
+    if unique_device_by_address(&known, address)?.is_some_and(|device| device.paired) {
+        return Ok(HandoffTarget::Paired);
+    }
+
+    let discovered = scan_for(discovery_window)?;
+    let device = unique_device_by_address(&discovered, address)?
+        .filter(|device| device.rssi.is_some())
+        .ok_or_else(|| format!("Bluetooth device {address} was not discovered locally"))?;
+    Ok(if device.paired {
+        HandoffTarget::Paired
+    } else {
+        HandoffTarget::Pairable
+    })
+}
+
+/// Resolve an approved handoff address back to one local `BlueZ` object and
+/// pair, trust, then connect it using the compositor-owned pairing agent.
+///
+/// Callers must hold their own one-shot local authorization; this helper does
+/// not interpret a remote handoff request as consent.
+pub fn pair_handoff(address: &str) -> Result<(), String> {
+    if !valid_address(address) {
+        return Err("invalid Bluetooth address".into());
+    }
+    let devices = devices()?;
+    let device = unique_device_by_address(&devices, address)?
+        .ok_or_else(|| format!("Bluetooth device {address} is no longer known to BlueZ"))?;
+    connected_pair_outcome(pair(&device.path)?)
+}
+
+fn connected_pair_outcome(outcome: tilo_bluez::PairOutcome) -> Result<(), String> {
+    match outcome {
+        tilo_bluez::PairOutcome::PairedAndConnected => Ok(()),
+        tilo_bluez::PairOutcome::PairedNotConnected { reason } => Err(format!(
+            "Bluetooth pairing completed but the handoff connection failed: {reason}"
+        )),
+    }
+}
+
+/// Connect the paired device with this address.
+pub fn connect_address(address: &str) -> Result<(), String> {
+    connect(&known_address(address)?.path)
+}
+
+/// Disconnect the device with this address, keeping its bond.
+pub fn disconnect_address(address: &str) -> Result<(), String> {
+    disconnect(&known_address(address)?.path)
+}
+
+fn known_address(address: &str) -> Result<DeviceInfo, String> {
+    devices()?
+        .into_iter()
+        .find(|device| device.address.eq_ignore_ascii_case(address))
+        .ok_or_else(|| format!("Bluetooth device {address} is not known to BlueZ"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::has_adapter_in;
+    use super::*;
     use std::fs;
+
+    fn device(path: &str, address: &str, paired: bool) -> DeviceInfo {
+        DeviceInfo {
+            path: path.into(),
+            address: address.into(),
+            paired,
+            ..DeviceInfo::default()
+        }
+    }
+
+    #[test]
+    fn handoff_addresses_resolve_uniquely_and_pairing_must_complete() {
+        {
+            let devices = vec![device(
+                "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+                "AA:BB:CC:DD:EE:FF",
+                false,
+            )];
+            assert_eq!(
+                unique_device_by_address(&devices, "aa:bb:cc:dd:ee:ff")
+                    .unwrap()
+                    .map(|device| device.path.as_str()),
+                Some("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+            );
+        }
+        {
+            let devices = vec![
+                device("/org/bluez/hci0/dev_AA", "AA:BB:CC:DD:EE:FF", true),
+                device("/org/bluez/hci1/dev_AA", "AA:BB:CC:DD:EE:FF", false),
+            ];
+            assert!(
+                unique_device_by_address(&devices, "AA:BB:CC:DD:EE:FF")
+                    .unwrap_err()
+                    .contains("ambiguous")
+            );
+        }
+        {
+            assert!(valid_address("AA:BB:CC:DD:EE:FF"));
+            assert!(valid_address("aa:bb:cc:dd:ee:ff"));
+            assert!(!valid_address("/org/bluez/hci0/dev_AA"));
+            assert!(!valid_address("AA:BB:CC:DD:EE"));
+            assert!(!valid_address("GG:BB:CC:DD:EE:FF"));
+        }
+        {
+            assert_eq!(
+                connected_pair_outcome(tilo_bluez::PairOutcome::PairedAndConnected),
+                Ok(())
+            );
+            assert!(
+                connected_pair_outcome(tilo_bluez::PairOutcome::PairedNotConnected {
+                    reason: "accessory stayed busy".into(),
+                })
+                .unwrap_err()
+                .contains("accessory stayed busy")
+            );
+        }
+    }
 
     #[test]
     fn has_adapter_requires_an_hci_controller() {

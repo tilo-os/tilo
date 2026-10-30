@@ -102,53 +102,67 @@ impl App {
             .focused_node
             .and_then(|node| self.bindings.binding_for(node))
             .or_else(|| self.root_widget.callback_binding());
-        if self.collaboration.manager.is_connected()
-            && let Some(binding) = &binding
-        {
-            match binding.history_uses_compensation(&mut self.state.doc) {
-                Ok(true) => {
-                    if let Err(error) = self.invoke_bound_history(binding, request) {
-                        tracing::warn!(%error, "document history admission refused");
-                    }
-                    return;
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::warn!(?error, "document history owner unavailable");
-                    return;
-                }
+        if let Some(binding) = binding {
+            if self.move_bound_history(&binding, request) {
+                self.needs_sync = true;
+                self.layout.layout_dirty = true;
             }
+            return;
         }
-        let owned_target = binding.is_some()
-            || self
-                .focused_node
-                .is_some_and(|node| self.bindings.owns_document(node));
-        let entry = if let Some(binding) = binding {
-            binding
-                .history_request(&mut self.state.doc, request)
-                .ok()
-                .flatten()
-        } else {
-            let author = Some(&self.collaboration.local_author);
-            match request {
-                crate::undo::UndoRequest::Undo => {
-                    self.state
-                        .undo_as(author, current_focus_idx, current_meta, None)
-                }
-                crate::undo::UndoRequest::Redo => {
-                    self.state
-                        .redo_as(author, current_focus_idx, current_meta, None)
-                }
+        let owned = self
+            .focused_node
+            .is_some_and(|node| self.bindings.owns_document(node));
+        let author = Some(&self.collaboration.local_author);
+        let entry = match request {
+            crate::undo::UndoRequest::Undo => {
+                self.state.undo_as(author, current_focus_idx, current_meta)
+            }
+            crate::undo::UndoRequest::Redo => {
+                self.state.redo_as(author, current_focus_idx, current_meta)
             }
         };
         if let Some(entry) = entry {
-            if owned_target {
+            if owned {
                 self.needs_sync = true;
                 self.layout.layout_dirty = true;
             } else {
                 self.apply_undo_entry(entry);
             }
         }
+    }
+
+    /// Undo or redo in `binding`'s document. A history holding a step that
+    /// queued an outside consequence moves through the document's published
+    /// history action at the broker, so its inverse is a new admitted
+    /// invocation; any other moves in place. Whether it moved.
+    pub(super) fn move_bound_history(
+        &mut self,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        request: crate::undo::UndoRequest,
+    ) -> bool {
+        if self.collaboration.manager.is_connected() {
+            match binding.history_uses_compensation(&mut self.state.doc) {
+                Ok(true) => {
+                    return match self.invoke_bound_history(binding, request) {
+                        Ok(_) => true,
+                        Err(error) => {
+                            tracing::warn!(%error, "document history admission refused");
+                            false
+                        }
+                    };
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(?error, "document history owner unavailable");
+                    return false;
+                }
+            }
+        }
+        binding
+            .history_request(&mut self.state.doc, request)
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     /// What Undo would do for the target the keyboard would undo in. Reads a

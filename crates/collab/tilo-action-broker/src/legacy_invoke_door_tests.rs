@@ -269,6 +269,7 @@ mod legacy_invoke_door {
     /// confirmation token, so only their own rules decide a case.
     fn live_descriptor() -> PublishedAction {
         PublishedAction {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: "workspace:atlas".into(),
             action: "open".into(),

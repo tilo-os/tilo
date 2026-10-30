@@ -16,11 +16,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::shell::remote_capture::adapter::RemoteCaptureAvailability;
-use crate::shell::remote_capture::device::{
+use crate::shell::remote_capture::host::{CaptureHost, Probe};
+use tilo_device_fabric::remote_capture::{
     MAX_REMOTE_CAPTURE_CHUNK_BYTES, MAX_REMOTE_CAPTURE_SESSIONS, RemoteAudioFormat,
     RemoteCaptureKind, RemoteCaptureProfile, RemoteVideoFormat,
 };
-use crate::shell::remote_capture::host::{CaptureHost, Probe};
 
 const MAX_DRAIN_PER_PUMP: usize = 32;
 
@@ -482,7 +482,7 @@ mod tests {
 
         {
             let profile = RemoteCaptureProfile::DocumentScanner {
-                format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
+                format: tilo_device_fabric::remote_capture::RemoteDocumentFormat::Png,
                 max_pages: 1,
                 max_document_bytes: 200_000,
             };
@@ -508,7 +508,7 @@ mod tests {
 
         {
             let profile = RemoteCaptureProfile::DocumentScanner {
-                format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
+                format: tilo_device_fabric::remote_capture::RemoteDocumentFormat::Png,
                 max_pages: 1,
                 max_document_bytes: 200_000,
             };

@@ -358,10 +358,10 @@ pub struct LocalLayerImport {
 pub enum FlightCommand {
     /// Launch an app through the desktop action model, focus it, type into it, and prove new frames present.
     #[command(
-        after_help = "Examples:\n  tilo-vm flight app org.gnome.TextEditor org.gnome.TextEditor\n  tilo-vm flight app chatgpt chatgpt --type-text 'flight input' --timeout-seconds 20\n\nDESKTOP_ID is the host-applications action id. APP_ID is the Wayland/X11 app id the compositor reports."
+        after_help = "Examples:\n  tilo-vm flight app org.gnome.TextEditor org.gnome.TextEditor\n  tilo-vm flight app chatgpt chatgpt --type-text 'flight input' --timeout-seconds 20\n\nDESKTOP_ID is the applications action id. APP_ID is the Wayland/X11 app id the compositor reports."
     )]
     App {
-        /// Desktop action id exported by the host-applications provider.
+        /// Desktop action id exported by the applications provider.
         desktop_id: String,
         /// App id expected on the presented foreign surface.
         app_id: String,
@@ -1222,11 +1222,6 @@ pub struct UpgradeArgs {
     /// published dev image, or a dev image built here FROM its integration image.
     #[arg(long)]
     pub from: Option<String>,
-    /// A pushed branch's head: t builds it (reusing what it built before), signs and
-    /// publishes it for this device (`t dispatch publish-os-ref-<target> --ref BRANCH
-    /// --publish`), and the device follows it until its channel publishes something newer.
-    #[arg(long = "ref", value_name = "BRANCH", conflicts_with_all = ["from", "image"])]
-    pub branch: Option<String>,
     /// With `--from local`: build FROM this production image as it is,
     /// instead of localhost/tilo:latest rebuilt when its inputs changed.
     #[arg(long, requires = "from", conflicts_with = "rebuild_base")]

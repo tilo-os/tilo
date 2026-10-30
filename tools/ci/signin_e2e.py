@@ -211,6 +211,65 @@ class Cycle:
         if "rror" in reply:
             raise Failed(f"could not hot-plug the test shell port: {reply.strip()}")
 
+    def emergency_shell(self, commands: dict[str, str], limit: float = 300) -> dict[str, str]:
+        """Run `commands` in the initrd's emergency shell, over the serial line (the boot's
+        /dev/console, served on serial.sock by boot-target --serial-socket), and return what
+        each printed. The shell asks for Enter first ("Press Enter for system maintenance")."""
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(str(self.run / "serial.sock"))
+        received = bytearray()
+        deadline = time.monotonic() + limit
+
+        def read_until(pattern: re.Pattern, until: float) -> re.Match | None:
+            while True:
+                found = pattern.search(_plain(bytes(received)))
+                if found:
+                    return found
+                remaining = min(until, deadline) - time.monotonic()
+                if remaining <= 0:
+                    return None
+                sock.settimeout(remaining)
+                try:
+                    chunk = sock.recv(65536)
+                except socket.timeout:
+                    return None
+                if not chunk:
+                    return None
+                received.extend(chunk)
+
+        results: dict[str, str] = {}
+        try:
+            # sulogin reads its Enter with whatever else has arrived by then, so nothing more
+            # is sent until the shell's prompt shows; and a line typed while the shell starts
+            # can still be lost, so the probe is typed again until it answers.
+            sock.sendall(b"\r")
+            read_until(re.compile(rb"# ?$"), time.monotonic() + 30)
+            answered = False
+            for _ in range(4):
+                nonce = secrets.token_hex(6)
+                # The marker is printed in two halves, so the shell's echo of the command
+                # never matches it.
+                sock.sendall(f"printf '%s-%s\\n' E2E-SHELL {nonce}\r".encode())
+                if read_until(re.compile(rf"\nE2E-SHELL-{nonce}\n".encode()), time.monotonic() + 15):
+                    answered = True
+                    break
+            if not answered:
+                results["shell"] = "no shell answered on the serial line:\n" \
+                    + _plain(bytes(received)).decode("utf-8", "replace")[-2000:]
+                return results
+            for name, command in commands.items():
+                received.clear()
+                nonce = secrets.token_hex(6)
+                sock.sendall(f"( {command} ) 2>&1 | sed 's/^/E2E| /'; "
+                             f"printf '%s-%s\\n' E2E-DONE {nonce}\r".encode())
+                found = read_until(re.compile(rf"\nE2E-DONE-{nonce}\n".encode()), deadline)
+                text = _plain(bytes(received)).decode("utf-8", "replace")
+                lines = [line[5:] for line in text.splitlines() if line.startswith("E2E| ")]
+                results[name] = "\n".join(lines) + ("\n" if found else "\n(cut short: time ran out)\n")
+        finally:
+            sock.close()
+        return results
+
     def keep_serial(self, label: str) -> None:
         serial = self.run / "serial.log"
         if serial.is_file():
@@ -286,6 +345,15 @@ class Shell:
     def close(self) -> None:
         if self.sock:
             self.sock.close()
+
+
+_ESCAPES = re.compile(rb"\x1b(?:\[[0-9;?=!]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][^\x1b]*\x1b\\|[=>])|[\x00\r]")
+
+
+def _plain(data: bytes) -> bytes:
+    """The text of terminal output `data`: its control sequences, carriage returns and NULs
+    taken out."""
+    return _ESCAPES.sub(b"", data)
 
 
 def quote(value: str) -> str:
@@ -380,6 +448,8 @@ class Run:
         self.recovery: str | None = None
         self.baseline: dict = {}
         self.items: dict[str, dict] = {}
+        # The items this variant's steps report; each one it leaves unreported is not-run.
+        self.planned: set[str] = set()
         self.avcs: dict[str, list[str]] = {}
         self.boot_denials: dict[str, dict] = {}
         self.facts: dict = {"variant": variant, "cycle": self.cycle.name}
@@ -654,11 +724,15 @@ cryptsetup close e2e-target
                 c.env[name] = before
         self.boot_devices = {name: c.env.get(name) for name in devices}
         c.env.update(devices)
-        c.vm("boot-target", "--2d", "--tpm", timeout=600)
+        # The serial line can be typed into, for the initrd's emergency shell should the boot
+        # end there (wait_screen).
+        c.vm("boot-target", "--2d", "--tpm", "--serial-socket", timeout=600)
         c.hotplug_shell()
 
     def classify(self, text: str) -> str:
         lower = text.lower()
+        if "emergency mode" in lower or "rdsosreport" in lower:
+            return "emergency"
         if "unlock tilo" in lower or "disk passphrase or recovery" in lower:
             return "disk-prompt"
         if "incorrect password" in lower or "incorrect pin" in lower or "tries left" in lower \
@@ -686,12 +760,37 @@ cryptsetup close e2e-target
             kind = self.classify(text)
             if kind in kinds:
                 return kind, path, text, None
+            if kind == "emergency":
+                c.keep_screen(f"{label}-emergency", path, text)
+                self.collect_emergency(label)
+                return kind, path, text, None
             if not c.running():
                 raise Failed(f"the VM stopped while waiting for {sorted(kinds)} ({label})")
             time.sleep(1.5)
         path, text = c.screen()
         c.keep_screen(f"{label}-timeout", path, text)
         return "timeout", path, text, None
+
+    EMERGENCY = {
+        "journal": "journalctl -b --no-pager -o short-monotonic",
+        "rdsosreport": "cat /run/initramfs/rdsosreport.txt",
+        "failed": "systemctl --failed --no-pager --plain --no-legend; systemctl list-jobs --no-pager",
+        "tilo-root": "ls -la /run/tilo-root /run/cryptsetup-keys.d; "
+                     "systemctl status --no-pager -l tilo-root-discover.service sysroot.mount",
+    }
+
+    def collect_emergency(self, label: str) -> None:
+        """The boot ended in the initrd's emergency shell: its journal, rdsosreport.txt and
+        failed units, read in that shell over the serial line. Nothing typed there is a secret,
+        and what it prints is redacted here and scrubbed with every other output."""
+        say(f"{label}: the boot is in the initrd's emergency shell; collecting its journal")
+        try:
+            found = self.cycle.emergency_shell(self.EMERGENCY)
+        except OSError as error:
+            found = {"shell": f"the serial line could not be reached: {error}"}
+        for name, text in found.items():
+            self.save(f"emergency-{label}-{name}.txt", text)
+        self.facts.setdefault("emergency", []).append(label)
 
     def greeter_log(self, label: str, state: dict) -> None:
         with (self.out / f"greeter-states-{label}.jsonl").open("a", encoding="utf-8") as handle:
@@ -1674,6 +1773,7 @@ cryptsetup close e2e-target
                      ("migration", self.migrate, ("6", "7")),
                      ("separate disk secret", self.separate_disk_secret, ("7",)),
                      ("recovery key", self.recovery_path, ("6",))]
+        self.planned = {key for _, _, items in steps for key in items}
         for name, step, items in steps:
             try:
                 step()
@@ -1695,9 +1795,17 @@ cryptsetup close e2e-target
 
     def boot_to_session(self, label: str) -> dict | None:
         """Boot, open the volume and sign in at the greeter with the account password; the
-        session that starts, if one does."""
+        session that starts, if one does. Once the person is migrated, the boot shows the boot
+        sign-in instead of the disk prompt: the password goes there, and the session follows
+        without the greeter asking (item 3)."""
         self.boot(label)
-        self.unlock_at_disk_prompt(label, self.account, f"{label}-disk-prompt")
+        if self.unlock_at_disk_prompt(label, self.account, f"{label}-disk-prompt") == 0:
+            path, text = self.cycle.screen()
+            self.cycle.keep_screen(f"{label}-boot-sign-in", path, text)
+            self.cycle.type(self.account)
+            self.cycle.keys("ret")
+            self.connect()
+            return self.wait_session(180)
         try:
             state = console.poll(self.cycle.console, lambda s: s.get("app") == "greeter"
                                  and s.get("accepts_input"), 300, 2)
@@ -1840,10 +1948,10 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "12": "The boot sign-in and the greeter after switch-root show the same card",
         "13": "The boot sign-in's first frame comes within 300 ms of knowing who may sign in",
         "14": "The boot sign-in's clock moves on by itself, with no input",
+        "9": "Rollback to an image from before pam_tilo still signs in with the old password",
     }
-    if any(r.variant == "rollback" for r in runs):
-        names["9"] = "Rollback to an image from before pam_tilo still signs in with the old password"
-    for key in names:
+    # Only the variants that ran owe their items: the rollback variant alone owes item 9.
+    for key in {key for r in runs for key in r.planned}:
         items.setdefault(key, {"status": "not-run", "summary": "an earlier step failed", "evidence": {}})
     document = {"items": {k: {"name": names[k], **items[k]} for k in sorted(items)},
                 "facts": {r.variant: r.facts for r in runs},

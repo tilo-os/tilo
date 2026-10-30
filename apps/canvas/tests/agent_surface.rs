@@ -20,8 +20,10 @@ use ui::prelude::TestApp;
 /// does not repeat its description, nor a description its label. Raised
 /// from 64 KiB when every document resource gained `review-restore` and
 /// `restore-reviewed` (exact-item restore, #4581), and from 68 KiB when the
-/// recent artworks became a record of their own beside the artwork.
-const BUDGET: usize = 72 * 1024;
+/// recent artworks became a record of their own beside the artwork, and
+/// from 72 KiB when the brush, colour and pigment choices became view
+/// effects an agent can make.
+const BUDGET: usize = 76 * 1024;
 
 #[test]
 fn the_agent_surface_matches_its_golden_file_and_budget() {

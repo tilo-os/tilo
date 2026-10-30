@@ -226,6 +226,11 @@ pub enum FeedsEffect {
     /// Import OPML…
     #[effect(attended)]
     ImportOpml,
+    /// New folder…
+    ///
+    /// Opens the form that names a folder for subscriptions.
+    #[effect(view)]
+    NewFolderForm,
     /// Export OPML…
     #[effect(attended, kind = "read")]
     ExportOpml,

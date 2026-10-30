@@ -121,304 +121,97 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (230, accounts::AccountsEffect::FAMILY),
 ];
 
+/// One [`crate::effects::LiveArea`]: the area `$module::$area` behind the
+/// pane `$pane`, its rows profiled as `$name`. `always` for an area whose
+/// rows show only what its pane already read; `read` with the effects its
+/// model answers for one whose read blocks on the device and so runs on the
+/// background executor ([`crate::effects::BackgroundRead`]).
+macro_rules! live {
+    (@ $order:literal, $name:literal, $pane:ident, $module:ident :: $area:ident,
+        $is_open:expr, $background:expr) => {
+        (
+            $order,
+            crate::effects::LiveArea {
+                name: $name,
+                pane: Category::$pane,
+                is_open: $is_open,
+                rows: |app| {
+                    $module::area(app)
+                        .map($module::$area::rows)
+                        .unwrap_or_default()
+                },
+                background: $background,
+            },
+        )
+    };
+    (@@ $order:literal, $name:literal, $pane:ident, $module:ident :: $area:ident, $answers:expr) => {
+        live!(@ $order, $name, $pane, $module::$area,
+            |app| $module::area(app).is_some_and($module::$area::is_open),
+            Some(crate::effects::BackgroundRead {
+                start: |app| $module::area(app).is_some_and($module::$area::start_read),
+                finished: |app| $module::area(app).is_none_or(|area| area.read.is_finished()),
+                wait: |app| $module::area(app).and_then(|area| area.read.wait()),
+                answers: $answers,
+            }))
+    };
+    ($order:literal, $name:literal, $pane:ident, always $module:ident :: $area:ident) => {
+        live!(@ $order, $name, $pane, $module::$area, |_| true, None)
+    };
+    ($order:literal, $name:literal, $pane:ident, $module:ident :: $area:ident) => {
+        live!(@ $order, $name, $pane, $module::$area,
+            |app| $module::area(app).is_some_and($module::$area::is_open), None)
+    };
+    ($order:literal, $name:literal, $pane:ident, $module:ident :: $area:ident, read Vec::new) => {
+        live!(@@ $order, $name, $pane, $module::$area, Vec::new)
+    };
+    ($order:literal, $name:literal, $pane:ident, $module:ident :: $area:ident,
+        read $effects:ident :: $effect:ident) => {
+        live!(@@ $order, $name, $pane, $module::$area,
+            <$effects::$effect as ui::tilo_resource::Effect>::declarations)
+    };
+}
+
 /// Every area with live rows, in the order their rows are published.
 pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
-    (
-        10,
-        crate::effects::LiveArea {
-            name: "settings.rows.notifications",
-            pane: Category::Notifications,
-            is_open: |app| {
-                notifications::area(app).is_some_and(notifications::NotificationsArea::is_open)
-            },
-            rows: |app| {
-                notifications::area(app)
-                    .map(notifications::NotificationsArea::rows)
-                    .unwrap_or_default()
-            },
-            background: Some(crate::effects::BackgroundRead {
-                start: |app| {
-                    notifications::area(app)
-                        .is_some_and(notifications::NotificationsArea::start_read)
-                },
-                finished: |app| {
-                    notifications::area(app)
-                        .is_none_or(notifications::NotificationsArea::read_finished)
-                },
-                wait: |app| {
-                    notifications::area(app).and_then(notifications::NotificationsArea::wait_read)
-                },
-                answers: Vec::new,
-            }),
-        },
-    ),
-    (
-        20,
-        crate::effects::LiveArea {
-            name: "settings.rows.default_apps",
-            pane: Category::DefaultApps,
-            is_open: |app| {
-                personal_apps::area(app).is_some_and(personal_apps::DefaultAppsArea::is_open)
-            },
-            rows: |app| {
-                personal_apps::area(app)
-                    .map(personal_apps::DefaultAppsArea::rows)
-                    .unwrap_or_default()
-            },
-            background: Some(crate::effects::BackgroundRead {
-                start: |app| {
-                    personal_apps::area(app).is_some_and(personal_apps::DefaultAppsArea::start_read)
-                },
-                finished: |app| {
-                    personal_apps::area(app)
-                        .is_none_or(personal_apps::DefaultAppsArea::read_finished)
-                },
-                wait: |app| {
-                    personal_apps::area(app).and_then(personal_apps::DefaultAppsArea::wait_read)
-                },
-                answers:
-                    <personal_apps::DefaultAppsEffect as ui::tilo_resource::Effect>::declarations,
-            }),
-        },
-    ),
+    live!(10, "settings.rows.notifications", Notifications, notifications::NotificationsArea, read Vec::new),
+    live!(20, "settings.rows.default_apps", DefaultApps, personal_apps::DefaultAppsArea, read personal_apps::DefaultAppsEffect),
     // Input reads a small snapshot file the compositor keeps, on a timer of
     // its own; it has nothing slow to put off.
-    (
-        50,
-        crate::effects::LiveArea {
-            name: "settings.rows.input",
-            pane: Category::Keyboard,
-            is_open: |_| true,
-            rows: |app| {
-                mouse_keyboard::area(app)
-                    .map(mouse_keyboard::InputArea::rows)
-                    .unwrap_or_default()
-            },
-            background: None,
-        },
-    ),
-    (
-        90,
-        crate::effects::LiveArea {
-            name: "settings.rows.bluetooth",
-            pane: Category::Bluetooth,
-            is_open: |app| bluetooth::area(app).is_some_and(bluetooth::BluetoothArea::is_open),
-            rows: |app| {
-                bluetooth::area(app)
-                    .map(bluetooth::BluetoothArea::rows)
-                    .unwrap_or_default()
-            },
-            background: Some(crate::effects::BackgroundRead {
-                start: |app| bluetooth::area(app).is_some_and(bluetooth::BluetoothArea::start_read),
-                finished: |app| {
-                    bluetooth::area(app).is_none_or(bluetooth::BluetoothArea::read_finished)
-                },
-                wait: |app| bluetooth::area(app).and_then(bluetooth::BluetoothArea::wait_read),
-                answers: <bluetooth::BluetoothEffect as ui::tilo_resource::Effect>::declarations,
-            }),
-        },
-    ),
-    (
-        140,
-        crate::effects::LiveArea {
-            name: "settings.rows.audio",
-            pane: Category::Sound,
-            is_open: |app| audio::area(app).is_some_and(audio::AudioArea::is_open),
-            rows: |app| {
-                audio::area(app)
-                    .map(audio::AudioArea::rows)
-                    .unwrap_or_default()
-            },
-            background: Some(crate::effects::BackgroundRead {
-                start: |app| audio::area(app).is_some_and(audio::AudioArea::start_read),
-                finished: |app| audio::area(app).is_none_or(audio::AudioArea::read_finished),
-                wait: |app| audio::area(app).and_then(audio::AudioArea::wait_read),
-                answers: <audio::AudioEffect as ui::tilo_resource::Effect>::declarations,
-            }),
-        },
-    ),
+    live!(50, "settings.rows.input", Keyboard, always mouse_keyboard::InputArea),
+    live!(90, "settings.rows.bluetooth", Bluetooth, bluetooth::BluetoothArea, read bluetooth::BluetoothEffect),
+    live!(140, "settings.rows.audio", Sound, audio::AudioArea, read audio::AudioEffect),
     // Displays probe brightness on threads of their own; the rest is a few
     // small files.
-    (
+    live!(
         180,
-        crate::effects::LiveArea {
-            name: "settings.rows.displays",
-            pane: Category::Displays,
-            is_open: |app| display::area(app).is_some_and(display::DisplayArea::is_open),
-            rows: |app| {
-                display::area(app)
-                    .map(display::DisplayArea::rows)
-                    .unwrap_or_default()
-            },
-            background: None,
-        },
+        "settings.rows.displays",
+        Displays,
+        display::DisplayArea
     ),
     // Networks are read on a thread of their own.
-    (
-        200,
-        crate::effects::LiveArea {
-            name: "settings.rows.network",
-            pane: Category::Network,
-            is_open: |app| network::area(app).is_some_and(network::NetworkArea::is_open),
-            rows: |app| {
-                network::area(app)
-                    .map(network::NetworkArea::rows)
-                    .unwrap_or_default()
-            },
-            background: None,
-        },
-    ),
+    live!(200, "settings.rows.network", Network, network::NetworkArea),
     // Printers read on a thread of their own.
-    (
+    live!(
         70,
-        crate::effects::LiveArea {
-            name: "settings.rows.printers",
-            pane: Category::Printers,
-            is_open: |app| printers::area(app).is_some_and(printers::PrintersArea::is_open),
-            rows: |app| {
-                printers::area(app)
-                    .map(printers::PrintersArea::rows)
-                    .unwrap_or_default()
-            },
-            background: None,
-        },
+        "settings.rows.printers",
+        Printers,
+        printers::PrintersArea
     ),
-    (
-        80,
-        crate::effects::LiveArea {
-            name: "settings.rows.users",
-            pane: Category::Users,
-            is_open: |app| users::area(app).is_some_and(users::UsersArea::is_open),
-            rows: |app| {
-                users::area(app)
-                    .map(users::UsersArea::rows)
-                    .unwrap_or_default()
-            },
-            background: Some(crate::effects::BackgroundRead {
-                start: |app| users::area(app).is_some_and(users::UsersArea::start_read),
-                finished: |app| users::area(app).is_none_or(users::UsersArea::read_finished),
-                wait: |app| users::area(app).and_then(users::UsersArea::wait_read),
-                answers: <users::UsersEffect as ui::tilo_resource::Effect>::declarations,
-            }),
-        },
-    ),
+    live!(80, "settings.rows.users", Users, users::UsersArea, read users::UsersEffect),
     // Speakers ask the broker on a thread of their own.
-    (
+    live!(
         110,
-        crate::effects::LiveArea {
-            name: "settings.rows.speakers",
-            pane: Category::Speakers,
-            is_open: |app| speakers::area(app).is_some_and(speakers::SpeakersArea::is_open),
-            rows: |app| {
-                speakers::area(app)
-                    .map(speakers::SpeakersArea::rows)
-                    .unwrap_or_default()
-            },
-            background: None,
-        },
+        "settings.rows.speakers",
+        Speakers,
+        speakers::SpeakersArea
     ),
-    (
-        120,
-        crate::effects::LiveArea {
-            name: "settings.rows.agent_models",
-            pane: Category::AgentModels,
-            is_open: |app| {
-                agent_models::area(app).is_some_and(agent_models::AgentModelsArea::is_open)
-            },
-            rows: |app| {
-                agent_models::area(app)
-                    .map(agent_models::AgentModelsArea::rows)
-                    .unwrap_or_default()
-            },
-            background: Some(crate::effects::BackgroundRead {
-                start: |app| {
-                    agent_models::area(app).is_some_and(agent_models::AgentModelsArea::start_read)
-                },
-                finished: |app| {
-                    agent_models::area(app).is_none_or(agent_models::AgentModelsArea::read_finished)
-                },
-                wait: |app| {
-                    agent_models::area(app).and_then(agent_models::AgentModelsArea::wait_read)
-                },
-                answers:
-                    <agent_models::AgentModelsEffect as ui::tilo_resource::Effect>::declarations,
-            }),
-        },
-    ),
-    (
-        130,
-        crate::effects::LiveArea {
-            name: "settings.rows.device_mesh",
-            pane: Category::DeviceMesh,
-            is_open: |app| device_mesh::area(app).is_some_and(device_mesh::DeviceMeshArea::is_open),
-            rows: |app| {
-                device_mesh::area(app)
-                    .map(device_mesh::DeviceMeshArea::rows)
-                    .unwrap_or_default()
-            },
-            background: Some(crate::effects::BackgroundRead {
-                start: |app| {
-                    device_mesh::area(app).is_some_and(device_mesh::DeviceMeshArea::start_read)
-                },
-                finished: |app| {
-                    device_mesh::area(app).is_none_or(device_mesh::DeviceMeshArea::read_finished)
-                },
-                wait: |app| device_mesh::area(app).and_then(device_mesh::DeviceMeshArea::wait_read),
-                answers: <device_mesh::DeviceMeshEffect as ui::tilo_resource::Effect>::declarations,
-            }),
-        },
-    ),
-    (
-        150,
-        crate::effects::LiveArea {
-            name: "settings.rows.accounts",
-            pane: Category::ExternalAccounts,
-            is_open: |app| accounts::area(app).is_some_and(accounts::AccountsArea::is_open),
-            rows: |app| {
-                accounts::area(app)
-                    .map(accounts::AccountsArea::rows)
-                    .unwrap_or_default()
-            },
-            background: Some(crate::effects::BackgroundRead {
-                start: |app| accounts::area(app).is_some_and(accounts::AccountsArea::start_read),
-                finished: |app| {
-                    accounts::area(app).is_none_or(accounts::AccountsArea::read_finished)
-                },
-                wait: |app| accounts::area(app).and_then(accounts::AccountsArea::wait_read),
-                answers: <accounts::AccountsEffect as ui::tilo_resource::Effect>::declarations,
-            }),
-        },
-    ),
+    live!(120, "settings.rows.agent_models", AgentModels, agent_models::AgentModelsArea, read agent_models::AgentModelsEffect),
+    live!(130, "settings.rows.device_mesh", DeviceMesh, device_mesh::DeviceMeshArea, read device_mesh::DeviceMeshEffect),
+    live!(150, "settings.rows.accounts", ExternalAccounts, accounts::AccountsArea, read accounts::AccountsEffect),
     // Disk unlock's rows show only what its pane has already read.
-    (
-        220,
-        crate::effects::LiveArea {
-            name: "settings.rows.disk_unlock",
-            pane: Category::Permissions,
-            is_open: |_| true,
-            rows: |app| {
-                disk_unlock::area(app)
-                    .map(disk_unlock::DiskUnlockArea::rows)
-                    .unwrap_or_default()
-            },
-            background: None,
-        },
-    ),
+    live!(220, "settings.rows.disk_unlock", Permissions, always disk_unlock::DiskUnlockArea),
     // Remembered drives' rows show only what the Storage pane has read.
-    (
-        240,
-        crate::effects::LiveArea {
-            name: "settings.rows.drives",
-            pane: Category::Storage,
-            is_open: |_| true,
-            rows: |app| {
-                drives::area(app)
-                    .map(drives::DrivesArea::rows)
-                    .unwrap_or_default()
-            },
-            background: None,
-        },
-    ),
+    live!(240, "settings.rows.drives", Storage, always drives::DrivesArea),
 ];
 
 /// The settings these panes show, as Settings' search shows them: a row

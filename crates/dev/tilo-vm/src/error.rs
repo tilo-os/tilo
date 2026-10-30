@@ -37,9 +37,7 @@ pub fn no_disk_help(local_build: Option<&str>) -> String {
             "no local dev-image build is available in this checkout ({LOCAL_BUILD_SCRIPT} is missing)"
         ),
     };
-    format!(
-        "t publishes main's dev disks, each architecture on its own: t dispatch publish-os-dev-disk-x86_64 --ref main (publish-os-dev-disk-aarch64 for ARM) if you may dispatch t, or ask a human who may   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
-    )
+    format!("ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}")
 }
 
 /// How a dial over the peer network failed, from `tilo-device-admin dial`'s
@@ -1117,10 +1115,6 @@ mod tests {
                 local_build: None,
             }
             .hint();
-            assert!(
-                without.contains("t dispatch publish-os-dev-disk-x86_64 --ref main"),
-                "{without}"
-            );
             assert!(without.contains("tilo-vm vm use <name>"), "{without}");
             assert!(
                 without.contains("no local dev-image build is available in this checkout"),

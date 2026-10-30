@@ -7,10 +7,10 @@
 use tilo_actions::{FlatAction, ResourceSpec};
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
-use crate::model::{Hit, Source, Target, search};
+use crate::model::{Hit, Source, Target, search, search_with};
 use crate::providers::{
-    Actions, Answers, AppEntry, Applications, CommandSpec, Commands, Content, Recents, WebSearch,
-    WindowEntry, Windows,
+    Actions, Answers, AppEntry, Applications, CommandSpec, Commands, Content, Published,
+    PublishedActions, Recents, WebSearch, WindowEntry, Windows,
 };
 use crate::window::WindowSearch;
 use ui::search::system::ResourceKind;
@@ -26,6 +26,9 @@ pub struct SearchData {
     pub windows: Vec<WindowEntry>,
     pub commands: Vec<CommandSpec>,
     pub resources: Vec<ResourceSpec>,
+    /// What providers publish through the session's action host, run by
+    /// address there ([`crate::model::Target::Invoke`]).
+    pub published: Vec<PublishedActions>,
     /// The search providers open applications publish.
     pub providers: Vec<Box<dyn ui::search::SearchProvider>>,
     /// Search what the resources hold, not what can be done to them.
@@ -36,6 +39,13 @@ pub struct SearchData {
     /// The desktop's search over everything does; a search narrowed to the
     /// apps or one window does not.
     pub answers: bool,
+    /// The exchange rates the host last fetched, which money is answered
+    /// with, and now, in Unix seconds, to say how old they are.
+    pub rates: Option<crate::answers::currency::Rates>,
+    pub now: u64,
+    /// The installed app that claims a URI scheme, by name: a service an
+    /// app serves is searched there ([`WebSearch::app_for_scheme`]).
+    pub app_for_scheme: Option<fn(&str) -> Option<String>>,
     /// Search one window, over what it publishes (`resources` and
     /// `providers` are that window's): what it holds, then what can be done
     /// in it ([`crate::window::WindowSearch`]), as an app's own search does.
@@ -46,6 +56,12 @@ pub struct SearchData {
     /// What the empty field says it searches, where that is not
     /// everything ("Search Tube…").
     pub placeholder: Option<String>,
+    /// What the host searches beyond these (Settings' pages, the store's
+    /// catalogue, files, what apps hold), each over what is published or a
+    /// service answers. The search over everything asks them.
+    pub sources: Vec<Box<dyn Source>>,
+    /// The sources the person switched off, left out whatever they find.
+    pub preferences: crate::preferences::SearchPreferences,
 }
 
 /// A row the person moved to, as it is found again once the rows are
@@ -61,10 +77,15 @@ struct Sources {
     windows: Windows,
     commands: Commands,
     actions: Actions,
+    published: Published,
     content: Content,
-    answers: bool,
+    answers: Option<(Answers, WebSearch)>,
     /// The one window searched, when the search is a window's.
     window: Option<WindowSearch>,
+    host: Vec<Box<dyn Source>>,
+    preferences: crate::preferences::SearchPreferences,
+    /// Now, in Unix seconds, as the host said when search opened.
+    now: u64,
 }
 
 impl Sources {
@@ -76,8 +97,12 @@ impl Sources {
                 commands: Commands(data.commands),
                 content: Content::new(Vec::new(), Vec::new()),
                 actions: Actions(Vec::new()),
-                answers: false,
+                published: Published(Vec::new()),
+                answers: None,
                 window: Some(WindowSearch::new(data.resources, data.providers).within(data.scope)),
+                host: Vec::new(),
+                preferences: data.preferences,
+                now: data.now,
             };
         }
         Self {
@@ -90,8 +115,27 @@ impl Sources {
             } else {
                 data.resources
             }),
-            answers: data.answers,
+            published: Published(if data.content_only {
+                Vec::new()
+            } else {
+                data.published
+            }),
+            answers: data.answers.then(|| {
+                (
+                    Answers {
+                        rates: data.rates,
+                        now: data.now,
+                    },
+                    data.app_for_scheme
+                        .map_or_else(WebSearch::default, |app_for_scheme| WebSearch {
+                            app_for_scheme,
+                        }),
+                )
+            }),
             window: None,
+            host: data.sources,
+            preferences: data.preferences,
+            now: data.now,
         }
     }
 
@@ -110,6 +154,8 @@ pub struct DesktopSearch {
     palette: CommandPalette,
     sources: Option<Sources>,
     recents: Recents,
+    /// What the person chose before, which orders equal matches.
+    usage: crate::usage::Usage,
     /// The hits the palette shows; entry `hit:{i}` is `rows[i]`.
     rows: Vec<Hit>,
     /// The kind of each "Show all" row; entry `more:{i}` is `more_rows[i]`.
@@ -148,6 +194,7 @@ impl DesktopSearch {
             palette,
             sources: None,
             recents: Recents::default(),
+            usage: crate::usage::Usage::default(),
             rows: Vec::new(),
             more_rows: Vec::new(),
             expanded: Vec::new(),
@@ -266,12 +313,17 @@ impl DesktopSearch {
                 &sources.windows,
                 &sources.content,
                 &sources.actions,
+                &sources.published,
                 &sources.commands,
             ];
-            if sources.answers {
-                all.extend([&Answers as &dyn Source, &WebSearch]);
+            if let Some((answers, web)) = &sources.answers {
+                all.extend([answers as &dyn Source, web]);
             }
-            search(&query, &all, 0)
+            all.extend(sources.host.iter().map(|source| &**source));
+            all.retain(|source| sources.preferences.enabled(source.id()));
+            let usage = &self.usage;
+            let now = sources.now;
+            search_with(&query, &all, 0, &|hit| usage.strength(&query, hit, now))
         };
         // Each group shares what the palette shows without scrolling; a
         // group cut short offers the rest in place.
@@ -380,9 +432,7 @@ impl DesktopSearch {
             {
                 self.expand(more);
             } else if let Some(hit) = self.hit(&outcome.id) {
-                self.recents.record(&hit);
-                self.choice = Some(hit.target);
-                self.palette.close();
+                self.choose_hit(hit, outcome.argument);
             }
         }
         if self.sources.is_none() || self.palette.is_open() {
@@ -393,10 +443,65 @@ impl DesktopSearch {
             && let Some(hit) = self.palette.selected_id().and_then(|id| self.hit(id))
         {
             // An action row closed the palette after queueing its invocation.
-            self.recents.record(&hit);
+            self.remember(&hit);
         }
         self.finish();
         true
+    }
+
+    /// Choose `hit`, with `argument` the one line its action asks for:
+    /// it is remembered, and its target is the choice. A switch stays in
+    /// view, showing what it flipped to; anything else closes search.
+    fn choose_hit(&mut self, hit: Hit, argument: Option<String>) {
+        self.remember(&hit);
+        let mut target = hit.target;
+        let mut toggles = false;
+        if let Target::Invoke(invoke) = &mut target
+            && let Some(descriptor) = &invoke.descriptor
+        {
+            toggles = descriptor.state.toggles;
+            if let (Some(param), Some(value)) = (descriptor.prompt_param(), argument) {
+                invoke
+                    .arguments
+                    .insert(param.to_owned(), serde_json::Value::String(value));
+            }
+        }
+        self.choice = Some(target);
+        if !toggles {
+            self.palette.close();
+        }
+    }
+
+    fn remember(&mut self, hit: &Hit) {
+        self.recents.record(hit);
+        let now = self.sources.as_ref().map_or(0, |sources| sources.now);
+        let query = self.palette.query().to_owned();
+        self.usage.record(&query, hit, now);
+    }
+
+    /// Choose the shown row `index` ([`Self::results`]) as a person
+    /// choosing it does, with `argument` the line its action asks for:
+    /// what a caller of the desktop's published search runs. An app's own
+    /// action row ([`Target::Action`]) runs only from its window, through
+    /// the palette's control. Returns whether there was such a row.
+    pub fn choose(&mut self, index: usize, argument: Option<String>) -> bool {
+        let Some(hit) = self.rows.get(index).cloned() else {
+            return false;
+        };
+        self.choose_hit(hit, argument);
+        true
+    }
+
+    /// What the person chose before, to keep with the rest of what the host
+    /// keeps.
+    #[must_use]
+    pub fn usage(&self) -> &crate::usage::Usage {
+        &self.usage
+    }
+
+    /// What the person chose before, as the host kept it.
+    pub fn set_usage(&mut self, usage: crate::usage::Usage) {
+        self.usage = usage;
     }
 
     /// The chosen non-action row, for the host to perform.
@@ -460,6 +565,14 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
                     .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
             )
         }
+        Target::Invoke(invoke) => (
+            match &invoke.descriptor {
+                Some(descriptor) => CommandEntry::from_descriptor(id, descriptor),
+                None => CommandEntry::new(id, hit.title.clone()),
+            },
+            hit.icon
+                .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
+        ),
         Target::Launch { app } | Target::Window { app: Some(app), .. } => (
             CommandEntry::new(id, hit.title.clone()),
             ui::icons::app_glyph(app, crate::availability::category_for(app)),
@@ -528,6 +641,102 @@ mod tests {
             })
         );
         assert!(!search.is_open());
+    }
+
+    /// The shell's published actions: a switch showing its state and keys,
+    /// and an action with nothing to act on now.
+    fn published() -> Vec<PublishedActions> {
+        let action = |id: &str, label: &str| {
+            tilo_actions::ActionSpec::immediate_encoded(
+                id,
+                label,
+                tilo_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction {
+                    type_id: "shell.action".into(),
+                    payload: Vec::new(),
+                },
+            )
+        };
+        let mut resource = ResourceSpec::new("actions", "actions", "Actions");
+        resource.actions.push(
+            action("notifications.dnd.toggle", "Do Not Disturb").with_state(
+                tilo_actions::ActionState {
+                    badge: Some("Off".into()),
+                    toggles: true,
+                    shortcut: Some("Super+D".into()),
+                },
+            ),
+        );
+        resource.actions.push(
+            action("projection.close", "Stop projecting")
+                .unavailable("nothing_to_act_on", "Nothing is projected"),
+        );
+        vec![PublishedActions {
+            app: "shell".into(),
+            room: "room".into(),
+            actions: tilo_actions::door::survey(&[resource]),
+        }]
+    }
+
+    #[test]
+    fn a_published_switch_shows_its_state_and_stays_open_on_it() {
+        let mut search = DesktopSearch::new();
+        search.open(SearchData {
+            published: published(),
+            ..data()
+        });
+        search.set_query("disturb");
+        let hit = &search.results()[0];
+        assert_eq!(hit.title, "Do Not Disturb");
+        let entries = search.palette().visible_entries();
+        assert_eq!(entries[0].badge.as_deref(), Some("Off"));
+        assert_eq!(entries[0].keybinding.as_deref(), Some("Super+D"));
+        drop(entries);
+        let mut doc = AutoCommit::new();
+        search
+            .palette_mut()
+            .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
+        assert!(
+            !search.observe(),
+            "a switch keeps search open on its new state"
+        );
+        let Some(Target::Invoke(invoke)) = search.take_choice() else {
+            panic!("the switch runs by address at its provider");
+        };
+        assert_eq!(
+            (invoke.app.as_str(), invoke.room.as_str()),
+            ("shell", "room")
+        );
+        assert_eq!(
+            invoke.address,
+            tilo_actions::ActionAddress::new("actions", "notifications.dnd.toggle")
+        );
+        assert!(search.is_open());
+    }
+
+    #[test]
+    fn a_published_action_with_nothing_to_act_on_answers_only_its_name() {
+        let mut search = DesktopSearch::new();
+        search.open(SearchData {
+            published: published(),
+            ..data()
+        });
+        search.set_query("stop proj");
+        assert!(
+            search
+                .results()
+                .iter()
+                .all(|hit| hit.title != "Stop projecting"),
+            "it takes no row from one that would do something"
+        );
+        search.set_query("Stop projecting");
+        assert!(
+            search
+                .results()
+                .iter()
+                .any(|hit| hit.title == "Stop projecting"),
+            "named exactly, it is offered, and running it says why not"
+        );
     }
 
     #[test]

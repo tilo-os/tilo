@@ -12,10 +12,10 @@ Two lanes measure them. Neither blocks a merge.
 
 | Lane | Where | Clock | KPI ids |
 |---|---|---|---|
-| Nightly, compositor side | t's `perf-latency` check, a headless debug compositor on a shared t node, lavapipe | input taken by the loop → frame finished (headless has no flip) | `latency.input_to_frame.pointer`, `latency.workspace_switch.{first_frame,settled,dropped_frames}` |
+| Compositor side | `tools/ci/perf-scheduled.sh latency`, a headless debug compositor, lavapipe | input taken by the loop → frame finished (headless has no flip) | `latency.input_to_frame.pointer`, `latency.workspace_switch.{first_frame,settled,dropped_frames}` |
 | Weekly, report-only | a reference machine below, through `tilo-vm` | kernel input event → KMS presentation (the flip's vblank) | `hw.key_to_present.notes.<hz>hz`, `hw.workspace_switch.{first_frame,settled,dropped_frames}.<hz>hz` |
 
-The nightly lane answers "did the compositor's own work get slower". Its input
+The compositor lane answers "did the compositor's own work get slower". Its input
 comes through the control socket rather than libinput, and it has no panel, so
 its numbers are not input to photon and are never marketed. The weekly lane is
 the true number up to the presentation timestamp. Neither sees peripheral scan

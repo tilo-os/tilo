@@ -741,7 +741,10 @@ fn header_commands_favorite_delete_and_open_the_website() {
         "Ctrl+Z brings the contact back"
     );
 
-    ask(&mut app, Request::OpenWebsite(ada.website.clone()));
+    app.app
+        .effect(&crate::actions::ContactsEffect::OpenWebsite { contact: ada.id })
+        .expect("the contact's website opens");
+    app.settle();
     assert_eq!(app.opened_url.as_deref(), Some(ada.website.as_str()));
     work.run_pending();
     assert_eq!(recorder.opened_uris(), [ada.website]);

@@ -110,14 +110,12 @@ update and after the uninstall (`guest.sh record`, `record-check`), and any
 change the step does not declare fails the run. `--no-journey` stops after the
 apps.
 
-It runs in CI only, as t's check `host-session-e2e` (tools/ci/products.toml) on a
-node with KVM, on the Fedora RPMs `desktop-package-amd64` built and install-tested
+It needs a machine with KVM and runs on the Fedora RPMs built and install-tested
 from the same commit (`dist/ci/run-package-job.sh` with the fedora-44 target of
-`dist/ci/package-targets.txt`): on `stable`, where the desktop payload is published
-only after it passes, and with `t dispatch host-session-e2e`. `run.py source` first
+`dist/ci/package-targets.txt`). `run.py source --rpms DIR` first
 writes `source.json` beside the RPMs, each one's size and SHA-256, which the report
-repeats. `report.md`, `source.json`, screenshots, the guest journal and session logs
-are its outputs (`t outputs host-session-e2e`).
+repeats; `run.py test --rpms DIR --out OUT` then runs the test. `report.md`,
+`source.json`, screenshots, the guest journal and session logs land in `OUT`.
 
 ## Files workspace recovery before first initialization
 

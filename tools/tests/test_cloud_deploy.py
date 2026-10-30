@@ -301,40 +301,6 @@ class CloudDeployTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("unsigned: room-service", err)
 
-    def test_receipts_from_two_revisions_deploy_the_newer_when_the_older_image_is_unchanged(self):
-        """Stable republishes an image only when its inputs change, as t caches the build."""
-        def commit(files, subject):
-            for name, text in files.items():
-                path = self.repo / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(text)
-            self.git("add", "-A")
-            self.git("commit", "-q", "-m", subject)
-            return self.git("rev-parse", "HEAD")
-
-        checks = ('[[check]]\nname = "image-room-service-context"\ninputs = ["crates/room/**"]\n'
-                  '[[check]]\nname = "image-room-service"\nneeds = ["image-room-service-context"]\n'
-                  'inputs = ["tools/ci/publish/oci-build.sh"]\n')
-        room = commit({"t.toml": checks, "crates/room/lib.rs": "1"}, "room service")
-        web = commit({"crates/browser/lib.rs": "2"}, "web only")
-        self.fake.publish(ROOM, room)
-        self.fake.publish(WEB, web)
-        out_dir = Path(self.temp.name) / "two"
-        code, _, err = self.plan("--out", str(out_dir), "--receipt", self.receipt(ROOM, room),
-                                 "--receipt", self.receipt(WEB, web))
-        self.assertEqual(code, 0, err)
-        plan = json.loads((out_dir / "plan.json").read_text())
-        self.assertEqual(plan["revision"], web)
-        self.assertEqual(plan["images"]["room-service"]["digest"], self.fake.digests[("room-service", room)])
-        self.assertEqual(plan["images"]["room-service"]["sourceRevision"], room)
-
-        # Once the room service's own files change, its older receipt no longer stands for the newer commit.
-        changed = commit({"crates/room/lib.rs": "3"}, "room service changed")
-        self.fake.publish(WEB, changed)
-        code, _, err = self.plan("--receipt", self.receipt(ROOM, room), "--receipt", self.receipt(WEB, changed))
-        self.assertEqual(code, 1)
-        self.assertIn("files it is built from changed", err)
-
     def test_a_service_already_running_the_build_keeps_its_pin(self):
         """A release the web entry's build did not change in (carried, so a new digest) leaves it."""
         carried = self.fake.publish(WEB, self.target, label=self.deployed)

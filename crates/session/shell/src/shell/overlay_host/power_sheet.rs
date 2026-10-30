@@ -94,6 +94,10 @@ impl ShellOverlayHost {
     }
 
     /// Where the open menu's panel stands, its title and rows inside it.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Rect ± Vec2 is float geometry translation and cannot panic"
+    )]
     pub fn power_menu_panel_rect(&self) -> Rect {
         let panel = self.layers.power_menu.seat().panel();
         if panel.is_zero_area() {

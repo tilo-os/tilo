@@ -1,0 +1,23 @@
+[package]
+name = "tilo-system-service"
+description = "The session's system service: the power mode and the session's power actions, the system update, and the time zone (set, or following the device), published as resources whose actions change them."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+bounded-command = { path = "../../system/bounded-command" }
+os-actions = { path = "../../system/os-actions" }
+serde.workspace = true
+serde_json.workspace = true
+settings-store = { path = "../../system/settings-store" }
+tilo-actions = { path = "../../collab/actions" }
+tilo-location = { path = "../../platform/tilo-location" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-service = { path = "../service" }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

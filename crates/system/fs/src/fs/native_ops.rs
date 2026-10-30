@@ -586,7 +586,7 @@ impl QuickFS {
         }
         if let Some(sync) = &self.sync {
             for delta in held.into_iter().chain(deltas) {
-                sync.broadcast_delta(delta);
+                sync.announce_delta(&delta);
             }
         }
         if any {

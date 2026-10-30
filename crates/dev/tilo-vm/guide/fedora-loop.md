@@ -33,5 +33,5 @@ Differences to expect:
   there is no "Tilo (my build)" entry to pick.
 
 The Fedora loop remains the way to test Tilo as a session on a stock Fedora 44
-desktop (see docs/development/host-session.md), which slots do not cover: use it
+desktop, which slots do not cover: use it
 for that, and slots for the Tilo OS image.

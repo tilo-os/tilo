@@ -1,7 +1,7 @@
 //! Telling inotify of the changes the kernel did not make.
 //!
 //! inotify reports what passes through this kernel's VFS. A peer's edit,
-//! merged into the namespace over gossip, never does, so a watch on the
+//! merged into the namespace by sync, never does, so a watch on the
 //! mount (the folder Files shows, its record catalogue) saw nothing of it
 //! and its owner had to read again on a timer. FUSE's reverse notifications
 //! drop what the kernel cached, but raise no inotify event for an entry

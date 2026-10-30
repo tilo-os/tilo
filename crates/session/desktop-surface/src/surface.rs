@@ -22,7 +22,6 @@ use tilo_sort::CompactSort as _;
 
 use tilo_desktop_model::{
     DesktopTree, GroupId, GroupShape, IdMinter, StripId, Tab, TabId, WindowWidth, Workspace,
-    WorkspaceId,
 };
 use ui::automerge::{AutoCommit, ObjId};
 use ui::collaboration::PresencePayload;
@@ -47,6 +46,7 @@ use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 mod arrivals;
 #[cfg(test)]
 mod close_motion_tests;
+mod displays;
 mod history;
 mod live_shares;
 mod notices;
@@ -54,13 +54,18 @@ mod notices;
 mod open_motion_tests;
 mod personal_ask;
 mod search;
+mod seed;
 mod splice;
 mod window_bars;
 
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
 pub use personal_ask::PersonalAsk;
-pub use search::{HostAction, HostActionSource, is_host_offer, search_chord_keys};
+pub use search::{
+    HostAction, HostActionSource, SearchHost, SearchHostFeed, SearchRow, is_host_offer,
+    search_chord_keys,
+};
+pub use seed::seed_tree;
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
@@ -139,6 +144,9 @@ struct Shared {
     /// Whoever holds each window someone else opened, by tab
     /// ([`DesktopHandle::set_holders`]).
     holders: HashMap<TabId, ui::widget::TabHolder>,
+    /// The windows waiting for the person ([`DesktopHandle::ask_attention`]),
+    /// until each has their focus.
+    asking: std::collections::BTreeSet<TabId>,
     /// Its person opens windows and tabs here ([`DesktopHandle::set_opens`]):
     /// the windows offer a new tab.
     opens: bool,
@@ -174,6 +182,17 @@ struct Shared {
     /// What the host offers to do for the person, and what they chose.
     host_actions: Vec<search::HostAction>,
     host_choices: Vec<String>,
+    /// What the host adds to search and carries out of it
+    /// ([`DesktopHandle::set_search_host`]).
+    search_host: Option<std::rc::Rc<dyn search::SearchHost>>,
+    /// Rows chosen in search that the host carries out, in order.
+    search_choices: Vec<tilo_desktop_search::Target>,
+    /// What a caller of the published search asked of it, taken on the
+    /// next update pass.
+    search_asks: Vec<search::SearchAsk>,
+    /// The open search's query and rows, as last shown.
+    search_query: String,
+    search_rows: Vec<search::SearchRow>,
     /// The ask about the person themselves the bar shows from their avatar.
     personal_ask: Option<personal_ask::PersonalAsk>,
     personal_ask_revision: u64,
@@ -348,6 +367,25 @@ impl DesktopHandle {
         let changed = shared.opens != opens;
         shared.opens = opens;
         changed
+    }
+
+    /// Tab `tab`'s window is waiting for the person (refused the keyboard,
+    /// a dialog where they are not looking): its tab wears a dot until it
+    /// has their focus. False when the desktop holds no such tab or it is
+    /// the one they are looking at.
+    pub fn ask_attention(&self, tab: TabId) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let looking = navigation::active_route(&shared.tree).map(|route| route.tab);
+        if looking == Some(tab) || route_of(&shared.tree, tab).is_none() {
+            return false;
+        }
+        shared.asking.insert(tab)
+    }
+
+    /// Whether tab `tab`'s window is waiting for the person.
+    #[must_use]
+    pub fn asks_attention(&self, tab: TabId) -> bool {
+        self.shared.borrow().asking.contains(&tab)
     }
 
     pub fn set_holders(&self, holders: HashMap<TabId, ui::widget::TabHolder>) -> bool {
@@ -622,6 +660,9 @@ pub struct DesktopSurface {
     unrouted_control: Option<ui::tilo_actions::ControlInvocation>,
     /// The pointer in logical coordinates, while search is open.
     search_pointer: Point,
+    /// The pointer in logical coordinates, as it last moved over the
+    /// surface.
+    pointer: Point,
     platform: ui::platform::PlatformConventions,
     /// The host's retained workspace history, when it keeps one.
     history: Option<Box<dyn HistorySource>>,
@@ -776,6 +817,7 @@ impl DesktopSurface {
         let shared = Rc::new(RefCell::new(Shared {
             tree,
             holders: HashMap::new(),
+            asking: std::collections::BTreeSet::new(),
             opens: true,
             revision: 1,
             queue: Vec::new(),
@@ -792,6 +834,11 @@ impl DesktopSurface {
             search_open: false,
             host_actions: Vec::new(),
             host_choices: Vec::new(),
+            search_host: None,
+            search_choices: Vec::new(),
+            search_asks: Vec::new(),
+            search_query: String::new(),
+            search_rows: Vec::new(),
             personal_ask: None,
             personal_ask_revision: 0,
             arrivals: Vec::new(),
@@ -820,6 +867,7 @@ impl DesktopSurface {
             search_owners: HashMap::new(),
             unrouted_control: None,
             search_pointer: Point::ZERO,
+            pointer: Point::ZERO,
             platform: ui::platform::PlatformConventions::default(),
             history: None,
             activity_requests: None,
@@ -842,6 +890,14 @@ impl DesktopSurface {
     /// ([`DesktopHandle::set_holders`]). Whether that changed what one
     /// offers.
     fn apply_holders(&mut self) -> bool {
+        {
+            // The person is looking at the focused window, however they got
+            // there; a closed window waits for no one.
+            let mut shared = self.shared.borrow_mut();
+            let looking = navigation::active_route(&shared.tree).map(|route| route.tab);
+            let Shared { asking, tree, .. } = &mut *shared;
+            asking.retain(|tab| Some(*tab) != looking && route_of(tree, *tab).is_some());
+        }
         let shared = self.shared.borrow();
         let mut changed = false;
         for row in self.rows.values_mut() {
@@ -850,6 +906,7 @@ impl DesktopSurface {
                 changed |= group.set_new_tab(shared.opens);
                 for tab in tabs {
                     changed |= group.set_tab_holder(tab, shared.holders.get(&tab).cloned());
+                    changed |= group.set_tab_attention(tab, shared.asking.contains(&tab));
                 }
             }
         }
@@ -1722,6 +1779,7 @@ impl DesktopSurface {
     /// Accent the active group of the shown strip and lay out against the
     /// host's viewport.
     fn present(&mut self) {
+        self.lay_out_displays();
         let (route, width) = {
             let shared = self.shared.borrow();
             (
@@ -2572,12 +2630,21 @@ impl Widget for DesktopSurface {
             }
         }
         let child = children.first().copied();
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+        }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
         } = event
         {
+            if self
+                .shown_row_ref()
+                .is_none_or(|row| row.group_under_cursor().is_none())
+            {
+                self.focus_display_at(self.pointer);
+            }
             self.focus_clicked_group();
             self.reveal_on_release = self.shown.and_then(|strip| {
                 let group = self.rows.get(&strip)?.group_under_cursor()?;
@@ -2752,9 +2819,18 @@ impl Widget for DesktopSurface {
             .min()
     }
 
+    /// A queued command is work to draw: it asks for the frame that
+    /// applies it, rather than waiting for an unrelated one, so a host
+    /// that only draws what asks needs no separate schedule.
+    fn needs_redraw(&self) -> bool {
+        !self.shared.borrow().queue.is_empty()
+            || self.children().into_iter().any(Widget::needs_redraw)
+    }
+
     fn has_pending_visual_work(&self) -> bool {
         let shown = self.shown;
         self.unbuilt.iter().any(|&(strip, _)| Some(strip) == shown)
+            || !self.shared.borrow().queue.is_empty()
             || self
                 .children()
                 .into_iter()
@@ -2903,37 +2979,6 @@ impl DesktopSurface {
         }
         reports
     }
-}
-
-/// The in-memory desktop a host starts from when it has no stored one: one
-/// workspace, one strip, and a window group per tab in `tabs`.
-pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) -> DesktopTree {
-    let mut workspace = Workspace::new(WorkspaceId(minter.mint()), workspace_name);
-    let mut strip = tilo_desktop_model::Strip::new(StripId(minter.mint()), "Main");
-    strip.window_groups = tabs
-        .into_iter()
-        .map(|tab| tilo_desktop_model::WindowGroup {
-            id: minter.mint(),
-            active_tab: tab.id,
-            tabs: vec![tab],
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        })
-        .collect();
-    let first_group = strip.window_groups.first().map(|g| g.id);
-    let strip_id = strip.id;
-    workspace.strips = vec![strip];
-    let mut tree = DesktopTree {
-        active: workspace.id,
-        ..DesktopTree::default()
-    };
-    tree.active_strip.insert(workspace.id, strip_id);
-    if let Some(group) = first_group {
-        tree.set_active_group(strip_id, group);
-    }
-    tree.workspaces = vec![workspace];
-    tree
 }
 
 #[cfg(test)]

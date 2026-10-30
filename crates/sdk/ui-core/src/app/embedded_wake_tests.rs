@@ -211,7 +211,12 @@ fn a_wake_raised_during_the_model_pump_is_not_lost() {
             .woken
             .load(std::sync::atomic::Ordering::Acquire)
     );
+    assert!(
+        fixture.tile.app.wake_pending(),
+        "the wake raised during the pump stays pending: the pass it asks for only runs in a frame the host prepares"
+    );
     fixture.pump();
+    assert!(!fixture.tile.app.wake_pending(), "that pass retired it");
     assert_eq!(fixture.calls(), before + 2);
     fixture.settle();
     let settled = fixture.calls();

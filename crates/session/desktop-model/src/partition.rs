@@ -28,7 +28,7 @@ use tilo_sort::CompactSort as _;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{GroupId, StripId, WorkspaceId};
-use crate::layout::Strip;
+use crate::layout::{Strip, WindowGroup};
 use crate::serde_ids::deserialize_id_btree_map;
 use crate::workspace::Workspace;
 
@@ -182,6 +182,23 @@ impl OutputPartition {
             .map(|g| g.id)
             .filter(|g| self.display_of(*g) == Some(display))
             .collect()
+    }
+
+    /// `strip`'s groups in the order its row lays them out: display by
+    /// display in reading order, each display's in strip order. The strip's
+    /// own order on one display.
+    pub fn lane_order<'a>(&self, strip: &'a Strip) -> Vec<&'a WindowGroup> {
+        let mut groups: Vec<&WindowGroup> = strip.window_groups.iter().collect();
+        if self.displays.len() < 2 {
+            return groups;
+        }
+        let order = self.reading_order();
+        groups.compact_sort_by_key(|g| {
+            self.display_of(g.id)
+                .and_then(|d| order.iter().position(|id| *id == d))
+                .unwrap_or(0)
+        });
+        groups
     }
 
     /// Record that `group` on `strip` has keyboard focus: it becomes its
@@ -459,6 +476,20 @@ mod tests {
         assert_eq!(p.display_of(4), Some(1));
         assert!(p.origin.is_empty());
         assert_eq!(p.groups_on(&ws[0].strips[0], 1), vec![2, 4]);
+    }
+
+    #[test]
+    fn a_row_lays_its_groups_out_display_by_display_in_strip_order() {
+        let ws = workspace(&[1, 2, 3, 4]);
+        let strip = &ws[0].strips[0];
+        let mut p = OutputPartition::default();
+        let ids = |p: &OutputPartition| -> Vec<GroupId> {
+            p.lane_order(strip).into_iter().map(|g| g.id).collect()
+        };
+        assert_eq!(ids(&p), vec![1, 2, 3, 4], "one display: the strip's order");
+        p.reconcile(&ws, &docked());
+        home(&mut p, &[(1, 1), (2, 0), (3, 1), (4, 0)]);
+        assert_eq!(ids(&p), vec![2, 4, 1, 3]);
     }
 
     #[test]

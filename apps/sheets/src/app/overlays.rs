@@ -1,11 +1,10 @@
 //! Everything that floats over the sheet: the File, Format and More menus, the
-//! sheet-tab menu and its colour popover, the document-settings sheet and the
-//! command palette.
+//! sheet-tab menu and its colour popover and the document-settings sheet.
 //!
 //! Menus are the toolkit's `ContextMenu`, the tab colours a `Popover` holding a
 //! `ColorSwatchPicker`, the settings an immediate-mode modal sheet
-//! (`modal_dialog`) with chips and a segmented control inside, and the palette
-//! a `CommandPalette` over the modal scrim. All of them paint in the window's
+//! (`modal_dialog`) with chips and a segmented control inside. All of them
+//! paint in the window's
 //! top layer (`Widget::draw_overlay`), so they sit above the grid and the bars.
 
 use super::{
@@ -607,29 +606,5 @@ impl SheetsApp {
                 .draw_overlay(scene, transform, tr, theme, presence);
         }
         self.paint_settings_sheet(scene, transform, tr, theme);
-        // The command palette floats above everything else, over the scrim.
-        if self.palette.is_open() {
-            let (pw, ph) = self.palette.desired_size();
-            let gutter = f64::from(theme.tokens.spacing.s6);
-            let pw = pw.min((self.rect.width() - 2.0 * gutter).max(0.0));
-            let ph = ph.min((self.rect.height() - 2.0 * gutter).max(0.0));
-            let x0 = self.rect.center().x - pw / 2.0;
-            let y0 = (self.rect.y0 + (self.rect.height() * 0.12).max(gutter))
-                .min(self.rect.y1 - ph - gutter)
-                .max(self.rect.y0 + gutter);
-            let card = Rect::new(x0, y0, x0 + pw, y0 + ph);
-            ui::overlay::scrim::behind_panel(
-                scene,
-                transform,
-                self.rect,
-                vello::kurbo::RoundedRect::from_rect(
-                    card,
-                    ui::widget::floating_surface::radius(theme),
-                ),
-                theme,
-            );
-            self.palette.set_rect(card);
-            self.palette.draw(scene, transform, tr, theme, presence);
-        }
     }
 }

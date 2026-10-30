@@ -820,11 +820,12 @@ impl Ebook {
                 },
                 &["chapter"],
             )
-            // Going to and selecting a passage of this book, asking where.
+            // Going to and selecting a passage of this book, asking where;
+            // a chapter left out is the open one.
             .with_effect_asking(
                 &BooksEffect::SelectPassage {
                     book: book.clone(),
-                    chapter: Some(0),
+                    chapter: None,
                     start_block: 0,
                     start_char: None,
                     end_block: None,
@@ -841,7 +842,7 @@ impl Ebook {
             .with_effect_asking(
                 &BooksEffect::GoTo {
                     book: book.clone(),
-                    chapter: Some(0),
+                    chapter: None,
                     block: None,
                 },
                 &["chapter", "block"],

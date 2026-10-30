@@ -368,7 +368,7 @@ def audit(root: Path = REPO) -> list[Finding]:
 def main() -> int:
     findings = audit()
     for finding in findings:
-        # The finding on stdout, its why, fix and re-run under it on stderr (findings.py).
+        # The finding on stdout, its why, fix and re-run under it on stderr.
         headline, detail = str(finding).split("\n", 1)
         print(headline)
         print(detail, file=sys.stderr)

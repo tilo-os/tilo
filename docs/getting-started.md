@@ -1,9 +1,7 @@
 # Getting Tilo onto a computer
 
 Guided migration is still under development. USB-free Full Tilo installation and
-Connected folders are unavailable; see
-[migration feature status](migration-status.md) for implemented paths, platform
-limits, and remaining validation.
+Connected folders are unavailable.
 
 Tilo can be used in three ways. Pick the least invasive route that answers your
 question; a virtual machine is the right first stop for most people.
@@ -142,13 +140,10 @@ undo without asking you to configure collaboration first.
 Do not repeat a disk operation until you understand whether the destination was
 changed. Keep the installer transcript and exact error. The complete recovery,
 rollback, alongside-install, and first-boot acceptance steps are in
-[`docs/installer-walkthrough.md`](installer-walkthrough.md); developer and
-nested-session setup is in [the development book](development/run-desktop.md).
+[`docs/installer-walkthrough.md`](installer-walkthrough.md); developer setup is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Staying current, and development builds
 
 An installed device updates itself from the channel it follows: stable releases, or
 main's development builds on a device installed from a development image.
-[Development devices](development/devices.md) explains both channels, how to choose
-one in **Settings → Updates**, and how a developer puts their own build on one of
-their devices.
+**Settings → Updates** chooses the channel.

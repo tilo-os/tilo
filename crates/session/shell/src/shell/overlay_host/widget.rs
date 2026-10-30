@@ -319,6 +319,10 @@ impl Widget for ShellOverlayHost {
             let woken = launcher.take_woken();
             launcher.app.update(doc, path) | woken
         });
+        let shell_actions_dirty = self.chrome.clone().is_some_and(|chrome| {
+            crate::shell::actions::host::ShellActionsHost::keep(&mut self.shell_actions, &chrome)
+                .is_some_and(|host| host.pump(&chrome, doc, path))
+        });
         if search_rows_stale {
             // A worker published an index, or artwork arrived, after the
             // rows were built. Force one normal fanout this frame so the
@@ -351,8 +355,8 @@ impl Widget for ShellOverlayHost {
         self.harvest_pending_group_topology();
         self.harvest_pending_search_open();
         let tab_rename_dirty = self.harvest_tab_renames();
-        let hosted_windows_dirty = self.sync_hosted_windows();
-        let hosted_windows_dirty = self.sync_window_shares() | hosted_windows_dirty;
+        self.sync_window_toolbars();
+        let hosted_windows_dirty = self.sync_window_shares();
         let chips_dirty = self.sync_desktop_control_chips()
             | self.sync_dev_build_chips()
             | self.sync_window_share_controls();
@@ -384,17 +388,6 @@ impl Widget for ShellOverlayHost {
         // off-thread — without this the store never writes to disk.
         if let Some(chrome) = self.chrome.as_ref() {
             let state = chrome.borrow();
-            // Release native document launch data once its tab is gone —
-            // covers removals through workspace/peer reconciliation as well
-            // as the explicit close action. Looked for through the guard
-            // first, so a frame with nothing to release writes nothing.
-            let mut tree = state.tree_mut();
-            if state.hosted_inputs.documents_to_prune(&tree)
-                && state.hosted_inputs.prune_documents(&mut tree)
-            {
-                tree.queue_save();
-            }
-            drop(tree);
             let records = state.records().clone();
             drop(state);
             records.tick();
@@ -468,6 +461,7 @@ impl Widget for ShellOverlayHost {
             || pairing_dirty
             || close_dirty
             || palette_dirty
+            || shell_actions_dirty
             || switcher_dirty
             || notifications_dropped
             || launch_dirty

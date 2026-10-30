@@ -1,6 +1,6 @@
 //! This person's own devices as the network meets them: a device that
 //! proves a certificate the person's root signed is kept as theirs, and a
-//! revocation the root signed drops one (see `docs/device-mesh.md`).
+//! revocation the root signed drops one.
 
 use super::{ShellNetwork, personal_device_peer_path, personal_device_peers};
 

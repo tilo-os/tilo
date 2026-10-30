@@ -9,8 +9,8 @@ by tools/dev/install-git-hooks.py:
 
 Changes on one side only merge as usual. Where both sides changed the same lines, the result
 takes %A's lines: in a rebase that is main, the side being rebased onto. The file may then lack
-what the rebased commit needed, which its generator puts back: the checks that verify these
-files declare a `fix`, and the pre-push hook runs `t fix` when they fail (docs/t.md).
+what the rebased commit needed, which its generator puts back: the check that verifies the
+file fails until it is regenerated.
 A conflict outside a generated block is left for a person, as git leaves any conflict.
 """
 
@@ -128,7 +128,7 @@ def main(argv: list[str]) -> int:
         print(f"merge-generated: {path}: {left} conflict(s) outside its generated parts", file=sys.stderr)
         return 1
     print(f"merge-generated: {path}: took main's side where both sides changed it; "
-          "the push gate regenerates it (t fix)", file=sys.stderr)
+          "regenerate it with its generator", file=sys.stderr)
     return 0
 
 

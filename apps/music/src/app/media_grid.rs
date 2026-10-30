@@ -10,7 +10,7 @@
 use std::rc::Rc;
 
 use super::Action;
-use super::page_part::{Asked, Placed, asking, bound};
+use super::page_part::{Asked, Placed, asking, binding, bound};
 use crate::model::Library;
 use ui::framework::Actions;
 use ui::icons::Icon;
@@ -139,8 +139,13 @@ impl MediaGridHost {
             (None, None) => MediaSource::Placeholder,
         };
         let built = MediaCard::new(format!("music.card.{}", card.art_id), source).title(card.title);
-        let mut built = bound(actions, built, &card.action)
-            .unwrap_or_else(|built| built.on_activate(asking(&self.asked, card.action)));
+        let mut built = bound(actions, built, &card.action).unwrap_or_else(|built| {
+            if card.action.only_shows() {
+                built.on_view(asking(&self.asked, card.action))
+            } else {
+                built.on_effect(asking(&self.asked, card.action))
+            }
+        });
         if card.portrait {
             built = built.aspect(MediaAspect::Circle);
         }
@@ -148,15 +153,37 @@ impl MediaGridHost {
             built = built.meta(line);
         }
         if let Some(menu) = card.menu {
-            built = built.hover_action(
+            built = self.hover(
+                built,
                 Icon::MoreHorizontal,
                 crate::i18n::t("music-spotify-playlist-actions"),
-                asking(&self.asked, menu),
+                menu,
+                actions,
             );
         } else if let Some(play) = card.play {
-            built = built.hover_action(Icon::Play, "Play", asking(&self.asked, play));
+            built = self.hover(built, Icon::Play, "Play", play, actions);
         }
         built
+    }
+
+    /// A card's hover action: the published effect where it has one, else
+    /// published as the card's own view action or effect.
+    fn hover(
+        &self,
+        card: MediaCard,
+        icon: Icon,
+        label: impl Into<String>,
+        action: Action,
+        actions: Option<&Actions<Library>>,
+    ) -> MediaCard {
+        if let Some(binding) = binding(actions, &action) {
+            return card.hover_action_binding(icon, label, binding);
+        }
+        if action.only_shows() {
+            card.hover_action_view(icon, label, asking(&self.asked, action))
+        } else {
+            card.hover_action_effect(icon, label, asking(&self.asked, action))
+        }
     }
 
     /// Lay the grid out from `top` across `[left, right]` and paint the

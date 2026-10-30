@@ -1,9 +1,9 @@
 //! The workbook's own life: what the app is built from, the resource it attaches to and adopts, what it submits as the person edits, and the locale and currency a document is shown in.
 
 use super::{
-    Addr, Atom, Cell, CellFormat, ChromeMetrics, ColorSwatchPicker, CommandPalette, CommandSlot,
-    ContextMenu, Currency, DocSettings, Edits, EffectiveLocale, Grid, Id, Invoke, Locale, PathBuf,
-    Pending, PendingReveal, Point, Popover, PopoverSide, Rc, Rect, SettingsPanel, SheetsApp, Theme,
+    Addr, Atom, Cell, CellFormat, ChromeMetrics, ColorSwatchPicker, CommandSlot, ContextMenu,
+    Currency, DocSettings, Edits, EffectiveLocale, Grid, Id, Invoke, Locale, PathBuf, Pending,
+    PendingReveal, Point, Popover, PopoverSide, Rc, Rect, SettingsPanel, SheetsApp, Theme,
     Workbook, opaque_participant_id,
 };
 
@@ -78,13 +78,7 @@ impl SheetsApp {
             calc: crate::calc::WorkbookCalc::default(),
             pending_reveal: None,
             clipboard: None,
-            palette: {
-                // window-bar: picker, type-ahead in the Ctrl+K command palette
-                let mut palette = CommandPalette::commands();
-                // window-bar: picker, the command palette's own query
-                palette.set_query_placeholder("Search commands\u{2026}");
-                palette
-            },
+            search: ui::search::SearchOpener::new(),
             dispatch: None,
             people: None,
             opening: Rc::default(),

@@ -576,7 +576,7 @@ fn a_section_receives_same_position_motion_after_pointer_reentry() {
     let section = Section::new(vec![Box::new(Text::new("Details"))])
         .with_header(SectionHeader::group("Advanced options"))
         .collapsed()
-        .on_toggle(move |open| seen.set(Some(open)));
+        .on_expand(move |open| seen.set(Some(open)));
     let mut scroll = Scrollable::new_vertical()
         .with_height(150.0)
         .with_child(Box::new(section));
@@ -644,7 +644,7 @@ fn a_scrolled_disclosure_gets_motion_after_leaving_a_text_field() {
                         Section::new(vec![Box::new(Text::new("Details"))])
                             .with_header(SectionHeader::group("Advanced options"))
                             .collapsed()
-                            .on_toggle(move |open| seen.set(Some(open))),
+                            .on_expand(move |open| seen.set(Some(open))),
                     )),
             ));
         let theme = Theme::dark().with_text_scale(scale);

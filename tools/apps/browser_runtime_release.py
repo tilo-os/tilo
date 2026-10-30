@@ -92,10 +92,9 @@ def signal_mode(environment, head):
 
 
 def t_checkout():
-    """The commit t checked these sources out at, when they carry no Git repository.
+    """The commit these sources were checked out at, when they carry no Git repository.
 
-    t's steps get the exact sources of their run without Git; a trusted run names its commit in
-    T_COMMIT (tools/apps/t-engine-release.sh, which names none for a working tree's rehearsal).
+    A run without Git names its commit in T_COMMIT; a working tree's rehearsal names none.
     """
     commit = os.environ.get('T_COMMIT', '')
     if not (ROOT / '.git').exists() and re.fullmatch('[0-9a-f]{40}', commit):

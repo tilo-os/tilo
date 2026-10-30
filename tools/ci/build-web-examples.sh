@@ -6,8 +6,7 @@
 #
 #   tools/ci/build-web-examples.sh example-counter example-qr-code ...
 #
-# t.toml's `web-examples` check runs it with every example
-# (tools/ci/package_sets.py). The bundles build into one target directory, so the runtime and
+# Run it with every example (tools/ci/package_sets.py). The bundles build into one target directory, so the runtime and
 # the toolkit compile once, with the first example, and each later example
 # only links its own bundle. What follows the link (wasm-bindgen over a
 # development module of about 215 MB, then the page assets) takes 30-50 s on

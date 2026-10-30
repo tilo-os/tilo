@@ -7,8 +7,7 @@ CI has no KMS planes, so none of those lines can be produced there; the
 `drm.presentation-checks` record this script writes is the evidence, and it is produced
 only on a `tilo-vm` device slot whose output presents with page flips.
 
-The checks are the hardware list in docs/architecture/compositor.md,
-"Verifying on hardware":
+The checks:
 
 - `atomic-flips`: an output scanned out through atomic flips, never demoted;
 - `atomic-disabled`: the same session with `TILO_KMS_ATOMIC=0` demotes every

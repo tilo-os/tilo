@@ -37,7 +37,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::a11y::AccessNode;
 use crate::accesskit_bridge::{build_presentation_tree_bound, build_tree_update_bound};
-use crate::host_core::{ControlHost as _, HostCore as _};
+use crate::host_core::{ControlHost as _, HostCore as _, KeyHost as _};
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
@@ -1225,35 +1225,6 @@ impl FrameHarness {
         std::mem::take(&mut self.component_close_reports)
     }
 
-    /// Mirror the live host's focused-control fallback for Enter and Space.
-    /// Widgets that consume the press keep ownership; releases never activate.
-    fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
-        if *handled
-            || !matches!(
-                event,
-                WindowEvent::KeyboardInput {
-                    event: winit::event::KeyEvent {
-                        logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                    ..
-                }
-            )
-        {
-            return;
-        }
-        let Some(focused) = self.focused else {
-            return;
-        };
-        let activated = self
-            .perform_node_action(focused, &crate::a11y::Action::Activate)
-            .unwrap_or(false);
-        if activated {
-            *handled = true;
-        }
-    }
-
     /// Stand the app up and resolve its first observable layout.
     ///
     /// Responsive structure discovered from the viewport is settled
@@ -1353,14 +1324,7 @@ impl FrameHarness {
     pub fn validate_history_registration(
         &self,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        self.history
-            .as_ref()
-            .ok_or(crate::history_mode::HistoryRegistrationError::Missing)?
-            .validate()?;
-        self.history
-            .as_ref()
-            .ok_or(crate::history_mode::HistoryRegistrationError::Missing)?
-            .validate_root(self.root.as_ref())
+        self.tree().validate_history_registration()
     }
 
     /// Review pre-entry controls retained by the managed History surface.
@@ -1426,17 +1390,6 @@ impl FrameHarness {
         self.perform_palette_action(&target, &crate::a11y::Action::Activate)
             .ok()?;
         Some(address)
-    }
-
-    /// Cancel one exact retained control without dispatching it.
-    pub fn cancel_pending_history_control(
-        &mut self,
-        token: &crate::history_mode::pending_controls::ContinuationToken,
-    ) -> bool {
-        self.invalidate_local();
-        self.history
-            .as_mut()
-            .is_some_and(|history| history.cancel_pending_control(token))
     }
 
     /// Invalidate only the managed History surface. The mounted live owner
@@ -1886,47 +1839,65 @@ impl FrameHarness {
         &mut self.action_registry
     }
 
-    /// Undo through the component that owns the action decoders. The harness
-    /// registry is the fallback for a widget that registered actions on the
-    /// driver itself.
+    /// Undo or redo in `binding`'s document. A history holding a step that
+    /// queued an outside consequence is moved by the document's published
+    /// history action, as an agent or the palette invokes it, so its inverse
+    /// is a new admitted invocation; any other is moved in place.
     fn history_through_component(
-        root: &mut dyn crate::widget::Widget,
-        doc: &mut automerge::AutoCommit,
+        &mut self,
         binding: &crate::bound_dispatch::CallbackBinding,
         request: crate::undo::UndoRequest,
-        fallback: &tilo_actions::ActionRegistry,
     ) -> bool {
-        let mut acted = None;
-        let mut visit = |found: &crate::bound_dispatch::CallbackBinding,
-                         _: &mut dyn crate::widget::AppWidget,
-                         registry: &tilo_actions::ActionRegistry| {
-            if found.same_component(binding) {
-                acted = Some(
-                    found
-                        .history_request_with_registry(doc, request, Some(registry))
-                        .ok()
-                        .flatten()
-                        .is_some(),
-                );
-            }
-            None
+        match binding.history_uses_compensation(&mut self.state.doc) {
+            Ok(true) => self.invoke_bound_history(binding, request).is_ok(),
+            Ok(false) => binding
+                .history_request(&mut self.state.doc, request)
+                .ok()
+                .flatten()
+                .is_some(),
+            Err(_) => false,
+        }
+    }
+
+    /// Invoke the "undo" or "redo" action `binding`'s document publishes.
+    fn invoke_bound_history(
+        &mut self,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        request: crate::undo::UndoRequest,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let action = match request {
+            crate::undo::UndoRequest::Undo => "undo",
+            crate::undo::UndoRequest::Redo => "redo",
         };
-        let visited = root.visit_components(&mut crate::bound_dispatch::ComponentRequest {
-            target: Some(binding),
-            found: false,
-            visit: &mut visit,
-        });
-        if let Some(acted) = acted {
-            return acted;
+        let snapshots = crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            None,
+        )
+        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?;
+        let mut candidates = snapshots
+            .iter()
+            .filter(|snapshot| snapshot.binding.same_component(binding))
+            .flat_map(|snapshot| snapshot.resources().iter())
+            .filter(|resource| {
+                resource.actions.iter().any(|spec| {
+                    spec.id == action && spec.kind == tilo_actions::OperationKind::Document
+                })
+            });
+        let resource = candidates
+            .next()
+            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                code: "history_action_unavailable".into(),
+                reason: "the current document does not publish its history action".into(),
+            })?;
+        if candidates.next().is_some() {
+            return Err(tilo_actions::DoorError::Unavailable {
+                code: "history_action_ambiguous".into(),
+                reason: "the current document publishes more than one history target".into(),
+            });
         }
-        if visited.is_err() {
-            return false;
-        }
-        binding
-            .history_request_with_registry(doc, request, Some(fallback))
-            .ok()
-            .flatten()
-            .is_some()
+        let address = tilo_actions::ActionAddress::new(resource.id.as_str(), action);
+        self.invoke_address(&address, &serde_json::Map::new(), false)
     }
 
     /// Undo the last action, the way the live host does — through
@@ -1968,21 +1939,11 @@ impl FrameHarness {
             .and_then(|node| self.bindings.binding_for(node))
             .or_else(|| self.root.callback_binding())
         {
-            Self::history_through_component(
-                &mut *self.root,
-                &mut self.state.doc,
-                &binding,
-                request,
-                &self.action_registry,
-            )
+            self.history_through_component(&binding, request)
         } else {
             match request {
-                crate::undo::UndoRequest::Undo => {
-                    self.state.undo_as(Some(&author), None, None, None)
-                }
-                crate::undo::UndoRequest::Redo => {
-                    self.state.redo_as(Some(&author), None, None, None)
-                }
+                crate::undo::UndoRequest::Undo => self.state.undo_as(Some(&author), None, None),
+                crate::undo::UndoRequest::Redo => self.state.redo_as(Some(&author), None, None),
             }
             .is_some()
         };
@@ -2036,13 +1997,7 @@ impl FrameHarness {
         let mut acted = false;
         for (binding, req) in requests {
             acted |= if let Some(binding) = binding {
-                Self::history_through_component(
-                    &mut *self.root,
-                    &mut self.state.doc,
-                    &binding,
-                    req,
-                    &self.action_registry,
-                )
+                self.history_through_component(&binding, req)
             } else {
                 match req {
                     crate::undo::UndoRequest::Undo => self.perform_undo(),
@@ -3874,7 +3829,9 @@ impl FrameHarness {
                 self.root.as_ref(),
                 &self.taffy,
             );
-            let (allowed, _) = self.history_app_focus_order(self.child_node, &restrictions);
+            let (allowed, _) = self
+                .tree()
+                .layout_map_focus_order(self.child_node, &restrictions);
             // SAFETY: this final layout owns the freshly admitted tree.
             self.focused = unsafe { saved.restore(&self.node_map, &self.bindings, Some(&allowed)) };
         }
@@ -4365,45 +4322,11 @@ impl FrameHarness {
             .as_deref()
             .is_some_and(|palette| palette.is_presented())
         {
-            return self
-                .node_map
-                .keys()
-                .copied()
-                .filter(|&node| {
-                    self.inspect_node(node, |widget| widget.test_id() == Some("action-palette"))
-                        .unwrap_or(false)
-                })
-                .collect();
+            return self.tree().action_palette_node().into_iter().collect();
         }
-        let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
-            self.root.as_ref(),
-            &self.taffy,
-        );
-        // The laid out tree, as the live App walks it.
-        let root = self
-            .history
-            .as_ref()
-            .and_then(|history| history.review_layout_node())
-            .unwrap_or(self.child_node);
-        self.history_app_focus_order(root, &restrictions).0
-    }
-
-    /// Where Tab and directional focus travel: [`Self::focus_order`], kept
-    /// inside the keyboard scope (the focused desktop window's content,
-    /// [`crate::widget::Widget::scopes_keyboard_focus`]) unless a trap or the
-    /// action palette owns the keyboard.
-    fn keyboard_travel_order(&self) -> Vec<NodeId> {
-        let order = self.focus_order();
-        if self
-            .action_palette
-            .as_deref()
-            .is_some_and(|palette| palette.is_presented())
-            || self.focus_trap_active
-            || self.focus_trap_possible()
-        {
-            return order;
-        }
-        self.tree().within_keyboard_scope(order)
+        let tree = self.tree();
+        tree.focus_order_under(self.child_node, &tree.focus_restrictions())
+            .0
     }
 
     /// Whether embedded History and a History holding saved focus leave a
@@ -4422,34 +4345,6 @@ impl FrameHarness {
         move |node| {
             restrictions.allows(node) && saved.as_ref().is_none_or(|owned| owned.contains(&node))
         }
-    }
-
-    fn history_app_focus_order(
-        &self,
-        root: NodeId,
-        restrictions: &crate::history_mode::embedded::FocusRestrictions,
-    ) -> (Vec<NodeId>, bool) {
-        // One sweep asks every mapped node, entering each component's scope
-        // once rather than once a node.
-        let sweep = std::cell::RefCell::new(crate::bound_dispatch::NodeSweep::new(
-            &self.bindings,
-            &self.node_map,
-        ));
-        crate::focus_navigation::layout_map_order(
-            root,
-            &self.taffy,
-            restrictions,
-            self.history.as_deref(),
-            |node| {
-                // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
-                unsafe {
-                    sweep
-                        .borrow_mut()
-                        .inspect(node, crate::focus_navigation::probe)
-                }
-                .ok()
-            },
-        )
     }
 
     /// Whether the walk in [`Self::update_focus_trap`] could find a trap: History
@@ -4497,12 +4392,9 @@ impl FrameHarness {
             self.root.as_ref(),
             &self.taffy,
         );
-        let root = self
-            .history
-            .as_ref()
-            .and_then(|history| history.review_layout_node())
-            .unwrap_or(self.child_node);
-        let (mut order, trapped) = self.history_app_focus_order(root, &restrictions);
+        let (mut order, trapped) = self
+            .tree()
+            .focus_order_under(self.child_node, &restrictions);
         if !self.focus_trap_active && trapped {
             // Capture a stable semantic/owner identity, never carry a stale Taffy id
             // through the portable host's complete layout rebuilds.
@@ -4518,7 +4410,9 @@ impl FrameHarness {
             // Bound component delegates can be absent from Widget::children's
             // generic order. Eligibility comes from this newly admitted layout,
             // with the same embedded-history restrictions as mapped traversal.
-            let (allowed, _) = self.history_app_focus_order(self.child_node, &restrictions);
+            let (allowed, _) = self
+                .tree()
+                .layout_map_focus_order(self.child_node, &restrictions);
             let restored = self.focus_before_trap.take().and_then(|saved| unsafe {
                 saved.restore(&self.node_map, &self.bindings, Some(&allowed))
             });
@@ -4593,17 +4487,6 @@ impl FrameHarness {
                             .is_none_or(|access| !access.state.hidden && !access.state.disabled)
                 })
                 .unwrap_or(false)
-    }
-
-    fn app_default_focus(&self, order: &[NodeId]) -> Option<NodeId> {
-        order
-            .iter()
-            .copied()
-            .find(|&node| {
-                self.inspect_node(node, |widget| widget.is_default_keyboard_focus())
-                    .unwrap_or(false)
-            })
-            .or_else(|| order.first().copied())
     }
 
     fn blur_inactive_app_components(&mut self, active: crate::application::InstanceId) -> bool {
@@ -4741,7 +4624,7 @@ impl FrameHarness {
             .and_then(|saved| unsafe {
                 saved.restore(&self.node_map, &self.bindings, Some(&order))
             })
-            .or_else(|| self.app_default_focus(&order));
+            .or_else(|| self.tree().default_focus(&order));
         if target.is_none() {
             let focused: Vec<_> = self
                 .node_map
@@ -4868,74 +4751,11 @@ impl FrameHarness {
         {
             self.active_input_instance = Some(binding.instance_id);
         }
-        if unsafe {
-            crate::history_mode::embedded::move_focus(
-                self.root.as_mut(),
-                node,
-                self.focused,
-                &self.node_map,
-                &self.bindings,
-                &self.taffy,
-            )
-        } {
-            self.focused = None;
-        }
-        let resumed_live = self.history.as_ref().is_some_and(|history| {
-            !history.captures_input()
-                && history.has_saved_focus()
-                && node.is_some_and(|node| !history.owns_node(node, &self.taffy))
-        });
-        if resumed_live {
-            // Tabbing through unopened chrome is temporary suspension. Keep
-            // the chosen editor's current caret; do not restore old view state.
-            if let Some(history) = &mut self.history {
-                history.discard_saved_focus();
-            }
-            let outgoing: Vec<_> = self
-                .node_map
-                .keys()
-                .copied()
-                .filter(|candidate| {
-                    Some(*candidate) != node
-                        && self
-                            .inspect_node(*candidate, |widget| widget.is_focused())
-                            .unwrap_or(false)
-                })
-                .collect();
-            for outgoing in outgoing {
-                let _ = self.mutate_node(outgoing, |widget| widget.set_focus(false));
-            }
-        }
+        self.suspend_history_focus(node);
         if self.focused == node {
             return;
         }
-        if let Some(history) = &mut self.history
-            && node.is_some_and(|node| history.owns_node(node, &self.taffy))
-            && self
-                .focused
-                .is_some_and(|node| !history.owns_node(node, &self.taffy))
-        {
-            // Suspend the runner's live focus without synthesizing blur. The
-            // unfinished live editor and its IME/local state stay in place.
-            unsafe {
-                history.preserve_focus(self.focused, &self.node_map, &self.bindings, &self.taffy);
-            }
-            self.focused = None;
-        }
         self.root.focus_requested(node, &self.taffy);
-        if let Some(history) = &mut self.history
-            && node.is_some_and(|node| history.owns_node(node, &self.taffy))
-            && self
-                .focused
-                .is_some_and(|node| !history.owns_node(node, &self.taffy))
-        {
-            // Suspend the runner's live focus without synthesizing blur. The
-            // unfinished live editor and its IME/local state stay in place.
-            unsafe {
-                history.preserve_focus(self.focused, &self.node_map, &self.bindings, &self.taffy);
-            }
-            self.focused = None;
-        }
         if let Some(target) = node {
             // Root dispatch visits every live app. An exact owner must also
             // clear competing mount/restoration flags, or a preceding editor
@@ -4980,23 +4800,22 @@ impl FrameHarness {
     pub fn tab(&mut self, back: bool) -> Option<NodeId> {
         self.invalidate_local();
         self.pump_component_wakes();
-        let order = self.keyboard_travel_order();
-        if order.is_empty() {
+        if !self.focus_tab(back) {
             return None;
         }
-        let next = crate::focus_navigation::tab_index(&order, self.focused, back)?;
-        // `next` is constructed above from `0..order.len()` in every branch.
-        let target = *order.get(next)?;
-        let framework =
-            crate::history_mode::embedded::owns_node(self.root.as_ref(), target, &self.taffy)
-                || self
-                    .history
-                    .as_ref()
-                    .is_some_and(|history| history.owns_node(target, &self.taffy));
-        let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
-        self.set_focused(Some(target));
-        self.relayout();
+        let target = self.focused?;
+        self.relayout_after_focus_move();
         Some(target)
+    }
+
+    /// Lay out after keyboard focus moved, as framework input when History
+    /// holds the focused node.
+    fn relayout_after_focus_move(&mut self) {
+        let framework = self
+            .focused
+            .is_some_and(|node| self.tree().history_owns(node));
+        let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
+        self.relayout();
     }
 
     /// The accessibility node of every keyboard-focusable control, in focus
@@ -5162,12 +4981,7 @@ impl FrameHarness {
         {
             return self.perform_palette_action(target, action);
         }
-        let framework =
-            crate::history_mode::embedded::owns_node(self.root.as_ref(), taffy_id, &self.taffy)
-                || self
-                    .history
-                    .as_ref()
-                    .is_some_and(|history| history.owns_node(taffy_id, &self.taffy));
+        let framework = self.tree().history_owns(taffy_id);
         let _framework_frame = FrameworkInputFrame::new(
             &self.framework_input,
             framework || self.bindings.owns_document(taffy_id),
@@ -5194,24 +5008,7 @@ impl FrameHarness {
             )
         };
         let handled = self
-            .dispatch_semantic_node(taffy_id, |widget, doc, root| {
-                if let Some(target) = semantic_target.as_deref() {
-                    crate::a11y_child_route::perform(
-                        widget,
-                        target,
-                        action,
-                        &mut crate::widget::Edits::lend(doc),
-                        root,
-                    )
-                } else {
-                    widget.perform_action(
-                        action,
-                        &key_path,
-                        &mut crate::widget::Edits::lend(doc),
-                        root,
-                    )
-                }
-            })
+            .perform_exported_action(taffy_id, semantic_target.as_deref(), &key_path, action)
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
         // The action may have replaced widgets: the node acted on is looked
         // up again only in the newly admitted composition.
@@ -5264,20 +5061,11 @@ impl FrameHarness {
                 // centre. Widget-granular by nature — it cannot reach inside a
                 // canvas, which is why `perform_action` exists.
                 crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck => {
-                    let rect = (!ordinal_path.is_empty())
-                        .then(|| {
-                            self.inspect_node(taffy_id, |widget| {
-                                widget.synthetic_accessibility_rect(&ordinal_path)
-                            })
-                            .ok()
-                            .flatten()
-                        })
-                        .flatten()
-                        .unwrap_or_else(|| {
-                            self.inspect_node(taffy_id, |widget| widget.get_rect())
-                                .unwrap_or(Rect::ZERO)
-                        });
-                    let c = rect.center();
+                    let c = self.exported_press_point(
+                        taffy_id,
+                        semantic_target.as_deref(),
+                        &ordinal_path,
+                    );
                     self.click_at(c.x, c.y);
                 }
                 _ => return Err(format!("the current control did not handle {action:?}")),
@@ -5465,12 +5253,7 @@ impl FrameHarness {
             .get(name)
             .copied()
             .ok_or_else(|| format!("no addressable widget named {name:?}"))?;
-        if crate::history_mode::embedded::owns_node(self.root.as_ref(), node, &self.taffy)
-            || self
-                .history
-                .as_ref()
-                .is_some_and(|history| history.owns_node(node, &self.taffy))
-        {
+        if self.tree().history_owns(node) {
             let _framework_frame = FrameworkInputFrame::new(&self.framework_input, true);
             if matches!(action, SemanticAction::Focus | SemanticAction::Activate) {
                 self.set_focused(Some(node));
@@ -6148,12 +5931,8 @@ impl FrameHarness {
             let modal = self.root.modal_capture();
             let navigation =
                 crate::focus_navigation::keyboard_nav_allowed(modal, self.focus_trap_active);
-            if key.logical_key == Key::Named(winit::keyboard::NamedKey::Tab)
-                && navigation
-                && !self.focused_widget_wants_tab_input()
-                && self.tab(self.modifiers.state().shift_key()).is_some()
-            {
-                self.relayout();
+            if self.handle_tab_navigation(event, navigation) {
+                self.relayout_after_focus_move();
                 return;
             }
             if modal.is_none()
@@ -6357,24 +6136,9 @@ impl FrameHarness {
         });
         // A touch lands on what was on screen when it began: the switch to
         // touch waits for its gesture to land (`Self::settle_touch_modality`).
-        let detected = if self.dispatching_touch_pointer {
-            None
-        } else {
-            match event {
-                WindowEvent::CursorMoved { .. }
-                | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. } => Some(self.interaction.with_pointer_modality()),
-                WindowEvent::KeyboardInput {
-                    event:
-                        winit::event::KeyEvent {
-                            state: ElementState::Pressed,
-                            ..
-                        },
-                    ..
-                } => Some(self.interaction.with_keyboard_modality()),
-                _ => None,
-            }
-        };
+        let detected = self
+            .interaction
+            .detected_from(event, self.dispatching_touch_pointer);
         if let Some(environment) = detected {
             self.switch_interaction(environment);
         }
@@ -6457,40 +6221,6 @@ impl FrameHarness {
         if let Some(t) = focus_target {
             self.set_focused(Some(t));
         }
-        if host_navigation_allowed
-            && !handled
-            && !history_input
-            && self.modifiers.state().alt_key()
-            && let WindowEvent::KeyboardInput { event: key, .. } = event
-            && key.state == ElementState::Pressed
-            && let Key::Named(named) = key.logical_key
-            && let Some(direction) = crate::focus_navigation::Direction::from_key(named)
-        {
-            let order = self.keyboard_travel_order();
-            let next = match self.focused {
-                Some(current) => self
-                    .inspect_node(current, |widget| widget.get_rect())
-                    .ok()
-                    .and_then(|rect| {
-                        crate::focus_navigation::next(
-                            (current, rect),
-                            order.iter().filter_map(|&id| {
-                                self.inspect_node(id, |widget| widget.get_rect())
-                                    .ok()
-                                    .map(|rect| (id, rect))
-                            }),
-                            direction,
-                        )
-                    }),
-                None => order.first().copied(),
-            };
-            if let Some(next) = next {
-                self.set_focused(Some(next));
-            }
-            // Host directional navigation owns recognized Alt+Arrow input even
-            // when no focus target exists, matching the live App contract.
-            handled = true;
-        }
         // A view-only wheel the host's next frame takes dispatched nothing,
         // focused nothing and queued nothing (the contract of
         // `Widget::view_only_scroll`): its tick would find no bracket, no
@@ -6532,14 +6262,11 @@ impl FrameHarness {
             // frame's sync and publication read.
             self.invalidate_local();
         }
-        if !history_input
-            || self.focused.is_some_and(|node| {
-                crate::history_mode::embedded::owns_node(self.root.as_ref(), node, &self.taffy)
-                    || self
-                        .history
-                        .as_ref()
-                        .is_some_and(|history| history.owns_node(node, &self.taffy))
-            })
+        if !history_input {
+            self.handle_unconsumed_key(event, host_navigation_allowed, true, &mut handled);
+        } else if self
+            .focused
+            .is_some_and(|node| self.tree().history_owns(node))
         {
             self.handle_unconsumed_activation_key(event, &mut handled);
         }
@@ -8525,21 +8252,6 @@ impl FrameHarness {
         find::<T>(self.root.as_mut())
     }
 
-    /// Deliver an out-of-band payload the way the live host delivers a
-    /// [`crate::app::UserEvent::External`] — a worker's progress line, or a
-    /// wake-up for requests the app queued itself — then run the host tick.
-    pub fn deliver_external(&mut self, payload: &str) {
-        self.invalidate_local();
-        self.pump_component_wakes();
-        self.root.on_external_event(
-            payload,
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
-            &self.state.root,
-        );
-        self.host_tick();
-        self.relayout();
-    }
-
     fn invoke_address(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -8885,6 +8597,17 @@ impl crate::host_core::HostCore for FrameHarness {
         self.root.as_mut()
     }
 
+    fn focus_parts(&mut self) -> crate::host_core::HostFocus<'_> {
+        crate::host_core::HostFocus {
+            root: self.root.as_mut(),
+            history: self.history.as_mut(),
+            node_map: &self.node_map,
+            bindings: &self.bindings,
+            taffy: &self.taffy,
+            focused: &mut self.focused,
+        }
+    }
+
     fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
         self.history.as_mut()
     }
@@ -8903,6 +8626,72 @@ impl crate::host_core::HostCore for FrameHarness {
         prepared: crate::history_mode::pending_controls::PreparedContinuation,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         self.invoke_held_control(prepared)
+    }
+}
+
+impl crate::host_core::KeyHost for FrameHarness {
+    fn modifiers(&self) -> &winit::event::Modifiers {
+        &self.modifiers
+    }
+
+    fn platform(&self) -> crate::platform::PlatformConventions {
+        self.platform
+    }
+
+    /// Where Tab and directional focus travel: [`Self::focus_order`], kept
+    /// inside the keyboard scope (the focused desktop window's content,
+    /// [`crate::widget::Widget::scopes_keyboard_focus`]) unless a trap or the
+    /// action palette owns the keyboard.
+    fn keyboard_travel_order(&self) -> Vec<NodeId> {
+        let order = self.focus_order();
+        if self
+            .action_palette
+            .as_deref()
+            .is_some_and(|palette| palette.is_presented())
+            || self.focus_trap_active
+            || self.focus_trap_possible()
+        {
+            return order;
+        }
+        self.tree().within_keyboard_scope(order)
+    }
+
+    fn move_focus(&mut self, node: Option<NodeId>) {
+        let framework = node.is_some_and(|node| self.tree().history_owns(node));
+        let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
+        self.set_focused(node);
+    }
+
+    /// The app's eligible controls, only the active component's when the
+    /// harness hosts several.
+    fn keyboard_entry_order(&self) -> Vec<NodeId> {
+        let instance = self.component_instance_id();
+        self.focus_order()
+            .into_iter()
+            .filter(|&node| {
+                self.app_focus_eligible(node)
+                    && instance.is_none_or(|instance| {
+                        self.bindings
+                            .binding_for(node)
+                            .is_some_and(|binding| binding.instance_id == instance)
+                    })
+            })
+            .collect()
+    }
+
+    fn key_fallback_acted(&mut self) {
+        self.invalidate_local();
+    }
+
+    fn root_event(&mut self) -> Option<crate::host_core::RootEvent<'_>> {
+        Some(crate::host_core::RootEvent {
+            root: self.root.as_mut(),
+            state: &mut self.state,
+            modifiers: &self.modifiers,
+            taffy: &self.taffy,
+            node: self.child_node,
+            scale_factor: self.input_scale,
+        })
     }
 }
 
@@ -8943,36 +8732,18 @@ impl crate::host_core::ControlHost for FrameHarness {
             .map(|resolved| resolved.confirmation_for_json(&intent.arguments))
     }
 
-    fn take_history_invocation(
+    fn run_local_history_address(
         &mut self,
-        intent: &tilo_actions::ControlInvocation,
-        owner: Option<crate::history_mode::HistoryOwner>,
-    ) -> bool {
-        if intent.address.resource != crate::history_mode::door::HISTORY_RESOURCE {
-            return false;
-        }
-        let embedded = owner.and_then(|owner| {
-            crate::history_mode::embedded::invoke_door(self.root.as_mut(), &owner, intent)
-        });
-        let result = embedded.unwrap_or_else(|| {
-            self.run_local_history_action(
-                &intent.address,
-                Some(&crate::host_core::json_argument(&intent.arguments)),
-            )
+        address: &tilo_actions::ActionAddress,
+        argument: &str,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.run_local_history_action(address, Some(argument))
+            .map(|()| {
+                crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )
+            })
             .map_err(tilo_actions::DoorError::Failed)
-        });
-        if let Err(error) = &result {
-            tracing::debug!(?error, "headless: History control refused");
-        }
-        let result = result.map(|()| {
-            crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-        });
-        crate::widget::controls::on_control_invocation_result(
-            self.root.as_mut(),
-            &intent.address,
-            &result,
-        );
-        true
     }
 
     /// The window's own component opens search here; one hosted inside the
@@ -12047,7 +11818,7 @@ mod tests {
         );
         let order = driver.focus_order();
         assert_eq!(order.len(), 2);
-        let target = driver.app_default_focus(&order);
+        let target = driver.tree().default_focus(&order);
         assert_eq!(target, order.get(1).copied());
         driver.set_focused(target);
         assert_eq!(activations.get(), 0);

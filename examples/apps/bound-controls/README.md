@@ -29,4 +29,4 @@ tilo-app run examples/apps/bound-controls
 tilo-app check examples/apps/bound-controls
 ```
 
-`tilo-app examples` lists every example, and `docs/examples.md` in the Tilo repository explains how examples differ from templates.
+`tilo-app examples` lists every example.

@@ -13,8 +13,8 @@ python3 tools/perf/tilolang_engines.py
 ```
 
 It builds `tilolang bench` (the `bench` example of `tilolang-tilo`) in release, without and with
-the `wasmtime` feature, and the image filter library (`t outputs bench-imagefilter` with t,
-`crates/platform/tilolang-tilo/bench/imagefilter/build.sh` without it). Then it runs the bench once
+the `wasmtime` feature, and the image filter library
+(`crates/platform/tilolang-tilo/bench/imagefilter/build.sh`). Then it runs the bench once
 per engine over every app in `apps/tl` at 1k and 10k items and prints one table of p50s.
 Options: `--engines wasmi,winch`, `--apps notes,todo`, `--sizes 1000`, `--samples 20`,
 `--records out.jsonl` (every record, as `tools/perf/record.py` JSON), and `--no-build` to rerun
@@ -109,8 +109,7 @@ cargo test --locked -p tilolang-runtime -p tilolang-tilo --features tilolang-til
     --config 'env.TILOLANG_ENGINE="winch"'
 ```
 
-t does not pass the shell's environment to tests; `--config env.…` gives it to them through
-cargo. A test fails if the engine running is not the one named.
+`--config env.…` gives the variable to the tests through cargo. A test fails if the engine running is not the one named.
 
 ## The seam
 

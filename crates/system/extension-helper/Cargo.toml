@@ -27,6 +27,8 @@ sha2.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 tilo-advisory-lock = { path = "../advisory-lock" }
+# Status and manifest files replaced atomically, durably and at their exact mode.
+tilo-files = { path = "../../platform/tilo-files" }
 # The one blocking HTTP client builder on Tilo's TLS provider and trust.
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 tilo-pycompat = { path = "../tilo-pycompat" }

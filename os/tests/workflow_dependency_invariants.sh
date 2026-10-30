@@ -4,7 +4,7 @@
 # immutable, SHA-256-pinned download.
 #
 # Each problem is a finding on stdout, `path: message` about the file that has to change, and
-# everything else goes to stderr (tools/policy/findings.py).
+# everything else goes to stderr.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

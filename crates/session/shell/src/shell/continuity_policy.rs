@@ -7,7 +7,7 @@
 
 use serde_json::{Map, Value};
 
-use super::device_fabric::PersonalFabricAction;
+use tilo_device_fabric::PersonalFabricAction;
 use tilo_lock::MutexRecover as _;
 
 pub use settings_store::continuity_privacy::ContinuityCapability;
@@ -142,7 +142,7 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::BluetoothHandoffCancel { .. }
             // A media handoff's local file travels on the transfer lane.
             | PersonalFabricAction::NearbyTransferOffer {
-                kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+                kind: tilo_nearby_service::TransferKind::MediaHandoff,
                 ..
             } => ContinuityCapability::Media,
             PersonalFabricAction::SetDisplayPlacement { .. }
@@ -568,7 +568,7 @@ mod tests {
             sent_us: 10,
         };
         let clock_report = PersonalFabricAction::FabricClockReport {
-            report: crate::shell::fabric_clock::ClockReport {
+            report: tilo_device_fabric::clock::ClockReport {
                 probe_nonce: [1; 16],
                 probe_sent_us: 10,
                 received_us: 20,
@@ -577,9 +577,9 @@ mod tests {
         };
         let health_probe = PersonalFabricAction::DeviceHealthProbe { nonce: [2; 16] };
         let health_report = PersonalFabricAction::DeviceHealthReport {
-            report: crate::shell::spatial_calibration::DeviceHealthReport {
+            report: tilo_device_fabric::spatial_calibration::DeviceHealthReport {
                 probe_nonce: [2; 16],
-                power: crate::shell::spatial_calibration::DevicePower::Battery(50),
+                power: tilo_device_fabric::spatial_calibration::DevicePower::Battery(50),
                 energy_saver: false,
             },
         };
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn the_transfer_lane_answers_to_the_switch_of_each_transfer_kind() {
-        use crate::shell::nearby_transfer::TransferKind;
+        use tilo_nearby_service::TransferKind;
 
         let offer = |kind| PersonalFabricAction::NearbyTransferOffer {
             transfer_id: [1; 16],

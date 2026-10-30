@@ -27,6 +27,8 @@ rustix = { workspace = true, features = ["fs", "std"] }
 # The disk's exclusive lock, as the partitioning tools take it.
 tilo-advisory-lock = { path = "../advisory-lock" }
 serde_json.workspace = true
+# Python's int(), str(), repr() and ==, as the reclaim decisions were defined.
+tilo-pycompat = { path = "../tilo-pycompat" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

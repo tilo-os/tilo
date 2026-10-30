@@ -7,8 +7,8 @@ import type {CertifiedActionsV1,PrivateInvocation} from './peer';
 /**
  * What a mount runs: the id of any application compiled into the runtime
  * (`so.tilo.word-processor`, `so.tilo.ebook`, …), or `desktop` for the
- * canonical desktop. A page URL selects it through the link grammar in
- * `docs/architecture/web-routing.md` (the `app/` entry is a single-app mount).
+ * canonical desktop. A page URL selects it through the link grammar (the
+ * `app/` entry is a single-app mount).
  */
 export type Application = 'desktop' | (string & {});
 export interface RuntimeStatus {

@@ -7,8 +7,7 @@ listed one is verified, refused, or accepted for a stated reason (the module
 docstring and lists of release_trust.py). Verified repositories need a
 transparency-logged signature, from the release key before the root ceremony
 and through an operational certificate to the release root after it; they also
-need the attachment lookup, and the t products that publish them must sign with
-a log entry, which is what makes oci-sign.sh add the certified signatures.
+need the attachment lookup.
 """
 import base64
 import hashlib
@@ -37,7 +36,6 @@ def load(name, path):
 
 hardware_profile = load('hardware_profile', REPO / 'os/dev/hardware_profile.py')
 release_trust = load('release_trust', REPO / 'tools/signing/release_trust.py')
-products = load('products', REPO / 'tools/ci/products.py')
 
 
 def shipped():
@@ -199,25 +197,6 @@ class ContainerSignaturePolicyTests(unittest.TestCase):
                         int(trust['TILO_RELEASE_OPERATIONAL_MAX_DAYS']))
         ceremony = (REPO / 'tools/signing/release-ca.sh').read_text(encoding='utf-8')
         self.assertIn('PURPOSES=(' + ' '.join(release_trust.PURPOSES) + ')', ceremony)
-
-    def test_every_signer_knows_the_verified_repositories(self):
-        lib = (REPO / 'tools/ci/publish/lib.sh').read_text(encoding='utf-8')
-        listed = re.search(r'device_verified\(\) \{\n  case \$1 in\n    ([^)]*)\)', lib).group(1)
-        self.assertEqual({name.strip() for name in listed.split('|')},
-                         set(release_trust.SIGNED_REPOSITORIES))
-        self.assertEqual(products.DEVICE_VERIFIED, set(release_trust.SIGNED_REPOSITORIES))
-
-    def test_verified_repositories_publish_logged_signatures(self):
-        # A product publishing to a repository installed systems verify must
-        # sign with a transparency-log entry: that is when oci-sign.sh adds the
-        # certified signatures the chain-mode policy requires.
-        published = [product for product in products.load().get('product', [])
-                     if product.get('repository') in release_trust.SIGNED_REPOSITORIES]
-        self.assertTrue(published, 'no t product publishes a verified repository')
-        for product in published:
-            with self.subTest(product=product['name']):
-                self.assertTrue(product.get('release'), 'a verified repository is published signed')
-                self.assertTrue(product.get('tlog'), 'its signature must be logged')
 
     def test_default_update_origin_requires_a_signature(self):
         repository = re.split(r'[:@]', hardware_profile.DEFAULT_TARGET_IMGREF, maxsplit=1)[0]

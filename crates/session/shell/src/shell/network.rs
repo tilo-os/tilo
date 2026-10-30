@@ -154,25 +154,7 @@ const PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY: usize = 256;
 /// producer is faster than the runtime can consume media frames.
 const PERSONAL_FABRIC_DATA_QUEUE_CAPACITY: usize = 192;
 
-/// Why a personal fabric action did not reach the transport.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PersonalFabricSendError {
-    /// The transport command queue is momentarily full. The action was not
-    /// sent, but the same call can succeed once the actor drains the queue.
-    Backpressure,
-    /// Identity, enrollment, wire validation or a closed transport refused
-    /// the action; retrying it unchanged cannot succeed.
-    Rejected(String),
-}
-
-impl std::fmt::Display for PersonalFabricSendError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Backpressure => formatter.write_str("personal fabric transport is busy"),
-            Self::Rejected(reason) => formatter.write_str(reason),
-        }
-    }
-}
+pub use tilo_device_fabric::link::PersonalFabricSendError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PersonalFabricQueueOutcome {
@@ -181,21 +163,19 @@ enum PersonalFabricQueueOutcome {
     Saturated,
 }
 
-fn is_personal_fabric_bulk_data(
-    action: &crate::shell::device_fabric::PersonalFabricAction,
-) -> bool {
+fn is_personal_fabric_bulk_data(action: &tilo_device_fabric::PersonalFabricAction) -> bool {
     matches!(
         action,
-        crate::shell::device_fabric::PersonalFabricAction::RemoteAudioFrame { .. }
-            | crate::shell::device_fabric::PersonalFabricAction::RemoteCaptureChunk { .. }
+        tilo_device_fabric::PersonalFabricAction::RemoteAudioFrame { .. }
+            | tilo_device_fabric::PersonalFabricAction::RemoteCaptureChunk { .. }
     )
 }
 
 fn is_duplicate_personal_fabric_data(
-    queued: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
-    incoming: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    queued: &tilo_device_fabric::PersonalFabricActionEnvelope,
+    incoming: &tilo_device_fabric::PersonalFabricActionEnvelope,
 ) -> bool {
-    use crate::shell::device_fabric::PersonalFabricAction;
+    use tilo_device_fabric::PersonalFabricAction;
 
     if queued.source != incoming.source || queued.target != incoming.target {
         return false;
@@ -227,11 +207,11 @@ fn is_duplicate_personal_fabric_data(
 }
 
 trait PersonalFabricEnvelopeRef {
-    fn envelope(&self) -> &crate::shell::device_fabric::PersonalFabricActionEnvelope;
+    fn envelope(&self) -> &tilo_device_fabric::PersonalFabricActionEnvelope;
 }
 
-impl PersonalFabricEnvelopeRef for crate::shell::device_fabric::PersonalFabricActionEnvelope {
-    fn envelope(&self) -> &crate::shell::device_fabric::PersonalFabricActionEnvelope {
+impl PersonalFabricEnvelopeRef for tilo_device_fabric::PersonalFabricActionEnvelope {
+    fn envelope(&self) -> &tilo_device_fabric::PersonalFabricActionEnvelope {
         self
     }
 }
@@ -240,8 +220,8 @@ fn personal_fabric_terminal_matches_data(
     terminal: &impl PersonalFabricEnvelopeRef,
     queued: &impl PersonalFabricEnvelopeRef,
 ) -> bool {
-    use crate::shell::device_fabric::PersonalFabricAction;
-    use crate::shell::remote_capture::device::RemoteCaptureSignal;
+    use tilo_device_fabric::PersonalFabricAction;
+    use tilo_device_fabric::remote_capture::RemoteCaptureSignal;
 
     let terminal = terminal.envelope();
     let queued = queued.envelope();
@@ -409,36 +389,17 @@ impl AuthenticatedPersonalRoute {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ReceivedPersonalFabricAction {
-    pub(crate) envelope: crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    pub(crate) envelope: tilo_device_fabric::PersonalFabricActionEnvelope,
     pub(crate) route: AuthenticatedPersonalRoute,
     /// [`fabric_monotonic_us`] when the bytes came off the connection, before
     /// validation and queueing, so clock probes exclude local queueing time.
     pub(crate) received_monotonic_us: u64,
 }
 
-/// This device's `CLOCK_MONOTONIC` in microseconds: the clock the device
-/// fabric exchanges for peer clock estimation, and the one `PipeWire` schedules
-/// audio against.
-#[must_use]
-pub fn fabric_monotonic_us() -> u64 {
-    let mut time = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `time` is a valid, writable timespec for the duration of the
-    // call, and CLOCK_MONOTONIC is always available on Linux.
-    let status = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut time) };
-    if status != 0 {
-        return 0;
-    }
-    u64::try_from(time.tv_sec)
-        .unwrap_or_default()
-        .saturating_mul(1_000_000)
-        .saturating_add(u64::try_from(time.tv_nsec).unwrap_or_default() / 1_000)
-}
+pub use tilo_device_fabric::clock::fabric_monotonic_us;
 
 impl PersonalFabricEnvelopeRef for ReceivedPersonalFabricAction {
-    fn envelope(&self) -> &crate::shell::device_fabric::PersonalFabricActionEnvelope {
+    fn envelope(&self) -> &tilo_device_fabric::PersonalFabricActionEnvelope {
         &self.envelope
     }
 }
@@ -1046,12 +1007,12 @@ fn device_fabric_backup_path(path: &Path) -> PathBuf {
     path.with_extension("postcard.backup")
 }
 
-fn load_device_fabric(path: &Path) -> crate::shell::device_fabric::DeviceFabric {
+fn load_device_fabric(path: &Path) -> tilo_device_fabric::DeviceFabric {
     [path.to_path_buf(), device_fabric_backup_path(path)]
         .into_iter()
         .find_map(|candidate| {
             let bytes = std::fs::read(candidate).ok()?;
-            crate::shell::device_fabric::DeviceFabric::decode_checkpoint(&bytes).ok()
+            tilo_device_fabric::DeviceFabric::decode_checkpoint(&bytes).ok()
         })
         .unwrap_or_default()
 }
@@ -1065,7 +1026,7 @@ fn write_device_fabric_checkpoint(path: &Path, bytes: &[u8]) -> Result<(), Strin
     }
     let prior = std::fs::read(path)
         .ok()
-        .filter(|prior| crate::shell::device_fabric::DeviceFabric::decode_checkpoint(prior).is_ok())
+        .filter(|prior| tilo_device_fabric::DeviceFabric::decode_checkpoint(prior).is_ok())
         .unwrap_or_else(|| bytes.to_vec());
     let backup = device_fabric_backup_path(path);
     tilo_files::native::atomic::write_with_mode(&backup, &prior, 0o600)
@@ -1319,11 +1280,7 @@ pub struct ShellNetwork {
     held_personal_rooms_override: Option<crate::shell::personal_workspaces::HeldRooms>,
     /// Convergent same-person device state, persisted separately from app
     /// continuation so transport upgrades cannot regress existing handoff.
-    device_fabric: Mutex<crate::shell::device_fabric::DeviceFabric>,
-    /// How often [`Self::device_fabric`] cloned and [`Self::with_device_fabric`]
-    /// borrowed the fabric, so tests can hold per-frame paths to borrowing.
-    #[cfg(test)]
-    device_fabric_reads: DeviceFabricReads,
+    device_fabric: Mutex<tilo_device_fabric::DeviceFabric>,
     device_fabric_path: Option<PathBuf>,
     /// Validated, ephemeral exact-target actions awaiting the shell runtime.
     personal_fabric_actions: Mutex<VecDeque<ReceivedPersonalFabricAction>>,
@@ -2073,8 +2030,6 @@ impl ShellNetwork {
             #[cfg(test)]
             held_personal_rooms_override: None,
             device_fabric: Mutex::new(device_fabric),
-            #[cfg(test)]
-            device_fabric_reads: DeviceFabricReads::default(),
             device_fabric_path: Some(device_fabric_path),
             personal_fabric_actions: Mutex::new(VecDeque::new()),
             authenticated_personal_routes: Mutex::new(std::collections::HashMap::new()),
@@ -5046,13 +5001,9 @@ impl ShellNetwork {
     ///
     /// A deep clone, clipboard histories included: per-frame readers use
     /// [`Self::with_device_fabric`] or [`Self::online_device_ids`] instead.
-    pub fn device_fabric(&self) -> crate::shell::device_fabric::DeviceFabric {
-        #[cfg(test)]
-        self.device_fabric_reads
-            .cloned
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    pub fn device_fabric(&self) -> tilo_device_fabric::DeviceFabric {
         self.device_fabric.lock().map_or_else(
-            |_| crate::shell::device_fabric::DeviceFabric::default(),
+            |_| tilo_device_fabric::DeviceFabric::default(),
             |state| state.clone(),
         )
     }
@@ -5061,12 +5012,8 @@ impl ShellNetwork {
     /// lock is poisoned. `f` must not call back into the fabric.
     pub fn with_device_fabric<R>(
         &self,
-        f: impl FnOnce(&crate::shell::device_fabric::DeviceFabric) -> R,
+        f: impl FnOnce(&tilo_device_fabric::DeviceFabric) -> R,
     ) -> Option<R> {
-        #[cfg(test)]
-        self.device_fabric_reads
-            .borrowed
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.device_fabric.lock().ok().map(|state| f(&state))
     }
 
@@ -5081,16 +5028,6 @@ impl ShellNetwork {
                 .collect()
         })
         .unwrap_or_default()
-    }
-
-    /// `(clones, borrows)` of the device fabric so far.
-    #[cfg(test)]
-    pub(crate) fn device_fabric_reads(&self) -> (usize, usize) {
-        use std::sync::atomic::Ordering::Relaxed;
-        (
-            self.device_fabric_reads.cloned.load(Relaxed),
-            self.device_fabric_reads.borrowed.load(Relaxed),
-        )
     }
 
     /// Stop only the outgoing transfer stream bound to this exact certified
@@ -5174,7 +5111,7 @@ impl ShellNetwork {
     pub fn send_personal_fabric_action(
         &self,
         target: &tilo_network_actor::fabric::DeviceId,
-        action: crate::shell::device_fabric::PersonalFabricAction,
+        action: tilo_device_fabric::PersonalFabricAction,
     ) -> Result<[u8; 16], String> {
         self.try_send_personal_fabric_action(target, action)
             .map_err(|error| error.to_string())
@@ -5192,7 +5129,7 @@ impl ShellNetwork {
     pub fn try_send_personal_fabric_action(
         &self,
         target: &tilo_network_actor::fabric::DeviceId,
-        action: crate::shell::device_fabric::PersonalFabricAction,
+        action: tilo_device_fabric::PersonalFabricAction,
     ) -> Result<[u8; 16], PersonalFabricSendError> {
         let (request_id, command) = self
             .personal_fabric_command(target, action)
@@ -5209,7 +5146,7 @@ impl ShellNetwork {
     fn personal_fabric_command(
         &self,
         target: &tilo_network_actor::fabric::DeviceId,
-        action: crate::shell::device_fabric::PersonalFabricAction,
+        action: tilo_device_fabric::PersonalFabricAction,
     ) -> Result<([u8; 16], NetCmd), String> {
         let user_public_key = self
             .local_person
@@ -5236,7 +5173,7 @@ impl ShellNetwork {
         while request_id == [0; 16] {
             UnwrapErr(SysRng).fill_bytes(&mut request_id);
         }
-        let envelope = crate::shell::device_fabric::PersonalFabricActionEnvelope {
+        let envelope = tilo_device_fabric::PersonalFabricActionEnvelope {
             request_id,
             source,
             target: target.clone(),
@@ -5264,7 +5201,7 @@ impl ShellNetwork {
     pub(crate) fn send_personal_fabric_action_on_route(
         &self,
         route: &AuthenticatedPersonalRoute,
-        action: crate::shell::device_fabric::PersonalFabricAction,
+        action: tilo_device_fabric::PersonalFabricAction,
     ) -> Result<[u8; 16], String> {
         let routes = self
             .authenticated_personal_routes
@@ -5372,7 +5309,7 @@ impl ShellNetwork {
     fn persist_device_fabric(
         &self,
         path: &Path,
-        fabric: &crate::shell::device_fabric::DeviceFabric,
+        fabric: &tilo_device_fabric::DeviceFabric,
     ) -> Result<(), String> {
         let bytes = fabric
             .encode_checkpoint()
@@ -5389,7 +5326,7 @@ impl ShellNetwork {
     fn persist_display_observations(
         &self,
         path: &Path,
-        fabric: &crate::shell::device_fabric::DeviceFabric,
+        fabric: &tilo_device_fabric::DeviceFabric,
     ) -> Result<(), String> {
         if let Some(user) = self.local_person {
             let bytes = display_observations::encode(fabric, user)?;
@@ -5459,11 +5396,11 @@ impl ShellNetwork {
         owner: &tilo_network_actor::fabric::DeviceId,
         stamp: &tilo_network_actor::fabric::FabricStamp,
         outputs: Vec<tilo_network_actor::fabric::DisplayOutputObservation>,
-    ) -> Result<bool, crate::shell::device_fabric::FabricError> {
+    ) -> Result<bool, tilo_device_fabric::FabricError> {
         let mut fabric = self
             .device_fabric
             .lock()
-            .map_err(|_| crate::shell::device_fabric::FabricError::InvalidCheckpoint)?;
+            .map_err(|_| tilo_device_fabric::FabricError::InvalidCheckpoint)?;
         let changed = fabric.observe_display_outputs(owner, stamp, outputs)?;
         if changed
             && let Some(path) = self.device_fabric_path.as_deref()
@@ -5483,20 +5420,20 @@ impl ShellNetwork {
     /// Returns an error when the snapshot is invalid or names another device.
     pub fn upsert_local_device_fabric(
         &self,
-        snapshot: crate::shell::device_fabric::DeviceFabricSnapshot,
-    ) -> Result<bool, crate::shell::device_fabric::FabricError> {
+        snapshot: tilo_device_fabric::DeviceFabricSnapshot,
+    ) -> Result<bool, tilo_device_fabric::FabricError> {
         if self
             .local_device
             .as_ref()
             .is_none_or(|device| device != &snapshot.owner)
         {
-            return Err(crate::shell::device_fabric::FabricError::ForeignAuthorship);
+            return Err(tilo_device_fabric::FabricError::ForeignAuthorship);
         }
         let changed = {
             let mut fabric = self
                 .device_fabric
                 .lock()
-                .map_err(|_| crate::shell::device_fabric::FabricError::InvalidCheckpoint)?;
+                .map_err(|_| tilo_device_fabric::FabricError::InvalidCheckpoint)?;
             let changed = fabric.upsert(snapshot)?;
             if changed
                 && let Some(path) = self.device_fabric_path.as_deref()
@@ -5521,8 +5458,8 @@ impl ShellNetwork {
         &self,
         stamp: &tilo_network_actor::fabric::FabricStamp,
         outputs: Vec<tilo_network_actor::fabric::DisplayOutputObservation>,
-    ) -> Result<bool, crate::shell::device_fabric::FabricError> {
-        use crate::shell::device_fabric::FabricError;
+    ) -> Result<bool, tilo_device_fabric::FabricError> {
+        use tilo_device_fabric::FabricError;
         if !self
             .permits_continuity(crate::shell::continuity_policy::ContinuityCapability::DisplayInput)
             || self.local_device.as_ref() != Some(&stamp.device)
@@ -5619,7 +5556,7 @@ impl ShellNetwork {
     pub fn update_local_unlock_state(
         &self,
         update: impl FnOnce(
-            &mut crate::shell::device_unlock::UnlockFabricState,
+            &mut tilo_device_fabric::unlock::UnlockFabricState,
             &tilo_network_actor::fabric::FabricStamp,
         ),
     ) -> Result<(), String> {
@@ -5656,7 +5593,7 @@ impl ShellNetwork {
     fn modify_local_device_fabric(
         &self,
         edit: impl FnOnce(
-            &mut crate::shell::device_fabric::DeviceFabricSnapshot,
+            &mut tilo_device_fabric::DeviceFabricSnapshot,
             &tilo_network_actor::fabric::FabricStamp,
         ) -> Result<(), String>,
     ) -> Result<(), String> {
@@ -5665,9 +5602,10 @@ impl ShellNetwork {
             .clone()
             .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
         let changed = {
-            let mut fabric = self.device_fabric.lock().map_err(|_| {
-                crate::shell::device_fabric::FabricError::InvalidCheckpoint.to_string()
-            })?;
+            let mut fabric = self
+                .device_fabric
+                .lock()
+                .map_err(|_| tilo_device_fabric::FabricError::InvalidCheckpoint.to_string())?;
             let mut snapshot = fabric
                 .snapshots()
                 .get(&local)
@@ -5729,7 +5667,7 @@ impl ShellNetwork {
         }
         let recipients = self.certified_secret_recipients();
         self.modify_local_device_fabric(|snapshot, stamp| {
-            let credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+            let credential = tilo_device_fabric::secrets::seal_wifi_credential(
                 ssid,
                 security,
                 password,
@@ -5767,11 +5705,7 @@ impl ShellNetwork {
             .into_values()
             .filter(|credential| credential.ssid == ssid && credential.security == security)
             .find_map(|credential| {
-                crate::shell::device_fabric_secrets::open_wifi_credential(
-                    &credential,
-                    recipient_key,
-                )
-                .ok()
+                tilo_device_fabric::secrets::open_wifi_credential(&credential, recipient_key).ok()
             })
     }
 
@@ -5783,7 +5717,7 @@ impl ShellNetwork {
         requester: &tilo_network_actor::fabric::DeviceId,
         ssid: &str,
         password: &str,
-    ) -> Result<crate::shell::device_fabric::WifiCredential, String> {
+    ) -> Result<tilo_device_fabric::WifiCredential, String> {
         let author = self
             .local_device
             .clone()
@@ -5791,7 +5725,7 @@ impl ShellNetwork {
         if !self.certified_secret_recipients().contains(requester) {
             return Err("tethering requester is not an enrolled personal device".into());
         }
-        crate::shell::device_fabric_secrets::seal_wifi_credential(
+        tilo_device_fabric::secrets::seal_wifi_credential(
             ssid,
             os_actions::WifiSecurity::Wpa2,
             password,
@@ -5809,14 +5743,14 @@ impl ShellNetwork {
     /// `NetworkManager` call. The plaintext is never retained by `ShellNetwork`.
     pub(crate) fn open_tethering_credential(
         &self,
-        credential: &crate::shell::device_fabric::WifiCredential,
+        credential: &tilo_device_fabric::WifiCredential,
     ) -> Result<String, String> {
         let key = &self
             .host_identity
             .as_ref()
             .ok_or_else(|| "this device has no certified personal identity".to_string())?
             .device_signing_key;
-        crate::shell::device_fabric_secrets::open_wifi_credential(credential, key)
+        tilo_device_fabric::secrets::open_wifi_credential(credential, key)
             .map_err(|error| error.to_string())
     }
 
@@ -5843,16 +5777,14 @@ impl ShellNetwork {
             if !credential.security.supports_portable_passphrase() {
                 continue;
             }
-            let current =
-                crate::shell::device_fabric_secrets::wifi_envelope_recipients(&credential)
-                    .map_err(|error| error.to_string())?;
+            let current = tilo_device_fabric::secrets::wifi_envelope_recipients(&credential)
+                .map_err(|error| error.to_string())?;
             if current == *desired {
                 continue;
             }
-            let Ok(password) = crate::shell::device_fabric_secrets::open_wifi_credential(
-                &credential,
-                recipient_key,
-            ) else {
+            let Ok(password) =
+                tilo_device_fabric::secrets::open_wifi_credential(&credential, recipient_key)
+            else {
                 continue;
             };
             self.share_wifi_credential(&credential.ssid, credential.security, &password)?;
@@ -5916,7 +5848,7 @@ impl ShellNetwork {
             .snapshots()
             .get(local)
             .cloned()?;
-        let mut single = crate::shell::device_fabric::DeviceFabric::default();
+        let mut single = tilo_device_fabric::DeviceFabric::default();
         single.upsert(snapshot).ok()?;
         single.encode_checkpoint().ok()
     }
@@ -6707,8 +6639,7 @@ impl ShellNetwork {
         device_public_key: [u8; 32],
         bytes: &[u8],
     ) {
-        let Ok(incoming) = crate::shell::device_fabric::DeviceFabric::decode_checkpoint(bytes)
-        else {
+        let Ok(incoming) = tilo_device_fabric::DeviceFabric::decode_checkpoint(bytes) else {
             tracing::warn!(peer = %peer, "dropping invalid personal fabric checkpoint");
             return;
         };
@@ -6756,9 +6687,9 @@ impl ShellNetwork {
             tracing::warn!(peer = %peer, "dropping oversized personal fabric action");
             return;
         }
-        let Ok((envelope, trailing)) = postcard::take_from_bytes::<
-            crate::shell::device_fabric::PersonalFabricActionEnvelope,
-        >(bytes) else {
+        let Ok((envelope, trailing)) =
+            postcard::take_from_bytes::<tilo_device_fabric::PersonalFabricActionEnvelope>(bytes)
+        else {
             tracing::warn!(peer = %peer, "dropping invalid personal fabric action");
             return;
         };
@@ -7500,14 +7431,6 @@ fn load_identity_revocations(
     Ok(entries)
 }
 
-/// See [`ShellNetwork::device_fabric_reads`].
-#[cfg(test)]
-#[derive(Default)]
-struct DeviceFabricReads {
-    cloned: std::sync::atomic::AtomicUsize,
-    borrowed: std::sync::atomic::AtomicUsize,
-}
-
 impl Drop for ShellNetwork {
     fn drop(&mut self) {
         // `take` + explicit shutdown avoids the noisy "runtime dropped
@@ -7612,8 +7535,7 @@ pub(crate) fn shell_network_for_test(
                 .expect("test continuity policy object"),
             ),
         ),
-        device_fabric: Mutex::new(crate::shell::device_fabric::DeviceFabric::default()),
-        device_fabric_reads: DeviceFabricReads::default(),
+        device_fabric: Mutex::new(tilo_device_fabric::DeviceFabric::default()),
         device_fabric_path: None,
         personal_fabric_actions: Mutex::new(VecDeque::new()),
         authenticated_personal_routes: Mutex::new(std::collections::HashMap::new()),
@@ -7831,7 +7753,7 @@ mod tests {
         let request_id = net
             .send_personal_fabric_action(
                 &id,
-                crate::shell::device_fabric::PersonalFabricAction::MediaAccepted {
+                tilo_device_fabric::PersonalFabricAction::MediaAccepted {
                     request_id: [0x7; 16],
                     session_id: "player:one".into(),
                 },
@@ -7861,15 +7783,14 @@ mod tests {
         std::fs::rename(&staged, dir.join("personal-device-peers.json")).unwrap();
     }
 
-    fn remote_audio_frame() -> crate::shell::device_fabric::PersonalFabricAction {
-        crate::shell::device_fabric::PersonalFabricAction::RemoteAudioFrame {
+    fn remote_audio_frame() -> tilo_device_fabric::PersonalFabricAction {
+        tilo_device_fabric::PersonalFabricAction::RemoteAudioFrame {
             session_id: [0x5; 16],
             authorization: [0x6; 16],
             sequence: 1,
             media_ts: 48_000,
-            presentation_ns: 1_000_000_000
-                + crate::shell::device_fabric::REMOTE_AUDIO_GROUP_LATENCY_NS,
-            pcm_s16le: vec![0; crate::shell::device_fabric::MAX_REMOTE_AUDIO_FRAME_BYTES],
+            presentation_ns: 1_000_000_000 + tilo_device_fabric::REMOTE_AUDIO_GROUP_LATENCY_NS,
+            pcm_s16le: vec![0; tilo_device_fabric::MAX_REMOTE_AUDIO_FRAME_BYTES],
         }
     }
 
@@ -8578,7 +8499,7 @@ mod tests {
         let owner =
             tilo_network_actor::fabric::DeviceId::new(hex::encode(peer_device.public().as_bytes()))
                 .unwrap();
-        let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
+        let mut incoming = tilo_device_fabric::DeviceFabric::default();
         incoming.upsert(fabric_snapshot(owner.clone(), 8)).unwrap();
         let payload = PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap());
         crate::shell::durable_writer::global().flush();
@@ -8660,9 +8581,9 @@ mod tests {
         request_byte: u8,
         source: &tilo_network_actor::fabric::DeviceId,
         target: &tilo_network_actor::fabric::DeviceId,
-        action: crate::shell::device_fabric::PersonalFabricAction,
-    ) -> crate::shell::device_fabric::PersonalFabricActionEnvelope {
-        crate::shell::device_fabric::PersonalFabricActionEnvelope {
+        action: tilo_device_fabric::PersonalFabricAction,
+    ) -> tilo_device_fabric::PersonalFabricActionEnvelope {
+        tilo_device_fabric::PersonalFabricActionEnvelope {
             request_id: [request_byte; 16],
             source: source.clone(),
             target: target.clone(),
@@ -8671,7 +8592,7 @@ mod tests {
         }
     }
 
-    fn test_capture_grant(byte: u8) -> crate::shell::remote_capture::device::RemoteCaptureGrant {
+    fn test_capture_grant(byte: u8) -> tilo_device_fabric::remote_capture::RemoteCaptureGrant {
         postcard::from_bytes(&postcard::to_allocvec(&[byte; 32]).expect("serialize capture grant"))
             .expect("deserialize capture grant")
     }
@@ -8808,6 +8729,7 @@ mod tests {
                 app_id: "so.tilo.files".into(),
                 route: CrdtRoute::app("so.tilo.files", room.to_string()),
                 actions: vec![PublishedAction {
+                    state: tilo_actions::ActionState::default(),
                     semantic_identity: None,
                     resource: "files.entry:/tmp/report".into(),
                     action: "refresh".into(),
@@ -9579,22 +9501,19 @@ mod tests {
                 .next()
                 .expect("shared credential");
             assert_eq!(
-                crate::shell::device_fabric_secrets::wifi_envelope_recipients(&credential)
+                tilo_device_fabric::secrets::wifi_envelope_recipients(&credential)
                     .expect("recipient projection"),
                 std::collections::BTreeSet::from([local_device.clone(), remote_device]),
                 "relay routing identity must never become a secret recipient"
             );
             assert_eq!(
-                crate::shell::device_fabric_secrets::open_wifi_credential(&credential, &remote_key)
+                tilo_device_fabric::secrets::open_wifi_credential(&credential, &remote_key)
                     .expect("enrolled device decrypts"),
                 "correct horse"
             );
             assert!(
-                crate::shell::device_fabric_secrets::open_wifi_credential(
-                    &credential,
-                    &relay_signing_key
-                )
-                .is_err(),
+                tilo_device_fabric::secrets::open_wifi_credential(&credential, &relay_signing_key)
+                    .is_err(),
                 "the distinct relay service key must not decrypt personal secrets"
             );
 
@@ -9611,12 +9530,12 @@ mod tests {
                 .next()
                 .expect("rewrapped credential");
             assert_eq!(
-                crate::shell::device_fabric_secrets::wifi_envelope_recipients(&credential)
+                tilo_device_fabric::secrets::wifi_envelope_recipients(&credential)
                     .expect("recipient projection"),
                 std::collections::BTreeSet::from([local_device])
             );
             assert!(
-                crate::shell::device_fabric_secrets::open_wifi_credential(&credential, &remote_key)
+                tilo_device_fabric::secrets::open_wifi_credential(&credential, &remote_key)
                     .is_err(),
                 "removed devices must be excluded from the next envelope"
             );
@@ -9629,8 +9548,8 @@ mod tests {
     fn fabric_snapshot(
         owner: tilo_network_actor::fabric::DeviceId,
         counter: u64,
-    ) -> crate::shell::device_fabric::DeviceFabricSnapshot {
-        use crate::shell::device_fabric::{
+    ) -> tilo_device_fabric::DeviceFabricSnapshot {
+        use tilo_device_fabric::{
             DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
             FabricCapabilities, OwnerSession,
         };
@@ -9661,8 +9580,8 @@ mod tests {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
-            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
-            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
+            unlock: tilo_device_fabric::unlock::UnlockFabricState::default(),
+            speakers: tilo_device_fabric::speaker_group::SpeakerFabricState::default(),
         }
     }
 
@@ -9713,10 +9632,10 @@ mod tests {
     pub(super) fn rich_display_network_snapshot(
         owner: tilo_network_actor::fabric::DeviceId,
     ) -> (
-        crate::shell::device_fabric::DeviceFabricSnapshot,
+        tilo_device_fabric::DeviceFabricSnapshot,
         tilo_network_actor::fabric::DisplayOutputObservation,
     ) {
-        use crate::shell::device_fabric::DisplayPlacement;
+        use tilo_device_fabric::DisplayPlacement;
         use tilo_network_actor::fabric::DisplayConnectorPlacement;
         use tilo_network_actor::fabric::DisplayOutputObservation;
         use tilo_network_actor::fabric::DisplayRect;
@@ -9762,9 +9681,9 @@ mod tests {
 
     #[test]
     fn offline_display_cache_requires_root_enrolment_and_exact_revision() {
-        use crate::shell::device_fabric::DeviceFabric;
         use std::collections::BTreeSet;
         use std::os::unix::fs::PermissionsExt as _;
+        use tilo_device_fabric::DeviceFabric;
         use tilo_network_actor::fabric::DeviceId;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("facts.json");
@@ -9820,8 +9739,8 @@ mod tests {
 
     #[test]
     fn offline_display_cache_rejects_corruption_without_partial_projection() {
-        use crate::shell::device_fabric::DeviceFabric;
         use std::collections::BTreeSet;
+        use tilo_device_fabric::DeviceFabric;
         use tilo_network_actor::fabric::DeviceId;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("facts.json");
@@ -9883,7 +9802,7 @@ mod tests {
         let peer = iroh::SecretKey::from_bytes(&[0xE4; 32]);
         let (net, _commands) = personal_continuity_network_for_test(user);
         // A personal-device certificate from the person's root enrols its
-        // device by itself (docs/device-mesh.md); this peer proves one for
+        // device by itself; this peer proves one for
         // assigned workspaces only, so nothing but the display cache could.
         authenticated_workspace_peer(&net, &root, &peer);
         let owner =
@@ -10071,7 +9990,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("personal-device-fabric.postcard");
             let owner = tilo_network_actor::fabric::DeviceId::new("laptop").unwrap();
-            let mut expected = crate::shell::device_fabric::DeviceFabric::default();
+            let mut expected = tilo_device_fabric::DeviceFabric::default();
             expected.upsert(fabric_snapshot(owner, 7)).unwrap();
             let user = ed25519_dalek::SigningKey::from_bytes(&[0xE6; 32])
                 .verifying_key()
@@ -10094,7 +10013,7 @@ mod tests {
             ))
             .unwrap();
             let snapshot = fabric_snapshot(owner.clone(), 8);
-            let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
+            let mut incoming = tilo_device_fabric::DeviceFabric::default();
             incoming.upsert(snapshot).unwrap();
             net.dispatch_personal_fabric(
                 peer_device.public(),
@@ -10105,7 +10024,7 @@ mod tests {
             assert!(net.device_fabric().snapshots().contains_key(&owner));
 
             let forged = tilo_network_actor::fabric::DeviceId::new("some-other-device").unwrap();
-            let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
+            let mut incoming = tilo_device_fabric::DeviceFabric::default();
             incoming.upsert(fabric_snapshot(forged.clone(), 9)).unwrap();
             net.dispatch_personal_fabric(
                 peer_device.public(),
@@ -10132,12 +10051,12 @@ mod tests {
             let request_id = net
                 .send_personal_fabric_action(
                     &target,
-                    crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
+                    tilo_device_fabric::PersonalFabricAction::ResumeMedia {
                         session_id: "player:one".into(),
                         app_id: "so.tilo.music".into(),
                         workspace_id: "11111111-1111-1111-1111-111111111111".into(),
                         title: "Track".into(),
-                        locator: crate::shell::device_fabric::MediaSourceLocator::Workspace {
+                        locator: tilo_device_fabric::MediaSourceLocator::Workspace {
                             path: "Music/track.flac".into(),
                         },
                         position_ms: 12,
@@ -10175,12 +10094,12 @@ mod tests {
             ))
             .unwrap();
             let target = net.local_device.clone().unwrap();
-            let envelope = crate::shell::device_fabric::PersonalFabricActionEnvelope {
+            let envelope = tilo_device_fabric::PersonalFabricActionEnvelope {
                 request_id: [8; 16],
                 source,
                 target,
                 issued_unix_ms: unix_now_ms(),
-                action: crate::shell::device_fabric::PersonalFabricAction::MediaAccepted {
+                action: tilo_device_fabric::PersonalFabricAction::MediaAccepted {
                     request_id: [7; 16],
                     session_id: "player:one".into(),
                 },
@@ -10231,7 +10150,7 @@ mod tests {
                 0xD4,
                 &source,
                 &target,
-                crate::shell::device_fabric::PersonalFabricAction::MediaCancelled {
+                tilo_device_fabric::PersonalFabricAction::MediaCancelled {
                     request_id: [0xD5; 16],
                     session_id: "player:old".into(),
                 },
@@ -10308,13 +10227,13 @@ mod tests {
                 0xD8,
                 &peer_device,
                 net.local_device.as_ref().unwrap(),
-                crate::shell::device_fabric::PersonalFabricAction::MediaCancelled {
+                tilo_device_fabric::PersonalFabricAction::MediaCancelled {
                     request_id: [0xD9; 16],
                     session_id: "wire".into(),
                 },
             );
             let wire = postcard::to_allocvec(&envelope).unwrap();
-            let decoded: crate::shell::device_fabric::PersonalFabricActionEnvelope =
+            let decoded: tilo_device_fabric::PersonalFabricActionEnvelope =
                 postcard::from_bytes(&wire).unwrap();
             assert_eq!(decoded, envelope);
             assert!(!wire.windows(8).any(|window| window == 52_u64.to_le_bytes()));
@@ -10335,9 +10254,9 @@ mod tests {
     )]
     fn personal_fabric_saturation_reserves_control_and_purges_exact_streams() {
         fn personal_fabric_action_queue_reserves_control_during_media_saturation() {
-            use crate::shell::device_fabric::PersonalFabricAction;
-            use crate::shell::personal_tethering::{TETHERING_PROTOCOL_VERSION, TetheringSignal};
-            use crate::shell::remote_capture::device::{RemoteCaptureChunk, RemoteCaptureSignal};
+            use tilo_device_fabric::PersonalFabricAction;
+            use tilo_device_fabric::remote_capture::{RemoteCaptureChunk, RemoteCaptureSignal};
+            use tilo_device_fabric::tethering::{TETHERING_PROTOCOL_VERSION, TetheringSignal};
 
             let source = test_device(1);
             let target = test_device(2);
@@ -10508,8 +10427,8 @@ mod tests {
         }
 
         fn personal_fabric_terminal_purges_only_the_exact_peer_stream() {
-            use crate::shell::device_fabric::PersonalFabricAction;
-            use crate::shell::remote_capture::device::{RemoteCaptureChunk, RemoteCaptureSignal};
+            use tilo_device_fabric::PersonalFabricAction;
+            use tilo_device_fabric::remote_capture::{RemoteCaptureChunk, RemoteCaptureSignal};
 
             let source = test_device(21);
             let other_source = test_device(22);
@@ -10604,7 +10523,7 @@ mod tests {
         }
 
         fn personal_fabric_all_control_saturation_fails_closed() {
-            use crate::shell::device_fabric::PersonalFabricAction;
+            use tilo_device_fabric::PersonalFabricAction;
 
             let source = test_device(31);
             let target = test_device(32);

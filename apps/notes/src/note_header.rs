@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{Chip, Column, ReactionStripWidget, Row, Text, Widget};
+use ui::widget::{Chip, Column, ReactionStripWidget, ReactionToggle, Row, Text, Widget};
 
 use crate::effect::NotesEffect;
 use crate::main_panel::{BacklinkChip, NoteReactions, TagChip};
@@ -42,23 +42,15 @@ pub struct NoteHeader {
     shown_captions: Rc<RefCell<Vec<String>>>,
     column: Option<Column>,
     stale: bool,
-    /// What the chips invoke, once the notebook's window is attached.
+    /// What the chips and the reactions invoke, once the notebook's window
+    /// is attached.
     actions: Option<ui::framework::Actions<Notebook>>,
-    /// Where a reaction goes, once the notebook's window is attached.
-    notebook: Option<ui::framework::Dispatcher<Notebook>>,
 }
 
 impl NoteHeader {
     /// Bind the chips to the notebook window's effects from now on.
     pub fn attach(&mut self, actions: ui::framework::Actions<Notebook>) {
         self.actions = Some(actions);
-        self.stale = true;
-    }
-
-    /// Send the reactions' edits to the notebook window's dispatcher from
-    /// now on.
-    pub fn set_notebook(&mut self, notebook: ui::framework::Dispatcher<Notebook>) {
-        self.notebook = Some(notebook);
         self.stale = true;
     }
 
@@ -182,20 +174,25 @@ impl NoteHeader {
     /// person's reaction with its emoji, the add button opens the shared
     /// picker, and either is the notebook's field edit, as the person.
     fn reaction_strip(&self, reactions: &NoteReactions) -> ReactionStripWidget {
+        let page = crate::notebook::page_id(reactions.page);
+        let toggled = self.actions.as_ref().and_then(|actions| {
+            actions.edit_binding_with(
+                Notebook::paths().pages.item(&page).reactions,
+                |field, toggle: ReactionToggle| {
+                    Ok(if toggle.react {
+                        field.react(toggle.emoji)
+                    } else {
+                        field.unreact(toggle.emoji)
+                    })
+                },
+            )
+        });
         let mut strip = ReactionStripWidget::new(reactions.groups.clone(), reactions.me.clone())
             .with_id("notes.reactions")
-            .can_react(reactions.can_react && self.notebook.is_some())
+            .can_react(reactions.can_react && toggled.is_some())
             .with_names(|reactor| reactor.name.clone().unwrap_or_else(|| reactor.by.clone()));
-        if let Some(notebook) = self.notebook.clone() {
-            let page = crate::notebook::page_id(reactions.page);
-            strip = strip.on_toggle(move |toggle| {
-                let field = Notebook::paths().pages.item(&page).reactions;
-                notebook.submit(if toggle.react {
-                    field.react(toggle.emoji)
-                } else {
-                    field.unreact(toggle.emoji)
-                });
-            });
+        if let Some(binding) = toggled {
+            strip = strip.on_action(binding);
         }
         strip
     }

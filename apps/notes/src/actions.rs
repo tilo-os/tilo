@@ -566,7 +566,7 @@ mod tests {
             &mut doc,
             &automerge::ROOT,
             "pages",
-            &"not a collection of notes".to_owned(),
+            &ui::tilo_resource::Atom("not a collection of notes".into()),
         )
         .expect("the field is written");
         assert!(crate::read::validate(&doc).is_err());

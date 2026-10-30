@@ -1,4 +1,4 @@
-"""Contract of the checks on t's Mac (t.toml)."""
+"""Which apps the macOS builds select (tools/ci/macos_apps.py)."""
 
 from __future__ import annotations
 

@@ -58,7 +58,7 @@ use crate::transport::Envelope;
 /// as smoothly as the 30 Hz producers publish at. The relay forwards a pointer
 /// slot to each connection at most this often, a client writes one to a relay
 /// at most this often, so a move the relay would only coalesce away never
-/// costs a packet, and the shell broadcasts one to its direct (gossip)
+/// costs a packet, and the shell broadcasts one to its direct
 /// neighbours at most this often too ([`crate::pointer_pacing`]).
 pub const POINTER_GAP: std::time::Duration = std::time::Duration::from_millis(50);
 

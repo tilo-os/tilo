@@ -1,7 +1,7 @@
 use super::*;
 use crate::model::{AnnoKind, annotation_key};
 use crate::resource::{BooksEffect, Passage, mark_place_resource};
-use tilo_actions::{ActionRegistry, EncodedAction};
+use tilo_actions::{ActionRegistry, EncodedAction, ResourceSpec};
 use ui::tilo_resource::{Invoke, Replica, Resource as _};
 use uuid::Uuid;
 

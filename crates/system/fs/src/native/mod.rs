@@ -2,7 +2,7 @@
     clippy::missing_errors_doc,
     reason = "fallible functions return the I/O or record-plane error of the step that failed"
 )]
-//! The Tier 1 local data plane (`docs/architecture/storage.md` §6).
+//! The Tier 1 local data plane.
 //!
 //! On a machine with a dedicated Btrfs store volume and a kernel with
 //! pre-content fanotify events, the workspace is a real tree on the store

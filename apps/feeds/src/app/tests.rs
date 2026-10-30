@@ -266,9 +266,10 @@ fn an_open_article_offers_its_commands() {
 }
 
 /// New folder heads the sidebar's Feeds, where folders are made, not the
-/// window bar, and opens its dialog from there.
+/// window bar (its press opens the dialog through the published effect:
+/// `host_input::a_guests_new_folder_opens_its_dialog_unasked`).
 #[test]
-fn new_folder_heads_the_sidebars_feeds_and_opens_its_dialog() {
+fn new_folder_heads_the_sidebars_feeds() {
     let mut mounted = framed(FeedsApp::new_demo());
     Framed::harness_mut(&mut mounted).present_in_window_bar();
     settle(&mut mounted);
@@ -281,20 +282,11 @@ fn new_folder_heads_the_sidebars_feeds_and_opens_its_dialog() {
         names.iter().all(|name| *name != "New folder"),
         "New folder is the sidebar's, not the bar's: {names:?}"
     );
-    let new_folder = drawn
-        .iter()
-        .find(|c| c.name.as_deref() == Some("New folder Feeds"))
-        .expect("the sidebar's Feeds heading holds New folder")
-        .id
-        .clone();
-    Framed::harness_mut(&mut mounted)
-        .operate_control(&new_folder, &ui::headless::ControlInput::Press)
-        .expect("New folder takes a press");
-    settle(&mut mounted);
-    assert_eq!(
-        mounted.modal.as_ref().map(|m| m.intent.clone()),
-        Some(ModalIntent::AddFolder),
-        "the sidebar's New folder opens its dialog"
+    assert!(
+        drawn
+            .iter()
+            .any(|c| c.name.as_deref() == Some("New folder Feeds")),
+        "the sidebar's Feeds heading holds New folder"
     );
 }
 
@@ -671,14 +663,16 @@ fn reader_state_edits_persist_through_the_document() {
     let mut a = app();
     let mut doc = synced(&mut a);
     assert_eq!(a.core().settings.theme, ReadTheme::System);
-    for request in [
-        Request::SetFont(ReadFont::Sans),
-        Request::SetPaper(ReadTheme::Sepia),
+    a.core_mut()
+        .change_read_settings(|settings| {
+            settings.font = ReadFont::Sans;
+            settings.theme = ReadTheme::Sepia;
+        })
+        .unwrap();
+    a.core_mut().apply(
         Request::SetScale(120.0),
-    ] {
-        a.core_mut()
-            .apply(request, &mut ui::widget::Edits::lend(&mut doc));
-    }
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     let settings = a.read_settings_for_test();
     assert_eq!(settings.font, ReadFont::Sans);
     assert_eq!(settings.theme, ReadTheme::Sepia);
@@ -1191,9 +1185,9 @@ fn reading_settings_open_under_their_button() {
         "the text size field is a control"
     );
     let (a, st) = Framed::split(&mut mounted);
-    a.requests
-        .borrow_mut()
-        .push(Request::SetPaper(ReadTheme::Dark));
+    a.core_mut()
+        .change_read_settings(|settings| settings.theme = ReadTheme::Dark)
+        .unwrap();
     a.settle(&mut ui::widget::Edits::lend(&mut st.doc), &st.root);
     assert_eq!(a.core().settings.theme, ReadTheme::Dark);
     // Escape closes the panel.

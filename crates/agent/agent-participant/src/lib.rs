@@ -39,9 +39,6 @@
 //!   app's operations; the only state this crate holds is the task's own
 //!   working record and, in the host's state directory, the agents'
 //!   credentials and each room's content bytes ([`host`]).
-//!
-//! See `docs/architecture/browser-runtime.md`, "Agents", and
-//! `docs/architecture/agent-memory.md`.
 
 #![deny(rust_2018_idioms)]
 

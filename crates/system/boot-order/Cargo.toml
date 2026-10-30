@@ -17,6 +17,8 @@ path = "src/main.rs"
 [dependencies]
 # No-follow opens of EFI variables and the effective user, without FFI.
 rustix = { workspace = true, features = ["fs", "process", "std"] }
+# The command line as argparse read it.
+tilo-pycompat = { path = "../tilo-pycompat" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

@@ -831,6 +831,59 @@ impl TooltipHost {
         self.appear.pose(chip, anchor)
     }
 
+    /// Paint the shown tooltip into `scene`, read again from what the
+    /// widget under it offers now (`current`, with the side it prefers): a
+    /// control rebuilt since the pointer settled (a toggle that now reads
+    /// "Show") shows what it says now. The chip stays inside `viewport`
+    /// (logical). Returns the resolved text, the chip, every pixel it may
+    /// paint (shadow included) and whether it is on screen yet: an
+    /// arrival's first frame draws nothing.
+    pub(crate) fn paint_shown(
+        &mut self,
+        current: Option<(Rect, String, TooltipSide)>,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        scene: &mut Scene,
+        transform: Affine,
+        viewport: Rect,
+    ) -> Option<(String, Rect, Rect, bool)> {
+        let mut side = TooltipSide::Below;
+        if self.visible().is_some() {
+            if let Some((_, _, placed)) = &current {
+                side = *placed;
+            }
+            self.refresh(current.map(|(rect, label, _)| (rect, label)));
+        }
+        let (label, anchor) = self.visible()?;
+        let text = crate::i18n::I18nManager::lookup(label, None);
+        let chip = hover_chip_rect_on(text_renderer, theme, (anchor, side), &text, viewport);
+        // It arrives from its control (`motion::Appear`).
+        let pose = self.pose(chip, theme.motion());
+        let bounds = chip_paint_bounds(chip, theme);
+        pose.paint(scene, transform, bounds, |scene, transform| {
+            draw_chip(scene, transform, text_renderer, theme, chip, &text);
+        });
+        let shown = pose.is_visible();
+        Some((text, chip, bounds, shown))
+    }
+
+    /// Whether `event` hides the tooltip: the person acts (a press, a key,
+    /// a wheel, a touch) or the pointer or the keyboard leaves the surface.
+    pub(crate) fn dismissed_by(event: &winit::event::WindowEvent) -> bool {
+        use winit::event::{ElementState, WindowEvent};
+        matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Touch(_)
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::Focused(false)
+        )
+    }
+
     /// Whether the shown chip is still arriving (its host asks for frames).
     pub fn is_moving(&self) -> bool {
         self.appear.is_moving()

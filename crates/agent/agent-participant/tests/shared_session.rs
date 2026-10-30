@@ -972,11 +972,11 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         .retained(workspace())
         .await
         .unwrap();
-    let (readable, sealed) = common::retained_documents(
-        &host_device.cert.device_public_key,
+    let (readable, sealed) = common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
+        &host_key,
     );
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     assert!(sealed > 0);

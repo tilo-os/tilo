@@ -513,3 +513,68 @@ fn published_property_action_bounds_follow_the_painted_hit_target() {
         );
     }
 }
+
+#[test]
+fn a_bound_property_action_runs_the_apps_action_on_every_path() {
+    use crate::widget::controls::ActionControls;
+    let resource = tilo_actions::ResourceSpec::new("contact", "test", "Contact").with_action(
+        tilo_actions::ActionSpec::operation(
+            "edit",
+            "Edit",
+            tilo_actions::OperationKind::View,
+            "test.edit",
+            &(),
+        )
+        .unwrap(),
+    );
+    let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
+    let mut harness = FrameHarness::for_root(
+        crate::State::new(),
+        crate::widget::Uncustodied(
+            PropertyList::new(vec![
+                Property::new("Phone", "+31 20 123 4567")
+                    .copyable()
+                    .action_binding(Icon::Pencil, "Edit", binding),
+            ])
+            .with_id("facts"),
+        ),
+        (480, 240),
+        Theme::dark(),
+    );
+    let mut root = harness.root_mut::<crate::widget::Uncustodied<PropertyList>>();
+    let list = &mut root.0;
+    let bindings = list.control_action_bindings();
+    let bound = bindings
+        .iter()
+        .find(|binding| binding.control_id == "tilo.key-action:facts:0/1")
+        .expect("the bound action is the button's control");
+    assert!(matches!(
+        &bound.kind,
+        crate::widget::ControlBindingKind::Action(address) if address.action == "edit"
+    ));
+    assert!(list.has_action_control_bindings());
+    drop(root);
+    let (_, action) = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("Edit Phone"))
+        .expect("the bound action is published");
+    let bounds = action.bounds().expect("bounds");
+    let center = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1).center();
+    harness.click_at(center.x, center.y);
+    let mut root = harness.root_mut::<crate::widget::Uncustodied<PropertyList>>();
+    let list = &mut root.0;
+    let invocation = list.take_control_invocation().expect("the press runs the action");
+    assert_eq!(invocation.address.action, "edit");
+    assert!(list.take_control_invocation().is_none());
+
+    // Unavailable, the button is disabled and runs nothing.
+    list.refresh_control_action_availability(&std::collections::HashSet::new());
+    let disabled = Widget::accessibility(&*list)
+        .and_then(|node| node.children.first().cloned())
+        .and_then(|row| row.children.get(1).cloned())
+        .is_some_and(|button| button.state.disabled);
+    assert!(disabled, "an unavailable action is published disabled");
+    assert!(!list.run_action(0, 1));
+    assert!(list.take_control_invocation().is_none());
+}

@@ -543,14 +543,8 @@ a11y-placement-apply = Diese umkehrbare Bildschirmanordnung übernehmen
 a11y-placement-dismiss = Diesen Anordnungsvorschlag verwerfen
 a11y-placement-undo = Anordnung für { $display } rückgängig machen
 a11y-display-fallback = Bildschirm
-a11y-speaker-join = { $group } als { $role } beitreten
-a11y-speaker-join-description = { $leader } hat gefragt; du wirst einmal gefragt und kannst jederzeit austreten
-a11y-speaker-join-allow = Dieser Lautsprechergruppe beitreten
-a11y-speaker-join-decline = Diese Lautsprechergruppe ablehnen
 a11y-speaker-playing-on = Wiedergabe auf { $group }
 a11y-speaker-setup = Lautsprecher einrichten
-a11y-speaker-membership = { $role } in { $group }
-a11y-speaker-membership-description = Dieses Gerät spielt in dieser Lautsprechergruppe; aktivieren zum Austreten
 a11y-remote-audio-play-here = { $media } hier abspielen
 a11y-remote-audio-allow = Dieses entfernte Audio einmal erlauben
 a11y-remote-audio-decline = Dieses entfernte Audio ablehnen
@@ -673,9 +667,6 @@ qs-devices-place = { $display } { $side ->
     } anordnen
 qs-devices-place-note = Vorschlag aus den Sensoren dieses Geräts. Prüfe ihn vor dem Übernehmen.
 qs-devices-placement-undo-note = Genaue Anordnung von vor der Kalibrierung wiederherstellen
-qs-devices-speaker-join = { $group } als { $role } beitreten?
-qs-devices-speaker-join-note = { $leader } hat gefragt. Du kannst jederzeit austreten.
-qs-devices-speaker-join-note-output = { $leader } möchte auf { $output } abspielen. Du kannst jederzeit austreten.
 qs-devices-speaker-for = Spielt für { $peer }
 qs-devices-another-device = ein anderes Gerät
 qs-devices-speaker-connecting = { $playing } spielen, { $waiting } verbinden sich
@@ -689,11 +680,6 @@ qs-devices-speaker-clock-failed = { $count ->
        *[other] { $count } Lautsprecher können den Takt nicht halten: { $reason }
     }
 qs-devices-speaker-setup-note = Stereopaar oder Raumlautsprecher, in den Einstellungen
-qs-devices-speaker-membership-note = Eingerichtet auf { $leader }
-qs-devices-speaker-listen = { $leader } dieses Mikrofon für { $group } verwenden lassen?
-qs-devices-speaker-listen-note = Nur während der Kalibrierung. Die Aufnahme bleibt auf diesem Gerät.
-qs-devices-speaker-listen-note-microphone = Verwendet { $microphone } nur während der Kalibrierung. Die Aufnahme bleibt auf diesem Gerät.
-qs-devices-speaker-listener-note = Eingerichtet auf { $leader }
 qs-devices-another-certified = Ein anderes deiner Geräte
 qs-devices-requested-allow-once = { $source } hat das angefragt
 qs-devices-audio-app = Audio der fokussierten App
@@ -745,7 +731,6 @@ qs-devices-action-stop = Beenden
 qs-devices-action-cancel = Abbrechen
 qs-devices-action-retry = Erneut versuchen
 qs-devices-action-dismiss = Schließen
-qs-devices-action-leave = Austreten
 qs-devices-action-disconnect = Trennen
 qs-devices-tether-denied = Am Telefon abgelehnt
 qs-devices-tether-expired = Anfrage abgelaufen
@@ -963,6 +948,8 @@ window-share-failed = Fenster konnte nicht geteilt werden
 window-unshare-failed = Teilen des Fensters konnte nicht beendet werden
 window-share-end-failed = Ein geschlossenes Fenster wird noch geteilt
 shell-terminal-unavailable = Terminal: { $error }
+shell-action-not-offered = Hier nicht verfügbar
+shell-action-nothing-to-act-on = Gerade gibt es nichts, worauf das wirkt
 shell-app-unavailable = Anwendung nicht verfügbar
 shell-activity-title = Aktivität
 shell-activity-loading = Aktivität im Arbeitsbereich wird geladen …
@@ -1044,13 +1031,6 @@ portal-capture-primary-display = Hauptbildschirm
 portal-capture-system-audio = Systemaudio
 
 # Die Rolle eines Lautsprechers in einer Lautsprechergruppe, als $role eines Satzes („Wohnzimmer als rechter Lautsprecher beitreten“)
-speaker-role-left = linker Lautsprecher
-speaker-role-right = rechter Lautsprecher
-speaker-role-centre = Mittellautsprecher
-speaker-role-subwoofer = Subwoofer
-speaker-role-surround-left = linker Surround-Lautsprecher
-speaker-role-surround-right = rechter Surround-Lautsprecher
-speaker-role-room = Raumlautsprecher
 speaker-group-summary = { $total ->
     [one] { $ready } von 1 Lautsprecher bereit
    *[other] { $ready } von { $total } Lautsprechern bereit
@@ -1111,13 +1091,10 @@ search-scope-everywhere = Überall
 search-provider-now-playing = Aktuelle Wiedergabe
 search-provider-records = Einträge
 search-provider-app-content = Inhalte deiner Apps
-search-unlock-app = { $app } entsperren, um nach „{ $query }“ zu suchen
-search-unlock-app-detail = { $app } ist gesperrt
 search-provider-session = Sitzung
 search-provider-shortcuts = Kurzbefehle
 search-provider-tray = Statusbereich
 search-provider-files = Dateien
-search-kind-answers = Antworten
 search-kind-people = Personen
 
 # Suche, bevor etwas getippt ist: der Starter
@@ -1150,11 +1127,8 @@ search-launcher-outcome-join = Beitreten
 search-launcher-outcome-answer = Annehmen
 search-provider-quick-answers = Schnelle Antworten
 search-provider-people = Personen
-search-answer-sum = { $expression } =
 search-answer-copied = Kopiert
-search-answer-money-stale = { $amount } = · Kurse { $age }
 search-matches = Passt zu „{ $word }“
-search-answer-open-address = { $address } öffnen
 search-provider-ask-agent = Einen Agenten fragen
 search-kind-agent = Agent
 search-ask-agent = Einen Agenten fragen: { $query }
@@ -1171,11 +1145,6 @@ canvas-ask-stopped = Angehalten.
 search-ask-agent-no-model = Der Agent hat kein KI-Modell. Wähle eines in den Einstellungen.
 search-ask-agent-offline = Du bist offline, und das Modell des Agenten liegt im Internet.
 search-provider-web = Web
-search-kind-web = Web
-search-kind-websites = Websites
-search-web-for = Im Web nach { $query } suchen
-search-web-service-for = { $service } nach { $query } durchsuchen
-search-web-subtitle = Web
 search-answer-no-browser = Keine App auf diesem Desktop öffnet Webadressen.
 search-answer-bad-address = Diese Adresse lässt sich nicht öffnen.
 search-people-invited = Eingeladen
@@ -1600,20 +1569,10 @@ search-continuity-audio-decline = Live-Audio von { $device } ablehnen
 search-continuity-audio-consent-subtitle = Diese Anfrage zur Freigabe von entferntem Audio beantworten
 search-continuity-audio-stop = Weiterleitung von { $source } beenden
 search-continuity-audio-stop-subtitle = Diese Live-Audioverbindung schließen und zurücksetzen
-search-continuity-speaker-join = { $group } als { $role } beitreten
-search-continuity-speaker-decline = Beitritt zu { $group } als { $role } ablehnen
-search-continuity-speaker-consent-subtitle = { $device } hat dieses Gerät gebeten, in einer Lautsprechergruppe zu spielen
-search-continuity-speaker-leave = { $group } verlassen
-search-continuity-speaker-leave-subtitle = Nicht mehr als { $role } in dieser Lautsprechergruppe spielen
 search-continuity-speaker-play-subtitle = Über jeden bereiten Lautsprecher dieser Gruppe abspielen
 search-continuity-speaker-media-subtitle = Hier weiterspielen und den Ton an diese Lautsprechergruppe senden
 search-continuity-speaker-stop = Wiedergabe auf { $group } beenden
 search-continuity-speaker-stop-subtitle = Die Wiedergabe dieser Lautsprechergruppe auf allen Lautsprechern beenden
-search-continuity-speaker-listen-allow = { $group } mit diesem Mikrofon kalibrieren lassen
-search-continuity-speaker-listen-decline = { $group } dieses Mikrofon nicht verwenden lassen
-search-continuity-speaker-listen-subtitle = { $device } möchte beim Kalibrieren der Lautsprecher mit dem Mikrofon dieses Geräts hören
-search-continuity-speaker-listen-stop = { $group } dieses Mikrofon nicht mehr verwenden lassen
-search-continuity-speaker-listen-stop-subtitle = Die auf { $leader } eingerichtete Lautsprecherkalibrierung darf mit diesem Mikrofon hören
 search-continuity-place-left = { $device } links anordnen
 search-continuity-place-right = { $device } rechts anordnen
 search-continuity-place-above = { $device } oberhalb anordnen
@@ -1679,59 +1638,19 @@ search-continuity-call-consent-subtitle = Diese Freigabe zur Anrufübergabe bean
 # Identitätseinrichtung: Fortschrittsanzeige
 
 # Identitätseinrichtung: Fortsetzen nach einem Neustart
-onboarding-progress-unreadable = Die gespeicherte Einrichtungsposition konnte nicht gelesen werden ({ $error }). Deine Identität ist sicher; die Einrichtung wurde beim Abschlussschritt fortgesetzt.
-onboarding-progress-invalid-identity = Die Einrichtung hat unvollständigen Fortschritt gefunden, konnte die vorhandene Identität aber nicht prüfen: { $error }
-onboarding-progress-save-failed = Die Einrichtung konnte ihre Neustartposition nicht speichern: { $error }. Es wurde keine Identitätsaktion wiederholt.
-onboarding-progress-clear-failed = Die Einrichtung ist abgeschlossen, aber ihre Neustartmarkierung konnte nicht entfernt werden: { $error }. Wähle erneut „Fertigstellen“, damit dieser Bildschirm bei der nächsten Anmeldung nicht wieder erscheint.
 
 # Identitätseinrichtung: gemeinsame Schaltflächen
-onboarding-recovery-key-count = Ein Wiederherstellungsschlüssel hat 24 Wörter; dieser hat { $found }.
-onboarding-recovery-key-unknown-word = Wort { $position } ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
-onboarding-recovery-key-typo = Wort { $position }, „{ $word }“, ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
-onboarding-recovery-key-suggestion = Wort { $position }, „{ $word }“, ist kein Wort eines Wiederherstellungsschlüssels. Meintest du „{ $suggestion }“?
-onboarding-recovery-key-checksum = Diese Wörter ergeben keinen Wiederherstellungsschlüssel. Wahrscheinlich ist eines vertippt oder vertauscht.
 
 # Identitätseinrichtung: vorhandene Identität verbinden
-onboarding-connect-recovery-message = Deine vorhandene Identität konnte nicht geprüft werden. Entsperre den Schlüsselbund des Desktops und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her. Bis dahin bleibt deine Identität, wie sie ist.
-onboarding-connect-choose-file-first = Wähle zuerst eine verschlüsselte Sicherung oder eine ältere Identitätsdatei aus.
-onboarding-keyring-unavailable = Der Schlüsselbund des Desktops ist weiterhin nicht verfügbar. Entsperre ihn und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her: { $error }
 
-# Identitätseinrichtung: Koppeln mit einem Gerät in der Nähe
-onboarding-nearby-failed-title = Die Kopplung wurde nicht abgeschlossen
-onboarding-nearby-ended = Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Erneut versuchen“.
-onboarding-nearby-unknown = Wähle „Erneut versuchen“.
-onboarding-nearby-detail = Details: { $detail }
-onboarding-nearby-permission-title = Zugriff verweigert: Dieser Computer durfte die Kopplung nicht speichern
-onboarding-nearby-permission = Die Geräteidentität dieses Computers konnte nicht gespeichert werden. Wähle „Erneut versuchen“, sobald das behoben ist.
-onboarding-nearby-storage-full-title = Der Speicher dieses Computers ist voll
-onboarding-nearby-storage-full = Die Kopplung konnte nicht gespeichert werden. Gib etwas Speicherplatz frei und wähle dann „Erneut versuchen“.
-onboarding-nearby-read-only-title = Der Speicher dieses Computers ist schreibgeschützt
-onboarding-nearby-read-only = Die Kopplung konnte nicht gespeichert werden. Wähle „Erneut versuchen“, sobald der Speicher beschreibbar ist.
-onboarding-nearby-unreachable-title = Dein anderes Gerät war nicht erreichbar
-onboarding-nearby-unreachable = Prüfe, ob beide Geräte im selben Netzwerk sind, und wähle dann „Erneut versuchen“.
-onboarding-nearby-timed-out-title = Kein vertrauenswürdiges Gerät hat diesen Computer rechtzeitig freigegeben
-onboarding-nearby-timed-out = Wähle „Erneut versuchen“ und gib ihn dann auf deinem anderen Gerät frei.
-onboarding-nearby-invalid-identity-title = Dein anderes Gerät hat eine ungültige Identität geliefert
-onboarding-nearby-invalid-identity = Wähle „Erneut versuchen“.
-onboarding-nearby-not-started-title = Die Einrichtung über ein Gerät in der Nähe konnte nicht starten
-onboarding-nearby-not-started = Wähle „Erneut versuchen“.
-onboarding-nearby-unavailable = Die Einrichtung über ein Gerät in der Nähe ist in dieser Sitzung nicht verfügbar
-onboarding-nearby-cancelled = Kopplung abgebrochen. Wähle „Erneut versuchen“, um neu zu beginnen.
-onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automatisch.
 
 # Identitätseinrichtung: verschlüsselte Sicherung
-onboarding-passphrase-too-short = Verwende mindestens 12 Zeichen. Mach sie lang und einzigartig; Länge allein macht eine gängige Passphrase nicht sicher.
-onboarding-passphrase-mismatch = Die beiden Passphrasen stimmen nicht überein.
-onboarding-passphrase-unavailable = Die Passphrasefelder sind vorübergehend nicht verfügbar.
 
 # Identitätseinrichtung: Beispielzustände für die Vorschau
-onboarding-snapshot-restore-error = Diese Sicherung konnte nicht geöffnet werden. Prüfe Datei und Passphrase und versuche es dann erneut.
-onboarding-snapshot-create-error = Die Identität konnte nicht gespeichert werden. Es wurde nichts erstellt; prüfe den verfügbaren Speicherplatz und versuche es erneut.
 
 # Identitätseinrichtung: Identität bereit
 
 # Einrichtung: mehr Video- und Audioformate
-onboarding-codecs-installer-failed = Der Download konnte nicht gestartet werden: { $error }
 
 # Desktop-Tour
 
@@ -1887,9 +1806,6 @@ peer-window-install = { $app } installieren
 peer-window-installing = { $app } wird installiert …
 peer-window-unavailable = { $app } ist für dieses Gerät nicht verfügbar.
 hosted-window-running-on = Läuft auf { $device }
-shell-document-unavailable = Dokument nicht verfügbar
-shell-named-document-unavailable = { $name } nicht verfügbar
-shell-path-open-failed = { $path } kann nicht geöffnet werden: { $error }
 editor-disk-conflict = Die Datei wurde auf dem Datenträger geändert; ungespeicherte Änderungen bleiben für die Konfliktlösung erhalten
 editor-hint-disk-conflict = Datei auf dem Datenträger geändert. Ungespeicherte Änderungen bleiben erhalten.
 editor-hint-focused = Live geteilter Code  ·  Strg+Z zum Rückgängigmachen
@@ -2105,65 +2021,16 @@ foreign-app-wait = Warten
 foreign-app-close = App schließen
 
 # Warum eine Anfrage an eine Lautsprechergruppe fehlschlug, wie die Einstellungen es anzeigen
-speaker-error-too-many-groups = zu viele Lautsprechergruppen
-speaker-error-group-exists = diese Lautsprechergruppe gibt es bereits
-speaker-error-group-gone = diese Lautsprechergruppe gibt es nicht mehr
-speaker-error-not-in-group = dieser Lautsprecher gehört nicht zur Gruppe
-speaker-error-calibration-range = diese Kalibrierungswerte liegen außerhalb des zulässigen Bereichs
-speaker-error-request-expired = diese Anfrage für die Lautsprechergruppe ist abgelaufen
-speaker-error-group-changed = diese Lautsprechergruppe hat sich geändert; frag erneut von ihrem Gerät aus
-speaker-error-too-many-memberships = dieses Gerät ist bereits in zu vielen Lautsprechergruppen
-speaker-error-not-a-member = dieses Gerät gehört nicht zu dieser Lautsprechergruppe
-speaker-error-too-many-sessions = es sind zu viele Sitzungen von Lautsprechergruppen aktiv
-speaker-error-group-unavailable = diese Lautsprechergruppe ist nicht verfügbar
-speaker-error-none-ready = kein Lautsprecher in dieser Gruppe ist bereit
-speaker-error-session-gone = diese Sitzung der Lautsprechergruppe ist nicht mehr aktiv
-speaker-error-name = gib den Lautsprechern einen Namen mit höchstens 64 Zeichen
-speaker-error-roles = jeder Lautsprecher braucht einen eigenen Ausgang und eine eigene Rolle, und ein Stereopaar braucht beide Seiten
-speaker-error-unavailable = Lautsprechergruppen sind nicht verfügbar
 device-fabric-error-no-identity = dieses Gerät hat noch keine persönliche Identität
-speaker-error-speaker-unavailable = dieser Lautsprecher ist gerade nicht verfügbar
-speaker-error-output-disconnected = dieser Ausgang ist nicht mehr verbunden
-speaker-error-already-playing = ein Lautsprecher spielt bereits seinen Ton ab
-speaker-error-speaker-output-gone = der Ausgang dieses Lautsprechers ist nicht mehr verbunden
-speaker-error-play-failed = der Ton konnte nicht abgespielt werden: { $error }
-speaker-error-device-invalid = diese Geräte-ID ist ungültig
-speaker-error-output-invalid = dieser Ausgang ist ungültig
-speaker-error-group-invalid = diese Lautsprechergruppe ist ungültig
 speaker-error-media-off = Schalte „Medien“ unter „Geräte & Synchronisierung“ ein, um Lautsprecher auf deinen Geräten gemeinsam zu nutzen
-speaker-error-no-calibration = es gibt keine abgeschlossene Kalibrierung zum Anwenden
-speaker-error-no-applied-calibration = es gibt keine angewendete Kalibrierung zum Zurücksetzen
-speaker-error-calibration-unavailable = die Kalibrierung ist nicht verfügbar
-speaker-error-calibration-gone = diese Kalibrierung ist nicht mehr verfügbar
-speaker-error-network-unavailable = das Gerätenetz ist nicht verfügbar
-speaker-error-calibrate-on-leader = kalibriere diese Gruppe auf dem Gerät, das sie eingerichtet hat
-speaker-error-not-all-ready = alle Lautsprecher müssen vor dem Kalibrieren bereit sein
-speaker-error-request-failed = die Lautsprecheranfrage ist fehlgeschlagen
-speaker-error-app-stopped = diese Anwendung spielt nichts mehr ab
-speaker-error-audio-unavailable = der Ton für Lautsprechergruppen ist nicht verfügbar
-speaker-error-other-session = auf diesem Gerät spielt bereits eine andere Lautsprechergruppe
 
 # Lautsprecher für die Kalibrierung messen
-speaker-calibration-reason-microphone-gone = dieses Mikrofon ist nicht mehr verbunden
-speaker-calibration-reason-output-gone = der Ausgang dieses Lautsprechers ist nicht mehr verbunden
-speaker-calibration-reason-play-failed = das Messsignal konnte nicht abgespielt werden: { $error }
-speaker-calibration-reason-clock = die Uhr dieses Lautsprechers konnte nicht abgeglichen werden: { $reason }
 clock-sync-failure-media-disabled = die Medien-Übergabe ist auf diesem Gerät ausgeschaltet
 clock-sync-failure-no-reply = das andere Gerät hat auf den Uhrabgleich nicht geantwortet
 now-playing-speakers-playing = Spielt auf { $group }
 now-playing-speakers-connecting = { $group }: verbindet…
 now-playing-speakers-syncing = { $group }: Uhren werden abgeglichen…
 now-playing-speakers-clock-failed = { $group } kann nicht synchron spielen: { $reason }
-speaker-calibration-reason-not-heard = dort hob sich kein Messsignal vom Rauschen ab
-speaker-calibration-reason-not-allowed = dieses Gerät hat sein Mikrofon nicht freigegeben
-speaker-calibration-reason-out-of-window = die Anfrage kam zu spät auf diesem Gerät an
-speaker-calibration-reason-busy = dieses Mikrofon war mit einem anderen Messsignal beschäftigt
-speaker-calibration-reason-capture-failed = die Aufnahme ist fehlgeschlagen
-speaker-calibration-reason-clock-unknown = die Uhr dieses Geräts ist noch nicht synchronisiert
-speaker-calibration-reason-no-answer = dieses Gerät hat nicht rechtzeitig geantwortet
-speaker-calibration-reason-not-at-seat = kein Mikrofon hat ihn deutlich genug gehört
-speaker-calibration-failed = { $speaker } konnte nicht gemessen werden: { $reason }
-speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
 
 # Drahtlose Bildschirmprojektion
 
@@ -2227,16 +2094,6 @@ continuity-disabled-file-transfer = die Dateiübertragung ist auf diesem Gerät 
 continuity-disabled-realtime = die Übergabe von Echtzeitsitzungen ist auf diesem Gerät ausgeschaltet
 continuity-disabled-gamepad = die Controller-Weiterleitung ist auf diesem Gerät ausgeschaltet
 continuity-disabled-app-continuations = die App-Übergabe ist auf diesem Gerät ausgeschaltet
-remote-audio-all-system-audio = Gesamter Systemton
-remote-audio-error-target-not-output = das Ziel ist kein erreichbarer Audioausgang
-remote-audio-error-unavailable = die Audioübertragung ist nicht verfügbar
-remote-audio-error-too-many = es sind zu viele Audioübertragungen aktiv
-remote-audio-error-source-expired = diese Auswahl der Audioquelle ist abgelaufen
-remote-audio-error-request-expired = diese Anfrage für die Audioübertragung ist abgelaufen
-remote-audio-error-route-inactive = diese Audioübertragung ist nicht mehr aktiv
-remote-audio-speaker-group = Lautsprechergruppe
-remote-audio-error-no-output = es ist kein lokaler Audioausgang verfügbar
-remote-audio-error-stream-ended = der Audiostream dieser Anwendung wurde beendet
 remote-capture-error-unavailable = die entfernte Eingabe ist nicht verfügbar
 remote-capture-error-busy = die entfernte Eingabe ist ausgelastet
 remote-capture-error-capacity = es können keine weiteren Anfragen für entfernte Eingaben gestellt werden
@@ -2281,21 +2138,6 @@ catalogue-error-flathub-missing = Flathub ist auf diesem Gerät nicht eingericht
 catalogue-error-flathub-not-found = sie wurde installiert, kann aber nicht zum Öffnen gefunden werden
 
 # Warum das Senden an ein Gerät in der Nähe fehlschlug
-nearby-error-destination-not-folder = das Ziel für Nearby Send ist kein Ordner
-nearby-error-too-large = die Übertragung überschreitet die Größenbegrenzung
-nearby-error-destination-name = für das Ziel von Nearby Send ist kein Name verfügbar
-nearby-error-outside-grant = die Quelle für Nearby Send liegt außerhalb der Freigabe von Dateien
-nearby-error-one-item = Nearby Send braucht genau eine normale Datei oder einen Ordner
-nearby-error-queue-full = die Warteschlange für Übertragungen ist voll
-nearby-error-quota-full = der Speicherplatz für Übertragungen ist voll
-nearby-error-disk-full = nicht genug freier Speicherplatz für diese Übertragung
-nearby-error-too-many = zu viele Übertragungen
-nearby-error-not-regular = die Quelle ist keine normale Datei
-nearby-error-folder-too-many = der Ordner enthält zu viele Einträge
-nearby-error-folder-special = der Ordner enthält eine Verknüpfung oder Sonderdatei
-nearby-error-folder-too-large = der Ordner überschreitet die Größenbegrenzung
-nearby-error-source-changed = die Quelle hat sich während der Vorbereitung geändert
-nearby-error-name-not-portable = der Name der Quelle ist nicht übertragbar
 
 # AirDrop lab receiver verification
 airdrop-verify-title = AirDrop-Empfänger überprüfen
@@ -2313,7 +2155,6 @@ airdrop-error-verification = Fingerabdruck stimmt nicht überein. Keine Datei ge
 airdrop-error-fresh-consent = Einen neuen AirDrop-Versuch starten, um Empfänger und Datei erneut zu bestätigen.
 
 # Ein Dokument, das ein Tab nicht wiederherstellen konnte
-hosted-document-unavailable = { $path } ist nicht verfügbar: { $error }
 
 # Eine Kamera, ein Mikrofon oder ein Scanner, geteilt von einem deiner anderen Geräte
 remote-capture-source-label = { $app } auf einem anderen Gerät
@@ -2321,14 +2162,6 @@ remote-capture-source-label = { $app } auf einem anderen Gerät
 # Druckaufträge: der Titel in der Druckwarteschlange, wenn die App keinen angegeben hat
 print-untitled-document = Dokument
 
-a11y-speaker-listen = { $leader } dieses Mikrofon zum Kalibrieren von { $group } verwenden lassen
-a11y-speaker-listen-description = Es nimmt nur auf, während jeder Lautsprecher ein Messsignal spielt; die Aufnahme bleibt auf diesem Gerät, gesendet werden nur Laufzeit und Pegel
-a11y-speaker-listen-allow = Dieses Mikrofon erlauben
-a11y-speaker-listen-decline = Dieses Mikrofon nicht erlauben
-a11y-speaker-listener = { $group } kann mit diesem Mikrofon kalibrieren
-a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem Mikrofon hören; aktivieren, um das zu beenden
-speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
-speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann
 lock-screen-unlock = Sitzung entsperren
 
 search-provider-permission-prompts = Berechtigungsanfragen
@@ -2484,8 +2317,6 @@ activity-morning-source = { $source }, letzte Aktivität { $time } · möglicher
 activity-morning-open = Morgenquelle öffnen
 
 # Kanonische Zulassung von Einrichtungsaktionen; keine privaten Identitätsdaten.
-onboarding-semantic-unavailable = Diese Einrichtungsaktion ist in diesem Schritt nicht mehr verfügbar.
-onboarding-semantic-failed = Die Einrichtung konnte diese Aktion nicht abschließen. Der Desktop bleibt geschützt.
 activity-morning-payload-unavailable = Anbieter-Zusammenfassung nicht verfügbar. Quelle öffnen, um sie zu prüfen oder zu aktualisieren.
 
 activity-morning-refresh = Quelle aktualisieren
@@ -2512,12 +2343,6 @@ palette-open-containing-folder = Enthaltenden Ordner öffnen
 palette-copy-path = Pfad kopieren
 
 # Vorbereitete Einrichtung auf dem installierten System und Übernahme der Originaldateien.
-onboarding-prepared-other-person = Auf diesem Computer ist bereits die Identität einer anderen Person, deshalb wurde die vorbereitete Einrichtung nicht angetastet. Stelle die eigene Sicherung dieser Person wieder her oder verbinde stattdessen ihr Konto.
-onboarding-portable-home-unavailable = Deine Übertragung ist auf diesem Computer noch nicht verfügbar. Versuche es erneut oder mach weiter, ohne deine Dateien herüberzuholen.
-onboarding-migration-resume-unavailable = Für deine aktuelle Identität gibt es keine aufgeschobene Dateiübernahme.
-onboarding-portable-applications-unavailable = Deine Apps konnten nicht wiederhergestellt werden. Du kannst es erneut versuchen, ohne deine vorhandenen Dateien zu ersetzen.
-onboarding-browser-unavailable = Deine Browserdaten warten noch. Versuche es erneut oder mach vorerst weiter.
-onboarding-backup-unavailable = Auf diesem Gerät kann keine Sicherung deiner persönlichen Identität erstellt werden.
 
 # Warum die erste Kopie angehalten hat, mit ihrem Status gemeldet.
 onboarding-copy-cleanup-unavailable = Das Aufräumen temporärer Dateien ist nicht verfügbar.

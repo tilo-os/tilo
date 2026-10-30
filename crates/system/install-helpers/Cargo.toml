@@ -96,6 +96,8 @@ tempfile.workspace = true
 # The development code-refresh probe reads its boot-input fixture as a tar.
 tar.workspace = true
 tilo-pycompat = { path = "../tilo-pycompat" }
+# Receipts and handoffs replaced atomically, durably and at their exact mode.
+tilo-files = { path = "../../platform/tilo-files" }
 # The development target UKI: the in-place UKI editor, and the hardware
 # profile's pinned DTB as hardware_profile.py resolves it.
 tilo-esp-write = { path = "../esp-write" }

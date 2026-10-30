@@ -68,7 +68,7 @@ together. Set an orchestration timeout because an ephemeral registration which
 never receives a job does not expire on its own.
 
 Pull requests and unrelated `main` changes retain the affected-package tests
-and release invariants t runs on every push. Installer, profile-tool, workspace manifest,
+and release invariants `check.yml` runs on every push. Installer, profile-tool, workspace manifest,
 lockfile and release-workflow changes on `main` additionally enter the existing
 native release queue, without reserving runners or dispatching OS builds.
 Manual rehearsals receive no signing lease. Do not put a persistent private key
@@ -245,10 +245,7 @@ and `/usr/share/tilo/tpm2-pcr-signing.public.pem` for PCR authorization.
 The signer and every parent directory must be root-owned and not group/world
 writable, and it must not live in the checkout or runner temporary directory.
 Tagged releases fail closed when this protected variable is absent.
-OS releases on t sign the same two inputs with the same keys in KMS directly
-(`sign-os-boot-<arch>`, tools/signing/boot-signer.sh) as the release signing
-role, which t's identity tokens get only for `stable` and `v*` tags. Its
-server-side OIDC policy must accept only the protected `release-imager.yml`
+The signer's server-side OIDC policy must accept only the protected `release-imager.yml`
 semantic-tag identity above. Reject all pull requests, branch rehearsals,
 dispatches and other workflows. Tag lanes run on the `imager-linux-*` hosts.
 
@@ -576,22 +573,20 @@ listed in the header of `os/dev/internal-bundle.py`.
 
 ## Kernel buildroot snapshot credentials
 
-t's kernel buildroot chain (`image-kernel-buildroot-<arch>`, `sign-kernel-buildroot`,
-`publish-kernel-buildroot`, `pin-kernel-buildroot`; `tools/ci/publish/kernel-buildroot.sh`)
-authenticates, signs and lands its pins like the RPM snapshot and kernel chains; it
+The kernel buildroot (`tools/ci/publish/kernel-buildroot.sh`)
+is authenticated, signed and pinned like the RPM snapshot and kernel; it
 needs no stored secret of its own:
 
 - The builds hold no credentials. Each architecture builds natively and must carry a
   matching `/usr/lib/tilo/kernel-buildroot-arch` marker and base, a recorded package
   list, exactly one signature-checked kernel SRPM and no remaining yum repositories.
-- `sign-kernel-buildroot`, on stable, exchanges a t identity token for the KMS signing
+- Signing exchanges an OIDC identity token for the KMS signing
   role (`os/dev/configure-cosign-kms.sh`) and signs both digests with a transparency
-  log entry; `publish-kernel-buildroot` pushes them with a `registry.tilo.so` identity
-  token and sets the `kernel-buildroot` pointer.
-- `pin-kernel-buildroot`, on main, pins stable's buildroots only when main would build
-  the same ones (the inputs digest in the pointer), verifies both signatures with
-  `keys/cosign.pub`, writes `os/kernel-buildroot-snapshot.env` through
-  `os/dev/open-snapshot-pr.py pins`, and t commits and pushes it.
+  log entry; publishing pushes them with a `registry.tilo.so` identity token.
+- Pinning takes the published buildroots only when main would build
+  the same ones (the inputs digest), verifies both signatures with
+  `keys/cosign.pub` and writes `os/kernel-buildroot-snapshot.env` through
+  `os/dev/open-snapshot-pr.py pins`.
 
 Do not configure `COSIGN_PRIVATE_KEY` or `COSIGN_PASSWORD`.
 
@@ -612,14 +607,12 @@ by `microsoft/winget-pkgs`. Configure:
   user token described above; the workflow accepts no repository token fallback;
 - repository variable `WINGET_GITHUB_USER`: that bot account's login.
 
-t's check `imager-winget-acceptance` runs every six hours on main's head and with
-`t dispatch imager-winget-acceptance`. It reads the release already published by
+`release-imager-winget.yml` runs every six hours and on dispatch. It reads the release already published by
 the landing page, refuses to select another version, keeps that release's download
 root and signing fingerprint, and advances `submitted` to `available` only after
 Microsoft's public index serves the exact identifier and version. It pushes the
-site with `TILO_SITE_TOKEN`, a token of the website bot that may push the site
-repository, which t's server config gives to runs on main; without it the check
-fails.
+site with a token of the website bot that may push the site repository, from the
+credential broker's `site` exchange; without the broker the workflow does not run.
 
 After first publication users install with:
 

@@ -5,7 +5,7 @@
 //! worker, a host in thin mode. The toolkit builds on it and keeps its paths
 //! (`ui::collaboration`, `ui::record`, `ui::app_surface`,
 //! `ui::local_identity`, `ui::local_document_action`, `ui::person_chat`,
-//! `ui::portable_storage`, `ui::host_worker::managed_sender`), so native apps
+//! `ui::portable_storage`), so native apps
 //! compile unchanged.
 //!
 //! - [`record`]: a record's identity, as it travels on the collaboration
@@ -108,12 +108,8 @@ pub mod history_source;
 pub mod invocation_scope;
 pub mod local_document_action;
 pub mod local_identity;
-#[cfg(unix)]
-pub mod managed_sender;
 pub mod person_chat;
 pub mod portable_storage;
-#[cfg(unix)]
-pub mod private_actions;
 pub mod record;
 pub mod state;
 
@@ -133,12 +129,6 @@ pub(crate) use wake::WakeHandle;
 #[cfg(test)]
 pub(crate) use wake::WakeScope;
 // The tests bound what the sender's storage allocates.
-#[cfg(test)]
-#[global_allocator]
-static ALLOCATOR: tilo_test_env::requested_allocations::Meter =
-    tilo_test_env::requested_allocations::Meter;
-#[cfg(test)]
-pub(crate) use tilo_test_env::requested_allocations::allocations_only as measure_test_allocations;
 
 pub(crate) mod host {
     pub use tilo_process::environment::{ContinuationMetadata, environment};
@@ -519,7 +509,7 @@ pub enum CollabRequest {
     ///
     /// Apps page by repeating with `before_seq` set to the lowest seq from
     /// the previous batch until `exhausted == true`, then fall back to the
-    /// cooperative path (broker queries gossip peers).
+    /// cooperative path (the broker asks the room's other members).
     FetchScrollback {
         artifact: collab_types::ArtifactId,
         /// Exclusive upper bound on `seq`.
@@ -603,12 +593,6 @@ pub enum CollabRequest {
     CloseWorkspaceControl {
         session_id: u64,
     },
-    /// Report the terminal result of a directed invocation.
-    CompleteInvocation {
-        id: u64,
-        code: String,
-        message: String,
-    },
     UpdateInvocation {
         id: u64,
         update: tilo_actions::InvocationUpdate,
@@ -630,55 +614,6 @@ pub enum CollabRequest {
     /// invocation. The answer arrives as [`CollabEvent::RemoteAction`].
     RemoteAction {
         message: tilo_actions::remote::RemoteActionMessage,
-    },
-    QueryActionDirectory {
-        request_id: u64,
-        query: runtime_collab::ActionDirectoryQuery,
-    },
-    ResolvePublishedAction {
-        request_id: u64,
-        peer_id: u64,
-        revision: String,
-        resource: String,
-        action: String,
-    },
-    /// Opaque funded work from the owner-thread managed sender. Queue acceptance
-    /// does not establish durable local acceptance or receiver admission.
-    #[cfg(unix)]
-    ManagedInvocationAttempt {
-        attempt: crate::managed_sender::ManagedAttempt,
-    },
-    InvokeResolvedPublishedAction {
-        request_id: u64,
-        peer_id: u64,
-        revision: String,
-        resource: String,
-        action: String,
-        arguments: serde_json::Map<String, serde_json::Value>,
-        confirmation: serde_json::Value,
-    },
-    InvokePublishedAction {
-        request_id: u64,
-        peer_id: u64,
-        resource: String,
-        action: String,
-        arguments: serde_json::Map<String, serde_json::Value>,
-        confirmation: serde_json::Value,
-    },
-    PublishedInvocationStatus {
-        request_id: u64,
-        id: u64,
-    },
-    CancelPublishedInvocation {
-        request_id: u64,
-        id: u64,
-    },
-    LaunchPublishedApplication {
-        request_id: u64,
-        app_id: String,
-        /// Optional portable blob identity staged read-only by the session
-        /// before it launches the target application.
-        content_hash: Option<String>,
     },
     /// A Store launch, with a dedicated reply vocabulary so a widget's
     /// correlation id cannot complete an unrelated SDK action invocation.
@@ -781,14 +716,12 @@ pub struct BrokerActionCatalogueWire {
 pub use runtime_collab::route::{ChannelAccessState, RouteSpec};
 
 /// The custody types only this toolkit's endpoint mints: the committed
-/// captures and managed invocation results its collaboration events carry.
+/// captures its collaboration events carry.
 #[derive(Clone, Copy, Debug)]
 pub enum SdkCustody {}
 
 impl runtime_collab::event::EndpointCustody for SdkCustody {
     type CommittedRead = CommittedDocument;
-    #[cfg(unix)]
-    type ManagedResult = crate::managed_sender::ManagedAttemptResult;
 }
 
 /// One event this endpoint receives, carrying the toolkit's own custody
@@ -813,108 +746,6 @@ pub fn colour_from_packed(packed: u32) -> Option<collab_types::presence::Presenc
     }
     let [_, r, g, b] = packed.to_be_bytes();
     collab_types::presence::PresenceHue::nearest_to_srgb(r, g, b)
-}
-
-/// Failure modes for [`CollaborationManager::send_signed_op`].
-/// `NoIdentity` is the common case — call before the shell provisions an
-/// identity — and callers can fall back to `document_incremental`.
-#[derive(Debug)]
-pub enum SignedSendError {
-    /// No [`SigningIdentity`] bound (see [`CollaborationManager::with_identity`]).
-    NoIdentity,
-    /// The identity has signed every representable sequence number. Reusing
-    /// one would make a fresh edit indistinguishable from a replay attack, so
-    /// the identity must be rotated before any more operations are signed.
-    SequenceExhausted,
-    /// Canonical-bytes serialisation of the envelope failed; in practice
-    /// only fires for unrepresentable values.
-    Canonical(collab_types::CanonicalError),
-}
-
-impl std::fmt::Display for SignedSendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SignedSendError::NoIdentity => {
-                f.write_str("CollaborationManager has no signing identity bound")
-            }
-            SignedSendError::SequenceExhausted => {
-                f.write_str("collaboration signing sequence exhausted; rotate the identity")
-            }
-            SignedSendError::Canonical(e) => write!(f, "canonical encoder failed: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for SignedSendError {}
-
-/// Identity-side handle used by [`CollaborationManager::send_signed_op`]
-/// to mint signed envelopes. The secret key stays private — not
-/// re-exported on the manager's public surface — so app code can only
-/// sign via the manager's helper, never handle the raw secret.
-pub struct SigningIdentity {
-    /// Local secret half — never serialised, never logged.
-    pub(crate) secret_key: ed25519_dalek::SigningKey,
-    /// Public half — embedded as the `author` field on every signed op.
-    pub public_key: collab_types::Ed25519PublicKey,
-    /// Role attestation the broker looks up ops against. One identity may
-    /// hold attestations on multiple channels; this pins to one per manager.
-    pub attestation_id: collab_types::AttestationId,
-    /// Monotonic per-author seq, bumped on every `sign` so the validator's
-    /// replay check (`seq > last_seen`) passes. Reusing a seq is the
-    /// spec-defined replay attack.
-    pub(crate) seq: u64,
-}
-
-impl SigningIdentity {
-    /// Construct an identity from a fresh keypair and the attestation id
-    /// that authorises it. Mostly used in tests; production code builds
-    /// via the shell-side identity-loading helper.
-    pub fn new(
-        secret_key: ed25519_dalek::SigningKey,
-        attestation_id: collab_types::AttestationId,
-    ) -> Self {
-        let public_key =
-            collab_types::Ed25519PublicKey::from_bytes(secret_key.verifying_key().to_bytes());
-        Self {
-            secret_key,
-            public_key,
-            attestation_id,
-            seq: 0,
-        }
-    }
-
-    /// Build a fresh `SignedOp` envelope wrapping `payload`, bumping the
-    /// internal seq so callers don't need to track sequence numbers.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SignedSendError::SequenceExhausted`] rather than ever reusing
-    /// a sequence number, or [`SignedSendError::Canonical`] when `payload`
-    /// fails to canonicalize for signing.
-    pub fn sign_op(
-        &mut self,
-        payload: Vec<u8>,
-        artifact: collab_types::ArtifactId,
-        kind: collab_types::OpKind,
-    ) -> Result<collab_types::SignedOp, SignedSendError> {
-        let timestamp = crate::time::wall();
-        let sequence = self
-            .seq
-            .checked_add(1)
-            .ok_or(SignedSendError::SequenceExhausted)?;
-        let mut op = collab_types::SignedOp::new_unsigned(
-            payload,
-            artifact,
-            self.public_key,
-            self.attestation_id,
-            kind,
-            timestamp,
-            sequence,
-        );
-        collab_types::sign_op(&mut op, &self.secret_key).map_err(SignedSendError::Canonical)?;
-        self.seq = sequence;
-        Ok(op)
-    }
 }
 
 /// Where a manager's connection stands, as the UI shows it.
@@ -1049,11 +880,6 @@ pub struct CollaborationManager {
     awaiting_primary: bool,
     /// The state last handed out by [`Self::take_state_change`].
     reported_state: Option<CollaborationState>,
-    /// When `Some`, [`Self::send_signed_op`] mints a signed envelope and
-    /// dispatches [`CollabRequest::SignedOperation`]. This explicit
-    /// policy-envelope API is separate from document mutations, which the SDK
-    /// signs with the certified launcher identity.
-    identity: Option<SigningIdentity>,
     /// Where the action directory stands on the current primary route. A new
     /// `Hello` resets it.
     action_directory: DirectoryOffer,
@@ -1085,7 +911,6 @@ impl CollaborationManager {
             primary_route: PrimaryRouteState::default(),
             awaiting_primary: false,
             reported_state: None,
-            identity: None,
             action_directory: DirectoryOffer::Unoffered,
             sync_expected: true,
             join_refusal: None,
@@ -1210,7 +1035,6 @@ impl CollaborationManager {
             backend: Backend::Disabled(reason),
             primary_route: PrimaryRouteState::default(),
             awaiting_primary: false,
-            identity: None,
             action_directory: DirectoryOffer::Unoffered,
             sync_expected: false,
             join_refusal: None,
@@ -1395,44 +1219,6 @@ impl CollaborationManager {
             Backend::Disabled(_) => Err(TransportError::Closed),
             Backend::Transport(transport) => transport.submit(command),
         }
-    }
-
-    /// Bind a signing identity, builder-style for chaining at boot.
-    /// Replaces any previous identity.
-    #[must_use]
-    pub fn with_identity(mut self, identity: SigningIdentity) -> Self {
-        self.identity = Some(identity);
-        self
-    }
-
-    /// Replace the bound identity in place, e.g. when the user switches
-    /// identities in the chrome's identity picker without tearing down the manager.
-    pub fn set_identity(&mut self, identity: SigningIdentity) {
-        self.identity = Some(identity);
-    }
-
-    /// Sign and send a CRDT mutation envelope. Best-effort like
-    /// [`Self::send`]: an unsent frame isn't retried, but the next live
-    /// edit republishes state, bounding the loss to one round-trip.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SignedSendError::NoIdentity`] when no signing identity is
-    /// bound, [`SignedSendError::SequenceExhausted`] before a sequence could
-    /// be reused, or [`SignedSendError::Canonical`] when `payload` fails to
-    /// canonicalize for signing.
-    pub fn send_signed_op(
-        &mut self,
-        payload: Vec<u8>,
-        artifact: collab_types::ArtifactId,
-        kind: collab_types::OpKind,
-    ) -> Result<(), SignedSendError> {
-        let identity = self.identity.as_mut().ok_or(SignedSendError::NoIdentity)?;
-        let envelope = identity.sign_op(payload, artifact, kind)?;
-        self.send(CollabRequest::SignedOperation {
-            envelope: Box::new(envelope),
-        });
-        Ok(())
     }
 
     /// Fire-and-forget and non-blocking on every backend. Presence may be

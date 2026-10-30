@@ -1735,17 +1735,15 @@ fn device_sync_settings(
                     )
                 },
             );
-            let bus = ui.bus.clone();
-            let id = peer.id.clone();
             let mut row = ListRow::new(format!("grayjay_peer_{}", peer.short_id()), &peer.name)
                 .icon(Icon::Monitor)
-                .secondary(detail)
-                .action(Icon::Trash, t("tube-revoke-device"), move || {
-                    action::push(
-                        &bus,
-                        Action::Effect(TubeEffect::RevokeDevice { device: id.clone() }),
-                    );
-                });
+                .secondary(detail);
+            let revoke = TubeEffect::RevokeDevice {
+                device: peer.id.clone(),
+            };
+            if let Some(binding) = ui.actions.and_then(|actions| actions.effect(&revoke)) {
+                row = row.action_binding(Icon::Trash, t("tube-revoke-device"), binding);
+            }
             if failed {
                 row = row.error();
             }

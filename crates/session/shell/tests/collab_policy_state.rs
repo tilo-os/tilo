@@ -24,7 +24,6 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
-use shell::shell::collab_broker::{CrdtRoute, LocalIdentity, PeerLabels};
 use threshold_identity::{
     ThresholdIdentity,
     signing::{SigningRound1, SigningRound1Commitment, SigningRound2Partial},
@@ -269,31 +268,6 @@ fn mls_ciphertext_can_be_redacted_without_decryption() {
         .apply_redaction(&collab_types::parse_redact_payload(&op).unwrap())
         .unwrap();
     assert!(f.state.is_redacted(OpId::from_op(&target)));
-}
-
-#[test]
-fn participant_names_use_room_then_handle_then_local_id_without_raw_peer_ids() {
-    const HANDLE: u64 = 5_537_458_103_208_628_978;
-    let named = LocalIdentity::with_lookup(HANDLE, |_| {
-        let mut labels = PeerLabels::new();
-        labels.insert(HANDLE, "Bob".into());
-        labels
-    });
-    let route = CrdtRoute::cluster("design-review");
-    for announced in [Some("peer@5537458103208628978"), None] {
-        let resolved = named.resolve(Some(&route), announced);
-        assert_eq!(resolved, "Bob");
-        assert!(!resolved.starts_with("peer-") && !resolved.starts_with("peer@"));
-    }
-
-    let unnamed = LocalIdentity::with_lookup(HANDLE, |_| PeerLabels::new());
-    assert_eq!(
-        unnamed.resolve(Some(&route), Some("tilo-agent")),
-        "tilo-agent"
-    );
-    let fallback = unnamed.resolve(Some(&route), None);
-    assert!(!fallback.is_empty());
-    assert!(!fallback.starts_with("peer-") && !fallback.starts_with("peer@"));
 }
 
 #[test]

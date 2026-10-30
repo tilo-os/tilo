@@ -42,7 +42,7 @@ tilo-automerge.workspace = true
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 # A record's on-disk copy and its writer (`record::save`).
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
-# The private storage the managed sender keeps its outbox in.
+# The private storage `portable_storage` keeps its records in.
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 # The channel settings the shell hands an app (personal dictionary).
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }

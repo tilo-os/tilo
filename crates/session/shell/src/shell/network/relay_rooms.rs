@@ -832,32 +832,25 @@ impl ShellNetwork {
             tracing::debug!(%error, "host rooms: no device certificate");
             return;
         }
-        let mut hosts: Vec<PersonsHost> = Vec::new();
-        hosts.extend(
-            super::configured_host_addrs()
-                .into_iter()
-                .map(PersonsHost::Configured),
-        );
-        if let Some(only) = only {
-            hosts.extend(
-                super::registered_home_peer_addrs(self.local_person)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(PersonsHost::Relay),
-            );
-            if let Some(user) = self.local_person
-                && self.personal_route_targets(&user).contains(&only)
-            {
-                hosts.push(PersonsHost::Device {
-                    addr: iroh::EndpointAddr::new(only),
-                    device: *only.as_bytes(),
-                });
-            }
-        }
-        for host in hosts
+        // Asking one host, the person's relays and that device are candidates too.
+        let relays = only
+            .map(|_| super::registered_home_peer_addrs(self.local_person).unwrap_or_default())
+            .unwrap_or_default();
+        let device = only
+            .filter(|only| {
+                self.local_person
+                    .is_some_and(|user| self.personal_route_targets(&user).contains(only))
+            })
+            .map(|only| PersonsHost::Device {
+                addr: iroh::EndpointAddr::new(only),
+                device: *only.as_bytes(),
+            });
+        let hosts = super::configured_host_addrs()
             .into_iter()
-            .filter(|host| only.is_none_or(|only| host.endpoint() == Some(only)))
-        {
+            .map(PersonsHost::Configured)
+            .chain(relays.into_iter().map(PersonsHost::Relay))
+            .chain(device);
+        for host in hosts.filter(|host| only.is_none_or(|only| host.endpoint() == Some(only))) {
             let listed = self
                 .ask_host(&host, LIST_ROOMS, serde_json::Map::new())
                 .and_then(answer_of::<Vec<RoomListing>>);
@@ -991,7 +984,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_room_is_named_after_its_workspace() {
+    fn a_workspace_name_becomes_a_bounded_room_name() {
         assert_eq!(room_name(" Plans\u{7} "), "Plans");
         assert_eq!(room_name(" \n "), "Shared workspace");
         assert_eq!(room_name(&"x".repeat(200)).chars().count(), ROOM_NAME_CHARS);

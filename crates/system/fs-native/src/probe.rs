@@ -2,7 +2,7 @@
 //!
 //! Every probe exercises the feature on the store volume and reports what
 //! the kernel actually did; nothing is inferred from a version string. The
-//! kernel facts K1–K6 are the ones `docs/architecture/storage.md` §6.8 lists.
+//! kernel facts are K1–K6.
 
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
@@ -324,7 +324,7 @@ pub fn probe(store_root: &Path, k5: Option<K5Params>) -> io::Result<CapabilityRe
     })
 }
 
-/// K1–K6 from `docs/architecture/storage.md` §6.8.
+/// The kernel facts K1–K6.
 fn kernel_checks(
     checks: &mut Vec<Check>,
     root: &Path,

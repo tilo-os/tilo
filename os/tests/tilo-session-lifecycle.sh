@@ -120,8 +120,10 @@ if [ -e "$repo/os/dev-image/usr/lib/systemd/user" ]; then
 fi
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
-[ "$(ls "$repo/os/usr/share/wayland-sessions")" = shell.desktop ] || {
-  echo 'the image must ship exactly one login session: shell.desktop' >&2
+grep -Fqx 'Exec=/usr/libexec/tilo-session --native --backend drm' \
+  "$repo/os/usr/share/wayland-sessions/tilo-session.desktop"
+[ "$(ls "$repo/os/usr/share/wayland-sessions" | tr '\n' ' ')" = 'shell.desktop tilo-session.desktop ' ] || {
+  echo 'the image must ship exactly the shell and native login sessions' >&2
   exit 1
 }
 # The image build refuses a shell or X11 bridge with an unresolved library.
@@ -145,6 +147,7 @@ log="$tmp/log"
 fake_systemctl="$tmp/systemctl"
 fake_dbus_update="$tmp/dbus-update-activation-environment"
 fake_shell="$tmp/shell"
+fake_native="$tmp/native-session"
 test_wrapper="$tmp/tilo-session"
 runtime_dir="$tmp/runtime"
 install -d -m 700 "$runtime_dir"
@@ -229,16 +232,71 @@ if [ "${TILO_SESSION_HOLD_PIPE:-0}" = 1 ]; then
 fi
 exit "${TILO_SESSION_DESKTOP_STATUS:-0}"
 SH
-chmod 0755 "$fake_systemctl" "$fake_dbus_update" "$fake_shell"
+cat >"$fake_native" <<'SH'
+#!/bin/bash
+printf 'native %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
+printf 'native-output %s\n' "$*"
+exit "${TILO_SESSION_DESKTOP_STATUS:-0}"
+SH
+chmod 0755 "$fake_systemctl" "$fake_dbus_update" "$fake_shell" "$fake_native"
 tilo_stage_script "$wrapper" "$test_wrapper" \
   SYSTEMCTL="$fake_systemctl" \
   DBUS_UPDATE="$fake_dbus_update" \
   SHELL_BIN="$fake_shell" \
+  NATIVE_SESSION_BIN="$fake_native" \
   IMAGE_FLAVOUR="$tmp/image-flavour" \
   FLIGHT_RECORDER="$TILO_FLIGHT_RECORDER"
 printf 'dev\n' >"$tmp/image-flavour"
 grep -Fqx "readonly SYSTEMCTL=$fake_systemctl" "$test_wrapper"
 grep -Fqx "readonly SHELL_BIN=$fake_shell" "$test_wrapper"
+grep -Fqx "readonly NATIVE_SESSION_BIN=$fake_native" "$test_wrapper"
+
+# --native runs the native session in place of the shell, under the same
+# target and environment, with the remaining arguments and a flight record.
+native_log="$tmp/native-log"
+set +e
+XDG_STATE_HOME="$tmp/native-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$native_log" TILO_SESSION_DESKTOP_STATUS=3 \
+  "$test_wrapper" --native --backend drm >"$tmp/native-stdout"
+status=$?
+set -e
+[ "$status" = 3 ]
+cat >"$tmp/native-expected" <<'EOF'
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
+dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
+systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
+systemctl --user start tilo-graphical-session.target
+native --backend drm
+systemctl --user stop tilo-graphical-session.target
+dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= GLIBC_TUNABLES=
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
+EOF
+cmp "$tmp/native-expected" "$native_log"
+grep -Fqx 'native-output --backend drm' "$tmp/native-stdout"
+native_flight="$tmp/native-state/tilo/session-logs/latest.log"
+head -n 1 "$native_flight" | grep -Fq " shell=$fake_native"
+grep -Fqx 'native-output --backend drm' "$native_flight"
+tail -n 1 "$native_flight" | grep -Eq '^tilo-flight-record-v1 end=.* status=3 '
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+# A missing native binary ends the login before any target starts.
+missing_wrapper="$tmp/tilo-session-missing-native"
+tilo_stage_script "$wrapper" "$missing_wrapper" \
+  SYSTEMCTL="$fake_systemctl" \
+  DBUS_UPDATE="$fake_dbus_update" \
+  SHELL_BIN="$fake_shell" \
+  NATIVE_SESSION_BIN="$tmp/no-native-session" \
+  IMAGE_FLAVOUR="$tmp/no-image-flavour" \
+  FLIGHT_RECORDER="$TILO_FLIGHT_RECORDER"
+set +e
+XDG_STATE_HOME="$tmp/native-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$tmp/missing-native-log" \
+  "$missing_wrapper" --native --backend drm 2>"$tmp/missing-native-err"
+status=$?
+set -e
+[ "$status" = 1 ]
+grep -Fq "$tmp/no-native-session is missing or not executable" "$tmp/missing-native-err"
+[ ! -e "$tmp/missing-native-log" ]
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 
 # Successful verification starts the desktop, preserves its exit status, and
 # tears down the Tilo target afterward.
@@ -285,6 +343,7 @@ tilo_stage_script "$wrapper" "$slow_wrapper" \
   SYSTEMCTL="$fake_systemctl" \
   DBUS_UPDATE="$fake_dbus_update" \
   SHELL_BIN="$fake_shell" \
+  NATIVE_SESSION_BIN="$fake_native" \
   IMAGE_FLAVOUR="$tmp/no-image-flavour" \
   FLIGHT_RECORDER="$slow_recorder"
 slow_dir="$tmp/slow-state/tilo/session-logs"
@@ -342,6 +401,7 @@ tilo_stage_script "$wrapper" "$late_ready_wrapper" \
   SYSTEMCTL="$fake_systemctl" \
   DBUS_UPDATE="$fake_dbus_update" \
   SHELL_BIN="$fake_shell" \
+  NATIVE_SESSION_BIN="$fake_native" \
   IMAGE_FLAVOUR="$tmp/no-image-flavour" \
   FLIGHT_RECORDER="$late_ready_recorder"
 set +e

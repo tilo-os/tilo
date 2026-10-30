@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Publish the tapps and app collections a Release / apps build signed.
 #
-# tools/apps/t-release.sh runs this from the repository root with the signed
+# Run this from the repository root with the signed
 # packages in release/<arch>/, in two stages that hold different credentials
 # (TILO_APP_PUBLISH_STAGE):
 #
@@ -113,7 +113,7 @@ fi
 publish_collections() {
   collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
   python3 -I tools/ci/python.py tools/apps/app_release.py --collection "$COLLECTION" > "$collection_plan"
-  # t's release steps pass the commit's time, as they run without Git (tools/apps/t-release.sh).
+  # A release step that runs without Git passes the commit's time.
   source_epoch=${TILO_SOURCE_EPOCH:-$(git show -s --format=%ct "$GITHUB_SHA")}
   [[ $source_epoch =~ ^[0-9]+$ ]]
   channel_url=

@@ -25,15 +25,13 @@ The runner digest is a harness compatibility check, **not** a hash of production
 sources. Runtime verifies it against the current runner, checks inventories and
 pins against current metadata, and verifies each exact executable's digest.
 
-T owns source binding through source-bound Cargo graph inputs and dependency
-outputs. Both the build check and final checks must declare the same transitive
-`cargo_packages` closure, with the final checks depending on the build outputs.
+The caller owns source binding through source-bound Cargo graph inputs and dependency
+outputs. The build and final checks must use the same transitive Cargo package
+closure, with the final checks depending on the build outputs.
 Relevant runner, validator and wrapper files must also be explicit inputs. No
 whole-repository hash, Git command or expected source SHA is used here. An optional
-`T_COMMIT` is recorded as `build_commit` provenance only: unchanged dependency
-inputs may validly reuse an artifact built on a different main commit. Main checks
-use T's default caching; the weekly sibling disables caching to refresh external
-service evidence.
+caller-supplied commit is recorded as `build_commit` provenance only: unchanged dependency
+inputs may validly reuse an artifact built on a different main commit.
 Retain the checkout at its builder path: the strict DOCX test embeds the absolute
 path of `crates/system/cloud-source-gdrive/tests/validate_docx.py`. Its digest is
 also recorded and checked. Runtime must have the builder's compatible libc and
@@ -107,6 +105,5 @@ python3 -m unittest discover -s tools/ci -p test_rystic_ci.py -q
 
 These stdlib-only tests fake the subprocess and version-handshake boundaries.
 They compile nothing and never start, download or lease a real twin. Existing
-manual usage in `scripts/test-cloud-rystic.py` is unchanged. Prior observed test
-results and unsupported contract details remain in
-[`docs/testing/cloud-rystic-results.md`](../../docs/testing/cloud-rystic-results.md).
+manual usage in `scripts/test-cloud-rystic.py` is unchanged.
+

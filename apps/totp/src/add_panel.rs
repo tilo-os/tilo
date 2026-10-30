@@ -533,8 +533,10 @@ fn text_field(
 }
 
 /// A labelled segmented choice, as the label and the control that follow it in
-/// a row: the segments' labels, which one is chosen and what choosing one does.
+/// a row: the control's id, the segments' labels, which one is chosen and what
+/// choosing one does to the form (published as the control's view action).
 fn choice(
+    id: &str,
     label: &str,
     labels: &[String],
     selected: usize,
@@ -543,7 +545,7 @@ fn choice(
     let segments = labels.iter().map(Segment::new).collect();
     [
         Box::new(Text::new(label).with_role(TextRole::Label)),
-        Box::new(ToggleGroup::new(segments, selected).on_change(set)),
+        Box::new(ToggleGroup::new(segments, selected).on_view(id, set)),
     ]
 }
 
@@ -648,6 +650,7 @@ fn advanced_section(sheet: &Shared, values: &Values, theme: &Theme, open: bool) 
         // window of ordinary height with the section open.
         let mut row = Row::new().with_gap(theme.tokens.spacing.s3);
         for part in choice(
+            "totp-add-algorithm",
             &t("totp-add-label-algorithm"),
             &algorithms,
             values.algorithm.with(|selected| *selected),
@@ -656,11 +659,17 @@ fn advanced_section(sheet: &Shared, values: &Values, theme: &Theme, open: bool) 
             row = row.push(part);
         }
         row = row.push(Box::new(Spacer::new()));
-        for part in choice(&t("totp-add-label-digits"), &counts, chosen, move |index| {
-            if let Some(count) = offered.get(index) {
-                digits.set(*count);
-            }
-        }) {
+        for part in choice(
+            "totp-add-digits",
+            &t("totp-add-label-digits"),
+            &counts,
+            chosen,
+            move |index| {
+                if let Some(count) = offered.get(index) {
+                    digits.set(*count);
+                }
+            },
+        ) {
             row = row.push(part);
         }
         items.push(Box::new(row));
@@ -680,7 +689,7 @@ fn advanced_section(sheet: &Shared, values: &Values, theme: &Theme, open: bool) 
     } else {
         section.collapsed()
     };
-    section.on_toggle(move |_| toggle())
+    section.on_expand(move |_| toggle())
 }
 
 /// How tall the form may be in a window `viewport_h` tall before it scrolls:

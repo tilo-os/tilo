@@ -9,8 +9,8 @@
 //! nothing received, nothing written — does no conflict work at all.
 //!
 //! Both signals come from the stores themselves, not from the pass that
-//! received the changes, so changes that arrive any other way (the gossip
-//! pump, a peer's own exchange with this device, a pull outside the loop)
+//! received the changes, so changes that arrive any other way (a peer's own
+//! exchange with this device, a pull outside the loop)
 //! are covered too. Still, the first pass after start, and one pass every
 //! [`CONFLICT_SWEEP_INTERVAL`] after it, look everywhere.
 

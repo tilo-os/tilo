@@ -1,10 +1,10 @@
 //! The sync plane: namespace replication plus content hydration.
 //!
-//! Unenforced workspaces use iroh-gossip for live Automerge deltas and
-//! `tilo-fs-sync/1` for bootstrap/anti-entropy. Enforced workspaces use only
-//! the authenticated sync ALPN: gossip does not preserve the original author
-//! needed for a write-authorisation decision. Iroh-blobs hydrates content on
-//! read, guarded by the live namespace and ACL.
+//! Every workspace replicates its namespace only over authenticated
+//! sessions: a local change announces itself to each peer, which pulls it
+//! over `tilo-fs-sync/1`, and anti-entropy passes heal anything missed.
+//! Iroh-blobs hydrates content on read, guarded by the live namespace and
+//! ACL.
 //!
 //! A joiner must *load the host's document* so both share the same
 //! Automerge object ids — independently-created docs would fork on
@@ -22,16 +22,11 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use bytes::Bytes;
-use futures_util::StreamExt;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh_base::EndpointAddr;
 use iroh_blobs::Hash;
-use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
-use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
-use iroh_gossip::proto::TopicId;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::RevocationList;
 use tokio::sync::mpsc;
@@ -333,8 +328,8 @@ const MAX_CONCURRENT_SYNC_CONNECTIONS: usize = 4;
 /// empty when that side has nothing to send.
 const SYNC_FRAMING: Framing = Framing::little_endian(MAX_FRAME);
 
-/// A shareable invitation to join a workspace: how to reach a peer + which
-/// gossip topic the workspace uses.
+/// A shareable invitation to join a workspace: how to reach a peer + the
+/// workspace's random 256-bit name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ticket {
     pub node: EndpointAddr,
@@ -368,7 +363,7 @@ impl Ticket {
 }
 
 /// Bind an endpoint under this device's own key, with an in-memory
-/// address lookup (so gossip can dial peers we learn about by id).
+/// address lookup (so sessions can dial peers we learn about by id).
 /// Returns both so callers can register peer addresses.
 ///
 /// The `NodeId` this produces is the device's Ed25519 public key —
@@ -1447,21 +1442,19 @@ fn blob_guard(
     Some(sender)
 }
 
-/// Enqueues local Automerge deltas for broadcast over gossip. Cheap to clone.
+/// Wakes the workspace's reconciliation on local namespace changes. Cheap to
+/// clone.
 #[derive(Clone)]
 pub struct SyncHandle {
-    local_tx: mpsc::UnboundedSender<Bytes>,
+    local_tx: mpsc::UnboundedSender<()>,
     record_index_generation: tokio::sync::watch::Sender<u64>,
-    /// Woken when peers are heard from outside the reconciliation loop (a
-    /// gossip delta, a neighbour), so its idle timer stops backing off.
-    activity: Arc<tokio::sync::Notify>,
 }
 
 impl SyncHandle {
-    /// Queue a freshly-produced local delta for broadcast (no-op if empty).
-    pub fn broadcast_delta(&self, delta: Vec<u8>) {
+    /// A local change produced `delta`: announce it to peers (no-op if empty).
+    pub fn announce_delta(&self, delta: &[u8]) {
         if !delta.is_empty() {
-            let _ = self.local_tx.send(Bytes::from(delta));
+            let _ = self.local_tx.send(());
         }
     }
 
@@ -1478,11 +1471,6 @@ impl SyncHandle {
             .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
 
-    /// Peers were heard from outside the reconciliation loop.
-    fn notify_activity(&self) {
-        self.activity.notify_one();
-    }
-
     #[cfg(test)]
     pub(crate) fn test_handle() -> Arc<Self> {
         let (local_tx, _local_rx) = mpsc::unbounded_channel();
@@ -1490,7 +1478,6 @@ impl SyncHandle {
         Arc::new(Self {
             local_tx,
             record_index_generation,
-            activity: Arc::new(tokio::sync::Notify::new()),
         })
     }
 }
@@ -1732,7 +1719,7 @@ impl Workspace {
     /// Begin hosting a new workspace, returning a ticket to share with
     /// peers. `policy` is what the sync and content planes serve *through*
     /// (see [`PeerPolicy`]); `None` hosts unenforced.
-    pub async fn host(
+    pub fn host(
         endpoint: Endpoint,
         lookup: MemoryLookup,
         store: Arc<ContentStore>,
@@ -1753,11 +1740,10 @@ impl Workspace {
             },
             None,
         )
-        .await
     }
 
     /// Host a workspace with the exact-record sharing protocol enabled.
-    pub async fn host_with_records(
+    pub fn host_with_records(
         endpoint: Endpoint,
         lookup: MemoryLookup,
         store: Arc<ContentStore>,
@@ -1779,13 +1765,9 @@ impl Workspace {
             },
             Some(records),
         )
-        .await
     }
 
-    async fn host_inner(
-        node: SyncNode,
-        records: Option<RecordServices>,
-    ) -> Result<(Workspace, Ticket)> {
+    fn host_inner(node: SyncNode, records: Option<RecordServices>) -> Result<(Workspace, Ticket)> {
         let SyncNode {
             endpoint,
             lookup,
@@ -1822,12 +1804,11 @@ impl Workspace {
                 identity,
                 policy,
             },
-            (topic, ticket.workspace_id()),
-            vec![],
+            ticket.workspace_id(),
+            &[],
             record_plane,
             sessions,
-        )
-        .await?;
+        );
         Ok((ws, ticket))
     }
 
@@ -1884,7 +1865,6 @@ impl Workspace {
             identity,
             policy,
         } = node;
-        let topic = ticket.workspace;
         let record_plane = build_record_plane(
             &endpoint,
             &identity,
@@ -1926,7 +1906,7 @@ impl Workspace {
                 eprintln!("initial record mesh reconciliation failed: {error}");
             }
         }
-        Self::start(
+        Ok(Self::start(
             SyncNode {
                 endpoint,
                 lookup,
@@ -1936,25 +1916,24 @@ impl Workspace {
                 identity,
                 policy,
             },
-            (topic, ticket.workspace_id()),
-            vec![ticket.node],
+            ticket.workspace_id(),
+            &[ticket.node],
             record_plane,
             sessions,
-        )
-        .await
+        ))
     }
 
     #[allow(
         clippy::too_many_lines,
         reason = "startup owns the ordered lifecycle and cleanup of every sync protocol task"
     )]
-    async fn start(
+    fn start(
         node: SyncNode,
-        (topic_bytes, workspace_id): ([u8; 32], uuid::Uuid),
-        bootstrap: Vec<EndpointAddr>,
+        workspace_id: uuid::Uuid,
+        bootstrap: &[EndpointAddr],
         record_plane: Option<RecordPlane>,
         sessions: Arc<SessionPool>,
-    ) -> Result<Workspace> {
+    ) -> Workspace {
         let SyncNode {
             endpoint,
             lookup,
@@ -1968,8 +1947,8 @@ impl Workspace {
         // writes produce minimal deltas (and the seed isn't re-broadcast).
         prime_namespace_baseline(&namespace);
 
-        // Register bootstrap peers so gossip can dial them and we can hydrate.
-        let boot_ids = register_bootstrap_peers(&lookup, &hydrator, &bootstrap);
+        // Register bootstrap peers so sessions can dial them and we can hydrate.
+        register_bootstrap_peers(&lookup, &hydrator, bootstrap);
 
         let sync_proto = SyncProtocol {
             endpoint: endpoint.clone(),
@@ -1995,7 +1974,6 @@ impl Workspace {
             pool: Arc::downgrade(&sessions),
         };
         sessions.serve_with(session_proto.clone());
-        let gossip = Gossip::builder().spawn(endpoint.clone());
         let builder = Router::builder(endpoint.clone())
             .accept(TILO_FS_SESSION_ALPN, session_proto)
             .accept(
@@ -2017,7 +1995,7 @@ impl Workspace {
                 builder.accept(
                     TILO_FS_AUTHORITY_ALPN,
                     AuthorityProtocol {
-                        endpoint: endpoint.clone(),
+                        endpoint,
                         identity: identity.clone(),
                         policy: policy.clone(),
                         authority: Arc::clone(authority),
@@ -2030,75 +2008,35 @@ impl Workspace {
         } else {
             builder
         };
-        // A gossip message records only the peer that relayed it, not the
-        // original author, so a receiver cannot enforce a writer capability.
-        // Enforced workspaces use the authenticated sync ALPN exclusively.
-        let router = if policy.is_none() {
-            builder
-                .accept(GOSSIP_ALPN, gossip.clone())
-                .accept(TILO_FS_SYNC_ALPN, sync_proto)
-                .spawn()
-        } else {
-            builder.accept(TILO_FS_SYNC_ALPN, sync_proto).spawn()
-        };
+        let router = builder.accept(TILO_FS_SYNC_ALPN, sync_proto).spawn();
 
         let (local_tx, local_rx) = mpsc::unbounded_channel();
         let (record_index_generation, _) = tokio::sync::watch::channel(0_u64);
         let sync = Arc::new(SyncHandle {
             local_tx,
             record_index_generation,
-            activity: Arc::new(tokio::sync::Notify::new()),
         });
-        let mut tasks = Vec::new();
-        let (gossip_sender, reconcile_rx) = if policy.is_none() {
-            let topic = TopicId::from_bytes(topic_bytes);
-            let gtopic = if boot_ids.is_empty() {
-                gossip.subscribe(topic, vec![]).await?
-            } else {
-                gossip.subscribe_and_join(topic, boot_ids).await?
-            };
-            let (sender, receiver) = gtopic.split();
-            tasks.push(AbortOnDrop(tokio::spawn(pump_loop(
-                receiver,
-                sender.clone(),
-                local_rx,
-                namespace.clone(),
-                hydrator.clone(),
-                Arc::clone(&sync),
-                record_plane
-                    .as_ref()
-                    .map(|records| Arc::clone(&records.repository)),
-            ))));
-            (Some(sender), None)
-        } else {
-            // Enforced workspaces cannot relay unauthenticated gossip deltas,
-            // but local mutations still wake authenticated anti-entropy. This
-            // avoids making a live NAS wait for a polling tick and provides a
-            // prompt retry after a transient exchange failure.
-            (None, Some(local_rx))
-        };
         // Anti-entropy backstop: periodically exchange namespace changes and
         // records with every peer and resolve conflicts, so a missed delta
         // or a mid-join window can't leave a peer permanently diverged.
-        tasks.push(AbortOnDrop(tokio::spawn(reconcile_loop(ReconcileLoop {
+        let tasks = vec![AbortOnDrop(tokio::spawn(reconcile_loop(ReconcileLoop {
             namespace: namespace.clone(),
-            hydrator: hydrator.clone(),
-            sender: gossip_sender,
+            hydrator,
             identity,
             policy,
             records: record_plane,
-            local_rx: reconcile_rx,
+            local_rx: Some(local_rx),
             announcements: announce_rx,
             sessions,
             sync: Arc::clone(&sync),
-        }))));
+        })))];
 
-        Ok(Workspace {
+        Workspace {
             namespace,
             sync,
             _router: router,
             _tasks: tasks,
-        })
+        }
     }
 }
 
@@ -2106,84 +2044,19 @@ fn register_bootstrap_peers(
     lookup: &MemoryLookup,
     hydrator: &Hydrator,
     bootstrap: &[EndpointAddr],
-) -> Vec<iroh_base::PublicKey> {
-    bootstrap
-        .iter()
-        .map(|address| {
-            lookup.add_endpoint_info(address.clone());
-            hydrator.add_peer(address.clone());
-            address.id
-        })
-        .collect()
+) {
+    for address in bootstrap {
+        lookup.add_endpoint_info(address.clone());
+        hydrator.add_peer(address.clone());
+    }
 }
 
 fn prime_namespace_baseline(namespace: &Arc<Mutex<Namespace>>) {
     namespace.lock_recover().prime_baseline();
 }
 
-/// The bidirectional pump: broadcast local deltas, apply remote deltas,
-/// and learn peer addresses for hydration as neighbors come up.
-async fn pump_loop(
-    mut receiver: GossipReceiver,
-    sender: GossipSender,
-    mut local_rx: mpsc::UnboundedReceiver<Bytes>,
-    namespace: Arc<Mutex<Namespace>>,
-    hydrator: Arc<Hydrator>,
-    sync: Arc<SyncHandle>,
-    records: Option<Arc<RecordRepository>>,
-) {
-    loop {
-        tokio::select! {
-            maybe = local_rx.recv() => {
-                match maybe {
-                    Some(delta) => {
-                        // A delta carries every change since the previous
-                        // one: never send it in the middle of a changeset.
-                        let _gate = changeset_boundary(records.as_deref()).await;
-                        let _ = sender.broadcast(delta).await;
-                        sync.notify_activity();
-                    }
-                    None => break, // all SyncHandles dropped
-                }
-            }
-            ev = receiver.next() => {
-                match ev {
-                    Some(Ok(Event::Received(msg))) => {
-                        // Apply the delta + break any move-cycle it introduced (cheap,
-                        // pure-CPU). Content-conflict resolution and anti-entropy run in
-                        // reconcile_loop so a slow hydration never blocks local delta propagation.
-                        let resolve_delta = {
-                            let mut ns = namespace
-                                .lock_recover();
-                            ns.apply_remote_and_resolve(msg.content.as_ref())
-                                .unwrap_or_default()
-                        };
-                        sync.notify_record_index_changed();
-                        sync.notify_activity();
-                        if !resolve_delta.is_empty() {
-                            let _gate = changeset_boundary(records.as_deref()).await;
-                            let _ = sender.broadcast(Bytes::from(resolve_delta)).await;
-                        }
-                    }
-                    Some(Ok(Event::NeighborUp(id))) => {
-                        hydrator.add_peer(EndpointAddr::new(id));
-                        sync.notify_activity();
-                    }
-                    Some(Ok(_)) => {}
-                    Some(Err(_)) => {
-                        // Transient gossip error: don't kill the pump (that would silently
-                        // dead-sync the workspace) — back off briefly and keep going.
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                    None => break, // stream ended
-                }
-            }
-        }
-    }
-}
-
 /// Periodic anti-entropy + conflict resolution: pulls each known peer's
-/// changes to recover from dropped gossip or a mid-join window, then
+/// changes to recover from a missed announcement or a mid-join window, then
 /// materializes conflict copies for concurrent content edits.
 struct DirectMeshAuthorizer<'a> {
     peer: &'a AuthenticatedFsPeer,
@@ -2302,7 +2175,7 @@ fn record_replica_observation(
 }
 
 /// How soon every peer is reconciled again after anything happened (a
-/// local change, an announcement, a gossip delta, a pass that changed
+/// local change, an announcement, a pass that changed
 /// something). While nothing happens the wait doubles per timer pass up to
 /// [`IDLE_RECONCILE_CEILING`] ([`IdleBackoff`]).
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(3);
@@ -2331,7 +2204,6 @@ const PEER_DEADLINE: Duration = Duration::from_secs(20);
 struct PeerPass<'a> {
     namespace: &'a Arc<Mutex<Namespace>>,
     hydrator: &'a Hydrator,
-    sender: Option<&'a GossipSender>,
     identity: &'a FsTransportIdentity,
     policy: &'a PeerPolicy,
     records: Option<&'a RecordPlane>,
@@ -2369,17 +2241,6 @@ impl PeerPass<'_> {
         !recent || !self.namespace.lock_recover().in_sync_with(peer)
     }
 
-    async fn broadcast(&self, delta: Vec<u8>) {
-        if !delta.is_empty()
-            && let Some(sender) = self.sender
-        {
-            // A delta carries every change since the last one, including a
-            // changeset being published meanwhile.
-            let _gate = changeset_boundary(self.records.map(|r| &*r.repository)).await;
-            let _ = sender.broadcast(Bytes::from(delta)).await;
-        }
-    }
-
     /// The pass over the peer's session: every exchange on its one
     /// connection.
     async fn over_session(&self, sessions: &SessionPool, peer: &session::Session) -> PassOutcome {
@@ -2410,17 +2271,15 @@ impl PeerPass<'_> {
                         .lock_recover()
                         .insert(peer.peer.device_public_key, Instant::now());
                     changed |= received;
-                    let resolution = self.namespace.lock_recover().post_sync_resolve();
-                    self.broadcast(resolution).await;
+                    // The resolution moves this device's heads, so peers
+                    // take it in their next exchange.
+                    let _ = self.namespace.lock_recover().post_sync_resolve();
                 }
                 Err(error) => report("namespace sync", &error),
             }
         } else if self.read_only {
             match session::pull_namespace(sessions, peer, self.namespace, self.policy).await {
-                Ok((received, resolution)) => {
-                    changed |= received;
-                    self.broadcast(resolution).await;
-                }
+                Ok((received, _resolution)) => changed |= received,
                 Err(error) => report("namespace pull", &error),
             }
         }
@@ -2488,7 +2347,6 @@ impl PeerPass<'_> {
 struct PassShared {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
-    sender: Option<GossipSender>,
     identity: FsTransportIdentity,
     policy: PeerPolicy,
     records: Option<RecordPlane>,
@@ -2528,7 +2386,7 @@ struct PassOutcome {
 /// exchange failed keeps the short wait for [`FAILURE_RETRY_WINDOW`] after
 /// the first failure in a row, then backs off as well, so an absent peer is
 /// not dialled every few seconds forever. Collaborators' changes do not
-/// wait on this: announcements, gossip and peers' own passes act at once.
+/// wait on this: announcements and peers' own passes act at once.
 #[derive(Debug)]
 struct IdleBackoff {
     interval: Duration,
@@ -2548,12 +2406,6 @@ impl IdleBackoff {
     /// How long after the last pass the next timer pass is due.
     const fn interval(&self) -> Duration {
         self.interval
-    }
-
-    /// Something happened outside a pass (a gossip delta, a neighbour):
-    /// the next timer pass is due soon again.
-    const fn activity(&mut self) {
-        self.interval = RECONCILE_INTERVAL;
     }
 
     /// A pass ended at `now`; `timer` says whether the timer started it
@@ -2608,7 +2460,6 @@ impl PassShared {
         let context = PeerPass {
             namespace: &self.namespace,
             hydrator: &self.hydrator,
-            sender: self.sender.as_ref(),
             identity: &self.identity,
             policy: &self.policy,
             records: self.records.as_ref(),
@@ -2756,11 +2607,10 @@ async fn pull_records_from_peer(
 struct ReconcileLoop {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
-    sender: Option<GossipSender>,
     identity: FsTransportIdentity,
     policy: PeerPolicy,
     records: Option<RecordPlane>,
-    local_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
+    local_rx: Option<mpsc::UnboundedReceiver<()>>,
     /// Peers that announced new changes over a session.
     announcements: mpsc::UnboundedReceiver<iroh_base::PublicKey>,
     sessions: Arc<SessionPool>,
@@ -2775,7 +2625,6 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
     let ReconcileLoop {
         namespace,
         hydrator,
-        sender,
         identity,
         policy,
         records,
@@ -2790,7 +2639,6 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
         PassShared {
             namespace: namespace.clone(),
             hydrator: hydrator.clone(),
-            sender: sender.clone(),
             identity: identity.clone(),
             policy,
             records: records.clone(),
@@ -2809,11 +2657,16 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
     let mut first_pass = true;
     let mut conflict_watch = conflict_watch::ConflictWatch::default();
     let trace = std::env::var_os("TILO_FS_NATIVE_TRACE").is_some();
+    // Changes a pass took from one peer are announced to every peer at
+    // once by the next, so they spread live rather than on peers' timers.
+    let mut forward = false;
     loop {
-        // A local change or a peer's announcement starts a pass at once;
-        // otherwise the timer does. Peers heard from elsewhere (gossip)
-        // bring the timer back to its short interval without a pass.
-        let (local_change, timer) = tokio::select! {
+        // A local change, changes taken from a peer, or a peer's
+        // announcement starts a pass at once; otherwise the timer does.
+        let (local_change, timer) = if std::mem::take(&mut forward) {
+            (true, false)
+        } else {
+            tokio::select! {
             () = tokio::time::sleep_until(due) => (false, true),
             mutation = async {
                 match &mut local_rx {
@@ -2827,10 +2680,6 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 (true, false)
             }
             Some(_) = announcements.recv() => (false, false),
-            () = sync.activity.notified() => {
-                backoff.activity();
-                due = due.min(timer_due(backoff.interval()));
-                continue;
             }
         };
         // A burst of changes is one pass: what arrived meanwhile is covered.
@@ -2867,6 +2716,7 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
         };
         let outcome = exchanges.run(known_peers, plan).await;
         let namespace_changed = outcome.changed;
+        forward = namespace_changed && !local_change && peer_count > 1;
         first_pass = false;
         backoff.after_pass(timer, outcome, Instant::now());
         due = timer_due(backoff.interval());
@@ -2955,12 +2805,7 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 let mut ns = namespace.lock_recover();
                 crate::conflict::materialize(&mut ns, &c, len, unix_now_ms())
             };
-            if !delta.is_empty()
-                && let Some(sender) = &sender
-            {
-                let _gate = changeset_boundary(records.as_ref().map(|r| &*r.repository)).await;
-                let _ = sender.broadcast(Bytes::from(delta)).await;
-            }
+            sync.announce_delta(&delta);
         }
     }
 }

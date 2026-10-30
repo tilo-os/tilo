@@ -6,14 +6,13 @@ packages, the pieces `os/components.toml` does not list. For those, rebuild the
 image and move the running VM onto it:
 
 ```sh
-tilo-vm vm upgrade --ref my-branch     # t builds and publishes the branch, the VM pins it, reboot
 tilo-vm vm upgrade --from sha:1a2b3c4  # main's build of a commit, the same way
 tilo-vm vm upgrade                     # back to the VM's channel's newest image
 tilo-vm vm rollback-image              # back to the image before, if the new one is bad
 ```
 
-A published image goes the way every device takes an update
-(docs/development/devices.md): the VM pins it in its channel's place
+A published image goes the way every device takes an update:
+the VM pins it in its channel's place
 (`tilo-update-channel pin`) and its own `tilo-verified-update` checks the
 signature and stages it.
 
@@ -43,29 +42,25 @@ needed and how much is free.
 | What changed | Loop |
 |---|---|
 | a component `os/components.toml` lists (shell, fs, an app, ...) | `tilo-vm swap <component>`: seconds, no reboot (`tilo-vm guide swapping`) |
-| anything else, on a pushed branch or main | `tilo-vm vm upgrade --ref <branch>` or `--from sha:<commit>` |
-| anything else, where t cannot publish the branch yet | for now: `tilo-vm vm upgrade --from local`, or build on another machine (below) and `vm upgrade --image target/tilo-vm/image` |
+| anything else, on main | `tilo-vm vm upgrade --from sha:<commit>` |
+| anything else, on a branch | `tilo-vm vm upgrade --from local`, or build on another machine (below) and `vm upgrade --image target/tilo-vm/image` |
 
 Swap whatever it can swap. An image upgrade reboots the VM and restarts every
 slot's session, including other agents'.
 
-## From a published build: `--ref <branch>`, `--from sha:<commit>`
+## From a published build: `--from sha:<commit>`
 
-Every image a device may follow is signed with the development key: main's by
-`publish-os-dev-<arch>` and `publish-os-board-<board>` in
-`registry.tilo.so/tilo/tilo-vm`, a branch's by `publish-os-ref-<target>` in the
-branches' own `registry.tilo.so/tilo/tilo-vm-ref`:
+Every image a device may follow is signed with the development key and
+published in `registry.tilo.so/tilo/tilo-vm`:
 
 | Tag | What |
 | --- | --- |
 | `<arch>-ci`, `<board>-ci` | the dev channel: main's newest gated image |
 | `main-<sha7>-ci-<arch>`, `main-<sha7>-<board>` | main's build of one commit |
-| `tilo-vm-ref:ref-<branch>-<sha7>-<target>` | a branch's build, published when dispatched |
 
-`--ref <branch>` runs `t dispatch publish-os-ref-<target> --ref <branch>
---publish` for the VM's target (its board, else its architecture) and moves the
-VM onto the result. `--from sha:<commit>` takes the build of that commit: main's,
-else a branch's found by listing the tags. A pinned build lasts until the VM's
+`--from sha:<commit>` takes the build of that commit: main's dev image, else a
+dev image built here from that commit's integration image (`tilo-ci`), found by
+listing its tags. A pinned build lasts until the VM's
 channel publishes something newer; `tilo-vm vm upgrade` without an image returns
 to the channel at once. To see what exists:
 `skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm`.
@@ -75,7 +70,7 @@ to the channel at once. To see what exists:
 The local builds below (`image build`, `--from local`, `--image <layout>`) are the
 temporary path for an image t cannot yet publish from a branch: they send an
 unsigned image over SSH instead of the device's signed update path, and go away
-once every branch can be published (docs/development/devices.md).
+once every branch can be published.
 
 `tilo-vm image build` runs the same build as `--from local` without a VM and
 leaves the dev image as an OCI layout, `target/tilo-vm/image`, with its

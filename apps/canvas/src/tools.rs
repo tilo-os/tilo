@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use ui::LocalState;
+// `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::icons::Icon;
+use ui::tilo_resource;
 use ui::vello::peniko::Color;
 
 use crate::brushes::{DYNAMICS, Dynamics, Preset};
@@ -509,7 +511,56 @@ const BRUSH_LARGEST_LEAST: u8 = 120; // a brush width in artwork units, not on-s
 /// enough to lay in a sky in a few strokes on any size of artwork.
 const BRUSH_LARGEST_SHARE: f64 = 0.25;
 
+/// What the brush paints with next, chosen in the inspector or by the
+/// palette, an agent or a script alike. It changes only what this window
+/// holds, never the artwork.
+#[derive(Clone, Debug, PartialEq, Eq, ui::tilo_resource::Effect)]
+#[effect(operation = "canvas.tools", app = "so.tilo.canvas")]
+pub enum ToolEffect {
+    /// Use brush preset.
+    #[effect(view)]
+    UseBrush {
+        #[param("The preset's name: round, pen, pencil, marker, airbrush, …")]
+        preset: String,
+    },
+    /// Use colour.
+    ///
+    /// The colour the brush paints on a plain layer.
+    #[effect(view)]
+    UseColour {
+        #[param("The colour, #rrggbb")]
+        colour: String,
+    },
+    /// Load pigment.
+    ///
+    /// The pigment of the layer's medium the brush paints with.
+    #[effect(view)]
+    UsePigment {
+        #[param("The pigment's name")]
+        name: String,
+        #[param("Its masstone, #rrggbb")]
+        colour: String,
+    },
+}
+
 impl Tools {
+    /// Take up what `effect` chooses.
+    ///
+    /// # Errors
+    /// Returns why a brush preset is not one there is.
+    pub fn answer(&self, effect: ToolEffect) -> ui::framework::EffectAnswer {
+        match effect {
+            ToolEffect::UseBrush { preset } => {
+                let preset = Preset::parse(&preset)
+                    .ok_or_else(|| format!("No brush `{preset}`: one of {}", Preset::names()))?;
+                self.choose_preset(preset);
+            }
+            ToolEffect::UseColour { colour } => self.colour.set(colour),
+            ToolEffect::UsePigment { name, colour } => self.pigment.set(Some((name, colour))),
+        }
+        Ok(ui::framework::Effected::done())
+    }
+
     /// A smaller (`[`) or larger (`]`) brush and eraser: a step of the
     /// size slider's travel, as painters' hands expect. Whether `key` was
     /// one of them.

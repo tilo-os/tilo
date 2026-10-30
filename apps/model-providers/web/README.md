@@ -3,7 +3,9 @@
 Run from the repository root:
 
 ```sh
-t test model-providers-web
+cargo build --locked -p tilo-app-cli --bin tilo-app
+target/debug/tilo-app build --target web --bundle app apps/model-providers
+node apps/model-providers/web/run.mjs "$PWD/target/tilo-app/web/model-providers/bundle"
 ```
 
 This builds the SDK's production **single-app** bundle for
