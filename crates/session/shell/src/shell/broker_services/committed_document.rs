@@ -160,6 +160,17 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             RecordRead::Own
         }
     }
+    fn holds_record(&self, room: &str, app: &str, record: &str) -> bool {
+        use tilo_action_broker::services::RecordRead;
+        if self.record_read(room, app, record) != RecordRead::Own {
+            return true;
+        }
+        let Some(room_id) = super::super::state::RoomId::parse(room) else {
+            return false;
+        };
+        let route = tilo_action_broker::route::CrdtRoute::record(app, room.to_owned(), record);
+        self.owner_holds(room_id, app, record) || self.holds_sealed_writes(&route)
+    }
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
         context.revalidate()?;
         let route = context.route();
@@ -374,7 +385,7 @@ impl NativeOwnerCommitService {
     /// the channel. A read of those would wait for the missing changes
     /// forever, so the record is the app's own to open, from the copy it
     /// keeps, as a new one is; it then hands its channel what it holds.
-    fn reads_sealed_writes(
+    pub(super) fn reads_sealed_writes(
         &self,
         room: super::super::state::RoomId,
         route: &tilo_action_broker::route::CrdtRoute,
@@ -405,7 +416,7 @@ impl NativeOwnerCommitService {
     /// What the sealed writes this device holds of `route`'s record in
     /// `room` make, opened with the keys of the record's channel, within
     /// `maximum` bytes.
-    fn held_sealed_record(
+    pub(super) fn held_sealed_record(
         &self,
         room: super::super::state::RoomId,
         route: &tilo_action_broker::route::CrdtRoute,
@@ -694,7 +705,7 @@ async fn prepare_here(
 /// a mutation reassembled from its segments. `None` while a write builds on
 /// one that has not arrived. At most `maximum` bytes are opened.
 /// What the sealed writes of one record this device holds make.
-enum HeldSealed {
+pub(super) enum HeldSealed {
     /// Nothing to read yet: no write, or the channel's keys are on their way.
     Waiting,
     /// The record, whole.

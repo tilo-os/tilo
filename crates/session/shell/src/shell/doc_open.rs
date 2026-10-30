@@ -1039,7 +1039,7 @@ pub(crate) fn grant_read_for_open(
 /// Grant `package_id` a session read of `path` in workspace `ws_id`, with
 /// this device's provenance for it. `None` when the workspace is gone;
 /// `false` when the read cannot be vouched for and was not granted.
-fn grant_document_read(
+pub(crate) fn grant_document_read(
     tree: &mut crate::shell::state::WorkspaceTree,
     ws_id: crate::shell::state::WorkspaceId,
     package_id: &str,

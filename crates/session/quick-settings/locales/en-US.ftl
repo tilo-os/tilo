@@ -59,6 +59,11 @@ qs-clipboard-empty = Empty
 qs-clipboard-empty-hint = Nothing copied yet
 qs-connected = Connected
 qs-connecting = Connecting…
+qs-copy-detail-from = { $age }, from { $device }
+qs-copy-detail-this-device = { $age }, from this computer
+qs-copy-files = Files
+qs-copy-formatted = Formatted text
+qs-copy-image = Image
 qs-devices = Devices
 qs-devices-count = { $count ->
     [one] 1 device

@@ -144,6 +144,9 @@ fn answer(
             }
             Ask::OpenWebsite(website)
         }
+        ContactsEffect::ReadDuplicate { survivor, source } => {
+            return Ok(Effected::value(read_duplicate(&book, survivor, source)?));
+        }
         ContactsEffect::OpenReview { survivor, source } => {
             let kept = book
                 .contact(survivor)
@@ -169,6 +172,39 @@ fn answer(
     };
     asked.borrow_mut().asks.push(ask);
     Ok(Effected::done())
+}
+
+/// The possible duplicate `source` of `survivor`: both contacts, by item and
+/// name, and what they share.
+fn read_duplicate(
+    book: &Contacts,
+    survivor: ContactId,
+    source: ContactId,
+) -> Result<serde_json::Value, String> {
+    let kept = book
+        .contact(survivor)
+        .ok_or_else(|| "surviving contact no longer exists".to_string())?;
+    let other = book
+        .contact(source)
+        .ok_or_else(|| "source contact no longer exists".to_string())?;
+    let candidate = crate::actions::duplicate_candidate(kept, other)
+        .ok_or_else(|| "contacts are no longer a likely duplicate".to_string())?;
+    let person = |contact: &crate::model::Contact| {
+        serde_json::json!({
+            "item": crate::resource::contact_resource_id(contact.id),
+            "name": contact.display_name(),
+        })
+    };
+    Ok(serde_json::json!({
+        "kind": "contacts.duplicate",
+        "survivor": person(kept),
+        "source": person(other),
+        "shared": candidate.reasons.iter().map(|reason| match reason {
+            crate::actions::DuplicateReason::Email => "email",
+            crate::actions::DuplicateReason::Phone => "phone",
+            crate::actions::DuplicateReason::Name => "name",
+        }).collect::<Vec<_>>(),
+    }))
 }
 
 /// Settle the pending import review `token`, when it is still pending.

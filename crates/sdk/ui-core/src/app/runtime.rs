@@ -75,6 +75,9 @@ pub(super) struct LayoutRuntime {
     /// Last settled logical content size (the window inside `safe_area`);
     /// scale changes also require a solve.
     pub(super) last_layout_logical: Option<(f64, f64)>,
+    /// The display scale of that layout: its edges are on this scale's
+    /// device pixels, so another scale is solved again even at one size.
+    pub(super) last_layout_scale: Option<f32>,
     /// System chrome drawn over the window, which content stays clear of.
     pub(super) safe_area: crate::scale::SafeArea,
     /// The row the runner draws the app's window-bar slots in, outside a
@@ -131,6 +134,7 @@ impl LayoutRuntime {
             remounts: 0,
             last_frame_size: None,
             last_layout_logical: None,
+            last_layout_scale: None,
             safe_area: crate::scale::SafeArea::default(),
             slot_bar_inset: 0.0,
             content_origin: vello::kurbo::Point::ORIGIN,

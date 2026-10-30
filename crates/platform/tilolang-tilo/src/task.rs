@@ -10,9 +10,10 @@
 //! The door ([`TaskDoor`]) is the task's connection: in the session the program connection to
 //! the agent door (`crates/platform/tilolang-host/src/task.rs`), whose caller is the task.
 //!
-//! **Reads** go through each app's `read-values`, the record's fields as they are stored, read by
-//! the app that holds them as the task's read ([`Host::read_values`]); one resource is read once
-//! per program.
+//! **Reads** go to the door ([`TaskDoor::read`], [`TaskDoor::query`]). In the session the task's
+//! host answers them itself from each app's record as the door hands it over, read with the
+//! app's package ([`crate::task_records::RecordReads`]): no app runs for them. One resource is
+//! read once per program.
 //!
 //! **Steps.** One program is one step. Run without `confirm`, it first runs provisionally: its
 //! invocations are listed, not sent, and nothing it bound is kept. One that changed nothing has
@@ -28,18 +29,18 @@ use serde_json::{Value as Json, json};
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::flow::Journal;
 use tilolang_runtime::ids::{DocId, RunId, TypeId};
-use tilolang_runtime::meta::Meta;
+use tilolang_runtime::meta::{Meta, parse_ty};
 use tilolang_runtime::program::{ProgramOutcome, Session};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::{
     Applied, ChangeNote, ChangeSummary, FieldSpec, FieldValue, Mutation, NewRecord, OutboxEntry,
     Scalar, Store, StoreError, SubId, Txn,
 };
-use tilolang_runtime::value::{ResourceRef, Value, from_json, to_json};
+use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{ActionInfo, Authority, Decision, ModuleHash, Principal, Runtime};
 
 use crate::bundle::Bundle;
-use crate::host::Host;
+use crate::host::{Host, argument_json};
 use crate::meta::MetaExt as _;
 use crate::publish::{package_resource_id, resource_id};
 
@@ -64,6 +65,10 @@ pub trait TaskDoor {
     /// # Errors
     /// Why it cannot be read.
     fn query(&self, app: &str, request: &Json) -> Result<Json, String>;
+
+    /// A program starts: what was read for an earlier one is read again
+    /// ([`crate::task_records::RecordReads::forget`]).
+    fn begin_program(&self) {}
 }
 
 /// How an invocation the door made ended.
@@ -101,6 +106,8 @@ pub struct TaskSession {
     session: RefCell<Session>,
     steps: Rc<RefCell<Steps>>,
     reads: Rc<RefCell<Reads>>,
+    /// Where the task reaches the workspace.
+    door: Rc<dyn TaskDoor>,
 }
 
 /// What a runtime of a task decides itself: nothing. Every change it makes goes to its
@@ -168,7 +175,29 @@ impl TaskSession {
             session: RefCell::new(Session::new()),
             steps,
             reads,
+            door: Rc::clone(door),
         })
+    }
+
+    /// Every installed app the task's programs may name, by the name they name it with: its
+    /// id and its declarations (`{alias: {app, signatures: [{name, signature}]}}`), read from
+    /// the packages alone, whether or not any app runs.
+    #[must_use]
+    pub fn catalogue(&self) -> Json {
+        let mut apps = serde_json::Map::new();
+        for signature in self.runtime.catalogue() {
+            if signature.app == tilolang::HOST_APP {
+                continue;
+            }
+            let alias = tilolang::resolve::default_alias(&signature.app);
+            let app = apps
+                .entry(alias)
+                .or_insert_with(|| json!({"app": signature.app, "signatures": []}));
+            if let Some(signatures) = app["signatures"].as_array_mut() {
+                signatures.push(json!({"name": signature.name, "signature": signature.render()}));
+            }
+        }
+        Json::Object(apps)
     }
 
     /// Read the time from `clock` (ISO-8601 UTC), for `now` and the times filters write.
@@ -211,6 +240,7 @@ impl TaskSession {
             ..Steps::default()
         };
         self.reads.borrow_mut().known.clear();
+        self.door.begin_program();
         let inputs = tilolang_runtime::reads::ProgramInputs {
             me: self.person.clone(),
             ..Default::default()
@@ -249,6 +279,13 @@ impl TaskSession {
             "steps": steps.planned,
             "changed": steps.done,
             "apps": steps.apps,
+            // Where each app it changed takes a step back: the app's own resource, by its id,
+            // which the history verbs are published on.
+            "history": steps
+                .apps
+                .iter()
+                .map(|app| json!({"app": app, "resource": package_resource_id(app)}))
+                .collect::<Vec<_>>(),
         });
         (answer, steps)
     }
@@ -284,7 +321,7 @@ impl Invoker for DoorInvoker {
         let Some(meta) = self.apps.get(app) else {
             return Invoked::Refused(format!("this task may use no app {app}"));
         };
-        let call = match call_of(meta, invocation) {
+        let call = match call_of(&self.apps, meta, invocation) {
             Ok(call) => call,
             Err(why) => return Invoked::Failed(why),
         };
@@ -331,7 +368,11 @@ impl Invoker for DoorInvoker {
 /// The door's call for `invocation` of the package `meta`: a declared action on its subject
 /// (its first parameter, when it is one of the package's types) or on the package, its other
 /// arguments by name; a field edit on its resource.
-fn call_of(meta: &Meta, invocation: &Invocation) -> Result<Json, String> {
+fn call_of(
+    apps: &HashMap<String, Meta>,
+    meta: &Meta,
+    invocation: &Invocation,
+) -> Result<Json, String> {
     match invocation {
         Invocation::Action {
             app, action, args, ..
@@ -348,23 +389,18 @@ fn call_of(meta: &Meta, invocation: &Invocation) -> Result<Json, String> {
             };
             let mut arguments = serde_json::Map::new();
             for (name, value) in args.iter().skip(usize::from(subject.is_some())) {
-                let param = declared.params.iter().find(|param| param.name == *name);
-                let json = match (value, param) {
-                    // A flag travels as the integer the guest boxed it as.
-                    (Value::Int(n), Some(param)) if param.ty == "Bool" => json!(*n != 0),
-                    // A resource of the app's own type, as the catalogue refers to it.
-                    (Value::Ref(r), Some(param)) => match meta.type_named(&param.ty) {
-                        Some(ty) => json!({
-                            "app": app,
-                            "kind": meta.kind_of(&ty.name),
-                            "id": r.target.id_string(),
-                            "label": "",
-                        }),
-                        None => argument_json(value)?,
-                    },
-                    _ => argument_json(value)?,
+                let param = declared
+                    .params
+                    .iter()
+                    .find(|param| param.name == *name)
+                    .ok_or_else(|| format!("{action} takes no argument `{name}`"))?;
+                let ty = parse_ty(&param.ty, app)?;
+                let owner = |other: &str| {
+                    apps.get(other)
+                        .cloned()
+                        .ok_or_else(|| format!("this task may use no app {other}"))
                 };
-                arguments.insert(name.clone(), json);
+                arguments.insert(name.clone(), argument_json(&owner, meta, value, &ty)?);
             }
             Ok(json!({
                 "app": app,
@@ -397,15 +433,6 @@ fn call_of(meta: &Meta, invocation: &Invocation) -> Result<Json, String> {
                 "arguments": {"field": field_id, "value": value},
             }))
         }
-    }
-}
-
-/// An argument as the app's published action takes it ([`crate::host`]'s `value_of`): a resource
-/// by its published id, anything else as the runtime encodes it.
-fn argument_json(value: &Value) -> Result<Json, String> {
-    match value {
-        Value::Ref(r) => Ok(Json::String(r.target.id_string())),
-        other => to_json(other),
     }
 }
 

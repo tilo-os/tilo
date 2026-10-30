@@ -239,6 +239,22 @@ type MergePreflightResult = Arc<
 >;
 /// A remote account's folder opens while the cloud service has it mounted.
 /// A disabled or not-yet-mounted account says why instead.
+/// What the entry `entry` is, the entry's read: its name, path, kind,
+/// size, when it last changed, and whether its content is here.
+fn entry_answer(entry: &Entry) -> serde_json::Value {
+    serde_json::json!({
+        "name": entry.name,
+        "path": entry.path.display().to_string(),
+        "folder": entry.is_dir,
+        "type": entry.mime,
+        "size": entry.app.as_ref().map_or(Some(entry.size), |app| app.size),
+        "modified": entry.modified.map(|modified| modified.to_rfc3339()),
+        "app": entry.app.as_ref().map(|app| crate::applications::kind_label(app.kind)),
+        "content_here": entry.content_is_local(),
+        "conflict": entry.is_conflict(),
+    })
+}
+
 fn remote_folder_availability(account: &crate::remote_accounts::RemoteAccount) -> Availability {
     if account.health == crate::remote_accounts::RemoteAccountHealth::Disabled {
         return Availability::Unavailable {
@@ -2501,6 +2517,12 @@ impl FilesState {
                     .ok_or_else(|| "file location is no longer available".to_string())?;
                 self.open_path(target);
                 None
+            }
+            FilesEffect::ReadEntry { entry } => {
+                let entry = self
+                    .entry_by_resource_id(&entry)
+                    .ok_or_else(|| "file location is no longer available".to_string())?;
+                Some(entry_answer(entry))
             }
             FilesEffect::Reveal { record } => {
                 self.reveal_record(&record)?;

@@ -9,16 +9,14 @@ use tasks::model::{
     ConfirmationState, Issue, MessageKind, ModelChoice, RunPhase, Tracker, issue_resource,
 };
 use tilo_action_broker::services::{
-    NativeTaskActionRequirement, TRACKER_APP, TrackerAnswer, TrackerDirection, TrackerQuestion,
-    TrackerRun, TrackerRuns,
+    NativeTaskActionRequirement, TRACKER_APP, TRACKER_RECORD, TrackerAnswer, TrackerDirection,
+    TrackerQuestion, TrackerRun, TrackerRuns,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_resource::{Id, Reader};
 
 use super::NativeOwnerCommitService;
 
-/// The tracker's record: the app's one record of the workspace.
-const TRACKER_RECORD: &str = "";
 /// The largest tracker the broker reads.
 const MAX_TRACKER_BYTES: usize = 16 * 1024 * 1024;
 /// How far up a chain of parents a run's model is looked for. A tracker
@@ -178,6 +176,17 @@ impl NativeTrackerRuns {
             .lock_recover()
             .get(room)
             .map(|(revision, _)| *revision);
+        // A sealed room's owner keeps no replica of its records: the tracker
+        // is what the sealed writes this device holds of it make, as an
+        // app's read of it is.
+        let route = tilo_action_broker::route::CrdtRoute::record(
+            TRACKER_APP,
+            room.to_owned(),
+            TRACKER_RECORD,
+        );
+        if self.owner.reads_sealed_writes(room_id, &route) {
+            return self.sealed_tracker(room, room_id, &route, known);
+        }
         let owner = &self.owner.opened_owner("tracker owner unavailable")?;
         let read = owner.with_current(room_id, |view| {
             view.read_document_with_history(
@@ -201,11 +210,7 @@ impl NativeTrackerRuns {
             Ok(DocumentRead::Captured(document)) => {
                 let doc = automerge::AutoCommit::load(&document.bytes)
                     .map_err(|error| format!("the tracker does not load: {error}"))?;
-                let tracker = Arc::new(TrackerView::of(
-                    Reader::<Tracker>::read(&doc)
-                        .map_err(|error| format!("the tracker does not read: {error}"))?
-                        .state(),
-                ));
+                let tracker = view_of(&doc)?;
                 held.insert(room.to_owned(), (document.revision, tracker.clone()));
                 Ok(Some(tracker))
             }
@@ -213,11 +218,60 @@ impl NativeTrackerRuns {
                 Ok(held.get(room).map(|(_, tracker)| tracker.clone()))
             }
             // A room with no tracker yet holds no runs.
-            Ok(DocumentRead::CheckpointPending) | Err(_) if known.is_none() => Ok(None),
+            Ok(DocumentRead::CheckpointPending) if known.is_none() => Ok(None),
+            Err(error) if known.is_none() => {
+                tracing::debug!(room, %error, "the room's tracker could not be read; it holds no runs yet");
+                Ok(None)
+            }
             Ok(DocumentRead::CheckpointPending) => Err("the tracker is between checkpoints".into()),
             Err(error) => Err(error),
         }
     }
+}
+
+impl NativeTrackerRuns {
+    /// Sealed `room`'s tracker as the sealed writes this device holds of it
+    /// make it; the one read last while the channel's keys are on their way.
+    fn sealed_tracker(
+        &self,
+        room: &str,
+        room_id: super::super::state::RoomId,
+        route: &tilo_action_broker::route::CrdtRoute,
+        known: Option<[u8; 32]>,
+    ) -> Result<Option<Arc<TrackerView>>, String> {
+        use super::committed_document::HeldSealed;
+        let held_view = |held: &HashMap<String, Read>| held.get(room).map(|(_, view)| view.clone());
+        match self
+            .owner
+            .held_sealed_record(room_id, route, MAX_TRACKER_BYTES)?
+        {
+            HeldSealed::Readable(mut doc) => {
+                let revision = tilo_peer_state::committed_document_revision(&doc.get_heads());
+                if known == Some(revision) {
+                    return Ok(held_view(&self.read.lock_recover()));
+                }
+                let tracker = view_of(&doc)?;
+                self.read
+                    .lock_recover()
+                    .insert(room.to_owned(), (revision, tracker.clone()));
+                Ok(Some(tracker))
+            }
+            HeldSealed::Waiting => Ok(held_view(&self.read.lock_recover())),
+            HeldSealed::Incomplete { missing } => Err(format!(
+                "the sealed writes this device holds of the tracker build on {missing} \
+                 change(s) it does not hold"
+            )),
+        }
+    }
+}
+
+/// The tracker `doc` holds, as the shell reads it.
+fn view_of(doc: &automerge::AutoCommit) -> Result<Arc<TrackerView>, String> {
+    Ok(Arc::new(TrackerView::of(
+        Reader::<Tracker>::read(doc)
+            .map_err(|error| format!("the tracker does not read: {error}"))?
+            .state(),
+    )))
 }
 
 /// The runs `tracker` holds: every issue with a run, as the broker reads it.
@@ -256,6 +310,55 @@ fn inherited_model(tracker: &Tracker, issue: &Issue) -> Option<ModelChoice> {
     }
 }
 
+/// The most characters of earlier conversation a run's instruction carries,
+/// all messages together: the newest are kept and the older ones counted,
+/// so a long chat stays within what a run's instruction may hold.
+const CONVERSATION_CHARS: usize = 12 * 1024;
+/// The most characters of one earlier message a run is told.
+const SAID_CHARS: usize = 1_500;
+
+/// `instruction` with the conversation before the run appended, as the
+/// agent reads a request that continues one
+/// ([`runtime_collab::INSTRUCTION_CONVERSATION`]): one line per message,
+/// the person's and the agent's own told apart. A follow-up in a chat
+/// ("now do the same for the other two") is understood through it.
+fn with_conversation(instruction: String, said: &[tasks::model::Said]) -> String {
+    if said.is_empty() {
+        return instruction;
+    }
+    let mut kept = Vec::new();
+    let mut room = CONVERSATION_CHARS;
+    for message in said.iter().rev() {
+        let mut text: String = message.text.chars().take(SAID_CHARS).collect();
+        if text.len() < message.text.len() {
+            text.push('…');
+        }
+        let line = format!(
+            "\n{}{}",
+            if message.agent { "You: " } else { "Person: " },
+            text.replace('\n', "\n  ")
+        );
+        if line.len() > room {
+            break;
+        }
+        room = room.saturating_sub(line.len());
+        kept.push(line);
+    }
+    let mut out = instruction;
+    out.push_str(runtime_collab::INSTRUCTION_CONVERSATION);
+    let left_out = said.len().saturating_sub(kept.len());
+    if left_out > 0 {
+        let _ = std::fmt::Write::write_fmt(
+            &mut out,
+            format_args!("\n({left_out} earlier messages left out)"),
+        );
+    }
+    for line in kept.into_iter().rev() {
+        out.push_str(&line);
+    }
+    out
+}
+
 fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
     let run = issue.run.as_ref()?;
     let agent = run.agent.0.strip_prefix("agent:").unwrap_or(&run.agent.0);
@@ -292,16 +395,20 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
     Some(TrackerRun {
         issue: issue_resource(id),
         title: issue.title.clone(),
-        instruction: issue.instruction(),
+        instruction: with_conversation(issue.instruction(), &issue.conversation_before(run.epoch)),
         agent: agent.to_owned(),
         epoch: run.epoch,
         starter: run.starter.clone(),
         active: run.phase.active(),
+        finished_by_agent: matches!(run.phase, RunPhase::Done | RunPhase::Failed),
         paused_through: run.paused.as_ref().map(|paused| paused.through),
         budget: issue.budget.as_ref().map(|budget| {
             collab_types::task_budget::TaskExecutionBudget {
                 turn_ms: u32::try_from(budget.turn_ms).unwrap_or(u32::MAX),
                 total_ms: u32::try_from(budget.total_ms).unwrap_or(u32::MAX),
+                max_turns: budget
+                    .max_turns
+                    .map(|turns| u32::try_from(turns).unwrap_or(u32::MAX)),
             }
         }),
         subject: issue
@@ -315,11 +422,34 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
         }),
         directions,
         question,
+        // A delegation that does not decode is carried with why: the agent's
+        // check refuses the run so, never reading it as a collaborator's.
+        delegation: run.delegation.as_deref().map(|hex| {
+            tilo_peer_state::join::task_delegation::TaskDelegation::from_hex(hex)
+                .map(|delegation| delegation.encode())
+                .map_err(|error| error.to_string())
+        }),
     })
 }
 
 impl TrackerRuns for NativeTrackerRuns {
+    /// Every room whose replica this device holds keeps its tracker here:
+    /// one of committed documents and one of sealed channels alike, whose
+    /// sealed writes [`Self::tracker`] opens with the room's history keys.
+    /// Only the first used to count, so in a sealed room (a fresh person's
+    /// own) a task agent's join found "the room's tracker is unavailable"
+    /// and no run ever reached its agent.
     fn requires_room(&self, room: &str) -> bool {
+        tilo_owner_commit::OwnerCommitService::records_effects(&self.owner, room)
+    }
+
+    /// A room whose documents this device commits confines its agents to
+    /// their runs, as it always has. A room of sealed channels (a person's
+    /// own) serves runs too now, but whether an agent there may also act on
+    /// a grant alone (an agent on a box beside the desktop, through the
+    /// door) is its own decision, not a side effect of reading the tracker:
+    /// it stays as it was.
+    fn confines_agents_to_tasks(&self, room: &str) -> bool {
         tilo_owner_commit::OwnerCommitService::requires_room(&self.owner, room)
     }
 
@@ -360,13 +490,15 @@ impl TrackerRuns for NativeTrackerRuns {
             .unwrap_or_default())
     }
 
-    fn check_agent(&self, room: &str, agent: &str) -> Result<(), String> {
+    fn check_agent(&self, room: &str, run: &TrackerRun) -> Result<(), String> {
         let room_id = super::super::state::RoomId::parse(room).ok_or("invalid tracker room")?;
         let owner = &self.owner.opened_owner("tracker owner unavailable")?;
         owner.with_current(room_id, |view| {
-            view.peer()
-                .workspace()
-                .check_admitted_agent(agent, std::time::SystemTime::now())
+            view.peer().workspace().check_admitted_agent(
+                &run.agent,
+                run.delegation()?,
+                std::time::SystemTime::now(),
+            )
         })
     }
 
@@ -382,7 +514,7 @@ impl TrackerRuns for NativeTrackerRuns {
             let now = std::time::SystemTime::now();
             view.peer()
                 .workspace()
-                .check_admitted_agent(&run.agent, now)?;
+                .check_admitted_agent(&run.agent, run.delegation()?, now)?;
             requirement.check_tracker(view.peer(), room, run, now)
         })
     }
@@ -454,6 +586,197 @@ mod tests {
         assert!(run.instruction.contains("Keep the headings"));
         assert_eq!(run.directions.len(), 1);
         assert_eq!((run.applied_revision(), run.latest_revision()), (0, 1));
+    }
+
+    /// A chat's run reaches its agent with the chat's whole budget: its turn
+    /// ceiling as well as its time, and the tracker admits no more turns
+    /// than the run's envelope does.
+    #[test]
+    fn a_chats_run_carries_its_turn_ceiling_to_the_agent() {
+        assert_eq!(
+            tasks::model::MAX_TURNS,
+            u64::from(collab_types::task_budget::MAX_RUN_TURNS)
+        );
+        let mut person = Replica::<Tracker>::new().as_author("ada");
+        person
+            .apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
+                ask: tasks::model::AgentRequest {
+                    id: tilo_resource::Id::from_raw("chat"),
+                    title: "Review today's applications".into(),
+                    body: None,
+                    agent: "claude".into(),
+                    model: None,
+                    subject: None,
+                    quick: false,
+                    chat: true,
+                    delegation: None,
+                },
+            }))
+            .unwrap();
+        let runs = runs_of(&person.state().unwrap());
+        let [run] = runs.as_slice() else {
+            panic!("one run: {runs:?}");
+        };
+        let budget = run.budget.expect("a chat has a budget");
+        budget.validate().unwrap();
+        assert_eq!(
+            budget.max_turns.map(u64::from),
+            Some(tasks::model::CHAT_TURNS)
+        );
+        assert_eq!(u64::from(budget.total_ms), tasks::model::MAX_TOTAL_MS);
+    }
+
+    /// A conversation goes on after a run ended: what the person tells the
+    /// agent then starts the next run, and the broker hands that run the
+    /// message as its one direction, never the earlier run's.
+    #[test]
+    fn a_message_after_a_run_ended_is_the_next_runs_direction() {
+        let mut person = Replica::<Tracker>::new().as_author("ada");
+        person
+            .apply(Tracker::CREATE.with(tracker::Create {
+                title: "Review the applications".parse().expect("not blank"),
+                parent: None,
+                body: None,
+                status: None,
+                assignee: Some("agent:claude".into()),
+            }))
+            .unwrap();
+        let issue = person
+            .state()
+            .unwrap()
+            .issues
+            .ids()
+            .next()
+            .cloned()
+            .unwrap();
+        let tell = |text: &str| {
+            Tracker::TELL_AGENT.with(tracker::TellAgent {
+                issue: issue.clone(),
+                text: text.parse().expect("not blank"),
+            })
+        };
+        person.apply(tell("Start with the newest")).unwrap();
+        let mut agent = person.fork().as_agent_for("agent:claude", "ada");
+        agent
+            .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+                issue: issue.clone(),
+                outcome: tasks::model::RunOutcome::Done,
+                summary: None,
+            }))
+            .unwrap();
+        person.sync_with(&mut agent).unwrap();
+        assert!(
+            runs_of(&person.state().unwrap())
+                .iter()
+                .all(|run| !run.active)
+        );
+
+        person.apply(tell("Now draft the replies")).unwrap();
+        let runs = runs_of(&person.state().unwrap());
+        let [run] = runs.as_slice() else {
+            panic!("one run: {runs:?}");
+        };
+        assert_eq!((run.epoch, run.active), (2, true));
+        let directions: Vec<&str> = run
+            .directions
+            .iter()
+            .map(|direction| direction.text.as_str())
+            .collect();
+        assert_eq!(directions, ["Now draft the replies"]);
+    }
+
+    /// A follow-up run is told the conversation before it: what the person
+    /// asked and what the agent answered and did, oldest first, and not the
+    /// message it is to act on now, which is its direction. A long chat is
+    /// told its newest messages, the older ones counted.
+    #[test]
+    fn a_follow_up_run_is_told_the_conversation_before_it() {
+        let mut person = Replica::<Tracker>::new().as_author("ada");
+        person
+            .apply(Tracker::CREATE.with(tracker::Create {
+                title: "Review the applications".parse().expect("not blank"),
+                parent: None,
+                body: Some("Jane Doe, Ravi Patel and Mei Lin applied today".into()),
+                status: None,
+                assignee: Some("agent:claude".into()),
+            }))
+            .unwrap();
+        let issue = person
+            .state()
+            .unwrap()
+            .issues
+            .ids()
+            .next()
+            .cloned()
+            .unwrap();
+        let tell = |text: &str| {
+            Tracker::TELL_AGENT.with(tracker::TellAgent {
+                issue: issue.clone(),
+                text: text.parse().expect("not blank"),
+            })
+        };
+        person.apply(tell("Start with Jane Doe")).unwrap();
+        let mut agent = person.fork().as_agent_for("agent:claude", "ada");
+        agent
+            .apply(Tracker::REPORT_RUN.with(tracker::ReportRun {
+                issue: issue.clone(),
+                phase: tasks::model::RunPhase::Executing,
+                text: Some("1 of 1: reviewed Jane Doe".parse().expect("not blank")),
+            }))
+            .unwrap();
+        agent
+            .apply(
+                Tracker::FINISH_RUN.with(tracker::FinishRun {
+                    issue: issue.clone(),
+                    outcome: tasks::model::RunOutcome::Done,
+                    summary: Some(
+                        "Reviewed Jane Doe and drafted a reply"
+                            .parse()
+                            .expect("not blank"),
+                    ),
+                }),
+            )
+            .unwrap();
+        person.sync_with(&mut agent).unwrap();
+        person
+            .apply(tell("Now do the same for the other two"))
+            .unwrap();
+        let runs = runs_of(&person.state().unwrap());
+        let [run] = runs.as_slice() else {
+            panic!("one run: {runs:?}");
+        };
+        let conversation = run
+            .instruction
+            .split(runtime_collab::INSTRUCTION_CONVERSATION)
+            .nth(1)
+            .expect("the run is told the conversation");
+        assert_eq!(
+            conversation,
+            "\nPerson: Start with Jane Doe\nYou: 1 of 1: reviewed Jane Doe\nYou: Reviewed Jane Doe and drafted a reply"
+        );
+        assert!(
+            run.instruction
+                .starts_with("Review the applications\n\nJane Doe, Ravi Patel")
+        );
+        assert!(
+            !conversation.contains("other two"),
+            "its own message is its direction"
+        );
+
+        let many: Vec<tasks::model::Said> = (0..400)
+            .map(|index| tasks::model::Said {
+                agent: index % 2 == 1,
+                text: format!("message {index} {}", "x".repeat(100)),
+            })
+            .collect();
+        let told = super::with_conversation("Go on".into(), &many);
+        assert!(
+            told.len() < super::CONVERSATION_CHARS + 200,
+            "{}",
+            told.len()
+        );
+        assert!(told.contains("earlier messages left out"));
+        assert!(told.ends_with(&many[399].text), "the newest is kept");
     }
 
     /// A part of a task works on the model the task was set to, so every step

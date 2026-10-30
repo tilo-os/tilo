@@ -294,6 +294,10 @@ pub struct ChromeState {
     identity_source: IdentitySource,
     pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
     pub(crate) native_app_opening: super::launcher::NativeAppOpening,
+    /// Layout changes to take back by run, and windows opened for a
+    /// resource that are still to be opened at it
+    /// ([`super::desktop_layout`]).
+    pub(crate) desktop_layout: super::desktop_layout::Journal,
     /// Shared with the portal (grants) and peer-sync (replica), all
     /// holding clones of the same [`WorkspaceTreeHandle`]. Named `tree_handle`
     /// (not `tree`) so unmigrated call-sites get a type-mismatch error
@@ -598,14 +602,12 @@ pub struct ChromeState {
     /// restore.
     desk_undo_toasts: BTreeMap<u64, settings_store::desk_widgets::WidgetId>,
     desk_restores: Vec<settings_store::desk_widgets::WidgetId>,
-    /// Notices of an app that ran out of memory, by toast id: the closed-tab
-    /// serials of its windows, which Reopen puts back where they were.
-    memory_reopen_toasts: BTreeMap<u64, Vec<u64>>,
-    /// Agents whose admission a room's governor refused, as (room, agent,
-    /// the governor's reason): the agent door answers the client waiting on
-    /// that admission with it ([`crate::shell::agent_admission`]), and takes
-    /// them every turn.
-    pub(crate) refused_agent_admissions: Vec<(String, String, String)>,
+    /// Notices of an app that ran out of memory, by toast id: the tabs its
+    /// windows kept, which Reopen opens the app again into.
+    memory_reopen_toasts: BTreeMap<u64, Vec<crate::shell::state::TabId>>,
+    /// Agent door connections the person admitted, whose task run Tasks
+    /// is to make ([`crate::shell::agent_admission::DoorRunAsk`]).
+    door_runs: Vec<crate::shell::agent_admission::DoorRunAsk>,
     /// Notifications of new devices asking to be the person, with the
     /// request each answers and the code it shows.
     device_asking_toasts: BTreeMap<u64, ([u8; 32], String, bool)>,
@@ -699,6 +701,7 @@ impl ChromeState {
             tree_handle,
             hosted_inputs,
             native_app_opening: super::launcher::NativeAppOpening::default(),
+            desktop_layout: super::desktop_layout::Journal::default(),
             identity_source,
             overlays: OverlayFlags::default(),
             projection_follow: ProjectionFollow::Person,
@@ -801,7 +804,7 @@ impl ChromeState {
             desk_undo_toasts: BTreeMap::new(),
             desk_restores: Vec::new(),
             memory_reopen_toasts: BTreeMap::new(),
-            refused_agent_admissions: Vec::new(),
+            door_runs: Vec::new(),
             device_asking_toasts: BTreeMap::new(),
             consent_notices: BTreeMap::new(),
             device_asking_seen: std::collections::BTreeSet::new(),
@@ -2105,57 +2108,51 @@ impl ChromeState {
     }
 
     /// Tell the person memory ended an app or one of its jobs (`notice`
-    /// says which and why). The app's windows that went with it (`lost`)
-    /// are remembered as closed tabs, so Reopen Closed Tab brings them back
-    /// too, and the notice's Reopen puts them all back where they were.
-    /// Returns the notice's id.
+    /// says which and why). The app's windows that went with it kept their
+    /// places as the app's cards (`lost`, the tabs), and the notice's
+    /// Reopen opens the app again into all of them. Returns the notice's id.
     pub(crate) fn push_out_of_memory_notice(
         &mut self,
         notice: crate::shell::launcher::LaunchFailureNotice,
-        lost: Vec<crate::shell::closed_tabs::ClosedTab>,
+        lost: Vec<crate::shell::state::TabId>,
     ) -> u64 {
-        let serials: Vec<u64> = lost
-            .into_iter()
-            .map(|entry| self.closed_tabs.push(entry))
-            .collect();
         let mut toast = Notification::new(notice.title, notice.body)
             .with_severity(NotificationSeverity::Error)
             .with_app_name(crate::shell::i18n::t("host-source-applications"));
         toast.dismiss_after = crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME;
-        if !serials.is_empty() {
+        if !lost.is_empty() {
             toast.actions = vec![("default".into(), crate::shell::i18n::t("memory-app-reopen"))];
-            self.memory_reopen_toasts.insert(toast.id, serials);
+            self.memory_reopen_toasts.insert(toast.id, lost);
         }
         self.push_notification_full(toast)
     }
 
-    /// The out-of-memory notice's Reopen: the app's windows back where they
-    /// were, relaunched. Returns how many came back.
+    /// The out-of-memory notice's Reopen: the app opened again into the
+    /// places its windows kept. Returns how many came back.
     pub(crate) fn reopen_after_memory(&mut self, toast: u64) -> usize {
-        let Some(serials) = self.memory_reopen_toasts.remove(&toast) else {
+        let Some(lost) = self.memory_reopen_toasts.remove(&toast) else {
             return 0;
         };
-        let mut reopened = 0_usize;
-        for serial in serials {
-            if let Some(entry) = self.closed_tabs.take(serial)
-                && self.restore_closed_tab(entry).is_some()
-            {
-                reopened = reopened.saturating_add(1);
-            }
-        }
-        reopened
+        self.reopen_stopped(lost)
     }
 
-    /// Put `lost`, the windows of an app ended to start again on a newer
-    /// build, back where they were, relaunched as the out-of-memory notice's
-    /// Reopen does. Returns how many came back.
-    pub(crate) fn reopen_on_new_build(
-        &mut self,
-        lost: Vec<crate::shell::closed_tabs::ClosedTab>,
-    ) -> usize {
-        lost.into_iter()
-            .filter_map(|entry| self.restore_closed_tab(entry))
-            .count()
+    /// Open the app ended to start again on a newer build into the places
+    /// its windows kept (`lost`), as the out-of-memory notice's Reopen
+    /// does. Returns how many came back.
+    pub(crate) fn reopen_on_new_build(&mut self, lost: Vec<crate::shell::state::TabId>) -> usize {
+        self.reopen_stopped(lost)
+    }
+
+    /// Open the apps of the stopped cards `tabs` again into them.
+    fn reopen_stopped(&mut self, tabs: Vec<crate::shell::state::TabId>) -> usize {
+        let reopened = {
+            let mut tree = self.tree_mut();
+            tabs.into_iter()
+                .filter(|tab| crate::shell::peer_windows::reopen_stopped(&mut tree, *tab))
+                .count()
+        };
+        self.bump();
+        reopened
     }
 
     /// Ask the person about a new device asking to be them, once: what it
@@ -2681,12 +2678,9 @@ impl ChromeState {
     /// The model's refusal: no active workspace, or a name that is empty, too
     /// long or holds control characters.
     pub fn create_strip(&mut self, name: &str) -> Result<crate::shell::state::StripId, String> {
-        let command = tilo_desktop_model::commands::DesktopCommand::CreateStrip {
-            name: name.to_owned(),
-        };
-        let strip = self.tree_mut().commit_strip_command(&command)?;
-        self.bump();
-        Ok(strip)
+        let room = super::desktop_layout::shown_room(self)?;
+        let person = super::desktop_layout::Actor::person(self, room);
+        super::desktop_layout::create_strip(self, room, name, &person, true)
     }
 
     /// Rename `strip` of the active workspace.
@@ -2700,13 +2694,9 @@ impl ChromeState {
         strip: crate::shell::state::StripId,
         name: &str,
     ) -> Result<(), String> {
-        let command = tilo_desktop_model::commands::DesktopCommand::RenameStrip {
-            strip: strip.raw(),
-            name: name.to_owned(),
-        };
-        self.tree_mut().commit_strip_command(&command)?;
-        self.bump();
-        Ok(())
+        let room = super::desktop_layout::shown_room(self)?;
+        let person = super::desktop_layout::Actor::person(self, room);
+        super::desktop_layout::rename_strip(self, room, strip, name, &person)
     }
 
     /// Move `strip` of the active workspace to just before `before`, or to
@@ -3050,7 +3040,7 @@ impl ChromeState {
             return;
         }
         self.device_asking_toasts.remove(&n.id);
-        // The windows stay among the closed tabs; only the notice's offer lapses.
+        // The windows keep their places as the app's cards; only the notice's offer lapses.
         self.memory_reopen_toasts.remove(&n.id);
         self.notification_log.retain(n);
     }
@@ -3536,6 +3526,17 @@ impl ChromeState {
     /// The work handed to agents since last taken.
     pub(crate) fn take_agent_asks(&mut self) -> Vec<AgentAsk> {
         std::mem::take(&mut self.agent_asks)
+    }
+
+    /// Ask Tasks for the run of an agent door connection the person
+    /// admitted.
+    pub(crate) fn ask_door_run(&mut self, ask: crate::shell::agent_admission::DoorRunAsk) {
+        self.door_runs.push(ask);
+    }
+
+    /// The door connections whose runs to ask for since last taken.
+    pub(crate) fn take_door_runs(&mut self) -> Vec<crate::shell::agent_admission::DoorRunAsk> {
+        std::mem::take(&mut self.door_runs)
     }
 
     /// Ask the workspace's agent `query` about what is focused (the

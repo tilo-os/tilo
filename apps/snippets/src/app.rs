@@ -1306,6 +1306,24 @@ mod tests;
 fn show(core: &Shared, view: SnippetsView, cx: &EffectCx<Snippets>) -> EffectAnswer {
     let mut core = core.borrow_mut();
     match view {
+        SnippetsView::ReadTag { tag } => {
+            if !core.library.tags().iter().any(|(known, _)| known == &tag) {
+                return Err("tag no longer exists".into());
+            }
+            let read = core
+                .library
+                .read_place("tag", &tag, |snippet| snippet.tags.contains(&tag));
+            return Ok(Effected::value(read));
+        }
+        SnippetsView::ReadFolder { folder } => {
+            if !core.library.folders().contains(&folder) {
+                return Err("folder no longer exists".into());
+            }
+            let read = core
+                .library
+                .read_place("folder", &folder, |snippet| snippet.folder.0 == folder);
+            return Ok(Effected::value(read));
+        }
         SnippetsView::Search => {
             cx.dispatcher()
                 .open_search(&ui::search::SearchRequest::this_app());

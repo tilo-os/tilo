@@ -312,6 +312,7 @@ pub(crate) enum OwnedRestoreError {
     EngineContract,
     Bound(crate::bound_dispatch::BoundDispatchError),
     /// The record's current authority does not grant this author Write.
+    #[cfg(feature = "native")]
     Denied,
 }
 /// What a confirmed restore writes: the schema-declared content of a version,

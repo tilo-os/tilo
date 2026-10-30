@@ -88,6 +88,20 @@ pub enum GitClientEffect {
         #[param("Path of the file in the repository")]
         path: String,
     },
+    /// Read change
+    ///
+    /// Answers what changed in one file: its path (and the path it was
+    /// renamed from), where the change is, what kind of change it is, how
+    /// many lines were added and removed, and the diff itself. It is the
+    /// changed file's read: what discloses its row, so staging, unstaging
+    /// and discarding it are offered to whoever may read it, an agent too.
+    #[effect(view, row, returns, label = "Read change")]
+    ReadChange {
+        #[param("Where the change is: staged, unstaged or untracked")]
+        area: String,
+        #[param("Path of the file in the repository")]
+        path: String,
+    },
     /// Open commit
     #[effect(view, row)]
     OpenCommit {
@@ -233,7 +247,7 @@ fn stable_component(value: &str) -> String {
     hex::encode(value)
 }
 
-fn change_area_name(area: ChangeArea) -> &'static str {
+pub(crate) fn change_area_name(area: ChangeArea) -> &'static str {
     match area {
         ChangeArea::Staged => "staged",
         ChangeArea::Unstaged => "unstaged",
@@ -272,6 +286,14 @@ fn change_row(change: &FileChange) -> LiveRow {
         change_resource_id(change.area, &change.path),
         "git_client.diff",
         format!("{} — {area}", change.path),
+    )
+    .operation(
+        GitClientEffect::ReadChange {
+            area: area.into(),
+            path: path.clone(),
+        }
+        .bound()
+        .reads_document(),
     )
     .effect(&GitClientEffect::OpenChange {
         area: area.into(),

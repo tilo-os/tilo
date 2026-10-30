@@ -115,6 +115,9 @@ pub struct Core {
     pub trying: std::cell::Cell<bool>,
     /// The resources of apps this runtime does not hold that programs read, as they print.
     pub foreign: RefCell<crate::reads::Foreign>,
+    /// The seen marks the person set here, for the host to keep in their own record
+    /// ([`crate::seen`]).
+    pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -220,6 +223,7 @@ impl Core {
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::reads::Foreign::default()),
+            seen_writes: RefCell::new(Vec::new()),
         });
         // The types the host provides to every module, such as `Invocation`.
         let host = crate::registry::Package::new(
@@ -303,11 +307,11 @@ impl Core {
             PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew, RecSetF,
             RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
             ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart, RichTime,
-            SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet,
-            StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
-            TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions, UiAnchor, UiBind, UiBindState,
-            UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
-            VersionEnd, Versions, WorkspaceMembers,
+            RunChanges, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt,
+            StateGet, StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH,
+            TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions, UiAnchor, UiBind,
+            UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, Unseen, UnwrapF,
+            UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -358,7 +362,7 @@ impl Core {
             | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
             | UiActions => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions
-            | VersionEnd | Phrase | Dated => self.platform_import(imp, a),
+            | RunChanges | Unseen | VersionEnd | Phrase | Dated => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }

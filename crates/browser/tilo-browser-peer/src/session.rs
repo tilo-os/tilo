@@ -3076,6 +3076,11 @@ impl Task {
     /// now opens it.
     fn admitted(&mut self, workspace_id: u64, client: &Link) {
         self.check_admission();
+        // What this session could not ask before the room admitted it.
+        let asked = self
+            .channels
+            .ask_now(workspace_id, tilo_clock::unix_now_ms());
+        self.absorb(asked);
         for route in self.held_routes(workspace_id) {
             let opens = self.ciphers.contains_key(&route)
                 || self
@@ -3290,6 +3295,13 @@ impl Task {
                     // reconnect; acknowledgements go with the next frame.
                     continue;
                 };
+                let crate::channels::Outgoing::Request { workspace_id, .. } = &outgoing;
+                if lock(&self.shared).status.rooms.get(workspace_id) != Some(&true) {
+                    // The host takes a room's governance only from a session
+                    // it admitted to the room: this is asked again the
+                    // moment it does (`admitted`).
+                    continue;
+                }
                 let signer = Arc::clone(&self.signer);
                 let device = self.config.cert.device_public_key;
                 for envelope in sign_governance(signer.as_ref(), device, outgoing).await {

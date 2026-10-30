@@ -1348,6 +1348,45 @@ pub fn close_tab_for_destroyed_surface_and_persist(
     removed
 }
 
+/// Keep the tab of a window whose app went away without closing it: its
+/// process ended (it crashed, was killed, or ended with the session) and
+/// its connection with it. Nobody closed the window, so its place is kept:
+/// the tab becomes the app's card, said to have stopped, which opens the
+/// app again into it when chosen, and a restart reopens it as any saved
+/// window (`peer_windows::retry_saved_windows`). `launch` is the launch the
+/// window belonged to, the identity it is opened again by. Returns the tab,
+/// or `None` when no tab showed the window.
+pub fn keep_tab_of_vanished_surface(
+    tree: &mut WorkspaceTree,
+    surface_id: u64,
+    launch: Option<&str>,
+) -> Option<TabId> {
+    let tab = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.strips)
+        .flat_map(|strip| &mut strip.window_groups)
+        .flat_map(|group| &mut group.tabs)
+        .find(|tab| matches!(&tab.tile, TileContent::Foreign { surface_id: id, .. } if *id == surface_id))?;
+    let TileContent::Foreign { app_id, .. } = &tab.tile else {
+        return None;
+    };
+    let app_id = launch.map_or_else(
+        || crate::shell::persist::durable_app_id(surface_id, app_id),
+        str::to_owned,
+    );
+    tab.tile = TileContent::LocalApp {
+        app_id,
+        label: tab.title.clone(),
+        note: crate::shell::peer_windows::STOPPED.to_owned(),
+    };
+    let kept = tab.id;
+    mark_tree_changed(tree);
+    tree.queue_save();
+    Some(kept)
+}
+
 /// Which strip each workspace showed and which group each strip had in
 /// front, taken just before a new toplevel was adopted.
 ///
@@ -3053,6 +3092,7 @@ mod tests {
                     opens_mime_types: Vec::new(),
                     opens_uri_schemes: Vec::new(),
                     opens_secondary: false,
+                    opens_resource_kinds: Vec::new(),
                     offers: Vec::new(),
                 });
                 crate::shell::launcher::clear_pending_placements();

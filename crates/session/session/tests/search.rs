@@ -80,6 +80,7 @@ fn session(host: Rc<Host>) -> Session {
                 ..SearchOptions::default()
             },
             apps: Some(host),
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
@@ -248,6 +249,7 @@ fn session_with_settings() -> Session {
             services: vec![Box::new(tilo_settings_service::SettingsService::new(
                 "person",
             ))],
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],

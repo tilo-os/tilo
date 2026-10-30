@@ -135,6 +135,11 @@ pub const KINDS: &[OriginKind] = &[
                 "Collection<session.task>",
                 "The tasks running for the person now (an agent's, a script's).",
             ),
+            field(
+                "people",
+                "Collection<session.person>",
+                "The others here in the workspace in front.",
+            ),
         ],
     },
     OriginKind {
@@ -148,6 +153,14 @@ pub const KINDS: &[OriginKind] = &[
             ),
             field("name", "Text", "Its name."),
             field("current", "Bool", "Whether it is the one in front."),
+        ],
+    },
+    OriginKind {
+        name: "session.person",
+        doc: "Someone else here in the workspace in front: a person or an agent.",
+        fields: &[
+            field("key", "Text", "Who they are, by their live presence's id."),
+            field("name", "Text", "Their name here."),
         ],
     },
     OriginKind {

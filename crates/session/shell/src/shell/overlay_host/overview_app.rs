@@ -489,14 +489,11 @@ impl ShellOverlayHost {
         let moved = flight.progress().to_bits() != progress.to_bits();
         if drawn {
             let listed = self.overview_listed_windows();
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Rect ± Vec2 is float geometry translation and cannot panic"
-            )]
+            let to_area = vello::kurbo::Affine::translate(origin).inverse();
             let sources = self
                 .overview_window_sources(&listed)
                 .into_iter()
-                .map(|(tab, rect)| (tab, rect - origin))
+                .map(|(tab, rect)| (tab, to_area.transform_rect_bbox(rect)))
                 .collect();
             flight.set_clock(progress, sources);
             // Its titles and panel move on the same clock: it draws again.
@@ -665,11 +662,11 @@ impl ShellOverlayHost {
 }
 
 /// Move the window group holding `tab` to `strip` of the active workspace,
-/// or say the window could not be moved.
+/// or say that it could not be moved.
 fn move_window_to_strip(
     chrome: &crate::shell::chrome_state::Chrome,
-    tab: tilo_desktop_model::TabId,
-    strip: tilo_desktop_model::StripId,
+    tab: crate::shell::state::TabId,
+    strip: crate::shell::state::StripId,
 ) {
     let mut state = chrome.borrow_mut();
     let group = state

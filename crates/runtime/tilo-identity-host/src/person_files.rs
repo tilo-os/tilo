@@ -251,7 +251,13 @@ mod tests {
             // Not root, or no other person exists here: nothing switches.
             return;
         };
-        let home = tempfile::tempdir().unwrap();
+        // Under /tmp, not TMPDIR: the person must reach the directory, and the
+        // test environment's TMPDIR is root's alone (0700), as a person's
+        // home is not.
+        let home = tempfile::Builder::new()
+            .prefix("tilo-person-files")
+            .tempdir_in("/tmp")
+            .unwrap();
         std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let person = home.path().join("person");
         std::fs::create_dir(&person).unwrap();

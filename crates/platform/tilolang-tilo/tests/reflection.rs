@@ -223,6 +223,56 @@ fn the_last_version_is_the_latest_on_every_replica_whichever_order_they_arrive_i
     assert_eq!(text(call(&ben, "ben", "describe", vec![line])), want);
 }
 
+/// Changes made one on top of another within one second: each is the last version once it is
+/// made, before and after it is committed, and on a replica that receives them all at once;
+/// never the one it was made on, whichever change's hash is smaller.
+#[test]
+fn of_changes_within_one_second_the_last_version_is_the_one_made_last() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+    let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
+    ada.commit();
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-28T09:00:00Z".to_owned());
+    let line = call(
+        &ada,
+        "ada",
+        "say",
+        vec![Value::resource(&talk), Value::text("hello")],
+    );
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    // Two changes' hashes order either way half the time: twelve rewords in one second
+    // would each come out first by hash about once.
+    for round in 0..12 {
+        let who = if round % 2 == 0 { "mia" } else { "ada" };
+        call(
+            &ada,
+            who,
+            "reword",
+            vec![line.clone(), Value::text(format!("hello {round}"))],
+        );
+        let want = format!("ada 2026-10-28T09:00:00Z {who} 2026-10-28T09:00:00Z Reword");
+        let provisional = text(call(&ada, "ada", "describe", vec![line.clone()]));
+        assert!(
+            provisional.starts_with(&want),
+            "round {round}, before the record holds it: {provisional}"
+        );
+        ada.commit();
+        let committed = text(call(&ada, "ada", "describe", vec![line.clone()]));
+        assert!(
+            committed.starts_with(&want),
+            "round {round}, once the record holds it: {committed}"
+        );
+    }
+    ada.sync_with(&mut ben);
+    assert_eq!(
+        text(call(&ben, "ben", "describe", vec![line])),
+        "ada 2026-10-28T09:00:00Z ada 2026-10-28T09:00:00Z Reword 13"
+    );
+}
+
 /// Topics, each with its notes, listed by when each last changed, the latest first.
 const TOPICS: &str = r#"app so.tilo.lang.topics "Topics"
 

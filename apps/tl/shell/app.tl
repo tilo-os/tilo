@@ -15,6 +15,7 @@ type Desk (origin: session.desk) {
     strip: Text
     workspaces: Collection<Workspace>
     tasks: Collection<Task>
+    people: Collection<Person>
 }
 
 /// A workspace on this device.
@@ -29,6 +30,12 @@ type Task (origin: session.task) {
     key: Text merge register
     title: Text (title)
     state: Text
+}
+
+/// Someone else here in the workspace in front.
+type Person (origin: session.person) {
+    key: Text merge register
+    name: Text (title)
 }
 
 root Desk
@@ -115,6 +122,9 @@ view bar(d: Desk) {
         }
         ui.Text(d.clock, role: .subheading, numeric: true)
         row(gap: .sibling, align: .center, distribute: .end) {
+            for p in d.people {
+                ui.Avatar(name: .some(p.name))
+            }
             ui.Avatar(name: .some(d.person))
             ui.Button(if d.unread > 0 { "{d.unread}" } else { "Notifications" }, icon: if d.quiet { .bell_off } else { .bell }, icon_only: d.unread == 0, role: .bar) {
                 on press: status(d)

@@ -96,17 +96,18 @@ fn note_versions<'c>(
     changes: impl IntoIterator<Item = &'c automerge::Change>,
 ) {
     for change in changes {
-        let Some((stamp, resources)) = idx::reflect::stamp_of(change) else {
-            continue;
-        };
-        for resource in resources {
+        for version in idx::reflect::versions_of(change) {
             index
-                .entry(resource)
+                .entry(version.resource.clone())
                 .or_default()
-                .push(stamp.version.clone());
+                .push(version);
         }
     }
 }
+
+/// The versions of no resource: what a store holds before it has any.
+static NO_VERSIONS: std::sync::LazyLock<HashMap<String, Vec<Version>>> =
+    std::sync::LazyLock::new(HashMap::new);
 
 /// What the record moved on from, when known: its heads before, and the versions its new
 /// changes made.
@@ -1092,6 +1093,24 @@ impl TiloStore {
         }
     }
 
+    /// The versions of every resource the record's changes made, by resource: built from the
+    /// record the first time they are asked for, and kept up as it moves.
+    fn built_versions(&self) -> std::cell::Ref<'_, HashMap<String, Vec<Version>>> {
+        {
+            let mut inner = self.inner.borrow_mut();
+            if inner.versions.is_none() {
+                let mut built = HashMap::new();
+                if let Some(mirror) = inner.mirror.as_deref() {
+                    note_versions(&mut built, &mirror.committed_document().get_changes(&[]));
+                }
+                inner.versions = Some(built);
+            }
+        }
+        std::cell::Ref::map(self.inner.borrow(), |inner| {
+            inner.versions.as_ref().unwrap_or(&*NO_VERSIONS)
+        })
+    }
+
     /// The actions the runtime committed since the host last took them, oldest first. They stay
     /// available by ticket ([`Self::committed`]) until the door has answered ([`Self::take_ticket`]).
     #[must_use]
@@ -2020,9 +2039,13 @@ impl Inner {
                 who: note.invoker.clone(),
                 at,
                 action: note.action.clone(),
+                task: note.group.clone(),
+                ..Version::default()
             },
-            // No change yet: it orders before the record's own at the same time.
+            // No change yet: the action was invoked on top of every change this device
+            // holds, so it orders after each of them recorded in the same second.
             change: String::new(),
+            op: idx::reflect::PROVISIONAL,
         };
         let mut reached: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
         let mut ends = Ends::new();
@@ -2716,20 +2739,49 @@ impl Store for TiloStore {
     }
 
     fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
-        let mut inner = self.inner.borrow_mut();
-        if inner.versions.is_none() {
-            let mut built = HashMap::new();
-            if let Some(mirror) = inner.mirror.as_deref() {
-                note_versions(&mut built, &mirror.committed_document().get_changes(&[]));
-            }
-            inner.versions = Some(built);
-        }
-        Ok(inner
-            .versions
-            .as_ref()
-            .and_then(|versions| versions.get(&at.id_string()))
+        Ok(self
+            .built_versions()
+            .get(&at.id_string())
             .cloned()
             .unwrap_or_default())
+    }
+
+    fn run_changes(&self, run: &str) -> Result<Vec<Version>, StoreError> {
+        let mut out: Vec<Version> = self
+            .built_versions()
+            .values()
+            .flatten()
+            .filter(|v| v.task.as_ref().is_some_and(|task| task.id == run))
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| (&a.at, &a.change, &a.resource).cmp(&(&b.at, &b.change, &b.resource)));
+        Ok(out)
+    }
+
+    fn read_before(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        change: &str,
+    ) -> Result<FieldValue, StoreError> {
+        let inner = self.inner.borrow();
+        let (app, ty) = inner.locate(at)?;
+        let mirror = inner.mirror()?;
+        let hash: ChangeHash = change
+            .parse()
+            .map_err(|_| not_found(format!("change {change}")))?;
+        let committed = mirror.committed_document();
+        let made = committed
+            .get_change_by_hash(&hash)
+            .ok_or_else(|| not_found(format!("change {change}")))?;
+        let before = committed.fork_at(made.deps()).map_err(backend)?;
+        let before = Doc::load(&before.save()).map_err(backend)?;
+        let located = locate_ref(&before, (&app, &ty), at, &inner.nested)?;
+        let spec = located
+            .schema
+            .field(&field.id)
+            .ok_or_else(|| not_found(format!("field {}", field.id)))?;
+        read_field(&before, &located, spec)
     }
 
     fn version_end(&self, at: &ResourceRef, last: bool) -> Result<Option<Version>, StoreError> {

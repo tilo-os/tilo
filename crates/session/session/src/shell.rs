@@ -49,7 +49,7 @@ pub(crate) struct Shell {
     desk: Desk,
     link: Rc<SessionLink>,
     /// What the desk's reading was last made from.
-    seen: Option<(u64, i64, u32, bool)>,
+    seen: Option<crate::desk::DeskKey>,
     part: Rc<RefCell<ShellPart>>,
 }
 

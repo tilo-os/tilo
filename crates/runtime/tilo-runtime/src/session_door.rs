@@ -334,16 +334,17 @@ pub fn serve<H>(
 where
     H: tilo_actions::remote::ActionHost + Send + Sync + 'static,
 {
-    serve_after(stream, None, host, None, ask)
+    serve_after(stream, None, || Ok(host), None, ask)
 }
 
 /// [`serve`] a connection whose first line, `first`, was already read
-/// ([`read_first_line`]).
+/// ([`read_first_line`]), through the host `host` makes once the person
+/// admitted it.
 #[cfg(unix)]
 pub fn serve_after<H>(
     mut stream: std::os::unix::net::UnixStream,
     mut first: Option<Vec<u8>>,
-    host: H,
+    host: impl FnOnce() -> Result<H, String>,
     tasks: Option<std::sync::Arc<dyn crate::mcp::TaskHosts>>,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
 ) -> io::Result<()>
@@ -397,6 +398,16 @@ where
             person,
         } => (room, agent, person),
         Consent::Refuse(message) => {
+            write_line(&mut stream, &error_reply(&id, &message));
+            finish_refusal(&mut stream);
+            return Ok(());
+        }
+    };
+    // What the admitted client acts through, made once it is admitted: the
+    // run the person's admission started, on a desktop.
+    let host = match host() {
+        Ok(host) => host,
+        Err(message) => {
             write_line(&mut stream, &error_reply(&id, &message));
             finish_refusal(&mut stream);
             return Ok(());

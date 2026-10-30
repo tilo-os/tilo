@@ -811,6 +811,63 @@ mod identity_admin_tests {
         (state, owner, room)
     }
 
+    /// A native host's seat, which never certifies anyone here.
+    struct NoSeat;
+
+    impl crate::services::LocalPersonServices for NoSeat {
+        fn certificate(
+            &self,
+            _room: &str,
+            _person: &str,
+        ) -> Result<tilo_user_identity::DeviceCert, String> {
+            Err("no seat in this test".into())
+        }
+    }
+
+    /// On a native host (one with the person's seat), neither an agent nor a
+    /// person that carries no retained custody takes a host step: an agent
+    /// takes one only in its task run (`task_run_host`), a person only
+    /// through the seat. Neither is taken as an actor-only caller.
+    #[test]
+    fn a_keyless_agent_or_person_takes_no_host_step_on_a_native_host() {
+        let host = Arc::new(Host::default());
+        let owner = hex::encode([41; 32]);
+        let mut workspace = Workspace::new(WorkspaceId(9), "Identities");
+        workspace.set_owner(owner.clone());
+        workspace.admit_agent_preset(
+            "planner",
+            tilo_action_policy::roles::AgentPreset::Observer,
+            &tilo_action_policy::Subject::person(owner.clone()),
+        );
+        let room = workspace.room().to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared().authority()),
+            None,
+            None,
+            crate::services::HostServices {
+                host_steps: vec![host.clone()],
+                local_person: Some(Arc::new(NoSeat)),
+                ..Default::default()
+            },
+        );
+        let agent = Caller::local_agent("planner").in_room(room.clone());
+        assert!(
+            invoked(&state, &agent, &request(identity_admin::LIST, None)).is_err(),
+            "an agent outside any run takes no host step"
+        );
+        let person = Caller::local_person(owner).in_room(room);
+        assert!(
+            invoked(&state, &person, &request(identity_admin::LIST, None)).is_err(),
+            "a person reaches a native host's steps only with the seat's custody"
+        );
+        assert!(host.started.lock().unwrap().is_empty());
+    }
+
     fn request(step: &str, confirmation: Option<Confirmation>) -> InvokeRequest {
         InvokeRequest {
             on_behalf_of: None,
@@ -874,6 +931,51 @@ mod identity_admin_tests {
         clippy::significant_drop_tightening,
         reason = "the test keeps its fixture and guards alive through its assertions"
     )]
+    /// Asking only who publishes (`max_results: 0`, how an agent's paths
+    /// find an app) lists the host's own services beside apps' windows, and
+    /// builds no row; asking a service for its rows still gets them.
+    #[test]
+    fn a_host_service_is_listed_when_only_publishers_are_asked() {
+        let host = Arc::new(Host::default());
+        let (state, owner, room) = broker(host);
+        let caller = Caller::local_person(owner).in_room(room.clone());
+        let ask = |query: tilo_actions::remote::CatalogueQuery| {
+            state
+                .action_query(&caller, &query)
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .expect("the catalogue answers at once")
+                .expect("the room's owner may ask")
+        };
+        let publishers = ask(tilo_actions::remote::CatalogueQuery {
+            max_results: 0,
+            ..Default::default()
+        });
+        assert!(publishers.rows.is_empty(), "{:?}", publishers.rows);
+        assert!(
+            publishers.providers.iter().any(|provider| {
+                provider.provider == identity_admin::PROVIDER
+                    && provider.app_id == "so.tilo.settings"
+                    && provider.room == room
+                    && provider.browsable
+            }),
+            "{:?}",
+            publishers.providers
+        );
+        let rows = ask(tilo_actions::remote::CatalogueQuery {
+            provider: Some(identity_admin::PROVIDER.into()),
+            ..Default::default()
+        });
+        assert!(
+            rows.rows
+                .iter()
+                .any(|row| row.provider == identity_admin::PROVIDER),
+            "{:?}",
+            rows.rows
+        );
+    }
+
     #[test]
     fn certified_host_steps_admit_only_nonforeign_local_custody() {
         for pairing in [false, true] {
@@ -944,6 +1046,7 @@ mod identity_admin_tests {
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 asked.invocation = tilo_actions::InvocationId::new();
                 assert!(f.invoke(&asked).is_err());
+                drop(f);
                 assert_eq!(service.started.lock().unwrap().len(), 1);
             }
         }

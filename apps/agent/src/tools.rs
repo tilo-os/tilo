@@ -707,6 +707,7 @@ fn invoke_definition() -> ToolDefinition {
                     "additionalProperties": true
                 },
                 PARTS: parts_schema(),
+                PROGRESS: progress_schema(),
                 INVOKE_REPLY: {
                     "type": "string",
                     "description":
@@ -810,6 +811,29 @@ fn parts_schema() -> Value {
             "required": ["part", "app"],
             "additionalProperties": false
         }
+    })
+}
+
+/// The property of an `invoke` that says where a request of several items
+/// is: told to the person as one line per item.
+pub const PROGRESS: &str = "progress";
+
+fn progress_schema() -> Value {
+    json!({
+        "type": "object",
+        "description":
+            "Only when the request is the same work for several items (each mail, each file, \
+             each person): on the invoke that finishes an item's work, how many items are \
+             done now, of how many, and what you did for this one in a few words (for \
+             example done 3, of 8, item \"reviewed Jane Doe\"). The person sees it as their \
+             progress line.",
+        "properties": {
+            "done": { "type": "integer", "minimum": 0 },
+            "of": { "type": "integer", "minimum": 1 },
+            "item": { "type": "string" }
+        },
+        "required": ["done", "of", "item"],
+        "additionalProperties": false
     })
 }
 
@@ -1207,7 +1231,18 @@ pub fn validate_loop_calls(calls: &[ToolCall]) -> Result<(), String> {
                 .map_err(|error| error.to_string())?,
             PLAN if index + 1 == calls.len() => {}
             PLAN => return Err("plan must be the last call in its turn".into()),
-            _ => return Err(format!("There is no tool called {}.", call.name)),
+            // Every other tool the loop offers is taken as its schema says:
+            // the offered set is the accepted set, so no offered tool is
+            // refused as unknown.
+            name => {
+                let definition = typed_loop_definitions()
+                    .into_iter()
+                    .find(|definition| definition.name == name)
+                    .ok_or_else(|| format!("There is no tool called {name}."))?;
+                definition
+                    .validate_input(&call.input)
+                    .map_err(|error| error.to_string())?;
+            }
         }
     }
     Ok(())
@@ -1750,6 +1785,29 @@ mod tests {
                 call("b", LIST_OPERATIONS, json!({"application": false}))
             ])
             .is_err()
+        );
+        // Every tool the loop offers is accepted as its schema says.
+        assert!(
+            validate_loop_calls(&[call(
+                "a",
+                crate::pages::READ_RESULT,
+                json!({"result": "r1", "from": 0})
+            )])
+            .is_ok()
+        );
+        assert!(
+            validate_loop_calls(&[call("a", crate::pages::READ_RESULT, json!({"from": 0}))])
+                .is_err()
+        );
+        assert!(validate_loop_calls(&[call("a", "unoffered", json!({}))]).is_err());
+        assert!(
+            validate_loop_calls(&[call(
+                "a",
+                INVOKE,
+                json!({"operation": "shown", "parameters": {},
+                       "progress": {"done": 3, "of": 8, "item": "reviewed Jane Doe"}})
+            )])
+            .is_ok()
         );
     }
 
@@ -2577,6 +2635,7 @@ mod tests {
                 "operation",
                 INVOKE_PARAMETERS,
                 PARTS,
+                PROGRESS,
                 INVOKE_REPLY,
                 INVOKE_STANDALONE,
                 UNABLE

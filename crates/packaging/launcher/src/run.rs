@@ -382,6 +382,10 @@ pub struct RunOptions {
     /// A URI to open, forwarded as one opaque argv value. The caller must
     /// validate its scheme against the freshly-read installed manifest.
     pub open_uri: Option<String>,
+    /// Open [`Self::open_uri`] in a window that browses as a visitor: the
+    /// app is handed [`runtime_portal::windows::VISITOR_WINDOW_FLAG`] after
+    /// the address.
+    pub open_as_visitor: bool,
     /// Shell instance id selecting the fixed private standard console namespace.
     pub headless_console: Option<u64>,
     /// The app is a tilolang app whose instance a tilolang host runs: its process is its
@@ -429,6 +433,7 @@ impl Default for RunOptions {
             app_id: None,
             open_document: None,
             open_uri: None,
+            open_as_visitor: false,
             headless_console: None,
             tilolang_hosted: false,
             tilolang_connector: None,
@@ -438,7 +443,11 @@ impl Default for RunOptions {
 
 fn gui_open_args(opts: &RunOptions) -> Vec<String> {
     let mut args = if let Some(uri) = &opts.open_uri {
-        vec![uri.clone()]
+        let mut args = vec![uri.clone()];
+        if opts.open_as_visitor {
+            args.push(runtime_portal::windows::VISITOR_WINDOW_FLAG.to_owned());
+        }
+        args
     } else {
         opts.open_document
             .as_ref()
@@ -698,6 +707,26 @@ mod managed_service_tests {
             &format!("id = \"so.tilo.worker\"\nversion = \"1\"\nkind = \"{kind}\""),
             &format!("[entrypoint]\nbin = \"bin/worker\"\ntype = \"{entrypoint_type}\"\n"),
         )
+    }
+
+    /// A page opened for an agent reaches the app as its address and then
+    /// the app's visitor switch, so the window browses without the person's
+    /// sign-ins; without the switch the app is handed the address alone.
+    #[test]
+    fn a_visitor_launch_hands_the_app_its_visitor_switch() {
+        let mut opts = RunOptions {
+            open_uri: Some("https://example.com/".into()),
+            ..RunOptions::default()
+        };
+        assert_eq!(gui_open_args(&opts), ["https://example.com/"]);
+        opts.open_as_visitor = true;
+        assert_eq!(
+            gui_open_args(&opts),
+            [
+                "https://example.com/",
+                runtime_portal::windows::VISITOR_WINDOW_FLAG
+            ]
+        );
     }
 
     fn service_options() -> RunOptions {
@@ -3706,8 +3735,17 @@ pub(crate) fn run_with_context(
             .take_for_launch(&binding, &manifest.sandbox.services)
             .map_err(RunError::InvalidServiceLaunch)?
     } else {
+        // A window whose instance a tilolang host runs holds none of the app's data: it gets no
+        // collaboration connection (the host's instance has the app's own). An origin connector
+        // holds none of the app's data either: its instances commit it. The connection is not
+        // opened at all: one opened and dropped is a launch handoff the broker starts to bind
+        // and then hears hang up.
+        let mut services = manifest.sandbox.services.clone();
+        if opts.tilolang_hosted || opts.tilolang_connector.is_some() {
+            services.remove(crate::services::COLLAB_SERVICE);
+        }
         let mut resolved = resolve_service_binds_for_launch(
-            &manifest.sandbox.services,
+            &services,
             opts.no_services,
             ServiceLaunchContext {
                 app_id: package_id,
@@ -3785,17 +3823,6 @@ pub(crate) fn run_with_context(
                 child_fd: runtime_portal::windows::CHILD_FD,
             });
         }
-        resolved
-    };
-    // A window whose instance a tilolang host runs holds none of the app's data: it gets no
-    // collaboration connection (the host's instance has the app's own), and says so.
-    // An origin connector holds none of the app's data either: its instances commit it.
-    let resolved: Vec<_> = if opts.tilolang_hosted || opts.tilolang_connector.is_some() {
-        resolved
-            .into_iter()
-            .filter(|service| service.name != crate::services::COLLAB_SERVICE)
-            .collect()
-    } else {
         resolved
     };
     let binds = to_service_binds(&resolved);

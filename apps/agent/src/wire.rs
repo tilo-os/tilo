@@ -106,11 +106,15 @@ impl Link {
     /// Returns an error when `TILO_SVC_COLLAB_FD` is missing or the launcher's
     /// inherited capability cannot be turned into a typed collaboration
     /// client (wrong fd type, broker not listening, handshake rejected).
+    ///
+    /// With `identity` (a task agent's: its task delegation and task key) the
+    /// join presents it instead of the launcher's identity service.
     pub fn connect(
         app_id: &str,
         cluster_id: uuid::Uuid,
         record: Option<String>,
         handle: Option<String>,
+        identity: Option<CertifiedEndpointIdentity>,
     ) -> Result<Self> {
         let agent_id = handle.ok_or_else(|| anyhow::anyhow!("agent connection needs an id"))?;
         let fd = if std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some() {
@@ -118,11 +122,19 @@ impl Link {
         } else {
             None
         };
-        let (manager, wake) = Wake::around(|| match fd {
-            Some(fd) => {
+        let (manager, wake) = Wake::around(|| match (fd, identity) {
+            (Some(fd), Some(identity)) => CollaborationManager::for_agent_route_fd_with_identity(
+                fd, app_id, cluster_id, record, agent_id, identity,
+            ),
+            (Some(fd), None) => {
                 CollaborationManager::for_agent_route_fd(fd, app_id, cluster_id, record, agent_id)
             }
-            None => CollaborationManager::for_agent_route(app_id, cluster_id, record, agent_id),
+            (None, Some(identity)) => CollaborationManager::for_agent_route_with_identity(
+                app_id, cluster_id, record, agent_id, identity,
+            ),
+            (None, None) => {
+                CollaborationManager::for_agent_route(app_id, cluster_id, record, agent_id)
+            }
         });
         let manager = manager.context("connect through TILO_SVC_COLLAB_FD")?;
         Ok(Self::with_manager(manager, Some(wake)))
@@ -244,6 +256,16 @@ impl Link {
     /// Reserved for a future fallible transport; currently always succeeds
     /// (a dead broker currently surfaces as an indefinite empty poll, not an
     /// `Err`).
+    /// Why the broker connection ended, once it has: a closed transport
+    /// never reopens, so nothing more will arrive on this link.
+    #[must_use]
+    pub fn closed(&self) -> Option<String> {
+        match self.manager.state() {
+            ui::collaboration::CollaborationState::Offline(reason) => Some(reason),
+            _ => None,
+        }
+    }
+
     pub fn recv(&mut self, timeout: Duration) -> Result<Option<CollabEvent>> {
         let deadline = ui::time::now() + timeout;
         loop {

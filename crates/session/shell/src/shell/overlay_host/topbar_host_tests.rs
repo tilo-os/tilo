@@ -290,6 +290,7 @@ mod continuity {
             .unwrap()
             .active_tab;
         drop(tree);
+        drop(state);
         tab
     }
 

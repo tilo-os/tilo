@@ -132,27 +132,7 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     ];
     groups.push(devices(general, parts));
     if let Some(public) = &general.public {
-        let items = public.controls.as_ref().map_or_else(Vec::new, |controls| {
-            let make_public = !controls.public;
-            vec![buttons(vec![
-                button(parts, "ws-general-public", &controls.switch, move || {
-                    WorkspaceSettingsEffect::SetPublic {
-                        public: make_public,
-                    }
-                })
-                .toggled(controls.public),
-                button(parts, "ws-general-public-role", &controls.role, || {
-                    WorkspaceSettingsEffect::NextJoinRole
-                }),
-                button(
-                    parts,
-                    "ws-general-public-describe",
-                    &controls.describe,
-                    || WorkspaceSettingsEffect::Describe,
-                ),
-            ])]
-        });
-        groups.push(described(&public.group, items));
+        groups.push(public_group(public, parts));
     }
     if !general.archived.is_empty() {
         groups.push(archived(general, parts));
@@ -268,6 +248,31 @@ pub(super) fn buttons(buttons: Vec<Button>) -> Element {
         Row::new().with_rhythm(Rhythm::Related).align_start(),
         |row, button| row.push(Box::new(button)),
     ))
+}
+
+/// Whether anyone may find and join the workspace, and how.
+fn public_group(public: &Public, parts: &Parts) -> Element {
+    let items = public.controls.as_ref().map_or_else(Vec::new, |controls| {
+        let make_public = !controls.public;
+        vec![buttons(vec![
+            button(parts, "ws-general-public", &controls.switch, move || {
+                WorkspaceSettingsEffect::SetPublic {
+                    public: make_public,
+                }
+            })
+            .toggled(controls.public),
+            button(parts, "ws-general-public-role", &controls.role, || {
+                WorkspaceSettingsEffect::NextJoinRole
+            }),
+            button(
+                parts,
+                "ws-general-public-describe",
+                &controls.describe,
+                || WorkspaceSettingsEffect::Describe,
+            ),
+        ])]
+    });
+    described(&public.group, items)
 }
 
 /// The archived workspaces, each with Restore and Delete.

@@ -12,6 +12,20 @@
 //! forks/execs and blocks for the child's lifetime; outcomes come back
 //! through [`drain_events`], drained once per frame.
 
+mod app_cache;
+pub use app_cache::invalidate_app_cache;
+#[cfg(test)]
+use app_cache::{
+    APP_CACHE, APP_CACHE_EPOCH, APP_CACHE_WATCH, expire_watched_app_cache, forget_app_cache,
+    record_app_read, registry_changed,
+};
+use app_cache::{
+    APP_CACHE_REVISION, RegistryStamp, ensure_app_cache_watch, installed_apps_snapshot,
+    registry_stamps,
+};
+pub(crate) use app_cache::{
+    installed_apps_epoch, installed_apps_without_waiting, load_installed_apps,
+};
 pub(crate) mod diagnostics;
 mod embed_launch;
 pub(crate) mod launch_history;
@@ -43,6 +57,25 @@ pub(crate) fn start_task_host(room: &str, task: &str) -> std::io::Result<std::os
     })?;
     tilolang_hosts::start_task(room, task)
 }
+
+/// Apply an agent task's change to the record of the tilolang app `app` in `room` at its
+/// origin, as the broker admitted it (`tilolang_hosts::apply_change`): the origin's answer.
+///
+/// # Errors
+/// `room` is no room, the app is no installed tilolang app, or its host did not answer.
+pub(crate) fn apply_task_change(
+    room: &str,
+    app: &str,
+    change: &runtime_portal::tilolang_host::Change,
+) -> std::io::Result<serde_json::Value> {
+    let room = RoomId::parse(room).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("`{room}` is no room"),
+        )
+    })?;
+    tilolang_hosts::apply_change(app, room, change)
+}
 #[cfg(target_os = "linux")]
 pub(crate) mod window_doors;
 #[cfg(test)]
@@ -54,8 +87,8 @@ pub use launch_records::{
     consume_trusted_service_launch_identity, register_in_process_launch,
 };
 pub(crate) use launch_records::{
-    authenticated_window_launch, register_in_process_window, register_tilolang_instance,
-    withdraw_in_process_launch,
+    authenticated_window_launch, register_in_process_window, register_tilolang_change,
+    register_tilolang_instance, register_windowless_launch, withdraw_in_process_launch,
 };
 
 use crate::shell::action_authority;
@@ -64,11 +97,13 @@ use crate::shell::state::WorkspaceAuthority as _;
 mod agent_provider;
 #[cfg(target_os = "linux")]
 use agent_provider::workspace_agent_provider;
+mod task_agent;
 use std::collections::VecDeque;
 #[cfg(any(test, target_os = "linux"))]
 use std::process::Command;
 #[cfg(any(test, target_os = "linux"))]
 use std::process::Stdio;
+pub use task_agent::{launch_task_agent, task_agent_runtime_installed};
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
@@ -77,7 +112,7 @@ use std::io::{self, Read};
 #[cfg(target_os = "linux")]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -85,11 +120,6 @@ use crate::shell::host_runtime::{proc_stat, write_runtime_private};
 use crate::shell::state::{RoomId, Workspace};
 use collab_types::caps::LaunchGrants;
 use os_actions::{TOOL_CONTEXT_ENV, ToolIntent};
-
-/// Fallback only: the registry is watched with inotify, so a new install
-/// shows up on the next `installed_apps()` without waiting. This bound
-/// catches a missed watch (NFS, the watch limit, a swapped `TILO_APPS_DATA_DIR`).
-const APP_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Stderr tail kept for a failed launch — enough to carry `bwrap`'s or
 /// the dynamic loader's complaint, small enough a chatty app can't grow
@@ -995,7 +1025,14 @@ impl LaunchFailure {
         }
     }
 
-    pub(crate) const fn message_key(self) -> &'static str {
+    /// What the person reads for this failure to open `display_name`.
+    /// Formatted with the app's name whether or not the message names it
+    /// today, so no message can show its `{ $app }` unfilled.
+    pub(crate) fn message(self, display_name: &str) -> String {
+        app_message(self.message_key(), display_name)
+    }
+
+    const fn message_key(self) -> &'static str {
         match self {
             Self::LauncherUnavailable | Self::Other => "launch-failed-launcher-unavailable",
             Self::ProviderUnavailable => "launch-error-provider-unavailable",
@@ -1161,14 +1198,12 @@ impl LaunchEvent {
                 reason: LaunchFailure::RoomRefused,
                 detail,
             } => detail.clone(),
-            LaunchEventKind::SpawnFailed { reason, .. } => {
-                crate::shell::i18n::t(reason.message_key())
-            }
+            LaunchEventKind::SpawnFailed { reason, .. } => reason.message(&self.display_name),
             LaunchEventKind::Failed { code, stderr_tail } => {
-                crate::shell::i18n::t(stopped_reason_key(*code, stderr_tail))
+                app_message(stopped_reason_key(*code, stderr_tail), &self.display_name)
             }
             LaunchEventKind::WindowLost { .. } => {
-                crate::shell::i18n::t("launch-failed-window-lost")
+                app_message("launch-failed-window-lost", &self.display_name)
             }
             LaunchEventKind::Started { .. }
             | LaunchEventKind::Exited
@@ -1314,6 +1349,12 @@ fn compact_notice_name(name: &str) -> String {
     }
 }
 
+/// The launch-failure message `key`, formatted with the app's name: every
+/// such message may name the app it is about.
+fn app_message(key: &str, display_name: &str) -> String {
+    crate::shell::i18n::t_args(key, &[("app", compact_notice_name(display_name).into())])
+}
+
 pub(crate) fn launch_failure_title(display_name: &str) -> String {
     crate::shell::i18n::t_args(
         "launch-failure-title",
@@ -1428,11 +1469,10 @@ pub(crate) struct SessionLaunches {
     /// compositor never asked, and the person never reached the app to ask
     /// it. However the process then exits, the window was lost.
     vanished: Mutex<HashSet<String>>,
-    /// The tabs of windows that went away without being asked to close, by
-    /// launch key, as a reopen restores them: kept until the launch's end
+    /// The tabs kept for windows whose app went away with them open, by
+    /// launch key: kept until the launch's end
     /// says whether memory ended it (then its notice reopens them) or not.
-    lost_tabs:
-        Mutex<HashMap<String, Vec<(std::time::Instant, crate::shell::closed_tabs::ClosedTab)>>>,
+    lost_tabs: Mutex<HashMap<String, Vec<(std::time::Instant, crate::shell::state::TabId)>>>,
     /// Launch keys whose app has been handed an action invocation since it
     /// started: an agent, another device or the person drove it, so a
     /// window it then closes was closed on request.
@@ -1627,19 +1667,6 @@ pub(crate) fn spawn_reporting<T: Send + 'static>(
     })
 }
 
-/// Last enumeration and when it was memoised; `None` marks it stale, so it
-/// is only the baseline the next read compares against.
-static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Option<Instant>)>> = Mutex::new(None);
-static APP_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
-/// Bumped when a watch (or an explicit invalidate) makes the memoised
-/// snapshot untrustworthy. Distinct from [`APP_CACHE_REVISION`]: an
-/// invalidation alone must not look like a new generation of apps.
-static APP_CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
-/// The registry roots watched, and a watch of each that could be armed.
-static APP_CACHE_WATCH: Mutex<Option<(Vec<PathBuf>, Vec<tilo_files::native::ChangeWatch>)>> =
-    Mutex::new(None);
-/// The registries the memoised snapshot was read from, as they were just before the read.
-static APP_CACHE_STAMP: Mutex<Option<Vec<Option<RegistryStamp>>>> = Mutex::new(None);
 /// Capabilities of the workspace apps are being launched into, published
 /// by [`set_workspace_capabilities`] or [`launch_in_workspace`]. Empty is
 /// the safe default: an app launched before publish gets manifest-only.
@@ -2097,6 +2124,24 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     installed_apps_snapshot().map(|(_, apps)| apps)
 }
 
+/// The installed app that declares (`[providers].resources`) it opens
+/// resources of `kind`, such as `mail.message`: the one that does, or the
+/// one that is not a secondary tool for them when several do. `None` when
+/// none does, or the claim is ambiguous.
+pub(crate) fn app_opening_resource_kind(kind: &str) -> Option<String> {
+    let claims: Vec<InstalledApp> = installed_apps()
+        .ok()?
+        .into_iter()
+        .filter(|app| app.has_gui && app.opens_resource_kinds.iter().any(|of| of == kind))
+        .collect();
+    let primary: Vec<&InstalledApp> = claims.iter().filter(|app| !app.opens_secondary).collect();
+    match (primary.as_slice(), claims.as_slice()) {
+        ([app], _) => Some(app.package_id.clone()),
+        ([], [app]) => Some(app.package_id.clone()),
+        _ => None,
+    }
+}
+
 /// Resolve one canonical installed package without parsing every app's
 /// manifest on the compositor loop. Keep the registry watch armed so a real
 /// update invalidates the input-method service before its TTL fallback.
@@ -2141,212 +2186,6 @@ pub(crate) fn installed_earlier_ids() -> tilo_action_policy::EarlierIds {
 pub(crate) fn find_installed(apps: &[InstalledApp], package_id: &str) -> Option<InstalledApp> {
     let find = |id: &str| apps.iter().find(|app| app.package_id == id).cloned();
     find(package_id).or_else(|| find(installed_earlier_ids().successor(package_id)?))
-}
-
-/// Which version of a registry file is on disk. An install replaces the registry by one
-/// rename, its commit point, so a completed install always shows as another file here.
-#[derive(Clone, PartialEq, Eq, Debug)]
-struct RegistryStamp {
-    device: u64,
-    inode: u64,
-    modified: Option<std::time::SystemTime>,
-    len: u64,
-}
-
-fn registry_stamps() -> Vec<Option<RegistryStamp>> {
-    use std::os::unix::fs::MetadataExt as _;
-    app_cache_roots()
-        .iter()
-        .map(|root| {
-            let metadata =
-                std::fs::metadata(root.join(package_store::layout::REGISTRY_FILE)).ok()?;
-            Some(RegistryStamp {
-                device: metadata.dev(),
-                inode: metadata.ino(),
-                modified: metadata.modified().ok(),
-                len: metadata.len(),
-            })
-        })
-        .collect()
-}
-
-/// Pair records with their cache revision while holding the cache lock.
-///
-/// A memoised snapshot answers only while the registries are the ones it was read from: the
-/// watch that expires it runs on its own thread, and an app launched right after an install
-/// completed must start the installed package, not the one before it.
-fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
-    let stamps = registry_stamps();
-    {
-        let cache = lock(&APP_CACHE);
-        if let Some((apps, Some(at))) = cache.as_ref()
-            && at.elapsed() < APP_CACHE_TTL
-            && lock(&APP_CACHE_STAMP).as_ref() == Some(&stamps)
-        {
-            return Ok((APP_CACHE_REVISION.load(Ordering::Acquire), apps.clone()));
-        }
-    }
-    let epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
-    let apps = read_installed_apps()?;
-    *lock(&APP_CACHE_STAMP) = Some(stamps);
-    let generation = record_app_read(epoch, &apps);
-    ensure_app_cache_watch();
-    Ok((generation, apps))
-}
-
-/// [`installed_apps`] for the compositor loop: the last enumeration, fresh
-/// or stale, and never a registry read, which scans the registry and parses
-/// every manifest. One past its TTL or invalidated by the registry watch is
-/// refreshed on a worker and served until the refresh lands; before the
-/// first enumeration there is none.
-pub(crate) fn installed_apps_without_waiting() -> Vec<InstalledApp> {
-    let (apps, fresh) = {
-        let cache = lock(&APP_CACHE);
-        cache.as_ref().map_or_else(
-            || (Vec::new(), false),
-            |(apps, at)| {
-                (
-                    apps.clone(),
-                    at.is_some_and(|at| at.elapsed() < APP_CACHE_TTL),
-                )
-            },
-        )
-    };
-    if !fresh {
-        refresh_installed_apps_in_background();
-    }
-    apps
-}
-
-/// Re-read the registry on a worker, one refresh at a time.
-fn refresh_installed_apps_in_background() {
-    static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if REFRESHING.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    let spawned = std::thread::Builder::new()
-        .name("tilo-apps-refresh".into())
-        .spawn(|| {
-            if let Err(error) = installed_apps_snapshot() {
-                tracing::debug!(%error, "installed apps refresh failed; the last list stays");
-            }
-            REFRESHING.store(false, Ordering::Release);
-        });
-    if spawned.is_err() {
-        REFRESHING.store(false, Ordering::Release);
-    }
-}
-
-/// Store a registry read that started at `read_epoch` as the new baseline.
-fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) -> u64 {
-    let mut cache = lock(&APP_CACHE);
-    // An invalidation (install, removal, watch event, repointed registry)
-    // that raced this read means the read may predate it: keep it only as
-    // a stale baseline so the next call re-reads instead of hiding the
-    // change for a whole TTL.
-    let fresh = (APP_CACHE_EPOCH.load(Ordering::Acquire) == read_epoch).then(Instant::now);
-    let changed = cache.as_ref().is_none_or(|(cached, _)| cached != apps);
-    // The TTL controls disk freshness, not search identity. Advancing this
-    // generation for identical records invalidates both native and host app
-    // indexes, making a just-discovered action disappear before invocation.
-    if changed {
-        APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
-    }
-    *cache = Some((apps.to_vec(), fresh));
-    let generation = if fresh.is_some() {
-        APP_CACHE_REVISION.load(Ordering::Acquire)
-    } else {
-        0
-    };
-    drop(cache);
-    generation
-}
-
-/// Drop the memoised enumeration and read the registry again, so what the
-/// compositor loop is served ([`installed_apps_without_waiting`]) already
-/// holds the change. Used on a worker after an install/remove and by tests
-/// that repoint `TILO_APPS_DATA_DIR`; never on the compositor loop.
-pub fn invalidate_app_cache() {
-    // Bump the epoch under the lock so a read finishing right after cannot
-    // memoise itself as fresh.
-    let mut cache = lock(&APP_CACHE);
-    APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
-    APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
-    *cache = None;
-    drop(cache);
-    *lock(&APP_CACHE_STAMP) = None;
-    load_installed_apps();
-}
-
-/// Read the installed apps into what the compositor loop is served. At
-/// startup, before the loop turns, so its first windows are named by their
-/// apps; never on the loop.
-pub(crate) fn load_installed_apps() {
-    if let Err(error) = installed_apps_snapshot() {
-        tracing::warn!(%error, "installed apps unreadable");
-    }
-}
-
-/// Cheap installed-store invalidation token for session-owned services.
-/// A changed token means callers must reread the canonical cached catalogue;
-/// it is not an authorization or a package identity.
-pub(crate) fn installed_apps_epoch() -> u64 {
-    APP_CACHE_EPOCH.load(Ordering::Acquire)
-}
-
-fn expire_watched_app_cache() {
-    let mut cache = lock(&APP_CACHE);
-    APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
-    if let Some((_, at)) = cache.as_mut() {
-        *at = None;
-    }
-}
-
-fn app_cache_roots() -> Vec<PathBuf> {
-    [
-        package_store::layout::default_user_root(),
-        package_store::layout::system_data_dir(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
-}
-
-/// Watch the registry roots, package folders included, once per set of roots. A change is
-/// read on the watch's thread, so the list the compositor loop is served holds it without a
-/// read of its own. Opens and reads are not changes, so filling the cache does not expire it.
-fn ensure_app_cache_watch() {
-    let roots = app_cache_roots();
-    if roots.is_empty() {
-        return;
-    }
-    let mut watched = lock(&APP_CACHE_WATCH);
-    if watched.as_ref().is_some_and(|(held, _)| *held == roots) {
-        return;
-    }
-    let armed = roots
-        .iter()
-        .filter_map(|root| {
-            tilo_files::native::watch_tree_changes(
-                root,
-                |_| true,
-                || {
-                    expire_watched_app_cache();
-                    if let Err(error) = installed_apps_snapshot() {
-                        tracing::debug!(
-                            %error,
-                            "changed app registry unreadable; the last list stays stale"
-                        );
-                    }
-                },
-            )
-            .map_err(|error| {
-                tracing::info!(%error, path = %root.display(), "app registry path is not watched");
-            })
-            .ok()
-        })
-        .collect();
-    *watched = Some((roots, armed));
 }
 
 /// Immutable installed-app snapshot revision for retained search projections.
@@ -3575,6 +3414,9 @@ enum LaunchContext<'a> {
     None,
     Tool(&'a ToolIntent),
     Raw(String),
+    /// A Browser window that browses as a visitor, without the person's
+    /// sign-ins ([`ui::webview::VISITOR_WINDOW_FLAG`]).
+    Visitor,
 }
 
 /// A launch to run again once its app is updated: everything
@@ -3595,6 +3437,7 @@ enum ReplayContext {
     None,
     Tool(ToolIntent),
     Raw(String),
+    Visitor,
 }
 
 impl ReplayContext {
@@ -3605,6 +3448,7 @@ impl ReplayContext {
             LaunchContext::None => Self::None,
             LaunchContext::Tool(intent) => Self::Tool((*intent).clone()),
             LaunchContext::Raw(raw) => Self::Raw(raw.clone()),
+            LaunchContext::Visitor => Self::Visitor,
         }
     }
 }
@@ -3617,6 +3461,7 @@ impl Replay {
             ReplayContext::None => LaunchContext::None,
             ReplayContext::Tool(intent) => LaunchContext::Tool(intent),
             ReplayContext::Raw(raw) => LaunchContext::Raw(raw.clone()),
+            ReplayContext::Visitor => LaunchContext::Visitor,
         };
         execute_installed_inner(
             app,
@@ -4157,6 +4002,16 @@ fn apply_launch_context(
             command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded));
         }
         LaunchContext::Raw(encoded) => command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded)),
+        LaunchContext::Visitor => {
+            if uri.is_none() || document.is_some() {
+                return Err(LaunchError::RegistryUnreadable {
+                    detail: "a visitor window opens one web address".into(),
+                });
+            }
+            // The launcher's own switch: it hands the app its visitor switch
+            // after the address (`runtime_portal::windows::VISITOR_WINDOW_FLAG`).
+            command.args.push("--open-as-visitor".into());
+        }
     }
     Ok(())
 }
@@ -4225,7 +4080,7 @@ pub(crate) fn queue_package_target_in_workspace(
     workspace: &Workspace,
     uri: String,
 ) -> Result<(), LaunchError> {
-    queue_package_open(package_id, None, workspace, None, Some(uri))
+    queue_package_open(package_id, None, workspace, None, Some(uri), false)
 }
 
 /// Open `document` or `uri` (or just the app) in the package `package_id`
@@ -4234,7 +4089,9 @@ pub(crate) fn queue_package_target_in_workspace(
 /// [`InstalledApp`]; a refusal arrives as a launch event, named
 /// `display_name` when the caller knows what the person asked to open (a
 /// package that is no longer installed has no registry name to fall back
-/// on), else the package's own display name.
+/// on), else the package's own display name. A `visitor` launch opens `uri`
+/// in a Browser window without the person's sign-ins
+/// ([`ui::webview::VISITOR_WINDOW_FLAG`]).
 ///
 /// # Errors
 ///
@@ -4246,6 +4103,7 @@ pub(crate) fn queue_package_open(
     workspace: &Workspace,
     document: Option<PathBuf>,
     uri: Option<String>,
+    visitor: bool,
 ) -> Result<(), LaunchError> {
     let workspace = workspace.clone();
     spawn_reporting(
@@ -4264,14 +4122,19 @@ pub(crate) fn queue_package_open(
                     });
                 }
                 let grants = workspace.launch_grants(tilo_clock::unix_now());
-                execute_installed(
+                execute_installed_inner(
                     app,
                     workspace.room(),
                     document.as_deref(),
                     uri.as_deref(),
-                    None,
+                    if visitor {
+                        LaunchContext::Visitor
+                    } else {
+                        LaunchContext::None
+                    },
                     None,
                     Some(grants),
+                    None,
                 )
             });
             if let Err(error) = outcome {
@@ -4479,7 +4342,18 @@ pub(crate) fn admit_native_app(
         }
         Ok(())
     };
-    delegate().map_err(|detail| {
+    let asked = delegate();
+    // The grant can be in the room though its answer said otherwise (it
+    // landed, and only recording its receipt failed): the room, not the
+    // answer, says whether the app may author there now.
+    if asked.is_err()
+        && native_app_open_access(owner, room, certificate, package)
+            .is_ok_and(|now| now == NativeAppOpenAccess::Author)
+    {
+        // As any later opening of the app finds it.
+        return Ok(NativeAppOpenAccess::Author);
+    }
+    asked.map_err(|detail| {
         if let Some(detail) = app_authorship_refusal(&detail) {
             return LaunchError::AppAuthorshipRefused {
                 package_id: package.to_owned(),
@@ -6240,9 +6114,9 @@ const LOST_TABS_PER_LAUNCH: usize = 8;
 /// not brought back.
 const LOST_WITH_THE_LAUNCH: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// A window of launch `key` went away without being asked to close; `tab`
-/// is its tab as a reopen restores it. Kept until the launch ends.
-pub(crate) fn note_lost_tab(key: &str, tab: crate::shell::closed_tabs::ClosedTab) {
+/// A window of launch `key` went away with its app; `tab` is the tab kept
+/// in its place. Kept until the launch ends.
+pub(crate) fn note_lost_tab(key: &str, tab: crate::shell::state::TabId) {
     LaunchSession::with(|session| {
         keep_lost_tab(
             lock(&session.lost_tabs).entry(key.to_string()).or_default(),
@@ -6254,8 +6128,8 @@ pub(crate) fn note_lost_tab(key: &str, tab: crate::shell::closed_tabs::ClosedTab
 /// Keep `tab` among a launch's lost tabs, forgetting the oldest past
 /// [`LOST_TABS_PER_LAUNCH`].
 fn keep_lost_tab(
-    tabs: &mut Vec<(std::time::Instant, crate::shell::closed_tabs::ClosedTab)>,
-    tab: crate::shell::closed_tabs::ClosedTab,
+    tabs: &mut Vec<(std::time::Instant, crate::shell::state::TabId)>,
+    tab: crate::shell::state::TabId,
 ) {
     if tabs.len() == LOST_TABS_PER_LAUNCH {
         tabs.remove(0);
@@ -6265,7 +6139,7 @@ fn keep_lost_tab(
 
 /// The tabs of launch `key`'s windows that went away unasked just before
 /// now, taken once; older ones are forgotten.
-pub(crate) fn take_lost_tabs(key: &str) -> Vec<crate::shell::closed_tabs::ClosedTab> {
+pub(crate) fn take_lost_tabs(key: &str) -> Vec<crate::shell::state::TabId> {
     lock(&LaunchSession::current().lost_tabs)
         .remove(key)
         .unwrap_or_default()

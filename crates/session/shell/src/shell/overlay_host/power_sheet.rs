@@ -103,7 +103,8 @@ impl ShellOverlayHost {
         if panel.is_zero_area() {
             return Rect::ZERO;
         }
-        panel + self.layers.power_menu.area().origin().to_vec2()
+        vello::kurbo::Affine::translate(self.layers.power_menu.area().origin().to_vec2())
+            .transform_rect_bbox(panel)
     }
 
     /// Open the power menu for a capture of the desktop with it up.

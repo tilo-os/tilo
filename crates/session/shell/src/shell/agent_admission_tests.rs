@@ -3,7 +3,7 @@
     reason = "tests hold the chrome borrow across the assertions that read it"
 )]
 use super::*;
-use crate::shell::chrome_state::PromptRequest;
+use crate::shell::chrome_state::{ChromeState, PromptRequest};
 use crate::shell::search::providers::permission_prompts::answer_pending_prompt_as;
 use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
 use ui::widget::PromptChoice;
@@ -64,19 +64,40 @@ fn facts(exe: &str) -> ClientFacts {
 fn ask(
     sender: &std::sync::mpsc::Sender<DoorRequest>,
     facts: ClientFacts,
-) -> tokio::sync::oneshot::Receiver<Consent> {
+) -> tokio::sync::oneshot::Receiver<DoorDecision> {
     let (decide, decided) = tokio::sync::oneshot::channel();
     sender.send(DoorRequest { facts, decide }).unwrap();
     decided
 }
 
-/// The room's governor takes what admitting a client asked of it, as the
-/// room's admitted document then carries it: nothing is a member before.
-fn governor_commits(chrome: &Chrome) {
-    chrome
-        .borrow()
-        .tree_mut()
-        .govern_requests_here_for_test(&"shell-fixture".to_owned());
+/// Tasks makes the run of each admitted client, as the overlay asks it
+/// (`ask_agent::ask_door_runs`): an issue with the title asked for, assigned
+/// to a task agent minted for it. The titles of the issues made.
+fn tasks_start_runs(chrome: &Chrome) -> Vec<String> {
+    let asks = chrome.borrow_mut().take_door_runs();
+    asks.into_iter()
+        .map(|ask| {
+            assert_eq!(
+                ask.person,
+                person(chrome),
+                "the run acts for who admitted it"
+            );
+            let agent = format!("task-agent-{}", ask.title.len());
+            let _ = ask.reply.send(Ok(DoorRun {
+                agent,
+                issue: format!("tasks.tracker/issues/{}", ask.title),
+                presentation: ask.title.clone().into_bytes(),
+            }));
+            ask.title
+        })
+        .collect()
+}
+
+/// The client was let in under `label`, into the run Tasks made for it.
+fn admitted(decided: &mut tokio::sync::oneshot::Receiver<DoorDecision>, label: &str) -> Admitted {
+    let admitted = decided.try_recv().expect("decided").expect("let in");
+    assert_eq!(admitted.label, label);
+    admitted
 }
 
 fn front_id(chrome: &Chrome) -> uuid::Uuid {
@@ -91,6 +112,7 @@ fn answer(chrome: &Chrome, choice: PromptChoice, member: Option<MemberChoice>) {
     answer_pending_prompt_as(&mut chrome.borrow_mut(), id, choice, member).expect("answered");
 }
 
+/// Nobody is made a member by the door: a client works in its run.
 fn agent_members(chrome: &Chrome) -> Vec<String> {
     use crate::shell::state::WorkspaceAuthority as _;
     chrome
@@ -136,34 +158,28 @@ fn nothing_is_decided_until_the_person_answers_and_a_refusal_admits_nobody() {
     );
     answer(&chrome, PromptChoice::Deny, None);
     consent.pump(&chrome);
-    assert!(matches!(decided.try_recv(), Ok(Consent::Refuse(_))));
-    assert!(agent_members(&chrome).is_empty());
+    assert!(matches!(decided.try_recv(), Ok(Err(_))));
+    assert!(tasks_start_runs(&chrome).is_empty(), "no run for a refusal");
     assert_eq!(consent.waiting(), 0);
 }
 
 #[test]
-fn allowing_once_adds_the_proposed_agent_and_remembers_nothing() {
+fn allowing_once_starts_a_run_of_its_own_and_remembers_nothing() {
     let chrome = chrome_with_room();
     let (sender, mut consent) = channel(None, None);
     let mut decided = ask(&sender, facts("/usr/bin/node"));
     consent.pump(&chrome);
     answer(&chrome, PromptChoice::Allow, None);
     consent.pump(&chrome);
-    assert!(
-        decided.try_recv().is_err(),
-        "let in before its room made it a member"
-    );
-    governor_commits(&chrome);
+    assert!(decided.try_recv().is_err(), "let in before its run went");
+    assert_eq!(tasks_start_runs(&chrome), ["claude-code in this session"]);
     consent.pump(&chrome);
-    assert_eq!(
-        decided.try_recv().unwrap(),
-        Consent::Admit {
-            room: room(&chrome),
-            agent: "claude-code".into(),
-            person: person(&chrome),
-        }
-    );
-    assert_eq!(agent_members(&chrome), ["claude-code"]);
+    let admitted = admitted(&mut decided, "claude-code");
+    assert_eq!(admitted.room, room(&chrome));
+    assert_eq!(admitted.person, person(&chrome));
+    assert_eq!(admitted.agent, "task-agent-27", "the run's task agent");
+    assert_eq!(admitted.presentation, b"claude-code in this session");
+    assert!(agent_members(&chrome).is_empty(), "the door adds no member");
     // Once is once: the same client asks again next time.
     let mut again = ask(&sender, facts("/usr/bin/node"));
     consent.pump(&chrome);
@@ -171,40 +187,27 @@ fn allowing_once_adds_the_proposed_agent_and_remembers_nothing() {
     assert_eq!(chrome.borrow().pending_grants.len(), 1);
 }
 
-/// The person's answer asks the room's governor; a governor that refuses
-/// turns the client away with its reason, and nobody is a member.
+/// The person's answer asks Tasks for the run; a run Tasks does not make
+/// turns the client away with why, and nothing else is made.
 #[test]
-fn an_admission_the_rooms_governor_refuses_turns_the_client_away() {
+fn a_run_tasks_does_not_make_turns_the_client_away() {
     let chrome = chrome_with_room();
     let (sender, mut consent) = channel(None, None);
     let mut decided = ask(&sender, facts("/usr/bin/node"));
     consent.pump(&chrome);
     answer(&chrome, PromptChoice::Allow, None);
     consent.pump(&chrome);
-    let asked: Vec<_> = chrome
-        .borrow()
-        .tree()
-        .outbox_to_ask()
-        .map(|entry| entry.id)
-        .collect();
-    assert!(!asked.is_empty(), "the governor is asked");
-    for id in asked {
-        chrome.borrow().tree_mut().outbox_answered(
-            id,
-            crate::shell::state::HostAnswer::Refused("the room takes no agents".into()),
-        );
+    for ask in chrome.borrow_mut().take_door_runs() {
+        let _ = ask.reply.send(Err("Tasks is not installed".into()));
     }
-    crate::shell::workspace_governance::report_governance_refusals(&mut chrome.borrow_mut());
     consent.pump(&chrome);
-    assert_eq!(
-        decided.try_recv().unwrap(),
-        Consent::Refuse("the room takes no agents".into())
-    );
+    let refused = decided.try_recv().unwrap().unwrap_err();
+    assert!(refused.contains("Tasks is not installed"), "{refused}");
     assert!(agent_members(&chrome).is_empty());
 }
 
 #[test]
-fn the_person_names_which_agent_and_preset_a_client_is_admitted_as() {
+fn the_person_names_what_a_client_works_under() {
     let chrome = chrome_with_room();
     let (sender, mut consent) = channel(None, None);
     let mut decided = ask(&sender, facts("/usr/bin/node"));
@@ -214,32 +217,12 @@ fn the_person_names_which_agent_and_preset_a_client_is_admitted_as() {
         PromptChoice::Allow,
         Some(MemberChoice {
             agent: "  Scribe ".into(),
-            preset: Some(AgentPreset::Operator),
         }),
     );
     consent.pump(&chrome);
-    governor_commits(&chrome);
+    assert_eq!(tasks_start_runs(&chrome), ["scribe in this session"]);
     consent.pump(&chrome);
-    assert!(matches!(
-        decided.try_recv().unwrap(),
-        Consent::Admit { agent, .. } if agent == "scribe"
-    ));
-    let state = chrome.borrow();
-    let tree = state.tree();
-    let workspace = tree.desktop.active_workspace().unwrap();
-    assert!(
-        workspace
-            .policy
-            .grants
-            .iter()
-            .any(|grant| grant.id.as_str() == "agent-member:scribe:operator"),
-        "the membership is the ordinary admission grant"
-    );
-    assert_eq!(
-        workspace.agent_role_at("scribe", tilo_clock::unix_now()),
-        Some(crate::shell::state::CapRole::Editor),
-        "an operator changes the room"
-    );
+    admitted(&mut decided, "scribe");
 }
 
 #[test]
@@ -250,17 +233,17 @@ fn a_session_answer_lets_the_same_client_in_again_and_no_other() {
     consent.pump(&chrome);
     answer(&chrome, PromptChoice::Session, None);
     consent.pump(&chrome);
-    governor_commits(&chrome);
+    tasks_start_runs(&chrome);
     consent.pump(&chrome);
-    assert!(matches!(first.try_recv(), Ok(Consent::Admit { .. })));
+    admitted(&mut first, "claude-code");
 
+    // Let in without asking, into a run of its own.
     let mut same = ask(&sender, facts("/usr/bin/node"));
     consent.pump(&chrome);
-    assert!(
-        matches!(same.try_recv(), Ok(Consent::Admit { agent, .. }) if agent == "claude-code"),
-        "the remembered client was asked again"
-    );
-    assert!(chrome.borrow().pending_grants.is_empty());
+    assert!(chrome.borrow().pending_grants.is_empty(), "asked again");
+    assert_eq!(tasks_start_runs(&chrome), ["claude-code in this session"]);
+    consent.pump(&chrome);
+    admitted(&mut same, "claude-code");
 
     let mut other = ask(&sender, facts("/opt/other/node"));
     consent.pump(&chrome);
@@ -268,31 +251,6 @@ fn a_session_answer_lets_the_same_client_in_again_and_no_other() {
         other.try_recv().is_err(),
         "another executable is another client"
     );
-    assert_eq!(chrome.borrow().pending_grants.len(), 1);
-}
-
-#[test]
-fn a_remembered_client_is_asked_again_once_its_agent_is_removed() {
-    let chrome = chrome_with_room();
-    let (sender, mut consent) = channel(None, None);
-    let _first = ask(&sender, facts("/usr/bin/node"));
-    consent.pump(&chrome);
-    answer(&chrome, PromptChoice::Session, None);
-    consent.pump(&chrome);
-    governor_commits(&chrome);
-    consent.pump(&chrome);
-    {
-        let state = chrome.borrow();
-        let mut tree = state.tree_mut();
-        let workspace = tree.desktop.active_workspace_mut().unwrap();
-        workspace.revoke_grants_matching(|grant| {
-            grant.id.as_str().starts_with("agent-member:claude-code")
-        });
-    }
-    assert!(agent_members(&chrome).is_empty());
-    let mut again = ask(&sender, facts("/usr/bin/node"));
-    consent.pump(&chrome);
-    assert!(again.try_recv().is_err(), "a revoked agent was let in");
     assert_eq!(chrome.borrow().pending_grants.len(), 1);
 }
 
@@ -315,9 +273,9 @@ fn always_is_kept_privately_for_the_next_session_and_only_an_owner_gives_it() {
     chrome.borrow_mut().test_only_owner_override = Some(true);
     answer(&chrome, PromptChoice::Always, None);
     consent.pump(&chrome);
-    governor_commits(&chrome);
+    tasks_start_runs(&chrome);
     consent.pump(&chrome);
-    assert!(matches!(decided.try_recv(), Ok(Consent::Admit { .. })));
+    admitted(&mut decided, "claude-code");
     // The answer is written on the state writer.
     crate::shell::durable_writer::global().flush();
     let mode = std::fs::metadata(&store).unwrap().permissions().mode();
@@ -327,7 +285,9 @@ fn always_is_kept_privately_for_the_next_session_and_only_an_owner_gives_it() {
     let (sender, mut consent) = channel(Some(store), None);
     let mut next = ask(&sender, facts("/usr/bin/node"));
     consent.pump(&chrome);
-    assert!(matches!(next.try_recv(), Ok(Consent::Admit { .. })));
+    tasks_start_runs(&chrome);
+    consent.pump(&chrome);
+    admitted(&mut next, "claude-code");
     let mut renamed = ask(
         &sender,
         ClientFacts {
@@ -356,9 +316,9 @@ fn remembering_always_never_waits_for_the_disk() {
         consent.pump(&chrome);
         answer(&chrome, PromptChoice::Always, None);
         consent.pump(&chrome);
-        governor_commits(&chrome);
+        tasks_start_runs(&chrome);
         consent.pump(&chrome);
-        assert!(matches!(decided.try_recv(), Ok(Consent::Admit { .. })));
+        admitted(&mut decided, "claude-code");
     });
     crate::shell::durable_writer::global().flush();
     let stored: StoredBindings = serde_json::from_slice(&std::fs::read(&store).unwrap()).unwrap();
@@ -395,13 +355,17 @@ fn an_agent_is_never_shown_the_decisions_on_its_own_admission() {
     let chrome = chrome_with_room();
     // The most an admitted agent can hold: it may change the room and ask to
     // reach outside it, and still never answers a prompt.
-    ensure_agent_member(
-        &chrome.borrow(),
-        &room(&chrome),
-        "claude-code",
-        AgentPreset::Operator,
-    )
-    .expect("the owner admits it");
+    {
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        let workspace = tree.desktop.active_workspace_mut().unwrap();
+        let owner = tilo_action_policy::Subject::person("shell-fixture");
+        workspace.admit_agent_preset(
+            "claude-code",
+            tilo_action_policy::roles::AgentPreset::Operator,
+            &owner,
+        );
+    }
     let state = chrome.borrow();
     let tree = state.tree();
     let workspace = tree.desktop.active_workspace().unwrap();
@@ -469,14 +433,14 @@ fn two_waiting_clients_are_each_decided_only_by_the_answer_to_their_own_prompt()
                 )
             })
             .collect();
-        // Each prompt names its own client and the agent it becomes; a
+        // Each prompt names its own client and the name it works under; a
         // process id means nothing to the person deciding.
         assert!(
-            shown[0].0.starts_with("t (") && shown[0].1.contains("agent t"),
+            shown[0].0.starts_with("t (") && shown[0].1.contains("as t,"),
             "{shown:?}"
         );
         assert!(
-            shown[1].0.starts_with("claude-code (") && shown[1].1.contains("agent claude-code"),
+            shown[1].0.starts_with("claude-code (") && shown[1].1.contains("as claude-code,"),
             "{shown:?}"
         );
         assert!(
@@ -508,7 +472,7 @@ fn two_waiting_clients_are_each_decided_only_by_the_answer_to_their_own_prompt()
     );
     consent.pump(&chrome);
     assert!(t.try_recv().is_err() && claude.try_recv().is_err());
-    assert!(agent_members(&chrome).is_empty());
+    assert!(tasks_start_runs(&chrome).is_empty());
 
     // The person allows `t`, the prompt on screen.
     answer_pending_prompt_as(
@@ -519,16 +483,9 @@ fn two_waiting_clients_are_each_decided_only_by_the_answer_to_their_own_prompt()
     )
     .expect("t's prompt is on screen");
     consent.pump(&chrome);
-    governor_commits(&chrome);
+    assert_eq!(tasks_start_runs(&chrome), ["t in this session"]);
     consent.pump(&chrome);
-    assert_eq!(
-        t.try_recv().unwrap(),
-        Consent::Admit {
-            room: room(&chrome),
-            agent: "t".into(),
-            person: person(&chrome),
-        }
-    );
+    assert_eq!(admitted(&mut t, "t").room, room(&chrome));
     assert!(
         matches!(
             claude.try_recv(),
@@ -536,7 +493,6 @@ fn two_waiting_clients_are_each_decided_only_by_the_answer_to_their_own_prompt()
         ),
         "Claude Code was decided by t's answer"
     );
-    assert_eq!(agent_members(&chrome), ["t"]);
     assert_eq!(consent.waiting(), 1);
 
     // The same answer again, now that Claude Code's prompt is on screen,
@@ -550,7 +506,7 @@ fn two_waiting_clients_are_each_decided_only_by_the_answer_to_their_own_prompt()
     }
     consent.pump(&chrome);
     assert!(claude.try_recv().is_err());
-    assert_eq!(agent_members(&chrome), ["t"]);
+    assert!(tasks_start_runs(&chrome).is_empty());
 
     // Claude Code is decided only by its own prompt.
     answer_pending_prompt_as(
@@ -561,8 +517,8 @@ fn two_waiting_clients_are_each_decided_only_by_the_answer_to_their_own_prompt()
     )
     .expect("Claude Code's prompt is on screen");
     consent.pump(&chrome);
-    assert!(matches!(claude.try_recv(), Ok(Consent::Refuse(_))));
-    assert_eq!(agent_members(&chrome), ["t"]);
+    assert!(matches!(claude.try_recv(), Ok(Err(_))));
+    assert!(tasks_start_runs(&chrome).is_empty());
     assert_eq!(consent.waiting(), 0);
     assert!(chrome.borrow().pending_grants.is_empty());
 }
@@ -613,7 +569,7 @@ fn a_click_admits_only_the_client_its_prompt_names_and_never_the_next_one() {
         ),
         "the click on t's prompt decided Claude Code"
     );
-    assert!(agent_members(&chrome).is_empty());
+    assert!(tasks_start_runs(&chrome).is_empty());
 
     // Claude Code's own prompt is now on screen, naming it, and only a
     // click on it admits it.
@@ -622,11 +578,7 @@ fn a_click_admits_only_the_client_its_prompt_names_and_never_the_next_one() {
     assert!(clicked.starts_with("claude-code ("), "{clicked}");
     host.tick_permission_prompt_for_tests();
     consent.pump(&chrome);
-    governor_commits(&chrome);
+    assert_eq!(tasks_start_runs(&chrome), ["claude-code in this session"]);
     consent.pump(&chrome);
-    assert!(matches!(
-        claude.try_recv(),
-        Ok(Consent::Admit { agent, .. }) if agent == "claude-code"
-    ));
-    assert_eq!(agent_members(&chrome), ["claude-code"]);
+    admitted(&mut claude, "claude-code");
 }

@@ -32,10 +32,6 @@ use crate::shell::topbar_chrome::{self as bar_data, ClockPoll};
 /// The instance the bar is mounted as: no tab of any workspace.
 const TOPBAR_INSTANCE: u64 = u64::MAX - 8;
 
-/// How far below a bar its own drawing reaches: the focus ring, the
-/// hairline and the shadow of what floats on it.
-const BAR_REACH: f64 = 28.0;
-
 /// What the shell keeps of the bar it hosts.
 #[derive(Default)]
 pub(super) struct TopBarHost {
@@ -59,6 +55,10 @@ pub(super) struct TopBarHost {
     /// The pointer was over the bar at its last move: the move that takes it
     /// off reaches the bar too, so no control stays lifted.
     hovered: bool,
+    /// The shell's own Tab moved keyboard focus onto the bar: reading it
+    /// with the keyboard holds it shown, as a Tab inside it does. Focus the
+    /// shell merely placed on it (a fresh desktop's first focus) does not.
+    reached_by_keyboard: bool,
 }
 
 /// What of the chrome the feed is built from: a change of any of it
@@ -75,20 +75,18 @@ struct FeedKey {
     continuity: Option<String>,
 }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Rect ± Vec2 is float geometry translation and cannot panic"
-)]
 fn moved(rect: Rect, by: Vec2) -> Rect {
-    if rect.is_zero_area() { rect } else { rect + by }
+    if rect.is_zero_area() {
+        rect
+    } else {
+        vello::kurbo::Affine::translate(by).transform_rect_bbox(rect)
+    }
 }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Rect ± Vec2 is float geometry translation and cannot panic"
-)]
 fn local(rect: Rect, origin: Point) -> Rect {
-    rect - origin.to_vec2()
+    vello::kurbo::Affine::translate(origin.to_vec2())
+        .inverse()
+        .transform_rect_bbox(rect)
 }
 
 impl TopBarHost {
@@ -144,18 +142,23 @@ impl TopBarHost {
         self.app.as_ref().is_some_and(|app| app.is_focused())
     }
 
-    /// What the bar paints, shadows and focus rings included, in the
-    /// desktop's coordinates.
-    fn painted_bounds(&self) -> Vec<Rect> {
+    /// What the bar paints, in the desktop's coordinates: each bar with the
+    /// focus ring and hairline around its controls, and what floats on it
+    /// (its menu, the clock) with their shadows.
+    fn painted_bounds(&self, theme: &Theme) -> Vec<Rect> {
+        let ring = ui::widget::focus_ring_reach(theme);
         let mut bounds: Vec<Rect> = self
             .shown
             .bars
             .iter()
-            .map(|(_, rect, _)| Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + BAR_REACH))
+            .map(|(_, rect, _)| rect.inflate(ring, ring))
             .collect();
         for rect in [self.shown.clock, self.shown.popover] {
             if !rect.is_zero_area() {
-                bounds.push(rect.inflate(BAR_REACH, BAR_REACH));
+                bounds.push(
+                    ui::surface::floating_shadow_bounds(rect, theme)
+                        .union(rect.inflate(ring, ring)),
+                );
             }
         }
         bounds
@@ -437,7 +440,7 @@ impl ShellOverlayHost {
                     app.draw(&mut drawn, transform, text_renderer, theme, presence);
                 }
                 self.topbar.refresh_shown();
-                painted = self.topbar.painted_bounds();
+                painted = self.topbar.painted_bounds(theme);
                 if !painted.is_empty() {
                     scene.append(&drawn, None);
                 }
@@ -496,33 +499,31 @@ impl ShellOverlayHost {
         self.bump_chrome();
     }
 
-    /// Carry a click on a tray item at the bar to the item. Whether it
-    /// reached it.
-    fn topbar_tray(&self, key: &str, request: tilo_desktop::chrome::AppTrayRequest) -> bool {
-        // The bar says where in its own area; the item's menu opens
-        // where that is on the desktop.
+    /// Hand a click on a tray item to its app, at the item's place on the
+    /// desktop (the bar says where in its own area). Whether it was taken.
+    fn forward_tray_request(
+        &self,
+        key: &str,
+        request: tilo_desktop::chrome::AppTrayRequest,
+    ) -> bool {
+        use tilo_desktop::chrome::AppTrayRequest;
         let (dx, dy) = (
             ui::num::i32_of_f64(self.topbar.origin.x),
             ui::num::i32_of_f64(self.topbar.origin.y),
         );
+        let at = |x: i32, y: i32| (x.saturating_add(dx), y.saturating_add(dy));
         let request = match request {
-            tilo_desktop::chrome::AppTrayRequest::Activate { x, y } => {
-                tilo_desktop::chrome::AppTrayRequest::Activate {
-                    x: x.saturating_add(dx),
-                    y: y.saturating_add(dy),
-                }
+            AppTrayRequest::Activate { x, y } => {
+                let (x, y) = at(x, y);
+                AppTrayRequest::Activate { x, y }
             }
-            tilo_desktop::chrome::AppTrayRequest::SecondaryActivate { x, y } => {
-                tilo_desktop::chrome::AppTrayRequest::SecondaryActivate {
-                    x: x.saturating_add(dx),
-                    y: y.saturating_add(dy),
-                }
+            AppTrayRequest::SecondaryActivate { x, y } => {
+                let (x, y) = at(x, y);
+                AppTrayRequest::SecondaryActivate { x, y }
             }
-            tilo_desktop::chrome::AppTrayRequest::ContextMenu { x, y } => {
-                tilo_desktop::chrome::AppTrayRequest::ContextMenu {
-                    x: x.saturating_add(dx),
-                    y: y.saturating_add(dy),
-                }
+            AppTrayRequest::ContextMenu { x, y } => {
+                let (x, y) = at(x, y);
+                AppTrayRequest::ContextMenu { x, y }
             }
         };
         if let Err(error) = crate::tray::global().request(key, bar_data::tray_request(request)) {
@@ -594,7 +595,7 @@ impl ShellOverlayHost {
             }
             ChromeIntent::AppTray { key, request } => {
                 drop(state);
-                return self.topbar_tray(&key, request);
+                return self.forward_tray_request(&key, request);
             }
             ChromeIntent::RenameWorkspace { name } => {
                 if !state.may_rename_active_workspace() {
@@ -805,14 +806,16 @@ impl ShellOverlayHost {
                 .is_some_and(|app| app.take_structure_dirty())
     }
 
-    /// Whether the bar is moving or fading, or has something new to show.
+    /// Whether the bar is moving or fading, or its app moves. A change the
+    /// bar has yet to draw is not motion: [`Self::update_topbar`] answers it
+    /// with one frame.
     pub(super) fn topbar_needs_frame(&self) -> bool {
         self.topbar.shown.animating
             || self
                 .topbar
                 .app
                 .as_ref()
-                .is_some_and(|app| app.needs_redraw())
+                .is_some_and(|app| app.needs_animation_frame())
     }
 
     /// When the bar next needs to run with nothing waking it.
@@ -850,7 +853,20 @@ impl ShellOverlayHost {
     /// Whether something the bar opened, or its own keyboard focus, holds it
     /// shown.
     pub(super) fn topbar_holds_shown(&self) -> bool {
-        self.topbar.shown.holds_shown || self.topbar.natively_focused()
+        self.topbar.shown.holds_shown
+            || (self.topbar.reached_by_keyboard && self.topbar.natively_focused())
+    }
+
+    /// The shell moved keyboard focus to `widget`, by the person's Tab with
+    /// `by_keyboard`: whether that is the bar, reached by reading it.
+    pub fn native_focus_moved(&mut self, widget: Option<*const ()>, by_keyboard: bool) {
+        let onto_bar = widget.is_some_and(|widget| {
+            self.topbar
+                .app
+                .as_deref()
+                .is_some_and(|app| std::ptr::addr_eq(std::ptr::from_ref(app), widget))
+        });
+        self.topbar.reached_by_keyboard = onto_bar && by_keyboard;
     }
 
     /// The bar's surface in its app, for a test or a capture driving it.

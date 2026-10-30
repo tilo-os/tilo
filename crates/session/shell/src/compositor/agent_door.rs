@@ -29,12 +29,15 @@
 //! its `initialize` is read until the person, in trusted chrome, admits it as
 //! an agent member of the workspace in front of them.
 //!
-//! **The broker**: an admitted connection is served the runtime's MCP
-//! projection as `Caller::local_agent(agent).in_room(room)` in a fresh
-//! execution, so discovery and invocation pass the same gate as every other
-//! caller: attributed to `agent:<id>`, limited to what the workspace grants
-//! that agent, and revoked live with its membership. There are no pixel
-//! tools.
+//! **The run**: admitting a client makes a task of it — an issue in Tasks,
+//! assigned to a task agent minted for the connection, whose run the
+//! person's admission starts — and the connection is served the runtime's
+//! MCP projection through that run
+//! (`tilo_action_broker::collab_broker_capnp::TaskRunHost`): every action it
+//! takes, an app's or a host step, is admitted by the run as the agent
+//! working on the issue for the person, attributed to the task agent, in the
+//! run's History group, and refused once the person stops the run. There are
+//! no pixel tools.
 
 use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -43,7 +46,7 @@ use std::time::Duration;
 
 use tilo_runtime::session_door::Consent;
 
-use crate::shell::agent_admission::{ClientFacts, DoorRequest};
+use crate::shell::agent_admission::{ClientFacts, DoorDecision, DoorRequest};
 
 /// Names a development compositor's door when it is not the real seat's.
 /// Honoured only in builds with developer overrides.
@@ -358,12 +361,31 @@ fn serve_connection(
         return;
     };
     let facts = facts_of(pid);
+    // What the person's admission joins: the run Tasks made for this
+    // connection, once it goes.
+    let joined: std::cell::RefCell<Option<Vec<u8>>> = std::cell::RefCell::new(None);
     let ended = tilo_runtime::session_door::serve_after(
         stream,
         Some(first),
-        crate::shell::remote_actions::BrokerActionHost::new(broker),
+        || {
+            let presentation = joined
+                .borrow_mut()
+                .take()
+                .ok_or("the connection was admitted into no run")?;
+            broker.state().task_run_host(&presentation)
+        },
         Some(std::sync::Arc::new(TaskHosts)),
-        |hello, connected| ask_person(requests, wake, facts, hello, connected),
+        |hello, connected| match ask_person(requests, wake, facts, hello, connected) {
+            Ok(admitted) => {
+                *joined.borrow_mut() = Some(admitted.presentation);
+                Consent::Admit {
+                    room: admitted.room,
+                    agent: admitted.agent,
+                    person: admitted.person,
+                }
+            }
+            Err(reason) => Consent::Refuse(reason),
+        },
     );
     if let Err(error) = ended {
         tracing::debug!(%error, "agent door: client disconnected");
@@ -371,14 +393,14 @@ fn serve_connection(
 }
 
 /// Hand one client to the compositor thread's consent and wait for the
-/// person's answer, giving up when the client leaves.
+/// person's answer and its run, giving up when the client leaves.
 fn ask_person(
     requests: &std::sync::mpsc::Sender<DoorRequest>,
     wake: &crate::session_runtime::Wake,
     mut facts: ClientFacts,
     hello: &tilo_runtime::session_door::Hello,
     connected: &dyn Fn() -> bool,
-) -> Consent {
+) -> DoorDecision {
     facts.client.clone_from(&hello.client_name);
     facts.version.clone_from(&hello.client_version);
     tracing::info!(
@@ -390,20 +412,20 @@ fn ask_person(
     );
     let (decide, mut decided) = tokio::sync::oneshot::channel();
     if requests.send(DoorRequest { facts, decide }).is_err() {
-        return Consent::Refuse("this session is ending".into());
+        return Err("this session is ending".into());
     }
     wake();
     loop {
         match decided.try_recv() {
-            Ok(consent) => return consent,
+            Ok(decision) => return decision,
             Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                return Consent::Refuse("this session is ending".into());
+                return Err("this session is ending".into());
             }
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
         }
         if !connected() {
             // Dropping `decided` withdraws the prompt.
-            return Consent::Refuse("the client left".into());
+            return Err("the client left".into());
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -534,18 +556,19 @@ mod tests {
         assert_eq!(door_path(true, false, None, None), None);
     }
 
-    /// The whole door in one process, over the production broker gate: a
-    /// client (what `tilo-runtime-mcp --connect` relays from an agent in a
+    /// The whole door in one process, over the production broker: a client
+    /// (what `tilo-runtime-mcp --connect` relays from an agent in a
     /// terminal) connects, is served nothing until the person admits it
-    /// through the `permission-prompts` decision, then lists the live apps
-    /// its grants reach as its own agent, and loses them with its membership.
+    /// through the `permission-prompts` decision, and then only through the
+    /// run Tasks makes for it: admitting it asks Tasks for that run, makes
+    /// it no member, and a run Tasks does not make turns it away with why.
     #[test]
     #[allow(
         clippy::too_many_lines,
         clippy::significant_drop_tightening,
         reason = "one scenario read top to bottom; the broker handle lives for all of it"
     )]
-    fn an_admitted_agent_lists_the_live_apps_through_the_door_and_loses_them_on_removal() {
+    fn an_admitted_client_is_served_only_through_the_run_tasks_makes_for_it() {
         use crate::shell::chrome_state::SearchScope;
         use crate::shell::chrome_state::{ChromeState, PromptRequest};
         use crate::shell::search::SearchRegistry;
@@ -557,13 +580,11 @@ mod tests {
         use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
         use std::io::{BufRead, Write};
         use std::sync::Arc;
-        use tilo_action_policy::Subject;
 
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
         let mut workspace = Workspace::new(id, "Demo");
         workspace.set_owner("shell-fixture");
-        let room = workspace.room();
         tree.desktop.workspaces.push(workspace);
         tree.desktop.active = id;
         let handle = WorkspaceTreeHandle::new(tree);
@@ -579,43 +600,6 @@ mod tests {
                 )),
                 tilo_action_broker::services::HostServices::default(),
             );
-        broker.replace_published_surfaces_for_test(vec![
-            crate::shell::collab_broker_capnp::PublishedSurface {
-                peer_id: 7,
-                app_id: "so.tilo.settings".into(),
-                route: crate::shell::collab_broker::CrdtRoute::app(
-                    "so.tilo.settings",
-                    room.to_string(),
-                ),
-                actions: vec![crate::shell::collab_broker_capnp::PublishedAction {
-                    state: tilo_actions::ActionState::default(),
-                    resource: "settings.display".into(),
-                    semantic_identity: None,
-                    action: "inspect".into(),
-                    resource_kind: "settings".into(),
-                    resource_label: "Displays".into(),
-                    action_label: "Inspect".into(),
-                    keywords: Vec::new(),
-                    icon: None,
-                    description: None,
-                    operation_kind: tilo_actions::OperationKind::View,
-                    params: vec![],
-                    contract: tilo_actions::ActionContract::view(),
-                    input: crate::shell::collab_broker_capnp::PublishedInput::None,
-                    view: None,
-                }],
-                live: true,
-            },
-        ]);
-
-        broker.replace_action_directory_roots_for_test(vec![
-            crate::shell::collab_broker_capnp::ActionDirectoryRoot {
-                peer_id: 7,
-                app_id: "so.tilo.settings".into(),
-                cluster_id: room.to_string(),
-                record_id: String::new(),
-            },
-        ]);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
@@ -640,19 +624,10 @@ mod tests {
                 replies.try_recv().ok()
             })
         };
-        // The door serves the agent tools: `tilo_ls` with no path lists the
-        // apps, one `<name>  <label>  running|installed` line each.
+        // A tool call: it must not run before the person answers.
         let list_apps = |id: u64| {
             serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
                 "params":{"name":"tilo_ls","arguments":{}}})
-        };
-        let running_settings = |reply: &serde_json::Value| {
-            reply["result"]["content"][0]["text"]
-                .as_str()
-                .is_some_and(|text| {
-                    text.lines()
-                        .any(|line| line.starts_with("settings ") && line.ends_with("running"))
-                })
         };
 
         send(
@@ -727,52 +702,30 @@ mod tests {
             )
             .expect("the owner admits it");
 
-        // The answer asks the room's governor for the agent's membership;
-        // the door lets the client in once the room has made it a member.
+        // The answer asks Tasks for the client's run, as asking a new
+        // agent does; nobody becomes a member of the room.
         turn(&mut consent);
-        handle
-            .write()
-            .govern_requests_here_for_test(&"shell-fixture".to_owned());
-        let initialized = reply(&mut consent);
-        assert_eq!(initialized["id"], 1, "{initialized}");
+        let asks = chrome.borrow_mut().take_door_runs();
+        assert_eq!(asks.len(), 1, "one run asked for");
+        assert_eq!(asks[0].title, "claude-code in this session");
         assert!(
-            initialized["result"]["serverInfo"].is_object(),
-            "{initialized}"
+            handle.read().desktop.workspaces[0]
+                .agent_members()
+                .is_empty(),
+            "the door admits no member"
         );
-        let members: Vec<_> = handle.read().desktop.workspaces[0]
-            .agent_members()
-            .into_iter()
-            .map(|(agent, _)| agent)
-            .collect();
-        assert_eq!(
-            members,
-            ["claude-code"],
-            "admitted as a visible, revocable member"
-        );
-
-        let listed = loop {
-            let listed = reply(&mut consent);
-            if listed["id"] == 3 {
-                break listed;
-            }
-            // The call queued before admission answers too, as the agent.
-            assert_eq!(listed["id"], 2, "{listed}");
-            send(list_apps(3));
-        };
-        assert_eq!(listed["result"]["isError"], false, "{listed}");
+        for ask in asks {
+            let _ = ask
+                .reply
+                .send(Err("Tasks is not installed in this workspace".into()));
+        }
+        let refused = reply(&mut consent);
+        assert_eq!(refused["id"], 1, "{refused}");
         assert!(
-            running_settings(&listed),
-            "the live app is listed: {listed}"
-        );
-
-        handle.write().desktop.workspaces[0]
-            .revoke_grants_matching(|grant| matches!(grant.subject, Subject::Agent(_)));
-        send(list_apps(4));
-        let revoked = reply(&mut consent);
-        assert_eq!(revoked["id"], 4);
-        assert!(
-            !running_settings(&revoked),
-            "a removed agent still lists the app: {revoked}"
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("Tasks is not installed")),
+            "{refused}"
         );
     }
 }

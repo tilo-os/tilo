@@ -17701,8 +17701,8 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime");
+        let mut fixture = ControlFixture::new();
         tokio::task::LocalSet::new().block_on(&runtime, async {
-            let mut fixture = ControlFixture::new();
             let directory =
                 crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
                     fixture.frame_builder.chrome().tree_handle(),
@@ -17806,8 +17806,8 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime");
+        let mut fixture = ControlFixture::new();
         tokio::task::LocalSet::new().block_on(&runtime, async {
-            let mut fixture = ControlFixture::new();
             let mut directory =
                 crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
                     fixture.frame_builder.chrome().tree_handle(),
@@ -18025,13 +18025,13 @@ mod tests {
                 .enable_all()
                 .build()
                 .expect("runtime");
+            let tree = directory_test_tree();
+            let mut frame_builder = FrameBuilder::with_handle(tree.clone(), false, (800, 600));
             tokio::task::LocalSet::new().block_on(&runtime, async {
-                let tree = directory_test_tree();
                 let mut directory =
                     crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-                        tree.clone(),
+                        tree,
                     );
-                let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
                 attach_directory_fixture(&mut frame_builder, &directory);
                 let mut ctx = TestControlCtx::new();
                 let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
@@ -18247,13 +18247,13 @@ mod tests {
                 .enable_all()
                 .build()
                 .expect("runtime");
+            let tree = directory_test_tree();
+            let mut frame_builder = FrameBuilder::with_handle(tree.clone(), false, (800, 600));
             tokio::task::LocalSet::new().block_on(&runtime, async {
-                let tree = directory_test_tree();
                 let mut directory =
                     crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-                        tree.clone(),
+                        tree,
                     );
-                let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
                 attach_directory_fixture(&mut frame_builder, &directory);
                 let mut ctx = TestControlCtx::new();
                 let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
@@ -18360,13 +18360,13 @@ mod tests {
                 .enable_all()
                 .build()
                 .expect("runtime");
+            let tree = directory_test_tree();
+            let mut frame_builder = FrameBuilder::with_handle(tree.clone(), false, (800, 600));
             tokio::task::LocalSet::new().block_on(&runtime, async {
-                let tree = directory_test_tree();
                 let mut directory =
                     crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
-                        tree.clone(),
+                        tree,
                     );
-                let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
                 attach_directory_fixture(&mut frame_builder, &directory);
                 let mut ctx = TestControlCtx::new();
                 let session = SessionManager::new(IdleConfig::from_env(), Instant::now());

@@ -27,9 +27,12 @@ use serde_json::Value;
 use thiserror::Error;
 
 use tilo_network_actor::fabric::{
-    DeviceId, DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect, FabricStamp,
-    MAX_FABRIC_ACTION_BYTES, MAX_FABRIC_CHECKPOINT_BYTES,
+    DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect, MAX_FABRIC_ACTION_BYTES,
+    MAX_FABRIC_CHECKPOINT_BYTES,
 };
+// The identity and stamp every record here is authored with: a service that
+// shares something of this device's names them.
+pub use tilo_network_actor::fabric::{DeviceId, FabricStamp};
 
 /// Locally derived focus identity of a physical gamepad's target. None of
 /// these fields are accepted from a remote peer or an untrusted application.

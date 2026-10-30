@@ -1349,6 +1349,9 @@ session-displays = Bildschirme
 session-displays-next = Nächste Bildschirmanordnung
 session-displays-set = Bildschirme anordnen
 session-param-displays-mode = Wie die Bildschirme zusammen genutzt werden: erweitern, spiegeln, eingebaut oder extern
+session-clipboard = Zwischenablage
+session-clipboard-paste-files = Dateien hier einfügen
+session-param-paste-destination = Der Ordner, in den die kopierten Dateien eingefügt werden
 desktop-action-show-overview = Übersicht zeigen
 desktop-action-hide-overview = Übersicht ausblenden
 

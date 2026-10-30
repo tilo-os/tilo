@@ -104,7 +104,8 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
                 );
                 let save = app.focusable_order[1];
                 let bounds = app.inspect_node(save, |widget| widget.get_rect()).unwrap();
-                assert_eq!(bounds.width(), 120.5);
+                // The allocation, its edges on whole pixels.
+                assert_eq!(bounds.width(), 121.0);
                 assert!(app.dispatch_semantic_click(bounds.center().x, bounds.center().y));
                 app.set_focused_node(Some(app.focusable_order[0]));
             }
@@ -234,8 +235,9 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
             let save_after = app
                 .inspect_node(save_node, |widget| widget.get_rect())
                 .unwrap();
-            assert_eq!(input_after.x0 - input_before.x0, 105.5);
-            assert_eq!(save_after.x0 - save_before.x0, 105.5);
+            // Moved by the shift, from whole pixel to whole pixel.
+            assert_eq!(input_after.x0 - input_before.x0, 106.0);
+            assert_eq!(save_after.x0 - save_before.x0, 106.0);
             assert_eq!(app.focused_node, Some(input_node));
             assert_eq!(
                 app.inspect_node(input_node, |widget| (

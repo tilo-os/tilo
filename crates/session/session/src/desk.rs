@@ -18,6 +18,9 @@ use tilo_surface_host::{DeskReading, shell_part};
 
 use crate::notifications::NoticeSignals;
 
+/// What the desk's reading is made from ([`Desk::key`]).
+pub(crate) type DeskKey = (u64, i64, u32, bool, u64);
+
 /// The kind of the desk's resource: the origin kind a shell's type holds.
 pub(crate) const DESK_KIND: &str = "session.desk";
 
@@ -39,23 +42,39 @@ pub(crate) struct Desk {
     pub(crate) signals: Rc<NoticeSignals>,
     /// Whether the device has quick settings; without, its status is its notifications.
     pub(crate) status_panel: bool,
+    /// Who is here, when this session takes part in the collaboration plane.
+    pub(crate) sync: Option<Rc<crate::sync::Client>>,
 }
 
 impl Desk {
-    /// What the reading is made from, without making it: the tree's revision, the minute, and
-    /// what the notifications say. The reading changes only when this does.
-    pub(crate) fn key(&self) -> (u64, i64, u32, bool) {
+    /// What the reading is made from, without making it: the tree's revision, the minute,
+    /// what the notifications say and who is here. The reading changes only when this does.
+    pub(crate) fn key(&self) -> DeskKey {
         (
             self.handle.revision(),
             ui::clock::local_now().timestamp().div_euclid(60),
             self.signals.unread(),
             self.signals.quiet(),
+            self.sync
+                .as_ref()
+                .map_or(0, |sync| sync.here().borrow().revision()),
         )
     }
 
     /// The desk now.
     pub(crate) fn reading(&self) -> DeskReading {
         let now = ui::clock::local_now();
+        let people = self.handle.read(|tree| {
+            self.sync.as_ref().map_or_else(Vec::new, |sync| {
+                sync.people(tree, &|_: &str| None)
+                    .into_iter()
+                    .map(|person| shell_part::PersonReading {
+                        key: person.id,
+                        name: person.label,
+                    })
+                    .collect()
+            })
+        });
         self.handle.read(|tree| DeskReading {
             person: self.person.clone(),
             clock: ui::clock::time_of_day(&now),
@@ -82,6 +101,7 @@ impl Desk {
             // task host reports to it.
             tasks: Vec::new(),
             badges: self.signals.badges(),
+            people,
         })
     }
 }

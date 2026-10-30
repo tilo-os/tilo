@@ -3081,8 +3081,9 @@ pub use remount::Remount;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
 pub use layout::{
-    AuthoredExtent, ExtentSizing, SkippedFrames, WidgetLayoutError, compute_widget_layout, insets,
-    insets_all, insets_xy, layout_clip, placing_again, text_control_height, with_layout_clip,
+    AuthoredExtent, DeviceScaleGuard, ExtentSizing, SkippedFrames, WidgetLayoutError,
+    compute_widget_layout, device_scale, enter_device_scale, insets, insets_all, insets_xy,
+    layout_clip, placing_again, text_control_height, with_layout_clip,
 };
 
 mod cached_paint;
@@ -3110,7 +3111,7 @@ pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
-    ManualConflict, ManualLayout, PageLayout, SectionLayout,
+    ManualConflict, ManualLayout, PageLayout, ScrollDirection, ScrollLayout, SectionLayout,
 };
 mod embedded;
 pub use embedded::Embedded;

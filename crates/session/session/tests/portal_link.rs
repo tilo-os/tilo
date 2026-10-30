@@ -37,6 +37,7 @@ fn serving(captures: Option<InputCaptures>) -> (Session, PortalSide) {
             presentation: ui::headless::fixture_runner_inputs,
             wake,
             portal: Some(link),
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", 1280, 720)],

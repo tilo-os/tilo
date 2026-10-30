@@ -88,9 +88,6 @@ enum TaskActionStop {
     Failed(String),
 }
 
-/// Most actions one task may invoke.
-const MAX_TASK_STEPS: usize = 64;
-
 /// A child of the run the host accepted, followed to its outcome alone
 /// ([`Session::invoke_task_action`]) or beside others started in the same
 /// turn. Each keeps its own invocation id and broker job: following several
@@ -184,9 +181,13 @@ pub struct Config {
     /// Explicit typed Cap'n Proto endpoint for headless diagnostics outside
     /// the launcher. Normal sessions leave this `None` and inherit the fd.
     pub endpoint: Option<PathBuf>,
-    /// Certified device credentials for an explicit endpoint. Launcher-bound
-    /// sessions leave this `None` and use the inherited identity service.
+    /// Certified credentials to join with: a diagnostic endpoint's device,
+    /// or a task agent's task delegation and key over the inherited service.
+    /// Other launcher-bound sessions leave this `None` and use the inherited
+    /// identity service.
     pub endpoint_identity: Option<CertifiedEndpointIdentity>,
+    /// A task agent, made for one task: it ends once its first run does.
+    pub task_agent: bool,
     /// The app whose document this is — its manifest package id, which is
     /// what a launched copy of the app announces.
     pub app_id: String,
@@ -287,6 +288,7 @@ impl Session {
                 cfg.cluster,
                 cfg.record.clone(),
                 Some(cfg.agent_id.clone()),
+                cfg.endpoint_identity.clone(),
             )?,
         };
         // Discovery is room-wide, but writes never are. This subscription
@@ -383,6 +385,12 @@ impl Session {
                             tracing::warn!(%report_error, "native task review report was refused");
                         }
                     }
+                    // A task agent was made for this one task: its life ends
+                    // with the task's run, as its delegation does.
+                    if self.cfg.task_agent {
+                        tracing::info!(run_id = run.run_id, task = %run.task_id, "the task agent's task ended; exiting");
+                        return Ok(());
+                    }
                 }
                 Some(CollabEvent::Invocation {
                     id,
@@ -411,7 +419,15 @@ impl Session {
                             .send(&CollabRequest::UpdateInvocation { id, update })?;
                     }
                 }
-                Some(_) | None => {}
+                Some(_) => {}
+                // Nothing will arrive once the broker closed the session (a
+                // refused admission, a revoked device, an ended task): the
+                // process ends with the reason instead of waiting on nothing.
+                None => {
+                    if let Some(reason) = self.link.closed() {
+                        anyhow::bail!("the broker closed the agent's session: {reason}");
+                    }
+                }
             }
             for (id, update) in transforms.finished() {
                 self.link

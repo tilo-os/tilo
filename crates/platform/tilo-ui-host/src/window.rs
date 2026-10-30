@@ -1112,6 +1112,41 @@ impl AppWindow {
         true
     }
 
+    /// Enter in a field of one line that submits nothing moves the keyboard on to the next field
+    /// of its view, as native Notes goes from a note's title to its body. A field with `submit`
+    /// keeps Enter: it submits. Whether it moved.
+    fn enter_moves_on(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        modifiers: ui::winit::keyboard::ModifiersState,
+    ) -> bool {
+        use ui::winit::keyboard::{Key, NamedKey};
+        let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if key.state != ui::winit::event::ElementState::Pressed
+            || key.logical_key != Key::Named(NamedKey::Enter)
+            || self.composing
+            || modifiers.shift_key()
+            || modifiers.control_key()
+            || modifiers.alt_key()
+            || modifiers.super_key()
+        {
+            return false;
+        }
+        let Some(next) = self
+            .focused_field()
+            .zip(self.built.as_ref())
+            .and_then(|(field, built)| field_after_enter(built, &field))
+        else {
+            return false;
+        };
+        // The window's own request, taken once its tree is laid out again.
+        self.focus_request = Some(next);
+        self.structure_dirty = true;
+        true
+    }
+
     /// Send what the person typed after each press the app ran since, into the view a press
     /// opened for them when `opened` (its first field takes the keyboard).
     fn send_typed_into(&mut self, opened: bool) {
@@ -1390,6 +1425,42 @@ fn lane_of(key: &str) -> (Lane, String) {
     }
 }
 
+/// The field Enter in the field `key` of the composed tree `tree` moves the keyboard on to: the
+/// next field of its view, when `key` is a text field of one line that submits nothing.
+fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
+    fn in_order<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
+        out.push(node);
+        for child in &node.children {
+            in_order(child, out);
+        }
+    }
+    let text_input = crate::adapter::kind("TextInput");
+    let takes_typing = |node: &UiNode| {
+        node.binding.is_some()
+            && (node.kind == text_input || node.kind == crate::adapter::kind("RichInput"))
+    };
+    let mut nodes = Vec::new();
+    in_order(tree, &mut nodes);
+    let at = nodes.iter().position(|node| node.key == key)?;
+    let field = nodes.get(at)?;
+    // Given `lines`, the field wraps and Enter breaks its line (a document's title still ends
+    // at Enter, and wraps only to fit).
+    let one_line = field.kind == text_input
+        && matches!(
+            field.props.get("lines"),
+            None | Some(Value::Unit | Value::Opt(None))
+        );
+    if !one_line || field.events.contains_key("submit") {
+        return None;
+    }
+    let lane = lane_of(key).0;
+    nodes
+        .get(at.saturating_add(1)..)?
+        .iter()
+        .find(|node| takes_typing(node) && lane_of(&node.key).0 == lane)
+        .map(|node| node.key.clone())
+}
+
 /// The virtual lists of a view's tree, by key.
 fn virtual_lists(tree: &UiNode) -> Vec<String> {
     fn walk(node: &UiNode, out: &mut Vec<String>) {
@@ -1609,7 +1680,7 @@ impl ui::widget::Decorator for AppWindow {
         {
             self.pointed_after = Some(self.fired);
         }
-        if self.hold_typing(event) {
+        if self.hold_typing(event) || self.enter_moves_on(event, ctx.modifiers.state()) {
             *ctx.handled = true;
             return;
         }

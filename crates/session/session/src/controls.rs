@@ -28,9 +28,11 @@ pub const SESSION_RESOURCE: &str = "session:screen";
 pub const NIGHT_LIGHT_RESOURCE: &str = "session:night-light";
 /// The resource of how the displays are used together.
 pub const DISPLAYS_RESOURCE: &str = "session:displays";
+/// The resource of this device's clipboard.
+pub const CLIPBOARD_RESOURCE: &str = "session:clipboard";
 
 /// What the session's resources ask of the compositor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "do", rename_all = "kebab-case")]
 pub enum SessionCommand {
     /// Turn the touchpads on (`Some(true)`), off, or (`None`) the other
@@ -47,6 +49,9 @@ pub enum SessionCommand {
     /// Turn the night light on (`Some(true)`), off, or (`None`) the other
     /// way from how it is.
     NightLight { on: Option<bool> },
+    /// Paste the files copied to the clipboard into this folder, as a copy
+    /// or (after a cut) a move.
+    PasteFiles { destination: String },
 }
 
 /// A step of the magnifier.
@@ -180,6 +185,20 @@ fn resources() -> Vec<ResourceSpec> {
                         .unwrap_or(DisplayMode::Extend),
                 },
             )),
+        ResourceSpec::new(CLIPBOARD_RESOURCE, "session", t("session-clipboard")).with_action(
+            action(
+                "paste-files",
+                t("session-clipboard-paste-files"),
+                vec![ActionParam::required_owned(
+                    "destination",
+                    ParamType::Text,
+                    t("session-param-paste-destination"),
+                )],
+                |args| SessionCommand::PasteFiles {
+                    destination: args.text("destination").unwrap_or_default().to_owned(),
+                },
+            ),
+        ),
     ]
 }
 

@@ -81,7 +81,7 @@ jobs:
     # The bounded wait for an executing window, plus the API calls around it.
     timeout-minutes: 50
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     outputs:
       superseded: ${{ steps.window.outputs.superseded }}
       base: ${{ steps.window.outputs.base }}
@@ -470,6 +470,14 @@ jobs:
       # (tools/cargo-runner.sh), as with nightly and runs outside CI. This shard
       # provides llvmpipe and an audio endpoint, so a test that finds either
       # missing fails instead of skipping.
+      # Tests that need a capability this runner lacks are left out, by name
+      # of the capability, and so reported as not run
+      # (.config/nextest-capabilities.toml, tools/ci/capability_filter.py).
+      - name: Capabilities of shard ${{ matrix.shard }}
+        if: matrix.test_packages != ''
+        run: |
+          filter=$(python3 tools/ci/capability_filter.py)
+          echo "CAPABILITY_FILTER=$filter" >> "$GITHUB_ENV"
       - name: Test shard ${{ matrix.shard }}
         if: matrix.test_packages != ''
         env:
@@ -482,7 +490,7 @@ jobs:
           bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
           bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
-          -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
+          -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}${CAPABILITY_FILTER:+ and $CAPABILITY_FILTER}"
 
       # Each nextest phase writes the same ci-profile JUnit path. Preserve
       # its report before a later phase starts, including on test failure.

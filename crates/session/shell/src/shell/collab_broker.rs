@@ -1014,7 +1014,12 @@ fn spawn_inner(
         .as_ref()
         .filter(|_| config.is_none())
         .map(|tree| {
-            super::broker_services::native_tracker(tree, peer_sync.cloned(), channel_keys.clone())
+            super::broker_services::native_tracker(
+                tree,
+                peer_sync.cloned(),
+                channel_keys.clone(),
+                Some(Arc::clone(&channels)),
+            )
         });
     if let Some(tracker) = &tracker {
         services.tracker_runs =

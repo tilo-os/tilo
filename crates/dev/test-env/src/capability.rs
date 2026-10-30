@@ -65,6 +65,24 @@ pub enum Capability {
 }
 
 impl Capability {
+    /// Every capability, for the CI step that checks the manifest's names.
+    pub const ALL: &'static [Self] = &[
+        Self::Gpu,
+        Self::Audio,
+        Self::Media,
+        Self::Fuse,
+        Self::FuseControl,
+        Self::Fanotify,
+        Self::FsVerity,
+        Self::ScreenCapture,
+        Self::Chown,
+        Self::UserNamespace,
+        Self::NamespaceEntry,
+        Self::Swtpm,
+        Self::KernelKeyring,
+        Self::NetworkTunnel,
+    ];
+
     /// The variable that turns a missing capability into a test failure.
     #[must_use]
     pub const fn variable(self) -> &'static str {
@@ -196,8 +214,12 @@ pub fn mount_namespace() -> std::io::Result<()> {
     }
 }
 
-/// Whether this process can start bubblewrap with a user namespace of its own,
-/// tried on the read-only root the bundle fixtures use.
+/// Whether this process can start bubblewrap as Tilo's sandboxes do, tried on
+/// a throwaway `true`: every namespace of its own, the read-only root the
+/// bundle fixtures use, and a fresh `/proc` and `/dev`. A container that lets
+/// a process make namespaces may still refuse it a new `/proc` (its own is
+/// partly masked), and every sandbox mounts one: the probe asks for it too, so
+/// it never passes where the sandboxes cannot start.
 #[cfg(target_os = "linux")]
 pub fn bubblewrap() -> std::io::Result<()> {
     namespace(
@@ -208,11 +230,127 @@ pub fn bubblewrap() -> std::io::Result<()> {
             "--ro-bind",
             "/",
             "/",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
             "--",
             "true",
         ],
     )
 }
+
+/// Whether this process can start bubblewrap as uid 1000 in user and pid
+/// namespaces of its own with a fresh `/proc`, as a test that runs its own
+/// binary as a non-root owner does. A container may allow
+/// [`bubblewrap`] and still refuse to mount `/proc` in a new pid namespace.
+#[cfg(target_os = "linux")]
+pub fn bubblewrap_with_proc() -> std::io::Result<()> {
+    namespace(
+        "bwrap",
+        &[
+            "--die-with-parent",
+            "--unshare-user",
+            "--uid",
+            "1000",
+            "--gid",
+            "1000",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--",
+            "true",
+        ],
+    )
+}
+
+/// Whether this process can start bubblewrap as root of a user namespace
+/// with every capability, a tmpfs `/run` and an overlay mounted in it: the
+/// build sandbox of `env-tools`.
+#[cfg(target_os = "linux")]
+pub fn bubblewrap_overlay() -> std::io::Result<()> {
+    let probe = std::env::temp_dir().join(format!(
+        "tilo-test-env-overlay-probe-{}",
+        std::process::id()
+    ));
+    let side = |name: &str| probe.join(name).to_string_lossy().into_owned();
+    for name in ["lower", "upper", "work"] {
+        std::fs::create_dir_all(probe.join(name))?;
+    }
+    let (lower, upper, work) = (side("lower"), side("upper"), side("work"));
+    let probed = namespace(
+        "bwrap",
+        &[
+            "--unshare-user",
+            "--uid",
+            "0",
+            "--gid",
+            "0",
+            "--cap-add",
+            "ALL",
+            "--ro-bind",
+            "/",
+            "/",
+            "--tmpfs",
+            "/run",
+            "--overlay-src",
+            &lower,
+            "--overlay",
+            &upper,
+            &work,
+            "/run/probe",
+            "--",
+            "true",
+        ],
+    );
+    // The overlay can leave its work directory unreadable.
+    let _ = namespace("chmod", &["-R", "u+rwx", &probe.to_string_lossy()]);
+    std::fs::remove_dir_all(&probe)?;
+    probed
+}
+
+/// Whether this machine has TUN devices, and `ip` and nftables work in user
+/// and network namespaces of this process's own (`unshare --user
+/// --map-root-user --net`), as the device VPN's namespace tests need.
+#[cfg(target_os = "linux")]
+pub fn network_tunnel() -> std::io::Result<()> {
+    if !std::path::Path::new("/dev/net/tun").exists() {
+        return Err(std::io::Error::other("no /dev/net/tun"));
+    }
+    namespace("ip", &["-V"])?;
+    namespace(
+        "unshare",
+        &[
+            "--user",
+            "--map-root-user",
+            "--net",
+            "--",
+            "nft",
+            "list",
+            "ruleset",
+        ],
+    )
+}
+
+/// A probe `.config/nextest-capabilities.toml` names for a group of tests.
+#[cfg(target_os = "linux")]
+pub type NamedProbe = (&'static str, fn() -> std::io::Result<()>);
+
+/// Every probe the capability manifest may name, by its name there. The
+/// `capability_probe` test runs each where the tests run, and the CI test
+/// step leaves out the tests whose probe fails.
+#[cfg(target_os = "linux")]
+pub const PROBES: &[NamedProbe] = &[
+    ("user-namespace", user_namespace),
+    ("mount-namespace", mount_namespace),
+    ("bubblewrap", bubblewrap),
+    ("bubblewrap-with-proc", bubblewrap_with_proc),
+    ("bubblewrap-overlay", bubblewrap_overlay),
+    ("network-tunnel", network_tunnel),
+];
 
 #[cfg(target_os = "linux")]
 fn namespace(program: &str, args: &[&str]) -> std::io::Result<()> {
@@ -255,7 +393,9 @@ pub fn capability_unavailable(capability: Capability, reason: fmt::Arguments<'_>
     let location = std::panic::Location::caller();
     assert!(
         !capability.required(),
-        "{} is set but {capability} is unavailable: {reason}",
+        "{} is set but {capability} is unavailable: {reason}. A test machine \
+         without it leaves this test out through its entry in \
+         .config/nextest-capabilities.toml",
         capability.variable(),
     );
     eprintln!(
@@ -397,7 +537,9 @@ mod tests {
         assert_eq!(
             message,
             "TILO_REQUIRE_FUSE is set but FUSE is unavailable: \
-             cannot mount the fixture: no /dev/fuse"
+             cannot mount the fixture: no /dev/fuse. A test machine without it \
+             leaves this test out through its entry in \
+             .config/nextest-capabilities.toml"
         );
     }
 

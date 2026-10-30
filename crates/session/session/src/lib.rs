@@ -37,6 +37,7 @@ pub mod displays;
 mod env;
 mod keys;
 mod lists;
+mod mount;
 mod notifications;
 mod panels;
 pub mod portal_link;
@@ -45,6 +46,7 @@ mod search;
 mod setup;
 mod sheets;
 pub mod shell;
+pub mod sync;
 mod system_sounds;
 pub mod unlock;
 mod wallpapers;
@@ -77,8 +79,8 @@ use ui::shortcut_table::ShortcutAction;
 
 pub use config::SessionConfig;
 pub use controls::{
-    DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
-    SESSION_RESOURCE, SessionCommand,
+    CLIPBOARD_RESOURCE, DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify,
+    NIGHT_LIGHT_RESOURCE, SESSION_RESOURCE, SessionCommand,
 };
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
@@ -181,6 +183,14 @@ pub struct Options {
     /// left, and the pictures on it. Without one, the session starts on a
     /// fresh desk and keeps nothing (tests and screenshots).
     pub state: Option<std::path::PathBuf>,
+    /// Whether the session takes part in the collaboration plane: who is
+    /// here in each workspace's room, over Iroh. Off, this desktop has no
+    /// collaborators but its own person.
+    pub collab: bool,
+    /// The person's device fabric, when this session runs on one: what was
+    /// copied here is shared with their other devices through it, and what
+    /// they copied there joins the clipboard here.
+    pub fabric: Option<tilo_device_fabric::link::SharedLink>,
 }
 
 /// Where quick settings reads the device from.
@@ -207,6 +217,35 @@ fn no_session_actions(action: SessionAction) -> Result<(), String> {
     Ok(())
 }
 
+/// Who is here: this session's membership of each workspace's room, over the
+/// collaboration plane. `None` when the session takes no part in it, or the
+/// device's endpoint did not bind: a desktop with no one else on it.
+fn start_collaboration(options: &Options) -> Option<Rc<sync::Client>> {
+    if !options.collab {
+        return None;
+    }
+    let identity = sync::device_identity();
+    let own = sync::OwnPresence {
+        label: options.person.clone(),
+        user: identity
+            .as_ref()
+            .map(|identity| hex::encode(identity.device_cert.user_public_key)),
+        ..sync::OwnPresence::default()
+    };
+    match sync::Client::start(
+        identity,
+        own,
+        sync::configured_hosts(),
+        options.wake.handle(),
+    ) {
+        Ok(sync) => Some(Rc::new(sync)),
+        Err(error) => {
+            tracing::warn!(%error, "the collaboration plane");
+            None
+        }
+    }
+}
+
 impl Default for Options {
     fn default() -> Self {
         Self {
@@ -230,6 +269,8 @@ impl Default for Options {
             questions: None,
             portal: None,
             state: None,
+            collab: true,
+            fabric: None,
         }
     }
 }
@@ -298,6 +339,12 @@ struct Shared {
     notice_view: RefCell<Option<tilo_quick_settings::NotificationsView>>,
     /// What the services ask the person, on the sheets.
     asker: questions::Asker,
+    /// Who is here: this session's membership of each workspace's room,
+    /// when it takes part in the collaboration plane.
+    sync: Option<Rc<sync::Client>>,
+    /// The copies the person can paste again, and what the Clipboard section
+    /// was last fed of them.
+    clipboard: mount::clipboard::Clipboard,
 }
 
 /// The app a window shows, by its id.
@@ -551,12 +598,41 @@ impl Shared {
                         tracing::warn!(%error, "open settings");
                     }
                 }
+                // A copy is pasted into the app the panel was opened over,
+                // so the panel closes and the loop puts it on the clipboard
+                // and pastes it once the app has the keyboard again.
+                SessionRequest::Effect(QsEffect::PasteCopy { copy }) => {
+                    self.close_quick_settings();
+                    self.clipboard.ask(mount::clipboard::Ask::Paste(copy));
+                }
+                SessionRequest::Effect(QsEffect::PinCopy { copy, pinned }) => {
+                    self.clipboard.pin(&copy, pinned);
+                }
+                SessionRequest::Effect(QsEffect::RemoveCopy { copy }) => {
+                    self.clipboard.remove(&copy);
+                }
+                SessionRequest::Effect(QsEffect::ClearClipboard) => {
+                    self.clipboard.clear();
+                }
                 other => {
                     tracing::debug!(?other, "quick settings asks what the session cannot do yet");
                 }
             }
         }
         self.feed_notifications();
+        self.feed_clipboard();
+    }
+
+    /// Feed the panel's Clipboard section when it changed: every copy the
+    /// person can paste again, newest first.
+    fn feed_clipboard(&self) {
+        let Some(device) = &self.device else {
+            return;
+        };
+        let Some(view) = self.clipboard.changed_view(ui::time::unix_now_ms()) else {
+            return;
+        };
+        device.update(|state| state.clipboard = view);
     }
 
     /// The workspace in front, as its room: where a chosen notification's
@@ -938,6 +1014,8 @@ pub struct Session {
     night_light: (bool, bool),
     /// The portal's link to the loop, while the portal serves.
     portal: Option<portal_link::SessionLink>,
+    /// The person's device fabric, while this session runs on one.
+    fabric: Option<tilo_device_fabric::link::SharedLink>,
     /// The desktop services the portal and the notifications daemon run
     /// in, fed what the session knows of itself.
     desktop: Option<Rc<desktop_services::DesktopServices>>,
@@ -1052,6 +1130,7 @@ impl Session {
 
         // The chrome above the windows: its own tree, beside the desk's.
         let intents = Rc::new(RefCell::new(Vec::new()));
+        let sync = start_collaboration(&options);
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
@@ -1068,6 +1147,7 @@ impl Session {
             person: options.person.clone(),
             signals: Rc::clone(&notice_signals),
             status_panel: options.quick_settings.is_some(),
+            sync: sync.clone(),
         };
         let desk_service = desk();
         let shell = shell::Shell::mount(&mut compositor, &mut doors, desk(), options.scale)
@@ -1171,6 +1251,8 @@ impl Session {
             )),
             asker,
             notice_view: RefCell::new(None),
+            sync,
+            clipboard: mount::clipboard::Clipboard::new(),
         };
         shared.start_search();
         // What the portal brings comes from any thread, and wakes the loop
@@ -1195,6 +1277,7 @@ impl Session {
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             night_light: (options.config.night_light, options.config.kept),
             portal: options.portal,
+            fabric: options.fabric,
             screen_locked: false,
             desktop: options.desktop,
             running: Vec::new(),
@@ -1423,6 +1506,7 @@ impl Session {
     /// the gestures it took, the actions keys asked for, and what those
     /// asked in turn.
     fn settle(&mut self) -> Result<(), Error> {
+        self.follow_collaboration();
         self.follow_lock()?;
         if let Some(captures) = &self.captures {
             captures.serve(&mut self.compositor);
@@ -1431,6 +1515,9 @@ impl Session {
             portal.serve(&mut self.compositor, &self.shared.handle);
         }
         self.feed_portal();
+        // What the apps copied since the last pass joins the history; a copy
+        // chosen in it is pasted once the panel let the keyboard go.
+        self.shared.clipboard.follow(&mut self.compositor);
         // Each round can ask for another (a key's shortcut the chrome
         // leaves to the session); a few rounds settle any chain.
         for _ in 0..4 {
@@ -1450,7 +1537,28 @@ impl Session {
             // them out on its next pass.
             self.shared.desktop.with_widgets(WidgetHost::relayout);
         }
+        self.shared.clipboard.serve_asks(&mut self.compositor);
+        // One file of a paste in flight per turn, so a folder of files does
+        // not hold up a frame.
+        self.shared.clipboard.step_files();
+        // What was copied here reaches the person's other devices, and what
+        // they copied there joins the clipboard here.
+        if let Some(fabric) = &self.fabric
+            && self.shared.clipboard.sync_fabric(fabric.as_ref())
+        {
+            self.shared.feed_clipboard();
+        }
         Ok(())
+    }
+
+    /// Keep the rooms this session takes part in current with the desktop's
+    /// workspaces, and hand the desktop who is here.
+    fn follow_collaboration(&self) {
+        let Some(sync) = &self.shared.sync else {
+            return;
+        };
+        self.shared.handle.read(|tree| sync.follow_desktop(tree));
+        sync.follow();
     }
 
     /// Tell the portal what it asks of the session about its apps: which
@@ -1595,6 +1703,12 @@ impl Session {
                 if kept && let Err(error) = settings_store::hardware::NIGHT_LIGHT.set(on) {
                     tracing::warn!(%error, "the night light setting was not kept");
                 }
+                Ok(())
+            }
+            SessionCommand::PasteFiles { destination } => {
+                self.shared
+                    .clipboard
+                    .paste_files(std::path::Path::new(&destination));
                 Ok(())
             }
             SessionCommand::SetTouchpad { on } => {

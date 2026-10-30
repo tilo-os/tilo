@@ -39,14 +39,15 @@ usage:
       door, or the person's own session (--real), where the person admits it. Each entry is a
       program for the door's `tilo` tool, run as the REPL's task: lets are kept, refs (n3) name
       what answers showed, a bulk change previews until `confirm`, `undo` takes a step back.
-  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--dump WxH]
+  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--dump WxH [--shots DIR]]
       lay out every view of each app headlessly, staged from each of its scenarios, at window
       sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and
       report overflow, clipped text, overlapping siblings, hit targets below the minimum and
       pages that scroll sideways, each at its view's node in the source. Exits 1 on a finding
       the allow-list (one finding id per line) does not name; --json prints the report as JSON;
       --dump prints each layout at that window size as the check reads it (boxes, clips and
-      semantics of every widget) to stderr.
+      semantics of every widget) to stderr, and --shots writes the window at that size (display
+      and text scale 1) as each stage leaves it, light and dark, to PNGs in DIR.
   tilolang check|fmt|ids ...
       the compiler's commands (tilolangc --help); `use` also finds native apps in --path";
 
@@ -138,6 +139,7 @@ fn layout_check_command(args: &[String]) -> ExitCode {
                 "--search" | "--path" => options.search.push(value(&mut iter, arg)?.into()),
                 "--allow" => options.allow = Some(value(&mut iter, arg)?.into()),
                 "--json" => json = true,
+                "--shots" => options.shots = Some(value(&mut iter, arg)?.into()),
                 "--dump" => {
                     let size = value(&mut iter, arg)?;
                     options.dump = size

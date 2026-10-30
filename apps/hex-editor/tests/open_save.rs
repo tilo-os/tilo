@@ -256,36 +256,44 @@ fn a_file_too_large_to_hold_is_refused_and_the_buffer_kept() {
 
 /// A file whose size already says it is too large is refused from its size,
 /// without reading the limit's worth of it first: on a projected folder that
-/// read would download it from a peer only to be thrown away. The file here
-/// cannot be read at all, so a refusal that names its size was decided
-/// before any read.
-#[cfg(unix)]
+/// read would download it from a peer only to be thrown away. The bytes this
+/// process read (`rchar` in `/proc/self/io`, every thread's `read` calls)
+/// stay below the limit only if the refusal came before the bounded read,
+/// whoever the test runs as.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_file_too_large_to_hold_is_refused_by_its_size_unread() {
-    use std::os::unix::fs::PermissionsExt as _;
+    fn bytes_read() -> u64 {
+        let io = std::fs::read_to_string("/proc/self/io").expect("this process's I/O counts");
+        io.lines()
+            .find_map(|line| line.strip_prefix("rchar: "))
+            .and_then(|count| count.trim().parse().ok())
+            .expect("the bytes this process read")
+    }
     let mut app = TestApp::<HexEditorShell>::new().unwrap();
     app.harness().relayout();
     let directory = tempfile::tempdir().unwrap();
     let huge = directory.path().join("disk.img");
+    let limit = u64::try_from(ui::application::MAX_OPEN_FILE_BYTES).unwrap();
     std::fs::File::create(&huge)
         .unwrap()
-        .set_len(u64::try_from(ui::application::MAX_OPEN_FILE_BYTES).unwrap() + 1)
+        .set_len(limit.saturating_add(1))
         .unwrap();
-    std::fs::set_permissions(&huge, std::fs::Permissions::from_mode(0o000)).unwrap();
-    assert!(
-        std::fs::File::open(&huge).is_err(),
-        "the test must run where an unreadable file cannot be read, or it proves nothing"
-    );
 
+    let before = bytes_read();
     let refused = app
         .effect(&HexEffect::OpenFile {
             path: Some(huge.as_path().try_into().unwrap()),
         })
         .expect_err("a file past the limit does not open");
-    std::fs::set_permissions(&huge, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let read = bytes_read().saturating_sub(before);
     assert!(
         format!("{refused:?}").contains("larger than"),
-        "refused by its size, before a read could fail: {refused:?}"
+        "the refusal says why: {refused:?}"
+    );
+    assert!(
+        read < limit,
+        "refused by its size before the limit's worth was read: {read} bytes read"
     );
 }
 

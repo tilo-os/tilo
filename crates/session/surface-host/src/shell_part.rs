@@ -73,6 +73,13 @@ pub struct TaskReading {
     pub state: String,
 }
 
+/// Someone else here, as the desk's reading names them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonReading {
+    pub key: String,
+    pub name: String,
+}
+
 /// The reading of [`DESK_RESOURCE`]: the fields of the `session.desk` kind
 /// (`tilolang::origin::KINDS`), as JSON on the door.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +99,9 @@ pub struct DeskReading {
     /// agent); no `session.desk` field holds it yet.
     #[serde(default)]
     pub badges: BTreeMap<String, u32>,
+    /// The others here in the workspace in front: its collaborators.
+    #[serde(default)]
+    pub people: Vec<PersonReading>,
 }
 
 /// What a shell asked of the session: an invocation on the door.
@@ -184,6 +194,7 @@ pub struct SessionOrigin {
     written: Option<DeskReading>,
     workspaces: BTreeMap<String, Kept<WorkspaceReading>>,
     tasks: BTreeMap<String, Kept<TaskReading>>,
+    people: BTreeMap<String, Kept<PersonReading>>,
     /// Effects handed to the session and not answered yet.
     in_flight: BTreeSet<Ask>,
 }
@@ -196,6 +207,7 @@ impl SessionOrigin {
             written: None,
             workspaces: BTreeMap::new(),
             tasks: BTreeMap::new(),
+            people: BTreeMap::new(),
             in_flight: BTreeSet::new(),
         }
     }
@@ -306,6 +318,17 @@ impl SessionOrigin {
                         ("state", text(&t.state)),
                     ]
                 },
+            ));
+        }
+        if let (Ok(ty), Some(collection)) = (kind("person"), field(desk, "people")) {
+            writes.extend(sync_items(
+                &mut self.people,
+                &reading.people,
+                root,
+                &collection,
+                ty,
+                |p| p.key.clone(),
+                |p| vec![("key", text(&p.key)), ("name", text(&p.name))],
             ));
         }
         Ok(writes)
@@ -455,6 +478,16 @@ impl Origin for SessionOrigin {
                         && let Some(was) = reading.tasks.iter().find(|t| t.key == key)
                     {
                         self.tasks.insert(
+                            key,
+                            Kept {
+                                at,
+                                was: was.clone(),
+                            },
+                        );
+                    } else if is("person")
+                        && let Some(was) = reading.people.iter().find(|p| p.key == key)
+                    {
+                        self.people.insert(
                             key,
                             Kept {
                                 at,

@@ -211,9 +211,10 @@ impl ShellOverlayHost {
                 | LaunchEventKind::WindowLost { .. }
                 | LaunchEventKind::OutOfMemory(_) => false,
             };
-            // The windows that went away with the launch are worth keeping
-            // only when memory ended it: then its notice reopens them where
-            // they were. Any other end of the app forgets them.
+            // The windows that went away with the launch kept their places
+            // as the app's cards. When memory ended it, its notice opens the
+            // app again into them; after any other end the cards stay for
+            // the person to open.
             let lost_tabs = match &event.kind {
                 LaunchEventKind::OutOfMemory(end) if !end.closed_the_app() => Vec::new(),
                 LaunchEventKind::Started { .. } => Vec::new(),
@@ -243,6 +244,26 @@ impl ShellOverlayHost {
                 continue;
             }
             let event = event.with_window_lost(lost);
+            // An agent made for a task that stops before its run is done is
+            // said where it was asked, with what it printed last: its task
+            // would otherwise read as still being worked on.
+            if let Some(agent) = event.managed_agent_id.as_deref()
+                && agent.starts_with(crate::shell::task_agents::NEW_TASK_AGENT)
+            {
+                let why = match &event.kind {
+                    LaunchEventKind::SpawnFailed { detail, .. } => Some(detail.clone()),
+                    LaunchEventKind::Failed { code, stderr_tail } => Some(
+                        task_agent_stop_reason(stderr_tail)
+                            .unwrap_or_else(|| format!("it exited with {code:?}")),
+                    ),
+                    _ => None,
+                };
+                if let Some(why) = why {
+                    tracing::warn!(%agent, %why, "the agent made for the task stopped");
+                    self.task_agent_ends.borrow_mut().push(why);
+                    posted = true;
+                }
+            }
             // Memory ended the app or one of its jobs: say which and why,
             // whether or not its window had shown, and offer the app back
             // where it was.
@@ -577,5 +598,58 @@ impl ShellOverlayHost {
                 });
             }
         }
+    }
+}
+
+/// The most specific reason an agent's last words give for its stop: the
+/// deepest cause of its error (`    1: ...`), else its error line, else its
+/// last line that is not the launcher's own account of the exit.
+fn task_agent_stop_reason(stderr_tail: &str) -> Option<String> {
+    let lines: Vec<&str> = stderr_tail
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let cause = lines.iter().rev().find_map(|line| {
+        let (number, rest) = line.split_once(": ")?;
+        number
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then_some(rest)
+    });
+    cause
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .find_map(|line| line.strip_prefix("Error: "))
+        })
+        .or_else(|| {
+            lines
+                .iter()
+                .rev()
+                .find(|line| !(line.starts_with("tilo-launcher:") && line.contains(" ended: ")))
+                .copied()
+        })
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod task_agent_stop_tests {
+    #[test]
+    fn the_deepest_cause_of_an_agents_error_is_its_stop_reason() {
+        let tail = "Error: connect through TILO_SVC_COLLAB_FD\n\nCaused by:\n    0: service connection failed\n    1: task agent join rejected: the task ended\ntilo-launcher: so.tilo.agent ended: exit status: 1\n";
+        assert_eq!(
+            super::task_agent_stop_reason(tail).as_deref(),
+            Some("task agent join rejected: the task ended")
+        );
+        assert_eq!(
+            super::task_agent_stop_reason("tilo-launcher: could not hold x\n").as_deref(),
+            Some("tilo-launcher: could not hold x")
+        );
+        assert_eq!(
+            super::task_agent_stop_reason("Error: no model\ntilo-launcher: ended\n").as_deref(),
+            Some("no model")
+        );
     }
 }
