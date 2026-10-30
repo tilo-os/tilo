@@ -622,6 +622,34 @@ impl ImapOrigin {
         let _ = now;
         writes
     }
+
+    /// The server did not take `request`, for `reason`: a send settles as `sent` says, and
+    /// a write is put back with the account's trouble.
+    fn not_taken(
+        &mut self,
+        cx: &OriginCx<'_>,
+        request: &Request,
+        reason: String,
+        sent: fn(String) -> Sending,
+        polled: &mut Polled,
+    ) {
+        match self.pending.remove(request) {
+            Some(Pending::Send(payload)) => {
+                self.sends.insert(payload, sent(reason));
+                polled.settle = true;
+            }
+            Some(Pending::Write {
+                account,
+                key,
+                before,
+            }) => {
+                self.trouble.insert(account.clone(), reason);
+                self.put_back(cx.host, &cx.now, &account, &key, &before);
+                polled.wrote = true;
+            }
+            None => {}
+        }
+    }
 }
 
 /// The conversations a server's changes start, each a record in its account.
@@ -887,38 +915,12 @@ impl Origin for ImapOrigin {
                     }
                     Some(Pending::Write { .. }) | None => {}
                 },
-                Event::Refused { request, reason } => match self.pending.remove(&request) {
-                    Some(Pending::Send(payload)) => {
-                        self.sends.insert(payload, Sending::Refused(reason));
-                        polled.settle = true;
-                    }
-                    Some(Pending::Write {
-                        account,
-                        key,
-                        before,
-                    }) => {
-                        self.trouble.insert(account.clone(), reason);
-                        self.put_back(cx.host, &cx.now, &account, &key, &before);
-                        polled.wrote = true;
-                    }
-                    None => {}
-                },
-                Event::Unsent { request, reason } => match self.pending.remove(&request) {
-                    Some(Pending::Send(payload)) => {
-                        self.sends.insert(payload, Sending::Unsent(reason));
-                        polled.settle = true;
-                    }
-                    Some(Pending::Write {
-                        account,
-                        key,
-                        before,
-                    }) => {
-                        self.trouble.insert(account.clone(), reason);
-                        self.put_back(cx.host, &cx.now, &account, &key, &before);
-                        polled.wrote = true;
-                    }
-                    None => {}
-                },
+                Event::Refused { request, reason } => {
+                    self.not_taken(cx, &request, reason, Sending::Refused, &mut polled);
+                }
+                Event::Unsent { request, reason } => {
+                    self.not_taken(cx, &request, reason, Sending::Unsent, &mut polled);
+                }
             }
         }
         // The accounts as the connector says them now (one in another process says them

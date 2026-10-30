@@ -269,7 +269,7 @@ fn rejected_as(answer: &Answer, name: &str) -> bool {
 
 #[test]
 fn the_agent_is_the_default_agent() {
-    let mut rig = Rig::new(tilo_test_env::hang_bound());
+    let rig = Rig::new(tilo_test_env::hang_bound());
     assert_eq!(
         rig.calls(),
         vec![
@@ -279,6 +279,7 @@ fn the_agent_is_the_default_agent() {
         "registered on the daemon it pairs through, and asked to be its default"
     );
     assert!(rig.prompt().is_none(), "nothing asked, nothing shown");
+    drop(rig);
 }
 
 #[test]
@@ -315,6 +316,7 @@ fn a_numeric_comparison_is_confirmed_in_the_dialog() {
         rig.fb.host().secret_prompt_rects().is_empty(),
         "no dialog, nothing withheld"
     );
+    drop(rig);
 }
 
 #[test]
@@ -336,6 +338,7 @@ fn a_passkey_is_typed_into_the_dialog() {
         rig.doc.keys(&ROOT).all(|key| !key.contains("entry")),
         "the typed code never enters a document"
     );
+    drop(rig);
 }
 
 #[test]
@@ -350,6 +353,7 @@ fn declining_rejects_the_pairing() {
         rejected_as(&answer, "org.bluez.Error.Rejected"),
         "Escape declines: {answer:?}"
     );
+    drop(rig);
 }
 
 #[test]
@@ -368,6 +372,7 @@ fn a_displayed_code_follows_typed_digits_and_cancels_the_pairing() {
     tilo_test_env::wait_until("the pairing to be cancelled", || {
         rig.calls().iter().any(|call| call == "CancelPairing")
     });
+    drop(rig);
 }
 
 #[test]

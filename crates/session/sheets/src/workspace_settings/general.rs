@@ -111,25 +111,51 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     let mut groups = vec![
         described(&general.identity, identity),
         described(&general.invite, vec![buttons(vec![invite])]),
-        Box::new(Section::titled(
-            general.glance_title.clone(),
-            vec![Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_id("ws-general-glance")
-                    .push(Box::new(StatGroup::new(
-                        general
-                            .stats
-                            .iter()
-                            .map(|(label, value)| {
-                                Box::new(StatTile::new(label.clone(), value.clone())) as Element
-                            })
-                            .collect(),
-                    ))),
-            )],
-        )),
+        glance(general),
+        described(&general.devices, devices(general, parts)),
     ];
+    if let Some(public) = &general.public {
+        groups.push(public_group(public, parts));
+    }
+    if !general.archived.is_empty() {
+        groups.push(archived(general, parts));
+    }
+    groups.push(delete_group(general, parts));
+    Box::new(
+        groups.into_iter().fold(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(Rhythm::Section),
+            Column::push,
+        ),
+    )
+}
+
+/// The workspace at a glance: its numbers, as tiles.
+fn glance(general: &General) -> Element {
+    Box::new(Section::titled(
+        general.glance_title.clone(),
+        vec![Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_id("ws-general-glance")
+                .push(Box::new(StatGroup::new(
+                    general
+                        .stats
+                        .iter()
+                        .map(|(label, value)| {
+                            Box::new(StatTile::new(label.clone(), value.clone())) as Element
+                        })
+                        .collect(),
+                ))),
+        )],
+    ))
+}
+
+/// The devices the workspace shows on, each toggled, and the order moves.
+fn devices(general: &General, parts: &Parts) -> Vec<Element> {
     let mut devices: Vec<Element> = general
         .device_rows
         .iter()
@@ -167,36 +193,38 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
         )
         .with_enabled(general.move_enabled[1]),
     ]));
-    groups.push(described(&general.devices, devices));
-    if let Some(public) = &general.public {
-        let items = public.controls.as_ref().map_or_else(Vec::new, |controls| {
-            let make_public = !controls.public;
-            vec![buttons(vec![
-                button(parts, "ws-general-public", &controls.switch, move || {
-                    WorkspaceSettingsEffect::SetPublic {
-                        public: make_public,
-                    }
-                })
-                .toggled(controls.public),
-                button(parts, "ws-general-public-role", &controls.role, || {
-                    WorkspaceSettingsEffect::NextJoinRole
-                }),
-                button(
-                    parts,
-                    "ws-general-public-describe",
-                    &controls.describe,
-                    || WorkspaceSettingsEffect::Describe,
-                ),
-            ])]
-        });
-        groups.push(described(&public.group, items));
-    }
-    if !general.archived.is_empty() {
-        groups.push(archived(general, parts));
-    }
-    // Deleting stands apart, last and under a rule, where nothing else is
-    // reached for on the way to it.
-    groups.push(Box::new(Section::new(vec![
+    devices
+}
+
+/// The Public group, with its controls for those who may change it.
+fn public_group(public: &Public, parts: &Parts) -> Element {
+    let items = public.controls.as_ref().map_or_else(Vec::new, |controls| {
+        let make_public = !controls.public;
+        vec![buttons(vec![
+            button(parts, "ws-general-public", &controls.switch, move || {
+                WorkspaceSettingsEffect::SetPublic {
+                    public: make_public,
+                }
+            })
+            .toggled(controls.public),
+            button(parts, "ws-general-public-role", &controls.role, || {
+                WorkspaceSettingsEffect::NextJoinRole
+            }),
+            button(
+                parts,
+                "ws-general-public-describe",
+                &controls.describe,
+                || WorkspaceSettingsEffect::Describe,
+            ),
+        ])]
+    });
+    described(&public.group, items)
+}
+
+/// Deleting stands apart, last and under a rule, where nothing else is
+/// reached for on the way to it.
+fn delete_group(general: &General, parts: &Parts) -> Element {
+    Box::new(Section::new(vec![
         Box::new(Divider::horizontal()),
         Box::new(
             ListRow::new("ws-general-delete-row", general.delete.title.clone())
@@ -210,16 +238,7 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
                     .with_enabled(general.deletable),
                 )),
         ),
-    ])));
-    Box::new(
-        groups.into_iter().fold(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_rhythm(Rhythm::Section),
-            Column::push,
-        ),
-    )
+    ]))
 }
 
 /// The name, typed in place; Enter saves it, as leaving the tab or the

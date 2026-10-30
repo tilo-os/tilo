@@ -10,6 +10,35 @@ fn rendered_enabled(widget: &dyn ui::widget::Widget, id: &str) -> Option<bool> {
         .find_map(|child| rendered_enabled(child, id))
 }
 
+/// Replace the text of the field `control` with `value`, as a person does.
+fn replace_text<A: ui::framework::ResourceApp>(
+    app: &mut ui::framework::testing::TestApp<A>,
+    control: &str,
+    value: &str,
+) {
+    app.harness().click_named(control).unwrap();
+    app.harness().set_modifiers(&["ctrl".into()]);
+    app.harness().key("a");
+    app.harness().set_modifiers(&[]);
+    app.harness().type_text(value);
+}
+
+/// Each of `controls` is drawn disabled, and pressing it anyway is let be.
+fn press_disabled<A: ui::framework::ResourceApp>(
+    app: &mut ui::framework::testing::TestApp<A>,
+    controls: &[&str],
+) {
+    for control in controls {
+        assert_eq!(
+            rendered_enabled(app.harness().root_widget(), control),
+            Some(false),
+            "{control}"
+        );
+        app.harness().click_named(control).unwrap();
+        app.settle();
+    }
+}
+
 #[test]
 fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions() {
     let backend = Arc::new(FakeAdminBackend::default());
@@ -44,13 +73,7 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
         ("url", "https://models.example.test/v1"),
         ("model", "rendered-model"),
     ] {
-        app.harness()
-            .click_named(&format!("agent-models-{field}-{id}"))
-            .unwrap();
-        app.harness().set_modifiers(&["ctrl".into()]);
-        app.harness().key("a");
-        app.harness().set_modifiers(&[]);
-        app.harness().type_text(value);
+        replace_text(&mut app, &format!("agent-models-{field}-{id}"), value);
     }
     assert_ne!(
         backend.state.lock_recover().config.profiles[0].label,
@@ -84,21 +107,16 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
     for role in [ui::Role::Viewer, ui::Role::Commenter] {
         app.set_role(role);
         app.settle();
-        for control in [
-            "agent-models-preset-openai-compatible",
-            &save,
-            &key,
-            &toggle,
-            &remove,
-        ] {
-            assert_eq!(
-                rendered_enabled(app.harness().root_widget(), control),
-                Some(false),
-                "{control}"
-            );
-            app.harness().click_named(control).unwrap();
-            app.settle();
-        }
+        press_disabled(
+            &mut app,
+            &[
+                "agent-models-preset-openai-compatible",
+                &save,
+                &key,
+                &toggle,
+                &remove,
+            ],
+        );
         assert_eq!(config(&mut app), original);
     }
     app.set_role(ui::Role::Owner);

@@ -1290,7 +1290,7 @@ mod tests {
         let undo = undo_operation(
             "tasks.tracker/issues/release",
             &StepChange {
-                resource: card.clone(),
+                resource: card,
                 action: "Moved to Review".into(),
             },
         );
@@ -1300,7 +1300,7 @@ mod tests {
             Some(tilo_actions::remote::Confirmation::Confirmed)
         );
         let query: activity::RecordQuery =
-            serde_json::from_value(Value::Object(undo.arguments.clone())).unwrap();
+            serde_json::from_value(Value::Object(undo.arguments)).unwrap();
         assert_eq!(
             query,
             activity::RecordQuery {

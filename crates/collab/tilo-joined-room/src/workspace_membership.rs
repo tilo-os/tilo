@@ -32,7 +32,6 @@ impl NativeWorkspaceOwner {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<OwnerCommitReceipt, String> {
-        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
         let binding = request.binding()?;
         let room = RoomId::parse(&request.room).ok_or("invalid native membership room")?;
         let CommitOperation::WorkspaceMembershipCommand {
@@ -49,20 +48,7 @@ impl NativeWorkspaceOwner {
             return Err("membership mutation is not signed by this device".into());
         }
         let governs = candidate.device() == candidate.governor();
-        if !governs
-            && !matches!(
-                command,
-                Command::Member { .. }
-                    | Command::Settings(_)
-                    | Command::Grant { .. }
-                    | Command::Revoke { .. }
-                    | Command::AddAgent { .. }
-                    | Command::RemoveAgent { .. }
-                    | Command::GrantAppAuthorship { .. }
-                    | Command::Share { .. }
-                    | Command::Unshare { .. }
-            )
-        {
+        if !governs && !a_member_commits(&command) {
             return Err("only the room's governor commits this change".into());
         }
         let id = serde_json::to_string(&(caller.device_public_key, invocation))
@@ -138,6 +124,26 @@ impl NativeWorkspaceOwner {
         self.publish_room(room, candidate, None)?;
         Ok(receipt)
     }
+}
+
+/// Whether a member's own device commits `command` itself; every other
+/// change only the room's governor commits.
+fn a_member_commits(
+    command: &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+) -> bool {
+    use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+    matches!(
+        command,
+        Command::Member { .. }
+            | Command::Settings(_)
+            | Command::Grant { .. }
+            | Command::Revoke { .. }
+            | Command::AddAgent { .. }
+            | Command::RemoveAgent { .. }
+            | Command::GrantAppAuthorship { .. }
+            | Command::Share { .. }
+            | Command::Unshare { .. }
+    )
 }
 
 #[cfg(test)]
