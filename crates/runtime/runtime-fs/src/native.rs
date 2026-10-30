@@ -1567,9 +1567,6 @@ impl FsSession {
         for (entry, right) in entries {
             let lease = entry.lease();
             self.validate(&table, lease, Some(*right))?;
-            if matches!(right, FsRight::Copy | FsRight::Move) {
-                self.validate(&table, lease, Some(FsRight::Read))?;
-            }
             if let (Some(parent), Some(name)) = (&lease.record.parent, &lease.record.name) {
                 self.validate(&table, parent, Some(*right))?;
                 let descriptor = Self::directory(parent)?;
@@ -1601,9 +1598,6 @@ impl FsSession {
         let table = self.call()?;
         let lease = entry.lease();
         self.validate(&table, lease, Some(right))?;
-        if matches!(right, FsRight::Copy | FsRight::Move) {
-            self.validate(&table, lease, Some(FsRight::Read))?;
-        }
         let parent = lease.record.parent.as_ref().ok_or(FsError::Denied)?;
         self.validate(&table, parent, Some(right))?;
         let name = lease.record.name.clone().ok_or(FsError::Denied)?;

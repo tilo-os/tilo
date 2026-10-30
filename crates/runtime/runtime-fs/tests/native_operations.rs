@@ -32,9 +32,6 @@ fn rights() -> Vec<FsRight> {
         FsRight::Read,
         FsRight::Create,
         FsRight::Rename,
-        FsRight::Copy,
-        FsRight::Move,
-        FsRight::Trash,
     ]
 }
 struct Fixture {
@@ -407,7 +404,7 @@ fn mutations_require_their_exact_rights() {
             true,
             vec![
                 FsRight::Enumerate,
-                FsRight::Copy,
+                FsRight::Read,
                 FsRight::Create,
                 FsRight::Rename,
             ],

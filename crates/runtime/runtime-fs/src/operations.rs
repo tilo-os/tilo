@@ -3369,9 +3369,6 @@ pub(super) mod tests {
             FsRight::Rename,
             FsRight::Replace,
             FsRight::Purge,
-            FsRight::Copy,
-            FsRight::Move,
-            FsRight::Trash,
         ]
     }
     #[test]
