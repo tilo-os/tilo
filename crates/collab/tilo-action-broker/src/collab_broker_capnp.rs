@@ -5810,7 +5810,7 @@ impl CapnpBrokerState {
         // In native rooms an agent's action authority comes only from the
         // authenticated task admission callback, never from ambient context
         // or a room grant alone (including after its run has stopped).
-        if actor.is_agent && self.task_admitted_room(&offered.0.route.cluster_id) {
+        if actor.is_agent && self.confines_agents_to_tasks(&offered.0.route.cluster_id) {
             match durable {
                 Some(DurableContext::Task { binding, .. })
                     if actor.id.strip_prefix("agent:").unwrap_or(&actor.id) == binding.agent_id => {
