@@ -636,6 +636,36 @@ mod tests {
         assert_eq!(found[0].keys.first().map(String::as_str), Some("new"));
     }
 
+    /// On touch a control smaller than a finger's target is caught, at its own box grown by
+    /// what it reports; with a mouse, whose hit areas grow about the face, nothing is.
+    #[test]
+    fn a_control_smaller_than_a_finger_is_caught_on_touch() {
+        let mut root = node("Column", "root", [0.0, 0.0, 400.0, 300.0], None);
+        root.children = vec![
+            node(
+                "Button",
+                "small",
+                [16.0, 16.0, 32.0, 32.0],
+                Some(Role::Button),
+            ),
+            node(
+                "Button",
+                "large",
+                [16.0, 64.0, 48.0, 48.0],
+                Some(Role::Button),
+            ),
+        ];
+        let small = |min| {
+            inspect(&root, (400, 300), min)
+                .into_iter()
+                .filter(|p| p.kind == Kind::SmallHitTarget)
+                .map(|p| p.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(small(Some(48.0)), [Some("small".to_owned())]);
+        assert!(small(None).is_empty());
+    }
+
     /// A header action the shell holds in a frame of its own is the control it frames.
     #[test]
     fn a_framed_action_over_a_button_is_caught() {

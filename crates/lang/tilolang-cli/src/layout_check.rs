@@ -180,6 +180,9 @@ pub struct Options {
     /// Print the toolkit's inspection of every layout at this window size to stderr: each
     /// widget's box, clip and semantics, as the check reads them.
     pub dump: Option<(u32, u32)>,
+    /// Write the window at the `dump` size, at display and text scale 1, as each stage leaves
+    /// it, in the light and the dark theme, to PNGs in this directory.
+    pub shots: Option<PathBuf>,
 }
 
 /// What a check found.
@@ -234,7 +237,8 @@ pub fn check(options: &Options) -> Result<Report, String> {
     let mut layouts_run: usize = 0;
     let mut unreached = Vec::new();
     for dir in &options.dirs {
-        let (app_findings, ran, app_unreached) = check_app(dir, &options.search, options.dump)?;
+        let (app_findings, ran, app_unreached) =
+            check_app(dir, &options.search, options.dump, options.shots.as_deref())?;
         findings.extend(app_findings);
         layouts_run = layouts_run.saturating_add(ran);
         unreached.extend(app_unreached);
@@ -265,6 +269,7 @@ fn check_app(
     dir: &Path,
     search: &[PathBuf],
     dump: Option<(u32, u32)>,
+    shots: Option<&Path>,
 ) -> Result<(Vec<Finding>, usize, Vec<String>), String> {
     let mut search = search.to_vec();
     search.extend(dir.parent().map(Path::to_path_buf));
@@ -282,6 +287,7 @@ fn check_app(
         meta: &meta,
         sources,
         dump,
+        shots,
         gathered: BTreeMap::new(),
         text: ui::TextRenderer::new(),
         ran: 0,
@@ -440,6 +446,7 @@ struct AppCheck<'a> {
     meta: &'a tilolang::PackageMeta,
     sources: source::SourceMap,
     dump: Option<(u32, u32)>,
+    shots: Option<&'a Path>,
     gathered: BTreeMap<Identity, Finding>,
     /// Measures text as the window's pipeline does, for clipped text.
     text: ui::TextRenderer,
@@ -486,6 +493,12 @@ impl AppCheck<'_> {
         if self.dump == Some(viewport) {
             let json = serde_json::to_string_pretty(&inspection).map_err(|e| e.to_string())?;
             eprintln!("== {} {label} at {layout}\n{json}", self.meta.app);
+            if let Some(dir) = self.shots
+                && layout.display_scale == 1.0
+                && layout.text_scale == 1.0
+            {
+                self.shoot(staged, layout, label, dir)?;
+            }
         }
         self.note_shown(&inspection.root);
         let rows = staged.rows();
@@ -519,6 +532,34 @@ impl AppCheck<'_> {
             self.gather(&problem, layout, label);
         }
         Ok(())
+    }
+
+    /// Write the window as `label` leaves it at `layout` to `dir`, light and dark, and lay it
+    /// out again as it was.
+    fn shoot(
+        &self,
+        staged: &mut stage::Staged,
+        layout: Layout,
+        label: &str,
+        dir: &Path,
+    ) -> Result<(), String> {
+        let slug: String = label
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let viewport = (layout.size.width, layout.size.height);
+        for (name, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+            staged.lay_out(viewport, theme, layout.input(), 1.0)?;
+            let file = dir.join(format!("{}-{slug}-{name}.png", self.short));
+            staged.harness().render_png(&file);
+        }
+        staged.lay_out(viewport, layout.theme(), layout.input(), 1.0)
     }
 
     /// Remember the views whose nodes `node` and what it holds show.
