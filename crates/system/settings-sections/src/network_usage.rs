@@ -226,6 +226,7 @@ pub struct NetworkUsage {
     pub reset_day: ResetDay,
     /// The mobile data plan's allowance per period, in gigabytes; 0 for
     /// none.
+    #[model(range = 0..=500)]
     pub limit_gb: u32,
     /// Each connection's history, by connection.
     #[model(readonly)]
