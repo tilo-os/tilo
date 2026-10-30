@@ -16,8 +16,9 @@ use ui::tilo_resource;
 #[model(check = IdentityPrefs::valid, check_reads = "colour", defaults)]
 pub struct IdentityPrefs {
     /// A presence hue's id (`teal`, `violet`, …); `None` derives it from the
-    /// person's identity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// person's identity. Written even when `None` (as `null`), so following
+    /// their identity again replaces a colour chosen before.
+    #[serde(default)]
     #[model(choices = colours::ids())]
     pub colour: Option<String>,
 }

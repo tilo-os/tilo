@@ -1403,7 +1403,11 @@ tilo_resource::json_model!(CustomTheme);
     reason = "each bool is an independent appearance switch, not one combined state"
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
-#[model(check = AppearancePrefs::valid, check_reads = "sunrise sunset", defaults)]
+#[model(
+    check = AppearancePrefs::valid,
+    check_reads = "sunrise sunset ui_face translucency",
+    defaults
+)]
 pub struct AppearancePrefs {
     /// Light, dark, or automatic: light by day and dark by night.
     #[serde(default = "default_mode")]
@@ -1497,13 +1501,16 @@ pub struct AppearancePrefs {
     /// The interface face, by any family name a theme may name (`Default`,
     /// `Hyperlegible`, `Noto Sans`); `None` follows the theme's own. The
     /// face is a role of the theme, so this only says the person would
-    /// rather have theirs than the one the theme chose.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// rather have theirs than the one the theme chose. Written even when
+    /// `None` (as `null`), so following the theme again replaces a face
+    /// chosen before.
+    #[serde(default)]
     pub ui_face: Option<String>,
     /// How much of the theme's translucency to keep: `1` as the theme sets
     /// it, `0` floating chrome opaque; `None` follows the theme. The
-    /// accessibility option that makes panels opaque still wins.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// accessibility option that makes panels opaque still wins. Written
+    /// even when `None` (as `null`), like `ui_face`.
+    #[serde(default)]
     #[model(range = 0.0..=1.0)]
     pub translucency: Option<f64>,
 }
@@ -2028,8 +2035,8 @@ impl AppearancePrefs {
         .validate()
         .map_err(|error| ui::tilo_resource::Refusal::new(format!("the interface face: {error}")))?;
         if let Some(translucency) = self.translucency {
-            let band = settings_store::appearance::TRANSLUCENCY_MIN as f64
-                ..=settings_store::appearance::TRANSLUCENCY_MAX as f64;
+            let band = f64::from(settings_store::appearance::TRANSLUCENCY_MIN)
+                ..=f64::from(settings_store::appearance::TRANSLUCENCY_MAX);
             if !band.contains(&translucency) {
                 return Err(ui::tilo_resource::Refusal::new(
                     "translucency is between none and the theme's own",
