@@ -23,7 +23,9 @@ const RASTER_THREADS: u16 = 2;
 /// One hosted surface's frames: what it drew last, and what draws its next.
 pub(crate) struct Frames {
     size: (u32, u32),
-    target: Target,
+    /// What draws them, or `None` where this build's toolkit has no
+    /// rasterizer to draw a surface with.
+    target: Option<Target>,
     /// What the compositor draws: the surface's pixels, changed where it
     /// changed.
     frame: HostFrame,
@@ -62,17 +64,20 @@ impl Frames {
 
     /// The alpha of one pixel of the last frame drawn, if it lies inside.
     pub(crate) fn alpha(&self, x: u32, y: u32) -> Option<u8> {
-        alpha_of(self.target.pixels(), self.size, x, y)
+        alpha_of(self.target.as_ref()?.pixels(), self.size, x, y)
     }
 
     /// Draw `scene` (physical pixels) where `damage` says it changed (`None`:
     /// all of it) and copy what was drawn into the frame, telling it what
     /// changed.
     pub(crate) fn present(&mut self, scene: &Scene, damage: Option<&[Rect]>) {
-        let Some(drawn) = self.target.draw(scene, damage) else {
+        let Some(target) = self.target.as_mut() else {
             return;
         };
-        self.frame.set_pixels(self.target.pixels(), &drawn);
+        let Some(drawn) = target.draw(scene, damage) else {
+            return;
+        };
+        self.frame.set_pixels(target.pixels(), &drawn);
     }
 }
 
@@ -85,16 +90,15 @@ enum Target {
 
 impl Target {
     /// The drawing `size` frames, on the GPU where this machine has one and
-    /// on the CPU where the toolkit draws every frame there.
-    fn new(size: (u32, u32)) -> Self {
+    /// on the CPU where the toolkit draws every frame there; `None` where
+    /// this build's toolkit has no rasterizer to draw one with.
+    fn new(size: (u32, u32)) -> Option<Self> {
         if let Some(gpu) = Gpu::new(size) {
-            return Self::Gpu(Box::new(gpu));
+            return Some(Self::Gpu(Box::new(gpu)));
         }
+        let canvas = ui::offscreen::CpuSurface::new(size.0, size.1, RASTER_THREADS)?;
         tracing::info!("surface apps' frames are drawn on the CPU: no GPU to draw them on");
-        Self::Cpu(Box::new(
-            ui::offscreen::CpuSurface::new(size.0, size.1, RASTER_THREADS)
-                .unwrap_or_else(|| unreachable!("the native toolkit draws on the CPU")),
-        ))
+        Some(Self::Cpu(Box::new(canvas)))
     }
 
     /// The last frame drawn, premultiplied RGBA, `width * 4` bytes a row:
