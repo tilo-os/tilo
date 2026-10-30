@@ -116,8 +116,7 @@ impl InteractiveOwnerTrust {
 }
 
 /// Canonical payload for the signed Iroh workspace-host transport hint.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct IrohWorkspaceHostHintV1 {
     /// Frozen payload version.
     pub version: u32,
@@ -135,6 +134,42 @@ pub struct IrohWorkspaceHostHintV1 {
     pub host_device_certificate: DeviceCert,
     /// HTTP packet relay used by this private/local Iroh deployment.
     pub packet_relay_url: String,
+}
+
+/// A signed hint as an earlier build wrote it: it also named the device
+/// that governed the room then. Restarts still read hints their devices
+/// pinned, which is written beside the rooms they hold.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredHint {
+    version: u32,
+    mode: WorkspaceHostMode,
+    room: String,
+    workspace_id: u64,
+    endpoint_addr: iroh_base::EndpointAddr,
+    host_user_public_key: [u8; 32],
+    host_device_certificate: DeviceCert,
+    packet_relay_url: String,
+    /// The room's governor in a hint from before it named its host alone:
+    /// read, never written.
+    #[serde(default, rename = "governing_authority")]
+    _governing_authority: Option<DeviceCert>,
+}
+
+impl<'de> Deserialize<'de> for IrohWorkspaceHostHintV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let stored = StoredHint::deserialize(deserializer)?;
+        Ok(Self {
+            version: stored.version,
+            mode: stored.mode,
+            room: stored.room,
+            workspace_id: stored.workspace_id,
+            endpoint_addr: stored.endpoint_addr,
+            host_user_public_key: stored.host_user_public_key,
+            host_device_certificate: stored.host_device_certificate,
+            packet_relay_url: stored.packet_relay_url,
+        })
+    }
 }
 
 impl IrohWorkspaceHostHintV1 {

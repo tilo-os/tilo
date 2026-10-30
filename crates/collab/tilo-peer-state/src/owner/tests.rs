@@ -921,6 +921,33 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
 }
 
 #[test]
+fn an_owner_file_from_before_the_room_host_had_its_name_restores() {
+    let joined = enrolled();
+    let host = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.room_host().clone()))
+        .unwrap();
+    drop(joined.owner);
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
+    let room = &mut value["rooms"][joined.room.to_string()];
+    let stored = room.as_object_mut().expect("a stored room");
+    let named_as_the_host = stored
+        .remove("room_host")
+        .expect("the record names the host");
+    stored.insert("governor".into(), named_as_the_host);
+    std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
+    let reopened = open_file(&joined.path).expect("a file from before the rename reads");
+    assert_eq!(
+        reopened
+            .with_current(joined.room, |view| Ok(view.room_host().clone()))
+            .unwrap(),
+        host,
+        "the governor field is the room's host"
+    );
+}
+
+#[test]
 fn owner_file_holds_byte_fields_as_compact_base64() {
     let joined = enrolled();
     let current = std::fs::read(&joined.path).unwrap();

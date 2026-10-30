@@ -78,7 +78,10 @@ pub(crate) struct StoredRoom {
     pub room: RoomId,
     pub workspace: u64,
     /// The host this room's commits are ordered by: a device of its owner,
-    /// this device itself for a room its own host keeps.
+    /// this device itself for a room its own host keeps. Files written by
+    /// builds before this record called it the room's governor keep their
+    /// layout: their rooms' hosts read under that name.
+    #[serde(alias = "governor")]
     pub room_host: DeviceCert,
     pub device: DeviceCert,
     /// How this device joined the room its host governs. A record without
