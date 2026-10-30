@@ -2609,6 +2609,7 @@ agent-quick-shots-release-streamed = Auf **Release 2.4** sind noch drei Karten o
 agent-quick-shots-release-reply = Auf **Release 2.4** sind noch drei Karten offen, und zwei Aufgaben fehlen: *macOS-Build signieren* bis Freitag und *Betagruppe informieren* am Samstag. Ich habe die Release Notes nach Review verschoben und einen Beitrag für den Kanal Release entworfen, der auf dich wartet.
 agent-quick-shots-answer-title = Was für Release 2.4 noch fehlt
 agent-quick-placeholder-idle = Frag { $agent } oder sag, was zu tun ist
+agent-quick-new-agent-addressed = einen neuen Agenten
 agent-quick-placeholder-running = Sag { $agent }, wie es weitergehen soll
 agent-quick-editor-name = Deine Nachricht an den Agenten
 agent-quick-send = Senden

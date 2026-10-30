@@ -1200,6 +1200,7 @@ impl Applier {
             Ok(action) => action,
             Err(error) => return serde_json::json!({"failed": error.to_string()}),
         };
+        let before = self.record.heads();
         if let Err(error) = self.record.apply_change(&action, invoker, ambient.as_ref()) {
             return serde_json::json!({"failed": error.to_string()});
         }
@@ -1208,9 +1209,15 @@ impl Applier {
         let differs = change.preview.as_ref().is_some_and(|preview| {
             serde_json::to_value(&action).is_ok_and(|applied| applied != *preview)
         });
+        // What it wrote, for the task to read back at once: the room takes it in its own time.
+        let wrote = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(self.record.changes_since(&before))
+        };
         serde_json::json!({
             "ok": {"value": output.value, "resources": output.resources},
             "differs": differs,
+            "change": wrote,
         })
     }
 }
