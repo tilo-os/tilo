@@ -90,7 +90,10 @@ pub use input::{
 };
 pub use keys::{KeyClaim, KeyRepeat};
 pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
-pub use policy::{Arrangement, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy, WindowRequest};
+pub use policy::{
+    Arrangement, LayoutPoint, LayoutRect, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy,
+    WindowRequest,
+};
 pub use selection::Selection;
 /// The quarter turns an output is shown at.
 pub use smithay::utils::Transform;
@@ -945,7 +948,7 @@ impl Compositor {
     /// was shown.
     pub fn render(&mut self) -> Result<(), Error> {
         for host in &mut self.data.state.hosts {
-            host.prepare_frame();
+            let _ = host.prepare_frame();
         }
         // A frame can move windows (a strip panning, a group resizing): the
         // policy places them where the surfaces just laid them out.

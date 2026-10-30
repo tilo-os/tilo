@@ -298,8 +298,8 @@ impl SurfaceHost for DesktopHost {
             .pointer_axis(horizontal, vertical);
     }
 
-    fn prepare_frame(&mut self) {
-        self.desk.borrow_mut().host.prepare_frame();
+    fn prepare_frame(&mut self) -> bool {
+        self.desk.borrow_mut().host.prepare_frame()
     }
 }
 

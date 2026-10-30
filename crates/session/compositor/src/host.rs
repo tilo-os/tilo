@@ -231,8 +231,11 @@ pub trait SurfaceHost {
     /// last.
     fn set_backdrops(&mut self, _images: Vec<Option<crate::BackdropImage>>) {}
 
-    /// A frame is about to be drawn: bring the layers up to date.
-    fn prepare_frame(&mut self) {}
+    /// A frame is about to be drawn: bring the layers up to date. `true`
+    /// when the layer drew something this frame.
+    fn prepare_frame(&mut self) -> bool {
+        false
+    }
 
     /// The outputs' logical rectangles `(x, y, w, h)`, now and whenever
     /// one is added, removed or moved: a surface covering the desktop

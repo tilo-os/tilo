@@ -10,6 +10,13 @@ use smithay::utils::{Logical, Point, Rectangle};
 
 use crate::input::{GestureEvent, Switch};
 
+/// A point in the layout: logical pixels, as the desktop arranges outputs
+/// and windows.
+pub type LayoutPoint = Point<i32, Logical>;
+
+/// A rectangle in the layout.
+pub type LayoutRect = Rectangle<i32, Logical>;
+
 /// What a policy learns about a window.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WindowInfo {
