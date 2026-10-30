@@ -442,10 +442,11 @@ pub fn record_node(record: &Record<'_>) -> TreePath {
         .resource(record.record)
 }
 
-/// Decide a received op on `record`: a compaction or redaction as the
-/// room's governance action, a change by its claims ([`check_claims`])
-/// against the app surface `surfaces` finds, or, with no surface source, as
-/// an edit of the record.
+/// Decide a received op on `record`: a compaction as a write of the record
+/// (or the room's `compact` governance action), a redaction as the room's
+/// governance action, a change by its claims ([`check_claims`]) against the
+/// app surface `surfaces` finds, or, with no surface source, as an edit of
+/// the record.
 ///
 /// # Errors
 /// The first [`ReceiptRefusal`].
@@ -531,7 +532,20 @@ pub fn decide_op_pinned(
         }
     };
     match op.kind {
-        crate::role::OpKind::Compaction => governed(roles::governance::COMPACT),
+        // A sealed compaction folds a record's sealed history into one
+        // snapshot of what it already held, and only a device holding the
+        // record's channel keys can make one. Whoever the record admits as a
+        // writer of it holds those keys, so compacting is part of writing it;
+        // the room's governor keeps its governance action as well. A
+        // compaction in the clear sets the room's history horizon for
+        // everyone and stays the governor's to make.
+        crate::role::OpKind::Compaction => {
+            if op.encryption.is_some() && allows(&record_node(record), ActionKind::Undoable) {
+                Ok(Receipt::Admit)
+            } else {
+                governed(roles::governance::COMPACT)
+            }
+        }
         crate::role::OpKind::Redaction => governed(roles::governance::REDACT),
         crate::role::OpKind::Change => {
             // An op of an app that publishes no surface (and of a record that
