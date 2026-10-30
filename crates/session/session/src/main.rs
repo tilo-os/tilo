@@ -505,6 +505,9 @@ fn services(
     services.push(Box::new(tilo_settings_service::SettingsService::new(
         &tilo_session::Options::default().person,
     )));
+    // What this session ran into: the list as the resource's reading and
+    // each record's text as its own, which Settings reads as an app does.
+    services.push(Box::new(tilo_crash_records::CrashRecords::new()));
     if hosted {
         return (services, following);
     }

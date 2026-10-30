@@ -1,33 +1,24 @@
 //! The records as resources: the list as the root's reading, each record's
 //! text as its own.
 //!
-//! Settings reads them through the host's door
-//! ([`tilo_actions::remote::crash_records`]) and so does an agent or a
-//! script; the session's own reader reads the same facts as a service.
-//! Nothing here draws.
+//! The session publishes them to the apps it runs, Settings first among
+//! them: an app reads [`wire::RESOURCE`] for every record and
+//! [`wire::record`] of one for its text, and so does an agent or a script
+//! through the same door. Nothing here draws, and nothing changes a record.
 
 use std::path::PathBuf;
 
 use serde_json::Value;
-use tilo_actions::remote::crash_records::{CrashKind, CrashRecord, CrashRecordText, StopReason};
+use tilo_actions::remote::crash_records::{
+    self as wire, CrashKind, CrashRecord, CrashRecordText, StopReason,
+};
 use tilo_actions::{ActionAddress, DoorError, ResourcePresentation, ResourceSpec};
 use tilo_service::{Service, reading};
 
-/// The resource every record is listed under.
-pub const CRASH_RECORDS_RESOURCE: &str = "crash-records";
-/// The kind of [`CRASH_RECORDS_RESOURCE`].
+/// The kind of [`wire::RESOURCE`].
 pub const CRASH_RECORDS_KIND: &str = "session.crash-records";
 /// The kind of each record's resource.
 pub const CRASH_RECORD_KIND: &str = "session.crash-record";
-
-/// What a record's resource id starts with, before its name.
-const RECORD_PREFIX: &str = "crash-record:";
-
-/// The resource id the record `id` is published as.
-#[must_use]
-pub fn record_resource(id: &str) -> String {
-    format!("{RECORD_PREFIX}{id}")
-}
 
 /// What a person calls a record of `kind`, for a reader with no words of its
 /// own (an agent's list, a settings row read aloud).
@@ -63,7 +54,7 @@ fn present(record: &CrashRecord) -> ResourcePresentation {
 /// What a record's resource is called to a reader with no words of its own.
 fn resource(record: &CrashRecord) -> ResourceSpec {
     ResourceSpec::new(
-        record_resource(&record.id),
+        wire::record(&record.id),
         CRASH_RECORD_KIND,
         label(record.kind),
     )
@@ -103,7 +94,7 @@ impl CrashRecords {
 impl Service for CrashRecords {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
-            ResourceSpec::new(CRASH_RECORDS_RESOURCE, CRASH_RECORDS_KIND, "Crash records")
+            ResourceSpec::new(wire::RESOURCE, CRASH_RECORDS_KIND, "Crash records")
                 .with_children(self.records().iter().map(resource)),
         ]
     }
@@ -111,11 +102,11 @@ impl Service for CrashRecords {
     /// The root reads as every record's facts, newest first; a record as
     /// its facts and its text, stacks included.
     fn read(&self, resource: &str) -> Option<Value> {
-        if resource == CRASH_RECORDS_RESOURCE {
+        if resource == wire::RESOURCE {
             return Some(reading(&self.records()));
         }
         let dir = self.dir.as_deref()?;
-        let id = resource.strip_prefix(RECORD_PREFIX)?;
+        let id = resource.strip_prefix(wire::RECORD_PREFIX)?;
         let text: CrashRecordText = crate::read(dir, id).ok()?;
         Some(reading(&text))
     }
@@ -173,7 +164,7 @@ mod tests {
         assert_eq!(children[0].label, "Desktop stopped responding");
         assert_eq!(children[1].label, "Desktop stopped unexpectedly");
 
-        let listed = read_json(&service, CRASH_RECORDS_RESOURCE);
+        let listed = read_json(&service, wire::RESOURCE);
         assert_eq!(listed.as_array().unwrap().len(), 2);
         assert_eq!(listed[0]["kind"], "froze");
 
@@ -211,7 +202,7 @@ mod tests {
         let service = CrashRecords::in_dir(Path::new("/nonexistent/tilo/crashes"));
         assert!(service.resources().remove(0).children.is_empty());
         assert_eq!(
-            read_json(&service, CRASH_RECORDS_RESOURCE),
+            read_json(&service, wire::RESOURCE),
             Value::Array(Vec::new())
         );
     }

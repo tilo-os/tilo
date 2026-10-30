@@ -4,11 +4,12 @@
 //! and a fault the system's core went on from.
 //!
 //! The records are files the host keeps in the person's private crash
-//! directory; nothing here sends one anywhere. The host answers two steps
-//! under its own provider: [`LIST`] says what each record is without its
-//! text, and [`READ`] returns one record's text, the stacks included, only
-//! when it is asked for by name. Settings lists them through the same door
-//! an agent or a script uses.
+//! directory; nothing here sends one anywhere. They read two ways, over the
+//! same names: as the session's published resources — [`RESOURCE`] reads as
+//! every record without its text ([`CrashRecord`]s), [`record`] as one
+//! record's text, the stacks included ([`CrashRecordText`]) — and, to a
+//! caller that reaches the records as steps, under [`PROVIDER`]: [`LIST`]
+//! and [`READ`] answer the same two. Nothing is ever changed.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +18,8 @@ use crate::door::ActionAddress;
 
 /// The provider the host answers the records under.
 pub const PROVIDER: &str = "tilo.crash-records";
-/// The resource the steps are actions of.
+/// The resource the steps are actions of, and the session's reading of
+/// every record, newest first.
 pub const RESOURCE: &str = "crash-records";
 /// Every record, newest first, as [`CrashRecord`]s without their text.
 pub const LIST: &str = "list";
@@ -26,6 +28,15 @@ pub const READ: &str = "read";
 
 /// Every step, in the order a catalogue lists them.
 pub const STEPS: [&str; 2] = [LIST, READ];
+
+/// What a record's resource id starts with, before its name.
+pub const RECORD_PREFIX: &str = "crash-record:";
+
+/// The resource the record `id` reads as: its facts and its text.
+#[must_use]
+pub fn record(id: &str) -> String {
+    format!("{RECORD_PREFIX}{id}")
+}
 
 #[must_use]
 pub fn target(step: &str) -> RemoteActionTarget {

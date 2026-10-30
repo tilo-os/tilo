@@ -80,9 +80,7 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
     (170, |context, made| {
         Box::new(storage::StorageArea::new(context, mesh_remote(made)))
     }),
-    (175, |context, made| {
-        Box::new(about::AboutArea::new(context, mesh_remote(made)))
-    }),
+    (175, |context, _| Box::new(about::AboutArea::new(context))),
     (190, |context, _| {
         Box::new(
             accounts::AccountsArea::new(context).with_account_root(context.account_root.clone()),
