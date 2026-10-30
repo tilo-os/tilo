@@ -150,6 +150,10 @@ pub fn sync_filter(field: &mut SearchField, content: &mut dyn Widget) {
               reserves the count slot, a removed scope token), set and read on its own \
               schedule, so an enum encoding would not simplify the call sites"
 )]
+#[crate::component::not_a_component(
+    system,
+    "no search fields in apps; the search button opens system search (AGENTS.md principle 3)"
+)]
 pub struct SearchField {
     input: TextInput,
     leading: Icon,
@@ -1031,6 +1035,10 @@ impl crate::widget::controls::ActionControls for SearchField {
 /// content, narrowing the first [`Filterable`] inside it. Ctrl+F (⌘F)
 /// focuses the field. A navigation shell's filter slot is the same field
 /// wired with [`sync_filter`].
+#[crate::component::not_a_component(
+    system,
+    "no search fields in apps; the search button opens system search (AGENTS.md principle 3)"
+)]
 pub struct Filtered {
     field: SearchField,
     content: crate::widget::Element,

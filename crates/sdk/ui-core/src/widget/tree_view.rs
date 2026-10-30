@@ -845,6 +845,7 @@ impl SparseTreeIndex {
     clippy::struct_excessive_bools,
     reason = "independent focus, selection, and retained-delegate invalidation states"
 )]
+#[crate::component::not_a_component(part, "the typed body of a tree view")]
 pub struct TreeImpl<T, M = TreeNode<T>> {
     test_id: Option<String>,
     model: M,

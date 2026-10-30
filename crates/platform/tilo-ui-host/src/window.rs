@@ -1365,6 +1365,12 @@ impl AppWindow {
         self.failed.as_deref()
     }
 
+    /// Each component of the window's view that did not build or take its props, and why.
+    #[must_use]
+    pub fn broken_components(&self) -> Vec<String> {
+        self.reconciler.borrow().broken()
+    }
+
     /// The Ask bar the window shows, if it shows one.
     #[must_use]
     pub fn asks(&self) -> Option<&wire::Ask> {
