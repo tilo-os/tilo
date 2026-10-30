@@ -280,7 +280,6 @@ impl CapnpBrokerState {
         reask: &ChildReask<'_>,
         steps: &dyn crate::services::HostStepServices,
     ) -> Result<(u64, tilo_actions::InvocationUpdate), String> {
-        let host = self.run_task_host(reask)?;
         let request = tilo_actions::remote::InvokeRequest {
             invocation: reask.invocation,
             target: tilo_actions::remote::RemoteActionTarget {
@@ -303,7 +302,8 @@ impl CapnpBrokerState {
             appearance: None,
             wait_ms: None,
         };
-        host.invoke_host_step(steps, &request)
+        self.run_task_host(reask)?
+            .invoke_host_step(steps, &request)
             .map_err(|error| error.to_string())?;
         self.native_host_step_observation(reask.run_id, reask.invocation)?
             .ok_or_else(|| "the task's step was taken but is not recorded".into())
@@ -316,7 +316,13 @@ impl CapnpBrokerState {
         reask: &ChildReask<'_>,
     ) -> Result<super::TaskRunHost, String> {
         let run = self.task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)?;
-        if let Some(host) = run.task_host {
+        let known = self
+            .run_task_hosts
+            .lock()
+            .map_err(|_| "task run hosts unavailable")?
+            .get(&reask.run_id)
+            .cloned();
+        if let Some(host) = known {
             return Ok(host);
         }
         let admitted = reask.caller.current(self)?;
@@ -324,14 +330,13 @@ impl CapnpBrokerState {
             (reask.peer_id, reask.caller.route().clone(), admitted),
             (reask.run_id, &run.lease, &run.task_id),
         )?;
-        let mut runs = self
-            .pending_task_runs
+        Ok(self
+            .run_task_hosts
             .lock()
-            .map_err(|_| "task run registry unavailable")?;
-        let pending = runs
-            .get_mut(&reask.run_id)
-            .ok_or("the task run is no longer going")?;
-        Ok(pending.task_host.get_or_insert(host).clone())
+            .map_err(|_| "task run hosts unavailable")?
+            .entry(reask.run_id)
+            .or_insert(host)
+            .clone())
     }
 
     /// A host step `run`'s agent took as a step of it, by `invocation`:
@@ -341,16 +346,16 @@ impl CapnpBrokerState {
         run_id: u64,
         invocation: tilo_actions::InvocationId,
     ) -> Result<Option<(u64, tilo_actions::InvocationUpdate)>, String> {
-        let host = self
-            .pending_task_runs
+        let caller = self
+            .run_task_hosts
             .lock()
-            .map_err(|_| "task run registry unavailable")?
+            .map_err(|_| "task run hosts unavailable")?
             .get(&run_id)
-            .and_then(|current| current.task_host.clone());
-        let Some(host) = host else {
+            .map(|host| host.caller().clone());
+        let Some(caller) = caller else {
             return Ok(None);
         };
-        let Some(job) = self.remote_job(host.caller(), &invocation) else {
+        let Some(job) = self.remote_job(&caller, &invocation) else {
             return Ok(None);
         };
         let update = self
@@ -687,7 +692,6 @@ impl CapnpBrokerState {
                 action_context: envelope.action_context.clone(),
                 terminal: false,
                 native: binding,
-                task_host: None,
             },
         );
         drop(pending);

@@ -521,20 +521,20 @@ impl ShellOverlayHost {
             let room = ask.room.to_string();
             // The same gate as the chord's and the chrome's asks: just changed,
             // as at a session's start, it is asked once it settles.
-            let identity_revision =
-                match ActionSessionSource::new(broker.clone()).identity_gate(&room, now) {
-                    IdentityGate::Settled(revision) => revision,
-                    IdentityGate::SettlesAt(at) => {
-                        self.door_runs_unsettled.push((at, ask));
-                        continue;
-                    }
-                    IdentityGate::Unknown => {
-                        let _ = ask.reply.send(Err(crate::shell::i18n::t(
-                            "agent-door-identity-unavailable",
-                        )));
-                        continue;
-                    }
-                };
+            let gate = ActionSessionSource::new(broker.clone()).identity_gate(&room, now);
+            let identity_revision = match gate {
+                IdentityGate::Settled(revision) => revision,
+                IdentityGate::SettlesAt(at) => {
+                    self.door_runs_unsettled.push((at, ask));
+                    continue;
+                }
+                IdentityGate::Unknown => {
+                    let _ = ask.reply.send(Err(crate::shell::i18n::t(
+                        "agent-door-identity-unavailable",
+                    )));
+                    continue;
+                }
+            };
             let owner = ComposerOwner {
                 person: ask.person,
                 room,

@@ -132,13 +132,13 @@ fn session_of(
     person: Option<&str>,
     issue: &str,
     group: tilo_actions::WorkGroup,
-) -> Result<Arc<Door>, String> {
+) -> Arc<Door> {
     let key = (room.to_owned(), agent.to_owned(), issue.to_owned());
     let mut sessions = sessions().lock_recover();
     if let Some((run, door)) = sessions.get(&key)
         && *run == group.id
     {
-        return Ok(Arc::clone(door));
+        return Arc::clone(door);
     }
     let run = group.id.clone();
     let door = Arc::new(
@@ -148,7 +148,7 @@ fn session_of(
     );
     // A later run of the issue ends the earlier one's session, its host with it.
     sessions.insert(key, (run, Arc::clone(&door)));
-    Ok(door)
+    door
 }
 
 impl HostStepServices for BrokerDoor {
@@ -196,11 +196,10 @@ impl HostStepServices for BrokerDoor {
             .id()
             .strip_prefix("agent:")
             .unwrap_or_else(|| actor.id());
-        let host = request
-            .task_run
-            .ok_or("a task's programs run only as steps of its run")?;
         let door = session_of(
-            host,
+            request
+                .task_run
+                .ok_or("a task's programs run only as steps of its run")?,
             request.room,
             agent,
             actor.acting_for(),
@@ -210,7 +209,7 @@ impl HostStepServices for BrokerDoor {
                 label,
                 kind: "task".into(),
             },
-        )?;
+        );
         let (complete, answered) = pending();
         // The program waits on the task's host and on every call it makes: never on the
         // broker's thread.

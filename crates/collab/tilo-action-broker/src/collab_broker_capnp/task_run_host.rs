@@ -139,7 +139,7 @@ impl CapnpBrokerState {
                 },
             );
         // Delivery is synchronous: a going run is in the channel now.
-        self.refresh_tracker_runs(&std::iter::once(room.clone()).collect());
+        self.refresh_tracker_runs(&std::iter::once(room).collect());
         let Ok(run) = rx.try_recv() else {
             self.disconnect_native_task_stream(peer);
             return Err("the task's run is not going, so it was delivered nothing".into());
@@ -218,6 +218,11 @@ impl TaskRunHost {
     /// Who the task agent is to the host steps it takes in its run.
     pub(super) fn caller(&self) -> &Caller {
         &self.0.caller
+    }
+
+    /// The connection the run was delivered to.
+    pub(super) fn peer(&self) -> u64 {
+        self.0.peer
     }
 
     pub(super) fn state(&self) -> Arc<CapnpBrokerState> {

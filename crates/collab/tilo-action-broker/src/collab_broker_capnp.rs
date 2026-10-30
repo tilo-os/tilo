@@ -1536,11 +1536,6 @@ struct PendingTaskRun {
     action_context: tilo_actions::ActionContext,
     terminal: bool,
     native: crate::services::NativeTaskBinding,
-    /// The host the run's agent takes its host steps through (a task's
-    /// programs), the same the agent door's connection is: one for the run,
-    /// so each step is read back by the caller that took it. Made at its
-    /// first host step.
-    task_host: Option<TaskRunHost>,
 }
 
 /// The application's terminal answer to a directed invocation.
@@ -3486,6 +3481,11 @@ pub struct CapnpBrokerState {
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
     pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
+    /// The host each launched task agent's run takes its host steps through
+    /// (a task's programs), by run: the same the agent door's connection is,
+    /// one for the run, so each step is read back by the caller that took
+    /// it. Made at its first host step; gone with the agent's stream.
+    run_task_hosts: Mutex<HashMap<u64, TaskRunHost>>,
     invocation_id: AtomicU64,
     services: HostServices,
     workers: Mutex<Vec<PendingWorker>>,
@@ -4139,6 +4139,10 @@ impl CapnpBrokerState {
             .transpose()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one constructor naming every registry the broker keeps"
+    )]
     fn new_configured(
         fanout: &Arc<FanoutState>,
         broker_channels: Arc<Mutex<BrokerChannels>>,
@@ -4235,6 +4239,7 @@ impl CapnpBrokerState {
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
                 task_subscribers: Mutex::new(HashMap::new()),
                 pending_task_runs: Mutex::new(HashMap::new()),
+                run_task_hosts: Mutex::new(HashMap::new()),
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
                 workers: Mutex::new(Vec::new()),
@@ -7192,6 +7197,19 @@ impl CapnpBrokerState {
         if let Ok(mut runs) = self.pending_task_runs.lock() {
             runs.retain(|_, run| run.peer_id != peer_id);
         }
+        // Taken out under the lock and dropped after it: a host's own drop
+        // may come back here.
+        let mut ended: Vec<TaskRunHost> = Vec::new();
+        if let Ok(mut hosts) = self.run_task_hosts.lock() {
+            hosts.retain(|_, host| {
+                let goes = host.peer() != peer_id;
+                if !goes {
+                    ended.push(host.clone());
+                }
+                goes
+            });
+        }
+        drop(ended);
     }
 
     /// Stable authenticated actor id for native presence and interactions.

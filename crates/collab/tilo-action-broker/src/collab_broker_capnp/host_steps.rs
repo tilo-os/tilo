@@ -134,6 +134,10 @@ impl CapnpBrokerState {
         clippy::too_many_lines,
         reason = "one ordered admission of a host step: room confinement, policy, confirmation and the host's own decision"
     )]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the step borrows the run it is taken in until the host started it"
+    )]
     pub(super) fn invoke_host_step_in_run(
         self: &Arc<Self>,
         caller: &Caller,
