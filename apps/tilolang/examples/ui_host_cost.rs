@@ -3,7 +3,7 @@
 //! (`tilolang_tilo::instance` and `tilo_ui_host::AppWindow` over the patch protocol), in one
 //! process: each half measured on its own.
 //!
-//! - **App host**: `count` instances of the package (its runtime over a room record of its
+//! - **App host**: `count` instances of the package (its runtime over a workspace record of its
 //!   own, its views, what it publishes on the door), each sending its window patches. The
 //!   anonymous memory they add, per instance.
 //! - **UI host**: a window for each, built from what its instance sent, laid out at 1280x800
@@ -16,7 +16,7 @@
 //!   seconds with every instance and window open and nothing happening.
 //!
 //! Each count is cumulative: `1 10 30` opens 1, then 9 more, then 20 more. With
-//! `--scenario`, each room holds the package's first scenario rather than nothing.
+//! `--scenario`, each workspace holds the package's first scenario rather than nothing.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -96,7 +96,7 @@ impl Platform for Packages {
     }
 }
 
-/// The names of a room nobody else is in.
+/// The names of a workspace nobody else is in.
 struct Alone;
 
 impl NameHost for Alone {
@@ -105,7 +105,7 @@ impl NameHost for Alone {
     }
 }
 
-/// One app open: its instance over a room record of its own, and the window end of its
+/// One app open: its instance over a workspace record of its own, and the window end of its
 /// connection.
 struct Open {
     instance: Instance,
@@ -292,7 +292,7 @@ fn main() -> Result<(), String> {
         .last()
         .map(|main| main.meta.app.clone())
         .ok_or("no package")?;
-    // With `--scenario`, each instance's room holds the package's first scenario.
+    // With `--scenario`, each instance's workspace holds the package's first scenario.
     let scenario = scenario
         .then(|| {
             packages

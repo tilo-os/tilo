@@ -9,7 +9,7 @@ use mail::fake_servers::{FakeImap, FakeSmtp, Layout, accepting_client_config, se
 use mail::model::{AccountConfig, AuthMethod};
 use tilolang_tilo::runtime::{Principal, ResourceRef, Value as RtValue};
 
-use super::Room;
+use super::Workspace;
 use crate::window::Window;
 use tilolang_mail::engine::EngineConnector;
 use tilolang_mail::origin::ImapOrigin;
@@ -94,13 +94,16 @@ fn account(servers: &Servers) -> AccountConfig {
 }
 
 /// The Mail window kept in step with `config`'s servers.
-fn room_with(config: AccountConfig) -> Room {
-    room_over(Box::new(move || vec![config.clone()]), Arc::default())
+fn workspace_with(config: AccountConfig) -> Workspace {
+    workspace_over(Box::new(move || vec![config.clone()]), Arc::default())
 }
 
-/// A room whose accounts are what `accounts` says each time it is asked, which comes online
+/// A workspace whose accounts are what `accounts` says each time it is asked, which comes online
 /// again when `reconnected` is set.
-fn room_over(accounts: tilolang_mail::engine::AccountSource, reconnected: Arc<AtomicBool>) -> Room {
+fn workspace_over(
+    accounts: tilolang_mail::engine::AccountSource,
+    reconnected: Arc<AtomicBool>,
+) -> Workspace {
     let woken = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&woken);
     let engine = mail::engine::live::LiveEngine::trusting(
@@ -117,32 +120,32 @@ fn room_over(accounts: tilolang_mail::engine::AccountSource, reconnected: Arc<At
     let origin = std::rc::Rc::new(std::cell::RefCell::new(
         ImapOrigin::new(Box::new(connector), woken).reconnecting_on(reconnected),
     ));
-    room_of(origin)
+    workspace_of(origin)
 }
 
-/// A room kept in step with a mail server by `origin`.
-fn room_of(origin: std::rc::Rc<std::cell::RefCell<ImapOrigin>>) -> Room {
+/// A workspace kept in step with a mail server by `origin`.
+fn workspace_of(origin: std::rc::Rc<std::cell::RefCell<ImapOrigin>>) -> Workspace {
     crate::app::builtin::choose("mail");
     let meta = crate::app::builtin::package_named("mail").expect("the mail package");
     let sink = tilolang_tilo::runtime::MemorySink::new();
     let window = Window::new(meta.app.clone(), "ada".to_owned(), RunMode::Live)
         .with_sink(sink.clone())
         .with_origin(origin);
-    let mut room = Room {
+    let mut workspace = Workspace {
         doc: ui::automerge::AutoCommit::new(),
         window,
         sink,
     };
-    room.settle();
-    room
+    workspace.settle();
+    workspace
 }
 
-impl Room {
+impl Workspace {
     fn host(&self) -> tilolang_tilo::host::Host {
         self.window.current_host().expect("the host started")
     }
 
-    /// Frames until `done` holds of the room, as the servers answer.
+    /// Frames until `done` holds of the workspace, as the servers answer.
     fn until(&mut self, what: &str, done: impl Fn(&mut Self) -> bool) {
         for _ in 0..400 {
             self.settle();
@@ -223,22 +226,24 @@ impl Room {
     }
 }
 
-fn synced(room: &mut Room) {
-    room.until("the inbox to sync", |room| room.threads().len() == 2);
+fn synced(workspace: &mut Workspace) {
+    workspace.until("the inbox to sync", |workspace| {
+        workspace.threads().len() == 2
+    });
 }
 
 #[test]
 fn an_account_syncs_into_mailboxes_and_conversations() {
     let servers = servers();
-    let mut room = room_with(account(&servers));
-    synced(&mut room);
-    let account = room.accounts().remove(0);
-    assert_eq!(room.text(&account, "address"), ME);
-    assert_eq!(room.text(&account, "name"), "Sam Rivera");
-    let boxes: Vec<String> = room
+    let mut workspace = workspace_with(account(&servers));
+    synced(&mut workspace);
+    let account = workspace.accounts().remove(0);
+    assert_eq!(workspace.text(&account, "address"), ME);
+    assert_eq!(workspace.text(&account, "name"), "Sam Rivera");
+    let boxes: Vec<String> = workspace
         .refs(&account, "mailboxes")
         .iter()
-        .map(|b| room.text(b, "key"))
+        .map(|b| workspace.text(b, "key"))
         .collect();
     assert_eq!(
         boxes,
@@ -246,40 +251,46 @@ fn an_account_syncs_into_mailboxes_and_conversations() {
     );
 
     // The reply joins the conversation it answers; the other stands alone.
-    let plan = room.thread("Launch plan");
-    let messages = room.refs(&plan, "messages");
+    let plan = workspace.thread("Launch plan");
+    let messages = workspace.refs(&plan, "messages");
     assert_eq!(messages.len(), 2);
-    assert_eq!(room.text(&messages[0], "from_name"), "Grace Hopper");
+    assert_eq!(workspace.text(&messages[0], "from_name"), "Grace Hopper");
     assert_eq!(
-        room.text(&messages[1], "body").trim(),
+        workspace.text(&messages[1], "body").trim(),
         "Agreed on the twelfth."
     );
     assert!(
-        room.flag(&plan, "unread"),
+        workspace.flag(&plan, "unread"),
         "an unread message makes it unread"
     );
-    assert_eq!(room.text(&plan, "senders"), "Ada Lovelace, Grace Hopper");
-    let dinner = room.thread("Dinner on Friday?");
-    assert!(!room.flag(&dinner, "unread"), "it was read on the server");
+    assert_eq!(
+        workspace.text(&plan, "senders"),
+        "Ada Lovelace, Grace Hopper"
+    );
+    let dinner = workspace.thread("Dinner on Friday?");
+    assert!(
+        !workspace.flag(&dinner, "unread"),
+        "it was read on the server"
+    );
 
     // Syncing again finds nothing new and makes nothing twice.
-    room.until("the inbox counts", |room| {
-        let inbox = room.refs(&room.accounts()[0], "mailboxes")[0].clone();
-        matches!(room.read(&inbox, "unread"), RtValue::Int(2))
+    workspace.until("the inbox counts", |workspace| {
+        let inbox = workspace.refs(&workspace.accounts()[0], "mailboxes")[0].clone();
+        matches!(workspace.read(&inbox, "unread"), RtValue::Int(2))
     });
-    assert_eq!(room.threads().len(), 2);
+    assert_eq!(workspace.threads().len(), 2);
 }
 
 #[test]
 fn reading_and_archiving_reach_the_server_and_come_back() {
     let servers = servers();
-    let mut room = room_with(account(&servers));
-    synced(&mut room);
-    let plan = room.thread("Launch plan");
+    let mut workspace = workspace_with(account(&servers));
+    synced(&mut workspace);
+    let plan = workspace.thread("Launch plan");
 
-    room.press("mark_read", vec![RtValue::resource(&plan)]);
-    assert!(!room.flag(&plan, "unread"), "it reads as read at once");
-    room.until("the server to hold it read", |_| {
+    workspace.press("mark_read", vec![RtValue::resource(&plan)]);
+    assert!(!workspace.flag(&plan, "unread"), "it reads as read at once");
+    workspace.until("the server to hold it read", |_| {
         servers
             .imap
             .messages("INBOX")
@@ -289,32 +300,32 @@ fn reading_and_archiving_reach_the_server_and_come_back() {
             == 3
     });
 
-    room.press("archive", vec![RtValue::resource(&plan)]);
+    workspace.press("archive", vec![RtValue::resource(&plan)]);
     assert!(
-        !matches!(room.read(&plan, "boxes"), RtValue::List(ref b) if b.contains(&RtValue::text("inbox"))),
+        !matches!(workspace.read(&plan, "boxes"), RtValue::List(ref b) if b.contains(&RtValue::text("inbox"))),
         "it leaves the inbox at once"
     );
-    room.until("the server to archive it", |_| {
+    workspace.until("the server to archive it", |_| {
         servers.imap.messages("INBOX").len() == 1
             && servers.imap.messages("[Gmail]/All Mail").len() == 2
     });
 
     // Taken back to the inbox, the server moves it back.
-    room.press("to_inbox", vec![RtValue::resource(&plan)]);
-    room.until("the server to hold it in the inbox again", |_| {
+    workspace.press("to_inbox", vec![RtValue::resource(&plan)]);
+    workspace.until("the server to hold it in the inbox again", |_| {
         servers.imap.messages("INBOX").len() == 3
     });
-    assert_eq!(room.threads().len(), 2, "moving makes nothing twice");
+    assert_eq!(workspace.threads().len(), 2, "moving makes nothing twice");
 }
 
 #[test]
 fn opening_a_conversation_reads_it_here_and_on_the_server() {
     let servers = servers();
-    let mut room = room_with(account(&servers));
-    synced(&mut room);
-    let plan = room.thread("Launch plan");
-    assert!(room.flag(&plan, "unread"));
-    let row = room
+    let mut workspace = workspace_with(account(&servers));
+    synced(&mut workspace);
+    let plan = workspace.thread("Launch plan");
+    assert!(workspace.flag(&plan, "unread"));
+    let row = workspace
         .items()
         .into_iter()
         .find(|(_, item)| {
@@ -324,9 +335,12 @@ fn opening_a_conversation_reads_it_here_and_on_the_server() {
         })
         .map(|(key, _)| key)
         .expect("the inbox lists the conversation");
-    room.activate(&row);
-    assert!(!room.flag(&plan, "unread"), "it reads as read once opened");
-    room.until("the server to hold it read", |_| {
+    workspace.activate(&row);
+    assert!(
+        !workspace.flag(&plan, "unread"),
+        "it reads as read once opened"
+    );
+    workspace.until("the server to hold it read", |_| {
         servers
             .imap
             .messages("INBOX")
@@ -338,26 +352,26 @@ fn opening_a_conversation_reads_it_here_and_on_the_server() {
 #[test]
 fn a_reply_goes_out_through_the_outbox_once_the_server_takes_it() {
     let servers = servers();
-    let mut room = room_with(account(&servers));
-    synced(&mut room);
-    let plan = room.thread("Launch plan");
-    let RtValue::Ref(draft) = room.press("reply", vec![RtValue::resource(&plan)]) else {
+    let mut workspace = workspace_with(account(&servers));
+    synced(&mut workspace);
+    let plan = workspace.thread("Launch plan");
+    let RtValue::Ref(draft) = workspace.press("reply", vec![RtValue::resource(&plan)]) else {
         panic!("a reply is a draft");
     };
     let draft = (*draft.target).clone();
-    assert_eq!(room.text(&draft, "to"), "ada@analytical.example");
-    assert_eq!(room.text(&draft, "subject"), "Re: Launch plan");
+    assert_eq!(workspace.text(&draft, "to"), "ada@analytical.example");
+    assert_eq!(workspace.text(&draft, "subject"), "Re: Launch plan");
     assert_eq!(
-        room.text(&draft, "in_reply_to"),
+        workspace.text(&draft, "in_reply_to"),
         "plan-2@analytical.example"
     );
 
-    room.press("send", vec![RtValue::resource(&draft)]);
-    room.until("the server to take the reply", |_| {
+    workspace.press("send", vec![RtValue::resource(&draft)]);
+    workspace.until("the server to take the reply", |_| {
         servers.smtp.sent().len() == 1
     });
-    room.until("the outbox to settle", |room| {
-        room.host().store().outbox_pending_count() == 0
+    workspace.until("the outbox to settle", |workspace| {
+        workspace.host().store().outbox_pending_count() == 0
     });
     let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
     assert!(sent.contains("Subject: Re: Launch plan"), "{sent}");
@@ -365,9 +379,9 @@ fn a_reply_goes_out_through_the_outbox_once_the_server_takes_it() {
         sent.contains("In-Reply-To: <plan-2@analytical.example>"),
         "{sent}"
     );
-    assert!(room.flag(&draft, "sent"));
+    assert!(workspace.flag(&draft, "sent"));
     assert!(
-        room.sink.delivered().is_empty(),
+        workspace.sink.delivered().is_empty(),
         "a send is the connector's, never the development log's"
     );
 }
@@ -378,20 +392,21 @@ fn an_unreachable_server_is_said_on_the_account() {
     let mut config = account(&servers);
     // Nothing listens there.
     config.imap_port = 1;
-    let mut room = room_with(config);
-    room.until("the account to say why", |room| {
-        room.accounts()
+    let mut workspace = workspace_with(config);
+    workspace.until("the account to say why", |workspace| {
+        workspace
+            .accounts()
             .first()
-            .is_some_and(|a| !room.text(a, "trouble").is_empty())
+            .is_some_and(|a| !workspace.text(a, "trouble").is_empty())
     });
-    let account = room.accounts().remove(0);
-    assert!(!room.flag(&account, "online"));
-    assert!(room.threads().is_empty());
+    let account = workspace.accounts().remove(0);
+    assert!(!workspace.flag(&account, "online"));
+    assert!(workspace.threads().is_empty());
 }
 
 /// What the draft's window shows, as text.
-fn editor_of(room: &Room, draft: &ResourceRef) -> String {
-    let view = room
+fn editor_of(workspace: &Workspace, draft: &ResourceRef) -> String {
+    let view = workspace
         .host()
         .open_resource(draft, None)
         .expect("the draft's window opens");
@@ -399,9 +414,10 @@ fn editor_of(room: &Room, draft: &ResourceRef) -> String {
 }
 
 /// How the draft `draft` stands on its way out, as `delivery(d)` reads it.
-fn delivery_of(room: &Room, draft: &ResourceRef) -> Option<(String, String)> {
+fn delivery_of(workspace: &Workspace, draft: &ResourceRef) -> Option<(String, String)> {
     use tilolang_tilo::runtime::store::Store as _;
-    room.host()
+    workspace
+        .host()
         .store()
         .outbox_states()
         .into_iter()
@@ -420,39 +436,39 @@ fn a_message_waits_to_go_online_and_goes_when_the_network_is_back() {
     }));
     let accounts = Arc::clone(&config);
     let reconnected = Arc::new(AtomicBool::new(false));
-    let mut room = room_over(
+    let mut workspace = workspace_over(
         Box::new(move || vec![accounts.lock().unwrap().clone()]),
         Arc::clone(&reconnected),
     );
-    synced(&mut room);
-    let plan = room.thread("Launch plan");
-    let RtValue::Ref(draft) = room.press("reply", vec![RtValue::resource(&plan)]) else {
+    synced(&mut workspace);
+    let plan = workspace.thread("Launch plan");
+    let RtValue::Ref(draft) = workspace.press("reply", vec![RtValue::resource(&plan)]) else {
         panic!("a reply is a draft");
     };
     let draft = (*draft.target).clone();
-    room.press("send", vec![RtValue::resource(&draft)]);
-    room.until("the message to wait to go online", |room| {
-        delivery_of(room, &draft)
+    workspace.press("send", vec![RtValue::resource(&draft)]);
+    workspace.until("the message to wait to go online", |workspace| {
+        delivery_of(workspace, &draft)
             .is_some_and(|(state, reason)| state == "waiting" && !reason.is_empty())
     });
     // The draft says so where it is written.
-    let shown = editor_of(&room, &draft);
+    let shown = editor_of(&workspace, &draft);
     assert!(shown.contains("Waiting to go online"), "{shown}");
     // It is not tried again on its own.
     for _ in 0..20 {
-        room.settle();
+        workspace.settle();
     }
     assert!(servers.smtp.sent().is_empty());
-    assert_eq!(delivery_of(&room, &draft).unwrap().0, "waiting");
+    assert_eq!(delivery_of(&workspace, &draft).unwrap().0, "waiting");
 
     // The network comes back, and with it the server: the message goes, once.
     *config.lock().unwrap() = reachable;
     reconnected.store(true, Ordering::Release);
-    room.until("the message to be sent", |room| {
-        delivery_of(room, &draft).is_some_and(|(state, _)| state == "sent")
+    workspace.until("the message to be sent", |workspace| {
+        delivery_of(workspace, &draft).is_some_and(|(state, _)| state == "sent")
     });
     assert_eq!(servers.smtp.sent().len(), 1);
-    let shown = editor_of(&room, &draft);
+    let shown = editor_of(&workspace, &draft);
     assert!(shown.contains("Sent"), "{shown}");
 }
 
@@ -487,36 +503,38 @@ fn connector_for(config: AccountConfig) -> std::sync::mpsc::Sender<tilolang_mail
     woken
 }
 
-/// A room as an instance in a tilolang host keeps it: its origin reaches the connector over a
+/// A workspace as an instance in a tilolang host keeps it: its origin reaches the connector over a
 /// socket, holding no network and no credential of its own.
-fn room_attached(connector: &std::sync::mpsc::Sender<tilolang_mail::serve::Wakeup>) -> Room {
+fn workspace_attached(
+    connector: &std::sync::mpsc::Sender<tilolang_mail::serve::Wakeup>,
+) -> Workspace {
     let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
     connector
         .send(tilolang_mail::serve::Wakeup::Attach(theirs))
         .unwrap();
     let origin = tilolang_mail::remote_origin(ours, Arc::new(|| {})).expect("the origin attaches");
-    room_of(origin)
+    workspace_of(origin)
 }
 
 #[test]
 fn an_instance_without_network_syncs_and_sends_through_the_mail_connector() {
     let servers = servers();
     let connector = connector_for(account(&servers));
-    let mut room = room_attached(&connector);
-    synced(&mut room);
-    let plan = room.thread("Launch plan");
-    let RtValue::Ref(draft) = room.press("reply", vec![RtValue::resource(&plan)]) else {
+    let mut workspace = workspace_attached(&connector);
+    synced(&mut workspace);
+    let plan = workspace.thread("Launch plan");
+    let RtValue::Ref(draft) = workspace.press("reply", vec![RtValue::resource(&plan)]) else {
         panic!("a reply is a draft");
     };
     let draft = (*draft.target).clone();
-    room.press("send", vec![RtValue::resource(&draft)]);
-    room.until("the message to be sent", |room| {
-        delivery_of(room, &draft).is_some_and(|(state, _)| state == "sent")
+    workspace.press("send", vec![RtValue::resource(&draft)]);
+    workspace.until("the message to be sent", |workspace| {
+        delivery_of(workspace, &draft).is_some_and(|(state, _)| state == "sent")
     });
     assert_eq!(servers.smtp.sent().len(), 1);
 
     // The window closes; mail arrives meanwhile; the next window has it.
-    drop(room);
+    drop(workspace);
     servers.imap.append(
         "INBOX",
         &mail(
@@ -528,11 +546,12 @@ fn an_instance_without_network_syncs_and_sends_through_the_mail_connector() {
         ),
         &[],
     );
-    let mut room = room_attached(&connector);
-    room.until("the mail that came while it was closed", |room| {
-        room.threads()
+    let mut workspace = workspace_attached(&connector);
+    workspace.until("the mail that came while it was closed", |workspace| {
+        workspace
+            .threads()
             .iter()
-            .any(|t| room.text(t, "subject") == "Your lease renewal")
+            .any(|t| workspace.text(t, "subject") == "Your lease renewal")
     });
     assert_eq!(servers.smtp.sent().len(), 1, "nothing was sent twice");
 }

@@ -5,10 +5,10 @@
 //! sends component patches; the window's widgets are the UI host's half
 //! (`tilo_ui_host::AppWindow`), which builds the shell from them and reports what the person
 //! did. Here both run in one process, joined by an in-process transport that carries the very
-//! batches a socket would, validated as the UI host validates them. In a room's UI host the
+//! batches a socket would, validated as the UI host validates them. In a workspace's UI host the
 //! same halves run in two processes.
 //!
-//! What this window adds is the framework's: the room record it hands the instance, the door
+//! What this window adds is the framework's: the workspace record it hands the instance, the door
 //! the instance's commits go through (attributed, undoable, replayed by every peer), the
 //! person's Undo, presence, and the door's endpoints for agents and search.
 
@@ -32,7 +32,7 @@ use ui::widget::{AppModel, Element, ModelPath, Widget};
 
 use crate::i18n::t_args;
 use crate::names::Names;
-use crate::resource::{Live, Room, RoomState, caller_of};
+use crate::resource::{Live, Workspace, WorkspaceState, caller_of};
 use ui::tilo_resource::profiling::Phase;
 
 /// The two vocabularies the window answers on the door: what an agent asks of the host, and
@@ -152,10 +152,10 @@ impl Platform for InProcess {
     }
 }
 
-/// The names of the room, as the instance shows them.
-struct RoomNames(Names);
+/// The names of the workspace, as the instance shows them.
+struct WorkspaceNames(Names);
 
-impl tilolang_tilo::runtime::NameHost for RoomNames {
+impl tilolang_tilo::runtime::NameHost for WorkspaceNames {
     fn name(&self, who: &tilolang_tilo::runtime::Principal) -> String {
         self.0.label(&who.0)
     }
@@ -176,14 +176,14 @@ pub struct Window {
     /// The UI host's half: the shell, the Ask bar and the door's endpoints.
     view: AppWindow,
     names: Names,
-    /// Where the indexes of the rooms this window shows are kept: `None` keeps them in memory.
+    /// Where the indexes of the workspaces this window shows are kept: `None` keeps them in memory.
     indexes: Option<std::path::PathBuf>,
-    /// The room this window shows, which names where its indexes are kept.
-    room: Option<String>,
-    /// The record of the room it shows, when that is not the workspace's record of the app (a
+    /// The workspace this window shows, which names where its indexes are kept.
+    workspace: Option<String>,
+    /// The record of the workspace it shows, when that is not the workspace's record of the app (a
     /// member's own): its indexes are its own.
     record: Option<String>,
-    /// The room's record, while it is read off the frame and the window shows what the indexes
+    /// The workspace's record, while it is read off the frame and the window shows what the indexes
     /// hold ([`Self::opening`]).
     opening: Option<ui::record::RecordOpening>,
     undo: ui::undo::UndoAccess,
@@ -212,7 +212,7 @@ impl Window {
                 sink: None,
             },
             Rc::new(InProcess),
-            Rc::new(RoomNames(names.clone())),
+            Rc::new(WorkspaceNames(names.clone())),
             Box::new(app_end),
         );
         let (endpoint, open_endpoint) = door_endpoints(
@@ -230,7 +230,7 @@ impl Window {
             view,
             names,
             indexes: None,
-            room: None,
+            workspace: None,
             record: None,
             opening: None,
             undo: ui::undo::UndoAccess::new(),
@@ -245,14 +245,14 @@ impl Window {
     }
 
     /// This window on the device `device`: the one that carries out the outside effects its
-    /// room queues.
+    /// workspace queues.
     #[must_use]
     pub fn on_device(mut self, device: &str) -> Self {
         self.instance.set_device(Some(device.to_owned()));
         self
     }
 
-    /// This window keeping the indexes of the rooms it shows under `dir`, so the room opens
+    /// This window keeping the indexes of the workspaces it shows under `dir`, so the workspace opens
     /// next time over them rather than reading its whole record.
     #[must_use]
     pub fn keep_indexes_in(mut self, dir: std::path::PathBuf) -> Self {
@@ -261,17 +261,17 @@ impl Window {
         self
     }
 
-    /// This window in the room `room`, as its launch names it: where its indexes are kept is
-    /// known before the room's record is.
+    /// This window in the workspace `workspace`, as its launch names it: where its indexes are kept is
+    /// known before the workspace's record is.
     #[must_use]
-    pub fn in_room(mut self, room: &str) -> Self {
-        self.room = Some(room.to_owned());
+    pub fn in_workspace(mut self, workspace: &str) -> Self {
+        self.workspace = Some(workspace.to_owned());
         self.place_indexes();
         self
     }
 
-    /// This window showing `record` of its room, a record other than the workspace's record
-    /// of the app (the person's own): it keeps that record's indexes apart from the room's.
+    /// This window showing `record` of its workspace, a record other than the workspace's record
+    /// of the app (the person's own): it keeps that record's indexes apart from the workspace's.
     #[must_use]
     pub fn of_record(mut self, record: &str) -> Self {
         self.record = Some(record.to_owned());
@@ -279,21 +279,20 @@ impl Window {
         self
     }
 
-    /// Where the indexes of this window's room are kept, when they are kept on disk: a past
+    /// Where the indexes of this window's workspace are kept, when they are kept on disk: a past
     /// version and a capture build theirs in memory.
     fn place_indexes(&mut self) {
-        let dir =
-            match (self.mode, &self.indexes, &self.room) {
-                (RunMode::Live, Some(indexes), Some(room)) => Some(
-                    tilolang_tilo::index::record_dir(indexes, room, self.record.as_deref()),
-                ),
-                _ => None,
-            };
+        let dir = match (self.mode, &self.indexes, &self.workspace) {
+            (RunMode::Live, Some(indexes), Some(workspace)) => Some(
+                tilolang_tilo::index::record_dir(indexes, workspace, self.record.as_deref()),
+            ),
+            _ => None,
+        };
         self.instance.set_index_dir(dir);
     }
 
-    /// This window shown before the room's record, which `record` reads off the frame: it opens
-    /// over the room's indexes, and a write, or a field no index holds, waits for the record.
+    /// This window shown before the workspace's record, which `record` reads off the frame: it opens
+    /// over the workspace's indexes, and a write, or a field no index holds, waits for the record.
     /// Its view takes it over once the record is had ([`Self::taken_over`]).
     #[must_use]
     pub fn opening(mut self, record: ui::record::RecordOpening) -> Self {
@@ -304,7 +303,7 @@ impl Window {
         self
     }
 
-    /// This window, shown before the room's record, taken over by the view of the record: it
+    /// This window, shown before the workspace's record, taken over by the view of the record: it
     /// reads the record from now on, through the framework as every window does.
     #[must_use]
     pub fn taken_over(mut self) -> Self {
@@ -313,8 +312,8 @@ impl Window {
         self
     }
 
-    /// This window deciding what its runtime invokes by the person's standing in the room as
-    /// `source` reads it, the room's policy the door decides by.
+    /// This window deciding what its runtime invokes by the person's standing in the workspace as
+    /// `source` reads it, the workspace's policy the door decides by.
     #[must_use]
     pub fn with_standing(
         self,
@@ -510,8 +509,8 @@ impl ui::undo::UndoControl for Window {
     }
 }
 
-impl ResourceSurface<Room> for Window {
-    fn present(&mut self, _state: &Rc<RoomState>) {
+impl ResourceSurface<Workspace> for Window {
+    fn present(&mut self, _state: &Rc<WorkspaceState>) {
         // The record moved: what the views read may have changed, and outside effects may wait.
         self.instance.moved();
     }
@@ -542,7 +541,7 @@ impl Widget for Window {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let _phase = Phase::start("tl.sync");
-        // Shown before the room's record, the window reads none: it opens over the indexes.
+        // Shown before the workspace's record, the window reads none: it opens over the indexes.
         let doc = self
             .opening
             .is_none()
@@ -622,7 +621,7 @@ impl Widget for Window {
         }
         self.instance
             .set_peers(peers_of(presence, &self.app, &self.me));
-        // The room's policy names people; presence pairs each participant with theirs.
+        // The workspace's policy names people; presence pairs each participant with theirs.
         self.instance
             .set_persons(presence.roster().into_iter().filter_map(|user| {
                 let person = presence.person_of(&ui::permissions::UserId(user.id.clone()))?;

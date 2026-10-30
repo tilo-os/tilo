@@ -1,8 +1,8 @@
-//! The room's tilolang record as a framework resource.
+//! The workspace's tilolang record as a framework resource.
 //!
-//! A tilolang app keeps its resources in the room record, under `tl/<app>/<id>`, and changes them
+//! A tilolang app keeps its resources in the workspace record, under `tl/<app>/<id>`, and changes them
 //! with [`DynAction`]s: the edits a wasm action planned, replayable by any peer without the
-//! module. [`Room`] is that record as a `tilo_resource::Resource`, so the framework's root hosts
+//! module. [`Workspace`] is that record as a `tilo_resource::Resource`, so the framework's root hosts
 //! it like every app's resource: persistence and sync, attributed history, per-author undo,
 //! permissions, the palette and agent door, and search.
 //!
@@ -10,7 +10,7 @@
 //! record's heads, which tell the framework that something changed. What the resource publishes
 //! (every record and item with its actions) and what search finds come from the live window's
 //! runtime, which registers itself here ([`Live`]), and are kept up to date change by change:
-//! a keystroke in one note republishes and re-indexes that note, not the room. A past version
+//! a keystroke in one note republishes and re-indexes that note, not the workspace. A past version
 //! previewed in History builds its own runtime over the old record and publishes nothing.
 
 use std::cell::RefCell;
@@ -27,17 +27,17 @@ use ui::tilo_actions::{ActionInvoker, ActorKind};
 use ui::tilo_resource::profiling::Phase;
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry, SearchWeight};
 
-/// The resource a tilolang app's window shows: the room record of its packages.
-pub struct Room;
+/// The resource a tilolang app's window shows: the workspace record of its packages.
+pub struct Workspace;
 
 /// What the framework keeps of the record: its heads, so a change is a new state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RoomState {
+pub struct WorkspaceState {
     heads: Vec<ui::automerge::ChangeHash>,
 }
 
-/// What a live window publishes of the room, kept up to date with the record change by change:
-/// the records with their items and actions. What search finds is read from the room's index
+/// What a live window publishes of the workspace, kept up to date with the record change by change:
+/// the records with their items and actions. What search finds is read from the workspace's index
 /// when asked.
 struct Published {
     hold: u64,
@@ -63,7 +63,7 @@ impl Published {
         }
     }
 
-    /// Every resource the room's packages hold, each with its actions; the host's own resource;
+    /// Every resource the workspace's packages hold, each with its actions; the host's own resource;
     /// and each package's actions that take no record.
     fn resources(&self) -> Vec<ui::tilo_actions::ResourceSpec> {
         let mut out = vec![host_resource(&self.committer)];
@@ -90,7 +90,7 @@ thread_local! {
     static NEXT_HOLD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// The live window's hold on publication: while it lives, the room's records are published
+/// The live window's hold on publication: while it lives, the workspace's records are published
 /// from its runtime, unless a window registered after it still lives. Dropping a hold takes
 /// back only its own registration, so a window the framework built and dropped again never
 /// leaves the one that stays unpublished.
@@ -191,7 +191,7 @@ fn door_handles(host: &Host) -> (Arc<dyn Planner>, Arc<dyn Committer>) {
     (handle.clone(), handle)
 }
 
-/// Every resource the live window's room publishes, each with its actions.
+/// Every resource the live window's workspace publishes, each with its actions.
 #[must_use]
 pub fn published() -> Vec<ui::tilo_actions::ResourceSpec> {
     with_live(Published::resources).unwrap_or_default()
@@ -214,30 +214,30 @@ fn entry(hit: &Hit) -> SearchEntry {
     entry
 }
 
-/// What search finds of the live window's room: every record and item with text.
+/// What search finds of the live window's workspace: every record and item with text.
 #[must_use]
 pub fn search_entries() -> Vec<SearchEntry> {
     with_live(|published| every_hit(&published.host).iter().map(entry).collect())
         .unwrap_or_default()
 }
 
-impl Resource for Room {
+impl Resource for Workspace {
     const KIND: &'static str = crate::RECORD_KIND;
     const LABEL: &'static str = "Apps";
     const ACTION_TYPE: &'static str = tilolang_tilo::action::ACTION_TYPE;
 
-    type State = RoomState;
+    type State = WorkspaceState;
     type Action = DynAction;
 
     /// The heads, and the live runtime's mirror brought up to date with the record first: what
-    /// the room publishes is then read from the record this state is of, not from the one
+    /// the workspace publishes is then read from the record this state is of, not from the one
     /// before a peer's change arrived.
-    fn read(doc: &Doc) -> Result<RoomState, ModelError> {
+    fn read(doc: &Doc) -> Result<WorkspaceState, ModelError> {
         let _phase = Phase::start("tl.read");
         if let Some(host) = live_host() {
             host.sync_from(doc);
         }
-        Ok(RoomState {
+        Ok(WorkspaceState {
             heads: doc.committed_document().get_heads(),
         })
     }
@@ -251,17 +251,17 @@ impl Resource for Room {
             && previous.args.get("field") == next.args.get("field")
     }
 
-    fn children(_state: &RoomState) -> Vec<ui::tilo_actions::ResourceSpec> {
+    fn children(_state: &WorkspaceState) -> Vec<ui::tilo_actions::ResourceSpec> {
         published()
     }
 
-    /// What the room's records hold is read as data, as every app's documents are: an agent
+    /// What the workspace's records hold is read as data, as every app's documents are: an agent
     /// reads a note's text rather than a screenshot of it.
     const READABLE: bool = true;
 
-    /// Every record and every item in one is part of the room's content (`tl:<app>:<id>`); the
+    /// Every record and every item in one is part of the workspace's content (`tl:<app>:<id>`); the
     /// package's own resource (`tl:<app>`) and the host's carry only actions.
-    fn document_child(_state: &RoomState, id: &str) -> bool {
+    fn document_child(_state: &WorkspaceState, id: &str) -> bool {
         id.strip_prefix("tl:")
             .and_then(|rest| rest.split_once(':'))
             .is_some_and(|(app, item)| !app.is_empty() && !item.is_empty())
@@ -270,7 +270,7 @@ impl Resource for Room {
     /// Read by the runtime over `doc`: the live window's when it holds exactly that record, and
     /// otherwise (a version of the past) one of its own over it, as History's preview builds.
     fn read_content(
-        _state: &RoomState,
+        _state: &WorkspaceState,
         doc: &Doc,
         item: Option<&str>,
     ) -> Result<serde_json::Value, String> {
@@ -291,7 +291,7 @@ impl Resource for Room {
         host.read_content(item)
     }
 
-    fn search(_state: &RoomState) -> Vec<SearchEntry> {
+    fn search(_state: &WorkspaceState) -> Vec<SearchEntry> {
         search_entries()
     }
 }

@@ -1,6 +1,6 @@
-//! What "New note" writes into the room record reaches another replica whole: every change it
+//! What "New note" writes into the workspace record reaches another replica whole: every change it
 //! made follows the changes it depends on, and a replica that receives them the way a window
-//! takes committed changes from the room ends up with the same heads and the same record.
+//! takes committed changes from the workspace ends up with the same heads and the same record.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -83,7 +83,7 @@ fn a_new_note_reaches_another_replica_in_order_and_whole() {
         let whole = record.hydrate(None);
         (record.get_heads(), changes, delta, whole)
     });
-    assert!(!changes.is_empty(), "New note changed the room record");
+    assert!(!changes.is_empty(), "New note changed the workspace record");
 
     // Each change depends only on what the record held before or on a change listed ahead of
     // it, and continues its actor's sequence with no gap.
@@ -116,7 +116,7 @@ fn a_new_note_reaches_another_replica_in_order_and_whole() {
         known.insert(change.hash());
     }
 
-    // The replica takes the changes as a window takes committed changes from the room.
+    // The replica takes the changes as a window takes committed changes from the workspace.
     let errors = Arc::new(AtomicUsize::new(0));
     tracing::subscriber::with_default(Errors(Arc::clone(&errors)), || {
         replica.load_incoming_whole(&delta).unwrap();
@@ -134,7 +134,10 @@ fn a_new_note_reaches_another_replica_in_order_and_whole() {
     let mut expected = after;
     heads.sort_unstable();
     expected.sort_unstable();
-    assert_eq!(heads, expected, "the replica's heads are the room record's");
+    assert_eq!(
+        heads, expected,
+        "the replica's heads are the workspace record's"
+    );
     assert_eq!(
         replica.document().hydrate(None),
         whole,

@@ -1,5 +1,5 @@
-//! `cargo run --release -p tilolang-app --example seeded_room -- <package dir> <items> <out dir>`:
-//! a profile whose room holds a package's record seeded with `<items>` items, and the package's
+//! `cargo run --release -p tilolang-app --example seeded_workspace -- <package dir> <items> <out dir>`:
+//! a profile whose workspace holds a package's record seeded with `<items>` items, and the package's
 //! bundle, for measuring the real window's first frame on it:
 //!
 //! ```text
@@ -7,8 +7,8 @@
 //!   tilolang-app --first-frame --data-dir <out>/data
 //! ```
 //!
-//! The room is the one `--data-dir` opens (`personal`), and the record is installed as the room's
-//! own document, as an earlier session of the app left it. With `--index`, the room's index is
+//! The workspace is the one `--data-dir` opens (`personal`), and the record is installed as the workspace's
+//! own document, as an earlier session of the app left it. With `--index`, the workspace's index is
 //! kept beside it too, as that session's window kept it.
 
 use std::path::PathBuf;
@@ -20,7 +20,7 @@ fn main() -> Result<(), String> {
         _ => (false, args.as_slice()),
     };
     let [package, items, out] = args else {
-        return Err("usage: seeded_room [--index] <package dir> <items> <out dir>".into());
+        return Err("usage: seeded_workspace [--index] <package dir> <items> <out dir>".into());
     };
     let items: usize = items
         .parse()
@@ -47,7 +47,7 @@ fn main() -> Result<(), String> {
     profile.store().flush(None).map_err(|e| e.to_string())?;
     match landing.durability(&**profile.store()) {
         ui::record::transfer::Durability::Durable => {}
-        other => return Err(format!("the room's record did not land: {other:?}")),
+        other => return Err(format!("the workspace's record did not land: {other:?}")),
     }
     if index {
         keep_index(&packages, &doc, &data)?;
@@ -56,7 +56,7 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
-/// Keep the index of the room `doc` is the record of where the window `--data-dir data` opens
+/// Keep the index of the workspace `doc` is the record of where the window `--data-dir data` opens
 /// reads it.
 fn keep_index(
     packages: &[tilolang_tilo::tilolang::Compiled],

@@ -596,7 +596,8 @@ fn keys_typed_after_each_of_several_presses_land_in_their_own_note_in_the_live_w
 }
 
 #[test]
-fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_room_once_it_has_room() {
+fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_workspace_once_it_has_workspace()
+ {
     let busy = Arc::new(AtomicBool::new(false));
     let changes = Arc::default();
     let mut session = Session::crowded_notes(&busy, &changes);
@@ -625,19 +626,19 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_room_onc
     assert_eq!(
         titles,
         ["BetaGamma", "WV"],
-        "every key is kept while the room cannot take it yet"
+        "every key is kept while the workspace cannot take it yet"
     );
     assert_eq!(
         changes.lock().unwrap().len(),
         before,
         "nothing went out while the queue was full"
     );
-    // The queue has room again: the host's next frames hand the room all of it.
+    // The queue has workspace again: the host's next frames hand the workspace all of it.
     busy.store(false, Ordering::SeqCst);
     session.settle();
-    let mut room = automerge::AutoCommit::new();
+    let mut workspace = automerge::AutoCommit::new();
     for change in changes.lock().unwrap().iter() {
-        room.load_incoming(change).unwrap();
+        workspace.load_incoming(change).unwrap();
     }
     let mut record = session
         .host
@@ -648,9 +649,9 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_room_onc
         .doc()
         .clone();
     assert_eq!(
-        room.get_heads(),
+        workspace.get_heads(),
         record.get_heads(),
-        "the room holds every key typed while its connection was full"
+        "the workspace holds every key typed while its connection was full"
     );
 }
 
@@ -688,7 +689,7 @@ fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() 
 
 #[test]
 fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key() {
-    // The person's id is their key, as a real room's ids are.
+    // The person's id is their key, as a real workspace's ids are.
     let ada = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";
     let mut session = Session::new("so.tilo.lang.signed", "tests/signed", ada, |presence| {
         presence.set_self_participant(ui::permissions::UserId(ada.to_owned()), "Ada");
