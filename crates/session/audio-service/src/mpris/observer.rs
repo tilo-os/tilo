@@ -322,7 +322,7 @@ async fn get_position(connection: &zbus::Connection, unique_name: &str) -> Optio
 #[cfg(test)]
 mod tests {
     use super::super::test_bus::{
-        PROBE, PrivateBus, eventually, pause_and_signal, record_calls, serve_playing_probe,
+        PROBE, PrivateBus, connect, eventually, pause_and_signal, record_calls, serve_playing_probe,
     };
     use super::*;
     use crate::{Event, Player, Status};
@@ -338,7 +338,7 @@ mod tests {
         let published = Arc::clone(&seen);
         let mpris = Mpris::with_calls(
             tokio::runtime::Handle::current(),
-            Some(bus.address.clone()),
+            Some(bus.address().to_owned()),
             calls,
             move |event| {
                 if let Event::Players { players } = event {
@@ -352,7 +352,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn signals_update_players_and_an_idle_player_costs_no_calls() {
         let bus = PrivateBus::start();
-        let connection = bus.connect().await;
+        let connection = connect(&bus).await;
         let calls = record_calls(&bus, connection.unique_name().unwrap().as_str()).await;
         let player = serve_playing_probe(&bus).await;
 

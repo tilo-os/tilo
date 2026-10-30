@@ -139,7 +139,7 @@ impl HostedTileInputs {
             picker_scope: Some(crate::portal::PickerScope {
                 initial_dir: directory.clone(),
                 roots: vec![directory.clone()],
-                home: Some(directory.clone()),
+                home: Some(directory),
             }),
             fixture: Some(fixture),
             fixture_clock: None,

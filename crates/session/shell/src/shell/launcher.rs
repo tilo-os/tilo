@@ -1469,11 +1469,11 @@ pub(crate) struct SessionLaunches {
     /// compositor never asked, and the person never reached the app to ask
     /// it. However the process then exits, the window was lost.
     vanished: Mutex<HashSet<String>>,
-    /// The tabs of windows that went away without being asked to close, by
-    /// launch key, as a reopen restores them: kept until the launch's end
+    /// The tabs kept for windows whose app went away with them open, by
+    /// launch key: kept until the launch's end
     /// says whether memory ended it (then its notice reopens them) or not.
     lost_tabs:
-        Mutex<HashMap<String, Vec<(std::time::Instant, crate::shell::closed_tabs::ClosedTab)>>>,
+        Mutex<HashMap<String, Vec<(std::time::Instant, crate::shell::state::TabId)>>>,
     /// Launch keys whose app has been handed an action invocation since it
     /// started: an agent, another device or the person drove it, so a
     /// window it then closes was closed on request.
@@ -6113,9 +6113,9 @@ const LOST_TABS_PER_LAUNCH: usize = 8;
 /// not brought back.
 const LOST_WITH_THE_LAUNCH: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// A window of launch `key` went away without being asked to close; `tab`
-/// is its tab as a reopen restores it. Kept until the launch ends.
-pub(crate) fn note_lost_tab(key: &str, tab: crate::shell::closed_tabs::ClosedTab) {
+/// A window of launch `key` went away with its app; `tab` is the tab kept
+/// in its place. Kept until the launch ends.
+pub(crate) fn note_lost_tab(key: &str, tab: crate::shell::state::TabId) {
     LaunchSession::with(|session| {
         keep_lost_tab(
             lock(&session.lost_tabs).entry(key.to_string()).or_default(),
@@ -6127,8 +6127,8 @@ pub(crate) fn note_lost_tab(key: &str, tab: crate::shell::closed_tabs::ClosedTab
 /// Keep `tab` among a launch's lost tabs, forgetting the oldest past
 /// [`LOST_TABS_PER_LAUNCH`].
 fn keep_lost_tab(
-    tabs: &mut Vec<(std::time::Instant, crate::shell::closed_tabs::ClosedTab)>,
-    tab: crate::shell::closed_tabs::ClosedTab,
+    tabs: &mut Vec<(std::time::Instant, crate::shell::state::TabId)>,
+    tab: crate::shell::state::TabId,
 ) {
     if tabs.len() == LOST_TABS_PER_LAUNCH {
         tabs.remove(0);
@@ -6138,7 +6138,7 @@ fn keep_lost_tab(
 
 /// The tabs of launch `key`'s windows that went away unasked just before
 /// now, taken once; older ones are forgotten.
-pub(crate) fn take_lost_tabs(key: &str) -> Vec<crate::shell::closed_tabs::ClosedTab> {
+pub(crate) fn take_lost_tabs(key: &str) -> Vec<crate::shell::state::TabId> {
     lock(&LaunchSession::current().lost_tabs)
         .remove(key)
         .unwrap_or_default()

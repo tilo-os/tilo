@@ -7173,6 +7173,27 @@ impl State {
     }
 }
 
+/// How an app's window went away, which decides what becomes of its tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowEnd {
+    /// The person closed it, or the app, still running, closed its own
+    /// window: the tab closes.
+    Closed,
+    /// The app's process ended with the window open (a crash, a kill, the
+    /// session ending): nobody closed it, and the tab stays.
+    AppGone,
+}
+
+/// What became of a window that was destroyed: closed when the person asked
+/// for it or its client is still connected, gone with its app otherwise.
+const fn window_end(asked_to_close: bool, client_connected: bool) -> WindowEnd {
+    if asked_to_close || client_connected {
+        WindowEnd::Closed
+    } else {
+        WindowEnd::AppGone
+    }
+}
+
 impl XdgShellHandler for State {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
@@ -7301,9 +7322,12 @@ impl XdgShellHandler for State {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let launch = crate::shell::launcher::launch_key_for_surface(surface_id);
         let asked_to_close = self.closing_toplevels.remove(&surface_id).is_some();
+        // A client that disconnected is gone from the display before its
+        // objects are torn down: its surface names no client any more.
+        let client_connected = surface.wl_surface().client().is_some();
         crate::shell::live_embeds::surface_gone(surface_id);
         eprintln!(
-            "window-destroyed: surface={surface_id} launch={} asked_to_close={asked_to_close}",
+            "window-destroyed: surface={surface_id} launch={} asked_to_close={asked_to_close} client_connected={client_connected}",
             launch.as_deref().unwrap_or("-")
         );
         let person_reached_it = self
@@ -7374,16 +7398,27 @@ impl XdgShellHandler for State {
             }
         } else {
             let mut tree = self.workspace_tree.write();
-            // A window that went away without being asked to may have been
-            // ended for memory: keep its tab, so the notice that says so can
-            // put it back where it was (`launcher::take_lost_tabs`).
-            if !asked_to_close
-                && let Some(key) = launch.as_deref()
-                && let Some(entry) = crate::shell::closed_tabs::capture_surface(&tree, surface_id)
-            {
-                crate::shell::launcher::note_lost_tab(key, entry);
+            match window_end(asked_to_close, client_connected) {
+                // The person closed it, or the app closed its own window.
+                WindowEnd::Closed => {
+                    let _ = tab_binding::close_tab_for_destroyed_surface_and_persist(
+                        &mut tree, surface_id,
+                    );
+                }
+                // The app's process ended with the window still open: it
+                // crashed, was ended for memory, or ended with the session.
+                // Its place stays, as the app's card; the notice that says
+                // why can open the app again into it
+                // (`launcher::take_lost_tabs`).
+                WindowEnd::AppGone => {
+                    if let Some(tab) =
+                        tab_binding::keep_tab_of_vanished_surface(&mut tree, surface_id, launch.as_deref())
+                        && let Some(key) = launch.as_deref()
+                    {
+                        crate::shell::launcher::note_lost_tab(key, tab);
+                    }
+                }
             }
-            let _ = tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id);
         }
         self.host_launch_surface_labels.remove(&surface_id);
         // Drop the tracker's per-surface buffer slot. The commit path's

@@ -505,26 +505,7 @@ impl Store {
                 Ok(Effected::done())
             }
             BackupsEffect::ReadSnapshot { snapshot_id } => {
-                let snapshot = self
-                    .catalog
-                    .snapshots
-                    .iter()
-                    .find(|snapshot| snapshot.id == snapshot_id)
-                    .ok_or("That snapshot is unavailable in this local repository.")?;
-                Ok(Effected::value(serde_json::json!({
-                    "id": snapshot.id,
-                    "source": snapshot.source_id,
-                    "destination": snapshot.dest_id,
-                    "taken": snapshot.taken.to_string(),
-                    "label": snapshot.label,
-                    "kind": snapshot.kind.label(),
-                    "size_bytes": snapshot.size_bytes,
-                    "delta_bytes": snapshot.delta_bytes,
-                    "files_changed": snapshot.files_changed,
-                    "status": format!("{:?}", snapshot.status),
-                    "failure": snapshot.failure,
-                    "files": snapshot.files.len(),
-                })))
+                Ok(Effected::value(self.read_snapshot(&snapshot_id)?))
             }
             BackupsEffect::ShowSnapshot { snapshot_id } => {
                 if !self.has_snapshot(&snapshot_id) {
@@ -553,6 +534,32 @@ impl Store {
                 Ok(Effected::done())
             }
         }
+    }
+
+    /// What the stored snapshot `snapshot_id` is: when it was taken, of
+    /// what, where it is kept, how large, its state and how many files it
+    /// holds.
+    fn read_snapshot(&self, snapshot_id: &str) -> Result<serde_json::Value, &'static str> {
+        let snapshot = self
+            .catalog
+            .snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == snapshot_id)
+            .ok_or("That snapshot is unavailable in this local repository.")?;
+        Ok(serde_json::json!({
+            "id": snapshot.id,
+            "source": snapshot.source_id,
+            "destination": snapshot.dest_id,
+            "taken": snapshot.taken.to_string(),
+            "label": snapshot.label,
+            "kind": snapshot.kind.label(),
+            "size_bytes": snapshot.size_bytes,
+            "delta_bytes": snapshot.delta_bytes,
+            "files_changed": snapshot.files_changed,
+            "status": format!("{:?}", snapshot.status),
+            "failure": snapshot.failure,
+            "files": snapshot.files.len(),
+        }))
     }
 
     /// Whether a verification or restore of `snapshot_id` may start now.

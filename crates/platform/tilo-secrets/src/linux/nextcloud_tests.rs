@@ -1,6 +1,5 @@
 //! Exercise the typed migration reader against a private, read-only Secret Service.
 use super::*;
-use std::io::BufRead;
 use std::sync::{Arc, Mutex};
 
 const ITEM: &str = "/org/freedesktop/secrets/item/selected";
@@ -168,14 +167,6 @@ impl DismissedPrompt {
         result: Value<'_>,
     ) -> zbus::Result<()>;
 }
-struct Bus(std::process::Child);
-impl Drop for Bus {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
 const SCENARIO: &str = "TILO_NEXTCLOUD_READER_TEST";
 
 fn run_scenarios() {
@@ -222,25 +213,12 @@ fn nextcloud_read_only_session_recovery() {
         run_scenarios();
         return;
     };
-    let scratch = tempfile::tempdir().unwrap();
-    let mut daemon = Bus(std::process::Command::new("dbus-daemon")
-        .args(["--session", "--nofork", "--print-address=1"])
-        .arg(format!(
-            "--address=unix:path={}",
-            scratch.path().join("bus").display()
-        ))
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("private test bus"));
-    let mut address = String::new();
-    std::io::BufReader::new(daemon.0.stdout.take().unwrap())
-        .read_line(&mut address)
-        .unwrap();
-    assert!(!address.trim().is_empty());
+    let bus = tilo_test_env::PrivateBus::start();
+    let address = bus.address();
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("DBUS_SESSION_BUS_ADDRESS", address.trim());
+    env.set("DBUS_SESSION_BUS_ADDRESS", address);
     let evidence = Arc::new(Mutex::new(Evidence::default()));
-    let _server = zbus::blocking::connection::Builder::address(address.trim())
+    let _server = zbus::blocking::connection::Builder::address(address)
         .unwrap()
         .name(SERVICE)
         .unwrap()

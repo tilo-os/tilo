@@ -487,7 +487,9 @@ fn decode_artwork(url: &str) -> Option<ArtworkImage> {
 
 #[cfg(test)]
 mod tests {
-    use super::test_bus::{FakePlayer, FakeRoot, PROBE, PrivateBus, eventually, record_calls};
+    use super::test_bus::{
+        FakePlayer, FakeRoot, PROBE, PrivateBus, connect, eventually, record_calls,
+    };
     use super::*;
     use crate::{ResumeRequest, ResumeSource};
 
@@ -533,7 +535,7 @@ mod tests {
     /// The probe player on `bus`, owned by this process, paused at 1 s on
     /// [`SONG`].
     async fn serve_probe(bus: &PrivateBus) -> zbus::Connection {
-        zbus::connection::Builder::address(bus.address.as_str())
+        zbus::connection::Builder::address(bus.address())
             .unwrap()
             .name(PROBE)
             .unwrap()
@@ -578,14 +580,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn requests_drive_the_player_over_one_connection() {
         let bus = PrivateBus::start();
-        let connection = bus.connect().await;
+        let connection = connect(&bus).await;
         let calls = record_calls(&bus, connection.unique_name().unwrap().as_str()).await;
         let player = serve_probe(&bus).await;
         let events = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&events);
         let mpris = Mpris::with_calls(
             tokio::runtime::Handle::current(),
-            Some(bus.address.clone()),
+            Some(bus.address().to_owned()),
             Some(connection),
             move |event| seen.lock().unwrap().push(event),
         );
