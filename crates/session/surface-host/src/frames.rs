@@ -134,19 +134,6 @@ impl Gpu {
     }
 }
 
-/// The alpha of one pixel of `pixels`, a `size` surface, if it lies inside.
-fn alpha_of(pixels: &[u8], size: (u32, u32), x: u32, y: u32) -> Option<u8> {
-    if x >= size.0 || y >= size.1 {
-        return None;
-    }
-    let index = (y as usize)
-        .checked_mul(size.0 as usize)?
-        .checked_add(x as usize)?
-        .checked_mul(4)?
-        .checked_add(3)?;
-    pixels.get(index).copied()
-}
-
 /// The pixels of a `size` surface.
 fn length(size: (u32, u32)) -> usize {
     (size.0 as usize)

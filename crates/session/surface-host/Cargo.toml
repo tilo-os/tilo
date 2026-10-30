@@ -1,6 +1,6 @@
 [package]
 name = "tilo-surface-host"
-description = "Runs the shell's surface apps (top bar, launcher, panels) inside the compositor's process: drives each toolkit app, rasterizes its frames into the buffers the compositor shows and hands it the input that lands on them."
+description = "Runs the shell's surface apps (top bar, launcher, panels) inside the compositor's process: drives each toolkit app, draws its frames on the GPU as the compositor's layers and hands it the input that lands on them."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
