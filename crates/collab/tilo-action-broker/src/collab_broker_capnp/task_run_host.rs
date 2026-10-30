@@ -427,12 +427,31 @@ impl TaskRunHost {
             },
             caller: &caller,
         };
-        let (wire, update) = self
+        let started = self
             .0
             .state
             .invoke_native_task_child(&reask, None, (&self.0.route, &self.0.admitted))
-            .await
-            .map_err(|error| refused(error.to_string()))?;
+            .await;
+        let (wire, update) = match started {
+            Ok(started) => started,
+            Err(error) => {
+                let error = error.to_string();
+                // The run pauses for its person: the question goes on its
+                // issue, as a launched agent puts it there, and the agent
+                // asks again with the same arguments once they answered.
+                if crate::services::NativeTaskActionRequirement::awaits_confirmation(&error)
+                    && let Err(why) = self
+                        .ask_on_issue(peer_id, request, argument.as_deref())
+                        .await
+                {
+                    tracing::warn!(%why, "agent door: the run's question could not be put on its issue");
+                }
+                return Err(refused(error));
+            }
+        };
+        if let Err(why) = self.settle_on_issue(request, argument.as_deref()).await {
+            tracing::warn!(%why, "agent door: the run's answered question could not be settled");
+        }
         self.remember(
             request.invocation,
             Started::Child {
@@ -446,4 +465,179 @@ impl TaskRunHost {
         );
         Ok(InvocationState::new(request.invocation, update).receipt())
     }
+
+    /// The tracker's own action `action` on the run's issue, taken as a
+    /// report of the run (a child of it, as a launched agent reports).
+    async fn tracker_step(
+        &self,
+        action: &str,
+        arguments: &serde_json::Value,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<(), String> {
+        use crate::services::{TRACKER_APP, TRACKER_RESOURCE};
+        let room = self.room().to_owned();
+        let (peer_id, resource) = self
+            .0
+            .state
+            .surfaces
+            .lock()
+            .map_err(|_| "task surface unavailable")?
+            .values()
+            .filter(|surface| {
+                surface.live && surface.app_id == TRACKER_APP && surface.route.cluster_id == room
+            })
+            .find_map(|surface| {
+                surface
+                    .actions
+                    .iter()
+                    .find(|offered| {
+                        offered.action == action
+                            && tilo_actions::selection::logical_resource_id(&offered.resource)
+                                == TRACKER_RESOURCE
+                    })
+                    .map(|offered| (surface.peer_id, offered.resource.clone()))
+            })
+            .ok_or("Tasks does not offer the run's issue here")?;
+        let (_, lease) = self.pending_run()?;
+        let caller = self.local_caller()?;
+        let argument = arguments.to_string();
+        let reask = ChildReask {
+            peer_id: self.0.peer,
+            agent_id: &self.0.agent,
+            run_id: self.0.run.run_id,
+            lease: &lease,
+            invocation,
+            target: runtime_collab::TaskAction {
+                peer_id,
+                provider: "",
+                resource: &resource,
+                action,
+                argument: Some(&argument),
+            },
+            caller: &caller,
+        };
+        self.0
+            .state
+            .invoke_native_task_child(&reask, None, (&self.0.route, &self.0.admitted))
+            .await
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Put the question `request` waits on on the run's issue: its draft,
+    /// as the action live on `peer_id` renders these arguments, for the
+    /// person to answer there.
+    async fn ask_on_issue(
+        &self,
+        peer_id: u64,
+        request: &InvokeRequest,
+        argument: Option<&str>,
+    ) -> Result<(), String> {
+        let (app, offered) = self
+            .0
+            .state
+            .surfaces
+            .lock()
+            .map_err(|_| "task surface unavailable")?
+            .get(&peer_id)
+            .and_then(|surface| {
+                surface
+                    .action_projection(
+                        &request.target.address.resource,
+                        &request.target.address.action,
+                    )
+                    .map(|(surface, offered)| (surface.app_id, offered))
+            })
+            .ok_or("the action asked about is no longer published")?;
+        let arguments = arguments_of(argument)?;
+        let draft = tilo_actions::Draft::render(
+            &offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal),
+            &arguments,
+        );
+        let id = question_id(request, &arguments);
+        let question = serde_json::json!({
+            "id": id,
+            "app": app,
+            "resource": tilo_actions::selection::logical_resource_id(&request.target.address.resource),
+            "action": request.target.address.action,
+            "arguments_digest": hex::encode(tilo_actions::draft::arguments_digest(&arguments)),
+            "draft": draft,
+        });
+        self.tracker_step(
+            "ask-confirmation",
+            &serde_json::json!({ "issue": issue_id(self.issue()), "question": question }),
+            derived_invocation("ask", &id),
+        )
+        .await
+    }
+
+    /// Spend the person's answer to the run's question about `request`, now
+    /// that the confirmed step started. Nothing when it asked nothing.
+    async fn settle_on_issue(
+        &self,
+        request: &InvokeRequest,
+        argument: Option<&str>,
+    ) -> Result<(), String> {
+        let (run, _) = self.pending_run()?;
+        let current = self.0.state.tracker_run_of(&run)?;
+        let arguments = arguments_of(argument)?;
+        let digest = hex::encode(tilo_actions::draft::arguments_digest(&arguments));
+        let Some(question) = current.question.filter(|question| {
+            question.action == request.target.address.action
+                && question.arguments_digest == digest
+                && question.answer != crate::services::TrackerAnswer::Waiting
+        }) else {
+            return Ok(());
+        };
+        self.tracker_step(
+            "settle-confirmation",
+            &serde_json::json!({ "issue": issue_id(self.issue()), "id": question.id }),
+            derived_invocation("settle", &question.id),
+        )
+        .await
+    }
+}
+
+/// The JSON argument map an invocation's slot carries.
+fn arguments_of(
+    argument: Option<&str>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let Some(text) = argument else {
+        return Ok(serde_json::Map::new());
+    };
+    let json = text
+        .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+        .unwrap_or(text);
+    serde_json::from_str(json).map_err(|_| "the action's arguments are not a JSON map".into())
+}
+
+/// The issue's id, as the tracker's actions name it.
+fn issue_id(issue: &str) -> &str {
+    issue
+        .strip_prefix(crate::services::TRACKER_ISSUE_PREFIX)
+        .unwrap_or(issue)
+}
+
+/// The id of the question about `request` with `arguments`: the same each
+/// time the step asks, so asking again finds the person's answer.
+fn question_id(
+    request: &InvokeRequest,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    let key = format!(
+        "{}\0{}\0{}",
+        tilo_actions::selection::logical_resource_id(&request.target.address.resource),
+        request.target.address.action,
+        hex::encode(tilo_actions::draft::arguments_digest(arguments))
+    );
+    blake3::hash(key.as_bytes()).to_hex().as_str()[..32].to_owned()
+}
+
+/// A stable invocation id for the run's report `what` about question `id`,
+/// so asking or settling twice is one report.
+fn derived_invocation(what: &str, id: &str) -> tilo_actions::InvocationId {
+    let digest = blake3::hash(format!("agent-door-{what}\0{id}").as_bytes());
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    tilo_actions::InvocationId(uuid::Builder::from_random_bytes(bytes).into_uuid())
 }

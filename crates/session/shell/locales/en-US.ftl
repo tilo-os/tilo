@@ -624,6 +624,7 @@ agent-door-run-body = { $who } works for you through this session's agent door. 
 agent-door-run-refused = Tasks did not start a task for this connection: { $reason }
 agent-door-run-unknown = Tasks did not say which task this connection works in.
 agent-door-run-ended = This connection's task ended before it could start working.
+agent-door-identity-unavailable = This device has no identity in this workspace yet, so it cannot start a task for this connection.
 
 # The shortcut-guide pill in the display corner
 help-pill = Help

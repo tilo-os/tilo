@@ -621,6 +621,7 @@ agent-door-run-body = { $who } arbeitet über die Agententür dieser Sitzung fü
 agent-door-run-refused = Aufgaben hat für diese Verbindung keine Aufgabe gestartet: { $reason }
 agent-door-run-unknown = Aufgaben hat nicht gesagt, in welcher Aufgabe diese Verbindung arbeitet.
 agent-door-run-ended = Die Aufgabe dieser Verbindung endete, bevor sie arbeiten konnte.
+agent-door-identity-unavailable = Dieses Gerät hat in diesem Arbeitsbereich noch keine Identität und kann daher keine Aufgabe für diese Verbindung starten.
 
 # Die Hilfe-Pille in der Bildschirmecke
 help-pill = Hilfe

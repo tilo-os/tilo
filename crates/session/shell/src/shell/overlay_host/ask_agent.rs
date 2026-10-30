@@ -95,20 +95,17 @@ impl ShellOverlayHost {
             .active_workspace()?
             .room()
             .to_string();
-        let stamp = tilo_identity_host::join_proof::current_device_stamp(&room)?;
-        if stamp.settled() {
-            return None;
-        }
-        let wait = stamp
-            .settles_at()?
-            .duration_since(std::time::SystemTime::now())
-            .unwrap_or_default();
-        Some(now.checked_add(wait).unwrap_or(now))
+        room_identity_settles_at(&room, now)
     }
 
-    /// When the ask-agent chord next needs a tick.
+    /// When the ask-agent chord, or an agent door connection's run waiting
+    /// for this device's identity to settle, next needs a tick.
     pub(crate) fn ask_agent_deadline(&self, now: Instant) -> Option<Instant> {
-        self.selection_requests.deadline(now)
+        self.door_runs_unsettled
+            .iter()
+            .map(|(at, _)| *at)
+            .chain(self.selection_requests.deadline(now))
+            .min()
     }
 
     /// `app_id` (as the launcher vouched for it) asked an agent about its
@@ -480,20 +477,40 @@ impl ShellOverlayHost {
     /// by the person, as asking a new agent makes one. The connection joins
     /// the run once it goes; it is never launched. Whether one was asked.
     fn ask_door_runs(&mut self, chrome: &crate::shell::chrome_state::Chrome) -> bool {
-        let asks = chrome.borrow_mut().take_door_runs();
+        let now = Instant::now();
+        let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.door_runs_unsettled)
+            .into_iter()
+            .partition(|(at, _)| *at <= now);
+        self.door_runs_unsettled = later;
+        let asks = due
+            .into_iter()
+            .map(|(_, ask)| ask)
+            .chain(chrome.borrow_mut().take_door_runs())
+            .collect::<Vec<_>>();
         let mut asked = false;
         for ask in asks {
-            let reply = super::agent_actions::DoorReply::new(ask.reply);
+            if ask.reply.is_closed() {
+                continue;
+            }
             let Some(broker) = self.shortcut_triggers.broker() else {
-                reply.send(Err(crate::shell::i18n::t("agent-door-workspace-gone")));
+                let _ = ask
+                    .reply
+                    .send(Err(crate::shell::i18n::t("agent-door-workspace-gone")));
                 continue;
             };
             let room = ask.room.to_string();
             let source = ActionSessionSource::new(broker);
             let Some(identity_revision) = source.identity_revision(&room) else {
-                reply.send(Err(
-                    "this device's identity in the workspace is not settled yet".into(),
-                ));
+                // Just changed, as at a session's start: asked once it settles,
+                // as the composer opens then.
+                match room_identity_settles_at(&room, now) {
+                    Some(at) => self.door_runs_unsettled.push((at, ask)),
+                    None => {
+                        let _ = ask.reply.send(Err(crate::shell::i18n::t(
+                            "agent-door-identity-unavailable",
+                        )));
+                    }
+                }
                 continue;
             };
             let owner = ComposerOwner {
@@ -502,6 +519,7 @@ impl ShellOverlayHost {
                 agent: crate::shell::task_agents::NEW_TASK_AGENT.into(),
                 identity_revision,
             };
+            let reply = super::agent_actions::DoorReply::new(ask.reply);
             self.agent_actions
                 .entry(owner.clone())
                 .or_default()
@@ -588,6 +606,20 @@ impl ShellOverlayHost {
             .or_else(|| self.chrome.as_ref()?.borrow().active_app_title())
             .unwrap_or_else(|| app_id.to_owned())
     }
+}
+
+/// When this device's identity in `room` settles, while it has just changed
+/// and is not settled yet; `None` once settled or with none.
+fn room_identity_settles_at(room: &str, now: Instant) -> Option<Instant> {
+    let stamp = tilo_identity_host::join_proof::current_device_stamp(room)?;
+    if stamp.settled() {
+        return None;
+    }
+    let wait = stamp
+        .settles_at()?
+        .duration_since(std::time::SystemTime::now())
+        .unwrap_or_default();
+    Some(now.checked_add(wait).unwrap_or(now))
 }
 
 /// Whether the collaborator `agent` takes asks in `room` now: admitted

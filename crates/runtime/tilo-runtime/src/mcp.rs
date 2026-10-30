@@ -1569,9 +1569,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             run.as_ref().map(|run| run.id.clone())
         };
-        Ok(
-            json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"run":run,"execution_id":self.caller.execution_id()}}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
-        )
+        let mut answer = json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"run":run,"execution_id":self.caller.execution_id()}}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}});
+        // The agent this session is (a door connection's task agent), so it
+        // can tell the person which agent to give access to.
+        if let Some(agent) = self.actor.strip_prefix("agent:") {
+            answer["serverInfo"]["agent"] = json!(agent);
+        }
+        Ok(answer)
     }
     /// One catalogue page from the action host, as this bridge's caller.
     async fn ask(&self, query: CatalogueQuery) -> Result<CataloguePage, BridgeError> {
