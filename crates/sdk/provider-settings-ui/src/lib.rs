@@ -936,9 +936,12 @@ impl<H: PanelBindings> ProviderPanel<H> {
             .zip(followed.iter_mut())
             .zip(stored)
         {
-            let mut draft = field.lock_recover();
-            if *last != now && *draft == *last {
-                draft.clone_from(&now);
+            if *last != now {
+                let mut draft = field.lock_recover();
+                if *draft == *last {
+                    draft.clone_from(&now);
+                }
+                drop(draft);
             }
             *last = now;
         }

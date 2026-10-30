@@ -354,7 +354,7 @@ fn a_model_set_by_id_takes_its_capabilities_from_the_providers_list() {
 #[test]
 fn the_model_field_follows_the_model_chosen_unless_the_person_edits_it() {
     let backend = Arc::new(FakeAdminBackend::default());
-    let mut app = mount(backend.clone());
+    let mut app = mount(backend);
     app.harness().resize((1800, 6000)).unwrap();
     run(
         &mut app,
