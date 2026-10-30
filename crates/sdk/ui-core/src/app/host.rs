@@ -363,26 +363,23 @@ fn draw_visible_tooltip(
     height: u32,
     scale_factor: f32,
 ) -> Option<KurboRect> {
-    app.input.tooltip_host.tick(crate::time::now());
+    app.input.tooltips.tick();
     let current = app
         .input
-        .tooltip_host
+        .tooltips
         .visible()
-        .and_then(|(_, anchor)| app.tooltip_placed_at(anchor.center()));
+        .and_then(|(_, anchor)| app.tooltip_target_at(anchor.center()));
     let viewport = KurboRect::new(
         0.0,
         0.0,
         f64::from(width) / f64::from(scale_factor),
         f64::from(height) / f64::from(scale_factor),
     );
-    let (_, _, bounds, _) = app.input.tooltip_host.paint_shown(
-        current,
-        &mut app.text_renderer,
-        &app.theme,
-        scene,
-        transform,
-        viewport,
-    )?;
+    let (scene, text, theme) = (scene, &mut app.text_renderer, &app.theme);
+    let (_, _, bounds, _) = app
+        .input
+        .tooltips
+        .paint(current, text, theme, scene, transform, viewport)?;
     Some(transform.transform_rect_bbox(bounds))
 }
 

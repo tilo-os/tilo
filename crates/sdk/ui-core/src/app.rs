@@ -2065,24 +2065,6 @@ impl App {
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
         self.tree().cursor_pick_at(point).icon()
     }
-
-    /// The smallest-area widget under `point` exposing a non-empty
-    /// [`Widget::tooltip`], so a nested icon button beats its enclosing
-    /// toolbar, with the side of its control the tooltip prefers.
-    #[cfg(feature = "native")]
-    pub(crate) fn tooltip_placed_at(
-        &self,
-        point: Point,
-    ) -> Option<(
-        vello::kurbo::Rect,
-        String,
-        crate::widget::tooltip::TooltipSide,
-    )> {
-        if !self.input.interaction.supports_hover() {
-            return None;
-        }
-        crate::widget::tooltip::smallest_target(self.tree().tooltips_at(point))
-    }
 }
 
 impl App {

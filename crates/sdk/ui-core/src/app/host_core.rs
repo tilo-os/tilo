@@ -47,6 +47,24 @@ impl crate::host_core::HostCore for App {
         }
     }
 
+    fn presentation_roots(&self) -> Vec<&dyn Widget> {
+        let mut roots: Vec<&dyn Widget> = vec![self.root_widget.as_ref()];
+        if let Some(history) = self.history.as_deref() {
+            roots.push(history);
+        }
+        if let Some(dialog) = self.close_admission.dialog.as_deref() {
+            roots.push(dialog);
+        }
+        if let Some(palette) = self.actions.action_palette.as_deref() {
+            roots.push(palette);
+        }
+        roots
+    }
+
+    fn pointer_hovers(&self) -> bool {
+        self.input.interaction.supports_hover()
+    }
+
     fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted {
         &mut self.layout.adopted
     }

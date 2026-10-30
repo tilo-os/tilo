@@ -142,7 +142,7 @@ impl App {
         // A tooltip goes when the person acts, or when the pointer or the
         // keyboard leaves the window, whatever then takes the event: History's
         // controls and the close dialog take some before the widgets do.
-        if crate::widget::TooltipHost::dismissed_by(&event) && self.input.tooltip_host.dismiss() {
+        if crate::widget::TooltipHost::dismissed_by(&event) && self.input.tooltips.dismiss() {
             window.request_redraw();
         }
         if matches!(
@@ -705,7 +705,7 @@ impl App {
             let hit_test = phases.start();
             let desired = app.resolve_cursor(logical).unwrap_or(CursorIcon::Default);
             let target = app
-                .tooltip_placed_at(logical)
+                .tooltip_target_at(logical)
                 .map(|(rect, label, _)| (rect, label));
             phases.finish(InputPhase::HitTest, hit_test);
             if app.input.current_cursor != desired {
@@ -714,11 +714,7 @@ impl App {
             }
             // `on_pointer` keeps the dwell running over the same
             // region and restarts it on a new one.
-            if app
-                .input
-                .tooltip_host
-                .on_pointer(target, crate::time::now())
-            {
+            if app.input.tooltips.on_pointer(target, crate::time::now()) {
                 window.request_redraw();
             }
         }
@@ -801,7 +797,7 @@ impl App {
         }
         [
             self.root_widget.next_wake_deadline(),
-            self.input.tooltip_host.reveal_at(),
+            self.input.tooltips.reveal_at(),
         ]
         .into_iter()
         .flatten()

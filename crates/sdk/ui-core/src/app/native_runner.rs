@@ -2567,8 +2567,8 @@ impl AppHandler {
             "overlay",
             app.debug_mode
                 || app.actions.action_palette.is_some()
-                || app.input.tooltip_host.needs_frame()
-                || app.input.tooltip_host.visible().is_some()
+                || app.input.tooltips.needs_frame()
+                || app.input.tooltips.visible().is_some()
                 || app
                     .profiler
                     .as_ref()
@@ -4156,7 +4156,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // A hover tooltip is not motion, so it reveals even under
         // reduce-motion. Its dwell is a wait: the loop sleeps until the
         // reveal is due (`scheduled_deadline`) and paints once then.
-        let tooltip_reveal = app.input.tooltip_host.reveal_at();
+        let tooltip_reveal = app.input.tooltips.reveal_at();
         let tooltip_pending = tooltip_reveal.is_some_and(|at| at <= crate::motion::frame_now());
         if tooltip_pending {
             request_primary_redraw();

@@ -14,9 +14,11 @@ use crate::widget::Widget;
 
 mod controls;
 mod keys;
+mod tooltips;
 
 pub(crate) use controls::{ControlHost, json_argument};
 pub(crate) use keys::{KeyHost, RootEvent};
+pub(crate) use tooltips::TooltipLayer;
 
 /// A host's document and laid-out widget tree, borrowed for one read.
 pub(crate) struct HostTree<'a> {
@@ -412,6 +414,37 @@ pub(crate) trait HostCore {
     /// Every tree the layout maps can name: the app root and what the host
     /// lays out around and over it.
     fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget));
+
+    /// The widgets the host shows, for the lookups that must see what a
+    /// container places itself (a desktop's strip of windows, a window's
+    /// bar) and so stays out of the layout maps: the app while it is live,
+    /// and what stands over it.
+    fn presentation_roots(&self) -> Vec<&dyn Widget>;
+
+    /// Whether what drives the pointer can hover at all (a touch screen
+    /// cannot).
+    fn pointer_hovers(&self) -> bool;
+
+    /// The tooltip the laid-out surface offers at logical `point`: the
+    /// smallest-area widget there offering one, with the side of its control
+    /// it prefers (so a nested icon button beats its enclosing toolbar).
+    fn tooltip_target_at(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> Option<(
+        vello::kurbo::Rect,
+        String,
+        crate::widget::tooltip::TooltipSide,
+    )> {
+        if !self.pointer_hovers() {
+            return None;
+        }
+        let mut targets = self.tree().tooltips_at(point);
+        for root in self.presentation_roots() {
+            tooltips::targets_under(root, point, &mut targets);
+        }
+        crate::widget::tooltip::smallest_target(targets)
+    }
 
     /// The walk the layout maps were admitted against.
     fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted;

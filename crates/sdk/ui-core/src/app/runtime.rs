@@ -283,7 +283,7 @@ pub(super) struct InputRuntime {
     pub(super) platform: crate::platform::PlatformConventions,
     pub(super) nav_gestures: crate::gesture::NavGestureRecognizer,
     pub(super) current_cursor: CursorIcon,
-    pub(super) tooltip_host: crate::widget::TooltipHost,
+    pub(super) tooltips: crate::host_core::TooltipLayer,
     /// Pen samples on their way to the pointer events they describe.
     pub(super) pen: crate::pen::PenInput,
     /// The app is shown inside a host whose focus order continues past it:
@@ -309,7 +309,7 @@ impl InputRuntime {
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
             current_cursor: CursorIcon::Default,
-            tooltip_host: crate::widget::TooltipHost::new(),
+            tooltips: crate::host_core::TooltipLayer::default(),
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
             pointer: crate::host_core::PointerPlace::default(),

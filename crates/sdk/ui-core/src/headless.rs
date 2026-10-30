@@ -304,7 +304,6 @@ mod cursor;
 pub mod test_support;
 #[cfg(any(test, feature = "test-support"))]
 pub use self::app::{HeadlessApp, MOUNT_VIEWPORT, fixture_runner_inputs};
-mod tooltip_layer;
 mod window_bar;
 pub use sidebar_button::SidebarShown;
 pub use window_bar::{WindowBarNotice, WindowBarNoticeButton};
@@ -478,7 +477,7 @@ pub struct FrameHarness {
     /// ([`Self::set_placed_pointers`]), drawn above everything else.
     placed_pointers: Vec<crate::presence::PeerCursor>,
     /// Hover tooltips, driven by host input ([`Self::send_host_event`]).
-    tooltips: tooltip_layer::TooltipLayer,
+    tooltips: crate::host_core::TooltipLayer,
     /// The last frame drew a motion (the tooltip's arrival, a popover's)
     /// before its end. A motion asks for frames only until it ends, and a
     /// host whose frames come slower than the motion lasts (a busy or
@@ -1582,7 +1581,7 @@ impl FrameHarness {
             presence: Box::new(PresenceCtx::empty()),
             presence_redraw: false,
             placed_pointers: Vec::new(),
-            tooltips: tooltip_layer::TooltipLayer::default(),
+            tooltips: crate::host_core::TooltipLayer::default(),
             settle_frame_owed: false,
             permissions: PermissionContext::permissive(),
             modifiers: winit::event::Modifiers::default(),
@@ -5093,25 +5092,63 @@ impl FrameHarness {
         out
     }
 
-    /// Every widget the driver can address, by `test_id` or path, with the
-    /// rect it currently occupies.
-    fn presentation_roots(&self) -> Vec<&dyn Widget> {
-        let mut roots = Vec::new();
-        if let Some(history) = &self.history {
-            roots.push(history.as_ref() as &dyn Widget);
-        }
-        if let Some(palette) = self.action_palette.as_deref().filter(|p| p.is_presented()) {
-            roots.push(palette as &dyn Widget);
-            return roots;
-        }
-        if self
-            .history
-            .as_ref()
-            .is_none_or(|history| history.live_interactive())
-        {
-            roots.push(self.root.as_ref());
-        }
-        roots
+    /// Feed one host event to the tooltip layer, before it is dispatched:
+    /// the pointer settles over what the last frame showed, and acting hides
+    /// the tooltip as the live window does.
+    fn track_tooltip(&mut self, event: &WindowEvent) {
+        let target = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale = self.input_scale;
+                let point = Point::new(position.x / scale, position.y / scale);
+                self.tooltip_target_at(point)
+                    .map(|(rect, tip, _)| (rect, tip))
+            }
+            _ => None,
+        };
+        self.tooltips.track(event, target);
+    }
+
+    /// Paint the shown tooltip into the frame's scene.
+    fn draw_tooltip(&mut self, transform: Affine) {
+        self.tooltips.tick();
+        let current = self
+            .tooltips
+            .visible()
+            .and_then(|(_, anchor)| self.tooltip_target_at(anchor.center()));
+        let viewport = Rect::new(
+            0.0,
+            0.0,
+            f64::from(self.viewport.0),
+            f64::from(self.viewport.1),
+        );
+        let (scene, text, theme) = (&mut self.scene, &mut self.text, &self.theme);
+        self.tooltips
+            .paint(current, text, theme, scene, transform, viewport);
+    }
+
+    /// The painted tooltip as the accessibility tree reads it: a tooltip
+    /// naming what the control under the pointer does, where it shows.
+    fn tooltip_inspection(&self) -> Option<InspectionNode> {
+        let (text, chip) = self.tooltips.drawn()?;
+        Some(InspectionNode {
+            path: "tooltip".into(),
+            widget: "Tooltip".into(),
+            test_id: None,
+            focusable: false,
+            rect: [chip.x0, chip.y0, chip.width(), chip.height()],
+            child_clip: None,
+            layout: None,
+            semantics: Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Tooltip).with_name(text.to_owned()),
+            ),
+            children: Vec::new(),
+        })
+    }
+
+    /// The text and chip (logical) of the tooltip the last frame painted.
+    #[must_use]
+    pub fn drawn_tooltip(&self) -> Option<(&str, Rect)> {
+        self.tooltips.drawn()
     }
 
     pub fn targets(&self) -> HashMap<String, Rect> {
@@ -8524,6 +8561,31 @@ impl crate::host_core::HostCore for FrameHarness {
         if let Some(palette) = self.action_palette.as_deref() {
             visit(palette);
         }
+    }
+
+    /// The app while it is live (an open History that replaces it is not),
+    /// or what stands over everything: the palette, once it is presented.
+    fn presentation_roots(&self) -> Vec<&dyn Widget> {
+        let mut roots = Vec::new();
+        if let Some(history) = &self.history {
+            roots.push(history.as_ref() as &dyn Widget);
+        }
+        if let Some(palette) = self.action_palette.as_deref().filter(|p| p.is_presented()) {
+            roots.push(palette as &dyn Widget);
+            return roots;
+        }
+        if self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_interactive())
+        {
+            roots.push(self.root.as_ref());
+        }
+        roots
+    }
+
+    fn pointer_hovers(&self) -> bool {
+        self.interaction.supports_hover()
     }
 
     fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted {
