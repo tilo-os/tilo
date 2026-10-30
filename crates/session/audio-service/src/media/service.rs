@@ -153,13 +153,13 @@ impl Players for Mpris {
 /// the private output they played on leaves. `false` when one did not
 /// take it.
 pub fn pause_playing(players: &dyn Players) -> bool {
-    players
-        .players()
-        .iter()
-        .filter(|player| player.playing && player.can_pause)
-        .fold(true, |paused, player| {
-            players.control(&player.bus, "Pause").is_ok() && paused
-        })
+    let mut paused = true;
+    for player in players.players() {
+        if player.playing && player.can_pause {
+            paused &= players.control(&player.bus, "Pause").is_ok();
+        }
+    }
+    paused
 }
 
 /// What lands from the worker.

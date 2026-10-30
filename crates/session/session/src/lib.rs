@@ -35,6 +35,7 @@ mod setup;
 mod sheets;
 mod search;
 pub mod unlock;
+mod window_motion;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -65,6 +66,8 @@ pub use controls::{
 };
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA_PLAYER, MICROPHONE, QUICK_SETTINGS};
+pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
+pub use lists::{AppLists, Lists};
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
@@ -336,6 +339,107 @@ impl Shared {
         }
         self.follow_device();
         self.follow_sheets();
+        let choices = self.handle.take_search_choices();
+        if choices.is_empty() {
+            return;
+        }
+        let room = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.room().to_string())
+                .unwrap_or_default()
+        });
+        for choice in choices {
+            self.search.perform(&room, choice, &mut |own| {
+                self.doors.invoke(&own.address, &own.arguments).map(drop)
+            });
+        }
+        // What the session's own actions asked of it.
+        self.follow_asks();
+    }
+
+    /// Give search its kept history and what the session publishes.
+    fn start_search(&self) {
+        if let Some(kept) = self.services.borrow().read(search::HISTORY) {
+            self.search.restore(&kept);
+        }
+        self.observe();
+    }
+
+    /// Hand search what the session publishes when it changed: read after
+    /// a frame, as the desk cannot read its own tree while it opens search.
+    fn observe(&self) {
+        let now = self.doors.revision();
+        if now.is_some() && *self.observed.borrow() == now {
+            return;
+        }
+        self.observed.replace(now);
+        let tabs = self.handle.read(|tree| {
+            let mut tabs = Vec::new();
+            for workspace in &tree.workspaces {
+                let room = workspace.room().to_string();
+                for tab in workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                {
+                    tabs.push((tab.id, room.clone(), tab_app(&tab.tile), tab.title.clone()));
+                }
+            }
+            tabs
+        });
+        self.record_places(&tabs);
+        let open_tabs = tabs.iter().map(|(tab, ..)| *tab).collect();
+        self.search.observe(&self.doors.resources(), open_tabs);
+        self.keep_history();
+    }
+
+    /// Where each app's window is now, for search's Continue: a window
+    /// whose title changed since it was last seen was at a new place.
+    fn record_places(&self, tabs: &[(u64, String, Option<String>, String)]) {
+        let mut seen = self.places_seen.borrow_mut();
+        seen.retain(|tab, _| tabs.iter().any(|(open, ..)| open == tab));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        for (tab, room, app, title) in tabs {
+            let Some(app) = app else { continue };
+            if title.trim().is_empty() || seen.get(tab) == Some(title) {
+                continue;
+            }
+            seen.insert(*tab, title.clone());
+            self.search.record_place(Place {
+                app: app.clone(),
+                room: room.clone(),
+                tab: *tab,
+                label: title.clone(),
+                value: String::new(),
+                anchor: None,
+                at: now,
+                device: None,
+            });
+        }
+    }
+
+    /// Keep what changed of search's history in its settings section,
+    /// through the section's field edits; without a settings service it
+    /// lasts as long as the session.
+    fn keep_history(&self) {
+        for edit in self.search.take_unkept() {
+            let kept = self
+                .services
+                .borrow_mut()
+                .invoke(search::HISTORY, "field-edit", &edit);
+            if let Some(Err(error)) = kept {
+                tracing::warn!(%error, "search history not kept");
+            }
+        }
+    }
+
+    fn close_quick_settings(&self) {
+        if let Some(panel) = &self.quick_settings {
+            panel.open.set(false);
+        }
     }
 
     /// Land what the device host read and carry out what the panel asked
@@ -853,6 +957,8 @@ pub struct Session {
     unlocking: Unlocking,
     /// The screenshots asked for.
     captures: Option<capture::Captures>,
+    /// The windows opening and closing.
+    windows: window_motion::WindowMotions,
 }
 
 /// The lock screen's passwords being checked, off the loop.
@@ -1102,6 +1208,7 @@ impl Session {
             shared.search.restore(&kept);
         }
         shared.observe();
+        shared.start_search();
         let loop_wake = compositor.waker();
         Ok(Self {
             compositor,
@@ -1117,6 +1224,7 @@ impl Session {
                 wake: loop_wake,
             },
             captures: options.captures,
+            windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             ended: false,
             magnifier: (
                 settings_store::magnifier::OFF,
@@ -1563,6 +1671,7 @@ impl Session {
     pub fn step(&mut self, timeout: Duration) -> Result<(), Error> {
         self.compositor.dispatch(timeout)?;
         self.settle()?;
+        self.windows.step(&mut self.compositor, Instant::now());
         self.compositor.render()?;
         self.shared.follow_asks();
         self.follow_lock();

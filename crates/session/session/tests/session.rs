@@ -128,6 +128,13 @@ impl TestClient {
         self.toplevel = Some(toplevel);
     }
 
+    /// Close the window: its toplevel goes, its surface stays.
+    fn close_window(&mut self) {
+        if let Some(toplevel) = self.toplevel.take() {
+            toplevel.destroy();
+        }
+    }
+
     /// Attach a buffer of one colour (RGBA) and commit it with a frame
     /// callback.
     fn show(&self, width: i32, height: i32, rgba: [u8; 4]) {
@@ -322,6 +329,63 @@ fn closing_a_windows_tab_asks_its_client_to_close() {
     );
 }
 
+/// The colour at the centre of `rect` on the display.
+fn centre(session: &mut Session, rect: (i32, i32, i32, i32)) -> [u8; 4] {
+    let shot = session.compositor().screenshot("HEADLESS-1").unwrap();
+    let x = u32::try_from(rect.0 + rect.2 / 2).unwrap();
+    let y = u32::try_from(rect.1 + rect.3 / 2).unwrap();
+    shot.pixel(x, y).unwrap()
+}
+
+/// Step the session until `done` holds, for up to three seconds of its
+/// clock.
+#[track_caller]
+fn within(
+    session: &mut Session,
+    client: &mut TestClient,
+    mut done: impl FnMut(&mut Session) -> bool,
+) {
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < until {
+        client.exchange();
+        session.step(Duration::from_millis(4)).expect("step");
+        if done(session) {
+            return;
+        }
+    }
+    panic!("condition not reached in time");
+}
+
+#[test]
+fn a_window_fades_in_as_it_opens_and_its_last_frame_fades_out_as_it_closes() {
+    const RED: [u8; 4] = [200, 40, 40, 255];
+    let mut session = session();
+    let mut client = mapped(&mut session, "org.example.Editor");
+    let (id, rect) = window(session.compositor(), "org.example.Editor").unwrap();
+    assert_ne!(centre(&mut session, rect), RED, "it starts faint");
+    within(&mut session, &mut client, |session| {
+        centre(session, rect) == RED
+    });
+
+    client.close_window();
+    within(&mut session, &mut client, |session| {
+        session
+            .compositor()
+            .closing_windows()
+            .iter()
+            .any(|(info, _)| info.id == id)
+    });
+    let last = centre(&mut session, rect);
+    assert!(
+        last[0] > 120 && last[1] < 100,
+        "its last frame is still drawn: {last:?}"
+    );
+    within(&mut session, &mut client, |session| {
+        session.compositor().closing_windows().is_empty()
+    });
+    assert_ne!(centre(&mut session, rect), RED, "and let go once it faded");
+}
+
 /// evdev codes the tests press.
 mod keys {
     pub const TAB: u32 = 15;
@@ -494,7 +558,7 @@ impl Published for Player {
             )
         };
         vec![
-            ResourceSpec::new(tilo_session::MEDIA_PLAYER, "media", "Player")
+            ResourceSpec::new(tilo_session::MEDIA, "media", "Player")
                 .with_action(spec("play-pause"))
                 .with_action(spec("next")),
         ]
@@ -526,7 +590,7 @@ fn the_play_key_reaches_whatever_publishes_the_player() {
     })));
     assert!(publishes(
         &session,
-        tilo_session::MEDIA_PLAYER,
+        tilo_session::MEDIA,
         "play-pause"
     ));
     tap(&mut session, keys::PLAY_PAUSE);

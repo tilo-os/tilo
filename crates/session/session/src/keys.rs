@@ -70,8 +70,9 @@ pub type Invocations = Rc<RefCell<Vec<Invocation>>>;
 
 /// Quick settings' resource, whose effects the level and radio keys run.
 pub const QUICK_SETTINGS: &str = "quick-settings.panel";
-/// What plays: the audio service's player.
-pub const MEDIA_PLAYER: &str = tilo_audio_service::media::MEDIA_PLAYER;
+/// What plays: the audio service's media, whose own controls reach the
+/// player in front.
+pub const MEDIA: &str = tilo_audio_service::media::MEDIA;
 /// The microphone: the audio service's sound resource.
 pub const MICROPHONE: &str = tilo_audio_service::sound::SOUND;
 /// This device's input devices, the session's own.
@@ -145,15 +146,13 @@ fn classify(keysym: u32) -> Option<Hardware> {
             hardware(MICROPHONE, "toggle-input-muted", false, true).reads(OsdKind::Microphone)
         }
         keysyms::XF86_AudioPlay | keysyms::XF86_AudioPause => {
-            hardware(MEDIA_PLAYER, "play-pause", false, true).reads(OsdKind::Play)
+            hardware(MEDIA, "play-pause", false, true).reads(OsdKind::Play)
         }
-        keysyms::XF86_AudioNext => {
-            hardware(MEDIA_PLAYER, "next", false, true).reads(OsdKind::NextTrack)
-        }
+        keysyms::XF86_AudioNext => hardware(MEDIA, "next", false, true).reads(OsdKind::NextTrack),
         keysyms::XF86_AudioPrev => {
-            hardware(MEDIA_PLAYER, "previous", false, true).reads(OsdKind::PreviousTrack)
+            hardware(MEDIA, "previous", false, true).reads(OsdKind::PreviousTrack)
         }
-        keysyms::XF86_AudioStop => hardware(MEDIA_PLAYER, "stop", false, true).reads(OsdKind::Stop),
+        keysyms::XF86_AudioStop => hardware(MEDIA, "stop", false, true).reads(OsdKind::Stop),
         keysyms::XF86_TouchpadToggle => hardware(TOUCHPAD, "toggle-touchpad", false, false),
         keysyms::XF86_KbdBrightnessUp => {
             hardware(KEYBOARD_BACKLIGHT, "brighter", true, true).reads(OsdKind::KeyboardBacklight)
@@ -290,7 +289,7 @@ mod tests {
         let play = key(keysyms::XF86_AudioPlay, None, KeyModifiers::default());
         assert_eq!(
             keys.resolve(&play, true).map(|(invocation, _)| invocation),
-            Some(Invocation::new(MEDIA_PLAYER, "play-pause").showing(OsdKind::Play))
+            Some(Invocation::new(MEDIA, "play-pause").showing(OsdKind::Play))
         );
     }
 

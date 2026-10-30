@@ -56,6 +56,50 @@ impl Doors {
         self.surfaces
             .iter()
             .flat_map(|surface| surface.borrow_mut().resources())
+    /// The surfaces offering their actions now, with their place: only
+    /// the exclusive ones while one is up.
+    fn offered(&self) -> Vec<(usize, &Shared)> {
+        let offered: Vec<(usize, &Shared)> = self
+            .surfaces
+            .iter()
+            .enumerate()
+            .filter(|(_, surface)| surface.borrow().offered())
+            .collect();
+        if offered
+            .iter()
+            .any(|(_, surface)| surface.borrow().exclusive())
+        {
+            offered
+                .into_iter()
+                .filter(|(_, surface)| surface.borrow().exclusive())
+                .collect()
+        } else {
+            offered
+        }
+    }
+
+    /// Where everything offered now stands: equal revisions offer the
+    /// same. `None` when a surface cannot tell.
+    #[must_use]
+    pub fn revision(&self) -> Option<Vec<(usize, u64)>> {
+        self.offered()
+            .into_iter()
+            .map(|(place, surface)| {
+                surface
+                    .borrow()
+                    .revision()
+                    .map(|revision| (place, revision))
+            })
+            .collect()
+    }
+
+    /// Everything the hosted surfaces offer now, in the order they were
+    /// added.
+    #[must_use]
+    pub fn resources(&self) -> Vec<ResourceSpec> {
+        self.offered()
+            .into_iter()
+            .flat_map(|(_, surface)| surface.borrow_mut().resources())
             .collect()
     }
 
@@ -70,6 +114,7 @@ impl Doors {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
         for surface in &self.surfaces {
+        for (_, surface) in self.offered() {
             let mut surface = surface.borrow_mut();
             if ui::tilo_actions::door::resolve(&surface.resources(), address).is_some() {
                 return surface.invoke(address, arguments);
@@ -84,6 +129,9 @@ impl Doors {
         self.surfaces
             .iter()
             .flat_map(|surface| surface.borrow_mut().accessible_labels())
+        self.offered()
+            .into_iter()
+            .flat_map(|(_, surface)| surface.borrow_mut().accessible_labels())
             .collect()
     }
 }
