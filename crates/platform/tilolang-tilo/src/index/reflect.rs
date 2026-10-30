@@ -128,8 +128,12 @@ impl Stamp {
     }
 }
 
+/// The action a step on the record that is no package's action is a version by (an undo, a
+/// revert from History).
+pub const STEP_ACTION: &str = "$history";
+
 /// The task run a change's context names: its group, when it is a task's.
-fn task_of(context: &tilo_actions::ActionContext) -> Option<TaskRun> {
+pub fn task_of(context: &tilo_actions::ActionContext) -> Option<TaskRun> {
     let group = context.group.as_ref()?;
     (group.kind == tilo_actions::context::TASK_RUN_GROUP).then(|| TaskRun {
         id: group.id.clone(),

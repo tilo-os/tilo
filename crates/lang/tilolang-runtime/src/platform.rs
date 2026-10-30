@@ -457,25 +457,45 @@ impl Core {
     ) -> Result<Vec<crate::store::Version>, crate::store::StoreError> {
         let versions = self.store.borrow().versions(at)?;
         let mark = self.seen_mark(person, &at.id_string());
-        Ok(crate::seen::unseen(&versions, person, mark.as_ref()))
+        let runs = self.seen_runs(person);
+        Ok(crate::seen::unseen(&versions, person, mark.as_ref(), &runs))
+    }
+
+    /// The task runs `person` reviewed, as the runtime holds them.
+    pub(crate) fn seen_runs(&self, person: &str) -> Vec<String> {
+        match self
+            .view_states
+            .borrow()
+            .get(&crate::seen::runs_key(person))
+        {
+            Some(Value::List(runs)) => runs
+                .iter()
+                .filter_map(|run| run.as_text().map(str::to_owned))
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// [`Self::unseen_of`], read by the frame running: it runs again when the versions of
-    /// `at` or the person's mark of it move.
+    /// `at`, the person's mark of it or the runs they reviewed move.
     pub(crate) fn unseen_read(
         &self,
         person: &str,
         at: &ResourceRef,
     ) -> HResult<Vec<crate::store::Version>> {
-        let key = crate::seen::seen_key(person, &at.id_string());
-        let (value, generation) = {
-            let states = self.view_states.borrow();
-            (
-                states.get(&key).cloned().unwrap_or_else(Value::none),
-                states.generation(&key),
-            )
-        };
-        self.note_state_read(key, generation, &value)?;
+        for key in [
+            crate::seen::seen_key(person, &at.id_string()),
+            crate::seen::runs_key(person),
+        ] {
+            let (value, generation) = {
+                let states = self.view_states.borrow();
+                (
+                    states.get(&key).cloned().unwrap_or_else(Value::none),
+                    states.generation(&key),
+                )
+            };
+            self.note_state_read(key, generation, &value)?;
+        }
         self.read_versions_of(at)?;
         self.unseen_of(person, at)
             .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))
@@ -503,12 +523,27 @@ impl Core {
                 Value::Text(mark.at.clone()),
             ])),
         );
-        self.seen_writes.borrow_mut().push(crate::seen::SeenWrite {
-            person: person.to_owned(),
-            resource,
-            mark,
-        });
+        self.seen_writes
+            .borrow_mut()
+            .push(crate::seen::SeenWrite::Resource {
+                person: person.to_owned(),
+                resource,
+                mark,
+            });
         Ok(true)
+    }
+
+    /// The task runs `person` reviewed are `runs` now.
+    pub(crate) fn set_seen_runs(&self, person: &str, runs: &[String]) {
+        let key = crate::seen::runs_key(person);
+        let mut sorted = runs.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        let value = Value::List(sorted.into_iter().map(Value::Text).collect());
+        let mut states = self.view_states.borrow_mut();
+        if states.get(&key) != Some(&value) {
+            states.set(key, value);
+        }
     }
 
     /// Record, in a view's frame, that it read the versions of `target`: it runs again when any
