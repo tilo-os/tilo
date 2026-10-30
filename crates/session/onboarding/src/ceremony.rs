@@ -277,7 +277,7 @@ impl Ceremony {
     /// A button whose press asks `effect`.
     pub(crate) fn button(&self, id: &str, label: &str, effect: OnboardingEffect) -> Button {
         let dispatch = self.dispatch.clone();
-        Button::new(id, label).on_click(move || dispatch.effect(&effect))
+        Button::new(id, label).on_effect(move || dispatch.effect(&effect))
     }
 
     pub(crate) fn back_button(&self) -> Box<dyn Widget> {
@@ -302,7 +302,7 @@ impl Ceremony {
         Checkbox::from_state(state)
             .with_id(id)
             .with_label(label)
-            .on_change(move |checked| {
+            .on_view(id, move |checked| {
                 dispatch.effect(&OnboardingEffect::Acknowledge { checked });
             })
     }
