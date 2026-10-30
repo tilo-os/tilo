@@ -79,6 +79,7 @@ mod governance_witness_tests;
 mod directory;
 mod launch_child;
 mod own_device;
+mod publishers;
 mod readmit;
 mod room_nodes;
 mod shortcut_run;
@@ -2045,6 +2046,7 @@ impl CapnpBrokerState {
         let expired = || self.not_offered(app_id, &room, address, timeout);
         let abandoned = completer.abandoned();
         tokio::pin!(deadline, abandoned);
+        let shows = self.action_shows(app_id, &room, address);
         // Taken before the first look, so a publication between that look
         // and the wait below still wakes it.
         let mut changes = self.publisher_changes();
@@ -2075,6 +2077,7 @@ impl CapnpBrokerState {
             // with no window, where the host runs one: it publishes, and the
             // wait below delivers to it. Only an `open` launches a window.
             if !launched
+                && !shows
                 && address.action != APPLICATION_OPEN_ACTION
                 && let Some(start) = self.run_windowless(app_id, &room)?
             {
@@ -2534,6 +2537,9 @@ impl CapnpBrokerState {
         address: &tilo_actions::ActionAddress,
         aliases: bool,
     ) -> Option<(u64, tilo_actions::ActionAddress)> {
+        // Asked before the tables are held: it reads them itself. An action
+        // that shows something needs a window to show it in.
+        let shows = self.action_shows(app_id, room, address);
         let subscribers = self.invocation_subscribers.lock().ok()?;
         let surfaces = self.surfaces.lock().ok()?;
         surfaces
@@ -2541,6 +2547,7 @@ impl CapnpBrokerState {
             .filter(|surface| {
                 surface.live
                     && self.shows(surface.peer_id, &address.action)
+                    && !(shows && self.is_windowless(surface.peer_id))
                     && surface.app_id == app_id
                     && surface.route.cluster_id == room
                     && record.is_none_or(|record| surface.route.record_id == record)

@@ -349,6 +349,58 @@ fn a_model_set_by_id_takes_its_capabilities_from_the_providers_list() {
     );
 }
 
+/// Use model, through its action, shows the model in the form's Model ID
+/// field; a field the person is editing keeps their draft.
+#[test]
+fn the_model_field_follows_the_model_chosen_unless_the_person_edits_it() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let mut app = mount(backend);
+    app.harness().resize((1800, 6000)).unwrap();
+    run(
+        &mut app,
+        ProviderEffect::AddProvider {
+            preset: "openrouter".into(),
+        },
+    );
+    app.settle();
+    let id = config(&mut app).profiles[0].id.clone();
+    let model_field = |app: &mut TestApp<ProviderSettingsApp>| {
+        with_panel(app, |panel| {
+            let profile = panel.provider_config().profiles[0].clone();
+            let field = panel.field_buffers(&profile).model;
+            let value = field.lock_recover().clone();
+            drop(field);
+            value
+        })
+    };
+    assert_eq!(model_field(&mut app), "");
+    run(
+        &mut app,
+        ProviderEffect::SetProviderModel {
+            provider: id.clone(),
+            model: "vendor/model-a".into(),
+        },
+    );
+    app.settle();
+    assert_eq!(model_field(&mut app), "vendor/model-a");
+    let shown = app.harness().inspection_json().unwrap();
+    assert!(shown.contains("vendor/model-a"), "the field shows it");
+    // The person types a model of their own; a later choice leaves it.
+    with_panel(&mut app, |panel| {
+        let profile = panel.provider_config().profiles[0].clone();
+        *panel.field_buffers(&profile).model.lock_recover() = "typed-by-hand".into();
+    });
+    run(
+        &mut app,
+        ProviderEffect::SetProviderModel {
+            provider: id,
+            model: "vendor/model-b".into(),
+        },
+    );
+    app.settle();
+    assert_eq!(model_field(&mut app), "typed-by-hand");
+}
+
 /// An agent says what a model can do, through the action on its provider,
 /// and is refused a model that calls no tools for an agent.
 #[test]

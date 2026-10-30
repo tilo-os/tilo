@@ -1536,6 +1536,41 @@ mod tests {
         );
     }
 
+    /// A view action (an issue's page, its chat) shows something too: an
+    /// instance with no window is no publisher of it, and no closed app is
+    /// run without a window for it.
+    #[test]
+    fn a_view_action_never_goes_to_an_instance_without_a_window() {
+        let (state, room) = broker(&workspace());
+        let (tx, _windowless) = tokio::sync::mpsc::unbounded_channel();
+        let mut up = surface(9, &room);
+        let mut page = action("show-page", tilo_actions::ConfirmationPolicy::None);
+        page.operation_kind = tilo_actions::OperationKind::View;
+        up.actions.push(page);
+        state
+            .launchable
+            .windowless_peers
+            .lock()
+            .expect("windowless")
+            .insert(9);
+        state
+            .invocation_subscribers
+            .lock()
+            .expect("subscribers")
+            .insert(9, tx);
+        state.surfaces.lock().expect("surfaces").insert(9, up);
+        let shows = tilo_actions::ActionAddress::new("files.app", "show-page");
+        assert!(state.action_shows(APP, &room, &shows));
+        assert_eq!(state.ready_publisher(APP, &room, None, &shows), None);
+        let changes = tilo_actions::ActionAddress::new("files.app", "new-window");
+        assert!(!state.action_shows(APP, &room, &changes));
+        assert_eq!(
+            state.ready_publisher(APP, &room, None, &changes),
+            Some(9),
+            "it takes what shows nothing"
+        );
+    }
+
     /// A component surface publishes its resources under its instance's
     /// alias (as the session's windowless Tasks does): an application target
     /// written with the app's own resource id reaches it, handed over under

@@ -439,6 +439,16 @@ impl TrackerRuns for NativeTrackerRuns {
         tilo_owner_commit::OwnerCommitService::records_effects(&self.owner, room)
     }
 
+    /// A room whose documents this device commits confines its agents to
+    /// their runs, as it always has. A room of sealed channels (a person's
+    /// own) serves runs too now, but whether an agent there may also act on
+    /// a grant alone (an agent on a box beside the desktop, through the
+    /// door) is its own decision, not a side effect of reading the tracker:
+    /// it stays as it was.
+    fn confines_agents_to_tasks(&self, room: &str) -> bool {
+        tilo_owner_commit::OwnerCommitService::requires_room(&self.owner, room)
+    }
+
     /// Keep the newest snapshot of each run's turn: a later epoch, a later
     /// turn, or a later sequence of the same turn replaces it; an ended run
     /// is forgotten. Whoever follows the run is woken to show it.

@@ -157,6 +157,13 @@ inputs = ["crates/session/**/*.rs", "apps/**/*.rs", "tools/policy/breakpoint_bas
 pre_push = true
 
 [[step]]
+name = "socket-paths"
+label = "Local sockets bind and connect at any path length"
+run = "python3 tools/policy/check_socket_paths.py"
+inputs = ["crates/**/*.rs", "apps/**/*.rs", "tools/policy/socket_paths_baseline.txt"]
+pre_push = true
+
+[[step]]
 name = "swallowed-decodes"
 label = "Session and app-hosting code hears its decode and parse errors"
 run = "python3 tools/policy/check_swallowed_decodes.py"

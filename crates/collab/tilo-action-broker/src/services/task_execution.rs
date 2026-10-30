@@ -404,6 +404,14 @@ impl TrackerRun {
 /// run's agent.
 pub trait TrackerRuns: Send + Sync {
     fn requires_room(&self, room: &str) -> bool;
+    /// Whether an agent in `room` acts only through its run's admission,
+    /// never on a room grant alone. Every room whose tracker is kept here
+    /// unless the host says otherwise: the room's tracker serving runs
+    /// ([`Self::requires_room`]) and agents being confined to them are two
+    /// decisions.
+    fn confines_agents_to_tasks(&self, room: &str) -> bool {
+        self.requires_room(room)
+    }
     /// Every run the room's tracker holds, going or ended.
     ///
     /// # Errors
