@@ -2,8 +2,7 @@
 """Set up the repository's hooks and merge drivers without replacing unrelated hook configuration.
 
 Run once per clone: the settings live in the clone's config, so every worktree of it has them.
-The hooks are .githooks/ (pre-commit, commit-msg and pre-push, which checks a landing on
-`integration`), each worktree its own tree's copy; the
+The hooks are .githooks/ (pre-commit and commit-msg); the
 merge drivers resolve generated files (.gitattributes, .githooks/merge-generated).
 """
 import argparse
@@ -42,7 +41,7 @@ def install(root):
         custom = [p.name for p in hooks.glob("*") if (p.is_file() or p.is_symlink()) and not p.name.endswith(".sample")]
         if custom:
             raise ValueError("Unrelated default hooks exist: " + ", ".join(custom) + "; no hooks or settings were replaced. Arrange explicit chaining first.")
-    for name in ("pre-commit", "commit-msg", "pre-push", "merge-generated"):
+    for name in ("pre-commit", "commit-msg", "merge-generated"):
         path = root / ".githooks" / name
         if not path.is_file() or not path.stat().st_mode & 0o111:
             raise ValueError("Missing or nonexecutable managed hook: " + str(path))
@@ -74,7 +73,7 @@ def main(argv=None):
     except ValueError as error:
         print("Hook installation refused: " + str(error), file=sys.stderr)
         return 1
-    print("Installed and verified pre-commit, commit-msg, pre-push and the generated-file merge drivers via " + scope + " core.hooksPath=.githooks")
+    print("Installed and verified pre-commit, commit-msg and the generated-file merge drivers via " + scope + " core.hooksPath=.githooks")
     return 0
 
 
