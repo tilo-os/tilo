@@ -30,46 +30,78 @@ static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-app-session-build-marker-v1"
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
-    use std::sync::Arc;
-    use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
-    use tilo_session::{Options, Session};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (ours, command) = match args.iter().position(|arg| arg == "--") {
+    let (ours, command) = split_command(&args);
+    // `--firstboot` is the host package's wrapper hook, which goes on to the
+    // session it was starting.
+    let host_desktop = ours.iter().any(|arg| arg == "--host-desktop");
+    if let Some(done) = first_boot(ours, host_desktop) {
+        return done;
+    }
+    let Some(line) = command_line(ours) else {
+        return ExitCode::FAILURE;
+    };
+    start(ours, command, line, host_desktop)
+}
+
+/// The session's own arguments and the command it starts, split at `--`.
+#[cfg(target_os = "linux")]
+fn split_command(args: &[String]) -> (&[String], &[String]) {
+    match args.iter().position(|arg| arg == "--") {
         Some(split) => (
             args.get(..split).unwrap_or_default(),
             args.get(split.saturating_add(1)..).unwrap_or_default(),
         ),
-        None => (args.as_slice(), &[][..]),
-    };
-    // The machine's first boot: setup runs and the process stops there,
-    // before any GPU, font or session state is opened. `--firstboot` is the
-    // host package's wrapper hook, which goes on to the session it was
-    // starting.
-    let host_desktop = ours.iter().any(|arg| arg == "--host-desktop");
-    match tilo_session::mount::firstboot::one_shot(ours) {
-        Ok(Some(tilo_session::mount::firstboot::OneShot::SetupOnly)) => {
-            return match tilo_session::mount::firstboot::run_setup(host_desktop) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(error) => {
-                    eprintln!("tilo-session: first boot setup failed: {error}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        Ok(Some(tilo_session::mount::firstboot::OneShot::SetupThenSession)) => {
-            if let Err(error) = tilo_session::mount::firstboot::run_setup(host_desktop) {
+        None => (args, &[][..]),
+    }
+}
+
+/// The machine's first boot: setup runs and the process stops there, before
+/// any GPU, font or session state is opened. What it returns is the code the
+/// process exits with when it stops here.
+#[cfg(target_os = "linux")]
+fn first_boot(ours: &[String], host_desktop: bool) -> Option<std::process::ExitCode> {
+    use std::process::ExitCode;
+    use tilo_session::mount::firstboot::{self, OneShot};
+    match firstboot::one_shot(ours) {
+        Ok(Some(OneShot::SetupOnly)) => Some(match firstboot::run_setup(host_desktop) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("tilo-session: first boot setup failed: {error}");
+                ExitCode::FAILURE
+            }
+        }),
+        Ok(Some(OneShot::SetupThenSession)) => {
+            if let Err(error) = firstboot::run_setup(host_desktop) {
                 // A machine that cannot be prepared still boots: the person
                 // sees what is missing rather than a login that never comes.
                 eprintln!("tilo-session: first boot setup failed: {error}; starting anyway");
             }
+            None
         }
-        Ok(None) => {}
+        Ok(None) => None,
         Err(error) => {
             eprintln!("tilo-session: {error}");
-            return ExitCode::from(2);
+            Some(ExitCode::from(2))
         }
     }
+}
+
+/// What the command line asked of the session: the backend it runs on, the
+/// size of a headless or nested one, and what it reaches of the desktop it
+/// runs in.
+#[cfg(target_os = "linux")]
+struct CommandLine {
+    backend: Backend,
+    size: (u16, u16),
+    reach: Reach,
+}
+
+/// The command line `ours` parsed, or `None` when it names a backend there
+/// is not.
+#[cfg(target_os = "linux")]
+fn command_line(ours: &[String]) -> Option<CommandLine> {
     let value = |flag: &str| {
         ours.iter()
             .position(|arg| arg == flag)
@@ -78,7 +110,7 @@ fn main() -> std::process::ExitCode {
     let name = value("--backend").map_or("drm", String::as_str);
     let Some(backend) = Backend::named(name) else {
         eprintln!("tilo-session: unknown backend {name} (drm, headless, nested)");
-        return ExitCode::FAILURE;
+        return None;
     };
     let size: (u16, u16) = value("--size")
         .and_then(|size| size.split_once('x'))
@@ -98,6 +130,31 @@ fn main() -> std::process::ExitCode {
             system: bus("--system-bus"),
         },
     );
+    Some(CommandLine {
+        backend,
+        size,
+        reach,
+    })
+}
+
+/// The session `line` describes, run until `command` exits.
+#[cfg(target_os = "linux")]
+fn start(
+    ours: &[String],
+    command: &[String],
+    line: CommandLine,
+    host_desktop: bool,
+) -> std::process::ExitCode {
+    use std::process::ExitCode;
+    use std::sync::Arc;
+    use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
+    use tilo_session::{Options, Session};
+
+    let CommandLine {
+        backend,
+        size,
+        reach,
+    } = line;
     let buses = reach.buses.clone();
     record_panics(backend);
     let wake = tilo_service::LoopWake::default();
@@ -106,7 +163,7 @@ fn main() -> std::process::ExitCode {
     let config = tilo_session::SessionConfig::load();
     // The machine's power: that policy, applied by the session's loop and
     // acted on over logind by the service started beside the others.
-    let power = Some(tilo_session_power::PowerLink::new(config.power.clone()));
+    let power = Some(tilo_session_power::PowerLink::new(config.power));
     // A session in a window of another desktop runs on that desktop's
     // machine: its services stay off the host's daemons, its device stays
     // the host's, and no session action it takes reaches the host.
@@ -178,7 +235,7 @@ fn main() -> std::process::ExitCode {
     };
     watch_the_loop(backend, &mut session);
     let session_bus = match &buses.session {
-        Bus::Address(address) => Some(address.clone()),
+        Bus::Address(address) => Some(address.as_str()),
         _ => None,
     };
     run(
@@ -198,7 +255,7 @@ fn run(
     ours: &[String],
     command: &[String],
     launch: Option<&std::rc::Rc<tilo_session::mount::apps::Apps>>,
-    session_bus: Option<String>,
+    session_bus: Option<&str>,
     export_displays: bool,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
@@ -223,7 +280,7 @@ fn run(
         launch.set_displays(
             tilo_paths::xdg::runtime_dir_or_default().join(&socket),
             x11_display.clone().map(|display| (display, None)),
-            session_bus.clone(),
+            session_bus.map(str::to_owned),
         );
     }
     let environment = SessionEnvironment {
@@ -234,9 +291,9 @@ fn run(
     if export_displays {
         environment.clone().export();
     }
-    let mut child = command.split_first().and_then(|(program, rest)| {
-        start_command(program, rest, &environment, session_bus.as_deref())
-    });
+    let mut child = command
+        .split_first()
+        .and_then(|(program, rest)| start_command(program, rest, &environment, session_bus));
     match session.run(|_| {
         child
             .as_mut()
