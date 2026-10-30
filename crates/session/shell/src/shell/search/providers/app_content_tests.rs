@@ -175,7 +175,7 @@ fn a_locked_vault_offers_one_unlock_row_and_an_unlocked_one_lists_its_logins() {
         1,
         "one row for the locked app, whatever matched"
     );
-    assert!(locked[0].id.starts_with(UNLOCK));
+    assert!(tilo_desktop_search::indexed::unlock_app(&locked[0].id).is_some());
     assert!(
         locked[0].title.contains("github"),
         "the row says what it would search for"
@@ -199,7 +199,11 @@ fn a_locked_vault_offers_one_unlock_row_and_an_unlocked_one_lists_its_logins() {
     );
     let unlocked = query(&provider, "github", &chrome);
     assert_eq!(titles(&unlocked), ["GitHub", "GitHub (work)"]);
-    assert!(!unlocked.iter().any(|row| row.id.starts_with(UNLOCK)));
+    assert!(
+        !unlocked
+            .iter()
+            .any(|row| tilo_desktop_search::indexed::unlock_app(&row.id).is_some())
+    );
 }
 
 #[test]
@@ -250,7 +254,10 @@ fn an_unlocked_github_login_is_found_by_github_with_passwords_closed() {
     );
     let rows = query(&provider, "github", &chrome);
     assert_eq!(rows.len(), 1);
-    assert!(rows[0].id.starts_with(UNLOCK), "locked: the unlock row");
+    assert!(
+        tilo_desktop_search::indexed::unlock_app(&rows[0].id).is_some(),
+        "locked: the unlock row"
+    );
 }
 
 #[test]
@@ -316,6 +323,7 @@ fn opening_prefers_the_entrys_own_action_then_the_apps_open_at_its_resource() {
     let room = RoomId::new().to_string();
     let action =
         |resource: &str, action: &str, params: Vec<tilo_actions::ActionParam>| PublishedAction {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: resource.into(),
             action: action.into(),

@@ -328,6 +328,7 @@ mod effect;
 mod endpoint;
 mod env;
 mod form;
+mod hosted_actions;
 // The headless host discovers native presentation, which the browser has not got.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod headless;
@@ -392,6 +393,7 @@ pub use effect::{
 pub use endpoint::{EffectCaller, EffectEndpoint};
 pub use env::{RecordEnv, WindowDocument};
 pub use form::{Form, FormSubmit};
+pub use hosted_actions::{HostedActions, HostedActionsLink, HostedInvocation};
 pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_room};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;

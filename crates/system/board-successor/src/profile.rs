@@ -17,7 +17,6 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::py;
 use crate::{Error, Result, require};
@@ -981,10 +980,6 @@ fn development_policy(repository: &str) -> Value {
          "signedIdentity": {"type": "matchRepository"}}]}}})
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
 /// `development_origin(root)`: the bound development update origin of a
 /// development image, `None` for any other image.
 ///
@@ -1011,7 +1006,7 @@ pub fn development_origin(root: &Root) -> Result<Option<Value>> {
     let manifest_bytes = root.read_bounded(&dev("manifest.json"))?;
     let manifest_sha256 = index(&document, "manifest_sha256")?;
     require(
-        *manifest_sha256 == Value::String(sha256_hex(&manifest_bytes)),
+        *manifest_sha256 == Value::String(py::sha256_hex(&manifest_bytes)),
         "development origin public manifest binding differs",
     )?;
     let provenance = json_bytes(&root.read_bounded(&dev("provenance.json"))?)?;
@@ -1045,7 +1040,7 @@ pub fn development_origin(root: &Root) -> Result<Option<Value>> {
     for name in identities {
         let expected = index(digests, name)?;
         require(
-            *expected == Value::String(sha256_hex(&root.read_bounded(&dev(name))?)),
+            *expected == Value::String(py::sha256_hex(&root.read_bounded(&dev(name))?)),
             "development public identity differs from manifest",
         )?;
     }
@@ -1151,7 +1146,7 @@ pub fn resolve_profile(root: &Root, kver: &str, architecture: &str) -> Result<Op
         "hardware profile device tree has an invalid flattened-device-tree header",
     )?;
     require(
-        sha256_hex(&payload) == digest,
+        py::sha256_hex(&payload) == digest,
         "hardware profile device tree does not match its pinned SHA-256",
     )?;
     Ok(Some(dtb))

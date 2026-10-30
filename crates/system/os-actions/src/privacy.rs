@@ -98,12 +98,12 @@ fn get_privacy_status_from(rfkill: &Path, dev: &Path) -> PrivacyStatus {
     status
 }
 
-/// Snapshot active capture streams through `PipeWire`'s own graph. `pw-dump`
-/// is the reference client shipped with `PipeWire` and keeps compatibility
-/// across native, Flatpak and portal clients. Attribution is independently
-/// re-derived from `/proc`; client-authored labels are intentionally ignored.
+/// Snapshot active capture streams through `PipeWire`'s own graph
+/// ([`media::audio::dump`]), which keeps compatibility across native, Flatpak
+/// and portal clients. Attribution is independently re-derived from `/proc`;
+/// client-authored labels are intentionally ignored.
 pub fn active_media_uses() -> Result<Vec<ActiveMediaUse>, String> {
-    let json = crate::process::run_capture("pw-dump", &[])?;
+    let json = media::audio::dump()?;
     parse_pipewire_media(&json, Path::new("/proc"), effective_uid())
 }
 

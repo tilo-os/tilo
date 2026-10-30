@@ -3,7 +3,7 @@
 //! Every URI the shell's own widgets open (`tilo_dialogs::open_uri`, a
 //! detected link, `ui::widget::try_open_external_url`) passes through
 //! [`LinkOpener`] first. A link in Tilo's grammar
-//! (`docs/architecture/web-routing.md`) that names one of this person's
+//! that names one of this person's
 //! workspaces opens there, through the same launcher the `open` action uses,
 //! instead of loading the web page in a browser. A web link to a workspace
 //! this person is not in yet is joined first, as them ([`LinkJoin`]: a
@@ -554,6 +554,7 @@ mod tests {
 
     fn descriptor(action: &str, view: Option<ResourceViewDescriptor>) -> ActionDescriptor {
         ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
             address: ActionAddress::new(BLOCK, action),
             semantic_identity: None,
             resource_kind: "word_processor.block".into(),

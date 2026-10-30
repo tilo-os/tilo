@@ -207,6 +207,23 @@ pub fn capture_selected(
         Err(unsupported())
     }
 }
+/// Discovery with the application package a caller pinned for a provider, for
+/// the qualification of an actual installed application's sessions.
+#[cfg(target_os = "linux")]
+pub fn discover_with_package(
+    home: &Path,
+    candidates: &[Candidate],
+    package: &impl Fn(
+        &Candidate,
+    ) -> Option<
+        Arc<crate::setup::service_sessions::source::slack_linux::SlackApplication>,
+    >,
+) -> io::Result<Discovery> {
+    crate::setup::browser_profiles::service_profiles::discover_with_package(
+        home, candidates, package,
+    )
+    .map(wrap)
+}
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
 pub fn discover_without_slack_package(
     home: &Path,

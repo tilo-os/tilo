@@ -344,7 +344,7 @@ impl Drop for Devices {
 mod tests {
     use super::*;
     use crate::portal::CaptureSessionBinding;
-    use crate::shell::realtime_session::VerifiedAppRegistration;
+    use tilo_device_fabric::realtime_session::VerifiedAppRegistration;
 
     /// Long enough that a random 32-digit hex ID never contains its decimal or hex form by
     /// chance, so the check below only fails for an ID derived from the serial.

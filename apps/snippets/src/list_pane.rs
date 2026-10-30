@@ -120,7 +120,9 @@ impl ListPane {
                 core.open = Some(id);
             }
         })
-        .on_activate(move |id| activate.borrow_mut().push(Action::OpenSnippet(id)))
+        .on_activate_view("snippets.list-open", move |id| {
+            activate.borrow_mut().push(Action::OpenSnippet(id));
+        })
         .with_accessible_name(name)
         .with_semantic_key(ToString::to_string)
     }

@@ -57,9 +57,8 @@ It retains acquisition/signature logs and publishes only verified inputs to
 a new directory. Failed attempts retain their staging directory and logs.
 This acquisition step does not resolve or build either target environment.
 
-t's `wine-source` check runs this stage (`tools/ci/publish/wine.sh`), on the
-`image-wine-tools` image, and keeps the signed source and acquisition evidence as its
-outputs.
+`tools/ci/publish/wine.sh source OUT` runs this stage in the wine-tools image and
+keeps the signed source and acquisition evidence in `OUT`.
 
 ### CI producer: locked Mock builds
 

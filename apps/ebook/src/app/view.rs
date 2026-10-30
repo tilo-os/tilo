@@ -60,20 +60,10 @@ pub(super) enum Asked {
 }
 
 impl Shown {
-    /// Where the reader is in the open book: its page chrome, a row beside
-    /// the library.
-    pub(crate) fn live_rows(&self) -> Vec<LiveRow> {
-        self.reading.as_ref().map(reading_row).into_iter().collect()
-    }
-
-    /// The reading position, or the book, chapter, annotation or location
-    /// a search hit names, when the published page leaves it out.
+    /// The book, chapter, annotation or location a search hit names, when
+    /// the published page leaves it out.
     fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.reading
-            .as_ref()
-            .map(reading_row)
-            .filter(|row| row.id() == id)
-            .or_else(|| self.search.resolve(id).map(LiveRow::from_resource))
+        self.search.resolve(id).map(LiveRow::from_resource)
     }
 
     /// The library's edits bound to where the reader is: the page's
@@ -90,11 +80,6 @@ impl Shown {
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.search.entries()
     }
-}
-
-/// Where the reader is in the open book, as the row it publishes.
-fn reading_row(reading: &BookResourceCtx) -> LiveRow {
-    LiveRow::from_resource(crate::actions::reading_resource(reading))
 }
 
 /// The reader as the view lays it out: it shows the library the document
@@ -116,10 +101,9 @@ pub(crate) fn window(cx: &ViewCx<Ebook>, mut window: BooksApp) -> Element {
         let store = Rc::clone(&store);
         cx.bind_declarations(move |_| store.borrow().shown.declarations());
     }
-    let (rows, row, entries) = (Rc::clone(&store), Rc::clone(&store), store);
+    let (row, entries) = (Rc::clone(&store), store);
     cx.publishing(
         Publishes::new()
-            .live_rows(move || rows.borrow().shown.live_rows())
             .live_row(move |id| row.borrow().shown.live_row(id))
             .search_entries(move || entries.borrow().shown.search_entries()),
         Box::new(window),

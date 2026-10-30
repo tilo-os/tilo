@@ -46,9 +46,7 @@ fn anchor_scope(scope: &PickerScope) -> Result<Vec<SelectionRoot>, String> {
         .map(|path| {
             Ok(SelectionRoot {
                 path: path.clone(),
-                directory: crate::shell::nearby_transfer::SecureNearbySource::anchor_directory(
-                    path,
-                )?,
+                directory: tilo_nearby_service::SecureNearbySource::anchor_directory(path)?,
             })
         })
         .collect()
@@ -346,7 +344,7 @@ fn grant_paths(
     let mut total = 0_u64;
     for path in paths {
         let source = roots.iter().find_map(|root| {
-            crate::shell::nearby_transfer::SecureNearbySource::open_in_directory(
+            tilo_nearby_service::SecureNearbySource::open_in_directory(
                 &root.directory,
                 &root.path,
                 &path,

@@ -1,7 +1,0 @@
-[ratchets.closure_action_button]
-"apps/browser/src/address_controls.rs" = 2
-
-[ratchets.closure_control]
-"apps/browser/src/address_controls.rs" = 1
-"apps/browser/src/credentials.rs" = 1
-"apps/browser/src/settings.rs" = 3

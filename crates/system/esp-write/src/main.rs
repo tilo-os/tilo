@@ -41,7 +41,6 @@
 //! is the in-place UKI editor of `tilo_esp_write::uki` instead.
 
 use std::ffi::{CString, OsStr, OsString};
-use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -54,6 +53,7 @@ use rustix::fs::{AtFlags, CWD, Dir, FileType, Mode, OFlags, SeekFrom, StatVfsMou
 use rustix::io::Errno;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use tilo_pycompat::repr_str;
 
 const DEFAULT_PLAN_ROOT: &str = "/var/lib/tilo/esp-plan";
 const TMP_PREFIX: &str = ".tilo-esp-write.";
@@ -144,97 +144,6 @@ fn strerror(errno: Errno) -> String {
     }
 }
 
-/// A string quoted the way Python's `repr` quotes it, for messages.
-fn repr(text: &str) -> String {
-    let quote = if text.contains('\'') && !text.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(text.len().saturating_add(2));
-    out.push(quote);
-    for c in text.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                let _ = write!(out, "\\x{:02x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
-    out
-}
-
-/// One operation as Python's `json.dumps(op, sort_keys=True)` prints it, so
-/// the journal reads as it always has.
-fn py_json(value: &Value, out: &mut String) {
-    match value {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => {
-            let _ = write!(out, "{n}");
-        }
-        Value::String(s) => py_json_str(s, out),
-        Value::Array(items) => {
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                py_json(item, out);
-            }
-            out.push(']');
-        }
-        Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-            out.push('{');
-            for (i, key) in keys.into_iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                py_json_str(key, out);
-                out.push_str(": ");
-                if let Some(item) = map.get(key) {
-                    py_json(item, out);
-                }
-            }
-            out.push('}');
-        }
-    }
-}
-
-fn py_json_str(text: &str, out: &mut String) {
-    out.push('"');
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            ' '..='~' => out.push(c),
-            c => {
-                let mut units = [0u16; 2];
-                for unit in c.encode_utf16(&mut units) {
-                    let _ = write!(out, "\\u{unit:04x}");
-                }
-            }
-        }
-    }
-    out.push('"');
-}
-
 fn full_match(pattern: &str, text: &str) -> Result<bool> {
     let re = Regex::new(&format!("^(?:{pattern})$"))
         .map_err(|e| Failure::Other(format!("bad policy pattern {pattern}: {e}")))?;
@@ -274,7 +183,7 @@ fn components(path: &str) -> Result<Vec<&str>> {
     if path.is_empty() || path.starts_with('/') || !parts.iter().all(|p| is_name(p)) {
         return Err(Failure::Refused(format!(
             "not a plain ESP-relative path: {}",
-            repr(path)
+            repr_str(path)
         )));
     }
     Ok(parts)
@@ -314,7 +223,7 @@ fn open_dir(root: BorrowedFd<'_>, parts: &[&str], create: bool) -> Result<OwnedF
             Err(e) => {
                 return Err(Failure::Refused(format!(
                     "{} is not a directory, or is a symlink: {}",
-                    repr(part),
+                    repr_str(part),
                     strerror(e)
                 )));
             }
@@ -337,7 +246,7 @@ fn refuse_symlink<N: rustix::path::Arg + Copy>(
             errno,
         }),
         Ok(st) if FileType::from_raw_mode(st.st_mode).is_symlink() => Err(Failure::Refused(
-            format!("{} on the ESP is a symlink", repr(shown)),
+            format!("{} on the ESP is a symlink", repr_str(shown)),
         )),
         Ok(_) => Ok(true),
     }
@@ -347,7 +256,7 @@ fn staged_file(plan_dir: BorrowedFd<'_>, name: &str, want: &Value) -> Result<Fil
     if !is_name(name) {
         return Err(Failure::Refused(format!(
             "not a staged file name: {}",
-            repr(name)
+            repr_str(name)
         )));
     }
     let fd = rustix::fs::openat(
@@ -361,7 +270,7 @@ fn staged_file(plan_dir: BorrowedFd<'_>, name: &str, want: &Value) -> Result<Fil
     if !FileType::from_raw_mode(st.st_mode).is_file() {
         return Err(Failure::Refused(format!(
             "staged {} is not a regular file",
-            repr(name)
+            repr_str(name)
         )));
     }
     let mut file = File::from(fd);
@@ -379,7 +288,7 @@ fn staged_file(plan_dir: BorrowedFd<'_>, name: &str, want: &Value) -> Result<Fil
     if want.as_str() != Some(hex::encode(digest.finalize()).as_str()) {
         return Err(Failure::Refused(format!(
             "staged {} does not match its SHA-256",
-            repr(name)
+            repr_str(name)
         )));
     }
     rustix::fs::seek(&file, SeekFrom::Start(0)).map_err(os(format!("seek staged {name}")))?;
@@ -398,13 +307,13 @@ fn io_failure(what: &str, e: &io::Error) -> Failure {
 
 fn field<'a>(op: &'a Map<String, Value>, key: &str) -> Result<&'a Value> {
     op.get(key)
-        .ok_or_else(|| Failure::Other(format!("operation has no {}", repr(key))))
+        .ok_or_else(|| Failure::Other(format!("operation has no {}", repr_str(key))))
 }
 
 fn str_field<'a>(op: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
     field(op, key)?
         .as_str()
-        .ok_or_else(|| Failure::Other(format!("operation's {} is not a string", repr(key))))
+        .ok_or_else(|| Failure::Other(format!("operation's {} is not a string", repr_str(key))))
 }
 
 /// Names in `dir`, without `.` and `..`.
@@ -468,7 +377,7 @@ fn apply(
         }
         _ => {
             let kind = match op.get("op") {
-                Some(Value::String(s)) => repr(s),
+                Some(Value::String(s)) => repr_str(s),
                 None | Some(Value::Null) => "None".to_owned(),
                 Some(other) => other.to_string(),
             };
@@ -676,9 +585,8 @@ fn run_plan(policy: &Policy, plan_dir: BorrowedFd<'_>, crash_after: i64) -> Resu
             return Err(Failure::Interrupted);
         }
         apply(policy, op, root_fd.as_fd(), plan_dir)?;
-        let mut line = format!("tilo-esp-write: caller={} ", policy.caller);
-        py_json(op, &mut line);
-        writeln!(stdout, "{line}")
+        let line = tilo_pycompat::Dumps::SORTED.dumps(op);
+        writeln!(stdout, "tilo-esp-write: caller={} {line}", policy.caller)
             .and_then(|()| stdout.flush())
             .map_err(|e| io_failure("log", &e))?;
     }

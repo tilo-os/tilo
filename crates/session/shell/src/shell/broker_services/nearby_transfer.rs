@@ -15,7 +15,7 @@ use super::super::state::WorkspaceAuthority as _;
 use super::super::state::{Capability, FsMode, WorkspaceTreeHandle};
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
 use crate::shell::device_fabric_runtime as fabric;
-use crate::shell::nearby_transfer::{SecureNearbyDestination, SecureNearbySource};
+use tilo_nearby_service::{SecureNearbyDestination, SecureNearbySource};
 use tilo_network_actor::fabric::DeviceId;
 
 /// As long as transfer and destination handles: Files no longer re-asks

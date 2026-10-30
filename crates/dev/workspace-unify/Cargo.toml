@@ -542,7 +542,6 @@ doc = false
 "iroh-base-1_0_3" = { package = "iroh-base", version = "^1.0.3", default-features = false, features = ["default", "key", "relay"] }
 "iroh-blobs-0_103_0" = { package = "iroh-blobs", version = "^0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
-"iroh-gossip-0_101_0" = { package = "iroh-gossip", path = "../../../vendor/iroh-gossip", default-features = false, features = ["default", "metrics", "net"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
 "iroh-relay-1_0_3" = { package = "iroh-relay", version = "^1.0.3", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
@@ -989,7 +988,7 @@ doc = false
 "shannon-0_2_0" = { package = "shannon", version = "^0.2.0", default-features = false, features = [] }
 "sharded-slab-0_1_7" = { package = "sharded-slab", version = "^0.1.7", default-features = false, features = [] }
 "sheets" = { path = "../../../apps/sheets", default-features = false, features = ["samples"] }
-"shell" = { path = "../../../crates/session/shell", default-features = false, features = ["default", "hosted-test-control", "in-process-apps", "test-support"] }
+"shell" = { path = "../../../crates/session/shell", default-features = false, features = ["default", "hosted-test-control", "test-support"] }
 "shell-words-1_1_1" = { package = "shell-words", version = "^1.1.1", default-features = false, features = ["default", "std"] }
 "shlex-1_3_0" = { package = "shlex", version = "^1.3.0", default-features = false, features = ["default", "std"] }
 "shortcuts" = { path = "../../../apps/shortcuts", default-features = false, features = ["samples"] }
@@ -1150,6 +1149,7 @@ doc = false
 "tilo-desktop" = { path = "../../../crates/session/desktop", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = ["appimage"] }
 "tilo-desktop-model" = { path = "../../../crates/session/desktop-model", default-features = false, features = [] }
+"tilo-desktop-policy" = { path = "../../../crates/session/desktop-policy", default-features = false, features = [] }
 "tilo-desktop-search" = { path = "../../../crates/session/desktop-search", default-features = false, features = [] }
 "tilo-desktop-surface" = { path = "../../../crates/session/desktop-surface", default-features = false, features = [] }
 "tilo-device-admin" = { path = "../../../crates/dev/tilo-device-admin", default-features = false, features = [] }
@@ -2961,7 +2961,6 @@ doc = false
 "iroh-base-1_0_3" = { package = "iroh-base", version = "^1.0.3", default-features = false, features = ["default", "key", "relay"] }
 "iroh-blobs-0_103_0" = { package = "iroh-blobs", version = "^0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
-"iroh-gossip-0_101_0" = { package = "iroh-gossip", path = "../../../vendor/iroh-gossip", default-features = false, features = ["default", "metrics", "net"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
 "iroh-relay-1_0_3" = { package = "iroh-relay", version = "^1.0.3", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
@@ -3397,7 +3396,7 @@ doc = false
 "shannon-0_2_0" = { package = "shannon", version = "^0.2.0", default-features = false, features = [] }
 "sharded-slab-0_1_7" = { package = "sharded-slab", version = "^0.1.7", default-features = false, features = [] }
 "sheets" = { path = "../../../apps/sheets", default-features = false, features = [] }
-"shell" = { path = "../../../crates/session/shell", default-features = false, features = ["default", "hosted-test-control", "in-process-apps", "test-support"] }
+"shell" = { path = "../../../crates/session/shell", default-features = false, features = ["default", "hosted-test-control", "test-support"] }
 "shell-words-1_1_1" = { package = "shell-words", version = "^1.1.1", default-features = false, features = ["default", "std"] }
 "shlex-1_3_0" = { package = "shlex", version = "^1.3.0", default-features = false, features = ["default", "std"] }
 "shortcuts" = { path = "../../../apps/shortcuts", default-features = false, features = [] }
@@ -3553,6 +3552,7 @@ doc = false
 "tilo-desktop" = { path = "../../../crates/session/desktop", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = ["appimage"] }
 "tilo-desktop-model" = { path = "../../../crates/session/desktop-model", default-features = false, features = [] }
+"tilo-desktop-policy" = { path = "../../../crates/session/desktop-policy", default-features = false, features = [] }
 "tilo-desktop-search" = { path = "../../../crates/session/desktop-search", default-features = false, features = [] }
 "tilo-desktop-surface" = { path = "../../../crates/session/desktop-surface", default-features = false, features = [] }
 "tilo-device-admin" = { path = "../../../crates/dev/tilo-device-admin", default-features = false, features = [] }

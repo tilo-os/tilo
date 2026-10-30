@@ -358,6 +358,14 @@ pub enum MusicEffect {
     /// Open artist
     #[effect(view, row)]
     OpenArtist { artist: String },
+    /// Browse genre
+    ///
+    /// Opens the platform search for Music, prefilled with the genre.
+    #[effect(view)]
+    BrowseGenre {
+        #[param("The genre to search for")]
+        genre: String,
+    },
     /// Play
     ///
     /// Plays a track on its own, or (with `queued`) this exact occurrence of

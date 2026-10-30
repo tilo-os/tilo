@@ -211,9 +211,10 @@ impl ShellOverlayHost {
                 | LaunchEventKind::WindowLost { .. }
                 | LaunchEventKind::OutOfMemory(_) => false,
             };
-            // The windows that went away with the launch are worth keeping
-            // only when memory ended it: then its notice reopens them where
-            // they were. Any other end of the app forgets them.
+            // The windows that went away with the launch kept their places
+            // as the app's cards. When memory ended it, its notice opens the
+            // app again into them; after any other end the cards stay for
+            // the person to open.
             let lost_tabs = match &event.kind {
                 LaunchEventKind::OutOfMemory(end) if !end.closed_the_app() => Vec::new(),
                 LaunchEventKind::Started { .. } => Vec::new(),

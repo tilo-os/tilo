@@ -3,7 +3,7 @@
 //!
 //! ## The split — almost everything here is external
 //!
-//! The Tilo action-model recipe (`docs/action-model-recipe.md`) sorts every
+//! The Tilo action-model recipe sorts every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
 //! becomes an [`Action`](tilo_actions::Action) (a serializable value that deterministically changes
 //! the shared Automerge document, so undo and multi-peer replay come for free),

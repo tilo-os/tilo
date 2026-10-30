@@ -212,7 +212,7 @@ jobs:
   # Pull requests containing only audited prose or self-tested quality helpers
   # may omit this independent suite.
   # The boundary invariants run five fixture binaries built from the merged
-  # tree, as t's security check depends on its vm-test-binaries check. Build
+  # tree. Build
   # them where the compiler and cache are warm: the checks themselves are
   # mostly text, but their first cold build on a 2-CPU lane spent a 30-minute
   # timeout inside one invariant and reported no result at all.
@@ -489,7 +489,7 @@ jobs:
         run: >-
           bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
-          bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
+          bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}${CAPABILITY_FILTER:+ and $CAPABILITY_FILTER}"
 
       # Each nextest phase writes the same ci-profile JUnit path. Preserve

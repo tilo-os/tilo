@@ -68,8 +68,8 @@ fn main() -> std::process::ExitCode {
 /// else the runner runs, rather than work done by the desktop. [`IDLE_CPU_BUDGET`] still catches a thread that spins without
 /// blocking.
 ///
-/// Measured on CI's shared x86-64 runner (headless, llvmpipe, debug build;
-/// `docs/benchmarks/idle-wakeups-2026-10-09.md` has the tables): 60/s with
+/// Measured on CI's shared x86-64 runner (headless, llvmpipe, debug build):
+/// 60/s with
 /// the frame loop parked. Before #3986 a run could also land in a spin of
 /// up to 2008/s: an in-process app whose record was still saving at its last
 /// frame left a wake deadline that only its next draw moved, so the loop ran

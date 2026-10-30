@@ -4,6 +4,7 @@
 //! control is bound to one of the panel's actions or effects.
 
 mod edit;
+mod now_playing;
 mod pages;
 mod root;
 mod sections;
@@ -44,6 +45,9 @@ pub(crate) struct Parts {
     query: LocalState<String>,
     /// The app groups folded on the notifications page.
     folded: LocalState<Vec<String>>,
+    /// What plays: the transport's song and playhead, and the choices
+    /// around it.
+    now_playing: now_playing::Parts,
 }
 
 /// The accessories and the person's devices one can move to.
@@ -102,6 +106,7 @@ impl Parts {
             arrangement: readings.project(Arrangement::of),
             query: LocalState::new(String::new()),
             folded: LocalState::new(Vec::new()),
+            now_playing: now_playing::Parts::new(readings),
         }
     }
 

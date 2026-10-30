@@ -5,8 +5,7 @@
 #
 # These crates are path dependencies outside the workspace, so the workspace's
 # `cargo test` builds them but never runs their tests. With no argument, runs
-# every crate in VENDORED_TEST_CRATES (tools/ci/package_sets.py); t.toml's
-# `vendored` check runs them when their files change.
+# every crate in VENDORED_TEST_CRATES (tools/ci/package_sets.py).
 #
 # Each crate is its own workspace. Its lock file (ignored by git) starts as the
 # workspace's Cargo.lock, so its dependencies are tested at the versions Tilo

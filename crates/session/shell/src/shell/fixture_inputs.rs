@@ -55,7 +55,7 @@ pub(crate) fn validate(
             "persistence and filesystem ACL paths must be absent",
         ));
     }
-    if !inputs.is_fixture() || inputs.files.is_none() || inputs.file_services().is_none() {
+    if !inputs.is_fixture() || !inputs.owns_files() {
         return Err(ShellFixtureError::Hosted(
             super::hosted_inputs::HostedTileError::RequiredServiceMissing(
                 "explicit fixture Files inputs/services",
@@ -293,12 +293,9 @@ mod tests {
         fn fixture_rebuild_keeps_explicit_actor_records_and_services() {
             let parent = tempfile::tempdir().unwrap();
             let inputs = inputs(parent.path());
-            let child = inputs.hosted.files.as_ref().unwrap().initial_dir.clone();
             let guard = DenyAmbientStarts::new();
             let tree = WorkspaceTree::bootstrap_demo();
-            let strip = tree.desktop.workspaces[0].strips[0].id;
             let note = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-            let files = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[1].id;
             let mut frame = FrameBuilder::with_fixture_inputs(tree, (3840, 2160), inputs).unwrap();
             let mut document = automerge::AutoCommit::new();
             frame.pump_apps(&mut document, &automerge::ROOT);
@@ -347,7 +344,6 @@ mod tests {
                 &frame.host().room_records()
             ));
             assert!(room_index.borrow().holds(home, &record.id));
-            assert_rebuilt_files(&mut frame, strip, files, &child, &document);
             assert_eq!(
                 frame.host().fixture_provider_ids(),
                 vec![
@@ -364,7 +360,13 @@ mod tests {
         fn fixture_directory_lives_through_rebuild_and_last_chrome_clone() {
             let parent = tempfile::tempdir().unwrap();
             let inputs = inputs(parent.path());
-            let child = inputs.hosted.files.as_ref().unwrap().initial_dir.clone();
+            let child = inputs
+                .hosted
+                .picker_scope
+                .as_ref()
+                .unwrap()
+                .initial_dir
+                .clone();
             assert_eq!(child.parent(), Some(parent.path()));
             let guard = DenyAmbientStarts::new();
             let mut frame = FrameBuilder::with_fixture_inputs(
@@ -431,7 +433,7 @@ mod tests {
                 ));
             }
             let mut missing = inputs(parent.path());
-            missing.hosted.files = None;
+            missing.hosted = crate::shell::hosted_inputs::HostedTileInputs::fixture().unwrap();
             assert!(matches!(
                 FrameBuilder::with_fixture_inputs(
                     WorkspaceTree::bootstrap_demo(),
@@ -481,40 +483,5 @@ mod tests {
                 .iter()
                 .any(|(_, label, _)| label == &title)
         );
-    }
-
-    fn assert_rebuilt_files(
-        frame: &mut FrameBuilder,
-        strip: crate::shell::state::StripId,
-        files_tab: u64,
-        child: &std::path::Path,
-        document: &automerge::AutoCommit,
-    ) {
-        use ui::widget::Widget;
-        let group = frame.host_mut().group_at_for_tests(strip, 0).unwrap();
-        assert!(group.set_active_tab(files_tab));
-        let host = group.active_host_mut().unwrap();
-        host.sync(document, &automerge::ROOT);
-        frame.relayout();
-        let files = frame
-            .mounted_mut(file_explorer::mounted_files)
-            .expect("actual Files app");
-        files.state().refresh();
-        let entries = files.state().displayed_entries();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].name, "Welcome.txt");
-        assert_eq!(entries[0].path, child.join("Welcome.txt"));
-        assert!(
-            files
-                .state()
-                .open_entry(0, &mut file_explorer::files_app::SystemRunner)
-                .unwrap()
-        );
-        let told = files.state().notice_line().expect("a refused open is said");
-        // The notice comes from Files' catalogue, not the shell's: naming the
-        // key apart from the call keeps the shell's catalogue check from
-        // claiming it.
-        let files_key = "files-open-unavailable";
-        assert!(told.contains(&file_explorer::i18n::t(files_key)), "{told}");
     }
 }

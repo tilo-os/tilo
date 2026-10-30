@@ -1789,117 +1789,73 @@ fn formula_bar_shows_the_cells_composition() {
     assert_eq!((bar.preedit, bar.caret), (None, Some(3)));
 }
 
-/// Ctrl+K opens the palette, which captures arrows and handles go-to-cell.
+/// The commands open the host's search on the workbook, Ctrl+K's palette;
+/// its "Go to cell" moves the selection.
 #[test]
-fn command_palette_captures_keys_and_goes_to_cells() {
-    {
-        let (mut app, mut doc) = seeded_app();
-        assert!(!app.palette.is_open());
-        let handled = feed(&mut app, &mut doc, &char_event("k"), ctrl_mods());
-        assert!(handled, "Ctrl+K must be consumed");
-        assert!(app.palette.is_open(), "Ctrl+K must open the palette");
-        // The first action is the argument-taking "Go to cell".
-        assert!(
-            app.palette
-                .selected_id()
-                .is_some_and(|id| id.ends_with("go-to-cell"))
-        );
-    }
+fn commands_open_the_hosts_search_and_go_to_cells() {
+    let (mut app, _doc) = seeded_app();
+    app.open_command_palette();
+    assert_eq!(
+        asked_search(&mut app),
+        ui::search::SearchRequest::this_app()
+    );
 
-    {
-        let (mut app, mut doc) = seeded_app();
-        let start = app.grid.active(); // E2 = (4, 1)
-        app.open_command_palette();
-        let first = app
-            .palette
-            .selected_id()
-            .expect("the palette has an initial highlighted entry")
-            .to_string();
-        assert!(first.ends_with("go-to-cell"));
+    assert_ne!(app.grid.active(), (1, 11));
+    let resources = app.published();
+    let resource = tilo_actions::flatten(&resources)
+        .into_iter()
+        .find(|flat| flat.action.id == "go-to-cell")
+        .expect("the workbook publishes Go to cell")
+        .resource_id
+        .0;
+    let spec =
+        tilo_actions::door::spec_of(&resources, &resource, "go-to-cell").expect("it resolves");
+    assert_eq!(spec.kind, tilo_actions::OperationKind::View);
+    let encoded = spec
+        .build_json(&prompt_arguments(spec, "B12"))
+        .expect("valid arguments");
+    let effect =
+        <actions::SheetsEffect as ui::tilo_resource::Effect>::from_payload(&encoded.payload)
+            .expect("a workbook effect");
+    app.show(effect).expect("the view is shown");
+    assert_eq!(app.grid.active(), (1, 11), "selection jumped to B12");
 
-        // ArrowDown is consumed by the palette and advances its highlight — the
-        // grid selection behind it must NOT move.
-        let handled = feed(
-            &mut app,
-            &mut doc,
-            &named_event(winit::keyboard::NamedKey::ArrowDown),
-            Modifiers::default(),
-        );
-        assert!(handled, "the palette must consume ArrowDown");
-        assert_ne!(
-            app.palette.selected_id(),
-            Some(first.as_str()),
-            "highlight advanced"
-        );
-        assert_eq!(app.grid.active(), start, "the grid selection must not move");
-
-        let handled = feed(
-            &mut app,
-            &mut doc,
-            &named_event(winit::keyboard::NamedKey::ArrowUp),
-            Modifiers::default(),
-        );
-        assert!(handled);
-        assert_eq!(app.palette.selected_id(), Some(first.as_str()));
-        assert_eq!(app.grid.active(), start);
-    }
-
-    {
-        let (mut app, mut doc) = seeded_app();
-        assert_ne!(app.grid.active(), (1, 11));
-        app.open_command_palette();
-        // Enter opens the argument step, pre-seeded (and fully selected) with
-        // the active cell reference.
-        feed(
-            &mut app,
-            &mut doc,
-            &named_event(winit::keyboard::NamedKey::Enter),
-            Modifiers::default(),
-        );
-        assert!(app.palette.in_argument_mode());
-        // Type a new reference — replaces the selected prefill.
-        for ch in ["B", "1", "2"] {
-            assert!(feed(
-                &mut app,
-                &mut doc,
-                &char_event(ch),
-                Modifiers::default()
-            ));
-        }
-        assert_eq!(app.palette.argument_buffer(), Some("B12"));
-        // Confirm → jumps the selection and closes the palette.
-        feed(
-            &mut app,
-            &mut doc,
-            &named_event(winit::keyboard::NamedKey::Enter),
-            Modifiers::default(),
-        );
-        app.dispatch_palette_view_for_test();
-        assert!(
-            !app.palette.is_open(),
-            "running a command closes the palette"
-        );
-        assert_eq!(app.grid.active(), (1, 11), "selection jumped to B12");
-    }
-
-    {
-        let (mut app, _doc) = seeded_app();
-        app.go_to_cell("not-a-ref");
-        assert!(app.status.contains("not a valid"), "status: {}", app.status);
-    }
+    app.go_to_cell("not-a-ref");
+    assert!(app.status.contains("not a valid"), "status: {}", app.status);
 }
 
-/// Run the published action the palette emitted against `doc`, as the
-/// door does, and let the app follow.
-fn run_palette_action(app: &mut SheetsApp, doc: &mut AutoCommit) {
-    let intent = ui::widget::controls::take_control_invocation(app)
-        .expect("the palette invoked a published action");
+/// The search the app asked the host to open.
+fn asked_search(app: &mut SheetsApp) -> ui::search::SearchRequest {
+    let invocation = ui::widget::controls::take_control_invocation(app)
+        .expect("the app asked the host to open search");
+    ui::search::SearchRequest::from_arguments(&invocation.arguments)
+}
+
+/// `text` as the one argument the prompted action `spec` takes.
+fn prompt_arguments(
+    spec: &tilo_actions::ActionSpec,
+    text: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert(
+        spec.prompt_param().expect("a prompted action").to_owned(),
+        text.into(),
+    );
+    arguments
+}
+
+/// Answer the action the app asked the host's palette for, which started
+/// from `prefill`, with `text`, run it against `doc` as the door does, and
+/// let the app follow.
+fn answer_asked(app: &mut SheetsApp, doc: &mut AutoCommit, prefill: Option<&str>, text: &str) {
+    let request = asked_search(app);
+    assert_eq!(request.query.as_deref(), prefill);
+    let address = request.asked().expect("the palette asks for an action");
     let resources = app.published();
-    let spec = tilo_actions::door::resolve(&resources, &intent.address)
-        .expect("the palette's address resolves");
+    let spec = tilo_actions::door::resolve(&resources, &address).expect("the address resolves");
     let encoded = spec
-        .build_json(&intent.arguments)
-        .expect("the palette's arguments build");
+        .build_json(&prompt_arguments(spec, text))
+        .expect("the arguments build");
     let action: <Workbook as ui::tilo_resource::Resource>::Action =
         serde_json::from_slice(&encoded.payload).expect("a workbook action");
     let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
@@ -1908,22 +1864,8 @@ fn run_palette_action(app: &mut SheetsApp, doc: &mut AutoCommit) {
     app.sync(doc, &automerge::ROOT);
 }
 
-/// Type `text` over the palette's argument, then press Enter.
-fn answer_palette(app: &mut SheetsApp, doc: &mut AutoCommit, text: &str) {
-    assert!(app.palette.in_argument_mode(), "the palette asks");
-    for ch in text.chars() {
-        feed(app, doc, &char_event(&ch.to_string()), Modifiers::default());
-    }
-    feed(
-        app,
-        doc,
-        &named_event(winit::keyboard::NamedKey::Enter),
-        Modifiers::default(),
-    );
-}
-
 /// Editing a chart, replying to a comment and editing a comment ask in
-/// the palette for the argument of the action the chart or comment
+/// the host's palette for the argument of the action the chart or comment
 /// publishes, and invoke that action.
 #[test]
 fn annotation_edits_ask_for_the_published_actions() {
@@ -1961,9 +1903,7 @@ fn annotation_edits_ask_for_the_published_actions() {
         AnnotationClick::EditChart(chart.as_str().to_owned()),
         &mut Edits::lend(&mut doc),
     );
-    assert_eq!(app.palette.argument_buffer(), Some("Spend"));
-    answer_palette(&mut app, &mut doc, "Costs");
-    run_palette_action(&mut app, &mut doc);
+    answer_asked(&mut app, &mut doc, Some("Spend"), "Costs");
     let charted = doc_workbook(&doc);
     let edited = charted
         .sheets
@@ -1979,16 +1919,13 @@ fn annotation_edits_ask_for_the_published_actions() {
         AnnotationClick::Reply(comment.as_str().to_owned()),
         &mut Edits::lend(&mut doc),
     );
-    answer_palette(&mut app, &mut doc, "Done");
-    run_palette_action(&mut app, &mut doc);
+    answer_asked(&mut app, &mut doc, None, "Done");
 
     app.apply_annotation_click(
         AnnotationClick::EditComment(comment.as_str().to_owned()),
         &mut Edits::lend(&mut doc),
     );
-    assert_eq!(app.palette.argument_buffer(), Some("Check this"));
-    answer_palette(&mut app, &mut doc, "Checked");
-    run_palette_action(&mut app, &mut doc);
+    answer_asked(&mut app, &mut doc, Some("Check this"), "Checked");
 
     let state = doc_workbook(&doc);
     let thread = state.comments.get(&comment).unwrap();
@@ -2071,9 +2008,7 @@ fn a_chart_card_changes_its_type_and_cells() {
         .map(|(rect, _)| rect.center())
         .expect("the card offers its cells");
     assert!(app.try_annotation_click(cells, &mut Edits::lend(&mut doc), &mut handled));
-    assert_eq!(app.palette.argument_buffer(), Some("B2:C4"));
-    answer_palette(&mut app, &mut doc, "A1:D3");
-    run_palette_action(&mut app, &mut doc);
+    answer_asked(&mut app, &mut doc, Some("B2:C4"), "A1:D3");
     let state = doc_workbook(&doc);
     let sheet_state = state.sheets.get(&sheet).unwrap();
     let shown = sheet_state

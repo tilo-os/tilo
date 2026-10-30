@@ -40,6 +40,19 @@ pub(super) fn bound<C: ActionControl<()>>(
     }
 }
 
+/// `action`'s binding on the published surface, for a widget that is not an
+/// [`ActionControl`] and takes bindings of its own.
+pub(super) fn binding(
+    actions: Option<&Actions<Library>>,
+    action: &Action,
+) -> Option<tilo_actions::ActionBinding<()>> {
+    let actions = actions?;
+    match action.published()? {
+        Published::Effect(effect) => actions.effect(&effect),
+        Published::Edit(edit) => actions.invocation(ui::tilo_resource::Invoke::edit(&edit).ok()?),
+    }
+}
+
 /// A button pressing `action`: bound where it is published ([`bound`]),
 /// else published as its own view action or effect.
 pub(super) fn press(

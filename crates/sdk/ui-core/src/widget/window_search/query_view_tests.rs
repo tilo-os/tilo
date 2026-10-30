@@ -184,8 +184,8 @@ fn a_view_answers_only_while_it_offers_a_query() {
         typed.borrow_mut().push(text.to_owned());
     })
     .offered_while(move || on.get())
-    .on_open(move || opened.borrow_mut().push("opened".to_owned()))
-    .on_close(move || closed.borrow_mut().push("closed".to_owned()));
+    .opening(move || opened.borrow_mut().push("opened".to_owned()))
+    .closing(move || closed.borrow_mut().push("closed".to_owned()));
     assert_eq!(
         InPlace::of(&mut root),
         InPlace::Nothing,

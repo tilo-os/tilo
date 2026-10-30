@@ -120,8 +120,6 @@ pub(crate) enum Request {
     FeedMenu(Id, Rect, Option<Point>),
     /// The person folded (`true`) or unfolded a folder in the sidebar.
     SetFolderCollapsed(Id, bool),
-    SetFont(ReadFont),
-    SetPaper(ReadTheme),
     /// The reading scale as a percentage.
     SetScale(f64),
 }
@@ -482,6 +480,8 @@ pub(crate) struct Core {
     pub(crate) worker: Option<FetchWorker>,
     synced: bool,
     pub(crate) dispatcher: Option<ui::framework::Dispatcher<Library>>,
+    /// The library's published actions, which the reading settings bind to.
+    pub(crate) actions: Option<ui::framework::Actions<Library>>,
     read_settings: Option<ui::framework::Setting<ReadSettings>>,
     refresh_reply: Option<ui::framework::EffectReply>,
     /// The document heads the mirrored store was last reconciled against.
@@ -496,6 +496,8 @@ pub(crate) struct Core {
     show_pane: Option<NavPane>,
     /// The first feed's sidebar row (its lift), as last painted.
     pub(crate) first_feed_row: Option<(Id, Rect)>,
+    /// What the window's controls and effects asked of the window.
+    pub(crate) requests: Requests,
 }
 
 /// Mark the article at `id` read or unread.
@@ -508,6 +510,7 @@ impl Core {
         Self {
             live: None,
             presented: None,
+            requests: Rc::default(),
             store: Rc::new(store),
             filter: Filter::All,
             selected: None,
@@ -532,6 +535,7 @@ impl Core {
             worker: None,
             synced: false,
             dispatcher: None,
+            actions: None,
             read_settings: None,
             refresh_reply: None,
 
@@ -1480,8 +1484,6 @@ impl Core {
                     );
                 }
             }
-            Request::SetFont(font) => self.bump_setting(doc, |s| s.font = font),
-            Request::SetPaper(paper) => self.bump_setting(doc, |s| s.theme = paper),
             Request::SetScale(percent) => {
                 self.bump_setting(doc, |s| s.font_scale = (percent / 100.0) as f32);
             }
@@ -1634,28 +1636,30 @@ impl FeedsApp {
     /// The live app: starts empty on the person's subscriptions and never
     /// fabricates feeds.
     pub fn new() -> Self {
-        Self::build(Library::new())
+        Self::build(Library::new(), None)
     }
 
     /// The sample library, on its richest unread article, for tests.
     #[cfg(feature = "samples")]
     pub fn new_demo() -> Self {
-        let app = Self::build(sample::store());
+        let app = Self::build(sample::store(), None);
         app.core.borrow_mut().select_featured();
         app
     }
 
-    fn build(store: Library) -> Self {
+    /// The window over `store`; with the library's `actions`, its controls
+    /// run the published effects.
+    fn build(store: Library, actions: Option<&ui::framework::Actions<Library>>) -> Self {
         let core: Shared = Rc::new(RefCell::new(Core::new(store)));
 
-        let requests: Requests = Rc::default();
+        let requests = Rc::clone(&core.borrow().requests);
         // The reader's commands are the window bar's slots
         // ([`Self::declare_window_toolbar`]): the shell draws no header row.
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Reading)
             .with_id("feeds.shell")
             .with_window_toolbar()
-            .sidebar(Box::new(SidebarNav::new(&core, &requests)))
+            .sidebar(Box::new(SidebarNav::new(&core, &requests, actions)))
             .overview(Box::new(ListPane::new(&core)))
             .content(Box::new(ReaderPane::new(&core)));
         Self {
@@ -1920,12 +1924,12 @@ impl FeedsApp {
             self.close_settings_panel();
             return;
         }
-        let settings = {
+        let (settings, actions) = {
             let core = self.core.borrow();
             if core.open_article().is_none() {
                 return;
             }
-            core.settings
+            (core.settings, core.actions.clone())
         };
         // The panel opens from the window bar's Reading settings, which
         // stands over the article's column: under the column's top edge,
@@ -1935,12 +1939,16 @@ impl FeedsApp {
         self.core.borrow_mut().menu = None;
         let window = Widget::get_rect(&self.shell);
         self.settings_panel = Some(
-            Popover::with_content(reader_settings_panel(settings, &self.requests))
-                .with_label("Reading settings")
-                .anchored(anchor)
-                .side(PopoverSide::Below)
-                .with_viewport(window)
-                .open(true),
+            Popover::with_content(reader_settings_panel(
+                settings,
+                &self.requests,
+                actions.as_ref(),
+            ))
+            .with_label("Reading settings")
+            .anchored(anchor)
+            .side(PopoverSide::Below)
+            .with_viewport(window)
+            .open(true),
         );
         self.overlays_dirty = true;
     }
@@ -2128,15 +2136,19 @@ impl ui::widget::Decorator for FeedsApp {
         &mut self.shell
     }
 
-    // While a dialog is open it is the window's one live part: what its
-    // controls run reaches it, not the shell behind its scrim.
+    // While a dialog is open its controls are the window's only live ones,
+    // not the shell's behind its scrim. What the window publishes and the
+    // operations addressed to it stay with whichever part publishes them,
+    // shell or dialog, so a published action never goes unanswered.
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ui::undo::LocalUndo>() {
             request.provide::<dyn ui::undo::LocalUndo>(self);
         } else if request.wants::<dyn ui::undo::UndoControl>() {
             request.provide::<dyn ui::undo::UndoControl>(self);
         } else if let Some(modal) = &self.modal {
-            Widget::provide(&modal.dialog, request);
+            if request.wants::<dyn ui::widget::controls::ActionControls>() {
+                Widget::provide(&modal.dialog, request);
+            }
         } else {
             Widget::provide(&self.shell, request);
         }
@@ -2147,7 +2159,9 @@ impl ui::widget::Decorator for FeedsApp {
         } else if request.wants::<dyn ui::undo::UndoControl>() {
             request.provide::<dyn ui::undo::UndoControl>(self);
         } else if let Some(modal) = &mut self.modal {
-            Widget::provide_mut(&mut modal.dialog, request);
+            if request.wants::<dyn ui::widget::controls::ActionControls>() {
+                Widget::provide_mut(&mut modal.dialog, request);
+            }
         } else {
             Widget::provide_mut(&mut self.shell, request);
         }
@@ -2658,6 +2672,7 @@ impl Core {
                 return Ok(Effected::Pending);
             }
             FeedsEffect::ImportOpml => self.request_import(),
+            FeedsEffect::NewFolderForm => self.requests.borrow_mut().push(Request::NewFolder),
             FeedsEffect::ExportOpml => self.export_opml(),
             FeedsEffect::RevealTag { tag } => {
                 if !self.store.has_tag(&tag) {
@@ -2714,11 +2729,12 @@ impl FeedsApp {
 /// hit or an agent's `open` names, answers [`FeedsEffect`] and stages the
 /// captures.
 pub(crate) fn window(cx: &ViewCx<Library>) -> ui::widget::Element {
-    let app = FeedsApp::new();
+    let app = FeedsApp::build(Library::new(), Some(&cx.actions()));
     {
         let mut core = app.core.borrow_mut();
         core.live = Some(cx.live().clone());
         core.dispatcher = Some(cx.dispatcher());
+        core.actions = Some(cx.actions());
         core.follow_read_settings(cx.settings::<ReadSettings>());
         core.follow_document();
     }

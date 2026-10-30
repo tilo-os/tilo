@@ -24,11 +24,8 @@ and a run that passes the room's own guest cap and so refuses. `summarize`
 reports the three as the workload's budget; a run that breaks it fails the
 fast, dispatched check.
 
-t's perf-room-capacity check (t.toml) runs the sweep on a node of known size;
-docs/benchmarks/room-host-capacity-2026-10.md records a run. The degraded
-probe is `perf-room-degraded` (t.toml, tools/ci/perf-room-degraded.sh), in
-the performance run, and docs/architecture/hosting-capacity.md states the
-budget it holds and what it establishes.
+Run the sweep on a node of known size. The degraded probe is
+tools/ci/perf-room-degraded.sh, in the performance run.
 
     python3 tools/perf/room_capacity.py sweep --bin target/release/tilo-room-load --out sweep
     python3 tools/perf/room_capacity.py degraded --bin target/release/tilo-room-load --out probe
@@ -70,8 +67,8 @@ SPECTATOR_BASE_GUESTS = 50
 CAP_GUESTS = 500
 CAP_SPECTATORS = 2000
 
-# Guests a public room host is declared to carry (docs/architecture/hosting-capacity.md,
-# measured in the write-up this module's sweep produced). Admission caps above
+# Guests a public room host is declared to carry (measured by
+# this module's sweep). Admission caps above
 # that are a backstop, not a capacity claim.
 DECLARED_GUESTS = 100
 # The public room's service level at that capacity, as the workload measures it

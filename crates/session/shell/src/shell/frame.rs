@@ -71,7 +71,7 @@ fn consume_record_requests(
                         }
                     });
                     actor.is_some_and(|actor| {
-                        crate::shell::search::providers::actions::shell_action_authorized_for(
+                        crate::shell::actions::shell_action_authorized_for(
                             workspace,
                             &actor,
                             "record.bring",
@@ -755,9 +755,6 @@ pub struct FrameBuilder {
     /// Compositor-authorised OSK, deliberately outside the workspace/tile
     /// tree. Its widget only mirrors pixels; protocol trust lives in State.
     osk_overlay: Option<ForeignSurfaceWidget>,
-    /// The keyboard an offscreen capture draws, as no client surface exists
-    /// to mirror; laid out where [`Self::layout_osk_overlay`] docks it.
-    shots_keyboard: Option<Box<dyn Widget>>,
     /// Authenticated app-owned call/navigation toplevels. Like the OSK these
     /// are client buffers outside the workspace tree, but each carries
     /// its own desktop placement and native input target.
@@ -1168,7 +1165,6 @@ impl FrameBuilder {
             peer_presence: None,
             shared_window_marks: Vec::new(),
             osk_overlay: None,
-            shots_keyboard: None,
             floating_overlays: Vec::new(),
             fullscreen_overlay: None,
             system_modal_scrim: false,
@@ -1591,14 +1587,6 @@ impl FrameBuilder {
             } else {
                 find(widget)
             }
-        })
-    }
-
-    #[cfg(test)]
-    fn widget_name(&self, id: NodeId) -> Option<&'static str> {
-        self.node_map.get(&id).map(|&widget| {
-            // SAFETY: this map belongs to the current, live layout tree.
-            unsafe { (*widget).name() }
         })
     }
 
@@ -2136,7 +2124,7 @@ impl FrameBuilder {
     /// working on. The release gate taps its keys from the same placement
     /// (`keyboard_rect` in `tools/atspi_external_client.py`).
     fn layout_osk_overlay(&mut self) {
-        if self.osk_overlay.is_none() && self.shots_keyboard.is_none() {
+        if self.osk_overlay.is_none() {
             return;
         }
         let outputs = self.effective_outputs();
@@ -2167,9 +2155,6 @@ impl FrameBuilder {
         };
         if let Some(keyboard) = self.osk_overlay.as_mut() {
             keyboard.place_floating(panel);
-        }
-        if let Some(keyboard) = self.shots_keyboard.as_mut() {
-            crate::shell::shots_keyboard::lay_out(keyboard.as_mut(), panel, &self.theme);
         }
     }
 
@@ -2303,17 +2288,15 @@ impl FrameBuilder {
         // launch per app per pass, so several windows at once need more than
         // one look. The tabs are walked again only once the tree may have
         // changed; while a window is owed a look, every round walks.
-        // A session that runs its apps as processes opens a tab that asks
-        // for one drawn here (saved so, or a peer's) as the app's own
-        // window, before the pending windows are counted.
+        // A tab that asks for an app drawn here (saved so, or a peer's)
+        // opens as the app's own window, before the pending windows are
+        // counted.
         {
             let chrome = self.chrome.borrow();
-            if chrome.hosted_inputs.apps_as_processes() {
-                let moved = self.peer_windows_quiet_at
-                    != Some(TreeRevisions::read(&chrome, &chrome.tree()));
-                if moved {
-                    crate::shell::tab_binding::reopen_app_tabs_as_processes(&mut chrome.tree_mut());
-                }
+            let moved =
+                self.peer_windows_quiet_at != Some(TreeRevisions::read(&chrome, &chrome.tree()));
+            if moved {
+                crate::shell::tab_binding::reopen_app_tabs_as_processes(&mut chrome.tree_mut());
             }
         }
         let (revisions, pending) = {
@@ -2586,17 +2569,6 @@ impl FrameBuilder {
                 );
             }
         }
-        // A capture has no client to mirror: it draws the widget itself.
-        if let Some(keyboard) = self.shots_keyboard.as_mut() {
-            let presence = self.presence.clone();
-            keyboard.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut self.text_renderer,
-                &self.theme,
-                &presence,
-            );
-        }
         if self.osk_active
             && let Some(keyboard) = self.osk_overlay.as_mut()
             && keyboard.is_mapped()
@@ -2808,17 +2780,6 @@ impl FrameBuilder {
                 .collect()
         });
         overlay_part(above, "shell.osk", desktop, |scene| {
-            if let Some(keyboard) = self.shots_keyboard.as_mut() {
-                let presence = self.presence.clone();
-                keyboard.draw(
-                    scene,
-                    Affine::IDENTITY,
-                    &mut self.text_renderer,
-                    &self.theme,
-                    &presence,
-                );
-                return Some(vec![keyboard.get_rect()]);
-            }
             let keyboard = self.osk_overlay.as_mut().filter(|_| self.osk_active)?;
             if !keyboard.is_mapped() {
                 return None;
@@ -4634,38 +4595,16 @@ impl FrameBuilder {
         &self.presence
     }
 
-    /// Put an authenticated remote-presence payload through the same fold
-    /// that a received peer packet uses. Deterministic product proofs need
-    /// this seam so they can render intent without standing up a network
-    /// relay; it is unavailable in production-only builds.
-    /// Write `bytes` to the active Terminal window as its session's output:
-    /// for captures of a terminal at work.
-    ///
-    /// # Errors
-    /// No Terminal window is active.
-    #[cfg(all(feature = "hosted-test-control", feature = "in-process-apps"))]
-    pub fn feed_active_terminal_for_shots(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.relayout();
-        let id = self
-            .active_terminal_node()
-            .ok_or("no Terminal window is active")?;
-        let widget = *self
-            .node_map
-            .get(&id)
-            .ok_or("the Terminal is not laid out")?;
-        // SAFETY: the pointer belongs to the current node map.
-        let terminal = hosted_terminal(unsafe { &mut *widget })
-            .ok_or("the active window is not a hosted Terminal")?;
-        terminal.feed(bytes);
-        Ok(())
-    }
-
     /// The presence the next paint draws, to seed it for captures.
     #[cfg(feature = "hosted-test-control")]
     pub fn presence_mut_for_shots(&mut self) -> &mut PresenceCtx {
         &mut self.presence
     }
 
+    /// Put an authenticated remote-presence payload through the same fold
+    /// that a received peer packet uses. Deterministic product proofs need
+    /// this seam so they can render intent without standing up a network
+    /// relay; it is unavailable in production-only builds.
     #[cfg(feature = "hosted-test-control")]
     pub fn apply_remote_presence_for_shots(
         &mut self,
@@ -4695,17 +4634,6 @@ impl FrameBuilder {
     #[cfg(feature = "hosted-test-control")]
     pub fn active_ime_content_for_shots(&self) -> Option<ui::ime::InputContent> {
         crate::shell::shots_keyboard::field_content(self.host.active_app_host()?)
-    }
-
-    /// Stand a capture in for a keyboard client: `content` is what the
-    /// focused field asks an input method for, so the shot gets that
-    /// purpose's layout. `None` puts the keyboard away.
-    #[cfg(all(feature = "hosted-test-control", feature = "in-process-apps"))]
-    pub fn set_shots_keyboard(&mut self, content: Option<ui::ime::InputContent>) {
-        self.shots_keyboard = content.map(|content| {
-            Box::new(crate::shell::shots_keyboard::keyboard_for(content)) as Box<dyn Widget>
-        });
-        self.layout_osk_overlay();
     }
 
     pub fn set_remote_display_name_for_shots(&mut self, user: &str, name: &str) {
@@ -6081,6 +6009,7 @@ impl FrameBuilder {
                 self.relayout();
                 self.focus_first(focus);
             }
+            self.deliver_control_invocations(state, root_obj);
             return true;
         }
 
@@ -6251,7 +6180,22 @@ impl FrameBuilder {
         // What the desktop handled, or a move of focus, may move what it
         // lays out, as in an app's window.
         self.layout_owed |= handled || *focus != focus_before;
+        if handled {
+            self.deliver_control_invocations(state, root_obj);
+        }
         handled
+    }
+
+    /// Run what an activation queued in the compositor's own widgets: those
+    /// publish their controls as actions, and no resource dispatcher stands
+    /// behind them the way one does behind an app's tree. A press that
+    /// handled nothing queued nothing.
+    fn deliver_control_invocations(&mut self, state: &mut ui::widget::Edits<'_>, root_obj: &ObjId) {
+        ui::widget::controls::start_pending_control_invocations(
+            self.host.as_mut(),
+            state,
+            root_obj,
+        );
     }
 
     fn dispatch_to_desktop(
@@ -6660,18 +6604,6 @@ fn register_semantic_targets<S: std::hash::BuildHasher>(
     }
 }
 
-/// The terminal a hosted Terminal tab shows, inside its app.
-#[cfg(all(
-    feature = "in-process-apps",
-    any(test, feature = "hosted-test-control")
-))]
-fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWidget> {
-    let embedded = widget
-        .as_any_mut()?
-        .downcast_mut::<ui::app::EmbeddedApp>()?;
-    terminal::mounted_terminal(embedded.component_root_mut()?)
-}
-
 #[cfg(test)]
 #[allow(
     clippy::float_cmp,
@@ -6684,45 +6616,6 @@ fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWid
 mod tests {
     use super::*;
 
-    use super::hosted_terminal;
-    /// Attach a real process before rebuilding any pointers into its widget.
-    /// A probe of the unopened production tab cannot prove PTY dispatch.
-    fn live_hosted_terminal_probe(fb: &mut FrameBuilder) -> std::sync::mpsc::Receiver<Vec<u8>> {
-        // Focus-window first changes chrome structure; materialize that tab
-        // before looking for its mounted application in the current node map.
-        fb.relayout();
-        let id = fb.active_terminal_node().expect("active mounted Terminal");
-        // SAFETY: this pointer belongs to the current active mounted owner.
-        let terminal = hosted_terminal(unsafe { &mut **fb.node_map.get(&id).unwrap() })
-            .expect("production chrome must mount a hosted Terminal");
-        *terminal = terminal::TerminalWidget::spawn_command(terminal::CommandBuilder::new("cat"))
-            .expect("attach a real PTY process to the hosted Terminal");
-        assert!(
-            !terminal.is_disconnected(),
-            "the real PTY must be available"
-        );
-        let probe = terminal.attach_input_probe();
-        // Replacing the widget invalidates descendant pointers; rebuild before
-        // measurement or focus reconciliation can dereference the old map.
-        fb.rebuild_layout_tree();
-        fb.relayout();
-        probe
-    }
-
-    fn finish_hosted_terminal_probe(fb: &mut FrameBuilder) {
-        let id = fb.active_terminal_node().expect("active mounted Terminal");
-        // SAFETY: the live map was rebuilt after attaching its real process.
-        let terminal = hosted_terminal(unsafe { &mut **fb.node_map.get(&id).unwrap() })
-            .expect("the live hosted Terminal remains mounted");
-        // The assertion already consumed the tested bytes. EOF is cleanup,
-        // delivered through the same real PTY so cat and its reader both exit.
-        terminal
-            .try_write_input(b"\x04")
-            .expect("close the real cat input");
-        tilo_test_env::wait_until("the real PTY process and reader finish", || {
-            terminal.is_disconnected()
-        });
-    }
     use crate::shell::state::FreshId as _;
     use winit::event::ElementState;
     use winit::keyboard::ModifiersState;
@@ -9096,600 +8989,6 @@ mod tests {
     }
 
     #[test]
-    fn native_terminal_focus_follows_the_active_owner_with_two_windows() {
-        fn contains_pointer(widget: &dyn Widget, pointer: *const ()) -> bool {
-            std::ptr::from_ref(widget).cast::<()>() == pointer
-                || widget
-                    .children()
-                    .into_iter()
-                    .any(|child| contains_pointer(child, pointer))
-        }
-        let (mut tree, strip, groups, tabs) = axis_a11y_tree();
-        let workspace = tree.desktop.active_workspace_mut().expect("test workspace");
-        workspace.strips[0].window_groups.truncate(2);
-        for group in &mut workspace.strips[0].window_groups {
-            group.tabs.truncate(1);
-            group.tabs[0].tile = crate::shell::state::TileContent::AppPlaceholder {
-                kind: crate::shell::state::AppKind::Terminal,
-                label: "Terminal".into(),
-            };
-        }
-        let mut frame = FrameBuilder::with_tree(tree, (3200, 900));
-        frame.relayout();
-        // Both real mounted owners remain in the live widget map. Visit both
-        // through the production window focus door: choosing an arbitrary
-        // HashMap Terminal cannot satisfy both owner assertions.
-        for index in 0..2 {
-            frame
-                .host_mut()
-                .focus_window_on_strip(strip, groups[index], tabs[index][0]);
-            assert_eq!(frame.chrome().active_tab_id(), Some(tabs[index][0]));
-            let owner = frame
-                .host()
-                .active_app_host()
-                .expect("active mounted app owner");
-            let target = frame
-                .initial_focus_target(&frame.focusable_order())
-                .expect("the active Terminal must have a native keyboard target");
-            let pointer = *frame.node_map.get(&target).expect("live focus node");
-            // SAFETY: no rebuild or mutation occurs while the live owner and
-            // its node-map pointer are inspected.
-            assert!(is_terminal(unsafe { &*pointer }));
-            assert!(
-                contains_pointer(owner, pointer.cast::<()>()),
-                "native focus must belong to the active tab, never another Terminal"
-            );
-        }
-    }
-
-    #[test]
-    fn native_terminal_typing_and_consent_follow_two_actual_mounted_owners() {
-        let (mut tree, strip, groups, tabs) = axis_a11y_tree();
-        let workspace = tree.desktop.active_workspace_mut().unwrap();
-        workspace.strips[0].window_groups.truncate(2);
-        for group in &mut workspace.strips[0].window_groups {
-            group.tabs.truncate(1);
-            group.tabs[0].tile = crate::shell::state::TileContent::AppPlaceholder {
-                kind: crate::shell::state::AppKind::Terminal,
-                label: "Terminal".into(),
-            };
-        }
-        let mut frame = FrameBuilder::with_tree(tree, (3200, 900));
-        frame.relayout();
-        let probes = (0..2)
-            .map(|index| {
-                frame
-                    .host_mut()
-                    .focus_window_on_strip(strip, groups[index], tabs[index][0]);
-                assert_eq!(frame.chrome().active_tab_id(), Some(tabs[index][0]));
-                live_hosted_terminal_probe(&mut frame)
-            })
-            .collect::<Vec<_>>();
-        let mut document = AutoCommit::new();
-        let mut focus = None;
-        for index in 0..2 {
-            assert!(
-                frame
-                    .host_mut()
-                    .focus_window_on_strip(strip, groups[index], tabs[index][0])
-            );
-            frame.relayout();
-            for (key, expected) in [(NamedKey::Space, b' '), (NamedKey::Enter, b'\r')] {
-                assert!(frame.dispatch_event(
-                    &key_press(Key::Named(key)),
-                    &Modifiers::default(),
-                    &mut ui::widget::Edits::lend(&mut document),
-                    &automerge::ROOT,
-                    &mut focus
-                ));
-                assert_eq!(
-                    tilo_test_env::recv("the probe's keys", &probes[index]),
-                    vec![expected]
-                );
-                assert!(
-                    matches!(
-                        probes[1 - index].try_recv(),
-                        Err(std::sync::mpsc::TryRecvError::Empty)
-                    ),
-                    "inactive Terminal must receive no bytes"
-                );
-            }
-            frame.host_mut().dictation_surface_mut().consent();
-            assert!(frame.dispatch_event(
-                &key_press(Key::Named(NamedKey::Enter)),
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut document),
-                &automerge::ROOT,
-                &mut focus
-            ));
-            assert!(matches!(
-                frame.host_mut().dictation_surface_mut().take_request(),
-                Some(crate::shell::overlay_host::dictation_layer::Request::Cancel(None))
-            ));
-            assert!(
-                probes.iter().all(|probe| matches!(
-                    probe.try_recv(),
-                    Err(std::sync::mpsc::TryRecvError::Empty)
-                )),
-                "consent must reach neither PTY"
-            );
-            // Acknowledge the observed cancellation as the frontend does.
-            frame
-                .host_mut()
-                .dictation_surface_mut()
-                .status(crate::compositor::dictation_status::DictationStatus::Idle);
-        }
-        for index in 0..2 {
-            assert!(
-                frame
-                    .host_mut()
-                    .focus_window_on_strip(strip, groups[index], tabs[index][0])
-            );
-            frame.relayout();
-            finish_hosted_terminal_probe(&mut frame);
-        }
-    }
-
-    #[test]
-    fn native_terminal_missing_active_owner_refuses_the_typing_fast_path() {
-        let (mut tree, strip, groups, tabs) = axis_a11y_tree();
-        let workspace = tree.desktop.active_workspace_mut().unwrap();
-        workspace.strips[0].window_groups.truncate(1);
-        workspace.strips[0].window_groups[0].tabs.truncate(1);
-        workspace.strips[0].window_groups[0].tabs[0].tile =
-            crate::shell::state::TileContent::AppPlaceholder {
-                kind: crate::shell::state::AppKind::Terminal,
-                label: "Terminal".into(),
-            };
-        let mut frame = FrameBuilder::with_tree(tree, (1280, 900));
-        frame.relayout();
-        frame
-            .host_mut()
-            .focus_window_on_strip(strip, groups[0], tabs[0][0]);
-        assert_eq!(frame.chrome().active_tab_id(), Some(tabs[0][0]));
-        let probe = live_hosted_terminal_probe(&mut frame);
-        let active = frame
-            .chrome
-            .borrow_mut()
-            .tree_mut()
-            .desktop
-            .active_group
-            .remove(&strip)
-            .unwrap();
-        assert!(
-            frame.host.active_app_host().is_none(),
-            "a live row cannot stand in for a missing active owner"
-        );
-        assert!(frame.active_terminal_node().is_none());
-        let mut document = AutoCommit::new();
-        let mut focus = None;
-        for key in [NamedKey::Space, NamedKey::Enter] {
-            assert!(!frame.offer_terminal_typing(
-                &key_press(Key::Named(key)),
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut document),
-                &automerge::ROOT,
-                &mut focus
-            ));
-            assert!(
-                matches!(probe.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
-                "the observable live PTY must receive no bytes"
-            );
-        }
-        frame
-            .chrome
-            .borrow_mut()
-            .tree_mut()
-            .desktop
-            .active_group
-            .insert(strip, active);
-        finish_hosted_terminal_probe(&mut frame);
-    }
-
-    #[test]
-    fn dictation_consent_keys_do_not_reach_the_hosted_terminal_pty() {
-        use crate::shell::state::{AppKind, TileContent};
-        // Production chrome path: `FrameBuilder::dispatch_event`, the same
-        // route tilo-control type/key and the DRM keyboard take once the
-        // compositor has mapped the press.
-        let mut fb = FrameBuilder::new((1280, 800));
-        fb.relayout();
-        // W17 / window.new.terminal leaves the Terminal tile active. The
-        // demo tree otherwise keeps Notes first, so chrome would still
-        // steal initial focus. Switch through the live GroupRow so harvest
-        // cannot write the Notes tab back over the tree.
-        let target = {
-            let chrome = fb.chrome();
-            let tree = chrome.tree();
-            tree.desktop.active_workspace().and_then(|workspace| {
-                workspace.strips.iter().find_map(|strip| {
-                    strip.window_groups.iter().find_map(|group| {
-                        group
-                            .tabs
-                            .iter()
-                            .find(|tab| {
-                                matches!(
-                                    &tab.tile,
-                                    TileContent::AppPlaceholder {
-                                        kind: AppKind::Terminal,
-                                        ..
-                                    } | TileContent::Stub {
-                                        kind: AppKind::Terminal,
-                                        ..
-                                    }
-                                )
-                            })
-                            .map(|tab| (strip.id, group.id, tab.id))
-                    })
-                })
-            })
-        };
-        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
-        assert!(
-            fb.host_mut().focus_window_on_strip(strip, group, tab),
-            "the compositor must be able to focus the hosted Terminal tab"
-        );
-        let probe = live_hosted_terminal_probe(&mut fb);
-        let mut focus = None;
-        fb.reconcile_native_focus(&mut focus);
-        let focused = focus.expect("a terminal tile must take initial focus");
-        assert!(
-            // SAFETY: node_map pointers are owned by the live widget tree.
-            fb.node_map
-                .get(&focused)
-                .is_some_and(|&widget| is_terminal(unsafe { &*widget })),
-            "chrome must not keep initial focus on a workspace pill: {:?}",
-            fb.widget_name(focused)
-        );
-        let mut doc = AutoCommit::new();
-        // Use the real local consent widget and production event dispatch.
-        // No recognizer or microphone exists in this keyboard-routing test.
-        fb.host_mut().dictation_surface_mut().consent();
-        assert!(fb.dispatch_event(
-            &key_press(Key::Named(NamedKey::Enter)),
-            &Modifiers::default(),
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        assert!(
-            matches!(
-                fb.host_mut().dictation_surface_mut().take_request(),
-                Some(crate::shell::overlay_host::dictation_layer::Request::Cancel(None))
-            ),
-            "Enter must select the prompt's conservative cancellation default"
-        );
-        assert!(
-            probe.try_recv().is_err(),
-            "consent Enter must never submit the shell line"
-        );
-        fb.host_mut().dictation_surface_mut().consent();
-        for key in [NamedKey::ArrowLeft, NamedKey::Space] {
-            assert!(fb.dispatch_event(
-                &key_press(Key::Named(key)),
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-        }
-        assert!(
-            probe.try_recv().is_err(),
-            "consent Space must never edit the shell line"
-        );
-        finish_hosted_terminal_probe(&mut fb);
-    }
-
-    #[test]
-    fn control_socket_typing_reaches_the_hosted_terminal_pty() {
-        use crate::shell::state::{AppKind, TileContent};
-        use winit::keyboard::SmolStr;
-        // Production chrome path: `FrameBuilder::dispatch_event`, the same
-        // route tilo-control type/key and the DRM keyboard take once the
-        // compositor has mapped the press.
-        let mut fb = FrameBuilder::new((1280, 800));
-        fb.relayout();
-        // W17 / window.new.terminal leaves the Terminal tile active. The
-        // demo tree otherwise keeps Notes first, so chrome would still
-        // steal initial focus. Switch through the live GroupRow so harvest
-        // cannot write the Notes tab back over the tree.
-        let target = {
-            let chrome = fb.chrome();
-            let tree = chrome.tree();
-            tree.desktop.active_workspace().and_then(|workspace| {
-                workspace.strips.iter().find_map(|strip| {
-                    strip.window_groups.iter().find_map(|group| {
-                        group
-                            .tabs
-                            .iter()
-                            .find(|tab| {
-                                matches!(
-                                    &tab.tile,
-                                    TileContent::AppPlaceholder {
-                                        kind: AppKind::Terminal,
-                                        ..
-                                    } | TileContent::Stub {
-                                        kind: AppKind::Terminal,
-                                        ..
-                                    }
-                                )
-                            })
-                            .map(|tab| (strip.id, group.id, tab.id))
-                    })
-                })
-            })
-        };
-        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
-        assert!(
-            fb.host_mut().focus_window_on_strip(strip, group, tab),
-            "the compositor must be able to focus the hosted Terminal tab"
-        );
-        let probe = live_hosted_terminal_probe(&mut fb);
-        let mut focus = None;
-        fb.reconcile_native_focus(&mut focus);
-        let focused = focus.expect("a terminal tile must take initial focus");
-        assert!(
-            // SAFETY: node_map pointers are owned by the live widget tree.
-            fb.node_map
-                .get(&focused)
-                .is_some_and(|&widget| is_terminal(unsafe { &*widget })),
-            "chrome must not keep initial focus on a workspace pill: {:?}",
-            fb.widget_name(focused)
-        );
-        let mut doc = AutoCommit::new();
-        for key in [
-            Key::Character(SmolStr::new_static("e")),
-            Key::Named(NamedKey::Space),
-            Key::Named(NamedKey::Enter),
-        ] {
-            assert!(
-                fb.dispatch_event(
-                    &key_press(key),
-                    &Modifiers::default(),
-                    &mut ui::widget::Edits::lend(&mut doc),
-                    &automerge::ROOT,
-                    &mut focus,
-                ),
-                "typed keys must be consumed on the production chrome path"
-            );
-        }
-        let mut got = Vec::new();
-        while let Ok(chunk) = probe.try_recv() {
-            got.extend(chunk);
-        }
-        assert_eq!(
-            got.as_slice(),
-            b"e \r",
-            "letters, Space and Enter must reach the PTY, not chrome Activate",
-        );
-        finish_hosted_terminal_probe(&mut fb);
-    }
-
-    #[test]
-    fn chrome_focus_does_not_steal_terminal_space_and_enter() {
-        use crate::shell::state::{AppKind, TileContent};
-        use winit::keyboard::SmolStr;
-        // W17 / A01 on the live compositor: the workspace pill keeps
-        // keyboard focus after the Terminal tile opens. Letters still
-        // reach the PTY through tree dispatch; Named Space/Enter used
-        // to Activate chrome (Homeoffice workspace settings).
-        let mut fb = FrameBuilder::new((1280, 800));
-        fb.relayout();
-        let target = {
-            let chrome = fb.chrome();
-            let tree = chrome.tree();
-            tree.desktop.active_workspace().and_then(|workspace| {
-                workspace.strips.iter().find_map(|strip| {
-                    strip.window_groups.iter().find_map(|group| {
-                        group
-                            .tabs
-                            .iter()
-                            .find(|tab| {
-                                matches!(
-                                    &tab.tile,
-                                    TileContent::AppPlaceholder {
-                                        kind: AppKind::Terminal,
-                                        ..
-                                    } | TileContent::Stub {
-                                        kind: AppKind::Terminal,
-                                        ..
-                                    }
-                                )
-                            })
-                            .map(|tab| (strip.id, group.id, tab.id))
-                    })
-                })
-            })
-        };
-        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
-        assert!(fb.host_mut().focus_window_on_strip(strip, group, tab));
-        let probe = live_hosted_terminal_probe(&mut fb);
-        let mut focus = None;
-        fb.reconcile_native_focus(&mut focus);
-        let chrome_id = fb.node_map.iter().find_map(|(id, widget)| {
-            let app = unsafe { (**widget).test_id() };
-            (app == Some(tilo_topbar::APP_ID)).then_some(*id)
-        });
-        let chrome_id = chrome_id.expect("production chrome must mount the top bar");
-        fb.set_native_focus(&mut focus, Some(chrome_id));
-        assert_eq!(
-            fb.widget_name(focus.expect("top bar must take keyboard focus")),
-            Some("EmbeddedApp"),
-            "this case is the VM path: chrome, not the Terminal, holds focus"
-        );
-        let mut doc = AutoCommit::new();
-        for key in [
-            Key::Character(SmolStr::new_static("e")),
-            Key::Named(NamedKey::Space),
-            Key::Named(NamedKey::Enter),
-        ] {
-            assert!(
-                fb.dispatch_event(
-                    &key_press(key),
-                    &Modifiers::default(),
-                    &mut ui::widget::Edits::lend(&mut doc),
-                    &automerge::ROOT,
-                    &mut focus,
-                ),
-                "typed keys must be consumed on the production chrome path"
-            );
-        }
-        let mut got = Vec::new();
-        while let Ok(chunk) = probe.try_recv() {
-            got.extend(chunk);
-        }
-        assert_eq!(
-            got.as_slice(),
-            b"e \r",
-            "Space and Enter must reach the PTY while chrome still has focus",
-        );
-        finish_hosted_terminal_probe(&mut fb);
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one production-path case keeps chrome focus, PTY probe, and group split visible"
-    )]
-    fn super_shift_enter_splits_the_tab_instead_of_reaching_the_pty() {
-        use crate::shell::state::{AppKind, TileContent};
-        // W08: Super+Shift+Enter is DetachTab. Offering unmodified Space/Enter
-        // to the Terminal before chrome must not also swallow this chord.
-        let mut fb = FrameBuilder::new((1280, 800));
-        fb.relayout();
-        let target = {
-            let chrome = fb.chrome();
-            let tree = chrome.tree();
-            tree.desktop.active_workspace().and_then(|workspace| {
-                workspace.strips.iter().find_map(|strip| {
-                    strip.window_groups.iter().find_map(|group| {
-                        group
-                            .tabs
-                            .iter()
-                            .find(|tab| {
-                                matches!(
-                                    &tab.tile,
-                                    TileContent::AppPlaceholder {
-                                        kind: AppKind::Terminal,
-                                        ..
-                                    } | TileContent::Stub {
-                                        kind: AppKind::Terminal,
-                                        ..
-                                    }
-                                )
-                            })
-                            .map(|tab| (strip.id, group.id, tab.id))
-                    })
-                })
-            })
-        };
-        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
-        assert!(fb.host_mut().focus_window_on_strip(strip, group, tab));
-        fb.relayout();
-        let mut focus = None;
-        fb.reconcile_native_focus(&mut focus);
-        let chrome_id = fb.node_map.iter().find_map(|(id, widget)| {
-            let app = unsafe { (**widget).test_id() };
-            (app == Some(tilo_topbar::APP_ID)).then_some(*id)
-        });
-        let chrome_id = chrome_id.expect("production chrome must mount the top bar");
-        fb.set_native_focus(&mut focus, Some(chrome_id));
-        assert_eq!(
-            fb.widget_name(focus.expect("top bar must take keyboard focus")),
-            Some("EmbeddedApp"),
-            "chrome holds focus, as on the VM path"
-        );
-        let probe = fb.node_map.values().find_map(|widget| {
-            let widget = unsafe { &mut **widget };
-            is_terminal(widget)
-                .then(|| hosted_terminal(widget))
-                .flatten()
-                .map(|term| term.attach_input_probe())
-        });
-        let Some(probe) = probe else {
-            panic!("production chrome must mount a hosted Terminal");
-        };
-        let groups_before = {
-            let chrome = fb.chrome();
-            chrome.tree().desktop.active_workspace().map_or(0, |ws| {
-                ws.strips
-                    .iter()
-                    .map(|s| s.window_groups.len())
-                    .sum::<usize>()
-            })
-        };
-        let tabs_before = {
-            let chrome = fb.chrome();
-            chrome
-                .tree()
-                .desktop
-                .active_workspace()
-                .and_then(|ws| {
-                    ws.strips
-                        .iter()
-                        .flat_map(|s| s.window_groups.iter())
-                        .find(|candidate| candidate.id == group)
-                })
-                .map_or(0, |g| g.tabs.len())
-        };
-        let mut doc = AutoCommit::new();
-        let chord = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
-        assert!(
-            fb.dispatch_event(
-                &key_press(Key::Named(NamedKey::Enter)),
-                &chord,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ),
-            "Super+Shift+Enter must be consumed as the split-tab chord"
-        );
-        fb.relayout();
-        let mut got = Vec::new();
-        while let Ok(chunk) = probe.try_recv() {
-            got.extend(chunk);
-        }
-        assert_eq!(
-            got.as_slice(),
-            b"",
-            "Super+Shift+Enter must not be delivered to the PTY"
-        );
-        let groups_after = {
-            let chrome = fb.chrome();
-            chrome.tree().desktop.active_workspace().map_or(0, |ws| {
-                ws.strips
-                    .iter()
-                    .map(|s| s.window_groups.len())
-                    .sum::<usize>()
-            })
-        };
-        let tabs_after = {
-            let chrome = fb.chrome();
-            chrome
-                .tree()
-                .desktop
-                .active_workspace()
-                .and_then(|ws| {
-                    ws.strips
-                        .iter()
-                        .flat_map(|s| s.window_groups.iter())
-                        .find(|candidate| candidate.id == group)
-                })
-                .map_or(0, |g| g.tabs.len())
-        };
-        assert_eq!(
-            groups_after,
-            groups_before + 1,
-            "Super+Shift+Enter must split the tab into a new group"
-        );
-        assert_eq!(
-            tabs_after,
-            tabs_before.saturating_sub(1),
-            "the source group must keep the remaining tabs"
-        );
-    }
-
-    #[test]
     fn scheduled_night_light_follows_the_phase_not_the_switch() {
         assert!(night_light_on(false, true, Some(true)));
         assert!(!night_light_on(true, true, Some(false)));
@@ -10266,10 +9565,6 @@ mod retained_tests;
 )]
 #[path = "frame_oobe_tests.rs"]
 mod oobe_tests;
-
-#[cfg(test)]
-#[path = "frame_window_bar_keyboard_tests.rs"]
-mod window_bar_keyboard_tests;
 
 #[cfg(test)]
 #[path = "frame_quiet_pump_tests.rs"]

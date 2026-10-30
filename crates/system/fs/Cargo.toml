@@ -33,7 +33,6 @@ filesystem = [
     "dep:clap",
     "dep:iroh",
     "dep:iroh-base",
-    "dep:iroh-gossip",
     "dep:tilo-endpoint-reachability",
     "dep:automerge",
     "dep:tilo-automerge",
@@ -170,7 +169,6 @@ fs-content = { version = "0.1.0", path = "../fs-content" }
 bao-tree = { workspace = true }
 irpc = { workspace = true }
 ref-cast = { workspace = true }
-iroh-gossip = { workspace = true, optional = true }
 tilo-endpoint-reachability = { version = "0.1.0", path = "../endpoint-reachability", optional = true }
 automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }

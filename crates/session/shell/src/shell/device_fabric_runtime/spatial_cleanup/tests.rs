@@ -1,5 +1,6 @@
 use super::*;
-use crate::shell::{device_fabric::PersonalFabricAction, network::AuthenticatedPersonalRoute};
+use crate::shell::network::AuthenticatedPersonalRoute;
+use tilo_device_fabric::PersonalFabricAction;
 
 fn sender() -> (SpatialInputState, InputLease, AuthenticatedPersonalRoute) {
     let lease = InputLease {

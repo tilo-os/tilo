@@ -121,12 +121,11 @@ pub fn receive_attachment(door: &Descriptor) -> io::Result<Option<Descriptor>> {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use std::io::{Read as _, Write as _};
-
     use super::*;
 
     #[test]
     fn an_attachment_reaches_the_connector_with_its_connection() {
+        use std::io::{Read as _, Write as _};
         let (session, connector) = pair().unwrap();
         let (instance, theirs) = connection().unwrap();
         send_attachment(&session, &theirs).unwrap();

@@ -70,7 +70,6 @@ DENIED = {
     "install": "the package installer (tilo-install)",
     "iroh": "the peer transport, owned by the runtime daemon",
     "iroh-blobs": "the content store's transfer protocol",
-    "iroh-gossip": "the filesystem's metadata gossip",
     "tilo-runtime": "the per-user runtime daemon",
     "tilo-relay": "the relay service",
     "shell": "the compositor",

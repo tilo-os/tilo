@@ -20,7 +20,7 @@
 # image for this device, registry.tilo.so/tilo/tilo-vm:<target>-ci, signed with the development
 # key, which only a dev image's own policy accepts (os/scripts/finalize-dev-image.py), so a
 # release image follows stable only. <target> is the board of a board image (its hardware
-# profile), else the architecture. docs/development/devices.md describes the whole path.
+# profile), else the architecture.
 set -euo pipefail
 
 POLICY="${TILO_UPDATE_POLICY:-/var/lib/tilo/update-policy}"

@@ -509,7 +509,7 @@ pub struct DeviceMeshArea {
     model: std::cell::OnceCell<Rc<RefCell<DeviceMeshModel>>>,
     /// The relay's configuration and state, read off the UI thread after
     /// the window's first frame ([`Self::start_read`]).
-    read: crate::device_read::DeviceRead<MeshRead>,
+    pub(crate) read: crate::device_read::DeviceRead<MeshRead>,
     /// The area's client for the action door, shared with its model: the
     /// window carries its requests and answers on the app's connection.
     remote: ui::RemoteActions,
@@ -599,16 +599,6 @@ impl DeviceMeshArea {
         let (path, devices) = self.source();
         let now = ui::time::wall();
         self.read.start(move || MeshRead::of(path, devices, now))
-    }
-
-    /// Whether the read [`Self::start_read`] started has ended.
-    pub(crate) fn read_finished(&self) -> bool {
-        self.read.is_finished()
-    }
-
-    /// What waits off the UI thread for the started read to end.
-    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
-        self.read.wait()
     }
 
     /// Take in finished background commands, if the model exists. While a
@@ -3287,7 +3277,7 @@ mod tests {
         assert!(area.start_read(), "the first read starts");
         assert!(!area.start_read(), "one read at a time");
         assert!(!area.is_open(), "a running read publishes nothing yet");
-        until_finished(|| area.read_finished());
+        until_finished(|| area.read.is_finished());
         let model = area.model().borrow();
         assert!(area.is_open());
         assert_eq!(

@@ -126,7 +126,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo install --locked cargo-deny cargo-machete \
     && cargo deny --version && cargo machete --version
 
-# Android NDK and Rust targets for the Android lint (t.toml's `android`, docs/android.md).
+# Android NDK and Rust targets for the Android lint (tools/ci/clippy-android.sh, docs/android.md).
 # The NDK ships Linux host tools for x86_64 only, so the ARM builder, whose
 # jobs never run that lane, does not carry it. API 29 is the host's minimum.
 RUN --mount=type=bind,source=tools/ci/install-android-ndk.sh,target=/tmp/install-android-ndk.sh,ro \
@@ -134,7 +134,7 @@ RUN --mount=type=bind,source=tools/ci/install-android-ndk.sh,target=/tmp/install
       TILO_RUST_TOOLCHAIN="${RUST_CHANNEL}" bash /tmp/install-android-ndk.sh \
       && dnf clean all && rm -rf /var/cache/dnf; \
     fi
-# The browser target for the wasm lint (t.toml's `wasm`).
+# The browser target for the wasm lint (tools/ci/check-wasm.sh).
 RUN rustup target add --toolchain "${RUST_CHANNEL}" wasm32-unknown-unknown
 # musl for this architecture: t's release builds link its compiler cache's
 # wrapper statically against it, so the wrapper runs in any job image.
@@ -167,7 +167,7 @@ ENV ANDROID_NDK_HOME=/opt/android-ndk \
     CXX_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang++ \
     AR_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
 
-# Windows, cross-compiled from Linux (docs/publishing-on-t.md, Windows): Rust's MSVC
+# Windows, cross-compiled from Linux: Rust's MSVC
 # targets and cargo-xwin, which drives clang-cl and lld-link (already here
 # from Fedora's clang and lld). The MSVC CRT and Windows SDK that cargo-xwin
 # downloads are deliberately not in the image: Microsoft's license does not

@@ -22,6 +22,26 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
+    /// Called with the row opened: the list, as control `id`, publishes
+    /// opening a row as its view action `open`, each row addressed by its
+    /// semantic key ([`Self::with_semantic_key`]), so a person's second
+    /// click or Enter, a screen reader, a script and an agent open through
+    /// the same action. What is shown is the window's own state, never an
+    /// edit.
+    #[must_use]
+    pub fn on_activate_view(
+        mut self,
+        id: impl Into<String>,
+        f: impl FnMut(M::Key) + 'static,
+    ) -> Self {
+        let id = id.into();
+        self.opens = Some((
+            crate::widget::view_choice::ViewChoice::new(format!("{id}/open"), "Open"),
+            Box::new(f),
+        ));
+        self
+    }
+
     /// The rows an agent may choose, by semantic key alone (a renamed row
     /// leaves what the list publishes as it was); as many as an enumeration
     /// carries.
@@ -37,19 +57,27 @@ impl<M: ListModel> VirtualList<M> {
 }
 
 impl<M: ListModel + 'static> VirtualList<M> {
-    /// Answer a `select` addressed to this list: show the row chosen and
-    /// report it, whoever chose it.
+    /// Answer a `select` or an `open` addressed to this list: show the row
+    /// addressed and report it, whoever chose it.
     fn start_view(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(entry) = self
+        let chosen = self
             .view
             .as_ref()
             .map(|(choice, _)| choice.start(op))
             .transpose()?
             .flatten()
-        else {
+            .map(|entry| (entry, false));
+        let opened = self
+            .opens
+            .as_ref()
+            .map(|(choice, _)| choice.start(op))
+            .transpose()?
+            .flatten()
+            .map(|entry| (entry, true));
+        let Some((entry, opens)) = chosen.or(opened) else {
             return Ok(None);
         };
         let encode = self
@@ -62,7 +90,11 @@ impl<M: ListModel + 'static> VirtualList<M> {
             .ok_or_else(|| format!("no entry `{entry}`"))?;
         self.selection.select_only(key.clone());
         self.focused_key = Some(key.clone());
-        if let Some((_, handler)) = self.view.as_mut() {
+        if opens {
+            if let Some((_, handler)) = self.opens.as_mut() {
+                handler(key);
+            }
+        } else if let Some((_, handler)) = self.view.as_mut() {
             handler(key);
         }
         Ok(Some(crate::widget::view_choice::chosen()))
@@ -72,7 +104,10 @@ impl<M: ListModel + 'static> VirtualList<M> {
 impl<M: ListModel + 'static> crate::widget::ResourceOperations for VirtualList<M> {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         let history = crate::widget::resource_operation::local_history_handlers(self);
-        match (self.view.is_some(), history.is_empty()) {
+        match (
+            self.view.is_some() || self.opens.is_some(),
+            history.is_empty(),
+        ) {
             (false, _) => history,
             (true, true) => &[crate::widget::view_choice::CHOICE_SELECT],
             (true, false) => &[
@@ -97,10 +132,15 @@ impl<M: ListModel + 'static> crate::widget::ResourceOperations for VirtualList<M
 
 impl<M: ListModel + 'static> crate::resources::PublishesResources for VirtualList<M> {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        let rows = || self.entries();
         self.view
-            .as_ref()
-            .map(|(choice, _)| choice.resource_of_keys(self.entries()))
-            .into_iter()
+            .iter()
+            .map(|(choice, _)| choice.resource_of_keys(rows()))
+            .chain(
+                self.opens
+                    .iter()
+                    .map(|(choice, _)| choice.resource_of_keys(rows())),
+            )
             .collect()
     }
 }
@@ -111,7 +151,7 @@ impl<M: ListModel + 'static> crate::widget::controls::ActionControls for Virtual
         domain: &crate::ControlDomain,
         attachment: crate::control_custody::CustodyAttachment,
     ) {
-        if let Some((choice, _)) = self.view.as_mut() {
+        for (choice, _) in self.view.iter_mut().chain(self.opens.iter_mut()) {
             choice.install_custody(domain, attachment);
         }
         for child in Widget::children_mut(self) {
@@ -120,7 +160,12 @@ impl<M: ListModel + 'static> crate::widget::controls::ActionControls for Virtual
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if let Some(invocation) = self.view.as_mut().and_then(|(choice, _)| choice.take()) {
+        if let Some(invocation) = self
+            .view
+            .as_mut()
+            .and_then(|(choice, _)| choice.take())
+            .or_else(|| self.opens.as_mut().and_then(|(choice, _)| choice.take()))
+        {
             return Some(invocation);
         }
         Widget::children_mut(self)
@@ -132,7 +177,7 @@ impl<M: ListModel + 'static> crate::widget::controls::ActionControls for Virtual
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
-        if let Some((choice, _)) = self.view.as_mut() {
+        for (choice, _) in self.view.iter_mut().chain(self.opens.iter_mut()) {
             choice.refresh_availability(allowed);
         }
         for child in Widget::children_mut(self) {

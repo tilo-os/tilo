@@ -271,7 +271,7 @@ pub(super) fn shown_room_hosted_windows(
 pub(super) fn shown_hosted_windows(
     tree: &crate::shell::state::WorkspaceTree,
     tiles: &[(u64, vello::kurbo::Rect)],
-) -> Vec<(String, crate::shell::device_fabric::WindowView)> {
+) -> Vec<(String, tilo_device_fabric::WindowView)> {
     let hosted = tree
         .desktop
         .workspaces
@@ -292,10 +292,9 @@ pub(super) fn shown_hosted_windows(
         reason = "clamped to the wire's side range and rounded first"
     )]
     let side = |value: f64| {
-        value.round().clamp(
-            1.0,
-            f64::from(crate::shell::device_fabric::MAX_WINDOW_VIEW_SIDE),
-        ) as u32
+        value
+            .round()
+            .clamp(1.0, f64::from(tilo_device_fabric::MAX_WINDOW_VIEW_SIDE)) as u32
     };
     tiles
         .iter()
@@ -304,7 +303,7 @@ pub(super) fn shown_hosted_windows(
             let host = hosted.get(tab)?;
             Some((
                 (*host).to_owned(),
-                crate::shell::device_fabric::WindowView {
+                tilo_device_fabric::WindowView {
                     tab: *tab,
                     width: side(rect.width()),
                     height: side(rect.height()),

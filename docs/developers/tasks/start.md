@@ -38,4 +38,4 @@ interaction; the starter also tests peer edits and per-author undo. Transport,
 workspace membership and sign-in still need host integration tests.
 
 Next: `tilo-app guide actions` or `tilo-app guide verify`.
-More: [Getting started](../getting-started.md).
+More: [Build an app](../../app-development.md).

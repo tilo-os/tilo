@@ -104,6 +104,7 @@ impl ComputeSandbox for ThumbnailSandbox {
 /// photograph in it, declared heavy enough to run elsewhere.
 fn make_thumbnails() -> ActionDescriptor {
     ActionDescriptor {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: ActionAddress::new("photos.library:main", "thumbnails.make"),
         resource_kind: "photos.library".into(),
@@ -803,6 +804,7 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
 
     // An action that declares no offload is not taken down this path.
     let ordinary = ActionDescriptor {
+        state: tilo_actions::ActionState::default(),
         contract: ActionContract::view(),
         ..make_thumbnails()
     };

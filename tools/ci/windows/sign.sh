@@ -7,7 +7,7 @@
 #
 #   sign.sh <arch> <build-dir> <package-dir> <out>
 #
-# Runs only on release tags (t.toml, sign/windows-*);
+# Runs only on release tags;
 # the version comes from the tag, imager-vMAJOR.MINOR.PATCH.
 set -euo pipefail
 

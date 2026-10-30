@@ -632,7 +632,7 @@ mod tests {
             let none = disk_check(Ok((200, "[]".into())), Some(&token), None);
             assert_eq!(none.state, "warn");
             let fix = none.fix.unwrap();
-            assert!(fix.contains("t dispatch publish-os-dev-"), "{fix}");
+            assert!(fix.contains("tilo-vm vm use <name>"), "{fix}");
             assert!(
                 fix.contains("no local dev-image build is available"),
                 "{fix}"

@@ -12,7 +12,8 @@ license.workspace = true
 test-support = []
 
 [dependencies]
-durable-store = { path = "../../system/durable-store" }
+# The client side of the session audio helper's lines, for what plays.
+audio = { package = "tilo-audio-service", path = "../audio-service", default-features = false }
 os-actions = { path = "../../system/os-actions" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 parking_lot.workspace = true
@@ -25,6 +26,8 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-quick-settings = { path = ".", features = ["test-support"] }
+tilo-test-env = { path = "../../dev/test-env" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 
 [lints]

@@ -8,7 +8,7 @@ description = "The Tilo UI runtime in the browser: real application components r
 repository.workspace = true
 homepage.workspace = true
 
-# Build the page bundle with `scripts/build.sh`; see docs/architecture/browser-runtime.md.
+# Build the page bundle with `scripts/build.sh`; see WEB_RUNTIME.md.
 
 [lib]
 crate-type = ["cdylib", "rlib"]

@@ -20,6 +20,7 @@ use ui::widget::{
     RowStatus, Widget,
 };
 
+use crate::actions::ApiTesterEffect;
 use crate::commands::{Cmd, FormMode, FormTarget, Sink};
 use crate::model::{Collection, HistoryEntry, Id, StatusClass};
 use crate::palette::{short_path, status_class};
@@ -31,8 +32,6 @@ pub(crate) struct SidebarView<'a> {
     pub(crate) selected: Option<(usize, usize)>,
 }
 
-/// The one row action: it opens the row's own menu.
-const MORE: &str = "more";
 /// The collection header's action.
 const RENAME: &str = "rename";
 
@@ -79,8 +78,10 @@ fn history_id(hi: usize) -> String {
     format!("history:{hi}")
 }
 
-fn collection_section_id(ci: usize) -> String {
-    format!("collection:{ci}")
+/// A collection's section, by the collection's id: what the header's
+/// rename runs with.
+fn collection_section_id(collection: &Id) -> String {
+    format!("collection:{collection}")
 }
 
 /// Parse `request:{ci}:{ri}`.
@@ -109,7 +110,7 @@ fn sections(view: &SidebarView<'_>) -> Vec<NavSection> {
                     NavItem::new(request_id(ci, ri), &request.name).badge(request.method.as_str())
                 })
                 .collect();
-            NavSection::new(collection_section_id(ci), &collection.name, items)
+            NavSection::new(collection_section_id(&collection.id), &collection.name, items)
                 .collapsible()
                 .trailing_action(NavAction::new(RENAME, Icon::Pencil, "Rename collection"))
                 .empty_caption("No saved requests")
@@ -143,22 +144,6 @@ fn sections(view: &SidebarView<'_>) -> Vec<NavSection> {
     sections
 }
 
-/// The ids behind each collection and its requests, by position, so a row's
-/// action reaches the right one after the list is handed new sections.
-type Ids = Rc<RefCell<Vec<(Id, Vec<Id>)>>>;
-
-fn ids_of(view: &SidebarView<'_>) -> Vec<(Id, Vec<Id>)> {
-    view.collections
-        .iter()
-        .map(|c| {
-            (
-                c.id.clone(),
-                c.requests.iter().map(|r| r.id.clone()).collect(),
-            )
-        })
-        .collect()
-}
-
 /// The sections and the chosen row the list takes at its next
 /// synchronization.
 type Pending = Rc<RefCell<Option<(Vec<NavSection>, Option<String>)>>>;
@@ -167,13 +152,11 @@ type Pending = Rc<RefCell<Option<(Vec<NavSection>, Option<String>)>>>;
 #[derive(Clone)]
 pub(crate) struct NavHandle {
     pending: Pending,
-    ids: Ids,
 }
 
 impl NavHandle {
     /// Show `view` at the list's next synchronization.
     pub(crate) fn set(&self, view: &SidebarView<'_>) {
-        *self.ids.borrow_mut() = ids_of(view);
         *self.pending.borrow_mut() = Some((
             sections(view),
             view.selected.map(|(ci, ri)| request_id(ci, ri)),
@@ -189,11 +172,8 @@ pub(crate) struct RequestsNav {
 
 /// The list, and the handle the app updates it through.
 pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHandle) {
-    let ids: Ids = Rc::new(RefCell::new(ids_of(view)));
     let select_sink = sink.clone();
     let menu_sink = sink.clone();
-    let section_sink = sink.clone();
-    let section_ids = Rc::clone(&ids);
     let mut list = NavList::new(sections(view))
         .with_accessible_name("Requests")
         .on_view("api.nav", move |id| {
@@ -210,33 +190,22 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
         // request is renamed or deleted, a sent one is replayed, kept as a
         // request, or forgotten (`APP-api-tester-04`). The app decides what a
         // row offers, so a history row is never offered a rename.
-        .item_actions(
-            vec![NavAction::new(MORE, Icon::MoreHorizontal, "More").opens_context_menu()],
-            |_, _| {},
-        )
+        .item_menu(NavAction::new("more", Icon::MoreHorizontal, "More"))
         .on_context_menu(move |id, lift, at| {
             menu_sink.borrow_mut().push(Cmd::RowMenu {
                 id: id.to_owned(),
                 lift,
                 at,
             });
-        })
-        .on_section_action(move |section, _| {
-            let Some(ci) = section
-                .strip_prefix("collection:")
-                .and_then(|ci| ci.parse::<usize>().ok())
-            else {
-                return;
-            };
-            section_sink.borrow_mut().push(Cmd::OpenForm(
-                FormMode::RenameCollection,
-                FormTarget {
-                    collection: section_ids.borrow().get(ci).map(|(id, _)| id.clone()),
-                    sent: None,
-                    request: None,
-                },
-            ));
         });
+    // A collection's header renames it, through the form its effect opens.
+    if let Some(rename) = sink.actions.borrow().as_ref().and_then(|actions| {
+        actions.effect_binding(ApiTesterEffect::RENAME_COLLECTION.try_map(|section: String| {
+            section.strip_prefix("collection:").map(str::to_owned)
+        }))
+    }) {
+        list = list.section_action(RENAME, rename);
+    }
     list.set_selected(view.selected.map(|(ci, ri)| request_id(ci, ri)).as_deref());
     let pending = Rc::new(RefCell::new(None));
     (
@@ -244,7 +213,7 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
             list,
             pending: Rc::clone(&pending),
         },
-        NavHandle { pending, ids },
+        NavHandle { pending },
     )
 }
 

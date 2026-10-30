@@ -22,8 +22,10 @@ use std::{
 };
 
 pub(crate) mod capture;
+mod delayed_filter;
 pub(crate) mod retained_io;
 mod retained_worker;
+mod workspace;
 pub use retained_worker::{RetainedWorkerConnector, RetainedWorkerWitness};
 pub mod target_projection;
 pub use target_projection::{

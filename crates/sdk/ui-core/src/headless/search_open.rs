@@ -46,20 +46,7 @@ impl FrameHarness {
         );
         palette.set_providers(providers);
         palette.open();
-        palette.set_scope(request.resource_scope().cloned());
-        if let Some(query) = &request.query {
-            palette.set_query(query);
-            palette.select_query();
-        }
-        // On one of the app's actions: the palette asks for its arguments.
-        if let Some(address) = request.asked() {
-            palette.activate_address(&address.resource, &address.action);
-        }
-        // On one of the app's resources: its row is under the cursor.
-        if let Some(anchor) = request.anchored() {
-            palette.set_query(&anchor.query);
-            palette.select_resource(&anchor.resource);
-        }
+        palette.open_on(request);
         self.discard_layout_tree();
         self.focused = None;
         self.action_palette = Some(palette);

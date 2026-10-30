@@ -89,8 +89,7 @@ path = "src/relay_offers_cli.rs"
 #   shell replay through the selection a bound shell authority hands the
 #   store (`tilo-relay-shell`); it refuses document
 #   changes an app's surface does not allow (`surfaces`). Sealed document
-#   content stays opaque. `docs/architecture/security.md` ("What a
-#   workspace host reads and originates") lists the same powers.
+#   content stays opaque.
 # - Multi-host by construction — several relays bound to the same
 #   workspace merge like any other automerge peers.
 # - Fully in-process testable — `Relay::start` binds a random-port
@@ -318,10 +317,6 @@ path = "tests/held_memory.rs"
 
 # Examples that carry unit tests build as test targets too, so `cargo test`
 # and the CI test jobs run those tests.
-[[example]]
-name = "inspect-peer-archive"
-test = true
-
 # What an active collaborator costs a relay in CPU, memory and egress:
 # the scheduled lane's `hosting` group (tools/ci/perf-scheduled.sh).
 # An example, not a binary, so relay images that build `--bins` leave it out.

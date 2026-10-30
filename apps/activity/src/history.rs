@@ -18,7 +18,7 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{FilterCount, ListRow, QueryView, Section, SectionHeader, Segment, ToggleGroup};
 
-use crate::{Filter, Nav, Provider, ago, page, tr, trf};
+use crate::{ActivityEffect, Filter, Nav, Provider, ago, page, tr, trf};
 
 /// The place's content and its header's commands.
 pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
@@ -66,8 +66,9 @@ fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery, narrows: bool) 
             let shown = feed.clone();
             let listed = nav.clone();
             let narrowed = filter.clone();
+            let actions = cx.actions();
             parts.push(cx.switch(&nav.selection, move |_, selection| {
-                list(&listed, &shown, selection.as_ref(), &narrowed)
+                list(&listed, &actions, &shown, selection.as_ref(), &narrowed)
             }));
             if feed.total > feed.entries.len() {
                 let more = nav.clone();
@@ -258,7 +259,13 @@ fn heading(entry: &wire::Entry) -> Heading {
     )
 }
 
-fn list(nav: &Nav, feed: &wire::Feed, selection: Option<&wire::Range>, filter: &Filter) -> Element {
+fn list(
+    nav: &Nav,
+    actions: &Actions<Filter>,
+    feed: &wire::Feed,
+    selection: Option<&wire::Range>,
+    filter: &Filter,
+) -> Element {
     let span = selected_span(feed, selection);
     let groups: HashMap<&str, &wire::Group> = feed
         .groups
@@ -276,7 +283,7 @@ fn list(nav: &Nav, feed: &wire::Feed, selection: Option<&wire::Range>, filter: &
             continue;
         }
         let selected = span.is_some_and(|(first, last)| (first..=last).contains(&index));
-        let row = entry_row(nav, feed, entry, selected, selection);
+        let row = entry_row(nav, actions, feed, entry, selected, selection);
         let under = heading(entry);
         match sections.last_mut() {
             Some((last, rows)) if *last == under => rows.push(row),
@@ -368,6 +375,7 @@ fn ledger_section(filter: &Filter) -> Option<Element> {
 
 fn entry_row(
     nav: &Nav,
+    actions: &Actions<Filter>,
     feed: &wire::Feed,
     entry: &wire::Entry,
     selected: bool,
@@ -403,17 +411,20 @@ fn entry_row(
     if !place.is_empty() {
         row = row.secondary(place.join(", "));
     }
-    let (chosen, stretched) = (nav.clone(), nav.clone());
-    let (one, id) = (wire::Range::one(&entry.id), entry.id.clone());
-    let from = selection.map(|range| range.from.clone());
+    let chosen = nav.clone();
+    let one = wire::Range::one(&entry.id);
     row = row.on_view(move || chosen.select(Some(one.clone())));
-    if let Some(from) = from.filter(|from| *from != entry.id) {
-        row = row.action(Icon::ListChecks, tr("activity-select-through"), move || {
-            stretched.select(Some(wire::Range {
-                from: from.clone(),
-                to: id.clone(),
-            }));
+    let through = selection
+        .map(|range| range.from.clone())
+        .filter(|from| *from != entry.id)
+        .and_then(|from| {
+            actions.effect(&ActivityEffect::SelectThrough {
+                from,
+                to: entry.id.clone(),
+            })
         });
+    if let Some(through) = through {
+        row = row.action_binding(Icon::ListChecks, tr("activity-select-through"), through);
     }
     Box::new(row)
 }

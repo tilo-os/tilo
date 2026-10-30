@@ -7,6 +7,10 @@ license.workspace = true
 description = "StatusNotifierItem tray host: the watcher, its items and their menus"
 
 [dependencies]
+blake3.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-service = { path = "../service" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Follows each item's change signals.
 futures-util.workspace = true

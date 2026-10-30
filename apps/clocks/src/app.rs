@@ -441,38 +441,21 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     )
 }
 
-/// The repeat-day strip, shared by the new-alarm form and the editor.
+/// The repeat-day strip, shared by the new-alarm form and the editor: the
+/// form's draft of the days, kept with its other fields until it is saved.
 fn repeat_control(selection: &ui::LocalState<BTreeSet<WeekdayKey>>, id: &'static str) -> Element {
-    let source = selection.clone();
-    Box::new(ModelView::from_state(selection, move |selected| {
-        // One multi-select strip: the week reads as one row, wrapping only
-        // when the form is too narrow for it.
-        let selection = source.clone();
-        let segments = WEEKDAYS
-            .iter()
-            .map(|(_, label)| ui::widget::Segment::new(*label))
-            .collect();
-        let chosen = WEEKDAYS
-            .iter()
-            .map(|(day, _)| selected.contains(day))
-            .collect();
-        Box::new(
-            ui::widget::ToggleGroup::multiple(segments, chosen)
-                .control_size(ui::widget::ControlSize::Large)
-                .with_id(id)
-                .with_accessible_name("Repeat on")
-                .on_chosen_change(move |chosen| {
-                    selection.set(
-                        WEEKDAYS
-                            .iter()
-                            .zip(chosen)
-                            .filter(|(_, on)| **on)
-                            .map(|((day, _), _)| *day)
-                            .collect(),
-                    );
-                }),
-        )
-    }))
+    // One multi-select strip: the week reads as one row, wrapping only
+    // when the form is too narrow for it.
+    let days = WEEKDAYS
+        .iter()
+        .map(|(day, label)| (*day, ui::widget::Segment::new(*label)))
+        .collect();
+    Box::new(
+        ui::widget::ToggleGroup::multiple_from_state(days, selection)
+            .control_size(ui::widget::ControlSize::Large)
+            .with_id(id)
+            .with_accessible_name("Repeat on"),
+    )
 }
 
 #[expect(

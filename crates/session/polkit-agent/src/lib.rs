@@ -3,9 +3,10 @@
 //! `pkexec`, GNOME Disks, virt-manager and system-wide Flatpak installs ask
 //! polkit for an administrator's consent; polkit asks the session's
 //! registered agent, and without one they fail with "no authentication
-//! agent". The shell registers this agent ([`service`]), which asks in a
-//! sheet the compositor draws through the shell's [`service::Sheets`] —
-//! never in a window an application could imitate or read keystrokes from.
+//! agent". The session registers this agent ([`service`]), which asks in
+//! a sheet its host draws through [`service::Sheets`] — the session's
+//! questions ([`questions`]) — never in a window an application could
+//! imitate or read keystrokes from.
 //!
 //! The password never touches polkit's D-Bus API: it goes to
 //! `polkit-agent-helper-1` ([`helper`]), which runs PAM and reports back.
@@ -14,6 +15,7 @@
 //! setuid binary or a screen.
 
 pub mod helper;
+pub mod questions;
 pub mod service;
 
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};

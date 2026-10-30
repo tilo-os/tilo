@@ -2,7 +2,7 @@
 //!
 //! It is its own package (`crates/dev/click-test-client`), so a shell edit
 //! does not rebuild it, and cargo hands a test only its own package's binary
-//! paths. `tools/ci/t-nextest.sh` builds it before the shell's tests and names
+//! paths. `tools/ci/nextest.sh` builds it before the shell's tests and names
 //! it in `$TILO_CLICK_TEST_CLIENT`; without that the client is looked up in the
 //! target directory the test binary was built into.
 

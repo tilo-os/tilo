@@ -2,10 +2,10 @@
 //! Hardware facts and arrangement are observations, never input authority.
 
 use super::super::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
-use super::super::device_fabric::DeviceFabric;
 use super::super::network::ShellNetwork;
 use settings_store::person_displays::{Arrangement, Layout};
 use std::sync::{Arc, Mutex, OnceLock};
+use tilo_device_fabric::DeviceFabric;
 use tilo_network_actor::fabric::{DeviceId, FabricStamp};
 
 #[derive(Clone, Debug)]

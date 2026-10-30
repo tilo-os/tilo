@@ -565,20 +565,15 @@ pub(super) fn take_on(
     Ok(())
 }
 
-/// Find the tabs `attribution` asked from: the Terminal tab this desktop
-/// shows whose Terminal reported the session, or the windows of the
-/// launch, by the launch custody of their Wayland clients.
+/// Find the tabs `attribution` asked from: the windows of the launch, by
+/// the launch custody of their Wayland clients. No tab here is a Terminal
+/// the shell runs itself, so a session attribution names none.
 pub(super) fn resolve(
     attribution: crate::compositor::workspace_door::Attribution,
     frame_builder: &FrameBuilder,
     state: &State,
 ) -> Option<crate::compositor::workspace_door::AppScope> {
     let chrome = frame_builder.chrome();
-    let windows = chrome
-        .hosted_inputs
-        .in_process()
-        .map(|apps| apps.borrow().hosted_windows())
-        .unwrap_or_default();
     let tree = chrome.tree();
     let workspace_tabs = || {
         tree.desktop.workspaces.iter().flat_map(|workspace| {
@@ -591,12 +586,7 @@ pub(super) fn resolve(
         })
     };
     attribution.resolve(
-        |session| {
-            windows
-                .iter()
-                .find(|(_, window)| window.session().as_deref() == Some(session))
-                .map(|(tab, _)| *tab)
-        },
+        |_session| None,
         |custody| {
             workspace_tabs()
                 .filter_map(|(_, tab)| match tab.tile {

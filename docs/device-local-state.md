@@ -6,8 +6,7 @@ not. A build tree, a thumbnail cache or a tool's per-machine index is derived
 state: it is rebuilt from the synced files, it is only valid on the machine
 that built it, and syncing it wastes bandwidth and produces conflicts nobody
 can resolve. This page is for app and tool authors whose programs write such
-state inside a workspace. The design behind it is
-[`architecture/storage.md`](architecture/storage.md) §6.7.
+state inside a workspace.
 
 ## Marking derived state
 

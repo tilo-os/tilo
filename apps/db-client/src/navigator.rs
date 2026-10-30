@@ -9,6 +9,7 @@
 //! titled with the connection's name, so the window's filter narrows the
 //! tables and never the connections.
 
+use ui::framework::Actions;
 use ui::icons::Icon;
 use ui::widget::{NavAction, NavItem, NavList, NavSection, RowStatus};
 use uuid::Uuid;
@@ -16,8 +17,12 @@ use uuid::Uuid;
 use crate::i18n::t;
 use crate::link::{ConnectionRow, Intent, Link};
 use crate::model::{DatabaseSchema, Engine, RelationKind, RelationRef, SchemaInfo};
+use crate::record::{Workspace as Record, id_of};
+use crate::resource::DbEffect;
 
 const CONNECTIONS: &str = "connections";
+/// The connections heading's action, which opens the new-connection form.
+const NEW_CONNECTION: &str = "new";
 const CATALOG: &str = "catalog";
 /// Separates a schema from a table in a row id; no catalog name contains it.
 const SEPARATOR: char = '\u{1f}';
@@ -117,7 +122,11 @@ fn connection_section(rows: &[ConnectionRow], open: Option<Uuid>) -> NavSection 
             })
             .collect(),
     )
-    .trailing_action(NavAction::new("new", Icon::Plus, t("db-new-connection")))
+    .trailing_action(NavAction::new(
+        NEW_CONNECTION,
+        Icon::Plus,
+        t("db-new-connection"),
+    ))
 }
 
 /// The open database's tables, under the connection's name; the one
@@ -148,12 +157,13 @@ pub struct Navigator {
 }
 
 impl Navigator {
-    pub fn new(link: &Link) -> Self {
+    /// The sidebar over `link`; with the workspace's `actions`, a saved
+    /// connection's row removes it and the heading opens the new-connection
+    /// form, each through its published action.
+    pub fn new(link: &Link, actions: Option<&Actions<Record>>) -> Self {
         let ask = link.clone();
-        let remove = link.clone();
-        let new = link.clone();
         let opened = link.clone();
-        let list = NavList::new(sections(&[], None))
+        let mut list = NavList::new(sections(&[], None))
             .with_accessible_name(t("db-navigator"))
             .on_view("db.sidebar", move |id| {
                 if let Some(id) = parse_connection(&id) {
@@ -165,20 +175,22 @@ impl Navigator {
                 } else if let Some(relation) = parse_relation(&id) {
                     ask.ask(Intent::OpenRelation(relation));
                 }
-            })
-            .item_actions(
-                vec![NavAction::new(
-                    "remove",
-                    Icon::Trash2,
-                    t("db-remove-connection"),
-                )],
-                move |id, _action| {
-                    if let Some(id) = parse_connection(id) {
-                        remove.ask(Intent::RemoveConnection(id));
-                    }
-                },
-            )
-            .on_section_action(move |_section, _action| new.ask(Intent::NewConnection));
+            });
+        if let Some(actions) = actions {
+            if let Some(remove) = actions.binding(
+                Record::REMOVE_CONNECTION.try_map(|key: String| parse_connection(&key).map(id_of)),
+            ) {
+                list = list.item_action(
+                    NavAction::new("remove", Icon::Trash2, t("db-remove-connection")),
+                    remove,
+                );
+            }
+            if let Some(new) =
+                actions.effect_binding(DbEffect::NEW_CONNECTION.map(|_section: String| ()))
+            {
+                list = list.section_action(NEW_CONNECTION, new);
+            }
+        }
         Self {
             link: link.clone(),
             list,
@@ -378,7 +390,7 @@ mod tests {
         }
     }
 
-    /// Choosing a connection, a table, removing a connection and adding one reach the controller as intents; the sample cannot be removed.
+    /// Choosing a connection or a table reaches the controller as intents; the sample cannot be removed.
     #[test]
     fn the_sidebar_asks_for_connections_to_open_and_to_change() {
         let link = Link::new();
@@ -397,7 +409,7 @@ mod tests {
         });
         let mut harness = FrameHarness::for_root(
             ui::State::new(),
-            Navigator::new(&link),
+            Navigator::new(&link, None),
             (320, 700),
             Theme::dark(),
         );
@@ -505,7 +517,7 @@ mod tests {
         link.publish(model(sample.id, None, 1));
         let mut harness = FrameHarness::for_root(
             ui::State::new(),
-            Navigator::new(&link),
+            Navigator::new(&link, None),
             (320, 700),
             Theme::dark(),
         );

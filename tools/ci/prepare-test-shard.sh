@@ -41,6 +41,15 @@ reads() { # PACKAGE...: whether the shard runs these packages' tests or scoped t
     return 1
 }
 
+# The packages whose tests start sandboxes of their own (tools/ci/nested-sandboxes.toml) need
+# a runner that lets them create user namespaces; say so where this one refuses them.
+nested=()
+# shellcheck disable=SC2086
+[[ -z ${tested// /} ]] || mapfile -t nested < <(python3 tools/ci/nested_sandboxes.py $tested)
+if (( ${#nested[@]} )) && ! bwrap --unshare-user --ro-bind / / true 2>/dev/null; then
+    echo "::warning::${nested[*]}: these tests start sandboxes of their own, and this runner refuses user namespaces (bwrap --unshare-user)"
+fi
+
 # Older/explicitly selected builders may predate the audio fixture. The
 # helper replaces only the conflicting audio daemon; other installed packages
 # retain their pinned versions.

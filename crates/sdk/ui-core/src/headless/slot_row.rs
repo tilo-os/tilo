@@ -17,6 +17,7 @@ use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
 use super::{FrameHarness, InspectionNode};
+use crate::host_core::KeyHost as _;
 use crate::search::SearchRequest;
 use crate::slot_row::{RowInput, RowPlace, SlotRow, SlotRowHost};
 use crate::widget::{HistoryControl, InPlace, Widget};

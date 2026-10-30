@@ -73,6 +73,8 @@ pub struct Board {
     cursor: Point,
     dirty: bool,
     on_drop: Option<Box<dyn FnMut(BoardDrop)>>,
+    /// What each drop asks the host for, where the app bound one.
+    drops: Option<crate::widget::ActionEmitter<BoardDrop>>,
     /// What the board is, for assistive technology.
     pub(crate) name: Option<String>,
 }
@@ -93,6 +95,7 @@ impl Board {
             cursor: Point::ZERO,
             dirty: false,
             on_drop: None,
+            drops: None,
             name: None,
         }
     }
@@ -135,6 +138,26 @@ impl Board {
     pub fn on_drop(mut self, on_drop: impl FnMut(BoardDrop) + 'static) -> Self {
         self.on_drop = Some(Box::new(on_drop));
         self
+    }
+
+    /// Each drop asks the host for `binding`: the app's own action, so the
+    /// move is confirmed, undone and permitted like every other.
+    #[must_use]
+    pub fn on_drop_binding(mut self, binding: tilo_actions::ActionBinding<BoardDrop>) -> Self {
+        self.drops = Some(crate::widget::ActionEmitter::new(binding));
+        self
+    }
+
+    /// Report a dropped card: through the app's bound action where it bound
+    /// one, else to its closure.
+    fn drop_card(&mut self, drop: BoardDrop) {
+        if let Some(drops) = &mut self.drops {
+            if let Err(error) = drops.emit(drop) {
+                tracing::warn!(%error, "a drop refused its card");
+            }
+        } else if let Some(on_drop) = &mut self.on_drop {
+            on_drop(drop);
+        }
     }
 
     #[must_use]
@@ -256,6 +279,58 @@ impl Board {
     }
 }
 
+impl crate::widget::controls::ActionControls for Board {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(drops) = &mut self.drops {
+            let _ = drops.install_custody(domain, attachment);
+        }
+        for child in Widget::children_mut(self) {
+            crate::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self
+            .drops
+            .as_mut()
+            .and_then(crate::widget::ActionEmitter::take)
+        {
+            return Some(invocation);
+        }
+        Widget::children_mut(self)
+            .into_iter()
+            .find_map(crate::widget::controls::take_control_invocation)
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        if let Some(drops) = &self.drops {
+            let control = Widget::test_id(self).unwrap_or("board").to_owned();
+            bindings.push(drops.metadata(control));
+        }
+        for child in Widget::children(self) {
+            bindings.extend(crate::widget::controls::control_action_bindings(child));
+        }
+        bindings
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(drops) = &mut self.drops {
+            drops.refresh_availability(allowed);
+        }
+        for child in Widget::children_mut(self) {
+            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
+}
+
 impl crate::widget::Decorator for Board {
     type Inner = Row;
 
@@ -265,6 +340,26 @@ impl crate::widget::Decorator for Board {
 
     fn inner_mut(&mut self) -> &mut Row {
         &mut self.row
+    }
+
+    /// The board answers for the drop it publishes itself (its
+    /// [`ActionControls`](crate::widget::controls::ActionControls) reaches
+    /// both that action and every row's); everything else the rows answer as
+    /// before.
+    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        if self.drops.is_some() && request.wants::<dyn crate::widget::controls::ActionControls>() {
+            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+            return;
+        }
+        self.row.provide(request);
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+        if self.drops.is_some() && request.wants::<dyn crate::widget::controls::ActionControls>() {
+            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+            return;
+        }
+        self.row.provide_mut(request);
     }
 
     fn needs_redraw(&self) -> bool {
@@ -360,13 +455,13 @@ impl crate::widget::Decorator for Board {
                     self.dirty = true;
                     if let Some((lane, before)) = drag.target
                         && let Some(keys) = self.lanes.get(lane)
-                        && let Some(on_drop) = self.on_drop.as_mut()
                     {
-                        on_drop(BoardDrop {
+                        let drop = BoardDrop {
                             card: drag.card,
                             lane: keys.key.clone(),
                             before,
-                        });
+                        };
+                        self.drop_card(drop);
                     }
                     *ctx.handled = true;
                     return;

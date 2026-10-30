@@ -492,7 +492,7 @@ impl FilesState {
         let id = entry.id.clone();
         ui::widget::Checkbox::from_state(&checked)
             .with_label(&entry.name)
-            .on_change(move |_| {
+            .on_view(&format!("cloud-entry-{}", entry.id), move |_| {
                 crate::command::push(
                     &sink,
                     FileCommand::Cloud(FilesEffect::SelectCloud { entry: id.clone() }),

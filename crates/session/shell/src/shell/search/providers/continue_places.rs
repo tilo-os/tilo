@@ -19,10 +19,10 @@ use std::sync::Arc;
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::{ActionArgs, ActionError};
-use crate::shell::search::app_content_index::AppContentIndex;
 use crate::shell::search::launcher::LauncherSection;
 use crate::shell::search::recent_places::{self, Place};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+use tilo_desktop_search::content_index::AppContentIndex;
 
 use super::app_content::OpenDoor;
 

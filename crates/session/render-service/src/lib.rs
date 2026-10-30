@@ -7,8 +7,7 @@
 //! on a device it opened once — warm pipelines, warm glyph cache, shared by
 //! every app of the room — into a dma-buf, and the app attaches that buffer
 //! to its own surface, so the compositor composites or scans it out like any
-//! client's. `docs/architecture/app-rendering.md` has the design;
-//! `docs/architecture/security.md` "App rendering" the boundary.
+//! client's.
 //!
 //! **One service per room.** The person's private rooms share one; every
 //! other room has its own, so an app in a room with strangers cannot touch

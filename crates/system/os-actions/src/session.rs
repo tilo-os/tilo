@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use tilo_power_mgmt::LogindManager;
+
 use crate::process::run;
 
 const LOGOUT_REQUEST_ENV: &str = "TILO_SESSION_LOGOUT_REQUEST";
@@ -38,16 +40,22 @@ pub fn user_switching_supported() -> bool {
     *SUPPORTED.get_or_init(|| run("busctl", &["--system", "status", GDM_BUS_NAME]).is_ok())
 }
 
-/// Run the shell-out backing `action`.
+/// Perform `action`.
 ///
 /// # Errors
 ///
-/// Returns an error message if `loginctl`/`systemctl` is not installed, is not authorised, or
+/// Returns an error message if logind cannot be reached, does not authorise the action, or
 /// the command otherwise fails, or when switching users on a display manager that
 /// cannot (see [`user_switching_supported`]).
 pub fn perform_session_action(action: SessionAction) -> Result<(), String> {
     match action {
-        SessionAction::Lock => run("loginctl", &["lock-session"]),
+        SessionAction::Lock => crate::block_on(async {
+            logind()
+                .await?
+                .lock_session()
+                .await
+                .map_err(|e| format!("logind Lock: {e}"))
+        }),
         SessionAction::Logout => request_logout(),
         // A greeter is a display-manager session, not a magic logind session
         // id. Ask the active display manager to create/activate its greeter.
@@ -66,10 +74,45 @@ pub fn perform_session_action(action: SessionAction) -> Result<(), String> {
                 "CreateTransientDisplay",
             ],
         ),
-        SessionAction::Suspend => run("systemctl", &["suspend"]),
-        SessionAction::Restart => run("systemctl", &["reboot"]),
-        SessionAction::ShutDown => run("systemctl", &["poweroff"]),
+        // Interactive, as `systemctl` asks: polkit may prompt the person.
+        SessionAction::Suspend => crate::block_on(async {
+            logind()
+                .await?
+                .suspend(true)
+                .await
+                .map_err(|e| format!("logind Suspend: {e}"))
+        }),
+        SessionAction::Restart => crate::block_on(async {
+            logind()
+                .await?
+                .reboot(true)
+                .await
+                .map_err(|e| format!("logind Reboot: {e}"))
+        }),
+        SessionAction::ShutDown => crate::block_on(async {
+            logind()
+                .await?
+                .power_off(true)
+                .await
+                .map_err(|e| format!("logind PowerOff: {e}"))
+        }),
     }
+}
+
+/// The process's handle on logind, opened once and kept: brightness keys
+/// auto-repeat, and a connection per call would cost a bus handshake each.
+pub(crate) async fn logind() -> Result<LogindManager, String> {
+    static LOGIND: std::sync::Mutex<Option<LogindManager>> = std::sync::Mutex::new(None);
+    if let Some(logind) = LOGIND.lock().ok().and_then(|slot| slot.clone()) {
+        return Ok(logind);
+    }
+    let logind = LogindManager::connect()
+        .await
+        .map_err(|e| format!("cannot reach logind on the system bus: {e}"))?;
+    if let Ok(mut slot) = LOGIND.lock() {
+        *slot = Some(logind.clone());
+    }
+    Ok(logind)
 }
 
 fn logout_request_path() -> Result<PathBuf, String> {
@@ -132,52 +175,8 @@ pub fn take_logout_request() -> bool {
 mod tests {
     use super::*;
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct Invocation {
-        binary: &'static str,
-        args: &'static [&'static str],
-    }
-
-    fn invocation(action: SessionAction) -> Invocation {
-        match action {
-            SessionAction::Lock => Invocation {
-                binary: "loginctl",
-                args: &["lock-session"],
-            },
-            SessionAction::Logout => panic!("logout uses the wrapper request channel"),
-            SessionAction::SwitchUser => Invocation {
-                binary: "busctl",
-                args: &[
-                    "call",
-                    "org.gnome.DisplayManager",
-                    "/org/gnome/DisplayManager/LocalDisplayFactory",
-                    "org.gnome.DisplayManager.LocalDisplayFactory",
-                    "CreateTransientDisplay",
-                ],
-            },
-            SessionAction::Suspend => Invocation {
-                binary: "systemctl",
-                args: &["suspend"],
-            },
-            SessionAction::Restart => Invocation {
-                binary: "systemctl",
-                args: &["reboot"],
-            },
-            SessionAction::ShutDown => Invocation {
-                binary: "systemctl",
-                args: &["poweroff"],
-            },
-        }
-    }
-
     #[test]
-    fn session_switch_and_logout_use_the_right_private_paths() {
-        {
-            let call = invocation(SessionAction::SwitchUser);
-            assert_eq!(call.binary, "busctl");
-            assert_eq!(call.args.last(), Some(&"CreateTransientDisplay"));
-            assert!(!call.args.contains(&"greeter"));
-        }
+    fn logout_uses_the_private_request_path() {
         {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("logout-request");

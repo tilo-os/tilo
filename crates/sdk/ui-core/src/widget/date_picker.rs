@@ -47,6 +47,9 @@ pub struct DatePicker {
     selected: NaiveDate,
     month_view: (i32, u32),
     on_change: Option<Box<dyn FnMut(NaiveDate)>>,
+    /// Choosing a day, published as the picker's view action `select`
+    /// ([`DatePicker::on_view`]).
+    choice: Option<DateChoice>,
     local_state: Option<crate::local_state::LocalBinding<NaiveDate>>,
     rect: Rect,
     day_rects: Vec<(NaiveDate, Rect)>,
@@ -92,6 +95,7 @@ impl DatePicker {
             selected: initial,
             month_view: (initial.year(), initial.month()),
             on_change: None,
+            choice: None,
             local_state: None,
             rect: Rect::ZERO,
             day_rects: Vec::new(),
@@ -204,6 +208,24 @@ impl DatePicker {
         self
     }
 
+    /// Called with the day chosen, by its ISO date: the picker, as control
+    /// `id`, publishes choosing a day as its view action `select`, so a
+    /// click, a key, a screen reader, a script and an agent choose through
+    /// the same action. What is chosen is the draft's own value, never an
+    /// edit.
+    #[must_use]
+    pub fn on_view(mut self, id: impl Into<String>, f: impl FnMut(NaiveDate) + 'static) -> Self {
+        let id = id.into();
+        self.choice = Some(DateChoice {
+            choice: crate::widget::view_choice::ViewChoice::new(
+                format!("{id}/day"),
+                "Choose a day",
+            ),
+            handler: Box::new(f),
+        });
+        self
+    }
+
     /// Wraps December → January. Does **not** move the selected date —
     /// the user must click a day to change selection.
     pub fn advance_month(&mut self) {
@@ -243,7 +265,9 @@ impl DatePicker {
         self.selected = date;
         self.month_view = (date.year(), date.month());
         self.publish_local_state();
-        if let Some(callback) = self.on_change.as_mut() {
+        if let Some(choice) = &mut self.choice {
+            choice.choice.emit(date.to_string());
+        } else if let Some(callback) = self.on_change.as_mut() {
             callback(date);
         }
     }
@@ -379,6 +403,12 @@ pub enum ExternalDatePickerHit {
 }
 
 impl Widget for DatePicker {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
+
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if let Some(date) = self
             .local_state
@@ -677,6 +707,90 @@ impl Widget for DatePicker {
                 true
             }
             _ => false,
+        }
+    }
+}
+
+/// A picker's published day choice and the app's handler.
+struct DateChoice {
+    choice: crate::widget::view_choice::ViewChoice,
+    handler: Box<dyn FnMut(NaiveDate)>,
+}
+
+impl crate::widget::ResourceOperations for DatePicker {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        if self.choice.is_some() {
+            &[crate::widget::view_choice::CHOICE_SELECT]
+        } else {
+            &[]
+        }
+    }
+
+    /// Answer a `select` addressed to this picker: select the day and
+    /// report it, whoever chose it.
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let chosen = self
+            .choice
+            .as_ref()
+            .map(|choice| choice.choice.start(op))
+            .transpose()?
+            .flatten();
+        let Some(entry) = chosen else {
+            return Ok(None);
+        };
+        let date = NaiveDate::parse_from_str(&entry, "%Y-%m-%d")
+            .map_err(|_| format!("no day `{entry}`"))?;
+        self.set_selected(date);
+        if let Some(choice) = &mut self.choice {
+            (choice.handler)(date);
+        }
+        Ok(Some(crate::widget::view_choice::chosen()))
+    }
+}
+
+impl crate::resources::PublishesResources for DatePicker {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        self.choice
+            .iter()
+            .map(|choice| choice.choice.resource_unlisted())
+            .collect()
+    }
+}
+
+impl crate::widget::controls::ActionControls for DatePicker {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(choice) = &mut self.choice {
+            choice.choice.install_custody(domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.choice.as_mut().and_then(|choice| choice.choice.take())
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = crate::widget::controls::default_bindings(self);
+        if let Some(choice) = &self.choice {
+            bindings.push(choice.choice.metadata(choice.choice.id().to_owned()));
+        }
+        bindings
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(choice) = &mut self.choice {
+            choice.choice.refresh_availability(allowed);
         }
     }
 }

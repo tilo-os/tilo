@@ -117,12 +117,6 @@ impl HeadlessApp {
         })
     }
 
-    /// Wrap a frame that already holds the component.
-    #[must_use]
-    pub fn from_frame(frame: FrameHarness) -> Self {
-        Self { frame }
-    }
-
     /// The frame and its host, for what only a frame can prove: a click's
     /// hit-test, a named control's geometry, a capture of the pixels.
     #[must_use]

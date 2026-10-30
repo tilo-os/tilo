@@ -780,6 +780,9 @@ pub struct VelloDrmBridge {
     _device_memory: Option<crate::shell::heap_trim::DeviceRegistration>,
     /// Atlas side and renderer allocations at the last `RENDERER-MEMORY` line.
     logged_memory: Option<[u64; 6]>,
+    /// The renderer's own allocations after the last paint, to tell a large free
+    /// ([`crate::shell::heap_trim::freed_a_lot`]).
+    allocated_seen: u64,
     /// [`crate::shell::heap_trim::windows_closed`] at the last frame.
     windows_closed_seen: u64,
     /// The renderer's [`vello::Renderer::scratch_shrinks`] at the last frame.

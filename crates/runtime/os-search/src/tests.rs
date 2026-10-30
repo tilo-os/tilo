@@ -135,6 +135,7 @@ pub(crate) fn row(provider: &str, resource: &str, label: &str, action: &str) -> 
             presentation: None,
         },
         action: Some(ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: ActionAddress::new(resource, action),
             resource_kind: "notes.page".into(),

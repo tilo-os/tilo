@@ -174,6 +174,11 @@ pub enum DbEffect {
         #[param("The saved query")]
         query: String,
     },
+    /// New connection
+    ///
+    /// Opens the form for a connection to save.
+    #[effect(view)]
+    NewConnection,
     /// Show database
     #[effect(view, row)]
     FocusDatabase { connection: Uuid },
@@ -262,7 +267,7 @@ impl ResourceApp for DbClientShell {
     const ICON: Option<&'static str> = Some("db-client");
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {
-        let app = DbClientApp::new();
+        let app = DbClientApp::with_actions(&cx.actions());
         let (opener, index) = {
             let state = app.state();
             (state.opener(), state.search_index())

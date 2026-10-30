@@ -446,7 +446,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     // to their own window: a window opened for an agent browses as a
     // visitor.
     let custody = window_mode(cx).holds_account_custody();
-    window.attach_dispatcher(cx.dispatcher());
+    window.attach_dispatcher(cx.dispatcher(), cx.actions());
     window.attach_services(
         cx.me()
             .and_then(crate::service_sessions::identity)

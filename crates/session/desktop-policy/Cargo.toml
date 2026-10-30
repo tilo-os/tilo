@@ -1,0 +1,24 @@
+[package]
+name = "tilo-desktop-policy"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "The desktop's window policy: native windows as tabs of the portable desktop surface's strips."
+
+# Where a compositor's windows go, which has focus and which the person
+# closed, answered by the portable desktop surface: a window is a tab of its
+# strips, laid out, panned, grouped and focused by the same widgets the
+# browser desktop runs. Compositor-neutral: windows are plain ids and rects.
+
+[dependencies]
+ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }
+tilo-desktop-surface = { version = "0.1.0", path = "../desktop-surface" }
+
+[dev-dependencies]
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

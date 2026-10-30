@@ -7,7 +7,7 @@
 //! crate owns the component, its records and the GPU. Everything runs on the
 //! page's thread.
 //!
-//! See `docs/architecture/browser-runtime.md`. Everything is browser-only;
+//! Everything is browser-only;
 //! native workspace builds compile an empty library. The page's host services
 //! are the platform crates' web backends (`tilo-dialogs`,
 //! `tilo-clipboard`, `tilo-notify`).

@@ -14,7 +14,7 @@ use tilo_reference::{ProgramStep, ResourceAt, StepChange, StepPreview};
 use ui::widget::{
     BlockEditor, Button, ButtonRole, Chip, Column, Container, ControlSize, Decorator,
     DisclosureGroup, Divider, Dropdown, ListRow, Popover, PopoverSide, ProgramStepView, Scrollable,
-    Slot, SlotHandle,
+    Slot, SlotHandle, StepAnswer,
 };
 use ui::widget::{Row, Spinner, Text, TextInput, When, Widget};
 use ui::{LocalState, Theme};
@@ -273,34 +273,25 @@ fn work_list(
         .with_intrinsic_height()
         .with_rhythm(ui::tokens::Rhythm::Section);
     for (index, step) in programs.iter().enumerate() {
-        let (open, undo, confirm, decline) = (
-            pressed(presses),
-            pressed(presses),
-            pressed(presses),
-            pressed(presses),
-        );
         let task = task.to_owned();
+        let (open, undo, resolve) = (pressed(presses), pressed(presses), pressed(presses));
         column = column.push(
             ProgramStepView::new(format!("agent-quick-step-{index}"), step.clone())
                 .with_disclosure(folds)
-                .on_open(move |resource| open(WorkPress::Open(resource.clone())))
-                .on_undo(move |change| {
-                    undo(WorkPress::Undo {
+                .answering(move |answer| match answer {
+                    StepAnswer::Open(resource) => open(WorkPress::Open(resource)),
+                    StepAnswer::Undo(change) => undo(WorkPress::Undo {
                         task: task.clone(),
-                        change: change.clone(),
-                    });
-                })
-                .on_confirm(move |preview| {
-                    confirm(WorkPress::Resolve {
-                        preview: preview.clone(),
+                        change,
+                    }),
+                    StepAnswer::Confirm(preview) => resolve(WorkPress::Resolve {
+                        preview,
                         approve: true,
-                    });
-                })
-                .on_decline(move |preview| {
-                    decline(WorkPress::Resolve {
-                        preview: preview.clone(),
+                    }),
+                    StepAnswer::Decline(preview) => resolve(WorkPress::Resolve {
+                        preview,
                         approve: false,
-                    });
+                    }),
                 })
                 .into_widget(),
         );

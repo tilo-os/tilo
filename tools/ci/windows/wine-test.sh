@@ -9,7 +9,7 @@
 # Wine is not Windows: the disk, volume and privilege APIs the media writer
 # uses are partial or missing there, so tests that need them are listed in
 # tools/ci/windows/wine-skip.txt with the reason, and run on real Windows
-# (docs/publishing-on-t.md, Windows). Everything else must pass.
+# Everything else must pass.
 set -euo pipefail
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,8 +63,7 @@ case "$mode" in
       || { printf 'no start menu shortcut\n' >&2; exit 1; }
     # The installed imager is not started here: its storage (tilo-files)
     # publishes only to volumes with positive local-disk evidence, which
-    # Wine's volumes do not give, so rendering its UI is left to Windows
-    # (docs/publishing-on-t.md, Windows).
+    # Wine's volumes do not give, so rendering its UI is left to Windows.
     wine "$dir/unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
     wineserver -w
     [ ! -e "$dir/tilo-imager.exe" ] || { printf 'uninstalling left the program behind\n' >&2; exit 1; }

@@ -1,4 +1,4 @@
-//! The Discord connector (docs/architecture/discord-bridge.md §2): one
+//! The Discord connector: one
 //! `discord.guild` record per bridged server, whose verbs record what the
 //! bridge bot observed and queue what it asks Discord to do, and whose
 //! planning effects work out what a change means, because a bot's program

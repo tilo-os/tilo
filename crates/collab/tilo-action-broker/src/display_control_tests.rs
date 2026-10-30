@@ -230,6 +230,7 @@ async fn display_rpc_preserves_original_published_caller_and_refuses_missing_or_
                 .publish_actions(
                     "so.tilo.settings",
                     &[runtime_collab::ExportedAction {
+                        state: tilo_actions::ActionState::default(),
                         resource: "settings.display".into(),
                         semantic_identity: None,
                         action: "identify-displays".into(),
@@ -499,6 +500,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                 .publish_actions(
                     "so.tilo.settings",
                     &[runtime_collab::ExportedAction {
+                        state: tilo_actions::ActionState::default(),
                         resource: "settings.display".into(),
                         semantic_identity: None,
                         action: "identify-displays".into(),

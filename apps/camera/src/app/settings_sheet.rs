@@ -1,8 +1,7 @@
 //! The capture settings: a modal sheet over the viewfinder holding one
-//! grouped settings form. Every control reports a change as a camera
-//! [`Action`], so the sheet and the viewfinder's quick controls share one
-//! mutation path; the sheet's values are refreshed from the document on every
-//! sync.
+//! grouped settings form. Every control runs Camera's published `Set…`
+//! effect, the one the palette, an agent or a script runs; the sheet's values
+//! are refreshed from the settings on every sync.
 //!
 //! A window too short for the whole form gets a sheet as tall as the window
 //! allows, and the dialog scrolls the form inside it, so every setting stays
@@ -12,10 +11,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::LocalState;
+use ui::framework::{ActionControl, Actions};
+use ui::tilo_resource::Binds;
 use ui::widget::{Dropdown, Field, Form, FormSection, ModalDialog, Toggle};
 
 use super::Action;
+use crate::actions::CameraEffect;
 use crate::model::{Facing, PhotoFormat, Resolution, Settings, Timer};
+use crate::record::Record;
 
 /// Actions raised by retained controls, applied by the app after the event
 /// that raised them.
@@ -27,7 +30,8 @@ const TITLE: &str = "Camera settings";
 pub(super) struct SettingsSheet {
     pub(super) dialog: ModalDialog<Form>,
     states: States,
-    queue: ActionQueue,
+    /// What the controls run, once Camera is open on a record.
+    actions: Option<Actions<Record>>,
     /// Whether the form offers a default lens: only where there is more
     /// than one camera to start with.
     lenses: bool,
@@ -72,6 +76,18 @@ fn timer_value(timer: Timer) -> &'static str {
     }
 }
 
+/// `control`, running `effect`; inert until Camera is open on a record.
+fn bound<I: 'static, C: ActionControl<I>>(
+    control: C,
+    actions: Option<&Actions<Record>>,
+    effect: impl Binds<CameraEffect, I>,
+) -> C {
+    match actions {
+        Some(actions) => actions.bind_effect(control, effect),
+        None => control.unavailable(),
+    }
+}
+
 /// A chooser row. The dropdowns of a section share one column at the
 /// trailing edge; once the section stacks, each spans the row under its
 /// label.
@@ -79,25 +95,21 @@ fn choice(
     label: &str,
     all: Vec<(String, String)>,
     state: &LocalState<String>,
-    queue: &ActionQueue,
-    to_action: fn(&str) -> Action,
+    actions: Option<&Actions<Record>>,
+    effect: impl Binds<CameraEffect, String>,
 ) -> Field {
-    let queue = Rc::clone(queue);
-    let mut dropdown = Dropdown::from_state(Vec::new(), state).on_change(move |value| {
-        queue.borrow_mut().push(to_action(value));
-    });
+    let mut dropdown = Dropdown::from_state(Vec::new(), state);
     dropdown.set_value_options(all);
-    Field::new(label, dropdown)
+    Field::new(label, bound(dropdown, actions, effect))
 }
 
-fn switch(label: &str, state: &LocalState<bool>, queue: &ActionQueue, action: Action) -> Field {
-    let queue = Rc::clone(queue);
-    Field::new(
-        label,
-        Toggle::from_state(state).on_change(move |_| {
-            queue.borrow_mut().push(action.clone());
-        }),
-    )
+fn switch(
+    label: &str,
+    state: &LocalState<bool>,
+    actions: Option<&Actions<Record>>,
+    effect: impl Binds<CameraEffect, bool>,
+) -> Field {
+    Field::new(label, bound(Toggle::from_state(state), actions, effect))
 }
 
 impl States {
@@ -116,65 +128,65 @@ impl States {
     }
 
     /// The form, its controls bound to these values.
-    fn form(&self, queue: &ActionQueue, lenses: bool) -> Form {
+    fn form(&self, actions: Option<&Actions<Record>>, lenses: bool) -> Form {
         let mut capture = FormSection::new("Capture")
             .grouped()
             .field(choice(
                 "Resolution",
                 options(&Resolution::ALL, Resolution::as_str, Resolution::label),
                 &self.resolution,
-                queue,
-                |value| Action::SetResolution(Resolution::parse_str(value)),
+                actions,
+                CameraEffect::SET_RESOLUTION,
             ))
             .field(choice(
                 "Photo format",
                 options(&PhotoFormat::ALL, PhotoFormat::as_str, PhotoFormat::label),
                 &self.photo_format,
-                queue,
-                |value| Action::SetPhotoFormat(PhotoFormat::parse_str(value)),
+                actions,
+                CameraEffect::SET_PHOTO_FORMAT,
             ))
             .field(choice(
                 "Self-timer",
                 options(&Timer::ALL, timer_value, timer_label),
                 &self.timer,
-                queue,
-                |value| Action::SetTimer(Timer::from_seconds(value.parse().unwrap_or(0))),
+                actions,
+                CameraEffect::SET_TIMER,
             ));
         if lenses {
             capture = capture.field(choice(
                 "Default camera",
                 options(&Facing::ALL, Facing::as_str, Facing::label),
                 &self.default_camera,
-                queue,
-                |value| Action::SetDefaultFacing(Facing::parse_str(value)),
+                actions,
+                CameraEffect::SET_DEFAULT_LENS,
             ));
         }
         let options = FormSection::new("Viewfinder and photos")
             .grouped()
-            .field(switch("HDR", &self.hdr, queue, Action::ToggleHdr))
+            .field(switch("HDR", &self.hdr, actions, CameraEffect::SET_HDR))
             .field(switch(
                 "Rule-of-thirds grid",
                 &self.grid,
-                queue,
-                Action::ToggleGrid,
+                actions,
+                CameraEffect::SET_GRID,
             ))
             .field(switch(
                 "Level guide",
                 &self.level,
-                queue,
-                Action::ToggleLevel,
+                actions,
+                CameraEffect::SET_LEVEL,
             ))
             .field(switch(
                 "Mirror front camera",
                 &self.mirror,
-                queue,
-                Action::ToggleMirror,
+                actions,
+                CameraEffect::SET_MIRROR_FRONT,
             ))
             .field(switch(
                 "Save location with photos",
                 &self.geotag,
-                queue,
-                Action::ToggleGeotag,
+                actions,
+                CameraEffect::SET_GEOTAG,
             ));
         Form::new().section(capture).section(options)
     }
@@ -184,15 +196,21 @@ impl SettingsSheet {
     pub(super) fn new(queue: &ActionQueue, settings: &Settings) -> Self {
         let states = States::of(settings);
         let dismiss = Rc::clone(queue);
-        let dialog = ModalDialog::new(TITLE, states.form(queue, false))
+        let dialog = ModalDialog::new(TITLE, states.form(None, false))
             .with_test_id("camera.settings")
             .on_dismiss(move || dismiss.borrow_mut().push(Action::Back));
         Self {
             dialog,
             states,
-            queue: Rc::clone(queue),
+            actions: None,
             lenses: false,
         }
+    }
+
+    /// Bind the controls to Camera's published effects.
+    pub(super) fn attach(&mut self, actions: &Actions<Record>) {
+        self.actions = Some(actions.clone());
+        *self.dialog.content_mut() = self.states.form(self.actions.as_ref(), self.lenses);
     }
 
     /// Whether the sheet offers a default lens.
@@ -206,7 +224,7 @@ impl SettingsSheet {
     pub(super) fn present(&mut self, settings: &Settings, lenses: bool) {
         if lenses != self.lenses {
             self.lenses = lenses;
-            *self.dialog.content_mut() = self.states.form(&self.queue, lenses);
+            *self.dialog.content_mut() = self.states.form(self.actions.as_ref(), lenses);
         }
         let s = &self.states;
         set_if_changed(&s.resolution, settings.resolution.as_str().to_owned());

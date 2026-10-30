@@ -259,7 +259,7 @@ async fn handle_conn(
         if !delta.is_empty()
             && let Some(s) = &sync
         {
-            s.broadcast_delta(delta); // propagate the edit to P2P peers
+            s.announce_delta(&delta); // propagate the edit to P2P peers
         }
         // Backpressure: awaits if the client is slow (bounds memory).
         if tx.send(resp).await.is_err() {
@@ -715,7 +715,6 @@ mod tests {
             auth_a,
             None,
         )
-        .await
         .unwrap();
 
         let (ep_b, look_b, auth_b) = bind_certified_test_endpoint().await;

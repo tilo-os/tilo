@@ -86,13 +86,6 @@ enum Cmd {
         #[arg(long)]
         service: String,
     },
-    /// Refresh every enrolled home peer's registration from its current
-    /// status: endpoint, and what its workers run for environments. A peer
-    /// that does not answer keeps its last registration.
-    HomePeerRefresh {
-        #[arg(long)]
-        identity_root: PathBuf,
-    },
     /// Rename an enrolled home peer after mutual authentication.
     HomePeerRename {
         #[arg(long)]
@@ -192,7 +185,6 @@ fn run() -> anyhow::Result<()> {
             service,
             label,
         } => cmd_home_peer(&identity_root, &device, &service, Some(label)),
-        Cmd::HomePeerRefresh { identity_root } => cmd_home_peer_refresh(&identity_root),
         Cmd::HomePeerRemove {
             identity_root,
             identity_dir,
@@ -260,37 +252,6 @@ fn cmd_home_peer(
     }
     refresh_home_peer_endpoint(identity_root, device, device_key(service)?, &response)?;
     println!("{}", serde_json::to_string(&response)?);
-    Ok(())
-}
-
-fn cmd_home_peer_refresh(identity_root: &std::path::Path) -> anyhow::Result<()> {
-    let path = identity_root.join("home-peers.json");
-    let registrations: Vec<tilo_relay::HomePeerRegistration> =
-        serde_json::from_slice(&std::fs::read(&path)?)?;
-    let mut refreshed = 0usize;
-    for registration in &registrations {
-        let (device, service) = (
-            registration.device_node_id.as_str(),
-            registration.relay_service_node_id.as_str(),
-        );
-        let answered = remote_home_peer(
-            identity_root,
-            device,
-            service,
-            tilo_relay::transport::HomePeerManagementRequest::Status,
-        )
-        .and_then(|response| {
-            refresh_home_peer_endpoint(identity_root, device, device_key(service)?, &response)
-        });
-        match answered {
-            Ok(()) => refreshed = refreshed.saturating_add(1),
-            Err(error) => eprintln!("{}: {error:#}", registration.label),
-        }
-    }
-    println!(
-        "{}",
-        serde_json::json!({ "refreshed": refreshed, "registered": registrations.len() })
-    );
     Ok(())
 }
 
@@ -624,6 +585,17 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
     println!("state:     {}", cfg.state_root.display());
     println!("identity:  {}", cfg.identity_root.display());
     println!("iroh:      {}", cfg.iroh_listen);
+    let full_replica = std::fs::read(&cfg.full_replica_status)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|status| {
+            status
+                .get("full_content_replication")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                && status.get("state").and_then(serde_json::Value::as_str) == Some("ready")
+        });
+    println!("full_content_replication: {full_replica}");
     let workspace_root = cfg.state_root.join("workspaces");
     let mut durable: Vec<_> = std::fs::read_dir(&workspace_root)
         .into_iter()

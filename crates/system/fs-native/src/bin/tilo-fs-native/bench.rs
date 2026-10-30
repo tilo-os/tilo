@@ -1,5 +1,5 @@
-//! Local benchmarks for the exit criteria that do not need a network
-//! (`docs/architecture/storage.md` §19.1): resident I/O against raw (B1,
+//! Local benchmarks for the exit criteria that do not need a network:
+//! resident I/O against raw (B1,
 //! B2), metadata storms (B3), capture cost and hashing throughput (K5, B7
 //! locally), placeholder time to first byte (B9 with a local source) and
 //! `git status` under capture (B8 locally).

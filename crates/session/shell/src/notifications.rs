@@ -38,7 +38,6 @@ mod scheduled;
 
 #[cfg(target_os = "linux")]
 pub use dbus::{NotificationService, ServerHandle, serve_notifications, spawn_signal_emitter};
-use flatpak::valid_notification_app_id;
 #[cfg(target_os = "linux")]
 pub(crate) use flatpak::verified_flatpak_app_id;
 pub use hints::IncomingImageData;
@@ -71,54 +70,10 @@ pub enum NotificationSharing {
     LocalOnly,
 }
 
-pub const MAX_CONTINUITY_NOTIFICATION_TTL_MS: u64 = 15 * 60 * 1_000;
+pub use tilo_device_fabric::notification::{
+    ContinuityNotificationProjection, MAX_CONTINUITY_NOTIFICATION_TTL_MS,
+};
 const MAX_CONTINUITY_NOTIFICATIONS: usize = 128;
-const MAX_CONTINUITY_ACTIONS: usize = 16;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContinuityNotificationProjection {
-    pub id: ContinuityNotificationId,
-    pub app_id: String,
-    pub app_name: String,
-    pub title: String,
-    pub body: String,
-    pub body_redacted: bool,
-    pub actions: Vec<(String, String)>,
-    pub urgency: u8,
-    pub expires_unix_ms: u64,
-}
-
-impl ContinuityNotificationProjection {
-    pub fn validate_at(&self, now_unix_ms: u64) -> bool {
-        self.id.epoch != [0; 16]
-            && self.id.token != [0; 16]
-            && valid_notification_app_id(&self.app_id)
-            && !self.app_name.is_empty()
-            && self.app_name.len() <= 160
-            && self.title.len() <= 512
-            && self.body.len() <= 4_096
-            && self.urgency <= 2
-            && self.actions.len() <= MAX_CONTINUITY_ACTIONS
-            && self.expires_unix_ms > now_unix_ms
-            && self.expires_unix_ms.saturating_sub(now_unix_ms)
-                <= MAX_CONTINUITY_NOTIFICATION_TTL_MS
-            && [&self.app_name, &self.title]
-                .into_iter()
-                .all(|value| !value.chars().any(char::is_control))
-            && self
-                .body
-                .chars()
-                .all(|character| !character.is_control() || matches!(character, '\n' | '\t'))
-            && (!self.body_redacted || self.body.is_empty())
-            && self.actions.iter().all(|(key, label)| {
-                !key.is_empty()
-                    && key.len() <= 128
-                    && label.len() <= 256
-                    && !key.chars().any(char::is_control)
-                    && !label.chars().any(char::is_control)
-            })
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContinuityNotificationDraft {

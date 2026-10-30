@@ -155,6 +155,7 @@ fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescripto
         }
     };
     ActionDescriptor {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: ActionAddress::new(wire::RESOURCE, action),
         resource_kind: wire::RESOURCE.into(),

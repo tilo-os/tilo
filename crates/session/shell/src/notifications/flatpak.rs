@@ -57,14 +57,6 @@ pub(super) fn read_bounded(path: &Path, max_bytes: u64) -> Option<String> {
     (metadata.len() <= max_bytes).then(|| std::fs::read_to_string(path).ok())?
 }
 
-pub(super) fn valid_notification_app_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 160
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-}
-
 #[cfg(any(test, target_os = "linux"))]
 pub(super) fn flatpak_application_id(info_path: &Path) -> Option<String> {
     let info = read_bounded(info_path, 16 * 1024)?;
@@ -77,7 +69,7 @@ pub(super) fn flatpak_application_id(info_path: &Path) -> Option<String> {
         }
         if application_section && let Some(id) = line.strip_prefix("name=") {
             let id = id.trim();
-            return valid_notification_app_id(id).then(|| id.to_string());
+            return tilo_device_fabric::notification::valid_app_id(id).then(|| id.to_string());
         }
     }
     None

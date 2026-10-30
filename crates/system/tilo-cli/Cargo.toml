@@ -25,6 +25,8 @@ serde_json.workspace = true
 serde.workspace = true
 toml.workspace = true
 tilo-advisory-lock = { path = "../advisory-lock" }
+# The cleanup record, replaced atomically and durably.
+tilo-files = { path = "../../platform/tilo-files" }
 rustix = { workspace = true, features = ["fs", "std"] }
 workspace-hack = { version = "0.1" }
 tilo-paths.workspace = true

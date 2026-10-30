@@ -156,7 +156,7 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
 
         let state = app.state_mut_for_test();
         state
-            .undo_as(Some(&me), None, None, None)
+            .undo_as(Some(&me), None, None)
             .expect("the keystroke is undoable");
 
         assert!(
@@ -191,7 +191,7 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
 
         let state = app.state_mut_for_test();
         state
-            .undo_as(Some(&UserId(AGENT.into())), None, None, None)
+            .undo_as(Some(&UserId(AGENT.into())), None, None)
             .expect("the agent's own action can be reverted as the agent");
         assert!(
             state.doc.get(&ROOT, "agent").unwrap().is_none(),

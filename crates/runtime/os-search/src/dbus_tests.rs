@@ -5,6 +5,7 @@ use zbus::zvariant::OwnedValue;
 
 use super::{BUS_NAME, GNOME_PATH, KRUNNER_PATH, serve_on};
 use crate::tests::{Host, owner, row, search};
+use tilo_test_env::PrivateBus;
 
 const GNOME: &str = "org.gnome.Shell.SearchProvider2";
 const KRUNNER: &str = "org.kde.krunner1";
@@ -19,58 +20,18 @@ type Match = (
     HashMap<String, OwnedValue>,
 );
 
-/// A session bus of its own, as `dbus-run-session` starts one, stopped on drop.
-struct SessionBus {
-    daemon: std::process::Child,
-    address: String,
-    _directory: tempfile::TempDir,
-}
-
-impl SessionBus {
-    fn start() -> Self {
-        use std::io::BufRead;
-        let directory = tempfile::tempdir().unwrap();
-        let mut daemon = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!(
-                "--address=unix:path={}",
-                directory.path().join("bus").display()
-            ))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("the session bus needs dbus-daemon, which the builder image installs");
-        let mut address = String::new();
-        std::io::BufReader::new(daemon.stdout.take().unwrap())
-            .read_line(&mut address)
-            .unwrap();
-        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
-        Self {
-            daemon,
-            address: address.trim().to_owned(),
-            _directory: directory,
-        }
-    }
-}
-
-impl Drop for SessionBus {
-    fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
-    }
-}
-
 /// The providers serving on a fresh session bus, and a client on the same bus.
-async fn client(host: &Host) -> (SessionBus, zbus::Connection, zbus::Connection) {
+async fn client(host: &Host) -> (PrivateBus, zbus::Connection, zbus::Connection) {
     let search = Arc::new(search(host));
     search.refresh().await.unwrap();
-    let bus = SessionBus::start();
+    let bus = PrivateBus::start();
     let server = serve_on(
-        zbus::connection::Builder::address(bus.address.as_str()).unwrap(),
+        zbus::connection::Builder::address(bus.address()).unwrap(),
         &search,
     )
     .await
     .unwrap();
-    let client = zbus::connection::Builder::address(bus.address.as_str())
+    let client = zbus::connection::Builder::address(bus.address())
         .unwrap()
         .build()
         .await

@@ -22,6 +22,8 @@ use zbus::zvariant::OwnedFd;
 const DEST: &str = "org.freedesktop.login1";
 const PATH: &str = "/org/freedesktop/login1";
 const IFACE: &str = "org.freedesktop.login1.Manager";
+/// The calling process's own session.
+const SESSION_AUTO: &str = "/org/freedesktop/login1/session/auto";
 
 /// A connected handle to `systemd-logind`'s `Manager`.
 #[derive(Clone)]
@@ -69,6 +71,49 @@ impl LogindManager {
     /// registry first.
     pub async fn suspend(&self, interactive: bool) -> zbus::Result<()> {
         self.proxy.call("Suspend", &(interactive)).await
+    }
+
+    /// `Manager.Reboot(interactive)`.
+    pub async fn reboot(&self, interactive: bool) -> zbus::Result<()> {
+        self.proxy.call("Reboot", &(interactive)).await
+    }
+
+    /// `Manager.PowerOff(interactive)`.
+    pub async fn power_off(&self, interactive: bool) -> zbus::Result<()> {
+        self.proxy.call("PowerOff", &(interactive)).await
+    }
+
+    /// `Session.Lock()` on the caller's own session.
+    pub async fn lock_session(&self) -> zbus::Result<()> {
+        self.own_session("Lock", &()).await
+    }
+
+    /// `Session.SetBrightness(subsystem, name, brightness)` on the caller's own session:
+    /// logind lets the seat's active session set a backlight it may not write itself.
+    pub async fn set_brightness(
+        &self,
+        subsystem: &str,
+        name: &str,
+        value: u32,
+    ) -> zbus::Result<()> {
+        self.own_session("SetBrightness", &(subsystem, name, value))
+            .await
+    }
+
+    async fn own_session<B>(&self, method: &str, body: &B) -> zbus::Result<()>
+    where
+        B: serde::Serialize + zbus::zvariant::DynamicType + Sync,
+    {
+        self.connection()
+            .call_method(
+                Some(DEST),
+                SESSION_AUTO,
+                Some("org.freedesktop.login1.Session"),
+                method,
+                body,
+            )
+            .await?;
+        Ok(())
     }
 
     /// `Manager.Inhibit(what, who, why, mode)` → a lock fd.

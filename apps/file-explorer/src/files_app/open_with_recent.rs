@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 use ui::tilo_actions::{ActionParam, ParamType, ResourceSpec};
 use ui::tilo_resource::Effect as _;
 use ui::tilo_resource::{AbsolutePath, Invoke};
-use ui::widget::command_palette::CommandEntry;
 use ui::widget::context_menu::MenuItem;
 use vello::kurbo::Point;
 
@@ -240,20 +239,19 @@ impl FilesState {
         self.menus.push(MenuChange::Sub(menu, commands));
     }
 
-    /// "Other application…": the shared searchable palette, listing every
+    /// "Other application…": the host's search on the file, listing every
     /// application that claims the type twice — to open once, and to make it
     /// the default. Its rows are this file's published open-with actions, so
-    /// choosing one goes through the same action door automation uses.
+    /// choosing one goes through the same action door automation uses. They
+    /// are published for the file until the person moves on.
     pub(super) fn open_app_chooser(&mut self) {
         let Some(path) = self.open_with_subject() else {
             return;
         };
-        let candidates = self.open_with_candidates(&path);
-        if candidates.apps.is_empty() {
+        if self.open_with_candidates(&path).apps.is_empty() {
             self.status = Some(t("files-open-with-none"));
             return;
         }
-        self.app_chooser_target = Some(path.clone());
         let Some(entry) = self
             .entries
             .iter()
@@ -262,116 +260,16 @@ impl FilesState {
         else {
             return;
         };
+        self.app_chooser_target = Some(path);
         let resource = self.entry_resource(&entry);
-        let once_group = t("files-open-with-once-group");
-        let always_group = t_args(
-            "files-open-with-always-group",
-            &[arg("type", candidates.type_label.clone())],
-        );
-        let flat = ui::tilo_actions::flatten(std::slice::from_ref(&resource));
-        let mut once = Vec::new();
-        let mut always = Vec::new();
-        for action in &flat {
-            let id = action.action.id.as_str();
-            let (bucket, group, app_id) = if let Some(app_id) = id.strip_prefix(OPEN_ONCE_PREFIX) {
-                (&mut once, &once_group, app_id)
-            } else if let Some(app_id) = id.strip_prefix(ALWAYS_PREFIX) {
-                (&mut always, &always_group, app_id)
-            } else {
-                continue;
-            };
-            let Some(app) = candidates.find(app_id) else {
-                continue;
-            };
-            let mut row = CommandEntry::from_flat_action(action).group(group.clone());
-            row.label.clone_from(&app.name);
-            if app.is_default {
-                row = row.badge(t("files-open-with-default-badge"));
-            }
-            bucket.push(row);
-        }
-        once.extend(always);
-        self.app_chooser.set_entries(once);
-        // window-bar: picker, the Open with chooser
-        self.app_chooser
-            .set_query_placeholder(t_args("files-open-with-search", &[arg("name", entry.name)]));
-        self.app_chooser.open();
+        self.app_chooser.open(ui::search::SearchRequest::within(
+            ui::search::ScopeDecl::new(resource.id.0, entry.name),
+        ));
         self.structure_dirty = true;
-    }
-
-    pub(super) fn app_chooser_open(&self) -> bool {
-        self.app_chooser_target.is_some() && self.app_chooser.is_open()
     }
 
     pub(super) fn close_app_chooser(&mut self) {
-        self.app_chooser.close();
         self.app_chooser_target = None;
-    }
-
-    /// Paint the chooser over a scrim, centred near the top of Files.
-    pub(super) fn draw_app_chooser(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        use ui::widget::Widget;
-        if !self.app_chooser_open() {
-            return;
-        }
-        let (width, height) = self.app_chooser.desired_size();
-        let gutter = f64::from(theme.tokens.spacing.s4);
-        let width = width.min((self.rect.width() - 2.0 * gutter).max(0.0));
-        let height = height.min((self.rect.height() - 2.0 * gutter).max(0.0));
-        let x = self.rect.center().x - width / 2.0;
-        let y = (self.rect.y0 + (self.rect.height() * 0.12).max(gutter))
-            .min(self.rect.y1 - height - gutter)
-            .max(self.rect.y0 + gutter);
-        let card = vello::kurbo::Rect::new(x, y, x + width, y + height);
-        ui::overlay::scrim::behind_panel(
-            scene,
-            transform,
-            self.rect,
-            vello::kurbo::RoundedRect::from_rect(card, ui::widget::floating_surface::radius(theme)),
-            theme,
-        );
-        self.app_chooser.set_rect(card);
-        self.app_chooser
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    /// While open, the chooser owns every event; Escape or a pick closes it.
-    pub(super) fn route_app_chooser_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut ui::widget::Edits<'_>,
-        path: &automerge::ObjId,
-        focus_target: &mut Option<taffy::NodeId>,
-    ) {
-        use ui::widget::Widget;
-        let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-        let Ok(node) = taffy.new_leaf(taffy::Style::default()) else {
-            return;
-        };
-        let mut handled = false;
-        self.app_chooser.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor,
-                modifiers: &modifiers,
-                state: state.reborrow(),
-                path,
-                handled: &mut handled,
-                focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        self.structure_dirty = true;
     }
 
     /// What the open-with actions of `entry`'s row are made from
@@ -502,6 +400,11 @@ fn append_open_with_chooser_actions(
     resource: &mut ResourceSpec,
 ) {
     for (app, in_place) in candidates.apps.iter().zip(in_place) {
+        let name = if app.is_default {
+            t_args("files-open-with-default", &[arg("app", app.name.clone())])
+        } else {
+            app.name.clone()
+        };
         let access =
             in_place.then_some(ui::collaboration::open_selected::v2::SelectedAccess::ReadOnly);
         let permission =
@@ -514,7 +417,7 @@ fn append_open_with_chooser_actions(
             (
                 OPEN_ONCE_PREFIX,
                 false,
-                t_args("files-open-with-app", &[arg("app", app.name.clone())]),
+                t_args("files-open-with-app", &[arg("app", name.clone())]),
             ),
             (
                 ALWAYS_PREFIX,
@@ -522,7 +425,7 @@ fn append_open_with_chooser_actions(
                 t_args(
                     "files-open-with-always-app",
                     &[
-                        arg("app", app.name.clone()),
+                        arg("app", name.clone()),
                         arg("type", candidates.type_label.clone()),
                     ],
                 ),

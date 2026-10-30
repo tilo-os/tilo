@@ -36,7 +36,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::activation::{Activation, Interaction, activation_controls};
+use crate::widget::activation::{Activation, Interaction};
 use crate::widget::{Element, TaffyTreeExt, Widget, card_column_width, card_columns};
 
 /// The shape of a card's art.
@@ -908,6 +908,26 @@ struct MediaCreator {
     image_url: Option<(ImageStore, String)>,
 }
 
+/// The action shown over the art on hover: its glyph, what it is called and
+/// what it runs.
+struct HoverAction {
+    icon: Icon,
+    label: String,
+    /// The action the press asks the host for.
+    emitter: crate::widget::ActionEmitter<()>,
+    /// The card's own view action, when the press is one: the host sends the
+    /// invocation back here and [`Self::run`] runs it.
+    native: Option<crate::widget::activation::NativeControl>,
+}
+
+impl HoverAction {
+    fn run(&mut self) {
+        if let Err(error) = self.emitter.emit(()) {
+            tracing::warn!(%error, "a hover action refused its arguments");
+        }
+    }
+}
+
 /// A retained media card. See the module docs.
 pub struct MediaCard {
     source: MediaSource,
@@ -921,7 +941,7 @@ pub struct MediaCard {
     creator_title_height: f64,
     creator_rect: Rect,
     badges: Vec<OwnedBadge>,
-    hover_action: Option<(Icon, String, Box<dyn FnMut()>)>,
+    hover_action: Option<HoverAction>,
     pressed_action: crate::pointer_replay::HeldPress,
     selected: bool,
     activation: Activation,
@@ -1038,15 +1058,73 @@ impl MediaCard {
         self
     }
 
-    /// A centred action over the art on hover; `label` names it.
+    /// A centred action over the art on hover, through an exported resource
+    /// action: the host resolves its policy before it runs, and the action
+    /// shows only while it is available.
     #[must_use]
-    pub fn hover_action(
+    pub fn hover_action_binding(
         mut self,
         icon: Icon,
         label: impl Into<String>,
-        on_activate: impl FnMut() + 'static,
+        binding: tilo_actions::ActionBinding<()>,
     ) -> Self {
-        self.hover_action = Some((icon, label.into(), Box::new(on_activate)));
+        self.hover_action = Some(HoverAction {
+            icon,
+            label: label.into(),
+            emitter: crate::widget::ActionEmitter::new(binding),
+            native: None,
+        });
+        self
+    }
+
+    /// Publish the hover action as the card's own view action, as
+    /// [`Self::on_view`] does for the card: what it shows through `f` (a
+    /// menu, a page) is the window's own state, and the control is
+    /// discoverable and agent-driveable.
+    #[must_use]
+    pub fn hover_action_view(
+        self,
+        icon: Icon,
+        label: impl Into<String>,
+        f: impl FnMut() + 'static,
+    ) -> Self {
+        self.hover_action_native(icon, label, tilo_actions::OperationKind::View, f)
+    }
+
+    /// Publish the hover action as the card's own effect, as
+    /// [`Self::on_effect`] does for the card: what it does through `f` acts
+    /// on the window's resource, and the control is discoverable and
+    /// agent-driveable.
+    #[must_use]
+    pub fn hover_action_effect(
+        self,
+        icon: Icon,
+        label: impl Into<String>,
+        f: impl FnMut() + 'static,
+    ) -> Self {
+        self.hover_action_native(icon, label, tilo_actions::OperationKind::Effect, f)
+    }
+
+    fn hover_action_native(
+        mut self,
+        icon: Icon,
+        label: impl Into<String>,
+        kind: tilo_actions::OperationKind,
+        f: impl FnMut() + 'static,
+    ) -> Self {
+        let label = label.into();
+        let (native, binding) = crate::widget::activation::NativeControl::new(
+            &format!("{}/action", self.activation.id()),
+            &label,
+            kind,
+            Box::new(f),
+        );
+        self.hover_action = Some(HoverAction {
+            icon,
+            label,
+            emitter: crate::widget::ActionEmitter::new(binding),
+            native: Some(native),
+        });
         self
     }
 
@@ -1123,8 +1201,8 @@ impl MediaCard {
                     .image(creator.image.as_ref()),
             );
         }
-        if let Some((icon, _, _)) = &self.hover_action {
-            face = face.hover_action(*icon);
+        if let Some(action) = &self.hover_action {
+            face = face.hover_action(action.icon);
         }
         f(&face)
     }
@@ -1140,6 +1218,14 @@ impl MediaCard {
             self.creator_title_height = title;
         }
         height
+    }
+
+    fn hover_action_ref(&self) -> Option<&HoverAction> {
+        self.hover_action.as_ref()
+    }
+
+    fn hover_action_mut(&mut self) -> Option<&mut HoverAction> {
+        self.hover_action.as_mut()
     }
 
     fn action_target(&self) -> Option<Rect> {
@@ -1308,9 +1394,9 @@ impl Widget for MediaCard {
                     release => {
                         *ctx.handled = true;
                         if release == Release::Click(())
-                            && let Some((_, _, on_activate)) = &mut self.hover_action
+                            && let Some(action) = &mut self.hover_action
                         {
-                            on_activate();
+                            action.run();
                         }
                         return;
                     }
@@ -1368,20 +1454,81 @@ impl Widget for MediaCard {
                     .with_bounds(self.creator_rect),
             );
         }
-        if let Some((_, label, _)) = &self.hover_action {
+        if let Some(action) = &self.hover_action {
             node.children.push(
-                crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_name(label.clone()),
+                crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                    .with_name(action.label.clone()),
             );
         }
         Some(node)
     }
 }
 
-activation_controls!(MediaCard, activation);
+impl crate::widget::controls::ActionControls for MediaCard {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        self.activation.install_custody(domain, attachment);
+        if let Some(hover) = self.hover_action_mut() {
+            let _ = hover.emitter.install_custody(domain, attachment);
+        }
+        for child in crate::widget::Widget::children_mut(self) {
+            crate::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        let hover = self
+            .hover_action_mut()
+            .and_then(|hover| hover.emitter.take());
+        self.activation.take_invocation().or(hover).or_else(|| {
+            crate::widget::Widget::children_mut(self)
+                .into_iter()
+                .find_map(crate::widget::controls::take_control_invocation)
+        })
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = self.activation.bindings();
+        if let Some(hover) = self.hover_action_ref() {
+            bindings.push(
+                hover
+                    .emitter
+                    .metadata(format!("{}/action", self.activation.id())),
+            );
+        }
+        for child in crate::widget::Widget::children(self) {
+            bindings.extend(crate::widget::controls::control_action_bindings(child));
+        }
+        bindings
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        self.activation.refresh_availability(allowed);
+        if let Some(hover) = self.hover_action_mut() {
+            hover.emitter.refresh_availability(allowed);
+        }
+        for child in crate::widget::Widget::children_mut(self) {
+            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
+}
 
 impl crate::widget::ResourceOperations for MediaCard {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.activation.native_handlers()
+        let mut handlers = self.activation.native_handlers();
+        if self
+            .hover_action_ref()
+            .is_some_and(|hover| hover.native.is_some())
+        {
+            handlers.insert(crate::widget::activation::NATIVE_INVOKE.to_owned());
+        }
+        handlers
     }
 
     fn start_operation(
@@ -1390,13 +1537,30 @@ impl crate::widget::ResourceOperations for MediaCard {
         _doc: &mut crate::widget::Edits<'_>,
         _path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.activation.start_native(op)
+        if let Some(started) = self.activation.start_native(op)? {
+            return Ok(Some(started));
+        }
+        let id = format!("{}/action", self.activation.id());
+        match self
+            .hover_action_mut()
+            .and_then(|hover| hover.native.as_mut())
+        {
+            Some(native) => native.start(&id, op),
+            None => Ok(None),
+        }
     }
 }
 
 impl crate::resources::PublishesResources for MediaCard {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        self.activation.native_resources()
+        let mut resources = self.activation.native_resources();
+        if let Some(native) = self
+            .hover_action_ref()
+            .and_then(|hover| hover.native.as_ref())
+        {
+            resources.push(native.resource());
+        }
+        resources
     }
 }
 

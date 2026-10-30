@@ -71,8 +71,6 @@ class SourceContentTests(unittest.TestCase):
         self.assertEqual(len(failures), 3)
 
     def test_a_repository_without_commits_is_checked_by_its_index(self):
-        # What tools/ci/t-git-index.sh gives a t check: the files present,
-        # indexed, and no commit.
         self.stage("fixture", b"\x00pinned")
         oid = self.git("rev-parse", ":fixture").decode().strip()
         self.manifest([{"path": "fixture", "oid": oid, "reason": "Required regression fixture"}])

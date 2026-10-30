@@ -20,7 +20,7 @@ use std::rc::Rc;
 use ui::icons::{Icon, icon_for_path};
 use ui::theme::Theme;
 use ui::widget::tree_view::{
-    NodeId, TreeClickActivation, TreeModel, TreeRowDecoration, TreeRowInfo, TreeRowTone, TreeView,
+    NodeId, TreeModel, TreeRowDecoration, TreeRowInfo, TreeRowTone, TreeView,
 };
 use ui::widget::{AppModel, Element, EmptyState, Manual, ModelPath, When};
 use vello::kurbo::Rect;
@@ -181,10 +181,10 @@ pub fn explorer(project: &Project, events: &ExplorerEvents) -> Explorer {
         .hide_root()
         .fill()
         .with_heading(project.name.clone())
-        .click_activation(TreeClickActivation::SingleClick)
-        .selection_follows_focus(true)
         .with_row_decoration(decorate)
-        .on_activate(move |id| {
+        // Choosing a row opens it: a click, Enter, a screen reader, a script
+        // or an agent, through the tree's published `select`.
+        .on_view("file_tree", move |id| {
             if let Some(id) = project_id(id) {
                 activated.borrow_mut().push(ExplorerEvent::Activate(id));
             }

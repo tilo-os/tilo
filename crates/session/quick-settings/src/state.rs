@@ -150,6 +150,8 @@ pub struct QuickSettingsState {
     /// Which of the device's controls the desktop found it has: an effect
     /// working one it lacks is published unavailable.
     pub available: crate::actions::QsActionAvailability,
+    /// What plays, while a player is playing or paused.
+    pub now_playing: Option<crate::NowPlaying>,
 }
 
 impl Default for QuickSettingsState {
@@ -199,6 +201,7 @@ impl Default for QuickSettingsState {
             notifications: crate::NotificationsView::default(),
             handoff_targets: None,
             available: crate::actions::QsActionAvailability::default(),
+            now_playing: None,
         }
     }
 }
@@ -266,6 +269,21 @@ impl QuickSettingsState {
             notifications: crate::NotificationsView::default(),
             handoff_targets: None,
             available: crate::actions::QsActionAvailability::all(),
+            now_playing: None,
+        }
+    }
+
+    /// The panel before anything of the device is read: no levels, no
+    /// radios, no controls found yet. A device host starts here and lands
+    /// its readings over it.
+    #[must_use]
+    pub fn unread() -> Self {
+        Self {
+            brightness_available: false,
+            volume_available: false,
+            status: crate::status::SystemStatus::default(),
+            available: crate::actions::QsActionAvailability::default(),
+            ..Self::fixture()
         }
     }
 

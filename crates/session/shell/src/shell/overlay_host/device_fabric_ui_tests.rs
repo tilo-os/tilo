@@ -3,10 +3,10 @@ use crate::shell::chrome_state::ChromeState;
 use crate::shell::collab_broker_capnp::{
     RealtimeConsentUiView, RealtimeContinuityUiView, RealtimeSourceUiView,
 };
-use crate::shell::device_fabric::DeviceKind;
 use crate::shell::state::WorkspaceTree;
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilo_device_fabric::DeviceKind;
 use tilo_network_actor::fabric::DeviceId;
 use ui::widget::Container;
 
@@ -47,8 +47,8 @@ fn fixture() -> (DeviceFabricView, DeviceId) {
             }],
             local_inputs: Vec::new(),
             transfers: Vec::new(),
-            remote_audio: crate::shell::remote_audio::RemoteAudioView::default(),
-            speaker_groups: crate::shell::speaker_group_runtime::SpeakerGroupsView::default(),
+            remote_audio: tilo_speaker_service::remote_audio::RemoteAudioView::default(),
+            speaker_groups: tilo_speaker_service::groups::SpeakerGroupsView::default(),
             device_health: Vec::new(),
             calibration_proposals: Vec::new(),
             revertible_calibrations: Vec::new(),
@@ -318,7 +318,7 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
                 target: remote,
                 target_label: "Travel laptop".into(),
                 phase: crate::shell::device_fabric_runtime::MediaHandoffPhase::Failed(
-                    crate::shell::device_fabric::MediaHandoffFailure::OpenFailed,
+                    tilo_device_fabric::MediaHandoffFailure::OpenFailed,
                 ),
             },
         ];
@@ -347,14 +347,14 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
         let (mut view, remote) = fixture();
         view.local_media.clear();
         view.local_outputs.clear();
-        view.remote_audio = crate::shell::remote_audio::RemoteAudioView {
-            sources: vec![crate::shell::remote_audio::RemoteAudioSourceView {
+        view.remote_audio = tilo_speaker_service::remote_audio::RemoteAudioView {
+            sources: vec![tilo_speaker_service::remote_audio::RemoteAudioSourceView {
                 token: 77,
                 label: "All system audio".into(),
                 application: false,
             }],
             routes: Vec::new(),
-            consents: vec![crate::shell::remote_audio::RemoteAudioConsentView {
+            consents: vec![tilo_speaker_service::remote_audio::RemoteAudioConsentView {
                 session_id: [8; 16],
                 source: remote.clone(),
                 label: "All system audio".into(),
@@ -587,25 +587,28 @@ fn device_pane_bluetooth_pairing_and_handoffs_need_local_choice_and_exact_target
 fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
     fn device_pane_requires_explicit_apply_and_keeps_revert_reachable() {
         let (mut view, remote) = fixture();
-        view.calibration_proposals = vec![crate::shell::spatial_calibration::CalibrationProposal {
-            peer: remote.clone(),
-            edge: crate::shell::device_fabric::DisplayEdge::Right,
-            previous: tilo_network_actor::fabric::DisplayRect {
-                x: 800,
-                y: 0,
-                width: 100,
-                height: 80,
+        view.calibration_proposals = vec![
+            tilo_device_fabric::spatial_calibration::CalibrationProposal {
+                peer: remote.clone(),
+                edge: tilo_device_fabric::DisplayEdge::Right,
+                previous: tilo_network_actor::fabric::DisplayRect {
+                    x: 800,
+                    y: 0,
+                    width: 100,
+                    height: 80,
+                },
+                proposed: tilo_network_actor::fabric::DisplayRect {
+                    x: 100,
+                    y: 0,
+                    width: 100,
+                    height: 80,
+                },
+                evidence_kind:
+                    tilo_device_fabric::spatial_calibration::SpatialEvidenceKind::UltraWideband,
+                confidence_milli: 900,
+                expires_unix_ms: 20_000,
             },
-            proposed: tilo_network_actor::fabric::DisplayRect {
-                x: 100,
-                y: 0,
-                width: 100,
-                height: 80,
-            },
-            evidence_kind: crate::shell::spatial_calibration::SpatialEvidenceKind::UltraWideband,
-            confidence_milli: 900,
-            expires_unix_ms: 20_000,
-        }];
+        ];
         view.revertible_calibrations = vec![remote.clone()];
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
@@ -860,8 +863,8 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
                 request_id: [12; 16],
                 peer: remote.clone(),
                 app_label: "Camera".into(),
-                profile: crate::shell::remote_capture::device::RemoteCaptureProfile::Camera {
-                    format: crate::shell::remote_capture::device::RemoteVideoFormat::Nv12,
+                profile: tilo_device_fabric::remote_capture::RemoteCaptureProfile::Camera {
+                    format: tilo_device_fabric::remote_capture::RemoteVideoFormat::Nv12,
                     width: 1280,
                     height: 720,
                     frames_per_second: 30,
@@ -910,7 +913,7 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
         assert!(
             actions.contains(&DeviceFabricUiAction::RequestRemoteCapture {
                 peer: remote,
-                kind: crate::shell::remote_capture::device::RemoteCaptureKind::Camera,
+                kind: tilo_device_fabric::remote_capture::RemoteCaptureKind::Camera,
             })
         );
     }

@@ -196,10 +196,7 @@ fn prepared_driver_publishes_undo_status_and_guards_wakes() {
         driver
             .state
             .commit_action_authored_with_context(None, None, Some(author()), None);
-        driver
-            .state
-            .undo_as(Some(&author()), None, None, None)
-            .unwrap();
+        driver.state.undo_as(Some(&author()), None, None).unwrap();
         driver.relayout();
         let outer_baseline = driver.state.undo_status(Some(&author()));
         assert!(!outer_baseline.can_undo && outer_baseline.can_redo);

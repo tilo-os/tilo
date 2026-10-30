@@ -2,8 +2,6 @@
 //! narrow window), the selected page beside them. Which page it is and what
 //! can be done with it are the window bar's ([`super::window_bar`]).
 
-use std::rc::Rc;
-
 use taffy::NodeId;
 use ui::LocalState;
 use ui::TextRole;
@@ -17,8 +15,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use super::hud::HudMetrics;
-use super::settings_sheet::ActionQueue;
 use super::{Action, CameraApp, DocumentChoice, DocumentJobKind, OcrLanguage};
+use crate::actions::CameraEffect;
+use crate::record::Record;
+use ui::framework::Actions;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
@@ -72,21 +72,12 @@ pub(super) struct DocumentControls {
 }
 
 impl DocumentControls {
-    pub(super) fn new(queue: &ActionQueue) -> Self {
+    pub(super) fn new() -> Self {
         let mut fields = Vec::new();
         let mut states = Vec::new();
         for choice in CHOICES {
             let state = LocalState::new("0".to_owned());
-            let queue = Rc::clone(queue);
-            let mut dropdown = Dropdown::from_state(Vec::new(), &state)
-                .caption(caption(choice))
-                .on_change(move |value| {
-                    if let Ok(index) = value.parse() {
-                        queue
-                            .borrow_mut()
-                            .push(Action::SetDocumentChoice(choice, index));
-                    }
-                });
+            let mut dropdown = Dropdown::from_state(Vec::new(), &state).caption(caption(choice));
             dropdown.set_value_options(indexed(
                 choice_labels(choice)
                     .iter()
@@ -101,6 +92,23 @@ impl DocumentControls {
             nodes: Vec::new(),
             scanners: Vec::new(),
         }
+    }
+
+    /// Each dropdown chooses its setting through Camera's published
+    /// `choose-scan-setting` effect.
+    pub(super) fn attach(&mut self, actions: &Actions<Record>) {
+        let fields = std::mem::take(&mut self.fields);
+        self.fields = fields
+            .into_iter()
+            .zip(CHOICES)
+            .map(|(field, choice)| {
+                actions.bind_effect(
+                    field,
+                    CameraEffect::CHOOSE_SCAN_SETTING
+                        .map(move |position: String| (choice.key().to_owned(), position)),
+                )
+            })
+            .collect();
     }
 }
 

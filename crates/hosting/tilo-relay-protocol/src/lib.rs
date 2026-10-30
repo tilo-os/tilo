@@ -74,7 +74,7 @@ pub use tilo_workspace_join::delegation;
 pub use tilo_workspace_join::room_workspace_id;
 
 pub use auth::{AuthError, AuthenticatedPeer, PeerRole};
-pub use config::{ConfigError, EnvironmentsConfig, PeerRelayConfig, RelayConfig};
+pub use config::{ConfigError, EnvironmentsConfig, RelayConfig};
 pub use home_peer::{
     HomePeerRegistration, RELAY_OFFERS_FILE, RelayEnvironments, RelayOffer, RelayOffers,
     home_peer_registry_path, personal_device_peer_path, remember_personal_device,

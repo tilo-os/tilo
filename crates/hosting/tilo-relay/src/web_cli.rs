@@ -121,17 +121,9 @@ pub struct WebArgs {
     /// runs the person's apps: pages learn it on `/node` to open apps there.
     /// While the node waits for its certificate, its root certifies the
     /// session with it, as one of the person's devices, and the certificate
-    /// is written to `--session-cert-out`.
+    /// is written to `--session-identity-root`.
     #[arg(long = "session-device", value_name = "HEX", requires = "web")]
     pub session_device: Option<String>,
-    /// Where the session's certificate is written (canonical encoding).
-    #[arg(
-        long = "session-cert-out",
-        value_name = "PATH",
-        requires_all = ["session_device", "install_token_file"],
-        conflicts_with = "session_identity_root"
-    )]
-    pub session_cert_out: Option<PathBuf>,
     /// The session's identity tree (its `TILO_IDENTITY_ROOT`), holding its
     /// device key: install writes its certificate and the person's user key
     /// there, so the session starts as an enrolled device of that person.
@@ -521,17 +513,8 @@ pub async fn await_certificate(
             "devicePublicKey": hex::encode(device.verifying_key().to_bytes()),
         })
     );
-    let session = match (
-        session_device(args)?,
-        &args.session_cert_out,
-        &args.session_identity_root,
-    ) {
-        (Some(public_key), Some(cert_out), _) => Some(tilo_relay::web::install::SessionDevice {
-            public_key,
-            cert_out: cert_out.clone(),
-            user_key_out: None,
-        }),
-        (Some(public_key), None, Some(root)) => {
+    let session = match (session_device(args)?, &args.session_identity_root) {
+        (Some(public_key), Some(root)) => {
             let paths = tilo_user_identity::IdentityPaths::under(root);
             Some(tilo_relay::web::install::SessionDevice {
                 public_key,

@@ -17,9 +17,8 @@ use std::path::PathBuf;
 use tilo_relay_protocol::metrics::RoomEgress;
 use tilo_relay_protocol::{
     ComputeAccelerator, DeviceMeshProfile, DeviceRole, HomePeerRegistration, MetricsSnapshot,
-    PeerRelayConfig, PowerAvailability, ProcessLease, RelayConfig, ReplicationIntent,
-    ReplicationResource, ServiceCapabilities, TrustPolicy, personal_continuity_workspace_id,
-    room_workspace_id,
+    PowerAvailability, ProcessLease, RelayConfig, ReplicationIntent, ReplicationResource,
+    ServiceCapabilities, TrustPolicy, personal_continuity_workspace_id, room_workspace_id,
 };
 
 fn postcard_hex<T: serde::Serialize>(value: &T) -> String {
@@ -322,11 +321,7 @@ fn toml_encodings_are_pinned() {
         },
         device_role: DeviceRole::AlwaysOnServer,
         services: ServiceCapabilities::home_peer(),
-        peer_relays: vec![PeerRelayConfig {
-            iroh_node_id: "ef".repeat(32),
-            label: "west".to_string(),
-            priority: 100,
-        }],
+        retired_peer_relays: None,
         environments: None,
         web_entry: None,
         member_limits: None,
@@ -351,11 +346,6 @@ inbound_relay = true
 remote_control_relay = true
 app_serving = false
 compute = false
-
-[[peer_relays]]
-iroh_node_id = "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
-label = "west"
-priority = 100
 "#;
     assert_eq!(toml::to_string_pretty(&config).unwrap(), encoded);
     assert_eq!(toml::from_str::<RelayConfig>(encoded).unwrap(), config);

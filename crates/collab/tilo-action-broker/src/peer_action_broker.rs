@@ -185,7 +185,6 @@ impl CapnpBrokerState {
                         drop(request);
                         return;
                     }
-                    let policy_time = request.policy_time().cloned();
                     let response = match state.invocation_host() {
                         Err(_) => Err(()),
                         Ok(host) => match request.evidence.as_ref() {
@@ -198,7 +197,6 @@ impl CapnpBrokerState {
                                 evidence,
                                 request.poll,
                                 request.notification,
-                                policy_time.as_ref(),
                             ))
                             .await
                             .unwrap_or_else(|refusal| ActionMessage::Rejected {
@@ -238,11 +236,10 @@ impl CapnpBrokerState {
         evidence: &tilo_relay_session::client::CertifiedAction,
         poll: Option<tilo_actions::InvocationId>,
         notification: Option<tilo_actions::InvocationUpdate>,
-        policy_time: Option<&crate::peer_actions::PolicyTime>,
     ) -> Result<ActionMessage, PeerRefusal> {
         signed_as_required(evidence)?;
         let caller = self
-            .verify_network_action_caller_with_policy_time(evidence, policy_time)
+            .verify_network_action_caller_with_policy_time(evidence, None)
             .map_err(|_| PeerRefusal::NotAuthorised)?;
         let host = self.invocation_host()?;
         if let Some(invocation) = poll {

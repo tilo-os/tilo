@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The build directory tools/apps/t-release.sh thin-runtime hands to the size checks.
+"""The build directory the shared runtime build hands to the size checks.
 
 The shared check builds the runtime, its engines and the account probe in the default
 collection's thin graph, in a build directory of its own that stays warm between its runs. Its

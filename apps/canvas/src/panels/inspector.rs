@@ -12,7 +12,7 @@ use ui::widget::{ColorSwatch, ColorSwatchPicker, Toggle};
 use super::{caption, heading, icon_button, percent};
 use crate::brushes::Preset;
 use crate::model::{Artwork, BLENDS, Mark, Shadow, Shape};
-use crate::tools::{Erasing, Sampling, Tool, Tools};
+use crate::tools::{Erasing, Sampling, Tool, ToolEffect, Tools};
 
 /// Inks for plain layers: document colours, the same in every theme.
 const INKS: [u32; 14] = [
@@ -64,14 +64,17 @@ pub(crate) fn swatches(colours: &[u32], names: Vec<String>, columns: usize) -> C
 
 /// Reuse document paint through the shared picker; changing counts while
 /// painting leaves this subtree in place.
+///
+/// `bind` binds the picker to what choosing one of the colours it is given
+/// (`#rrggbb`, by index) does.
 fn artwork_palette(
     cx: &ViewCx<Artwork>,
     id: String,
     current: impl Fn() -> String + 'static,
-    choose: impl Fn(String) + Clone + 'static,
+    bind: impl Fn(&ViewCx<Artwork>, ColorSwatchPicker, Vec<String>) -> ColorSwatchPicker + 'static,
 ) -> Element {
     let colours = cx.value(crate::palette::swatches);
-    cx.switch(&colours, move |_, colours| {
+    cx.switch(&colours, move |cx, colours| {
         let authored = !colours.is_empty();
         let colours = if authored {
             colours.clone()
@@ -80,8 +83,6 @@ fn artwork_palette(
         };
         let loaded = current().to_lowercase();
         let selected = colours.iter().position(|colour| colour == &loaded);
-        let values = colours.clone();
-        let choose = choose.clone();
         let picker = ColorSwatchPicker::new(
             colours.iter().filter_map(|colour| {
                 crate::render::colour(colour, &[])
@@ -90,12 +91,8 @@ fn artwork_palette(
             8,
         )
         .with_cell(f64::from(SWATCH))
-        .selecting(selected)
-        .on_change(move |index| {
-            if let Some(colour) = values.get(index) {
-                choose(colour.clone());
-            }
-        });
+        .selecting(selected);
+        let picker = bind(cx, picker, colours);
         let mut parts: Vec<Element> = Vec::new();
         if authored {
             parts.push(heading("canvas-artwork-colours"));
@@ -319,19 +316,24 @@ fn brush(cx: &ViewCx<Artwork>, tools: &Tools, layer: &str, tool: Tool) -> Elemen
     });
     let mut parts: Vec<Element> = vec![tool_heading(tools, medium.as_ref(), tool)];
     if brushing && medium.is_none() {
-        parts.push(preset_picker(tools));
+        parts.push(preset_picker(cx, tools));
     }
-    let palette = brush_palette(tools, &pigments);
+    let palette = brush_palette(&cx.actions(), tools, &pigments);
     if medium.is_some() {
         parts.push(Box::new(palette.with_cell(f64::from(SWATCH))));
     } else {
-        let chosen = tools.colour.clone();
         let loaded = tools.clone();
         parts.push(artwork_palette(
             cx,
             "canvas-artwork-colours".into(),
             move || loaded.hex(),
-            move |value| chosen.set(value),
+            |cx, picker, colours| {
+                cx.actions().bind_effect(
+                    picker,
+                    ToolEffect::USE_COLOUR
+                        .map(move |index: usize| colours.get(index).cloned().unwrap_or_default()),
+                )
+            },
         ));
         parts.push(field(
             &ui::i18n::I18nManager::lookup_plain("canvas-colour"),
@@ -431,19 +433,22 @@ fn load_slider(tools: &Tools, load: f64) -> Element {
 
 /// The presets the brush can lay a plain layer's strokes with, drawn in
 /// its paint.
-fn preset_picker(tools: &Tools) -> Element {
-    Box::new(super::brushes::picker(
+fn preset_picker(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
+    let picker = super::brushes::picker(
         &super::brushes::PAINTING,
         tools.preset.with(|preset| *preset),
         {
             let tools = tools.clone();
             move || tools.hex()
         },
-        {
-            let tools = tools.clone();
-            move |preset| tools.choose_preset(preset)
-        },
-    ))
+    );
+    Box::new(
+        cx.actions().bind_effect(
+            picker,
+            ToolEffect::USE_BRUSH
+                .map(|index: usize| super::brushes::preset_name(&super::brushes::PAINTING, index)),
+        ),
+    )
 }
 
 /// A labelled slider over `0..=1` of the person's own tool settings.
@@ -633,18 +638,21 @@ fn eraser(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
 
 /// The paints the brush can load: the medium's pigments, or inks on a
 /// plain layer.
-fn brush_palette(tools: &Tools, pigments: &[crate::media::PigmentSpec]) -> ColorSwatchPicker {
+fn brush_palette(
+    actions: &Actions<Artwork>,
+    tools: &Tools,
+    pigments: &[crate::media::PigmentSpec],
+) -> ColorSwatchPicker {
     if pigments.is_empty() {
         tools.pigment.set(None);
         let current = packed(&tools.hex());
-        let chosen = tools.colour.clone();
-        return swatches(&INKS, INKS.iter().map(|rgb| hex(*rgb)).collect(), 7)
-            .on_change(move |index| {
-                if let Some(rgb) = INKS.get(index) {
-                    chosen.set(hex(*rgb));
-                }
-            })
+        let picker = swatches(&INKS, INKS.iter().map(|rgb| hex(*rgb)).collect(), 7)
             .selecting(INKS.iter().position(|rgb| Some(*rgb) == current));
+        return actions.bind_effect(
+            picker,
+            ToolEffect::USE_COLOUR
+                .map(|index: usize| INKS.get(index).map(|rgb| hex(*rgb)).unwrap_or_default()),
+        );
     }
     // Keep the pigment when this palette has it too, else load the one
     // nearest the brush's colour: the paint the hand was using, not the
@@ -673,14 +681,11 @@ fn brush_palette(tools: &Tools, pigments: &[crate::media::PigmentSpec]) -> Color
         .iter()
         .map(|pigment| words(&pigment.name))
         .collect();
-    let pigment = tools.pigment.clone();
-    swatches(&colours, labels, 8)
-        .on_change(move |index| {
-            if let Some(load) = loads.get(index) {
-                pigment.set(Some(load.clone()));
-            }
-        })
-        .selecting(Some(index))
+    actions.bind_effect(
+        swatches(&colours, labels, 8).selecting(Some(index)),
+        ToolEffect::USE_PIGMENT
+            .map(move |index: usize| loads.get(index).cloned().unwrap_or_default()),
+    )
 }
 
 /// The pigment whose masstone is nearest `colour`.
@@ -1021,20 +1026,6 @@ impl Paint {
             }
         }
     }
-
-    fn invoke(&self, ids: &[String], value: String) -> Invoke<Artwork> {
-        match self {
-            Self::Fill => Artwork::SET_FILL.with((ids.to_vec(), value)),
-            Self::Stroke => Artwork::SET_STROKE.with((ids.to_vec(), value)),
-            Self::Stop(gradient, index) => {
-                let mut gradient = gradient.clone();
-                if let Some(stop) = gradient.stops.get_mut(*index) {
-                    stop.1 = value;
-                }
-                Artwork::SET_GRADIENT.with((ids.to_vec(), gradient))
-            }
-        }
-    }
 }
 
 /// Swatches of the layer's paints (or inks) and the colour as text.
@@ -1108,7 +1099,6 @@ fn paints(
     };
     let mut parts: Vec<Element> = Vec::new();
     if palette.is_empty() {
-        let dispatch = cx.dispatcher();
         let ids = ids.to_vec();
         let paint = paint.clone();
         let current = current.unwrap_or("none").to_owned();
@@ -1116,9 +1106,7 @@ fn paints(
             cx,
             format!("{}-artwork-colours", paint.id()),
             move || current.clone(),
-            move |value| {
-                dispatch.submit(paint.invoke(&ids, value));
-            },
+            move |cx, picker, colours| paint.bind(cx, picker, &ids, colours),
         ));
     } else {
         parts.push(Box::new(swatches));
@@ -1136,17 +1124,17 @@ fn stroke_brush(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark, plain: bool) 
     let mut rows: Vec<Element> = Vec::new();
     let preset = Preset::of(&mark.style);
     if plain && !preset.erases() {
-        let dispatch = cx.dispatcher();
         let targets = ids.to_vec();
         let ink = mark.style.stroke.clone().unwrap_or_default();
-        rows.push(Box::new(super::brushes::picker(
-            &super::brushes::PAINTING,
-            preset,
-            move || ink.clone(),
-            move |preset| {
-                dispatch
-                    .submit(Artwork::SET_BRUSH.with((targets.clone(), preset.name().to_owned())));
-            },
+        let picker = super::brushes::picker(&super::brushes::PAINTING, preset, move || ink.clone());
+        rows.push(Box::new(cx.actions().bind(
+            picker,
+            Artwork::SET_BRUSH.map(move |index: usize| {
+                (
+                    targets.clone(),
+                    super::brushes::preset_name(&super::brushes::PAINTING, index),
+                )
+            }),
         )));
     }
     let width = LocalState::new(*size);

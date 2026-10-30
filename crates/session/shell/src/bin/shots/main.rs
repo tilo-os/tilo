@@ -15,7 +15,6 @@ mod driver;
 mod mode;
 mod own_device;
 #[cfg(feature = "test-support")]
-mod own_process;
 mod scenario;
 
 use std::path::PathBuf;
@@ -82,6 +81,10 @@ struct Args {
     /// data (the topbar clock reads `chrono::Local::now()`, the system
     /// monitor reads CPU usage, etc.). Default 0 — strict.
     max_diff_pixels: u64,
+    /// Draw the scenes with the CPU rasterizer (`ui::offscreen::render_picture`
+    /// with no GPU adapter, `vello_cpu`) instead of vello's GPU pipeline, so a
+    /// frame can be put beside one a CPU-rasterizing host draws.
+    cpu: bool,
 }
 
 /// Consume the next value for `flag` from the remaining arguments, erroring
@@ -108,9 +111,15 @@ fn parse_mode_flag(v: &str) -> Result<Mode, String> {
     }
 }
 
+/// Scenes the offscreen path renders that are not a `scene_setup` row: states
+/// of the session itself rather than of the demo tree, so a capture can be put
+/// beside the same state of another session. `empty-desk` is the desk before
+/// any window opens (the tree a real boot reaches); `lock` is the lock screen.
+const SESSION_STATE_SCENES: &[&str] = &["empty-desk", "lock"];
+
 /// Parse `--scenes`' comma-separated value into `args.scenes`, rejecting any
-/// name outside [`ShellDriver::ALL_SCENES`]. Split out of `Args::apply_flag`
-/// to keep it short.
+/// name outside [`ShellDriver::ALL_SCENES`] or [`SESSION_STATE_SCENES`]. Split
+/// out of `Args::apply_flag` to keep it short.
 fn apply_scenes_flag(
     args: &mut Args,
     rest: &mut Vec<String>,
@@ -119,7 +128,9 @@ fn apply_scenes_flag(
     let v = take_value(rest, "--scenes")?;
     args.scenes = v.split(',').map(|s| s.trim().to_string()).collect();
     for s in &args.scenes {
-        if !ShellDriver::ALL_SCENES.contains(&s.as_str()) {
+        if !ShellDriver::ALL_SCENES.contains(&s.as_str())
+            && !SESSION_STATE_SCENES.contains(&s.as_str())
+        {
             return Err(format!(
                 "unknown scene '{s}'. Valid: {}",
                 ShellDriver::ALL_SCENES.join(", ")
@@ -182,6 +193,7 @@ impl Args {
             diff_threshold: 4,
             max_diff_pixels: 0,
             outputs: None,
+            cpu: false,
         };
         let mut scenes_explicit = false;
 
@@ -249,6 +261,7 @@ impl Args {
                 args.outputs = Some(outputs);
             }
             "--list-scenarios" => args.list_scenarios = true,
+            "--cpu" => args.cpu = true,
             "--theme" => {
                 shell::shell::frame::request_shots_theme(take_value(rest, "--theme")?);
             }
@@ -602,7 +615,7 @@ fn run_capture_one(args: &Args, viewport: (u32, u32), out: &std::path::Path) -> 
                 let mut driver = new_driver();
                 mode::offscreen::run_scenario(&mut driver, &scenario, out, args.per_frame)?;
             }
-            None => mode::offscreen::run_scenes(&args.scenes, out, viewport, outputs)?,
+            None => mode::offscreen::run_scenes(&args.scenes, out, viewport, outputs, args.cpu)?,
         },
         Mode::Headless => {
             let Some(name) = args.scenario.as_deref() else {

@@ -1,6 +1,6 @@
 //! Deciding a received document op change by change, before it is merged.
 //!
-//! Every peer checks every incoming change ([`permissions.md`] §5.2). This
+//! Every peer checks every incoming change. This
 //! is the check that needs no app code and reads no content, so a relay runs
 //! it on cleartext and sealed ops alike: each change's [`ChangeClaim`] names
 //! an action the record's app publishes, the author is granted that action
@@ -13,8 +13,6 @@
 //! A device that has the app also replays each change
 //! ([`tilo_actions::verify_change`]), which catches an author who is granted
 //! an action but wrote something else inside its units.
-//!
-//! [`permissions.md`]: ../../../../docs/architecture/permissions.md
 
 use std::collections::BTreeSet;
 
@@ -277,8 +275,19 @@ pub fn check_claims(
             })
         };
         let read = written.map(|written| written(&claim.change));
+        // A history step or a framework change may touch any unit, and its
+        // claim says so rather than naming the entries it queued: what it
+        // really queued is left to the devices that open it, as for a
+        // sealed op.
+        let claims_any_unit = claim.action.members().into_iter().all(|member| {
+            matches!(
+                member,
+                ClaimedAction::History(_) | ClaimedAction::Framework(_)
+            )
+        });
         let queues = match &read {
             Some(read) => in_outbox(&read.added),
+            None if claims_any_unit => false,
             None => in_outbox(&claim.units),
         };
         let queued_nothing = !queues && !outboxes.is_empty();

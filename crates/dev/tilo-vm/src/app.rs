@@ -2681,9 +2681,6 @@ impl App {
     fn vm_upgrade(&mut self, args: &UpgradeArgs) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(args.name.as_deref())?;
         let endpoint = self.endpoint(&vm)?;
-        if let Some(branch) = args.branch.as_deref() {
-            return self.vm_upgrade_branch(&vm, &endpoint, args, branch);
-        }
         let Some(from) = args.from.as_deref() else {
             if let Some(layout) = args.image.as_deref().map(Path::new)
                 && imageup::is_layout(layout)
@@ -3105,19 +3102,9 @@ impl App {
                     String::new()
                 })
             };
-            let vm_tags = listing(ci::REF_IMAGE)?;
             let ci_tags = listing("registry.tilo.so/tilo/tilo-ci")?;
-            let refs = imageup::ci_ref_candidates(
-                sha,
-                &target.arch,
-                target.board.as_deref(),
-                &vm_tags,
-                &ci_tags,
-            );
-            if let Some(image) = refs.dev_images.first() {
-                return Ok(Some(CiUpgrade::Published(image.clone())));
-            }
-            Ok(refs.bases.first().cloned().map(CiUpgrade::Base))
+            let bases = imageup::ci_ref_bases(sha, &target.arch, target.board.as_deref(), &ci_tags);
+            Ok(bases.first().cloned().map(CiUpgrade::Base))
         })?;
         let Some(found) = found else {
             let tried = candidates
@@ -3156,72 +3143,6 @@ impl App {
             }
         }
         Ok(found)
-    }
-
-    /// `vm upgrade --ref BRANCH`: t builds the branch's head for this device's target, reusing
-    /// every layer it built before, and publishes it signed; the device then takes it the way
-    /// it takes any update, pinned until its channel moves on.
-    fn vm_upgrade_branch(
-        &mut self,
-        vm: &Resolved,
-        endpoint: &SshEndpoint,
-        args: &UpgradeArgs,
-        branch: &str,
-    ) -> Result<Outcome, CliError> {
-        let facts = self.vm_facts(vm, endpoint, "vm upgrade")?;
-        let target = facts.board.clone().unwrap_or_else(|| {
-            facts
-                .arch()
-                .unwrap_or_else(|| std::env::consts::ARCH.to_owned())
-        });
-        let ls_remote =
-            CommandLine::new("git", &["ls-remote", "origin"]).arg(format!("refs/heads/{branch}"));
-        let listed = self.runner.output(&ls_remote)?;
-        let head = listed
-            .stdout
-            .split_whitespace()
-            .next()
-            .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
-            .map(str::to_owned)
-            .ok_or_else(|| CliError::Unsupported {
-                what: format!("--ref {branch}: origin has no such branch"),
-                alternative: format!("push it first: git push origin HEAD:{branch}"),
-            })?;
-        if !on_path("t") {
-            return Err(CliError::ToolMissing {
-                tool: "t".into(),
-                purpose: "build and publish the branch's image (docs/t.md)".into(),
-            });
-        }
-        let check = format!("publish-os-ref-{target}");
-        let dispatch = CommandLine::new(
-            "t",
-            &["dispatch", &check, "--ref", branch, "--publish", "--human"],
-        );
-        let runner = &mut self.runner;
-        let published = self
-            .receipt
-            .phase("publish", || runner.interactive(&dispatch))?;
-        if !published {
-            return Err(CliError::CommandFailed {
-                command: dispatch.display(),
-                status: "failed".into(),
-                stderr: format!(
-                    "t's output above names the cause. A branch's build publishes only where t \
-                     gives runs of branches identity tokens for registry.tilo.so and \
-                     tilo-dev-signing (\"needs identity tokens\" above); until it does, the \
-                     temporary path builds here: tilo-vm vm upgrade {} --from local",
-                    vm.name
-                ),
-            });
-        }
-        let image = format!(
-            "{}:ref-{}-{}-{target}",
-            ci::REF_IMAGE,
-            ci::ref_slug(branch),
-            head.chars().take(7).collect::<String>()
-        );
-        self.vm_upgrade_registry(vm, endpoint, args, Some(&image))
     }
 
     /// `vm upgrade`, `vm upgrade --image` and a published `--from ci:`: bootc
@@ -5308,7 +5229,7 @@ impl App {
             &[
                 "actions".into(),
                 "invoke".into(),
-                "host-applications".into(),
+                "applications".into(),
                 desktop_id.into(),
             ],
             &mut worst_control,

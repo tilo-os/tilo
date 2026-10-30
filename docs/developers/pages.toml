@@ -15,17 +15,10 @@ related_manifests = ["docs/development/pages.toml"]
 
 [[page]]
 slug = ""
-source = "docs/developers/getting-started.md"
+source = "docs/app-development.md"
 section = "Start"
-nav = "Getting started"
-description = "Install the tilo-app command, create an app, run it with hot reload, then package it for every platform and publish it."
-
-[[page]]
-slug = "examples"
-source = "docs/examples.md"
-section = "Start"
-nav = "Templates and examples"
-description = "The four templates an app starts from and the runnable examples that each teach one idea."
+nav = "Build an app"
+description = "Install the tilo-app command, create an app from a template or example, model it as resources and actions, test it, run it on every platform and publish it."
 
 [[page]]
 slug = "task-start"
@@ -77,39 +70,11 @@ nav = "Submit a release"
 description = "The offline tilo-app guide publish workflow."
 
 [[page]]
-slug = "build-an-app"
-source = "docs/app-development.md"
-section = "Guides"
-nav = "Build an app"
-description = "The complete tilo-app workflow: templates, the Tilo-native contract, resources and actions, screens, localization, text, large collections and testing."
-
-[[page]]
-slug = "actions"
-source = "docs/action-model-recipe.md"
-section = "Guides"
-nav = "Resources and actions"
-description = "Model every change as a serializable action so undo, collaboration, the command palette, scripts and agents share one implementation."
-
-[[page]]
 slug = "interface-guidelines"
 source = "crates/sdk/ui-core/HIG.md"
 section = "Guides"
 nav = "Interface guidelines"
 description = "Layout, navigation, text, chrome, system integration and the shared controls every Tilo app builds on."
-
-[[page]]
-slug = "resource-journey"
-source = "docs/sdk-resource-journey.md"
-section = "Guides"
-nav = "A resource workflow"
-description = "One checklist workflow proving validation, host identity, permissions, confirmation, undo, persistence and four shared-control presentations."
-
-[[page]]
-slug = "agent-action-api"
-source = "docs/agent-action-api.md"
-section = "Guides"
-nav = "Scripts and agents"
-description = "How programs and agents enumerate and invoke an app's actions without touching the screen."
 
 [[page]]
 slug = "android"

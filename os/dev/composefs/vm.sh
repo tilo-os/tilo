@@ -59,11 +59,11 @@ cmd_boot() {
       # without this there is no way to show it doing anything, only that it
       # started. os/dev/serial-console.py drives the socket.
       #
-      # SOMETHING MUST STAY ATTACHED. qemu writes the guest's console into the
-      # socket, and with no reader it blocks once the pipe fills — which stops
-      # the guest mid-boot, looking exactly like a hang in whatever it was
-      # doing. Use this only while a driver is connected, and boot without it
-      # for anything that only needs to read (`vm.sh serial`).
+      # A DRIVER THAT CONNECTS MUST KEEP READING. qemu writes the guest's
+      # console into a connected socket, and with no reader it blocks once
+      # the pipe fills — which stops the guest mid-boot, looking exactly like
+      # a hang in whatever it was doing. With nothing connected the console
+      # goes only to the serial log (`vm.sh serial`).
       --serial-socket) serial_mode=socket ;;
       # Enforcement is a separate axis from measurement: the measuring firmware
       # is selected unconditionally (os/dev/_common.sh), and this only asks for a

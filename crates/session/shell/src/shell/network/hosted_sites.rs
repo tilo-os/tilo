@@ -2,8 +2,8 @@
 //! workspace a Tilo computer is in by default, one a person joins by its
 //! site, or one a link opened here names.
 //!
-//! A site names its home workspace in its `entry.json`
-//! (docs/architecture/web-routing.md, §8): the workspace's host by its HTTPS
+//! A site names its home workspace in its `entry.json`:
+//! the workspace's host by its HTTPS
 //! origin, and the host's admission door when it lets people in without an
 //! invitation. The computer joins the way a browser does: the door
 //! pre-admits the person, and this device redeems the door's invitation

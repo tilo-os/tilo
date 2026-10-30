@@ -24,14 +24,7 @@ const EVENT_QUEUE_CAPACITY: usize = 96;
 const EVENTS_PER_SECOND: usize = 180;
 const PENDING_TIMEOUT: Duration = os_actions::AUTHORIZATION_TTL;
 
-/// Locally derived focus identity. None of these fields are accepted from a
-/// remote peer or an untrusted application.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PhysicalGamepadBinding {
-    pub app_id: String,
-    pub workspace_id: String,
-    pub session_id: String,
-}
+use tilo_device_fabric::PhysicalGamepadBinding;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalPhysicalGamepadView {

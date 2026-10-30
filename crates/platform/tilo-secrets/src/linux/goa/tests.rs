@@ -1,9 +1,11 @@
 //! Native-only qualification in a dedicated container under an ordinary UID.
 //! The fixture binds the actual owner bus path; no host keyring or routing seam.
 use super::*;
-use std::io::BufRead;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+use crate::linux::SERVICE;
+use tilo_test_env::PrivateBus;
 
 const ACCOUNT_PATH: &str = "/org/gnome/OnlineAccounts/Accounts/account_1";
 const ITEM_PATH: &str = "/org/freedesktop/secrets/item/selected";
@@ -31,49 +33,17 @@ struct Evidence {
     closes: usize,
     owner_changed: bool,
 }
-struct Bus {
-    daemon: std::process::Child,
-    address: String,
-    socket: PathBuf,
-}
-impl Bus {
-    fn start() -> Self {
-        let uid = unsafe { libc::getuid() };
-        assert!(uid != 0 && unsafe { libc::geteuid() } == uid);
-        let socket = PathBuf::from(format!("/run/user/{uid}/bus"));
-        assert!(
-            !socket.exists(),
-            "native qualification requires a fresh isolated owner bus"
-        );
-        let mut daemon = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!("--address=unix:path={}", socket.display()))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("native fixture image must provide dbus-daemon");
-        let mut address = String::new();
-        std::io::BufReader::new(daemon.stdout.take().unwrap())
-            .read_line(&mut address)
-            .unwrap();
-        assert!(
-            !address.trim().is_empty(),
-            "private fixture bus failed to start"
-        );
-        Self {
-            daemon,
-            address: address.trim().into(),
-            socket,
-        }
-    }
-}
-impl Drop for Bus {
-    fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
-        if self.socket.exists() {
-            std::fs::remove_file(&self.socket).unwrap();
-        }
-    }
+/// The owner bus path itself, which the fixture binds: no host keyring or
+/// routing seam stands in for it.
+fn start_owner_bus() -> PrivateBus {
+    let uid = unsafe { libc::getuid() };
+    assert!(uid != 0 && unsafe { libc::geteuid() } == uid);
+    let socket = PathBuf::from(format!("/run/user/{uid}/bus"));
+    assert!(
+        !socket.exists(),
+        "native qualification requires a fresh isolated owner bus"
+    );
+    PrivateBus::start_at(&socket)
 }
 
 struct AccountInterface(Scenario);
@@ -213,15 +183,19 @@ impl SessionInterface {
     }
 }
 
-fn serve(bus: &Bus, scenario: Scenario, evidence: &Arc<Mutex<Evidence>>) -> zbus::Connection {
+fn serve(
+    bus: &PrivateBus,
+    scenario: Scenario,
+    evidence: &Arc<Mutex<Evidence>>,
+) -> zbus::Connection {
     tilo_rt::app()
         .block_on(async {
-            let replacement = zbus::connection::Builder::address(bus.address.as_str())
+            let replacement = zbus::connection::Builder::address(bus.address())
                 .unwrap()
                 .build()
                 .await
                 .unwrap();
-            let builder = zbus::connection::Builder::address(bus.address.as_str())
+            let builder = zbus::connection::Builder::address(bus.address())
                 .unwrap()
                 .name(GOA)
                 .unwrap()
@@ -261,7 +235,7 @@ fn serve(bus: &Bus, scenario: Scenario, evidence: &Arc<Mutex<Evidence>>) -> zbus
 }
 
 fn qualify_scenario(scenario: Scenario) {
-    let bus = Bus::start();
+    let bus = start_owner_bus();
     let evidence = Arc::new(Mutex::new(Evidence::default()));
     let server = serve(&bus, scenario, &evidence);
     let profile = tempfile::tempdir().unwrap();

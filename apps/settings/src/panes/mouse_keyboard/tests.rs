@@ -786,13 +786,6 @@ fn a_tablets_row_offers_its_choices() {
 
 #[test]
 fn touchpad_choices_travel_as_stable_ids() {
-    for method in TouchpadClickMethod::ALL {
-        assert_eq!(click_method_for_id(click_method_id(method)), Some(method));
-    }
-    for method in TouchpadScrollMethod::ALL {
-        assert_eq!(scroll_method_for_id(scroll_method_id(method)), Some(method));
-    }
-    assert_eq!(click_method_for_id("Button areas"), None);
     let labels = localized_choices(&CLICK_METHOD_CHOICES);
     assert_eq!(labels[1], ("areas".into(), "Bottom-right corner".into()));
 }

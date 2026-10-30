@@ -994,10 +994,6 @@ impl ComputeTransportState {
         holdings.held_per_mille = held.saturating_mul(1_000).checked_div(total).unwrap_or(0);
     }
 
-    pub fn remove_worker(&mut self, worker: &DeviceKey) {
-        self.workers.remove(worker);
-    }
-
     pub fn attach(
         &mut self,
         device: DeviceKey,
@@ -2831,7 +2827,7 @@ mod tests {
                 state.accept_request([1; 32], 7, 200, &store, &gpu_job),
                 Err(ComputeTransportError::WorkerUnavailable)
             ));
-            state.remove_worker(&[2; 32]);
+            state.workers.remove(&[2; 32]);
             assert!(matches!(
                 state.accept_request([1; 32], 7, 200, &store, &spec()),
                 Err(ComputeTransportError::WorkerUnadvertised)

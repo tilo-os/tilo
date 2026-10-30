@@ -9,8 +9,8 @@
 //! one (`web/root-identity.mjs`) lends it as a signer, the same shape as
 //! custody, to [`issue_device_cert`] and [`certify_with_root`].
 //!
-//! The peer record (certificates and the commit outbox) is kept in the
-//! profile's durable store when the page names a profile
+//! The peer record (certificates and the commit outbox) and the rooms it
+//! holds are kept in the profile's durable store when the page names a profile
 //! ([`DurablePeerStore`]), committed to `IndexedDB` with everything else.
 //! Once started, the certified user becomes the toolkit's local identity
 //! (`ui::local_identity`), so mounts attribute edits to that person.
@@ -141,6 +141,8 @@ struct DurablePeerStore {
     key: durable_store::StorageKey,
     /// Channel membership and the edits held for it, beside the record.
     channels_key: durable_store::StorageKey,
+    /// The rooms the peer holds, beside the record.
+    rooms_key: durable_store::StorageKey,
     /// Seals the member state in `channels_key`. The page keeps it wrapped
     /// by a non-extractable `WebCrypto` key (`channel-vault.mjs`), never in
     /// this store.
@@ -177,6 +179,11 @@ impl DurablePeerStore {
                 crate::storage::PROFILE_WORKSPACE,
                 format!("{}.channels", hex::encode(user_public_key)),
             ),
+            rooms_key: durable_store::StorageKey::record(
+                PEER_PACKAGE,
+                crate::storage::PROFILE_WORKSPACE,
+                format!("{}.rooms", hex::encode(user_public_key)),
+            ),
             channel_vault,
         })
     }
@@ -208,6 +215,23 @@ impl PeerStore for DurablePeerStore {
         self.store
             .write(
                 &self.channels_key,
+                durable_store::WriteOp::Replace(bytes.to_vec()),
+                None,
+            )
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    fn load_rooms(&self) -> Option<Vec<u8>> {
+        use durable_store::DurableStore as _;
+        Some(self.store.read(&self.rooms_key).ok()??.bytes)
+    }
+
+    fn save_rooms(&self, bytes: &[u8]) -> Result<(), String> {
+        use durable_store::DurableStore as _;
+        self.store
+            .write(
+                &self.rooms_key,
                 durable_store::WriteOp::Replace(bytes.to_vec()),
                 None,
             )

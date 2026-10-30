@@ -27,7 +27,7 @@ use std::fmt;
 use std::process::ExitCode;
 
 pub mod account_handoff;
-pub mod args;
+pub use tilo_pycompat::argparse as args;
 pub mod bootc_copy_cache;
 pub mod code_refresh;
 pub mod code_refresh_probe;
@@ -60,6 +60,12 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl From<String> for Error {
+    fn from(message: String) -> Self {
+        Self(message)
+    }
+}
 
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {

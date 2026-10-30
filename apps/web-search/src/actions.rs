@@ -354,6 +354,7 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
     ACTIONS
         .iter()
         .map(|(action, label, description)| ActionDescriptor {
+            state: ui::tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: ActionAddress::new(RESOURCE_ID, *action),
             resource_kind: RESOURCE_KIND.to_string(),
@@ -380,6 +381,7 @@ pub fn publication() -> CollabRequest {
         actions: descriptors()
             .iter()
             .map(|descriptor| ExportedAction {
+                state: ui::tilo_actions::ActionState::default(),
                 view: None,
                 input: ExportedInput::None,
                 ..ExportedAction::from(descriptor)

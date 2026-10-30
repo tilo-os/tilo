@@ -665,11 +665,11 @@ async fn every_web_app_over_the_session() {
         .retained(workspace())
         .await
         .unwrap();
-    let (readable, _) = common::retained_documents(
-        &host_device.cert.device_public_key,
+    let (readable, _) = common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
+        &host_device.cert.device_public_key,
     );
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     host.relay.shutdown().await;

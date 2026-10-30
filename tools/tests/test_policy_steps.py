@@ -19,23 +19,20 @@ class StepsTests(unittest.TestCase):
         self.assertGreater(len(loaded), 40)
         for step in loaded:
             with self.subTest(step=step.name):
-                files = steps.own_files(step, ROOT)
-                if not step.run.startswith("python3 -m"):
+                files = steps.scripts(step)
+                if not step.run.startswith(("python3 -m", "./")):
                     self.assertTrue(files, f"{step.run} names no file of the tree")
                 for path in files:
                     self.assertTrue((ROOT / path).is_file(), path)
 
-    def test_list_gives_run_sh_the_steps_in_order_with_git_steps_indexed(self):
+    def test_list_gives_run_sh_the_steps_in_order(self):
         out = subprocess.run([sys.executable, str(ROOT / "tools/policy/steps.py"), "list"], check=True,
                              capture_output=True).stdout.decode().split("\0")[:-1]
         records = [tuple(out[index:index + 3]) for index in range(0, len(out), 3)]
         loaded = steps.load(ROOT)
-        self.assertEqual(records, [("tests" if step.tests else "tree", step.label, step.command) for step in loaded])
+        self.assertEqual(records, [("tests" if step.tests else "tree", step.label, step.run) for step in loaded])
         content = next(step for step in loaded if step.name == "source-content")
-        self.assertEqual(content.command, "bash tools/ci/t-git-index.sh python3 tools/policy/check_source_content.py")
-        self.assertEqual(content.check, "policy/source-content")
-        unit = next(step for step in loaded if step.name == "unit")
-        self.assertEqual(unit.check, "policy/tests/unit")
+        self.assertEqual(content.run, "python3 tools/policy/check_source_content.py")
 
     def test_the_node_half_and_the_rest_together_run_every_test_once(self):
         def records(*half: str) -> list[tuple[str, ...]]:
@@ -48,7 +45,7 @@ class StepsTests(unittest.TestCase):
         self.assertEqual(records("--node"), [("tests", f"{unit.label} that run Node.js scripts",
                                               "python3 tools/policy/run_unit_tests.py " + " ".join(unit.node_tests))])
         rest = dict((label, command) for _, label, command in records("--no-node"))
-        self.assertEqual(rest[unit.label], unit.command + "".join(f" --except {test}" for test in unit.node_tests))
+        self.assertEqual(rest[unit.label], unit.run + "".join(f" --except {test}" for test in unit.node_tests))
         self.assertEqual(len(rest), len(records()))
 
     def test_node_tests_are_exactly_the_test_files_that_start_node(self):
@@ -62,26 +59,13 @@ class StepsTests(unittest.TestCase):
         self.assertEqual(sorted(unit.node_tests), found,
                          "list the test files that run Node.js under node_tests in tools/policy/steps.toml")
 
-    def test_a_python_step_brings_the_modules_it_imports(self):
-        step = next(step for step in steps.load(ROOT) if step.name == "app-text-contract")
-        self.assertEqual(steps.own_files(step, ROOT), [
-            "tools/policy/check_app_resource_action_contract.py", "tools/policy/check_app_text_contract.py",
-            "tools/policy/findings.py", "tools/policy/rust_source.py"])
-        self.assertEqual(step.t_command, "python3 tools/policy/findings.py python3 tools/policy/check_app_text_contract.py")
-        unit = next(step for step in steps.load(ROOT) if step.name == "unit")
-        self.assertEqual(unit.t_command, unit.command, "the suite's tests name their own failures")
-
     def test_malformed_steps_are_refused(self):
         for text, message in (
-            ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\n', "names no inputs"),
-            ('[[step]]\nname = "A b"\nlabel = "A"\nrun = "true"\ninputs = ["x"]\n', "lowercase"),
-            ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\ninputs = ["x"]\nwhen = 1\n', "unknown fields"),
-            ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\ninputs = ["x"]\n' * 2, "two steps"),
-            ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\ninputs = ["x"]\ncovered_by = "b"\n', "covered by"),
-            ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\ninputs = ["x"]\nhistory = true\n', "only the suite's tests"),
-            ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\ninputs = ["x"]\nnode_tests = ["x"]\n',
-             "only a tests step"),
-            ('[[step]]\nname = "a"\nlabel = "A"\nrun = "python3 tools/policy/run_unit_tests.py t"\ninputs = ["x"]\n'
+            ('[[step]]\nname = "A b"\nlabel = "A"\nrun = "true"\n', "lowercase"),
+            ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\nwhen = 1\n', "unknown fields"),
+            ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\n' * 2, "two steps"),
+            ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\nnode_tests = ["x"]\n', "only a tests step"),
+            ('[[step]]\nname = "a"\nlabel = "A"\nrun = "python3 tools/policy/run_unit_tests.py t"\n'
              'tests = true\nnode_tests = ["t/test_gone.py"]\n', "don't exist"),
         ):
             with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:

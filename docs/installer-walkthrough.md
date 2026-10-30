@@ -1,8 +1,7 @@
 # Tilo installation: download to first login
 
 Guided migration is still under development. USB-free Full Tilo installation
-and Connected folders are unavailable; see [migration feature status](migration-status.md)
-for implemented paths, platform limits, and remaining validation.
+and Connected folders are unavailable.
 
 This is the user journey and the release acceptance checklist for Tilo Imager
 and the live installer. A release is not complete unless the walkthrough works
@@ -336,4 +335,4 @@ systems boot before deleting backups or recovery media.
 
 For a Windows-direct install that used a one-time `BootNext`, Tilo can be
 added to the persistent firmware picker after its first healthy boot while
-Windows remains the default. See [Windows-first firmware boot order](windows-first-tilo-boot-order.md).
+Windows remains the default.

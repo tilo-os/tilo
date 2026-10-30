@@ -11,10 +11,10 @@
 2 apps/store/src/catalogue/details.rs
 2 apps/video-editor/src/app.rs
 1 apps/word-processor/src/style_color_picker.rs
+2 crates/session/device-fabric/src/lib.rs
 2 crates/session/shell/src/compositor/drag_feedback.rs
 2 crates/session/shell/src/compositor/lock_screen.rs
 2 crates/session/shell/src/portal/desktop_services.rs
-2 crates/session/shell/src/shell/device_fabric.rs
 2 crates/session/shell/src/shell/overlay_host/qs_motion.rs
 3 crates/session/shell/src/shell/overlay_host/shortcuts.rs
 4 crates/session/window-share/src/flatpak_share.rs

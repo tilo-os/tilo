@@ -164,9 +164,6 @@ enum Action {
     Nav(View),
     Recommendation(ui::tilo_resource::Edit<crate::model::Library>),
     Back,
-    /// Open the platform search for this app, prefilled with a genre: the
-    /// Browse tiles route here.
-    BrowseGenre(String),
     /// Play `queue[index]` after replacing the queue.
     Play {
         /// Shared across every visible row hit so drawing a long list does not
@@ -2463,7 +2460,6 @@ impl Music {
             Action::Recommendation(edit) => self.recommendation_action(state, edit),
             Action::Nav(v) => self.on_nav(v),
             Action::Back => self.on_back(),
-            Action::BrowseGenre(genre) => self.on_browse_genre(&genre),
             Action::Play { queue, index } => self.on_play(queue, index, state),
             Action::ShufflePlay(queue) => self.on_shuffle_play(queue, state),
             Action::OpenSearch => {
