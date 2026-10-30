@@ -96,7 +96,7 @@ fn delegation(root: &ed25519_dalek::SigningKey, agent_key: [u8; 32]) -> Delegati
             apps: vec![VIDEO.into()],
         },
         now,
-        now + 3_600_000_000_000,
+        now.saturating_add(3_600_000_000_000),
     )
     .unwrap()
 }
