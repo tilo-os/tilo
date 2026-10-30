@@ -66,6 +66,9 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+# The identity record the launcher bound and the person's own: the directories
+# whose changes a worker follows.
+runtime-identity = { path = "../../runtime/runtime-identity" }
 iroh.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
