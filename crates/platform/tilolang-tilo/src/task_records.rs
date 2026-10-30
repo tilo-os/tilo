@@ -45,6 +45,9 @@ pub struct RecordReads {
     source: Rc<dyn RecordSource>,
     /// The records this program read, by app, each with a host of its own over it.
     open: RefCell<HashMap<String, (tilo_resource::Doc, Host)>>,
+    /// The apps whose record this program read as none: what the program saw of it (its root,
+    /// say) was made by the read alone, never written anywhere.
+    read_none: RefCell<std::collections::HashSet<String>>,
 }
 
 impl RecordReads {
@@ -66,6 +69,7 @@ impl RecordReads {
             records_under,
             source,
             open: RefCell::default(),
+            read_none: RefCell::default(),
         }
     }
 
@@ -90,11 +94,13 @@ impl RecordReads {
     /// Forget every record read: a new program reads them again.
     pub fn forget(&self) {
         self.open.borrow_mut().clear();
+        self.read_none.borrow_mut().clear();
     }
 
     /// Forget the record of the app `app`: the program changed it.
     pub fn forget_app(&self, app: &str) {
         self.open.borrow_mut().remove(app);
+        self.read_none.borrow_mut().remove(app);
     }
 
     /// Take in `change`, what the record's origin applied for this program to the record of the
@@ -104,6 +110,13 @@ impl RecordReads {
     /// # Errors
     /// The change does not apply to the record.
     pub fn take_in(&self, app: &str, change: &[u8]) -> Result<(), String> {
+        // A record read as none holds only what the read made of it; the origin, which made the
+        // record for the change, answers it whole, and that is the record from now on.
+        if self.read_none.borrow_mut().remove(app) {
+            let opened = self.host_over(app, Some(change))?;
+            self.open.borrow_mut().insert(app.to_owned(), opened);
+            return Ok(());
+        }
         let mut open = self.open.borrow_mut();
         let Some((doc, host)) = open.get_mut(app) else {
             return Ok(());
@@ -177,15 +190,28 @@ impl RecordReads {
 
     /// A host of the app `app`'s package over its record, as the door hands it now.
     fn open_host(&self, app: &str) -> Result<(tilo_resource::Doc, Host), String> {
+        let (under, record) = self
+            .address(app)
+            .ok_or_else(|| format!("{app} is not installed"))?;
+        let bytes = self.source.record(&under, &record)?;
+        if bytes.is_none() {
+            self.read_none.borrow_mut().insert(app.to_owned());
+        }
+        self.host_over(app, bytes.as_deref())
+    }
+
+    /// A host of the app `app`'s package over its record `bytes` (none: an empty record).
+    fn host_over(
+        &self,
+        app: &str,
+        bytes: Option<&[u8]>,
+    ) -> Result<(tilo_resource::Doc, Host), String> {
         let bundle = self
             .bundles
             .get(app)
             .ok_or_else(|| format!("{app} is not installed"))?;
-        let (under, record) = self
-            .address(app)
-            .ok_or_else(|| format!("{app} is not installed"))?;
-        let doc = match self.source.record(&under, &record)? {
-            Some(bytes) => tilo_resource::Doc::load(&bytes)
+        let doc = match bytes {
+            Some(bytes) => tilo_resource::Doc::load(bytes)
                 .map_err(|error| format!("{app}'s record does not read: {error}"))?,
             None => tilo_resource::Doc::new(),
         };

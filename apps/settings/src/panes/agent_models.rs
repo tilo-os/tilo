@@ -520,7 +520,7 @@ pub enum AgentModelsEffect {
     AddGoogleVertex,
     /// Sign in with Google in the browser for Vertex AI: for the provider
     /// being added, or again for an existing one whose sign-in ended.
-    #[effect(row, label = "Sign in with Google")]
+    #[effect(label = "Sign in with Google")]
     SignInWithGoogle {
         #[param("The provider's id; omit for the one being added")]
         provider: Option<String>,
@@ -531,7 +531,7 @@ pub enum AgentModelsEffect {
     /// Sign in to `ChatGPT`, GitHub Copilot or `OpenRouter`: for a provider
     /// to add, or again for an existing one. Finishes once the
     /// person has signed in and the provider is saved.
-    #[effect(attended, job, row, label = "Sign in")]
+    #[effect(attended, job, label = "Sign in")]
     SignInToProvider {
         #[param("`chatgpt`, `github-copilot` or `openrouter`")]
         service: String,
