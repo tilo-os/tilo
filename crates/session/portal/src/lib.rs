@@ -60,16 +60,15 @@ pub mod app_chooser;
 pub mod appearance;
 pub mod auth;
 pub mod background;
-pub mod consent;
-mod dispatch;
-pub mod documents;
-pub mod dynamic_launcher;
-pub mod email;
 pub mod capture_broker;
 pub mod captures;
 pub mod clipboard;
 pub mod consent;
+mod dispatch;
+pub mod documents;
+pub mod dynamic_launcher;
 mod eis;
+pub mod email;
 pub mod file_chooser;
 pub mod global_shortcuts;
 pub mod host;
@@ -77,17 +76,16 @@ pub mod inhibit;
 pub mod input_capture;
 pub mod lifecycle;
 pub mod lockdown;
-pub mod print;
-pub mod reply;
-pub mod requester;
-pub mod screensaver;
+pub mod notification;
 #[cfg(feature = "pipewire")]
 pub mod pipewire;
+pub mod print;
 pub mod remote_desktop;
-pub mod notification;
 pub mod reply;
+pub mod requester;
 pub mod restore;
 pub mod screencast;
+pub mod screensaver;
 pub mod screenshot;
 pub mod secret;
 pub mod session;
@@ -105,8 +103,8 @@ mod session_dbus_tests;
 pub use auth::{AuthenticatedCall, PortalAuthenticator};
 pub use consent::{Consents, WorkspaceGrants};
 pub use inhibit::{Inhibition, Inhibitions, SessionState};
-pub use requester::Requesters;
 pub use remote_desktop::{InputInjector, NoInput, RemoteInput};
+pub use requester::Requesters;
 pub use settings::{PortalSetting, Settings};
 pub use streams::{CaptureSource, CaptureStreams, NoStreams, SourceKind, Stream, StreamRequest};
 
@@ -617,12 +615,16 @@ impl Published for Consents {
 }
 
 impl Portal {
-    /// Every part that publishes something.
-    fn parts(&self) -> [&dyn Published; 4] {
+    /// Every part that publishes something; `controls` are the
+    /// controlling sessions' ([`Portal::controls`]).
+    fn parts<'a>(&'a self, controls: &'a remote_desktop::Controls) -> [&'a dyn Published; 7] {
         [
             &self.consents,
             &self.inhibitions,
             &self.autostart,
+            &self.captures,
+            controls,
+            &self.grants,
             &self.shortcuts,
         ]
     }
@@ -630,15 +632,13 @@ impl Portal {
 
 impl Service for Portal {
     fn resources(&self) -> Vec<ResourceSpec> {
+        let controls = self.controls();
         vec![
-            ResourceSpec::new(PORTAL_RESOURCE, "portal", "Portal")
-                .with_children(self.parts().into_iter().flat_map(Published::resources)),
-                .with_children(consents)
-                .with_children(self.inhibitions.resources())
-                .with_children(self.captures.resources())
-                .with_children(self.controls().resources())
-                .with_children(self.grants.resources())
-                .with_children(self.shortcuts.resources()),
+            ResourceSpec::new(PORTAL_RESOURCE, "portal", "Portal").with_children(
+                self.parts(&controls)
+                    .into_iter()
+                    .flat_map(Published::resources),
+            ),
         ]
     }
 
@@ -650,15 +650,10 @@ impl Service for Portal {
                 "autostart": self.autostart.apps(),
             }));
         }
-        self.parts()
+        let controls = self.controls();
+        self.parts(&controls)
             .into_iter()
             .find_map(|part| part.read(resource))
-        self.inhibitions
-            .read(resource)
-            .or_else(|| self.captures.read(resource))
-            .or_else(|| self.controls().read(resource))
-            .or_else(|| self.grants.read(resource))
-            .or_else(|| self.shortcuts.read(resource))
     }
 
     fn invoke(
@@ -668,30 +663,14 @@ impl Service for Portal {
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
         let published = self.resources();
-        self.parts()
+        let controls = self.controls();
+        self.parts(&controls)
             .into_iter()
             .find_map(|part| part.invoke(&published, resource, action, arguments))
             .unwrap_or_else(|| {
                 Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
                     resource, action,
                 )))
-        if let Some(consent) = resource.strip_prefix(CONSENT_PREFIX) {
-            let ConsentEffect::Forget = decode(&published, resource, action, arguments)?;
-            let (app, capability) = consent.split_once('\u{1f}').ok_or_else(unknown)?;
-            return self
-                .consents
-                .forget(app, capability)
-                .then(|| Started::Done(ActionOutput::default()))
-                .ok_or_else(unknown);
-        }
-        let controls = self.controls();
-        let parts: [&dyn Published; 4] = [&self.captures, &controls, &self.grants, &self.shortcuts];
-        self.inhibitions
-            .invoke(&published, resource, action, arguments)
-            .or_else(|| {
-                parts
-                    .iter()
-                    .find_map(|part| part.invoke(&published, resource, action, arguments))
             })
     }
 
