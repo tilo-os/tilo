@@ -769,6 +769,9 @@ def main() -> int:
               "TILO_NESTED_SESSION_BUILD)", file=sys.stderr)
         return 2
     only = args.only.split(",") if args.only else CHECKS
+    # Every check but dev looks at the four apps' windows and instances, which open starts.
+    if any(name in only for name in ("canvas", "repl", "ask", "restart")) and "open" not in only:
+        only = ["open", *only]
     summary: dict[str, Any] = {"build": str(build), "checks": {}, "failed": []}
     model = TestOnlyFixedReplyModel()
     session: Session | None = None
