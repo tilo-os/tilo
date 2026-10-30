@@ -493,6 +493,14 @@ impl AppCheck<'_> {
                 self.dir.display(),
             ));
         }
+        let broken = staged.broken_components();
+        if !broken.is_empty() {
+            return Err(format!(
+                "{}: {label}: components of the view did not build:\n  {}",
+                self.dir.display(),
+                broken.join("\n  ")
+            ));
+        }
         self.ran = self.ran.saturating_add(1);
         let inspection = staged.harness().inspection();
         if self.dump == Some(viewport) {

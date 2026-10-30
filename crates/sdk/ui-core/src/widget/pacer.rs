@@ -25,6 +25,7 @@ use crate::LocalState;
 use crate::time::{Duration, Instant};
 
 /// Steps its `step` once a beat while `running` is `true`.
+#[crate::component::not_a_component(framework, "frame pacing around a view")]
 pub struct Pacer {
     content: Element,
     running: LocalState<bool>,

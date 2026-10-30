@@ -21,6 +21,10 @@ use winit::event::WindowEvent;
     clippy::struct_excessive_bools,
     reason = "four independent, orthogonal builder toggles; not encoded state"
 )]
+#[crate::component::not_a_component(
+    layout,
+    "the language's `stack` and `row`, with their fill and padding"
+)]
 pub struct Container {
     child: Option<Box<dyn Widget>>,
     /// A child shown in place of another since the host last read it

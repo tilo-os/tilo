@@ -18,6 +18,7 @@ fn can_merge_damage(a: vello::kurbo::Rect, b: vello::kurbo::Rect) -> bool {
         && a.union(b).width() * a.union(b).height() <= covered_area * MAX_DAMAGE_MERGE_OVERDRAW
 }
 
+#[crate::component::not_a_component(layout, "the language's `row`")]
 pub struct Row {
     flow: Flow,
     /// When set, the row keeps all children on one line (no flex wrap) —

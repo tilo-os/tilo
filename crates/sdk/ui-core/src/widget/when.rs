@@ -16,6 +16,10 @@ use crate::theme::Theme;
 
 /// A placeholder that takes no room: no layout box, no gap, no paint.
 #[derive(Default)]
+#[crate::component::not_a_component(
+    framework,
+    "content shown on a condition; the language writes `if`"
+)]
 pub struct Absent {
     rect: Rect,
 }
@@ -80,6 +84,10 @@ pub fn optional(child: Option<Element>) -> Element {
 /// every synchronization, so state that changes it (a `LocalState`, the
 /// document) shows or hides the child on the next frame; the child keeps
 /// its own state while hidden.
+#[crate::component::not_a_component(
+    framework,
+    "content shown on a condition; the language writes `if`"
+)]
 pub struct When {
     child: Element,
     absent: Absent,

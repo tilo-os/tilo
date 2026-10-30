@@ -246,6 +246,7 @@ impl Acknowledger {
 
 /// The layer that shows an [`Acknowledger`]'s words over a surface: lay it
 /// out over the whole surface, draw it above everything else.
+#[crate::component::not_a_component(framework, "the framework's acknowledgement of an input")]
 pub struct AcknowledgementLayer {
     acknowledger: Acknowledger,
     rect: Rect,

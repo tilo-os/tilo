@@ -403,6 +403,10 @@ pub struct PromptLayout {
     clippy::struct_excessive_bools,
     reason = "independent focus, touch and echo flags, not a state machine"
 )]
+#[crate::component::not_a_component(
+    system,
+    "only the system asks for a secret; an app must not be able to forge the prompt"
+)]
 pub struct SecretPrompt {
     kind: SecretKind,
     presentation: Presentation,

@@ -304,6 +304,10 @@ impl TabMark {
     clippy::struct_excessive_bools,
     reason = "independent interaction and animation flags are not one state machine"
 )]
+#[crate::component::not_a_component(
+    shell,
+    "tabs and window groups are the system's (AGENTS.md principle 3)"
+)]
 pub struct TabBar {
     group_id_tag: String,
     tabs: Vec<TabDescriptor>,
