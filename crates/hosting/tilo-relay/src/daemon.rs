@@ -707,6 +707,13 @@ impl Relay {
     /// # Errors
     ///
     /// The delegation is not this relay's user's, or names another device.
+    #[cfg_attr(
+        not(feature = "agents"),
+        expect(
+            clippy::unused_async,
+            reason = "a build with agents awaits the governed rooms' rosters"
+        )
+    )]
     pub async fn register_agent(
         &self,
         cert: &tilo_user_identity::DeviceCert,
