@@ -836,7 +836,20 @@ impl FleetStamps {
             .flatten()
             .all(FileStamp::settled)
     }
+
+    /// When the last of its files settles ([`FileStamp::settles_at`]).
+    pub(crate) fn settles_at(self) -> Option<SystemTime> {
+        [self.fleet, self.home_peers]
+            .into_iter()
+            .flatten()
+            .map(FileStamp::settles_at)
+            .max()
+    }
 }
+
+/// How old a file's modification time must be before a later write, which
+/// stamps the current time, can no longer share it.
+pub(crate) const SETTLE: Duration = Duration::from_secs(2);
 
 /// Identity of one file's contents, as far as a writer can change it: a
 /// rename gives a new inode, an in-place rewrite a new length or time, and a
@@ -871,7 +884,12 @@ impl FileStamp {
     pub(crate) fn settled(self) -> bool {
         SystemTime::now()
             .duration_since(self.modified)
-            .is_ok_and(|age| age >= Duration::from_secs(2))
+            .is_ok_and(|age| age >= SETTLE)
+    }
+
+    /// When it is [`Self::settled`].
+    pub(crate) fn settles_at(self) -> SystemTime {
+        self.modified.checked_add(SETTLE).unwrap_or(self.modified)
     }
 }
 

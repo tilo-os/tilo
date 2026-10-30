@@ -41,16 +41,19 @@ pub(super) fn task_still_goes(
     task: &TaskDelegation,
 ) -> Result<(), String> {
     let encoded = task.encode();
-    if runs.iter().any(|run| {
-        run.active
-            && run.agent == task.agent_id
-            && run.issue == task.work_group
-            && run.delegation.as_deref() == Some(encoded.as_slice())
-    }) {
-        Ok(())
-    } else {
-        Err("the task this agent was made for has ended".into())
+    let Some(run) = runs.iter().find(|run| run.issue == task.work_group) else {
+        return Err("the task this agent was made for has ended (its issue holds no run)".into());
+    };
+    if run.agent != task.agent_id || run.delegation() != Ok(Some(encoded.as_slice())) {
+        return Err(
+            "the task this agent was made for has ended (its issue's run is another agent's)"
+                .into(),
+        );
     }
+    if !run.active {
+        return Err("the task this agent was made for has ended (its run ended)".into());
+    }
+    Ok(())
 }
 
 /// Admit a task agent's join: the asking device's certificate is admitted

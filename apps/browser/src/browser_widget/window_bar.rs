@@ -247,7 +247,7 @@ impl BrowserWidget {
             .on(self.show_library),
         ]);
         if let Some(status) = self.capabilities.toolbar_status() {
-            let downloads = BarCommand::Unit("browser.downloads", "show-downloads");
+            let downloads = BarCommand::Unit("browser.library", "show-downloads");
             actions.push(bar.entry("download", status, downloads));
         }
         actions.push(
@@ -690,7 +690,11 @@ mod more_menu_tests {
                 "browser.session",
                 "toggle-pause",
             ),
-            ("browser-menu-settings", "browser.settings", "show-settings"),
+            (
+                "browser-menu-settings",
+                <crate::resource::Browser as ui::tilo_resource::Resource>::KIND,
+                "show-settings",
+            ),
             (
                 "browser-menu-manage-extensions",
                 "browser.extensions",

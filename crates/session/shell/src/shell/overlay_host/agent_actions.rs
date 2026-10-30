@@ -264,6 +264,10 @@ impl Freshness {
     }
 }
 
+/// The last ask ticket handed out: unique across every owner's asks, so a
+/// ticket names one ask.
+static NEXT_ASK_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[derive(Default)]
 pub(super) struct AgentActions {
     owner: Option<ComposerOwner>,
@@ -280,6 +284,15 @@ pub(super) struct AgentActions {
     started: Option<Instant>,
     /// Task agents whose task now exists, to launch in their room.
     launches: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)>,
+    /// The chats to open, by room and address: the shell's desktop opens
+    /// each in a window of its own ([`Self::take_chats`]).
+    chats: Vec<(String, String)>,
+    /// Task agents whose ask Tasks took, by their issue's address, until the
+    /// room's tracker as this device holds it shows their run going: their
+    /// join is admitted against that tracker, so launched before it shows
+    /// the run they would be refused as made for a task that ended. The
+    /// tracker's change wakes the pump that moves them on.
+    awaiting: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)>,
     /// Requests that could not become a task, and why.
     refused: Vec<(ComposerRequest, String)>,
     /// How asks handed out ended, until the host takes them.
@@ -287,30 +300,37 @@ pub(super) struct AgentActions {
 }
 
 impl AgentActions {
-    pub(super) fn open(&mut self, source: ActionSessionSource, owner: ComposerOwner) -> bool {
+    ///
+    /// # Errors
+    /// Why it could not: requests of another owner still going, this
+    /// device's identity in the room not settled or changed, or the
+    /// session refused.
+    pub(super) fn open(
+        &mut self,
+        source: ActionSessionSource,
+        owner: ComposerOwner,
+    ) -> Result<(), String> {
         // Opening chrome must not retire a still-observable request or a
         // saved message. It is never a cancellation or a retry.
         if self.owner.as_ref() == Some(&owner) && self.session.is_some() {
-            return true;
+            return Ok(());
         }
         if !self.calls.is_empty() || !self.sent.is_empty() {
-            return false;
+            return Err("requests asked before are still going".into());
         }
-        let Some(revision) = source.identity_revision(&owner.room) else {
-            return false;
-        };
+        let revision = source
+            .identity_revision(&owner.room)
+            .ok_or("this device's identity in the room is not settled yet")?;
         if revision != owner.identity_revision {
-            return false;
+            return Err("this device's identity in the room changed".into());
         }
-        let Ok(session) = source.open(&owner.room, Some(&owner.person)) else {
-            return false;
-        };
+        let session = source.open(&owner.room, Some(&owner.person))?;
         self.owner = Some(owner);
         self.source = Some(source);
         self.session = Some(session);
         self.followed = None;
         self.fresh.mark();
-        true
+        Ok(())
     }
 
     fn begin(&mut self, operation: Operation) {
@@ -392,6 +412,37 @@ impl AgentActions {
         });
     }
 
+    /// Who the person is in the owner's room changed since the session
+    /// opened: every call is refused and the session ends. Whether there
+    /// was one to end; `None` while the identity stands.
+    fn end_on_identity_change(
+        &mut self,
+        owner: &ComposerOwner,
+        composer: &mut AgentQuickComposer,
+    ) -> Option<bool> {
+        if self
+            .source
+            .as_ref()
+            .and_then(|source| source.identity_revision(&owner.room))
+            == Some(owner.identity_revision)
+        {
+            return None;
+        }
+        let changed = self.session.is_some();
+        for call in std::mem::take(&mut self.calls) {
+            self.refuse(
+                &call.operation,
+                composer,
+                &Refusal::unknown("who you are in this workspace changed"),
+            );
+        }
+        self.followed = None;
+        self.session = None;
+        self.sent.clear();
+        composer.project(owner, None);
+        Some(changed)
+    }
+
     pub(super) fn pump(
         &mut self,
         composer: &mut AgentQuickComposer,
@@ -401,24 +452,7 @@ impl AgentActions {
             return false;
         };
         let active = composer.owner() == Some(&owner) && composer.is_open();
-        if self
-            .source
-            .as_ref()
-            .and_then(|source| source.identity_revision(&owner.room))
-            != Some(owner.identity_revision)
-        {
-            let changed = self.session.is_some();
-            for call in std::mem::take(&mut self.calls) {
-                self.refuse(
-                    &call.operation,
-                    composer,
-                    &Refusal::unknown("who you are in this workspace changed"),
-                );
-            }
-            self.followed = None;
-            self.session = None;
-            self.sent.clear();
-            composer.project(&owner, None);
+        if let Some(changed) = self.end_on_identity_change(&owner, composer) {
             return changed && active;
         }
         let pending = std::mem::take(&mut self.calls);
@@ -460,6 +494,7 @@ impl AgentActions {
                 changed = true;
             }
         }
+        changed |= self.launch_shown_runs(&owner.room, runs);
         if !active {
             self.fresh.mark();
             return changed;
@@ -493,9 +528,9 @@ impl AgentActions {
             changed = true;
         }
         if let Some(issue) = composer.take_open_chat()
-            && let Some(operation) = chat_operation(&issue)
+            && let Some(chat) = chat_uri(&issue)
         {
-            self.begin(operation);
+            self.chats.push((owner.room.clone(), chat));
             changed = true;
         }
         if let Some(choice) = composer.take_answer_use() {
@@ -566,12 +601,15 @@ impl AgentActions {
         show: bool,
         quick: bool,
     ) -> Option<AskTicket> {
-        if !self.open(source, owner.clone()) {
+        if let Err(error) = self.open(source, owner.clone()) {
+            tracing::warn!(%error, "the agent's session could not be opened for the ask");
             return None;
         }
-        // Unique across every owner's asks, so a ticket names one ask.
-        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let issued = AskTicket(LAST.fetch_add(1, Ordering::Relaxed) + 1);
+        let issued = AskTicket(
+            NEXT_ASK_TICKET
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1),
+        );
         let mut operation = match queue_operation(owner, None, (title, body), about, None, quick) {
             Ok(operation) => operation,
             Err(error) => {
@@ -587,6 +625,39 @@ impl AgentActions {
         // call ends asked, refused or out of time: an outcome either way.
         self.begin(operation);
         Some(issued)
+    }
+
+    /// Move the task agents whose run the tracker now shows going to
+    /// [`Self::launches`]; one whose run shows ended is not launched.
+    /// Whether any moved.
+    fn launch_shown_runs(&mut self, room: &str, runs: Option<&dyn RunSource>) -> bool {
+        let Some(source) = runs.filter(|_| !self.awaiting.is_empty()) else {
+            return false;
+        };
+        // Armed before the read, so a change after it wakes the next pump;
+        // still stale for `read_runs`, which reads its own way.
+        self.fresh.take();
+        self.fresh.mark();
+        let shown = source.runs(room);
+        let mut moved = false;
+        for (issue, minted) in std::mem::take(&mut self.awaiting) {
+            let agent = format!("agent:{}", minted.agent_id);
+            match shown
+                .iter()
+                .find(|run| run.issue == issue && run.agent == agent)
+            {
+                Some(run) if run.phase.active() => {
+                    self.launches.push((room.to_owned(), minted));
+                    moved = true;
+                }
+                Some(run) => {
+                    tracing::warn!(%issue, phase = ?run.phase, "the task ended before its agent was launched");
+                    moved = true;
+                }
+                None => self.awaiting.push((issue, minted)),
+            }
+        }
+        moved
     }
 
     /// How the asks handed out by [`Self::open_and_ask`] ended since the
@@ -710,12 +781,12 @@ impl AgentActions {
             } => {
                 let asked = asked_issue(operation);
                 // The task exists and its run carries the delegation: its
-                // agent can join now, under its own key.
+                // agent joins under its own key once the tracker shows it.
                 if let Some(task_agent) = task_agent
-                    && let Some(owner) = &self.owner
+                    && let Some(issue) = &asked
                 {
-                    self.launches
-                        .push((owner.room.clone(), Arc::clone(task_agent)));
+                    self.awaiting.push((issue.clone(), Arc::clone(task_agent)));
+                    self.fresh.mark();
                 }
                 if let Some(ticket) = ticket {
                     let outcome = asked.clone().map_or_else(
@@ -727,8 +798,8 @@ impl AgentActions {
                 match (opens, &asked) {
                     (Opens::Page, Some(issue)) => self.begin(show_operation(issue)),
                     (Opens::Chat, Some(issue)) => {
-                        if let Some(chat) = chat_operation(issue) {
-                            self.begin(chat);
+                        if let (Some(chat), Some(owner)) = (chat_uri(issue), &self.owner) {
+                            self.chats.push((owner.room.clone(), chat));
                         }
                     }
                     _ => {}
@@ -866,6 +937,11 @@ impl AgentActions {
 
     pub(super) fn deadline(&self) -> Option<Instant> {
         self.calls.iter().map(|call| call.deadline).min()
+    }
+
+    /// The chats asked to open since the last take, by room and address.
+    pub(super) fn take_chats(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.chats)
     }
 
     /// The task agents to launch now that their tasks exist, by room.
@@ -1153,29 +1229,12 @@ fn resolve_operation(
     }
 }
 
-/// Open `issue` (its address) as a chat: the desktop's `open` of the chat's
-/// address (`tilo-tasks:chat/<issue>`, which Tasks claims), in a window of its
-/// own. One window opens whether or not Tasks was running, and an agent opens
-/// a chat the same way.
-fn chat_operation(issue: &str) -> Option<Operation> {
-    use tilo_desktop_model::commands::{RESOURCE, layout};
+/// The address `issue` (its address) opens at as a chat
+/// (`tilo-tasks:chat/<issue>`, which Tasks claims): the desktop opens it in a
+/// window of its own, one whether or not Tasks was running.
+fn chat_uri(issue: &str) -> Option<String> {
     let id = issue.strip_prefix(tilo_action_broker::services::TRACKER_ISSUE_PREFIX)?;
-    let uri = tasks::chat_uri(&tilo_resource::Id::from_raw(id));
-    Some(Operation {
-        resource: RESOURCE.into(),
-        action: layout::OPEN.into(),
-        arguments: Map::from_iter([
-            ("target".into(), uri.into()),
-            ("place".into(), "new-window".into()),
-        ]),
-        purpose: Purpose::Show,
-        app: tilo_desktop_model::commands::APP_ID.into(),
-        target: Some(tilo_actions::remote::RemoteActionTarget {
-            provider: layout::PROVIDER.into(),
-            address: tilo_actions::ActionAddress::new(RESOURCE, layout::OPEN),
-        }),
-        confirmation: None,
-    })
+    Some(tasks::chat_uri(&tilo_resource::Id::from_raw(id)))
 }
 
 /// The issue an `ask-agent` operation makes, by its address.
@@ -2101,13 +2160,15 @@ mod tests {
     fn composer_in(room: &Arc<Room>) -> (AgentActions, AgentQuickComposer, ComposerOwner) {
         let owner = owner(&room.id);
         let mut actions = AgentActions::default();
-        assert!(actions.open(
-            ActionSessionSource::with_mock(
-                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
-                room.clone(),
-            ),
-            owner.clone(),
-        ));
+        actions
+            .open(
+                ActionSessionSource::with_mock(
+                    crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+                    room.clone(),
+                ),
+                owner.clone(),
+            )
+            .expect("opened");
         let mut composer = AgentQuickComposer::default();
         composer.open(
             owner.clone(),
@@ -2532,10 +2593,10 @@ mod tests {
         }
     }
 
-    /// "Open as chat" asks what the person typed as a task for a chat and
-    /// opens its issue's chat through the desktop's `open` of the chat's
-    /// address, in a window of its own, once asked; with a run followed, it
-    /// opens that run's issue the same way and asks nothing.
+    /// "Open as chat" asks what the person typed as a task for a chat and,
+    /// once asked, hands the shell's desktop the chat's address to open in a
+    /// window of its own; with a run followed, it opens that run's issue the
+    /// same way and asks nothing.
     #[test]
     fn open_as_chat_asks_the_typed_request_as_a_chat_and_opens_its_issue_as_one() {
         let room = Room::new(None);
@@ -2556,16 +2617,17 @@ mod tests {
         assert_eq!(asked["title"], "Review the applications in my inbox");
         assert_eq!(asked.get("chat").and_then(Value::as_bool), Some(true));
         let id = asked["id"].as_str().unwrap().to_owned();
-        let open = tilo_desktop_model::commands::layout::OPEN;
-        let desktop_open = format!("{}#{open}", tilo_desktop_model::commands::RESOURCE);
         let chat = tasks::chat_uri(&tilo_resource::Id::from_raw(&id));
         assert_eq!(
             room.invoked(),
-            [format!("{TRACKER}#ask-agent"), desktop_open.clone()],
-            "asked as work, never as a quick answer, then opened as a chat"
+            [format!("{TRACKER}#ask-agent")],
+            "asked as work, never as a quick answer"
         );
-        assert_eq!(room.arguments(open)["target"], chat.as_str());
-        assert_eq!(room.arguments(open)["place"], "new-window");
+        assert_eq!(
+            actions.take_chats(),
+            [(room.id.clone(), chat.clone())],
+            "then opened as a chat, by the shell's desktop"
+        );
         assert!(!composer.is_open(), "the conversation goes on in the chat");
 
         // The run it follows opens as a chat as it is.
@@ -2582,8 +2644,8 @@ mod tests {
             &ui::a11y::Action::Activate,
         );
         settle(&mut actions, &mut composer, &tracker);
-        assert_eq!(room.invoked(), [desktop_open]);
-        assert_eq!(room.arguments(open)["target"], chat.as_str());
+        assert!(room.invoked().is_empty(), "nothing is asked");
+        assert_eq!(actions.take_chats(), [(room.id.clone(), chat)]);
     }
 
     #[test]

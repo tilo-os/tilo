@@ -391,7 +391,7 @@ fn failed_browser_import_is_visible_in_empty_personal_library_and_bound_retry_fi
         );
         for (resource, action) in [
             ("browser.bookmarks", "show-bookmarks"),
-            ("browser.history", "show-history"),
+            ("browser.library", "show-history"),
         ] {
             app.call_on(resource, action, serde_json::json!({}))?;
             app.settle();

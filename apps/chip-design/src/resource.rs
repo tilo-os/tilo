@@ -78,7 +78,8 @@ pub struct Project {
     label = "Chip Design",
     children = Project::places,
     search = Project::search,
-    read_content = Project::read_content
+    read_content = Project::read_content,
+    document_child = Project::document_child
 )]
 impl Project {
     /// Import analytical report.
@@ -435,6 +436,24 @@ impl Project {
             .ok_or("invalid report resource")?;
         let report = state.reports.get(id).ok_or("report no longer exists")?;
         serde_json::to_value(report).map_err(|error| error.to_string())
+    }
+}
+
+impl Project {
+    /// Whether `id` is a place [`read_content`](Self::read_content)
+    /// answers: the operator graph, a report, a receipt or an evidence item.
+    /// Its read is what discloses it, so removing a report or a receipt is
+    /// offered to whoever may read it, an agent too, where the place's
+    /// Inspect view is this window's own.
+    fn document_child(_: &Self, id: &str) -> bool {
+        id.strip_prefix(<Self as tilo_resource::Resource>::KIND)
+            .and_then(|rest| rest.strip_prefix("/derived/"))
+            .is_some_and(|place| {
+                place == GRAPH_PLACE
+                    || ["report:", "verification:", "flow:"]
+                        .iter()
+                        .any(|kind| place.starts_with(kind))
+            })
     }
 }
 

@@ -106,8 +106,18 @@ pub enum ChatEffect {
     /// Read message
     ///
     /// The message as a value: who wrote it, whether that is an agent, its
-    /// whole text and the agent's record of its work.
-    #[effect(view, row, returns, item = messages, audience = "agents")]
+    /// whole text and the agent's record of its work. A message is the
+    /// room's: this read is what discloses its row, under the reader's own
+    /// policy, where the row's views (show the reasoning, reveal it) are the
+    /// window's own.
+    #[effect(
+        view,
+        row,
+        returns,
+        item = messages,
+        audience = "agents",
+        tag = ui::tilo_actions::DOCUMENT_READ_TAG
+    )]
     ReadMessage { message: String },
     /// Read room
     ///
@@ -1021,9 +1031,9 @@ impl ChatApp {
                         &[("channel", channel.name.clone().into())],
                     ),
                 )
-                .effect(&ChatEffect::OpenChannel {
-                    channel: channel_id(),
-                })
+                // Opening the conversation is the channel's: a view here
+                // would be the call row's disclosure, a private one that
+                // keeps joining and every call control from an agent.
                 .effect(&ChatEffect::JoinCall {
                     channel: channel_id(),
                 })

@@ -492,6 +492,12 @@ impl InProcessApps {
                 };
                 (HostContext::prepare(definition, inputs(), &target)?, target)
             }
+            // The app's package primary, the record a launched window of it
+            // opens, is made as that record, under its own custody key.
+            Err(RecordOpenError::MissingRecord) if checkout.id.is_package_primary() => (
+                HostContext::prepare(definition, inputs(), &LaunchTarget::PrimaryNew)?,
+                LaunchTarget::PrimaryNew,
+            ),
             Err(RecordOpenError::MissingRecord) => (
                 HostContext::prepare_new_record(definition, inputs(), checkout.id)?,
                 LaunchTarget::New,

@@ -466,6 +466,33 @@ for tapp in "${install_tapps[@]}"; do
     "$bin/tilo-install" install "$tapp" --allow-self-signed --force >/dev/null
 done
 
+# The Browser's Chromium engine, signed with the session's key as the engine
+# runtime its manifest requires (ui::webview::chromium::runtime's
+# RUNTIME_VERSION), when the build staged one (nested-session-build.sh).
+# After the apps: each install collects the runtimes no installed package
+# names, and the engine is named only once Browser is installed.
+engine_tree=$build_out/chromium-engine
+if [[ -x $engine_tree/tilo-chromium-host ]]; then
+    engine_version=$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\(.*\)";$/\1/p' \
+        "$repo_root/crates/sdk/ui-core/src/webview/chromium/runtime.rs")
+    [[ -n $engine_version ]] || die "the Chromium runtime names no RUNTIME_VERSION"
+    engine_key=$( { printf '%s\n' "$engine_version" "$pubkey"; find "$engine_tree" -type f -print0 \
+        | sort -z | xargs -0 sha256sum; } | sha256sum | cut -c1-64)
+    if [[ ! -f $runtimes/.engine-key || $(<"$runtimes/.engine-key") != "$engine_key" \
+          || ! -f $runtimes/$engine_version/bundle.toml ]]; then
+        say "signing the Chromium engine runtime $engine_version"
+        rm -rf "$runtimes/$engine_version" "$state/work/engine"
+        mkdir -p "$state/work/engine"
+        cp -rp "$engine_tree" "$state/work/engine/chromium"
+        "$bin/tilo-runtime-bundle" build --version "$engine_version" --arch "$(uname -m)" \
+            --from / --include "$state/work/engine/chromium" \
+            --identity "$identity" --out "$runtimes/$engine_version" >/dev/null \
+            || die "the Chromium engine runtime did not sign"
+        rm -rf "$state/work/engine"
+        printf '%s\n' "$engine_key" > "$runtimes/.engine-key"
+    fi
+fi
+
 # --- 7b. Model provider ----------------------------------------------------------
 # Written as the session's person, in the session's configuration and secret
 # store, by the gateway's own provider code (`provision-provider`): what

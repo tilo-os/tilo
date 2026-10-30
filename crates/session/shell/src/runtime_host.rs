@@ -81,28 +81,7 @@ impl Session {
         }
         stage("locking the profile");
         let lock = tilo_runtime::profile::lock(root)?;
-        stage("provisioning the collaboration identity");
-        let identity_dir = runtime_identity::identity_dir_from_env()?;
-        let identity_paths = crate::firstboot::collaboration_identity_paths();
-        if admission_owner.is_some() {
-            stage("verifying the existing collaboration identity");
-            crate::firstboot::verify_collaboration_identity(
-                &identity_dir,
-                &identity_paths,
-                tilo_clock::unix_now_ns(),
-            )?;
-            if !tilo_identity_host::provisioning::active_identity_owns_device(
-                &identity_dir,
-                &identity_paths,
-            )? {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "native admission identity does not own this device",
-                ));
-            }
-        } else {
-            crate::firstboot::ensure_collaboration_identity(&identity_dir, &identity_paths)?;
-        }
+        provision_identity(stage, admission_owner.is_some())?;
         stage("loading the workspace");
         let path = root.join("workspace.json");
         let mut tree = match persist::load_tree_from(&path) {
@@ -419,6 +398,35 @@ impl PeerSync {
                 })?,
         );
         Ok(())
+    }
+}
+
+/// Provision this device's collaboration identity, naming each step to `stage`. Native admission
+/// (`admitting`) creates nothing: the existing identity must verify and own this device.
+fn provision_identity(stage: &mut dyn FnMut(&str), admitting: bool) -> io::Result<()> {
+    stage("provisioning the collaboration identity");
+    let identity_dir = runtime_identity::identity_dir_from_env()?;
+    let identity_paths = crate::firstboot::collaboration_identity_paths();
+    if !admitting {
+        crate::firstboot::ensure_collaboration_identity(&identity_dir, &identity_paths)?;
+        return Ok(());
+    }
+    stage("verifying the existing collaboration identity");
+    crate::firstboot::verify_collaboration_identity(
+        &identity_dir,
+        &identity_paths,
+        tilo_clock::unix_now_ns(),
+    )?;
+    if tilo_identity_host::provisioning::active_identity_owns_device(
+        &identity_dir,
+        &identity_paths,
+    )? {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "native admission identity does not own this device",
+        ))
     }
 }
 

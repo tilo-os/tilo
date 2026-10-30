@@ -430,10 +430,25 @@ fn agents_reach_every_item_verb_and_the_calendars() {
         "prepare-in-mail",
         "set-color",
         "calendar.collection",
+        "read-calendar",
         "set-visibility",
     ] {
         assert!(surface.contains(needle), "missing {needle} in {surface}");
     }
+    // A capture runs no row's effect; a drive of the scenario does.
+    let mut driven = TestApp::<CalendarShell>::drive("month").expect("drive");
+    let local = driven
+        .effect_on(
+            &crate::actions::calendar_resource_id(crate::actions::LOCAL_CALENDAR_ID),
+            &CalendarEffect::ReadCalendar {
+                id: crate::actions::LOCAL_CALENDAR_ID.into(),
+            },
+        )
+        .expect("read the calendar on this device")
+        .value
+        .expect("a calendar's read answers it");
+    assert_eq!(local["visible"], true, "{local:#}");
+    assert!(local["events"].as_u64().is_some(), "{local:#}");
     assert!(
         <CalendarEffect as ui::tilo_resource::Effect>::specs()
             .iter()

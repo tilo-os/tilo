@@ -210,8 +210,11 @@ fn an_apps_row_offers_open_and_its_way_out_to_agents() {
             .map(|action| action.id.clone())
             .collect::<Vec<_>>()
     };
-    assert_eq!(action_ids("Chess"), ["open", "uninstall"]);
-    assert_eq!(action_ids("Text Editor"), ["open", "remove-from-apps"]);
+    assert_eq!(action_ids("Chess"), ["read", "open", "uninstall"]);
+    assert_eq!(
+        action_ids("Text Editor"),
+        ["read", "open", "remove-from-apps"]
+    );
 }
 
 /// The list shows facts the applications model has: a size where it is

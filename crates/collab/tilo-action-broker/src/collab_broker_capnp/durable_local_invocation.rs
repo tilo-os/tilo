@@ -457,7 +457,9 @@ impl CapnpBrokerState {
         let current = caller.current(self)?;
         // Ordinary durable observations may reconcile effects too. Only the
         // task-owned route can exercise a native agent's action authority.
-        if current.broker_actor().is_agent && self.task_admitted_room(&caller.route.cluster_id) {
+        if current.broker_actor().is_agent
+            && self.confines_agents_to_tasks(&caller.route.cluster_id)
+        {
             return Err("native task agent requires authenticated task action admission".into());
         }
         if host != self.invocation_host()? {

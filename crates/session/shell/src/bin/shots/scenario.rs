@@ -2031,15 +2031,6 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                 st.quick_settings.wifi_password = Some(p);
                 st.bump();
             });
-            match preset {
-                "typed" => driver
-                    .host_mut()
-                    .seed_wifi_password_for_tests("hunter2pass", false),
-                "rejected" => driver
-                    .host_mut()
-                    .seed_wifi_password_for_tests("wrongpass", true),
-                _ => {}
-            }
         }
         Action::SelectGroup(idx) => {
             let idx = *idx;

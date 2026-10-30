@@ -113,7 +113,12 @@ pub enum BrowserEffect {
     #[effect(row, job, cancellable, returns, idempotent)]
     Reload,
     /// Stop loading
-    #[effect(view, row)]
+    ///
+    /// The page stops fetching what it was loading: that acts on the page,
+    /// not only on what its caller sees, so it is no view. A view would be
+    /// the page row's disclosure in the action directory, a private one an
+    /// agent is never shown, and the page and all its actions with it.
+    #[effect(row, idempotent)]
     Stop,
     /// Open address
     ///
@@ -250,7 +255,11 @@ pub enum BrowserEffect {
         id: String,
     },
     /// Show browser settings
-    #[effect(view, row)]
+    ///
+    /// The browser's own view, not the settings row's: a view there would
+    /// be the row's disclosure, a private one that keeps clearing site data
+    /// from an agent.
+    #[effect(view)]
     ShowSettings,
     /// Filter library
     #[effect(view, row)]

@@ -5554,8 +5554,11 @@ impl BrowserWidget {
         }
         session.actions.push(pause);
 
+        // The Library's views (show history, downloads) are the Library
+        // row's: a view on these rows would be their disclosure in the
+        // action directory, a private one an agent is never shown, and with
+        // it every action here (clear history, start a download).
         let mut history = ResourceSpec::new("browser.history", "browser.history", "History");
-        history.actions.push(E::ShowHistory.bound());
         let clear = E::ClearHistory.bound();
         history.actions.push(if self.history.is_empty() {
             clear.unavailable("already_empty", "Browsing history is already empty")
@@ -5625,7 +5628,6 @@ impl BrowserWidget {
 
         let mut downloads =
             ResourceSpec::new("browser.downloads", "browser.downloads", "Downloads");
-        downloads.actions.push(E::ShowDownloads.bound());
         downloads
             .actions
             .push(E::StartDownload { url: String::new() }.bound_asking(&["url"]));
@@ -5637,12 +5639,14 @@ impl BrowserWidget {
             .take(MATERIALIZED_LIMIT)
         {
             let id = entry.id.clone();
+            // No Show view on the row: a search hit shows the download
+            // through its own resource, and a view here would be the row's
+            // disclosure, a private one that keeps its actions from agents.
             let mut child = ResourceSpec::new(
                 entry.resource_id(),
                 "browser.download",
                 entry.display_name(),
-            )
-            .with_action(E::ShowDownload { id: id.clone() }.bound());
+            );
             match entry.status {
                 DownloadStatus::AwaitingDestination => {
                     // The page is offering the file: keep it or discard it.
@@ -5706,7 +5710,6 @@ impl BrowserWidget {
             });
 
         let mut settings = ResourceSpec::new("browser.settings", "browser.settings", "Settings");
-        settings.actions.push(E::ShowSettings.bound());
         settings.actions.push(E::RequestSiteDataClear.bound());
 
         let mut browser = ResourceSpec::new(

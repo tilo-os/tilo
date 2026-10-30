@@ -376,6 +376,28 @@ impl Mail {
     /// its folders, the held messages newest first and the draft; with a
     /// folder, the messages in it; with a message, the whole message and
     /// its conversation, oldest first.
+    /// Whether the published place `id` is part of what
+    /// [`Self::read_held`] answers: a folder, a draft or a message of the
+    /// mailbox. Each is document state, disclosed by its document read.
+    pub(crate) fn document_projection_child(&self, id: &str) -> bool {
+        let last = id.rsplit('/').next().unwrap_or(id);
+        if folder_named(last).is_some() {
+            return true;
+        }
+        if last == crate::resource::COMPOSER_DRAFT {
+            return true;
+        }
+        if let Some(draft) = last.strip_prefix("draft:") {
+            return self
+                .drafts_listed()
+                .iter()
+                .any(|(listed, _)| listed == draft);
+        }
+        message_named(last)
+            .and_then(|message| last.starts_with("message:").then_some(message))
+            .is_some_and(|message| self.message(message).is_some())
+    }
+
     pub(crate) fn read_held(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let item = item.map_or("", |item| item.as_str().trim());
         if item.is_empty() {
@@ -404,9 +426,22 @@ impl Mail {
         }) {
             return Ok(serde_json::json!({ "draft": draft_summary(&id, draft) }));
         }
-        let (id, held) = self.held_message(item).ok_or_else(|| {
-            format!("no message `{item}` is held here; read the mailbox for the messages it holds")
-        })?;
+        let Some((id, held)) = self.held_message(item) else {
+            // A message whose body is on its server: what the mailbox knows
+            // of it (its folder, label and flags) is the document's all the
+            // same; the body is read from the server (`read-message`).
+            let state = message_named(item)
+                .and_then(|id| self.message(id).map(|state| (id, state)))
+                .ok_or_else(|| {
+                    format!(
+                        "no message `{item}` is in this mailbox; read the mailbox for the \
+                         messages it holds"
+                    )
+                })?;
+            return Ok(serde_json::json!({
+                "message": { "id": state.0, "state": state.1.to_json() },
+            }));
+        };
         let mut conversation: Vec<_> = self
             .held_newest()
             .into_iter()

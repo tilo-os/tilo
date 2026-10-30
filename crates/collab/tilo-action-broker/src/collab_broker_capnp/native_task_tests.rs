@@ -222,7 +222,7 @@ impl TrackerRuns for Native {
         self.owner.with_current(room(), |view| {
             view.peer().workspace().check_admitted_agent(
                 &run.agent,
-                run.delegation.as_deref(),
+                run.delegation()?,
                 std::time::SystemTime::now(),
             )
         })
@@ -238,11 +238,9 @@ impl TrackerRuns for Native {
         }
         self.owner.with_current(room(), |view| {
             let now = std::time::SystemTime::now();
-            view.peer().workspace().check_admitted_agent(
-                &run.agent,
-                run.delegation.as_deref(),
-                now,
-            )?;
+            view.peer()
+                .workspace()
+                .check_admitted_agent(&run.agent, run.delegation()?, now)?;
             requirement.check_tracker(view.peer(), requested, run, now)
         })
     }

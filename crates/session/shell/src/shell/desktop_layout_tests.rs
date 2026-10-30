@@ -7,8 +7,8 @@
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::state::{
-    AppKind, RoomId, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-    WorkspaceTree,
+    AppKind, GroupId, RoomId, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId, WorkspaceTree,
 };
 
 use super::{Actor, Place, Target};
@@ -168,12 +168,20 @@ fn a_resource_opens_in_a_held_place_by_id_and_undo_closes_it() {
     .expect("the run is undone");
     assert_eq!(undone.changes, 3, "{undone:?}");
     assert!(undone.kept.is_empty(), "{undone:?}");
-    let state = chrome.borrow();
-    let tree = state.tree();
-    let strips = &tree.desktop.workspaces[0].strips;
-    assert_eq!(strips.len(), 1, "the run's strip went with its windows");
-    assert_eq!(strips[0].window_groups.len(), 1);
-    assert_eq!(strips[0].window_groups[0].id, notes);
+    let strips: Vec<Vec<GroupId>> = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        tree.desktop.workspaces[0]
+            .strips
+            .iter()
+            .map(|strip| strip.window_groups.iter().map(|group| group.id).collect())
+            .collect()
+    };
+    assert_eq!(
+        strips,
+        [vec![notes]],
+        "the run's strip went with its windows"
+    );
 }
 
 #[test]
@@ -213,7 +221,7 @@ fn targets_are_told_apart_by_their_address() {
     let hash = "a".repeat(64);
     assert_eq!(
         Target::parse(&format!("tilo.content:{hash}")),
-        Ok(Target::Content(hash.clone()))
+        Ok(Target::Content(hash))
     );
     assert!(Target::parse("tilo.content:xyz").is_err());
     assert_eq!(

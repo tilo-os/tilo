@@ -99,6 +99,7 @@ fn item_views(field: &str, _item: &Id) -> Vec<ui::tilo_actions::ResourceViewSpec
     item_views = item_views,
     search = crate::search::library_search_entries,
     read_content = PhotoLibrary::content,
+    document_child = PhotoLibrary::reads_child,
     effects = PhotosEffect,
     version = 2,
     migrate = upgrade_library
@@ -377,13 +378,36 @@ impl PhotoLibrary {
                 "photos": self.photos.len(),
                 "albums": self.albums.len(),
             })),
-            Some(id) => self
-                .photos
-                .get(id)
-                .map(LibraryPhoto::to_json)
-                .or_else(|| self.albums.get(id).map(crate::model::Album::to_json))
-                .ok_or_else(|| format!("there is no photograph or album {id}")),
+            Some(id) => {
+                let key = Id::from_raw(item_key(id.as_str()));
+                self.photos
+                    .get(&key)
+                    .map(LibraryPhoto::to_json)
+                    .or_else(|| self.albums.get(&key).map(crate::model::Album::to_json))
+                    .ok_or_else(|| format!("there is no photograph or album {id}"))
+            }
         }
+    }
+
+    /// Whether the published child `id` is one [`Self::content`] answers:
+    /// a photograph or an album of the library. Each is document state,
+    /// disclosed by its document read, where its `view` or `open` would
+    /// move the person's window.
+    fn reads_child(&self, id: &str) -> bool {
+        let Some(rest) = id
+            .strip_prefix(<Self as tilo_resource::Resource>::KIND)
+            .and_then(|rest| rest.strip_prefix('/'))
+        else {
+            return false;
+        };
+        let key = |field: &str| {
+            rest.strip_prefix(field)
+                .and_then(|item| item.strip_prefix('/'))
+                .filter(|item| !item.contains('/'))
+                .map(Id::from_raw)
+        };
+        key("photos").is_some_and(|key| self.photos.get(&key).is_some())
+            || key("albums").is_some_and(|key| self.albums.get(&key).is_some())
     }
 
     /// The places derived from the library: favorites, albums, places,
@@ -411,6 +435,18 @@ pub fn insert(photo: &LibraryPhoto) -> ui::tilo_resource::Edit<PhotoLibrary> {
     PhotoLibrary::paths()
         .photos
         .insert_as(&photo.item(), usize::MAX, photo)
+}
+
+/// The key of the photograph or album `id` names: its published item id
+/// (`photos.library/photos/<key>`) or the key itself.
+fn item_key(id: &str) -> &str {
+    id.strip_prefix(<PhotoLibrary as tilo_resource::Resource>::KIND)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .and_then(|rest| {
+            rest.strip_prefix("photos/")
+                .or_else(|| rest.strip_prefix("albums/"))
+        })
+        .unwrap_or(id)
 }
 
 /// The derived place `id` names among `library`'s, as published.
@@ -552,3 +588,60 @@ impl ResourceApp for PhotosShell {
 mod tests;
 
 ui::reach_tests!(PhotosShell);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<super::PhotosShell>()
+        {
+            panic!("{failures}");
+        }
+    }
+
+    /// People, each person and the analysis are disclosed through reads
+    /// that answer what they hold.
+    #[test]
+    fn people_a_person_and_the_analysis_answer_their_reads() {
+        use crate::actions::PhotosEffect;
+        let mut app =
+            ui::framework::testing::TestApp::<super::PhotosShell>::drive("people").unwrap();
+        let read = |app: &mut ui::framework::testing::TestApp<super::PhotosShell>,
+                    row: &str,
+                    effect: &PhotosEffect| {
+            let output = app
+                .effect_on(row, effect)
+                .unwrap_or_else(|error| panic!("{row}: {error:?}"));
+            output
+                .value
+                .clone()
+                .unwrap_or_else(|| panic!("{row}: a read answers, not {output:?}"))
+        };
+        let people = read(
+            &mut app,
+            &super::derived_resource_id("people"),
+            &PhotosEffect::ReadPeople,
+        );
+        let named = people["people"].as_array().expect("people are listed");
+        assert!(
+            named.iter().any(|person| person["name"] == "Sam"),
+            "{people:#}"
+        );
+        let sam = read(
+            &mut app,
+            &crate::derived::person_resource_id("Sam"),
+            &PhotosEffect::ReadPerson {
+                person: "Sam".into(),
+            },
+        );
+        assert_eq!(sam["name"], "Sam", "{sam:#}");
+        assert!(!sam["photos"].as_array().unwrap().is_empty(), "{sam:#}");
+        let analysis = read(
+            &mut app,
+            &super::derived_resource_id("analysis"),
+            &PhotosEffect::ReadLibraryAnalysis,
+        );
+        assert_eq!(analysis["phase"], "idle", "{analysis:#}");
+    }
+}

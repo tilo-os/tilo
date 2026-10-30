@@ -558,9 +558,16 @@ impl CapnpBrokerState {
         Ok(self.tracker_run_of(run)?.applied_revision())
     }
 
-    /// Whether agents in `room` act only through their runs' admission: a
-    /// room whose tracker the host keeps.
+    /// Whether the room's tracker serves runs here: a task agent may
+    /// subscribe to its runs and its retained surfaces are offered.
     pub(super) fn task_admitted_room(&self, room: &str) -> bool {
         self.tracker_runs(room).is_some()
+    }
+
+    /// Whether agents in `room` act only through their runs' admission
+    /// ([`crate::services::TrackerRuns::confines_agents_to_tasks`]).
+    pub(super) fn confines_agents_to_tasks(&self, room: &str) -> bool {
+        self.tracker_runs(room)
+            .is_some_and(|runs| runs.confines_agents_to_tasks(room))
     }
 }

@@ -235,7 +235,14 @@ impl DirStamp {
     pub(crate) fn settled(self) -> bool {
         std::time::SystemTime::now()
             .duration_since(self.modified)
-            .is_ok_and(|age| age >= std::time::Duration::from_secs(2))
+            .is_ok_and(|age| age >= crate::device_fleet::SETTLE)
+    }
+
+    /// When it is [`Self::settled`].
+    pub(crate) fn settles_at(self) -> std::time::SystemTime {
+        self.modified
+            .checked_add(crate::device_fleet::SETTLE)
+            .unwrap_or(self.modified)
     }
 }
 
