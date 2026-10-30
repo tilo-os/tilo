@@ -269,7 +269,7 @@ pub(crate) fn bind(
             let target = if signed_in {
                 target
             } else {
-                target.as_visitor()
+                target.into_visit()
             };
             Command::Open {
                 target,

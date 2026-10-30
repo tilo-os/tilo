@@ -44,6 +44,12 @@ const ALLOWED: &[(&str, &str)] = &[
         "shell/launcher.rs",
         "selected open cannot borrow a host path or URI",
     ),
+    // A launch context the desktop only builds for one web address: a
+    // caller's broken invariant, refused before anything starts.
+    (
+        "shell/launcher.rs",
+        "a visitor window opens one web address",
+    ),
     (
         "shell/doc_open.rs",
         "this device's identity cannot vouch for the document's read",

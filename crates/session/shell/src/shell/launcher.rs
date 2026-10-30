@@ -12,6 +12,20 @@
 //! forks/execs and blocks for the child's lifetime; outcomes come back
 //! through [`drain_events`], drained once per frame.
 
+mod app_cache;
+pub use app_cache::invalidate_app_cache;
+#[cfg(test)]
+use app_cache::{
+    APP_CACHE, APP_CACHE_EPOCH, APP_CACHE_WATCH, expire_watched_app_cache, forget_app_cache,
+    record_app_read, registry_changed,
+};
+use app_cache::{
+    APP_CACHE_REVISION, RegistryStamp, ensure_app_cache_watch, installed_apps_snapshot,
+    registry_stamps,
+};
+pub(crate) use app_cache::{
+    installed_apps_epoch, installed_apps_without_waiting, load_installed_apps,
+};
 pub(crate) mod diagnostics;
 mod embed_launch;
 pub(crate) mod launch_history;
@@ -98,7 +112,7 @@ use std::io::{self, Read};
 #[cfg(target_os = "linux")]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -106,11 +120,6 @@ use crate::shell::host_runtime::{proc_stat, write_runtime_private};
 use crate::shell::state::{RoomId, Workspace};
 use collab_types::caps::LaunchGrants;
 use os_actions::{TOOL_CONTEXT_ENV, ToolIntent};
-
-/// Fallback only: the registry is watched with inotify, so a new install
-/// shows up on the next `installed_apps()` without waiting. This bound
-/// catches a missed watch (NFS, the watch limit, a swapped `TILO_APPS_DATA_DIR`).
-const APP_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Stderr tail kept for a failed launch — enough to carry `bwrap`'s or
 /// the dynamic loader's complaint, small enough a chatty app can't grow
@@ -1659,19 +1668,6 @@ pub(crate) fn spawn_reporting<T: Send + 'static>(
     })
 }
 
-/// Last enumeration and when it was memoised; `None` marks it stale, so it
-/// is only the baseline the next read compares against.
-static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Option<Instant>)>> = Mutex::new(None);
-static APP_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
-/// Bumped when a watch (or an explicit invalidate) makes the memoised
-/// snapshot untrustworthy. Distinct from [`APP_CACHE_REVISION`]: an
-/// invalidation alone must not look like a new generation of apps.
-static APP_CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
-/// The registry roots watched, and a watch of each that could be armed.
-static APP_CACHE_WATCH: Mutex<Option<(Vec<PathBuf>, Vec<tilo_files::native::ChangeWatch>)>> =
-    Mutex::new(None);
-/// The registries the memoised snapshot was read from, as they were just before the read.
-static APP_CACHE_STAMP: Mutex<Option<Vec<Option<RegistryStamp>>>> = Mutex::new(None);
 /// Capabilities of the workspace apps are being launched into, published
 /// by [`set_workspace_capabilities`] or [`launch_in_workspace`]. Empty is
 /// the safe default: an app launched before publish gets manifest-only.
@@ -2191,212 +2187,6 @@ pub(crate) fn installed_earlier_ids() -> tilo_action_policy::EarlierIds {
 pub(crate) fn find_installed(apps: &[InstalledApp], package_id: &str) -> Option<InstalledApp> {
     let find = |id: &str| apps.iter().find(|app| app.package_id == id).cloned();
     find(package_id).or_else(|| find(installed_earlier_ids().successor(package_id)?))
-}
-
-/// Which version of a registry file is on disk. An install replaces the registry by one
-/// rename, its commit point, so a completed install always shows as another file here.
-#[derive(Clone, PartialEq, Eq, Debug)]
-struct RegistryStamp {
-    device: u64,
-    inode: u64,
-    modified: Option<std::time::SystemTime>,
-    len: u64,
-}
-
-fn registry_stamps() -> Vec<Option<RegistryStamp>> {
-    use std::os::unix::fs::MetadataExt as _;
-    app_cache_roots()
-        .iter()
-        .map(|root| {
-            let metadata =
-                std::fs::metadata(root.join(package_store::layout::REGISTRY_FILE)).ok()?;
-            Some(RegistryStamp {
-                device: metadata.dev(),
-                inode: metadata.ino(),
-                modified: metadata.modified().ok(),
-                len: metadata.len(),
-            })
-        })
-        .collect()
-}
-
-/// Pair records with their cache revision while holding the cache lock.
-///
-/// A memoised snapshot answers only while the registries are the ones it was read from: the
-/// watch that expires it runs on its own thread, and an app launched right after an install
-/// completed must start the installed package, not the one before it.
-fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
-    let stamps = registry_stamps();
-    {
-        let cache = lock(&APP_CACHE);
-        if let Some((apps, Some(at))) = cache.as_ref()
-            && at.elapsed() < APP_CACHE_TTL
-            && lock(&APP_CACHE_STAMP).as_ref() == Some(&stamps)
-        {
-            return Ok((APP_CACHE_REVISION.load(Ordering::Acquire), apps.clone()));
-        }
-    }
-    let epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
-    let apps = read_installed_apps()?;
-    *lock(&APP_CACHE_STAMP) = Some(stamps);
-    let generation = record_app_read(epoch, &apps);
-    ensure_app_cache_watch();
-    Ok((generation, apps))
-}
-
-/// [`installed_apps`] for the compositor loop: the last enumeration, fresh
-/// or stale, and never a registry read, which scans the registry and parses
-/// every manifest. One past its TTL or invalidated by the registry watch is
-/// refreshed on a worker and served until the refresh lands; before the
-/// first enumeration there is none.
-pub(crate) fn installed_apps_without_waiting() -> Vec<InstalledApp> {
-    let (apps, fresh) = {
-        let cache = lock(&APP_CACHE);
-        cache.as_ref().map_or_else(
-            || (Vec::new(), false),
-            |(apps, at)| {
-                (
-                    apps.clone(),
-                    at.is_some_and(|at| at.elapsed() < APP_CACHE_TTL),
-                )
-            },
-        )
-    };
-    if !fresh {
-        refresh_installed_apps_in_background();
-    }
-    apps
-}
-
-/// Re-read the registry on a worker, one refresh at a time.
-fn refresh_installed_apps_in_background() {
-    static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if REFRESHING.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    let spawned = std::thread::Builder::new()
-        .name("tilo-apps-refresh".into())
-        .spawn(|| {
-            if let Err(error) = installed_apps_snapshot() {
-                tracing::debug!(%error, "installed apps refresh failed; the last list stays");
-            }
-            REFRESHING.store(false, Ordering::Release);
-        });
-    if spawned.is_err() {
-        REFRESHING.store(false, Ordering::Release);
-    }
-}
-
-/// Store a registry read that started at `read_epoch` as the new baseline.
-fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) -> u64 {
-    let mut cache = lock(&APP_CACHE);
-    // An invalidation (install, removal, watch event, repointed registry)
-    // that raced this read means the read may predate it: keep it only as
-    // a stale baseline so the next call re-reads instead of hiding the
-    // change for a whole TTL.
-    let fresh = (APP_CACHE_EPOCH.load(Ordering::Acquire) == read_epoch).then(Instant::now);
-    let changed = cache.as_ref().is_none_or(|(cached, _)| cached != apps);
-    // The TTL controls disk freshness, not search identity. Advancing this
-    // generation for identical records invalidates both native and host app
-    // indexes, making a just-discovered action disappear before invocation.
-    if changed {
-        APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
-    }
-    *cache = Some((apps.to_vec(), fresh));
-    let generation = if fresh.is_some() {
-        APP_CACHE_REVISION.load(Ordering::Acquire)
-    } else {
-        0
-    };
-    drop(cache);
-    generation
-}
-
-/// Drop the memoised enumeration and read the registry again, so what the
-/// compositor loop is served ([`installed_apps_without_waiting`]) already
-/// holds the change. Used on a worker after an install/remove and by tests
-/// that repoint `TILO_APPS_DATA_DIR`; never on the compositor loop.
-pub fn invalidate_app_cache() {
-    // Bump the epoch under the lock so a read finishing right after cannot
-    // memoise itself as fresh.
-    let mut cache = lock(&APP_CACHE);
-    APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
-    APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
-    *cache = None;
-    drop(cache);
-    *lock(&APP_CACHE_STAMP) = None;
-    load_installed_apps();
-}
-
-/// Read the installed apps into what the compositor loop is served. At
-/// startup, before the loop turns, so its first windows are named by their
-/// apps; never on the loop.
-pub(crate) fn load_installed_apps() {
-    if let Err(error) = installed_apps_snapshot() {
-        tracing::warn!(%error, "installed apps unreadable");
-    }
-}
-
-/// Cheap installed-store invalidation token for session-owned services.
-/// A changed token means callers must reread the canonical cached catalogue;
-/// it is not an authorization or a package identity.
-pub(crate) fn installed_apps_epoch() -> u64 {
-    APP_CACHE_EPOCH.load(Ordering::Acquire)
-}
-
-fn expire_watched_app_cache() {
-    let mut cache = lock(&APP_CACHE);
-    APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
-    if let Some((_, at)) = cache.as_mut() {
-        *at = None;
-    }
-}
-
-fn app_cache_roots() -> Vec<PathBuf> {
-    [
-        package_store::layout::default_user_root(),
-        package_store::layout::system_data_dir(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
-}
-
-/// Watch the registry roots, package folders included, once per set of roots. A change is
-/// read on the watch's thread, so the list the compositor loop is served holds it without a
-/// read of its own. Opens and reads are not changes, so filling the cache does not expire it.
-fn ensure_app_cache_watch() {
-    let roots = app_cache_roots();
-    if roots.is_empty() {
-        return;
-    }
-    let mut watched = lock(&APP_CACHE_WATCH);
-    if watched.as_ref().is_some_and(|(held, _)| *held == roots) {
-        return;
-    }
-    let armed = roots
-        .iter()
-        .filter_map(|root| {
-            tilo_files::native::watch_tree_changes(
-                root,
-                |_| true,
-                || {
-                    expire_watched_app_cache();
-                    if let Err(error) = installed_apps_snapshot() {
-                        tracing::debug!(
-                            %error,
-                            "changed app registry unreadable; the last list stays stale"
-                        );
-                    }
-                },
-            )
-            .map_err(|error| {
-                tracing::info!(%error, path = %root.display(), "app registry path is not watched");
-            })
-            .ok()
-        })
-        .collect();
-    *watched = Some((roots, armed));
 }
 
 /// Immutable installed-app snapshot revision for retained search projections.
