@@ -1307,10 +1307,12 @@ fn attachment_limits(
 }
 
 /// [`attachment_limits`] as the room's Chat reads them.
-fn room_files(persistent: &PersistentArgs) -> chat::record::RoomFiles {
-    attachment_limits(persistent).map_or_else(Default::default, |limits| chat::record::RoomFiles {
-        largest: limits.file_bytes,
-        member_hourly: limits.member_bytes,
+fn room_files(persistent: &PersistentArgs) -> chat::record::WorkspaceFiles {
+    attachment_limits(persistent).map_or_else(Default::default, |limits| {
+        chat::record::WorkspaceFiles {
+            largest: limits.file_bytes,
+            member_hourly: limits.member_bytes,
+        }
     })
 }
 
@@ -1325,7 +1327,7 @@ pub(crate) async fn settle_chat(
     apps: &[String],
     channels: &[String],
     feedback: Option<&str>,
-    files: chat::record::RoomFiles,
+    files: chat::record::WorkspaceFiles,
     discussions: &[crate::room_discussions::Published],
 ) -> anyhow::Result<()> {
     if !apps.iter().any(|app| app == crate::room_chat::CHAT_APP) {
