@@ -1533,14 +1533,14 @@ impl ToggleGroup {
             SegmentedStyle::Segmented if face.chosen.is_none() => {
                 let track = colors.surfaces.raised;
                 let edge = crate::surface::edge_on(track);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                let bordered = crate::surface::control_face(
+                    scene,
                     transform,
-                    track,
-                    None,
                     &RoundedRect::from_rect(outer, metrics.track_radius),
+                    track,
+                    theme,
                 );
-                if !face.focused {
+                if !face.focused && !bordered {
                     scene.stroke(
                         &Stroke::new(1.0),
                         transform,

@@ -5428,13 +5428,7 @@ fn paint_field_chrome(
             shape,
         );
     }
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        bg_color,
-        None,
-        shape,
-    );
+    let bordered = crate::surface::control_face(scene, transform, shape, bg_color, theme);
     // A field is a raised well: no edge at rest (the level step separates
     // it), and no ring when focused (the caret is the focus). A value the
     // form rejected edges the field in danger ink, the one status colour a
@@ -5461,7 +5455,7 @@ fn paint_field_chrome(
                 crate::widget::chip::TINT_EDGE,
             ),
         ))
-    } else if theme.colors_are_forced() {
+    } else if theme.colors_are_forced() && !bordered {
         // Accessibility deliberately collapses surface levels. Keep the
         // declared contrast edge instead of deriving a decorative hairline;
         // disabled fields keep this edge under the existing group opacity.

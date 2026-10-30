@@ -1769,21 +1769,23 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) -> Rect {
     } else {
         raised
     };
-    ctx.scene
-        .fill(Fill::NonZero, ctx.transform, bg, None, &shape);
+    let bordered = crate::surface::control_face(ctx.scene, ctx.transform, &shape, bg, theme);
     let (bw, bc) = if active {
         (2.0, theme.tokens.colors.intent.accent_ink)
     } else {
         (1.0, crate::surface::edge_on(raised))
     };
-    // Rest edge and focus ring share one half-pixel-inset outline.
-    ctx.scene.stroke(
-        &Stroke::new(bw),
-        ctx.transform,
-        bc,
-        None,
-        &crate::surface::edge_outline(face.field, radius),
-    );
+    // Rest edge and focus ring share one half-pixel-inset outline; the
+    // theme's border stands in for the rest edge.
+    if active || !bordered {
+        ctx.scene.stroke(
+            &Stroke::new(bw),
+            ctx.transform,
+            bc,
+            None,
+            &crate::surface::edge_outline(face.field, radius),
+        );
+    }
 
     let content = content_rect(face.field, face.icon.is_some(), &style);
     if let Some(icon) = face.icon {
