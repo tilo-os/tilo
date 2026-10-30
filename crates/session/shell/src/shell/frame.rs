@@ -5963,6 +5963,7 @@ impl FrameBuilder {
                 self.relayout();
                 self.focus_first(focus);
             }
+            self.deliver_control_invocations(state, root_obj);
             return true;
         }
 
@@ -6133,7 +6134,22 @@ impl FrameBuilder {
         // What the desktop handled, or a move of focus, may move what it
         // lays out, as in an app's window.
         self.layout_owed |= handled || *focus != focus_before;
+        if handled {
+            self.deliver_control_invocations(state, root_obj);
+        }
         handled
+    }
+
+    /// Run what an activation queued in the compositor's own widgets: those
+    /// publish their controls as actions, and no resource dispatcher stands
+    /// behind them the way one does behind an app's tree. A press that
+    /// handled nothing queued nothing.
+    fn deliver_control_invocations(&mut self, state: &mut ui::widget::Edits<'_>, root_obj: &ObjId) {
+        ui::widget::controls::start_pending_control_invocations(
+            self.host.as_mut(),
+            state,
+            root_obj,
+        );
     }
 
     fn dispatch_to_desktop(

@@ -1991,6 +1991,14 @@ mod tests {
             action(composer, id, &ui::a11y::Action::Activate, doc),
             "{id} is shown and enabled"
         );
+        // A press queues the control's intent; the compositor runs the queue
+        // when the input is handled (see `FrameBuilder::dispatch_to_desktop`),
+        // and here the press is the whole input.
+        ui::widget::controls::start_pending_control_invocations(
+            composer,
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT,
+        );
     }
 
     fn submit(
