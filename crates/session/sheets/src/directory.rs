@@ -384,7 +384,7 @@ fn rows(directory: &Directory, query: &str, dispatch: &Dispatcher<WorkspaceDirec
                     )))
                     .push(Box::new(
                         Button::new("directory-retry", &t("directory-try-again"))
-                            .on_click(move || retry.effect(&DirectoryEffect::Refresh)),
+                            .on_effect(move || retry.effect(&DirectoryEffect::Refresh)),
                     )),
             );
         }
@@ -435,7 +435,7 @@ fn row(listing: &Listing, dispatch: &Dispatcher<WorkspaceDirectory>) -> Element 
             &[("name", ui::i18n::ArgValue::Text(listing.name.clone()))],
         ))
         .tooltip(listing.joins_as.clone())
-        .on_click(move || press.effect(&effect))
+        .on_effect(move || press.effect(&effect))
         .with_enabled(!listing.waiting && listing.action != ListingAction::Joining);
     if primary {
         button = button.role(ButtonRole::Primary);

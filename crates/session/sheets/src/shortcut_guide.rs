@@ -404,7 +404,7 @@ fn keys(mut column: Column, guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>)
                     &format!("guide-reset-{}", pair.previous.action),
                     &t("guide-reset"),
                 )
-                .on_click(move || reset.effect(&effect)),
+                .on_effect(move || reset.effect(&effect)),
             ));
         }
         column = column.push(Box::new(row));

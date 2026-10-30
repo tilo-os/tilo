@@ -864,7 +864,7 @@ fn layouts(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
             .checked(row.current)
             .selected(spot == Some(&here))
             .with_enabled(row.enabled)
-            .on_activate(move || press.act(&pressed)),
+            .on_effect(move || press.act(&pressed)),
         ));
     }
     Box::new(column)
@@ -888,7 +888,7 @@ fn band(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Option<Element> {
                 let pressed = here.clone();
                 let mut button = Button::new(id, label)
                     .with_enabled(!answering)
-                    .on_click(move || press.act(&pressed));
+                    .on_effect(move || press.act(&pressed));
                 button.set_focus(spot == Some(&here));
                 button
             };
@@ -943,7 +943,7 @@ fn screens(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
             .selected(spot == Some(&here))
             .with_enabled(sheet.screens_editable)
             .tooltip(t("display-remote-row-description"))
-            .on_activate(move || press.act(&pressed)),
+            .on_effect(move || press.act(&pressed)),
         ));
     }
     Box::new(column)
@@ -964,7 +964,7 @@ fn wireless(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
                 ui::icons::Icon::Refresh,
                 &t("wireless-search-again"),
             )
-            .on_click(move || search.send(&DisplaysEffect::Search)),
+            .on_effect(move || search.send(&DisplaysEffect::Search)),
         ));
     let mut column = Column::new()
         .with_gap(ui::tokens::Spacing::BASE.s2)
@@ -989,7 +989,7 @@ fn stream_options(stream: &Stream, parts: &Parts) -> Element {
             ui::icons::Icon::VolumeX
         })
         .checked(on)
-        .on_activate(move || audio.send(&DisplaysEffect::ShareAudio { on: !on }));
+        .on_effect(move || audio.send(&DisplaysEffect::ShareAudio { on: !on }));
     let adaptive = parts.clone();
     let adapts = stream.adaptive;
     let resolution = parts.clone();
@@ -1014,11 +1014,11 @@ fn stream_options(stream: &Stream, parts: &Parts) -> Element {
             } else {
                 ButtonRole::Secondary
             })
-            .on_click(move || adaptive.send(&DisplaysEffect::AdaptiveQuality { on: !adapts })),
+            .on_effect(move || adaptive.send(&DisplaysEffect::AdaptiveQuality { on: !adapts })),
         ))
         .push(Box::new(
             Button::new("display-stream-resolution", &stream.resolution)
-                .on_click(move || resolution.send(&DisplaysEffect::NextResolution)),
+                .on_effect(move || resolution.send(&DisplaysEffect::NextResolution)),
         ))
         .push(Box::new(
             Button::new(
@@ -1028,7 +1028,7 @@ fn stream_options(stream: &Stream, parts: &Parts) -> Element {
                     &[("fps", ui::i18n::ArgValue::Number(f64::from(rate)))],
                 ),
             )
-            .on_click(move || {
+            .on_effect(move || {
                 fps.send(&DisplaysEffect::FrameRate {
                     fps: if rate == 60 { 30 } else { 60 },
                 });
@@ -1060,7 +1060,7 @@ fn pin_field(spot: Option<&Spot>, parts: &Parts) -> Element {
                 text.clone_into(&mut seat.pin.borrow_mut());
             }
         })
-        .on_submit(move |_| submitted.submit_pin());
+        .on_submit_view(move |_| submitted.submit_pin());
     if spot == Some(&Spot::Pin) {
         field.set_focus(true);
     }
@@ -1100,7 +1100,7 @@ fn receivers(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
             let search = parts.clone();
             column = column.push(Box::new(
                 Button::new("display-search-again", &label)
-                    .on_click(move || search.send(&DisplaysEffect::Search)),
+                    .on_effect(move || search.send(&DisplaysEffect::Search)),
             ));
         }
         return Box::new(column);
@@ -1137,7 +1137,7 @@ fn receivers(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
         let action = Button::new(&format!("display-receiver-action-{}", receiver.id), &label)
             .role(role)
             .with_enabled(receiver.link != Link::Connecting)
-            .on_click(move || button_press.act(&pressed));
+            .on_effect(move || button_press.act(&pressed));
         let mut row = ListRow::new(
             format!("display-receiver-{}", receiver.id),
             receiver.name.clone(),
@@ -1146,7 +1146,7 @@ fn receivers(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
         .icon(ui::icons::Icon::Monitor)
         .selected(spot == Some(&here))
         .trailing(Box::new(action))
-        .on_activate(move || row_press.act(&row_pressed));
+        .on_effect(move || row_press.act(&row_pressed));
         row = match receiver.link {
             Link::Connected => row.active(),
             Link::Failed(_) => row.error(),

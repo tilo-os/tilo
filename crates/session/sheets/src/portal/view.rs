@@ -141,7 +141,7 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                     } else {
                         ButtonRole::Secondary
                     })
-                    .on_click(move || press.send(&PortalEffect::Answer { index: index(at) }));
+                    .on_effect(move || press.send(&PortalEffect::Answer { index: index(at) }));
                 button.set_focus(at == dialog.selected);
                 column = column.push(Box::new(button));
             }
@@ -174,7 +174,7 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                         .checked(dialog.selected == at)
                         .selected(focus == Focus::Icons && dialog.selected == at)
                         .with_enabled(*icon_editable)
-                        .on_activate(move || {
+                        .on_effect(move || {
                             press.focus(Focus::Icons);
                             press.send(&PortalEffect::Icon { index: index(at) });
                         }),
@@ -221,7 +221,7 @@ fn choices_rows(
             ListRow::new(format!("portal-choice-{at}"), choice.clone())
                 .checked(chosen)
                 .selected(chosen && focus == Focus::Choices)
-                .on_activate(move || {
+                .on_effect(move || {
                     press.focus(Focus::Choices);
                     press.send(&PortalEffect::Select { index: index(at) });
                 }),
@@ -256,7 +256,7 @@ fn shortcut_row(at: usize, row: &Shortcut, focused: bool, parts: &Parts) -> Elem
                 .unwrap_or_else(|| t("portal-shortcut-not-set")),
         )
         .selected(focused)
-        .on_activate(move || press.send(&PortalEffect::Select { index: index(at) }));
+        .on_effect(move || press.send(&PortalEffect::Select { index: index(at) }));
     if let Some(status) = &row.status {
         list_row = list_row.subtitle(status.clone()).warning();
     }

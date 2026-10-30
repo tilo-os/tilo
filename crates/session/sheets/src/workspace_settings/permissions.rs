@@ -217,10 +217,9 @@ fn composer(permissions: &Permissions, parts: &Parts) -> Element {
                 .collect(),
             selected,
         )
-        .with_id("ws-grant-expiry")
         .with_accessible_name(composer.how_long.clone())
         .with_enabled(permissions.manage)
-        .on_change(move |index| {
+        .on_view("ws-grant-expiry", move |index| {
             if let Some(key) = keys.get(index) {
                 let key = key.clone();
                 choose.local.update(|local| local.draft.expiry = Some(key));
@@ -237,7 +236,7 @@ fn composer(permissions: &Permissions, parts: &Parts) -> Element {
         Button::new("ws-grant", &composer.grant)
             .role(ButtonRole::Primary)
             .with_enabled(can_grant)
-            .on_click(move || {
+            .on_effect(move || {
                 if let Some((subject, permission)) = named.clone() {
                     grant.ask(WorkspaceSettingsEffect::Grant {
                         subject,
@@ -315,7 +314,7 @@ fn row(permissions: &Permissions, permission: &Permission, parts: &Parts) -> Ele
                     .role(ButtonRole::Destructive)
                     .control_size(ControlSize::Small)
                     .with_enabled(permissions.manage)
-                    .on_click(move || {
+                    .on_view(move || {
                         confirm.confirm(Confirm::Revoke {
                             grant: grant.clone(),
                             holder: holder.clone(),
