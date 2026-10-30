@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 
 use crate::record::DynRecord;
 use tilolang_runtime::place::{AT_KEY, ITEMS_KEY, Placement};
+use tilolang_runtime::store::VersionKind;
 
 /// The registry type id every [`DynAction`] is encoded under.
 pub const ACTION_TYPE: &str = "tl.action";
@@ -199,6 +200,16 @@ impl DynEdit {
     }
 }
 
+/// What an action did to one resource ([`DynAction::made`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Made {
+    /// The resource, as the runtime writes it (`doc` or `doc/item`).
+    pub resource: String,
+    pub kind: VersionKind,
+    /// The fields it changed, by id, for a resource it changed.
+    pub fields: Vec<String>,
+}
+
 /// A tilolang action as recorded: what was invoked, by whom, and exactly what it wrote.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DynAction {
@@ -321,6 +332,114 @@ impl DynAction {
                 | DynEdit::OutboxMark { .. }
                 | DynEdit::Migrated { .. }
                 | DynEdit::In { .. } => {}
+            }
+        }
+        out
+    }
+
+    /// What this action did to each resource it changed (as the runtime writes them), in order
+    /// of first mention: made it, changed which of its fields, or removed it. A removed
+    /// resource has a version too, so who removed it stays answerable; a resource it made and
+    /// changed in one go was made.
+    #[must_use]
+    pub fn made(&self) -> Vec<Made> {
+        let mut out: Vec<Made> = Vec::new();
+        let mut add = |resource: String, kind: VersionKind, field: Option<String>| {
+            if !out.iter().any(|m| m.resource == resource) {
+                out.push(Made {
+                    resource: resource.clone(),
+                    kind,
+                    fields: Vec::new(),
+                });
+            }
+            let Some(made) = out.iter_mut().find(|m| m.resource == resource) else {
+                return;
+            };
+            // Made, then removed in one go, is removed; made, then changed, stays made.
+            match (made.kind, kind) {
+                (_, VersionKind::Removed) => made.kind = VersionKind::Removed,
+                (VersionKind::Changed, VersionKind::Created) => made.kind = VersionKind::Created,
+                _ => {}
+            }
+            if let Some(field) = field
+                && !made.fields.contains(&field)
+            {
+                made.fields.push(field);
+            }
+        };
+        for edit in &self.edits {
+            let mut edit = edit;
+            while let DynEdit::In { edit: inner, .. } = edit {
+                edit = inner;
+            }
+            match edit {
+                DynEdit::Create { id, .. } => add(id.clone(), VersionKind::Created, None),
+                DynEdit::Edit { id, edit } => {
+                    // The resource is the last item the path goes down to; the field after it
+                    // is the one edited.
+                    let mut resource = id.clone();
+                    let mut field = None;
+                    for segment in edit.path() {
+                        match segment {
+                            Segment::Item(item) => {
+                                resource = format!("{id}/{item}");
+                                field = None;
+                            }
+                            Segment::Field(name) if field.is_none() => {
+                                field = Some(name.clone());
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let tilo_resource::EditOp::InsertItem { id: Some(item), .. } = edit.op() {
+                        add(format!("{id}/{item}"), VersionKind::Created, None);
+                    }
+                    add(resource, VersionKind::Changed, field);
+                }
+                DynEdit::Insert { id, item, at, .. } => {
+                    if let Some(place) = Placement::decode(at).as_ref().and_then(Placement::place) {
+                        add(
+                            holder_of(id, place),
+                            VersionKind::Changed,
+                            Some(place.field.clone()),
+                        );
+                    }
+                    add(format!("{id}/{item}"), VersionKind::Created, None);
+                }
+                DynEdit::Place {
+                    id,
+                    item,
+                    at,
+                    holders,
+                    ..
+                } => {
+                    let placed = Placement::decode(at);
+                    let field = placed
+                        .as_ref()
+                        .and_then(Placement::place)
+                        .map(|place| place.field.clone());
+                    for holder in holders {
+                        add(holder.clone(), VersionKind::Changed, field.clone());
+                    }
+                    let kind = if placed.as_ref().is_some_and(|p| p.place().is_none()) {
+                        VersionKind::Removed
+                    } else {
+                        VersionKind::Changed
+                    };
+                    add(format!("{id}/{item}"), kind, None);
+                }
+                DynEdit::Remove { id } => add(id.clone(), VersionKind::Removed, None),
+                DynEdit::OutboxPush { .. }
+                | DynEdit::OutboxSettle { .. }
+                | DynEdit::OutboxMark { .. }
+                | DynEdit::Migrated { .. }
+                | DynEdit::In { .. } => {}
+            }
+        }
+        // A version that made or removed a resource names no fields.
+        for made in &mut out {
+            if made.kind != VersionKind::Changed {
+                made.fields.clear();
             }
         }
         out

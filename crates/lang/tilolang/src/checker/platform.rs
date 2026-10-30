@@ -88,6 +88,56 @@ impl Checker<'_> {
         }
     }
 
+    /// `unseen(r)`: the versions of `r` the person looking has not seen, oldest first: those a
+    /// task run or an agent made after the person's seen mark of `r` and after their own last
+    /// change of it (task-legibility.md §2, §4). A view that reads it runs again when either
+    /// moves.
+    pub(super) fn builtin_unseen(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("unseen", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(Imp::Unseen, vec![r], Ty::List(Box::new(host_ty("Version"))))
+    }
+
+    /// `changes(of: run)`: every version the task run made, of every resource, oldest first.
+    pub(super) fn builtin_changes(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [a] = args else {
+            self.err(
+                "E022",
+                span,
+                "`changes` takes one task run: `changes(of: run)`",
+            );
+            return Ex::error();
+        };
+        if a.name.as_ref().is_some_and(|n| n.name != "of") {
+            self.err(
+                "E022",
+                a.value.span,
+                "`changes` takes the run as `of`: `changes(of: run)`",
+            );
+        }
+        let run_ty = host_ty("TaskRun");
+        let run = self.expr(&a.value, Some(&run_ty));
+        match &run.ty {
+            Ty::Error => return Ex::error(),
+            ty if *ty == run_ty => {}
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    a.value.span,
+                    format!("`changes` takes a `host.TaskRun` (a version's `task`); this is {t}"),
+                );
+                return Ex::error();
+            }
+        }
+        Ex::host(
+            Imp::RunChanges,
+            vec![run],
+            Ty::List(Box::new(host_ty("Version"))),
+        )
+    }
+
     pub(super) fn builtin_lenses(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("lenses", args, span) else {
             return Ex::error();
