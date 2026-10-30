@@ -174,6 +174,19 @@ pub trait GovernanceTransport {
     fn take_inbound(&self) -> Vec<InboundChannelGovernance>;
 }
 
+/// [`ChannelDirectory::hosted_channel_keys`] as a handle of its own: asked
+/// with no lock of the channel service held ([`ChannelDirectory::hosted_keys`]).
+pub type HostedKeys = Arc<
+    dyn Fn(
+            RoomId,
+            ChannelId,
+            Option<&ChannelRoute>,
+            bool,
+        ) -> Option<Result<ChannelContentKeys, String>>
+        + Send
+        + Sync,
+>;
+
 /// The access policy inputs this service needs from the workspace model.
 pub trait ChannelDirectory: Send {
     /// The device key of `room`'s governor, when this device knows the
@@ -193,6 +206,16 @@ pub trait ChannelDirectory: Send {
         create: bool,
     ) -> Option<Result<ChannelContentKeys, String>> {
         let _ = (room, channel, route, create);
+        None
+    }
+    /// [`Self::hosted_channel_keys`], for a directory whose answer waits on
+    /// another thread (a room host in this process): [`ChannelKeyAccess`]
+    /// asks it before it takes the service's lock and hands the answer in,
+    /// so the lock is never held while the host answers. A host answering
+    /// may itself wait for whoever holds that lock, and every other user of
+    /// the service (the broker's loop among them) would wait behind it.
+    /// `None` (the default) when the answer never waits.
+    fn hosted_keys(&self) -> Option<HostedKeys> {
         None
     }
     /// Every device that may read `channel`, one of `room`'s channels, at
@@ -374,6 +397,10 @@ pub struct ChannelEncryption {
     /// Channels whose frames arrived while this device took no part in
     /// them: they have a group, so this device never creates one.
     groups_seen: std::collections::HashSet<ChannelId>,
+    /// The hosted keys [`ChannelKeyAccess`] asked for before taking the
+    /// lock this operation runs under, by channel: read instead of asking
+    /// the directory, and cleared when the operation ends.
+    resolved: HashMap<ChannelId, Option<Result<ChannelContentKeys, String>>>,
 }
 
 impl ChannelEncryption {
@@ -443,7 +470,43 @@ impl ChannelEncryption {
             hosted: HashMap::new(),
             registered: HashMap::new(),
             groups_seen: std::collections::HashSet::new(),
+            resolved: HashMap::new(),
         }
+    }
+
+    /// `channel`'s keys from this device's own room host
+    /// ([`ChannelDirectory::hosted_channel_keys`]): as asked before this
+    /// operation's lock was taken, else asked now.
+    fn hosted_keys_of(
+        &self,
+        room: RoomId,
+        channel: ChannelId,
+        route: Option<&ChannelRoute>,
+        create: bool,
+    ) -> Option<Result<ChannelContentKeys, String>> {
+        hosted_answer(
+            &self.resolved,
+            &*self.directory,
+            room,
+            channel,
+            route,
+            create,
+        )
+    }
+
+    /// The channels whose hosted keys the next [`Self::pump`] asks for
+    /// without the inbound governance naming them: unopened channels of a
+    /// device with no store, which open once their room is hosted here
+    /// ([`Self::wake_unopened`]).
+    fn unopened_hosted_asks(&self) -> Vec<(RoomId, ChannelId)> {
+        if self.store.is_some() {
+            return Vec::new();
+        }
+        self.unopened
+            .iter()
+            .filter(|(_, entry)| entry.retry.is_none())
+            .map(|(channel, entry)| (entry.room, *channel))
+            .collect()
     }
 
     /// Increases whenever any channel's keys or access change.
@@ -473,10 +536,7 @@ impl ChannelEncryption {
         route: Option<&ChannelRoute>,
         now: Instant,
     ) -> ChannelAccess {
-        if let Some(keys) = self
-            .directory
-            .hosted_channel_keys(room, channel, route, true)
-        {
+        if let Some(keys) = self.hosted_keys_of(room, channel, route, true) {
             return self.hosted_access(room, channel, keys, now);
         }
         if self.store.is_none() {
@@ -589,9 +649,15 @@ impl ChannelEncryption {
                     let opens = if stored {
                         self.directory.governor_of(entry.room).is_some()
                     } else {
-                        self.directory
-                            .hosted_channel_keys(entry.room, *channel, None, false)
-                            .is_some()
+                        hosted_answer(
+                            &self.resolved,
+                            &*self.directory,
+                            entry.room,
+                            *channel,
+                            None,
+                            false,
+                        )
+                        .is_some()
                     };
                     if recheck && opens {
                         changed.push((*channel, true));
@@ -623,10 +689,7 @@ impl ChannelEncryption {
     /// Observe a current key without opening a channel, requesting access or
     /// changing a removed member's rejoin state.
     fn existing_keys(&self, room: RoomId, channel: ChannelId) -> Option<ChannelContentKeys> {
-        if let Some(keys) = self
-            .directory
-            .hosted_channel_keys(room, channel, None, false)
-        {
+        if let Some(keys) = self.hosted_keys_of(room, channel, None, false) {
             return keys.ok();
         }
         self.peers
@@ -660,7 +723,20 @@ impl ChannelEncryption {
     /// the access policy, ask for access, and publish what is due. `wall` is
     /// the Unix time the policy is evaluated at.
     pub fn pump(&mut self, transport: &dyn GovernanceTransport, now: Instant, wall: u64) {
-        for inbound in transport.take_inbound() {
+        let inbound = transport.take_inbound();
+        self.pump_inbound(inbound, transport, now, wall);
+    }
+
+    /// [`Self::pump`] with `inbound`, the governance already taken from
+    /// `transport`.
+    fn pump_inbound(
+        &mut self,
+        inbound: Vec<InboundChannelGovernance>,
+        transport: &dyn GovernanceTransport,
+        now: Instant,
+        wall: u64,
+    ) {
+        for inbound in inbound {
             self.receive(inbound, now, wall);
         }
         // Read before the policy is: a change announced while the groups
@@ -811,10 +887,7 @@ impl ChannelEncryption {
             .is_some_and(|(hosted, _)| *hosted == room)
         {
             // This device's own host changed the channel.
-            if let Some(keys) = self
-                .directory
-                .hosted_channel_keys(room, channel, None, false)
-            {
+            if let Some(keys) = self.hosted_keys_of(room, channel, None, false) {
                 self.hosted_access(room, channel, keys, now);
             }
             return;
@@ -897,10 +970,7 @@ impl ChannelEncryption {
             return;
         }
         if !self.peers.contains_key(&channel)
-            && self
-                .directory
-                .hosted_channel_keys(room, channel, route, false)
-                .is_some()
+            && self.hosted_keys_of(room, channel, route, false).is_some()
         {
             // This device's own host takes part in the room's channels with
             // this device's leaf and answers the request itself. A second
@@ -1248,6 +1318,22 @@ fn wait_after_pass(deadline: Option<Instant>, now: Instant) -> Option<Duration> 
     })
 }
 
+/// `channel`'s hosted keys: the answer in `resolved` when one was asked
+/// for before the service's lock was taken, else `directory`'s now.
+fn hosted_answer(
+    resolved: &HashMap<ChannelId, Option<Result<ChannelContentKeys, String>>>,
+    directory: &dyn ChannelDirectory,
+    room: RoomId,
+    channel: ChannelId,
+    route: Option<&ChannelRoute>,
+    create: bool,
+) -> Option<Result<ChannelContentKeys, String>> {
+    match resolved.get(&channel) {
+        Some(answer) => answer.clone(),
+        None => directory.hosted_channel_keys(room, channel, route, create),
+    }
+}
+
 /// Wakes a host's parked governance pump.
 pub type PumpWake = Arc<dyn Fn() + Send + Sync>;
 
@@ -1256,14 +1342,50 @@ pub type PumpWake = Arc<dyn Fn() + Send + Sync>;
 pub struct ChannelKeyAccess {
     inner: Arc<Mutex<ChannelEncryption>>,
     wake: Option<PumpWake>,
+    /// The service directory's hosted keys ([`ChannelDirectory::hosted_keys`]),
+    /// asked before `inner` is locked: never under it.
+    hosted: Option<HostedKeys>,
 }
 
 impl ChannelKeyAccess {
     pub fn new(service: ChannelEncryption) -> Self {
         Self {
+            hosted: service.directory.hosted_keys(),
             inner: Arc::new(Mutex::new(service)),
             wake: None,
         }
+    }
+
+    /// Ask this device's own room host for each of `asks`' keys, with no
+    /// lock of the service held: what the operation run under the lock next
+    /// reads instead of asking the host itself
+    /// ([`ChannelEncryption::hosted_keys_of`]). Empty when the directory's
+    /// answers never wait.
+    fn ask_host<'a>(
+        &self,
+        asks: impl IntoIterator<Item = (RoomId, ChannelId, Option<&'a ChannelRoute>, bool)>,
+    ) -> HashMap<ChannelId, Option<Result<ChannelContentKeys, String>>> {
+        let Some(hosted) = &self.hosted else {
+            return HashMap::new();
+        };
+        asks.into_iter()
+            .map(|(room, channel, route, create)| (channel, hosted(room, channel, route, create)))
+            .collect()
+    }
+
+    /// Run `operation` on the service with `answers` from [`Self::ask_host`]
+    /// in place of the host's; `None` when the lock is poisoned.
+    fn with_answers<T>(
+        &self,
+        answers: HashMap<ChannelId, Option<Result<ChannelContentKeys, String>>>,
+        operation: impl FnOnce(&mut ChannelEncryption) -> T,
+    ) -> Option<T> {
+        let mut service = self.inner.lock().ok()?;
+        service.resolved = answers;
+        let done = operation(&mut service);
+        service.resolved.clear();
+        drop(service);
+        Some(done)
     }
 
     /// As [`Self::new`], for a host that parks its pump while
@@ -1272,6 +1394,7 @@ impl ChannelKeyAccess {
     /// first channel is announced or requested without waiting for a timer.
     pub fn with_wake(service: ChannelEncryption, wake: PumpWake) -> Self {
         Self {
+            hosted: service.directory.hosted_keys(),
             inner: Arc::new(Mutex::new(service)),
             wake: Some(wake),
         }
@@ -1280,13 +1403,17 @@ impl ChannelKeyAccess {
     /// See [`ChannelEncryption::access`]; also returns the service's
     /// generation, which changes whenever any channel's keys or access do.
     pub fn access(&self, room: RoomId, channel: ChannelId) -> (ChannelAccess, u64) {
-        let Ok(mut service) = self.inner.lock() else {
+        let answers = self.ask_host([(room, channel, None, true)]);
+        let Some((access, generation, queued)) = self.with_answers(answers, |service| {
+            let access = service.access(room, channel, Instant::now());
+            (
+                access,
+                service.generation(),
+                std::mem::take(&mut service.queued),
+            )
+        }) else {
             return (ChannelAccess::Unavailable, 0);
         };
-        let access = service.access(room, channel, Instant::now());
-        let generation = service.generation();
-        let queued = std::mem::take(&mut service.queued);
-        drop(service);
         if queued && let Some(wake) = &self.wake {
             wake();
         }
@@ -1296,13 +1423,21 @@ impl ChannelKeyAccess {
     /// See [`ChannelEncryption::access_record`]; also returns the service's
     /// generation, as [`Self::access`] does.
     pub fn access_record(&self, room: RoomId, route: &ChannelRoute) -> (ChannelAccess, u64) {
-        let Ok(mut service) = self.inner.lock() else {
+        // As `ChannelEncryption::access_record` asks: the route only when it
+        // is the channel's.
+        let channel = route.channel(&room.to_string());
+        let proven = route.proves(&room.to_string(), channel);
+        let answers = self.ask_host([(room, channel, proven.then_some(route), true)]);
+        let Some((access, generation, queued)) = self.with_answers(answers, |service| {
+            let (_, access) = service.access_record(room, route, Instant::now());
+            (
+                access,
+                service.generation(),
+                std::mem::take(&mut service.queued),
+            )
+        }) else {
             return (ChannelAccess::Unavailable, 0);
         };
-        let (_, access) = service.access_record(room, route, Instant::now());
-        let generation = service.generation();
-        let queued = std::mem::take(&mut service.queued);
-        drop(service);
         if queued && let Some(wake) = &self.wake {
             wake();
         }
@@ -1334,14 +1469,13 @@ impl ChannelKeyAccess {
         let metadata = envelope.encryption.ok_or("the write is not sealed")?;
         let ciphertext =
             collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
-        let service = self
-            .inner
-            .lock()
-            .map_err(|_| "channel service unavailable")?;
-        let keys = service
-            .existing_keys(room, metadata.channel)
+        let answers = self.ask_host([(room, metadata.channel, None, false)]);
+        let keys = self
+            .with_answers(answers, |service| {
+                service.existing_keys(room, metadata.channel)
+            })
+            .ok_or("channel service unavailable")?
             .ok_or("this device holds no existing key for the history's channel")?;
-        drop(service);
         keys.open_content(envelope.artifact, &metadata, &ciphertext)
             .map(|plaintext| plaintext.to_vec())
             .map_err(|error| error.to_string())
@@ -1403,11 +1537,43 @@ impl ChannelKeyAccess {
     /// cadence every pass had while the caller woke on a fixed timer.
     #[must_use]
     pub fn pump_until_due(&self, transport: &dyn GovernanceTransport) -> Option<Duration> {
-        let mut service = self.inner.lock().ok()?;
+        let inbound = transport.take_inbound();
+        // What the pass asks this device's own host, asked first with no
+        // lock held: the channels the inbound governance names, and those
+        // that open once their room is hosted here.
+        let unopened = if self.hosted.is_some() {
+            self.inner.lock().ok()?.unopened_hosted_asks()
+        } else {
+            Vec::new()
+        };
+        // A request whose route is not its channel's is dropped unasked
+        // (`receive_request`).
+        let named = inbound.iter().filter_map(|message| match message {
+            InboundChannelGovernance::Frame { room, frame } => {
+                Some((*room, frame.channel, None, false))
+            }
+            InboundChannelGovernance::AccessRequest {
+                room,
+                request,
+                route,
+            } => {
+                let route = route.as_deref();
+                route
+                    .is_none_or(|route| route.proves(&room.to_string(), request.channel))
+                    .then_some((*room, request.channel, route, false))
+            }
+        });
+        let answers = self.ask_host(
+            unopened
+                .into_iter()
+                .map(|(room, channel)| (room, channel, None, false))
+                .chain(named),
+        );
         let now = Instant::now();
-        service.pump(transport, now, tilo_clock::unix_now());
-        let deadline = service.next_pump_deadline(now);
-        drop(service);
+        let deadline = self.with_answers(answers, |service| {
+            service.pump_inbound(inbound, transport, now, tilo_clock::unix_now());
+            service.next_pump_deadline(now)
+        })?;
         wait_after_pass(deadline, now)
     }
 
@@ -1672,178 +1838,7 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     clippy::unwrap_used,
     reason = "test fixtures: a poisoned lock is the test failing"
 )]
-pub mod testing {
-    use super::*;
-    use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    /// An in-memory room: every endpoint publishes to all the others while
-    /// the room is up, and loses what it publishes while it is down.
-    #[derive(Default)]
-    pub struct Room {
-        pub queues: Mutex<HashMap<usize, Vec<InboundChannelGovernance>>>,
-        pub down: AtomicBool,
-    }
-
-    pub struct Endpoint {
-        pub room: Arc<Room>,
-        pub id: usize,
-        pub room_id: RoomId,
-    }
-
-    impl Endpoint {
-        pub fn join(room: &Arc<Room>, room_id: RoomId, id: usize) -> Self {
-            room.queues.lock().unwrap().entry(id).or_default();
-            Self {
-                room: Arc::clone(room),
-                id,
-                room_id,
-            }
-        }
-    }
-
-    impl GovernanceTransport for Endpoint {
-        fn publish(&self, message: NeighbourMsg) -> bool {
-            if self.room.down.load(Ordering::SeqCst) {
-                return false;
-            }
-            let room = self.room_id;
-            let inbound = match message {
-                NeighbourMsg::MlsGovernance { frame, .. } => {
-                    InboundChannelGovernance::Frame { room, frame }
-                }
-                NeighbourMsg::MlsAccessRequest { request, .. } => {
-                    InboundChannelGovernance::AccessRequest {
-                        room,
-                        request,
-                        route: None,
-                    }
-                }
-                NeighbourMsg::MlsRoutedAccessRequest { request, route, .. } => {
-                    InboundChannelGovernance::AccessRequest {
-                        room,
-                        request,
-                        route: Some(route),
-                    }
-                }
-                _ => return false,
-            };
-            for (id, queue) in self.room.queues.lock().unwrap().iter_mut() {
-                if *id != self.id {
-                    queue.push(inbound.clone());
-                }
-            }
-            true
-        }
-
-        fn take_inbound(&self) -> Vec<InboundChannelGovernance> {
-            std::mem::take(self.room.queues.lock().unwrap().entry(self.id).or_default())
-        }
-    }
-
-    #[derive(Clone, Default)]
-    pub struct Policy {
-        pub allowed: Arc<Mutex<BTreeSet<Ed25519PublicKey>>>,
-        /// Devices allowed only until a wall-clock second: a grant that
-        /// expires.
-        pub until: Arc<Mutex<BTreeMap<Ed25519PublicKey, u64>>>,
-        /// How the directory announces changes; `None` announces none, and
-        /// groups keep their one-second re-check.
-        pub announces: Arc<Mutex<Option<Announcements>>>,
-        /// The instants groups asked to be announced at, in order; the
-        /// test announces them itself when it moves the wall clock there.
-        pub announce_at: Arc<Mutex<Vec<u64>>>,
-        /// Devices kept out of one channel alone: a Read Deny on its record.
-        pub withheld: Arc<Mutex<HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>>>,
-        /// Devices kept out of every record of an app: a Read Deny on the
-        /// app. A channel whose route a device does not know may be any
-        /// app's, so they are kept out of it too (a production directory
-        /// keeps everyone out of a channel whose record it cannot name).
-        pub withheld_apps: Arc<Mutex<HashMap<String, BTreeSet<Ed25519PublicKey>>>>,
-        /// Channels whose record no grant names: without a route the
-        /// directory cannot tell who reads them.
-        pub unnamed: Arc<Mutex<std::collections::HashSet<ChannelId>>>,
-    }
-
-    /// The epoch a test [`Directory`] reports as its
-    /// [`ChannelDirectory::policy_epoch`].
-    #[derive(Clone)]
-    pub enum Announcements {
-        /// [`tilo_identity_host::policy_change`]'s, as production reports.
-        Process,
-        /// The test's own, bumped by hand.
-        Own(Arc<std::sync::atomic::AtomicU64>),
-    }
-
-    pub struct Directory {
-        pub governor: Ed25519PublicKey,
-        pub policy: Policy,
-    }
-
-    impl ChannelDirectory for Directory {
-        fn governor_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
-            Some(self.governor)
-        }
-        fn allowed_devices(
-            &self,
-            _: RoomId,
-            channel: ChannelId,
-            route: Option<&ChannelRoute>,
-            now: u64,
-        ) -> Option<BTreeSet<Ed25519PublicKey>> {
-            if route.is_none() && self.policy.unnamed.lock().unwrap().contains(&channel) {
-                return None;
-            }
-            let mut allowed = self.policy.allowed.lock().unwrap().clone();
-            allowed.extend(
-                self.policy
-                    .until
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .filter(|(_, until)| now < **until)
-                    .map(|(device, _)| *device),
-            );
-            if let Some(withheld) = self.policy.withheld.lock().unwrap().get(&channel) {
-                allowed.retain(|device| !withheld.contains(device));
-            }
-            for (app, withheld) in self.policy.withheld_apps.lock().unwrap().iter() {
-                if route.is_none_or(|route| &route.app == app) {
-                    allowed.retain(|device| !withheld.contains(device));
-                }
-            }
-            Some(allowed)
-        }
-        fn policy_epoch(&self) -> Option<u64> {
-            match &*self.policy.announces.lock().unwrap() {
-                None => None,
-                Some(Announcements::Process) => Some(tilo_identity_host::policy_change::epoch()),
-                Some(Announcements::Own(epoch)) => Some(epoch.load(Ordering::SeqCst)),
-            }
-        }
-        fn next_policy_change(&self, _: RoomId, now: u64) -> Option<u64> {
-            self.policy
-                .until
-                .lock()
-                .unwrap()
-                .values()
-                .copied()
-                .filter(|until| *until > now)
-                .min()
-        }
-        fn announce_at(&self, at: u64) {
-            self.policy.announce_at.lock().unwrap().push(at);
-        }
-    }
-
-    pub fn key(seed: u8) -> SigningKey {
-        SigningKey::from_bytes(&[seed; 32])
-    }
-
-    pub fn public(seed: u8) -> Ed25519PublicKey {
-        Ed25519PublicKey::from_bytes(key(seed).verifying_key().to_bytes())
-    }
-}
+pub mod testing;
 
 #[cfg(test)]
 mod tests {
@@ -3364,6 +3359,71 @@ mod tests {
             ChannelAccess::Waiting
         ));
         assert!(service.unopened.is_empty(), "an open that succeeds settles");
+    }
+
+    /// This device's own room host is asked for a channel's keys with no
+    /// lock of the service held. The host may wait on whoever waits for
+    /// that lock (the broker's loop, driving the host's commit that holds
+    /// the room): the service's other users go on while the host answers.
+    #[test]
+    fn the_service_is_not_locked_while_its_own_host_answers() {
+        struct Hosting(HostedKeys);
+        impl ChannelDirectory for Hosting {
+            fn governor_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
+                None
+            }
+            fn allowed_devices(
+                &self,
+                _: RoomId,
+                _: ChannelId,
+                _: Option<&ChannelRoute>,
+                _: u64,
+            ) -> Option<BTreeSet<Ed25519PublicKey>> {
+                None
+            }
+            fn hosted_channel_keys(
+                &self,
+                room: RoomId,
+                channel: ChannelId,
+                route: Option<&ChannelRoute>,
+                create: bool,
+            ) -> Option<Result<ChannelContentKeys, String>> {
+                (self.0)(room, channel, route, create)
+            }
+            fn hosted_keys(&self) -> Option<HostedKeys> {
+                Some(Arc::clone(&self.0))
+            }
+        }
+        let (entered, host_asked) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Mutex::new(released);
+        let hosted: HostedKeys = Arc::new(move |_, _, _, _| {
+            entered.send(()).unwrap();
+            released.lock().unwrap().recv().unwrap();
+            Some(Err("the host answers late".into()))
+        });
+        let access = ChannelKeyAccess::new(ChannelEncryption::without_store(
+            Box::new(Hosting(hosted)),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+        ));
+        let (room, channel) = (RoomId::new(), ChannelId::new());
+        let asking = {
+            let access = access.clone();
+            std::thread::spawn(move || access.access(room, channel).0)
+        };
+        host_asked.recv().unwrap();
+        let (told, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            told.send((access.channel_change(channel), access.generation()))
+                .unwrap();
+        });
+        let read = heard.recv_timeout(Duration::from_secs(10));
+        release.send(()).unwrap();
+        assert!(
+            read.is_ok(),
+            "the service answers its other users while its host answers"
+        );
+        assert!(matches!(asking.join().unwrap(), ChannelAccess::Unavailable));
     }
 
     /// A device whose secret store did not open keeps no channel state of

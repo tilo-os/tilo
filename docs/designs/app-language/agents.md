@@ -79,7 +79,14 @@ opens them. The task host is not an app, so it gets its own admission instead of
   preview is applied and reported as differing. Undo goes the same way, by the app's id and
   record. An app's own instance is never asked to act for the program.
 - **Native apps.** Their types and views come from the published catalogue the same way. Their
-  action code is the app's Rust, so the origin routes the invocation to whatever executes it.
+  action code is the app's Rust, so the origin routes the invocation to whatever executes it: a
+  window of the app when one is open, else an instance of the app with no window. For an action
+  that shows nothing the broker asks the host for one (`LauncherServices::windowless`) instead of
+  launching the app; the session mounts the app's own component on the room's record in its own
+  process, never drawn, connected as the app and marked windowless (`shell/windowless.rs`), and
+  the broker delivers to it. Tasks runs this way, so asking an agent and a run's reports to its
+  issue open no Tasks window. An `open` never goes to a windowless instance: it launches a
+  window.
 
 ## 2. What the agent knows from the start
 

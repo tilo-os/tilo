@@ -33,6 +33,7 @@ mod workspace_record_custody {
                 }),
                 continuation_instance: Some(91),
                 launch_ticket: None,
+                windowless: false,
             },
         )
         .unwrap();

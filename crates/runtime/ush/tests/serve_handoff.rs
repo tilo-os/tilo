@@ -332,6 +332,11 @@ fn which_bwrap() -> Option<PathBuf> {
 fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
     tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap(),
+        "the guest's sandbox"
+    );
+    tilo_test_env::require_capability!(
         NamespaceEntry,
         namespace_entry(),
         "the guest's network namespace"
@@ -350,6 +355,11 @@ fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
 #[test]
 fn a_new_session_runs_ushs_own_shell_and_marks_its_runs() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
+    tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap(),
+        "the guest's sandbox"
+    );
     tilo_test_env::require_capability!(
         NamespaceEntry,
         namespace_entry(),
@@ -409,6 +419,11 @@ fn guests_started(store: &Store) -> usize {
 #[test]
 fn a_tilo_side_session_starts_its_guest_for_the_first_program_only() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
+    tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap(),
+        "the guest's sandbox"
+    );
     tilo_test_env::require_capability!(
         NamespaceEntry,
         namespace_entry(),
@@ -500,6 +515,11 @@ fn a_tilo_side_session_starts_its_guest_for_the_first_program_only() {
 #[test]
 fn the_public_ush_alias_creates_default_and_runs_a_confined_command() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
+    tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap(),
+        "the guest's sandbox"
+    );
     tilo_test_env::require_capability!(
         NamespaceEntry,
         namespace_entry(),
@@ -763,6 +783,11 @@ fn run_handoff() {
 #[test]
 fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_terminal() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
+    tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap(),
+        "the guest's sandbox"
+    );
     tilo_test_env::require_capability!(
         NamespaceEntry,
         namespace_entry(),
@@ -1068,6 +1093,11 @@ fn start_reexec_supervisor(
 
 #[test]
 fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
+    tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap(),
+        "the guest's sandbox"
+    );
     tilo_test_env::require_capability!(
         NamespaceEntry,
         namespace_entry(),

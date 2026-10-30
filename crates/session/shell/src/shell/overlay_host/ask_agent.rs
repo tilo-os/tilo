@@ -419,7 +419,7 @@ impl ShellOverlayHost {
     /// The session source for the workspace, and those of its collaborator
     /// `members` that are admitted (certified under their own key) and hold
     /// a live task subscription, so a task assigned to them reaches them.
-    fn live_agents(
+    pub(super) fn live_agents(
         &self,
         room: &str,
         members: Vec<String>,

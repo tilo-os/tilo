@@ -65,6 +65,9 @@ pub(super) struct LocalAppConnection {
     pub(super) workspace_id: String,
     pub(super) creation: Option<crate::services::ApplicationCreationEvidence>,
     pub(super) continuation_instance: Option<u64>,
+    /// An instance of the app the host runs with no window
+    /// ([`crate::services::AuthenticatedApplicationLaunch::windowless`]).
+    pub(super) windowless: bool,
     /// The ids the launched app had before, as the launcher's catalogue believes them (the same
     /// publisher signed them): the app keeps using the record of its earliest
     /// ([`tilo_action_policy::EarlierIds::records_under`]).
@@ -245,6 +248,7 @@ impl LocalAppConnection {
                 workspace_id,
                 creation: launch.creation,
                 continuation_instance: launch.continuation_instance,
+                windowless: launch.windowless,
                 earlier,
                 process,
                 connected: AtomicBool::new(true),

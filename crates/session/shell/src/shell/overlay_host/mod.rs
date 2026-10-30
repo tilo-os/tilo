@@ -101,6 +101,7 @@ mod top_bar_reveal;
 mod transient_zone;
 mod widget;
 mod window_share_controls;
+mod windowless_apps;
 #[cfg(test)]
 pub(crate) use window_share_controls::windows_shared_by_others;
 mod window_toolbars;
@@ -824,6 +825,9 @@ pub struct ShellOverlayHost {
     /// The notification banners, an app hosted above content but below
     /// the permission prompt and modals.
     banners: banners::BannerHost,
+    /// The apps the session runs with no window, for actions on their
+    /// records ([`crate::shell::windowless`]).
+    windowless: windowless_apps::WindowlessApps,
     /// The theme's reduced-motion choice at the last paint, so wakes and
     /// animation frames for the acknowledgement skip a fade it won't show.
     acknowledgement_reduce_motion: std::cell::Cell<bool>,
