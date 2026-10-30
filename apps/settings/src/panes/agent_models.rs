@@ -20,7 +20,7 @@ pub use agent_provider_config::local::snapshot::{
     InProcessLocalModel, InstalledLocalModel, LocalModelPackage, LocalModelPhase,
     LocalModelSnapshot,
 };
-use agent_provider_config::{EndpointLocation, ModelDescriptor, ProviderConfig, ProviderProfile};
+use agent_provider_config::{ModelDescriptor, ProviderConfig, ProviderProfile};
 #[cfg(test)]
 use agent_provider_config::{ModelRequestLimits, ProviderProtocol};
 use ui::LocalState;

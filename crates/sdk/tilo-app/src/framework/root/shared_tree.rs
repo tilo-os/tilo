@@ -14,7 +14,9 @@ use ui_core::published::{SharedChildren, SharedResource};
 
 use super::super::rows::{LiveRow, join, outside_document};
 use super::typed::ResourceType;
-use super::{Decoration, ResourceRoot, offer_document_reads, offer_item_open, open_spec};
+use super::{
+    Decoration, ResourceRoot, offer_document_reads, offer_item_open, offer_item_reads, open_spec,
+};
 
 /// The document-owned tree at one live version, locale and
 /// [`Resource::publication_cache_epoch`].
@@ -65,13 +67,32 @@ pub(super) struct RecordChildren {
     children: SharedChildren,
 }
 
+/// What a publication adds to each child of the document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Adds {
+    /// `open` on the items a view opens.
+    open: bool,
+    /// Document actions queued as jobs, for an app that drains effects
+    /// causally.
+    jobs: bool,
+    /// The document read of each item, for a resource that answers no reads
+    /// of its own: an item is document state, disclosed by its read.
+    reads: bool,
+}
+
+impl Adds {
+    const fn none(self) -> bool {
+        !self.open && !self.jobs && !self.reads
+    }
+}
+
 /// The document children as last published, after what the publication adds
 /// to each child: `open` on items a view opens, and document actions queued
 /// as jobs. Kept so the next publication adds it only to the children that
 /// changed.
 pub(super) struct PublishedChildren {
-    /// What was added: (`open` offered, document actions queued).
-    adds: (bool, bool),
+    /// What was added.
+    adds: Adds,
     document: SharedChildren,
     published: SharedChildren,
 }
@@ -82,8 +103,8 @@ pub(super) struct PublishedChildren {
 /// rows are the very ones the surfaces handed out last time, over the same
 /// document child, is that very node again.
 pub(super) struct RowChildren {
-    /// What was added: (`open` offered, document actions queued).
-    adds: (bool, bool),
+    /// What was added.
+    adds: Adds,
     groups: HashMap<String, RowGroup>,
     children: SharedChildren,
 }
@@ -385,8 +406,8 @@ impl ResourceRoot {
     /// as [`Self::decorate_publication`] and `resources_for` add them to the
     /// whole tree. A child the last publication carried is that very node.
     fn published_children(&self, document: &SharedChildren, opens: bool) -> SharedChildren {
-        let adds = (opens, self.typed.has_causal_drains());
-        if adds == (false, false) {
+        let adds = self.adds(opens);
+        if adds.none() {
             return document.clone();
         }
         let mut kept = self.published_children.borrow_mut();
@@ -413,12 +434,7 @@ impl ResourceRoot {
                         .map_or_else(
                             || {
                                 let mut resource = child.to_resource();
-                                if adds.1 {
-                                    mark_document_jobs(&mut resource);
-                                }
-                                if adds.0 {
-                                    offer_item_open(self.resource.item_of, &mut resource);
-                                }
+                                self.decorate_child(&mut resource, adds);
                                 SharedResource::from_resource(resource)
                             },
                             |(_, published)| (*published).clone(),
@@ -517,7 +533,7 @@ impl ResourceRoot {
             *self.row_children.borrow_mut() = None;
             return document;
         }
-        let adds = (opens, self.typed.has_causal_drains());
+        let adds = self.adds(opens);
         let last = self
             .row_children
             .borrow_mut()
@@ -605,7 +621,7 @@ impl ResourceRoot {
         &self,
         base: Option<&SharedResource>,
         rows: &[LiveRow],
-        adds: (bool, bool),
+        adds: Adds,
     ) -> SharedResource {
         let mut rows = rows.iter().cloned().map(LiveRow::into_resource);
         let mut resource = match base {
@@ -626,21 +642,37 @@ impl ResourceRoot {
         SharedResource::from_resource(resource)
     }
 
+    /// What the publication adds to the document's children when a view
+    /// `opens` items.
+    fn adds(&self, opens: bool) -> Adds {
+        Adds {
+            open: opens,
+            jobs: self.typed.has_causal_drains(),
+            reads: !self.resource.readable && self.resource.record_table.is_some(),
+        }
+    }
+
     /// What the publication adds to each child, as `adds` says: `open` on
-    /// items a view opens, and document actions queued as jobs.
-    fn decorate_child(&self, resource: &mut tilo_actions::ResourceSpec, adds: (bool, bool)) {
-        if adds.1 {
+    /// items a view opens, document actions queued as jobs, and the
+    /// document read of each item.
+    fn decorate_child(&self, resource: &mut tilo_actions::ResourceSpec, adds: Adds) {
+        if adds.jobs {
             mark_document_jobs(resource);
         }
-        if adds.0 {
+        if adds.open {
             offer_item_open(self.resource.item_of, resource);
+        }
+        if adds.reads
+            && let Some(table) = self.resource.record_table
+        {
+            offer_item_reads(resource, table, self.resource.kind);
         }
     }
 
     /// Bind the edits surfaces offer on rows to each of `children` holding a
     /// row any surface offers on, anywhere in it. The others stay as they
     /// are.
-    fn bind_rows_shared(&self, children: &mut [SharedResource], adds: (bool, bool)) {
+    fn bind_rows_shared(&self, children: &mut [SharedResource], adds: Adds) {
         fn offered(resource: &SharedResource, offers: &dyn Fn(&str) -> bool) -> bool {
             offers(resource.id())
                 || resource

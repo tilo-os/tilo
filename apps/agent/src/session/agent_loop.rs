@@ -362,6 +362,16 @@ fn streamed_call(output: &str, index: usize) -> Option<StreamedCall> {
     })
 }
 
+/// What one run may take.
+struct RunBudget {
+    /// Its model turns; `None` when its time alone bounds it.
+    turns: Option<usize>,
+    /// Its whole time.
+    total: Duration,
+    /// The longest one model turn may take.
+    turn: Duration,
+}
+
 /// Durable state of one task's loop.
 pub(super) struct LoopState {
     pub(super) revealed: Revealed,
@@ -983,6 +993,29 @@ impl Session {
         result
     }
 
+    /// What `run` may take: its issue's budget (its turns, none when its
+    /// time alone bounds it, and its time), else the runner's default.
+    ///
+    /// # Errors
+    /// An issue's budget no run may have.
+    fn run_budget(&self, run: &runtime_collab::TaskRunEnvelope) -> Result<RunBudget, String> {
+        let Some(budget) = run.execution_budget else {
+            return Ok(RunBudget {
+                turns: Some(DEFAULT_LOOP_TURNS),
+                total: DEFAULT_LOOP_TIME,
+                turn: MAX_LOOP_TURN_TIME.min(self.chooser.timeout().max(Duration::from_secs(1))),
+            });
+        };
+        budget.validate()?;
+        Ok(RunBudget {
+            turns: budget
+                .max_turns
+                .map(|turns| usize::try_from(turns).unwrap_or(usize::MAX)),
+            total: Duration::from_millis(u64::from(budget.total_ms)),
+            turn: Duration::from_millis(u64::from(budget.turn_ms)),
+        })
+    }
+
     fn run_task_loop_with(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -999,25 +1032,12 @@ impl Session {
         if let Some(refusal) = self.chooser.refuses_tasks() {
             return Ok(LoopEnd::Failed(refusal));
         }
-        let (total_budget, turn_budget) = if let Some(budget) = run.execution_budget {
-            if let Err(error) = budget.validate() {
-                return Ok(LoopEnd::Failed(error.into()));
+        let (total_budget, turn_budget) = match self.run_budget(run) {
+            Ok(RunBudget { turns, total, turn }) => {
+                state.turns = turns;
+                (total, turn)
             }
-            // The issue's budget is the run's limit: its turns (none, and
-            // its time alone bounds it) and its time.
-            state.turns = budget
-                .max_turns
-                .map(|turns| usize::try_from(turns).unwrap_or(usize::MAX));
-            (
-                Duration::from_millis(u64::from(budget.total_ms)),
-                Duration::from_millis(u64::from(budget.turn_ms)),
-            )
-        } else {
-            state.turns = Some(DEFAULT_LOOP_TURNS);
-            (
-                DEFAULT_LOOP_TIME,
-                MAX_LOOP_TURN_TIME.min(self.chooser.timeout().max(Duration::from_secs(1))),
-            )
+            Err(error) => return Ok(LoopEnd::Failed(error)),
         };
         let mut context = compaction::Context::of(self.chooser.context_tokens());
         self.await_companions();
