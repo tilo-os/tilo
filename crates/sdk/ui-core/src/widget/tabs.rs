@@ -3019,6 +3019,7 @@ impl TabBar {
     /// not a control (it stands on a canvas): its title and location carry
     /// it, and a click on them still does what it does.
     pub fn set_carriable(&mut self, carriable: bool) {
+        self.touch();
         self.carriable = carriable;
         self.toolbar_row.set_carriable(carriable);
     }
