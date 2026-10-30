@@ -7,6 +7,10 @@
 use std::rc::Rc;
 use ui::search::{FieldWeight, ListIndex};
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "every declaration in the shell's action table is a palette row, and the provider's tests reach them the same way"
+)]
 use crate::shell::actions::*;
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::{t, t_args};
@@ -374,10 +378,6 @@ impl ActionsProvider {
 
     /// Build one table action, shared by palette enumeration and exact invocation.
     /// Exact addresses must not build unrelated rows after every chrome mutation.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the table action's synchronous and lifecycle callbacks share one construction path"
-    )]
     fn static_action(
         &self,
         action: &'static Action,
@@ -911,7 +911,6 @@ impl ActionsProvider {
 /// an answer to it. "notes" looks for notes, not for hiding them; an empty
 /// listing and an exact `search.provider.toggle:…` address still see every
 /// switch.
-
 fn asks_about_search_sources(needle: &str) -> bool {
     let needle = needle.trim().to_lowercase();
     if needle.is_empty() || needle.starts_with("search.provider.") {

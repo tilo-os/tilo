@@ -756,7 +756,7 @@ type SceneElements<R> = (Vec<RelocateRenderElement<OutputRenderElement<R>>>, [f3
 /// is shown.
 fn scene_elements<R>(
     renderer: &mut R,
-    state: &mut State,
+    state: &State,
     scene: &Scene,
     target: &Target,
     cursor: bool,

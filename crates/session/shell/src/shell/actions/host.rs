@@ -381,7 +381,7 @@ impl ShellActionsHost {
         let mut changed = self.app.update(doc, path) | woken;
         for asked in self.link.take_asked() {
             changed = true;
-            self.run(chrome, asked);
+            self.run(chrome, &asked);
         }
         let link = &self.link;
         self.waiting.retain(|waiting| match (waiting.ticket)() {
@@ -401,7 +401,7 @@ impl ShellActionsHost {
         changed
     }
 
-    fn run(&mut self, chrome: &Chrome, asked: HostedInvocation) {
+    fn run(&mut self, chrome: &Chrome, asked: &HostedInvocation) {
         let invocation = asked.invocation;
         let started = serde_json::from_slice::<Invocation>(&asked.payload)
             .map_err(|error| ActionError::Refused(error.to_string()))

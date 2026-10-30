@@ -173,13 +173,14 @@ fn decode_artwork(image: ArtworkImage) -> Option<Artwork> {
         );
         return None;
     };
-    (u64::try_from(rgba.len()).ok()? == u64::from(image.width) * u64::from(image.height) * 4).then(
-        || Artwork {
-            width: image.width,
-            height: image.height,
-            rgba: Arc::new(rgba),
-        },
-    )
+    let expected = u64::from(image.width)
+        .checked_mul(u64::from(image.height))
+        .and_then(|pixels| pixels.checked_mul(4));
+    (Some(u64::try_from(rgba.len()).ok()?) == expected).then(|| Artwork {
+        width: image.width,
+        height: image.height,
+        rgba: Arc::new(rgba),
+    })
 }
 
 /// Attribute every player not yet verified to a launch, and tell the helper
@@ -495,7 +496,7 @@ pub fn refresh_now_playing() {}
 
 /// Send `command` to exactly the player at `bus_name`, never to whichever
 /// other player happens to be active. Returns whether it was dispatched.
-pub fn control(bus_name: &str, command: PlayerCommand) -> bool {
+pub fn control(bus_name: &str, command: &PlayerCommand) -> bool {
     if !is_player_name(bus_name) {
         return false;
     }
@@ -529,7 +530,7 @@ pub fn control(bus_name: &str, command: PlayerCommand) -> bool {
     {
         let toggled = if status == PlaybackStatus::Playing {
             PlaybackStatus::Paused
-        } else if command == PlayerCommand::Pause {
+        } else if *command == PlayerCommand::Pause {
             status
         } else {
             PlaybackStatus::Playing
@@ -609,10 +610,10 @@ mod tests {
         // runs them.
         assert!(!send(Command::PlayPause, |_| {}));
         assert!(!pause_named("org.mpris.MediaPlayer2.probe"));
-        assert!(!control("org.freedesktop.DBus", PlayerCommand::Pause));
+        assert!(!control("org.freedesktop.DBus", &PlayerCommand::Pause));
         assert!(!control(
             &format!("{MPRIS_PREFIX}{}", "x".repeat(300)),
-            PlayerCommand::Pause
+            &PlayerCommand::Pause
         ));
         assert!(!pause_named_if_uri("org.mpris.MediaPlayer2.probe", ""));
     }

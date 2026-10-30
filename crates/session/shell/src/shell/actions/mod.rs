@@ -1777,7 +1777,10 @@ pub(crate) fn begin(
             }
             if !matches!(action_id, "peer.connect" | "peer.pair-device")
                 && let Some(refusal) = crate::shell::invite_policy::active_invite_route(&state)
-                    .map_or(Some("no active workspace"), |route| route.refusal())
+                    .map_or(
+                        Some("no active workspace"),
+                        super::invite_policy::InviteRoute::refusal,
+                    )
             {
                 return Err(ActionError::Refused(refusal.into()));
             }
