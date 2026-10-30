@@ -14,11 +14,12 @@ use std::time::Duration;
 
 use settings_store::magnifier::MagnifierView as StoredView;
 use tilo_accessibility_settings::{
-    AccessibilitySettings, ColorFilter as StoredFilter, SwitchKeyPair as StoredPair,
+    AccessibilitySettings, ColorFilter as StoredFilter, OnScreenKeyboard,
+    SwitchKeyPair as StoredPair,
 };
 use tilo_compositor::{
     A11y, Assists, ColorFilter, Compositor, CursorA11y, Error, Magnifier, MagnifierView,
-    SwitchConfig, SwitchPair,
+    SwitchConfig, SwitchPair, TextEntry,
 };
 
 /// How long a key must be held for slow keys to type it: long enough that a
@@ -58,6 +59,20 @@ pub fn a11y(settings: &AccessibilitySettings) -> A11y {
 /// When the compositor cannot flush the answers to clients.
 pub fn apply(compositor: &mut Compositor, settings: &AccessibilitySettings) -> Result<(), Error> {
     compositor.set_a11y(a11y(settings))
+}
+
+/// Whether the on-screen keyboard belongs on screen: the person's choice of
+/// when it runs, and what the compositor sees of a text field waiting for
+/// typing and of the way they are typing.
+#[must_use]
+pub fn keyboard_visible(preference: OnScreenKeyboard, entry: TextEntry) -> bool {
+    match preference {
+        OnScreenKeyboard::Always => true,
+        OnScreenKeyboard::Never => false,
+        // The keyboard arrives with a text field when the person types on the
+        // glass, and stays out of the way of the one they are holding.
+        OnScreenKeyboard::Auto => entry.wants_typing && entry.on_the_glass,
+    }
 }
 
 /// The stored colour filter as the compositor's.
@@ -233,5 +248,54 @@ mod tests {
         assert_eq!(a11y.magnifier.zoom, 3);
         assert_eq!(a11y.magnifier.view, MagnifierView::FullScreen);
         assert!(a11y.magnifier.factor() > 2.0);
+    }
+
+    /// A text field waiting for typing, typed on the glass or not.
+    fn entry(wants_typing: bool, on_the_glass: bool) -> TextEntry {
+        TextEntry {
+            wants_typing,
+            on_the_glass,
+        }
+    }
+
+    #[test]
+    fn the_on_screen_keyboard_follows_its_setting_and_the_glass() {
+        // Automatic: with a text field and a touch on the screen.
+        assert!(keyboard_visible(OnScreenKeyboard::Auto, entry(true, true)));
+        // Not while they type on the keyboard they hold.
+        assert!(!keyboard_visible(
+            OnScreenKeyboard::Auto,
+            entry(true, false)
+        ));
+        // Not over a desktop with no field waiting for anything.
+        assert!(!keyboard_visible(
+            OnScreenKeyboard::Auto,
+            entry(false, true)
+        ));
+        // Always: up even before a field is reached.
+        assert!(keyboard_visible(
+            OnScreenKeyboard::Always,
+            entry(false, false)
+        ));
+        // Never: not even for a touch in a field.
+        assert!(!keyboard_visible(
+            OnScreenKeyboard::Never,
+            entry(true, true)
+        ));
+    }
+
+    #[test]
+    fn the_stored_keyboard_preference_is_the_one_that_applies() {
+        for (stored, expected) in [
+            ("never", OnScreenKeyboard::Never),
+            ("always", OnScreenKeyboard::Always),
+            ("automatic", OnScreenKeyboard::Auto),
+        ] {
+            assert_eq!(
+                settings(&[("on_screen_keyboard", stored.into())]).on_screen_keyboard,
+                expected,
+                "{stored}"
+            );
+        }
     }
 }
