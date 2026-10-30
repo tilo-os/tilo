@@ -1978,7 +1978,19 @@ pub type EndpointChannelKeys = std::sync::Arc<
 pub struct CertifiedEndpointIdentity {
     presentation: Vec<u8>,
     device_key: ed25519_dalek::SigningKey,
-    channel_keys: Option<EndpointChannelKeys>,
+    signer: EndpointSigner,
+}
+
+/// What signs an explicit endpoint's writes and where its channel keys come
+/// from.
+#[derive(Clone)]
+enum EndpointSigner {
+    /// A test harness's endpoint: its key, and the channel keys `with_channel_keys`
+    /// gave it, if any.
+    Harness(Option<EndpointChannelKeys>),
+    /// A task agent: the task key its desktop delegated signs, and the
+    /// channel keys are always asked of an identity service.
+    Delegated(EndpointChannelKeys),
 }
 
 impl CertifiedEndpointIdentity {
@@ -1986,7 +1998,21 @@ impl CertifiedEndpointIdentity {
         Self {
             presentation,
             device_key,
-            channel_keys: None,
+            signer: EndpointSigner::Harness(None),
+        }
+    }
+
+    /// An identity signing with `key` under the delegation `presentation`
+    /// carries, its routes' channel keys asked through `keys`.
+    pub(crate) fn delegated(
+        presentation: Vec<u8>,
+        key: ed25519_dalek::SigningKey,
+        keys: EndpointChannelKeys,
+    ) -> Self {
+        Self {
+            presentation,
+            device_key: key,
+            signer: EndpointSigner::Delegated(keys),
         }
     }
 
@@ -1995,12 +2021,16 @@ impl CertifiedEndpointIdentity {
     /// them its writes are plaintext, and refused in a room that seals them.
     #[must_use]
     pub fn with_channel_keys(mut self, keys: EndpointChannelKeys) -> Self {
-        self.channel_keys = Some(keys);
+        self.signer = EndpointSigner::Harness(Some(keys));
         self
     }
 
     fn document_signer(&self) -> SdkDocumentSigner {
-        SdkDocumentSigner::Harness(Box::new(self.device_key.clone()), self.channel_keys.clone())
+        let key = Box::new(self.device_key.clone());
+        match &self.signer {
+            EndpointSigner::Harness(keys) => SdkDocumentSigner::Harness(key, keys.clone()),
+            EndpointSigner::Delegated(keys) => SdkDocumentSigner::Delegated(key, keys.clone()),
+        }
     }
 }
 
@@ -2116,6 +2146,10 @@ enum SdkDocumentSigner {
     /// still rejects the uncertified join before any op reaches policy.
     /// With channel keys to ask, its routes encrypt as a certified one's do.
     Harness(Box<ed25519_dalek::SigningKey>, Option<EndpointChannelKeys>),
+    /// A task agent: the task key signs its writes and the delegation its
+    /// desktop signed admits it; the channel keys come from its launcher's
+    /// identity service, as a launched app's do.
+    Delegated(Box<ed25519_dalek::SigningKey>, EndpointChannelKeys),
 }
 
 /// Identity state after the shovel thread has entered its `LocalSet`. The host
@@ -5846,9 +5880,9 @@ async fn try_send_frame(
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             identity.signing_public_key()
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key, _)) => {
-            key.verifying_key().to_bytes()
-        }
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(key, _) | SdkDocumentSigner::Delegated(key, _),
+        ) => key.verifying_key().to_bytes(),
         LocalSdkDocumentSigner::Host(identity) => identity.metadata().signing_public_key(),
     };
     let author = collab_types::Ed25519PublicKey::from_bytes(author);
@@ -5930,7 +5964,9 @@ async fn try_send_frame(
                 ));
             }
         },
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key, _)) => {
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(key, _) | SdkDocumentSigner::Delegated(key, _),
+        ) => {
             use ed25519_dalek::Signer as _;
             let signing_bytes = match op.signing_bytes() {
                 Ok(bytes) => bytes,
@@ -6074,7 +6110,9 @@ async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigne
                 .channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
                 .await
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, Some(keys))) => {
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(_, Some(keys)) | SdkDocumentSigner::Delegated(_, keys),
+        ) => {
             let query = KeyQuery::of(route, generation);
             let mut fetched = endpoint_channel_keys(std::sync::Arc::clone(keys), vec![query])
                 .await
@@ -6115,9 +6153,9 @@ async fn refresh_keys(
                 },
             )
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, Some(keys))) => {
-            std::sync::Arc::clone(keys)
-        }
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(_, Some(keys)) | SdkDocumentSigner::Delegated(_, keys),
+        ) => std::sync::Arc::clone(keys),
         _ => {
             tracing::debug!(target: KEY_ROUNDS, "collab: asking the host for channel keys");
             refresh_all_route_keys(routes, signer, inbound_tx, round).await;
