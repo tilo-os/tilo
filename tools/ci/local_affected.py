@@ -58,7 +58,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from ci import nextest_filters  # noqa: E402
 from ci.affected_packages import package_cost, recorded_test_seconds  # noqa: E402
 
-DEFAULT_STAGES = "check,clippy,test,goldens,certify,scenarios,scoped"
+DEFAULT_STAGES = "check,clippy,test,policy,goldens,certify,scenarios,scoped"
 CHANGED_STAGES = "check,clippy,test"
 GOLDEN_PACKAGES = {"shell", "tilo-ui", "ebook"}
 # Above this much recorded test time (seconds, tools/ci/recorded_test_time.json) a
@@ -460,6 +460,13 @@ def main() -> int:
             spawn("lint-defaults", lambda job: job.run(
                 f"clippy over the default builds of {' '.join(defaults)}", primary,
                 ["bash", "tools/ci/lint-affected.sh", "--default-builds", *defaults]))
+
+    # The repository policy suite (tools/policy/run.sh: the policy checks and every Python
+    # test under tools/tests and .codex/hooks), as CI's quality job runs it: here, beside the
+    # builder jobs, since its tests build Git repositories of their own from this checkout.
+    if want("policy"):
+        spawn("policy", lambda job: job.run("repository policy suite", Builder("local", None),
+                                            ["bash", "tools/policy/run.sh"]))
 
     # Type-check only (other architectures, `--full`): on the arm builder when there is one.
     if want("check") and checks:
