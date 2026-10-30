@@ -56,7 +56,6 @@ fn render_on_cpu(scene: &Scene, width: u32, height: u32, bg: Color) -> Result<Ve
     Ok(rgba)
 }
 
-
 /// A surface's frames kept in memory and drawn on the CPU: what a host
 /// shows on a machine where the toolkit has no GPU adapter to draw them on,
 /// exactly as it draws a normal app's frame there. Kept between frames, so
