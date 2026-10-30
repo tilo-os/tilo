@@ -262,8 +262,7 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
             assert!(!runs.is_empty());
             for run in runs {
                 assert!(
-                    (run.font_size - theme.tokens.typography.size(TextRole::Label)).abs()
-                        < 0.001,
+                    (run.font_size - theme.tokens.typography.size(TextRole::Label)).abs() < 0.001,
                     "{scale}x text must paint once at resolved size {}, got {}",
                     theme.tokens.typography.size(TextRole::Label),
                     run.font_size
@@ -300,8 +299,7 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
             )
             .0;
         assert!(
-            rect[2] / 2.0
-                >= f64::from(widest) + 2.0 * f64::from(Theme::dark().tokens.spacing.s3),
+            rect[2] / 2.0 >= f64::from(widest) + 2.0 * f64::from(Theme::dark().tokens.spacing.s3),
             "each segment holds the widest label: {rect:?}"
         );
         let harness = crate::headless::FrameHarness::new(
@@ -310,11 +308,8 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
                 crate::widget::Column::new()
                     .with_no_padding()
                     .push(Box::new(
-                        ToggleGroup::new(
-                            vec![Segment::new("World"), Segment::new("Timers")],
-                            0,
-                        )
-                        .fill(),
+                        ToggleGroup::new(vec![Segment::new("World"), Segment::new("Timers")], 0)
+                            .fill(),
                     )),
             ),
             (600, 200),
@@ -906,8 +901,7 @@ fn segment_colours_follow_selection_focus_and_style() {
                 let (idle, idle_ink) = segment_colors(&theme, style, false, false);
                 assert_eq!(idle, None, "{}: an idle segment paints nothing", theme.name);
                 assert!(
-                    contrast_ratio(idle_ink, ground)
-                        < contrast_ratio(colors.text_primary, ground),
+                    contrast_ratio(idle_ink, ground) < contrast_ratio(colors.text_primary, ground),
                     "{} {style:?}: an idle label is quieter than the chosen one",
                     theme.name
                 );
@@ -1088,8 +1082,8 @@ fn strips_choose_nothing_many_or_icons_and_tabs_start_flush() {
 
     fn a_bound_selection_follows_its_state_both_ways() {
         let state = crate::LocalState::new(1usize);
-        let mut g = ToggleGroup::new(vec![Segment::new("A"), Segment::new("B")], 0)
-            .bind_selection(&state);
+        let mut g =
+            ToggleGroup::new(vec![Segment::new("A"), Segment::new("B")], 0).bind_selection(&state);
         assert_eq!(g.selected(), 1);
         g.rect = Rect::new(0.0, 0.0, 200.0, 32.0);
         g.segment_rects = partition(g.rect, 2);
@@ -1245,7 +1239,11 @@ fn strips_choose_nothing_many_or_icons_and_tabs_start_flush() {
 fn a_multi_select_toggle_runs_its_action_with_the_chosen_indices() {
     use crate::widget::controls::ActionControls;
     let mut g = ToggleGroup::multiple(
-        vec![Segment::new("Mon"), Segment::new("Tue"), Segment::new("Wed")],
+        vec![
+            Segment::new("Mon"),
+            Segment::new("Tue"),
+            Segment::new("Wed"),
+        ],
         vec![true, false, false],
     )
     .with_id("days")
@@ -1266,7 +1264,9 @@ fn a_multi_select_toggle_runs_its_action_with_the_chosen_indices() {
         &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
         &automerge::ROOT,
     ));
-    let invocation = g.take_control_invocation().expect("the toggle runs the action");
+    let invocation = g
+        .take_control_invocation()
+        .expect("the toggle runs the action");
     assert_eq!(
         invocation.arguments.get("value"),
         Some(&serde_json::json!([0, 2]))
@@ -1277,5 +1277,8 @@ fn a_multi_select_toggle_runs_its_action_with_the_chosen_indices() {
         "the strip shows the new set once the app hands it back"
     );
     g.refresh_control_action_availability(&std::collections::HashSet::new());
-    assert!(!Widget::is_enabled(&g), "an unavailable action disables the strip");
+    assert!(
+        !Widget::is_enabled(&g),
+        "an unavailable action disables the strip"
+    );
 }

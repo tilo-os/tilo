@@ -1,6 +1,6 @@
 pub use crate::theme_document::{
-    Preset, THEME_SCHEMA_VERSION, ThemeDensity, ThemeDocument, ThemeMaterial, ThemeMotion,
-    ThemeShape, ThemeType,
+    MotionCurve, Preset, THEME_SCHEMA_VERSION, ThemeDensity, ThemeDocument, ThemeMaterial,
+    ThemeMotion, ThemeShape, ThemeType, ThemeWeight, ThemeWeights,
 };
 pub use crate::theme_layers::{
     APPEARANCE_SECTION, AccessibilityLayer, CUSTOM_THEMES_KEY, ContentSurface, DARK_THEME_KEY,
@@ -41,6 +41,16 @@ fn apply_motion_character(motion: &mut crate::tokens::Motion, character: f32) {
     motion.springs.bouncy = mix_spring(stock.bouncy, stock.snappy, calm);
 }
 
+/// The ink a border role names, or `None` for the stock hairlines (each
+/// surface derives its own).
+fn border_ink(colors: &Colors, ink: crate::tokens::BorderInk) -> Option<Color> {
+    match ink {
+        crate::tokens::BorderInk::Hairline => None,
+        crate::tokens::BorderInk::Standard => Some(colors.border_standard),
+        crate::tokens::BorderInk::Strong => Some(colors.text_tertiary),
+    }
+}
+
 fn clamp_to(value: f32, band: &std::ops::RangeInclusive<f32>) -> f32 {
     value.clamp(*band.start(), *band.end())
 }
@@ -50,13 +60,8 @@ fn clamp_to(value: f32, band: &std::ops::RangeInclusive<f32>) -> f32 {
 fn colors_of(document: &ThemeDocument, you: PresenceHue) -> Colors {
     let mut colors =
         Colors::of_palette(&document.palette, document.emphasis, document.presence, you);
-    colors.set_material(
-        clamp_to(document.material.blur, &ThemeMaterial::BLUR_USABLE),
-        clamp_to(
-            document.material.tint_opacity,
-            &ThemeMaterial::TINT_ADMITTED,
-        ),
-    );
+    let floating = document.material.floating.usable();
+    colors.set_material(floating.blur(), floating.tint());
     colors
 }
 
@@ -82,9 +87,51 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
     tokens.typography.distinct_letters = document.type_.distinguishes_letters();
     let size = clamp_to(document.type_.base_size, &ThemeType::USABLE) / ThemeType::BASE_SIZE;
     tokens.typography.scale = tokens.typography.scale.scaled(size);
+    let weights = document.type_.weights;
+    tokens.typography.set_hierarchy(
+        clamp_to(document.type_.contrast, &ThemeType::CONTRAST_ADMITTED),
+        [
+            weights.body.text_weight(),
+            weights.label.text_weight(),
+            weights.heading.text_weight(),
+        ],
+    );
     let character = clamp_to(document.motion.character, &ThemeMotion::ADMITTED);
     apply_motion_character(&mut tokens.motion, character);
     tokens.motion_character = character;
+    match document.motion.curve {
+        MotionCurve::Spring => {}
+        MotionCurve::Eased => tokens.motion = tokens.motion.eased(),
+        MotionCurve::None => tokens.motion.still = true,
+    }
+    tokens.motion = tokens.motion.with_duration_scale(clamp_to(
+        document.motion.duration_scale,
+        &ThemeMotion::DURATION_ADMITTED,
+    ));
+    let roles = document.material.roles().usable();
+    tokens.finishes = if document.palette.high_contrast {
+        roles.opaque()
+    } else {
+        roles
+    };
+    tokens.border = document.shape.border;
+    tokens.depth = document.depth;
+    let outline = crate::tokens::Outline {
+        width: if document.shape.border.outlines() {
+            document.shape.border.width
+        } else {
+            1.0
+        },
+        color: border_ink(&tokens.colors, document.shape.border.ink)
+            .unwrap_or(tokens.colors.text_tertiary),
+    };
+    tokens.elevation = tokens.elevation.with_depth(document.depth, outline);
+    if let Some(ink) = border_ink(&tokens.colors, document.shape.border.ink)
+        && document.shape.border.outlines()
+    {
+        // A floating panel's inner hairline becomes the border.
+        tokens.elevation.floating_edge = ink;
+    }
     tokens.selector = if document.palette.high_contrast {
         crate::tokens::SelectorFinish::OPAQUE
     } else {
@@ -268,6 +315,10 @@ pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
     Theme::light,
     Theme::high_contrast,
     || Theme::preset(Preset::HighContrastLight),
+    || Theme::preset(Preset::Glass),
+    || Theme::preset(Preset::GlassLight),
+    || Theme::preset(Preset::Block),
+    || Theme::preset(Preset::BlockLight),
 ];
 
 /// Polled by [`crate::app::App`] once per frame and reconciled against the
@@ -702,7 +753,7 @@ impl Theme {
     ///
     /// Exists so a check can be run against *all* of them rather than against
     /// whichever two someone remembered.
-    pub const ALL: [&'static str; 7] = [
+    pub const ALL: [&'static str; 11] = [
         Preset::Dark.name(),
         Preset::DarkCool.name(),
         Preset::DarkGraphite.name(),
@@ -710,6 +761,10 @@ impl Theme {
         Preset::Light.name(),
         Preset::HighContrast.name(),
         Preset::HighContrastLight.name(),
+        Preset::Glass.name(),
+        Preset::GlassLight.name(),
+        Preset::Block.name(),
+        Preset::BlockLight.name(),
     ];
 
     /// A shipped theme by id or name, loosely ([`Preset::find`]), so the
@@ -731,6 +786,18 @@ impl Theme {
     pub fn with_reduce_motion(mut self, on: bool) -> Self {
         self.reduce_motion = on;
         self
+    }
+
+    /// The finish `role` is painted in: the theme's, made opaque under
+    /// reduced transparency and forced colours (a flat finish stays flat).
+    #[must_use]
+    pub fn finish(&self, role: crate::tokens::SurfaceRole) -> crate::tokens::Finish {
+        let finish = self.tokens.finishes.of(role);
+        if self.reduce_transparency || self.forced_colors {
+            finish.opaque()
+        } else {
+            finish
+        }
     }
 
     #[must_use]
@@ -1634,9 +1701,13 @@ mod tests {
                 hover_alpha: 0.8,
             };
             doc.material = ThemeMaterial {
-                blur: 40.0,
-                tint_opacity: 0.9,
+                floating: crate::tokens::Finish::Translucent {
+                    blur: 40.0,
+                    tint: 0.9,
+                    saturation: 1.0,
+                },
                 selector,
+                ..ThemeMaterial::STOCK
             };
             doc.emphasis = Emphasis::Tinted { hue: 150.0 };
             let theme = Theme::from_document(&doc).unwrap();
@@ -1655,6 +1726,61 @@ mod tests {
             assert_eq!(theme.tokens.selector, selector);
             let fill = Oklch::from_color(theme.tokens.colors.intent.accent);
             assert!((fill.h - 150.0).abs() < 6.0 && fill.c > 0.08);
+        }
+
+        // The finish roles reach the tokens every painter reads.
+        {
+            use crate::text_render::TextWeight;
+            use crate::tokens::{Depth, Finish, TextRole};
+            let block = Theme::preset(Preset::Block);
+            assert_eq!(block.tokens.radii.control, 0.0);
+            assert_eq!(block.tokens.radii.tile, 0.0);
+            assert_eq!(block.tokens.finishes.window, Finish::Flat);
+            assert_eq!(block.tokens.finishes.floating, Finish::Flat);
+            assert_eq!(block.tokens.colors.surfaces.material_blur_px, 0.0);
+            assert_eq!(block.tokens.elevation.window.color.components[3], 0.0);
+            assert_eq!(block.tokens.elevation.floating.color.components[3], 0.0);
+            assert!(block.tokens.elevation.window.outline.is_none());
+            assert!(block.motion().still() && !block.motion().moves());
+            assert_eq!(
+                block.text(TextRole::Heading).weight,
+                TextWeight::Bold,
+                "Block's headings are bold"
+            );
+            assert_eq!(block.text(TextRole::Label).weight, TextWeight::Semibold);
+            assert_eq!(
+                block.tokens.elevation.floating_edge, block.tokens.colors.text_tertiary,
+                "a floating panel's edge is the strong border"
+            );
+
+            let glass = Theme::preset(Preset::Glass);
+            assert!(matches!(glass.tokens.finishes.window, Finish::Glass { .. }));
+            assert!(glass.tokens.colors.surfaces.material_blur_px > 0.0);
+            assert!(
+                glass.tokens.elevation.floating.color.components[3]
+                    > Theme::dark().tokens.elevation.floating.color.components[3]
+            );
+
+            let mut doc = Preset::Dark.document();
+            doc.depth = Depth::Outline;
+            doc.type_.contrast = 1.5;
+            let outlined = Theme::from_document(&doc).unwrap();
+            assert_eq!(outlined.tokens.elevation.window.color.components[3], 0.0);
+            assert!(outlined.tokens.elevation.window.outline.is_some());
+            assert!(
+                outlined.tokens.typography.size(TextRole::Display)
+                    > Theme::dark().tokens.typography.size(TextRole::Display)
+            );
+            assert_eq!(
+                outlined.tokens.typography.size(TextRole::Body),
+                Theme::dark().tokens.typography.size(TextRole::Body)
+            );
+
+            // Default stays exactly the design language.
+            let stock = Theme::dark();
+            assert_eq!(stock.tokens.elevation, crate::tokens::Elevation::dark());
+            assert_eq!(stock.tokens.finishes, crate::tokens::RoleFinishes::STOCK);
+            assert!(!stock.motion().still());
         }
 
         {

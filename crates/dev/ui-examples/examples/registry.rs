@@ -114,6 +114,7 @@ const SHOT_SOURCES: &[&str] = &[
 ];
 const PERF_SOURCES: &[&str] = &[
     "dashboard_perf_bench.rs",
+    "material_bench.rs",
     "perf_scenario.rs",
     "widget_perf_bench.rs",
 ];

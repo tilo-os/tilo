@@ -797,8 +797,8 @@ impl Widget for SearchField {
         if !self.embedded {
             let shape = RoundedRect::from_rect(self.rect, radius);
             let fill = theme.tokens.colors.surfaces.raised;
-            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-            if theme.colors_are_forced() {
+            let bordered = crate::surface::control_face(scene, transform, &shape, fill, theme);
+            if theme.colors_are_forced() && !bordered {
                 let focused = self.input.is_focused();
                 scene.stroke(
                     &Stroke::new(if focused { 2.0 } else { 1.0 }),
