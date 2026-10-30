@@ -82,8 +82,8 @@ view note_row(n: Note) {
     ui.ListRow(title: if n.title.len() == 0 { "Untitled" } else { n.title }, secondary: n.body, mark: if n.pinned { .pin })
 }
 
-/// A note's window: its title, its tags as chips that come off with their remove button, and
-/// its body.
+/// A note's window: its title, its tags as chips that come off with their remove button, its
+/// body, and what happened to it.
 view note_editor(n: Note) {
     std.document(n) {
         ui.TextInput(value: n.title, placeholder: "Untitled")
@@ -97,6 +97,7 @@ view note_editor(n: Note) {
             }
         }
         ui.TextInput(value: n.body, placeholder: "Write something", lines: 8)
+        std.history(n)
     }
 }
 

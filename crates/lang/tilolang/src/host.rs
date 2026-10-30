@@ -114,6 +114,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ),
             ("of", "Resource", "The resource it is a version of."),
             (
+                "mine",
+                "Bool",
+                "Whether the person looking made it, outside any task run: one they may undo on its own.",
+            ),
+            (
                 "description",
                 "Text",
                 "What the action that made it does, as its declaration describes it: `Renames a note.`; empty for one that describes nothing.",
@@ -143,6 +148,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "The task run that made it; `.none` for changes made outside a run.",
             ),
             ("versions", "List<Version>", "Its versions, oldest first."),
+            (
+                "mine",
+                "Bool",
+                "Whether the person looking made it, outside any task run.",
+            ),
         ],
     },
     ValueType {

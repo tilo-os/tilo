@@ -60,14 +60,19 @@ pub enum Mode {
     Capture,
 }
 
-/// What the person asked of their history at the window: the record's undo or redo, as the one
-/// who runs the instance carries it out on the record (`ToApp::Undo`, `ToApp::Redo`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What the person asked of their history at the window: the record's undo or redo
+/// (`ToApp::Undo`, `ToApp::Redo`), or an undo a view applied (`undo(v)`, `undo(run)`), as the
+/// one who runs the instance carries it out on the record through its history verb `undo`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistoryAsk {
     /// Take back their last step.
     Undo,
     /// Bring back what their last undo took back.
     Redo,
+    /// Take back the step the change (a change id of the record) is part of.
+    UndoStep(String),
+    /// Take back every step of the task run (its group).
+    UndoRun(String),
 }
 
 /// A later build of the package, in a development session.
@@ -1095,6 +1100,13 @@ impl Instance {
                 }
                 // The run's log is the system's: the window's host shows it.
                 ViewEvent::Review { run, .. } => self.out.push(ToUi::ShowRun { run }),
+                // An undo a view applied is the record's, carried out as the window's undo is.
+                ViewEvent::Undo(tilolang_runtime::UndoAsk::Step { change, .. }) => {
+                    self.history.push(HistoryAsk::UndoStep(change));
+                }
+                ViewEvent::Undo(tilolang_runtime::UndoAsk::Run { run }) => {
+                    self.history.push(HistoryAsk::UndoRun(run));
+                }
             }
         }
     }

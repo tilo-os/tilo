@@ -310,7 +310,17 @@ impl Core {
             Some(phrases) => phrases(id, &[]),
             None => id.to_owned(),
         };
-        let root = self.with_view(|vs| Ok(shown_nodes(vs, &key, &shown, &phrase)))?;
+        let root = self.with_view(|vs| {
+            let root = shown_nodes(vs, &key, &shown, &phrase);
+            // What a field held before reads quieter than what it holds now.
+            if side == "before"
+                && let Some(node) = vs.nodes.get_mut(root)
+                && node.kind == "ui.Text"
+            {
+                node.props.insert("secondary".to_owned(), Value::Bool(true));
+            }
+            Ok(root)
+        })?;
         self.ret_h(Value::Node(root))
     }
 

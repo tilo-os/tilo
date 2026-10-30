@@ -350,6 +350,7 @@ impl Core {
             .as_ref()
             .and_then(|a| a.icon.clone())
             .map(|icon| Box::new(Value::Text(icon)));
+        let mine = v.task.is_none() && self.looking_now().as_deref() == Some(v.who.as_str());
         let changes = match &info {
             Some(info) => self.changes_value(&v, of, info)?,
             None => Vec::new(),
@@ -362,6 +363,7 @@ impl Core {
             Value::Text(v.kind.word().to_owned()),
             Value::List(fields),
             Value::resource(of),
+            Value::Bool(mine),
             Value::Text(description),
             Value::Opt(icon),
             Value::List(changes),
@@ -543,6 +545,8 @@ impl Core {
                             Value::Text(run.title.clone()),
                         ]))
                     }));
+                    let mine = last.task.is_none()
+                        && self.looking_now().as_deref() == Some(last.who.as_str());
                     let versions = step
                         .into_iter()
                         .map(|v| self.version_value(v, at))
@@ -552,6 +556,7 @@ impl Core {
                         at_time,
                         task,
                         Value::List(versions),
+                        Value::Bool(mine),
                     ]));
                 }
                 Value::List(out)
@@ -605,6 +610,20 @@ impl Core {
             list.push(self.version_value(v, &at)?);
         }
         Ok(Value::List(list))
+    }
+
+    /// Who is looking, when someone is: [`Self::looking`] in a view or an action, `None` in
+    /// code no one is looking through (a function an agent's query runs).
+    pub(crate) fn looking_now(&self) -> Option<String> {
+        let frames = self.frames.borrow();
+        let top = frames.top().ok()?;
+        match &top.kind {
+            FrameKind::View(_) | FrameKind::Action(_) => {
+                drop(frames);
+                self.looking().ok()
+            }
+            _ => None,
+        }
     }
 
     /// Who is looking: the person a view shows to, or the invoker of the action running.
