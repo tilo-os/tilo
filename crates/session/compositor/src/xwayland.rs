@@ -92,6 +92,7 @@ impl State {
 
     fn unmap(&mut self, surface: &X11Surface) {
         if let Some(window) = self.element_of(surface) {
+            self.keep_closing(&window);
             self.space.unmap_elem(&window);
             self.rearrange();
         }

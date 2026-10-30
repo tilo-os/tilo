@@ -342,6 +342,26 @@ impl Compositor {
         };
     }
 
+    /// The windows that closed and are still drawn from the last buffer
+    /// they showed, with the place each one stood at, front first. A window
+    /// stays here until the desktop lets it go with
+    /// [`Compositor::release_snapshot`], the same id maps again, or closes
+    /// push it out.
+    pub fn closing_windows(&self) -> Vec<(WindowInfo, (i32, i32, i32, i32))> {
+        self.data
+            .state
+            .closing_windows()
+            .into_iter()
+            .map(|(info, rect)| (info, (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)))
+            .collect()
+    }
+
+    /// Let go of the snapshot of the window `id`: it is gone from the next
+    /// frame on.
+    pub fn release_snapshot(&mut self, id: u64) {
+        self.data.state.release_snapshot(id);
+    }
+
     /// Night light's colour temperature, while it is on.
     pub fn night_light(&self) -> Option<u32> {
         self.data.state.gamma.night_light()

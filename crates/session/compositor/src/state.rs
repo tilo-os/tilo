@@ -62,6 +62,25 @@ impl ClientData for ClientState {
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
 }
 
+/// How many windows that closed keep their last frame: a desktop animates
+/// a handful of closes at once, and older ones go.
+const MOST_CLOSING: usize = 16;
+
+/// A window that closed, drawn from its last buffer where it stood so the
+/// desktop can animate it away ([`crate::Compositor::closing_windows`]).
+pub(crate) struct Closing {
+    /// What the desktop knew it as.
+    pub(crate) info: WindowInfo,
+    /// The window as it was; its last buffer is still what it shows.
+    pub(crate) window: Window,
+    /// Where it stood, logical.
+    pub(crate) rect: Rectangle<i32, Logical>,
+    /// Its place in the stack, bottom first.
+    pub(crate) index: usize,
+    /// How it was framed.
+    pub(crate) frame: crate::window_frame::WindowFrame,
+}
+
 /// Where the pointer's events go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PointerTarget {
@@ -116,6 +135,8 @@ pub struct State {
     pub(crate) window_frames: std::collections::HashMap<u64, crate::window_frame::WindowFrame>,
     /// The shadows and edges drawn so far.
     pub(crate) frame_images: crate::window_frame::FrameImages,
+    /// The windows that closed, kept so the desktop can animate them away.
+    pub(crate) closing: Vec<Closing>,
     pub(crate) capture: crate::capture::Capture,
     /// Outputs turned off by a display configuration: known, not shown.
     pub(crate) disabled_outputs: Vec<Output>,
@@ -181,6 +202,7 @@ impl State {
             frame: crate::window_frame::WindowFrame::default(),
             window_frames: std::collections::HashMap::new(),
             frame_images: crate::window_frame::FrameImages::default(),
+            closing: Vec::new(),
             capture: crate::capture::Capture::new(display),
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
@@ -244,6 +266,51 @@ impl State {
                 Some((info, Rectangle::new(location, size)))
             })
             .collect()
+    }
+
+    /// Keep `window`, which is about to go, so the desktop can animate it
+    /// away: it is drawn from its last buffer as it stood, until the
+    /// desktop drops it with [`crate::Compositor::release_snapshot`] or a
+    /// window of the same id maps again.
+    pub(crate) fn keep_closing(&mut self, window: &Window) {
+        let Some(info) = describe(window) else {
+            return;
+        };
+        let Some(location) = self.space.element_location(window) else {
+            return;
+        };
+        let index = self
+            .space
+            .elements()
+            .position(|element| element == window)
+            .unwrap_or(0);
+        if self.closing.len() >= MOST_CLOSING {
+            self.closing.remove(0);
+        }
+        self.closing.retain(|closing| closing.info.id != info.id);
+        self.closing.push(Closing {
+            info,
+            window: window.clone(),
+            rect: Rectangle::new(location, window.geometry().size),
+            index,
+            frame: self.framing(window).frame,
+        });
+    }
+
+    /// The windows that closed and are still drawn, front first, with the
+    /// place each one stands at.
+    pub(crate) fn closing_windows(&self) -> Vec<(WindowInfo, Rectangle<i32, Logical>)> {
+        self.closing
+            .iter()
+            .map(|closing| (closing.info.clone(), closing.rect))
+            .collect()
+    }
+
+    /// Let go of the snapshot of the window `id`: it is gone from the next
+    /// frame on.
+    pub(crate) fn release_snapshot(&mut self, id: u64) {
+        self.closing.retain(|closing| closing.info.id != id);
+        self.effects.remove(&id);
     }
 
     /// How `window` is drawn this frame: its effect, or as it stands.
@@ -547,6 +614,8 @@ impl State {
         let Some(info) = describe(window) else {
             return;
         };
+        // It came back before the desktop was done with its close.
+        self.closing.retain(|closing| closing.info.id != info.id);
         let outputs = self.output_geometries();
         let size = window.geometry().size;
         let location = self.policy.place(&info, (size.w, size.h), &outputs);
@@ -862,6 +931,7 @@ impl XdgShellHandler for State {
             .find(|window| window.toplevel() == Some(&surface))
             .cloned();
         if let Some(window) = gone {
+            self.keep_closing(&window);
             self.space.unmap_elem(&window);
             self.rearrange();
         }

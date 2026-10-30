@@ -1504,6 +1504,78 @@ fn the_desktop_moves_scales_and_fades_a_window_without_moving_it() {
     assert_eq!(shown(&mut compositor, 320, 240), red);
 }
 
+#[test]
+fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, rect) = compositor.windows()[0].clone();
+    assert_eq!(rect, (220, 190, 200, 100));
+    let shown = |compositor: &mut Compositor, x, y| {
+        compositor.render().unwrap();
+        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
+    };
+    assert_eq!(shown(&mut compositor, 320, 240), Some([255, 0, 0, 255]));
+
+    client.toplevel.as_ref().unwrap().destroy();
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.windows().is_empty()
+    });
+
+    // The window left the desktop's windows, and its last frame stays where
+    // it stood, kept as an element the desktop animates away.
+    let closing = compositor.closing_windows();
+    assert_eq!(closing.len(), 1, "one snapshot: {closing:?}");
+    assert_eq!(closing[0].0.id, info.id);
+    assert_eq!(closing[0].1, rect, "where it stood");
+    assert_eq!(
+        shown(&mut compositor, 320, 240),
+        Some([255, 0, 0, 255]),
+        "its last buffer is still drawn"
+    );
+    assert_ne!(
+        shown(&mut compositor, 221, 191).unwrap(),
+        [255, 0, 0, 255],
+        "and still framed"
+    );
+
+    // The close runs like any other window effect.
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            scale: 0.5,
+            ..WindowEffect::default()
+        }),
+    );
+    assert_eq!(
+        shown(&mut compositor, 320, 240),
+        Some([255, 0, 0, 255]),
+        "the centre stays"
+    );
+    assert_ne!(
+        shown(&mut compositor, 221, 191).unwrap(),
+        [255, 0, 0, 255],
+        "it shrinks in"
+    );
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            opacity: 0.0,
+            ..WindowEffect::default()
+        }),
+    );
+    assert_eq!(
+        shown(&mut compositor, 320, 240),
+        Some(BACKGROUND),
+        "faded out, it is gone"
+    );
+
+    // The desktop is done with it.
+    compositor.release_snapshot(info.id);
+    assert!(compositor.closing_windows().is_empty());
+    assert_eq!(shown(&mut compositor, 320, 240), Some(BACKGROUND));
+    assert_eq!(shown(&mut compositor, 220, 190), Some(BACKGROUND));
+}
+
 /// A hosted surface that pictures one window.
 struct Pictures(WindowPicture);
 
