@@ -29,6 +29,7 @@ service = [
 ]
 
 [dependencies]
+blake3.workspace = true
 media = { package = "tilo-media", path = "../../platform/tilo-media", optional = true }
 settings-store = { path = "../../system/settings-store", features = ["watch"], optional = true }
 serde_json.workspace = true
