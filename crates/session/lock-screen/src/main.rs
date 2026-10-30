@@ -9,7 +9,7 @@
 
 use std::cell::RefCell;
 
-use tilo_sheets::lock::{self, LockSeat, Shown};
+use tilo_sheets::lock::{self, LockSeat, Shown, Status};
 use ui::application::{
     ApplicationDefinition, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
 };
@@ -55,8 +55,17 @@ fn prepared(
 fn shown() -> Shown {
     Shown {
         clock: ui::clock::time_of_day(&ui::clock::local_now()),
+        date: ui::format::day_heading(ui::clock::today(), false),
         person: std::env::var("TILO_SURFACE_PERSON").unwrap_or_default(),
         error: None,
         checking: false,
+        caps_lock: false,
+        // The session feeds the device's readings in as it learns them; a
+        // screen that opens before then says nothing rather than the wrong
+        // thing.
+        status: Status::default(),
+        media: None,
+        keyboard: false,
+        unlocking: false,
     }
 }
