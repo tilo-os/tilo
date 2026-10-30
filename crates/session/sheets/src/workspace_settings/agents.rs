@@ -9,8 +9,8 @@
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    ButtonRole, ChipStyle, Column, ControlSize, Element, EmptyState, ListRow, Row, Section,
-    Segment, ToggleGroup, Tone,
+    ButtonRole, ChipStyle, Column, ControlSize, Element, EmptyState, Fact, Facts, ListRow, Row,
+    Section, Segment, ToggleGroup, Tone,
 };
 
 use super::general::{button, buttons, caption};
@@ -70,9 +70,7 @@ pub struct AccessApp {
     /// What its answers are asked for by.
     pub scope: String,
     pub label: String,
-    /// Its answers in one line, while it is closed.
-    pub summary: String,
-    /// Whether any of its answers was set here, and what that means open.
+    /// Whether any of its answers was set here, and what that means.
     pub customised: bool,
     pub detail: String,
     pub kinds: Vec<KindLine>,
@@ -371,18 +369,14 @@ fn reviewed(review: &AgentReview, parts: &Parts) -> Element {
     column(groups)
 }
 
-/// One app: its name and answers in a line, which opens to an Allow / Ask
-/// first / Deny control for each kind of action, with Reset once any of
-/// them was set here.
+/// One app: its name and its answers as separate facts, which opens to an
+/// Allow, Ask first or Deny control for each kind of action, with Reset once
+/// any of them was set here.
 fn access_app(review: &AgentReview, app: &AccessApp, open: bool, parts: &Parts) -> Element {
     let toggle = parts.clone();
     let scope = app.scope.clone();
     let mut head = ListRow::new(format!("ws-agent-app-{}", app.scope), app.label.clone())
-        .secondary(if open {
-            app.detail.clone()
-        } else {
-            app.summary.clone()
-        })
+        .secondary(app.detail.clone())
         .disclosure()
         .selected(open)
         .on_activate(move || toggle.toggle_app(&scope));
@@ -404,14 +398,23 @@ fn access_app(review: &AgentReview, app: &AccessApp, open: bool, parts: &Parts) 
     } else if app.customised {
         head = head.tags(&[(review.custom.as_str(), ChipStyle::Tinted(Tone::Info))]);
     }
-    if !open {
-        return Box::new(head);
-    }
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Related)
         .push(Box::new(head));
+    if !open {
+        // Closed, each kind's answer is its own fact; open, its own control.
+        let facts = app
+            .kinds
+            .iter()
+            .map(|line| {
+                let answer = review.answers.get(line.answer).map_or("", String::as_str);
+                Fact::text(format!("{}: {answer}", line.label))
+            })
+            .collect();
+        return Box::new(column.push(Box::new(Facts::new(facts))));
+    }
     for line in &app.kinds {
         column = column.push(kind_line(review, app, line, parts));
     }
@@ -583,7 +586,6 @@ pub(super) fn sample_review() -> AgentReview {
             AccessApp {
                 scope: "so.tilo.notes".to_owned(),
                 label: "Notes".to_owned(),
-                summary: "Reading: Allow · Changes: Ask first · Outside: Deny".to_owned(),
                 customised: true,
                 detail: "Set here for this agent".to_owned(),
                 kinds: vec![
@@ -595,7 +597,6 @@ pub(super) fn sample_review() -> AgentReview {
             AccessApp {
                 scope: "so.tilo.calendar".to_owned(),
                 label: "Calendar".to_owned(),
-                summary: "Reading: Allow · Changes: Allow · Outside: Ask first".to_owned(),
                 customised: false,
                 detail: "Follows its admission".to_owned(),
                 kinds: vec![

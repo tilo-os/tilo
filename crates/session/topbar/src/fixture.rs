@@ -107,7 +107,16 @@ fn profile() -> ProfileModel {
     ProfileModel {
         name: "Quinn".into(),
         identity: LOCAL.into(),
-        colour: Some(ui::vello::peniko::Color::from_rgb8(0x5b, 0x8d, 0xef)),
+        // The person wears blue, as identity colours travel: the dark
+        // material's presence palette (see the profile card's swatches).
+        colour: Some(
+            ui::Theme::dark()
+                .tokens
+                .colors
+                .presence
+                .hue(ui::tokens::PresenceHue::Blue),
+        ),
+        colour_id: Some(ui::tokens::PresenceHue::Blue.id().to_owned()),
         offers_presence: true,
         ..ProfileModel::default()
     }

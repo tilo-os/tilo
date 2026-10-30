@@ -338,13 +338,21 @@ impl ShellOverlayHost {
     /// key in its task's workspace. A launch that fails is said in the
     /// composer. Whether any was asked.
     pub(super) fn launch_task_agents(&mut self) -> bool {
+        let ends = std::mem::take(self.task_agent_ends.get_mut());
+        let ended = !ends.is_empty();
+        for why in ends {
+            self.agent_quick_composer.tell(crate::shell::i18n::t_args(
+                "agent-quick-task-agent-stopped",
+                &[("reason", why.into())],
+            ));
+        }
         let launches: Vec<_> = self
             .agent_actions
             .values_mut()
             .flat_map(super::agent_actions::AgentActions::take_launches)
             .collect();
         if launches.is_empty() {
-            return false;
+            return ended;
         }
         for (room, minted) in launches {
             let workspace = self.chrome.as_ref().and_then(|chrome| {

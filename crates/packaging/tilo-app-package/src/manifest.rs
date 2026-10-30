@@ -1326,10 +1326,16 @@ pub struct Providers {
     /// still the default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secondary: bool,
+    /// Resource kinds the application opens (e.g. `mail.message`): an
+    /// address of one (`mail.message:<id>`) opens in this app, at it, as
+    /// the desktop's `open` routes it, without the app listing every item.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<String>,
 }
 
 impl Providers {
     fn normalize(&mut self) {
+        self.resources = normalize_unique(&self.resources, |value| value.trim().to_owned());
         self.mime = normalize_unique(&self.mime, |value| value.trim().to_ascii_lowercase());
         self.ext = normalize_unique(&self.ext, |value| {
             value.trim().trim_start_matches('.').to_ascii_lowercase()

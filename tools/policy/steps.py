@@ -2,8 +2,13 @@
 """The repository policy suite's steps (tools/policy/steps.toml): what tools/policy/run.sh runs,
 and what tools/ci/t_toml.py turns into one `policy/<name>` check each.
 
-  steps.py list   every step as NUL-separated records for run.sh: kind (`tree` or `tests`),
-                  label, command (git steps wrapped in tools/ci/t-git-index.sh)
+  steps.py list [--node | --no-node]
+                  every step as NUL-separated records for run.sh: kind (`tree` or `tests`),
+                  label, command (git steps wrapped in tools/ci/t-git-index.sh). With
+                  --no-node, the steps without their `node_tests`; with --node, only those
+                  tests, one step per step that names some: run.sh runs the suite in two
+                  halves where no machine has both Node.js and the Git checkout
+                  (tools/ci/local_affected.py runs the --node half on the builder)
 """
 from __future__ import annotations
 
@@ -17,8 +22,10 @@ ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = "tools/policy/steps.toml"
 GIT_INDEX = "tools/ci/t-git-index.sh"
 FINDINGS = "tools/policy/findings.py"
+SPLIT_RUNNER = "tools/policy/run_unit_tests.py"
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-FIELDS = {"name", "label", "run", "inputs", "git", "tests", "history", "covered_by", "pre_push", "split", "whole_tree_tests"}
+FIELDS = {"name", "label", "run", "inputs", "git", "tests", "history", "covered_by", "pre_push", "split", "whole_tree_tests",
+          "node_tests"}
 # What a step a push runs may not be: it lists the tree through Git (t indexes all of it first),
 # reads the whole tree, or builds. Those wait for main, which runs every default check.
 WHOLE_TREE = frozenset({"**"})
@@ -52,6 +59,20 @@ class Step:
     whole_tree_tests: tuple[str, ...] = ()
     # It runs in a copy of the tree holding only its inputs (run_unit_tests.py --pruned).
     pruned: bool = False
+    # Test files of a tests step that run Node.js scripts. They read no Git checkout, so where
+    # Node.js and the checkout are on different machines they run apart from the rest
+    # (`steps.py list --node`).
+    node_tests: tuple[str, ...] = ()
+
+    @property
+    def without_node(self) -> str:
+        """Its command without its `node_tests` (run_unit_tests.py --except)."""
+        return " ".join([self.command, *(f"--except {test}" for test in self.node_tests)])
+
+    @property
+    def node_command(self) -> str:
+        """What runs just its `node_tests`."""
+        return " ".join([f"python3 {SPLIT_RUNNER}", *self.node_tests])
 
     @property
     def check(self) -> str:
@@ -85,7 +106,19 @@ def load(root: Path = ROOT) -> list[Step]:
         step = Step(name, entry["label"], " ".join(entry["run"].replace("\\\n", " ").split()),
                     tuple(entry.get("inputs", ())), bool(entry.get("git")), bool(entry.get("tests")),
                     entry.get("covered_by"), bool(entry.get("pre_push")), bool(entry.get("history")),
-                    entry.get("git") == "paths", bool(entry.get("split")), tuple(entry.get("whole_tree_tests", ())))
+                    entry.get("git") == "paths", bool(entry.get("split")), tuple(entry.get("whole_tree_tests", ())),
+                    node_tests=tuple(entry.get("node_tests", ())))
+        if step.node_tests:
+            if not (step.tests and step.run.startswith(f"python3 {SPLIT_RUNNER} ")):
+                raise ValueError(f"{MANIFEST}: step {name} names node_tests, which only a tests step run by "
+                                 f"{SPLIT_RUNNER} may")
+            missing = [test for test in step.node_tests if not (root / test).is_file()]
+            if missing:
+                raise ValueError(f"{MANIFEST}: step {name} names node_tests that don't exist: {', '.join(missing)}")
+            whole = sorted(set(step.node_tests) & set(step.whole_tree_tests))
+            if whole:
+                raise ValueError(f"{MANIFEST}: step {name}: {', '.join(whole)} reads the whole tree, so it cannot "
+                                 "run apart from the Git checkout as a node test")
         if step.split and not (step.tests and step.history):
             raise ValueError(f"{MANIFEST}: step {name} says split = true, which only the suite's tests with "
                              "history = true may (the tests that read the whole tree run as one such check)")
@@ -110,9 +143,6 @@ def load(root: Path = ROOT) -> list[Step]:
         seen.add((step.tests, name))
         steps.append(step)
     return steps
-
-
-SPLIT_RUNNER = "tools/policy/run_unit_tests.py"
 
 
 def split_checks(step: Step, root: Path = ROOT) -> list[Step]:
@@ -186,13 +216,25 @@ def own_files(step: Step, root: Path = ROOT) -> list[str]:
     return sorted(files)
 
 
+def listed(steps: list[Step], node: bool | None) -> list[tuple[str, str, str]]:
+    """run.sh's records: every step (`node` None), those without their node tests (False), or
+    just the node tests (True)."""
+    if node is None:
+        return [("tests" if step.tests else "tree", step.label, step.command) for step in steps]
+    if node:
+        return [("tests", f"{step.label} that run Node.js scripts", step.node_command)
+                for step in steps if step.node_tests]
+    return [("tests" if step.tests else "tree", step.label, step.without_node) for step in steps]
+
+
 def main(argv: list[str]) -> int:
-    if argv != ["list"]:
+    halves = {(): None, ("--node",): True, ("--no-node",): False}
+    if argv[:1] != ["list"] or tuple(argv[1:]) not in halves:
         print(__doc__, file=sys.stderr)
         return 2
     out = sys.stdout.buffer
-    for step in load():
-        for field in ("tests" if step.tests else "tree", step.label, step.command):
+    for record in listed(load(), halves[tuple(argv[1:])]):
+        for field in record:
             out.write(field.encode() + b"\0")
     return 0
 

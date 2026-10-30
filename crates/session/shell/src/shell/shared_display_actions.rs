@@ -115,7 +115,6 @@ pub(crate) fn include(
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
-    use crate::shell::state::FreshId as _;
 
     pub(crate) fn publish() -> tilo_test_env::TestHome {
         use settings_store::person_displays::{DeviceOutput, PersonDevice};

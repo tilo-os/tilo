@@ -40,15 +40,19 @@ pub(crate) enum Served {
     WhenUp {
         tab: u64,
         value: Value,
+        /// The startup of the launch the window comes from: its failure is
+        /// the open's.
+        startup: tilo_action_broker::services::LaunchReadiness,
     },
 }
 
 /// An `open` waiting for its window: answered by the window publishing its
 /// actions (and, for a resource, being opened at it), its place closing, or
-/// its launch failing ([`take_parked`]).
+/// its own launch failing ([`take_parked`]).
 pub(crate) struct Parked {
     pub tab: u64,
     pub value: Value,
+    pub startup: tilo_action_broker::services::LaunchReadiness,
     pub answer: tilo_actions::remote::Completer<HostStepOutcome>,
 }
 
@@ -107,7 +111,16 @@ fn ask(
         .unwrap_or_else(PoisonError::into_inner)
         .push(Box::new(move |host| match work(host) {
             Served::Now(outcome) => answer.complete(outcome),
-            Served::WhenUp { tab, value } => park(Parked { tab, value, answer }),
+            Served::WhenUp {
+                tab,
+                value,
+                startup,
+            } => park(Parked {
+                tab,
+                value,
+                startup,
+                answer,
+            }),
         }));
     let wake = port()
         .wake

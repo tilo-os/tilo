@@ -10,26 +10,24 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use ed25519_dalek::Signer as _;
 use runtime_collab::TaskAgentCredentials;
 use ui::collaboration::CertifiedEndpointIdentity;
 
 /// Where the desktop leaves task agents' credentials: in the app directory
-/// the launcher gave this process (`TILO_APP_DIR`), else its home.
+/// the launcher gave this process (`TILO_APP_DIR`). Only a desktop launches
+/// a task agent, and it always gives one.
 ///
 /// # Errors
-/// Neither is set.
+/// This process was given no app directory.
 pub fn credentials_dir() -> Result<PathBuf> {
     let base = std::env::var_os("TILO_APP_DIR")
-        .or_else(|| std::env::var_os("HOME"))
-        .context("neither TILO_APP_DIR nor HOME names this agent's directory")?;
+        .context("TILO_APP_DIR is not set: a task agent runs only as its desktop launched it")?;
     Ok(PathBuf::from(base).join(runtime_collab::TASK_AGENT_CREDENTIALS_DIR))
 }
 
 /// Read and remove the credentials of task agent `agent_id` from `dir`, and
-/// build the identity it joins `workspace` with: the presentation carrying
-/// the device's certificate and task delegation, proved and signed by the
-/// task key.
+/// build the identity it joins `workspace` with
+/// ([`CertifiedEndpointIdentity::for_task_agent`]).
 ///
 /// # Errors
 /// The file cannot be read, decoded or removed, or it names another
@@ -60,14 +58,8 @@ pub fn load(
         "the task agent's credentials are for workspace {}, not {room}",
         credentials.workspace_id
     );
-    let key = ed25519_dalek::SigningKey::from_bytes(&credentials.agent_key);
-    let proof = key
-        .sign(&runtime_identity::collaboration_join_signing_bytes(&room))
-        .to_bytes();
-    let presentation = credentials
-        .presentation(proof)
-        .context("encoding the task agent's join presentation")?;
-    Ok(CertifiedEndpointIdentity::new(presentation, key))
+    CertifiedEndpointIdentity::for_task_agent(&credentials)
+        .context("encoding the task agent's join presentation")
 }
 
 #[cfg(test)]

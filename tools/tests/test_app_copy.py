@@ -47,8 +47,6 @@ class AppCopyTests(unittest.TestCase):
             request.thread_name("settings-portal");
             crate::device_read::thread("settings-reader", Box::new(job));
             DeviceInfo { icon: "net-device-icon".into() };
-            self.push_confirm(body, package,
-                ("settings-confirm-id", "settings-cancel-id"), action);
         }
         '''
         self.assertEqual(self.keys(source), {"settings-button-label"})
@@ -127,6 +125,24 @@ class AppCopyTests(unittest.TestCase):
             self.assertEqual(copy.missing_copy(root), [
                 "apps/settings/src/view.rs:1: de-DE lacks agent-absent",
                 "apps/settings/src/view.rs:1: en-US lacks agent-absent",
+            ])
+
+    def test_keys_resolved_by_another_crates_root_are_looked_up_in_its_catalogue(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            setup = "setup-title = Welcome\n"
+            self.crate(root, "crates/session/setup", {"en-US": setup, "de-DE": setup}, "")
+            (root / "crates/session/setup/Cargo.toml").write_text('[package]\nname = "tilo-setup"\n')
+            (root / "crates/session/setup/src/lib.rs").write_text(
+                'ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);\n')
+            own = "host-x = X\n"
+            self.crate(root, "crates/session/host", {"en-US": own, "de-DE": own},
+                       'fn page() { tilo_setup::t("setup-title"); tilo_setup::t("setup-gone"); }\n')
+            (root / "crates/session/host/Cargo.toml").write_text('[package]\nname = "tilo-host"\n')
+            self.assertEqual(copy.missing_copy(root), [
+                "crates/session/host/src/view.rs:1: de-DE lacks setup-gone (crates/session/setup)",
+                "crates/session/host/src/view.rs:1: en-US lacks setup-gone (crates/session/setup)",
             ])
 
     def test_every_actual_source_key_is_in_its_catalogues(self):

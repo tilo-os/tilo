@@ -56,8 +56,10 @@ pub(super) fn connection(app: &InstalledApp, room: RoomId) -> std::io::Result<Op
 fn attach(app: &InstalledApp, room: RoomId, origin: &str) -> std::io::Result<OwnedFd> {
     let (instance, theirs) = origin_connector::connection()?;
     let key = (app.package_id.clone(), origin.to_owned(), room.to_string());
-    let mut connectors = super::lock(&CONNECTORS);
-    let connectors = connectors.get_or_insert_with(HashMap::new);
+    // Held until the connector is attached or started, so two windows of the
+    // same origin never start two connectors.
+    let mut held = super::lock(&CONNECTORS);
+    let connectors = held.get_or_insert_with(HashMap::new);
     if let Some(running) = connectors.get(&key) {
         match origin_connector::send_attachment(&running.door, &theirs) {
             Ok(()) => return Ok(instance),
@@ -71,6 +73,7 @@ fn attach(app: &InstalledApp, room: RoomId, origin: &str) -> std::io::Result<Own
     let running = start(app, room, origin, key.clone())?;
     origin_connector::send_attachment(&running.door, &theirs)?;
     connectors.insert(key, running);
+    drop(held);
     Ok(instance)
 }
 

@@ -1534,60 +1534,6 @@ mod tests {
         );
     }
 
-    /// An app publishes its resources bound to the record its window or
-    /// windowless instance shows (`tilo-ui-bound:…:<hex of the kind>`),
-    /// while a caller with no window of it names the resource as its kind
-    /// declares it: the action still reaches that instance, under the
-    /// address the app published.
-    #[test]
-    fn an_action_named_by_its_resource_kind_reaches_an_app_that_binds_it() {
-        let (state, room) = broker(&workspace());
-        let (tx, mut windowless) = tokio::sync::mpsc::unbounded_channel();
-        let bound = format!(
-            "{}instance:record:{}",
-            tilo_actions::selection::BOUND_RESOURCE_PREFIX,
-            hex::encode("files.app")
-        );
-        // The instance comes up publishing the action on its bound resource.
-        let owner = Caller::local_person("owner").in_room(&room);
-        state.launchable.replace_windowless_for_test({
-            let weak: Weak<CapnpBrokerState> = Arc::downgrade(&state);
-            let bound = bound.clone();
-            let stream = Mutex::new(Some(tx));
-            Arc::new(move |_, room| {
-                let state = weak.upgrade().ok_or("the broker is gone")?;
-                if let Some(tx) = stream.lock().expect("stream").take() {
-                    state
-                        .launchable
-                        .windowless_peers
-                        .lock()
-                        .expect("windowless")
-                        .insert(9);
-                    state
-                        .invocation_subscribers
-                        .lock()
-                        .expect("subscribers")
-                        .insert(9, tx);
-                    let mut up = surface(9, room);
-                    for action in &mut up.actions {
-                        action.resource.clone_from(&bound);
-                    }
-                    state.surfaces.lock().expect("surfaces").insert(9, up);
-                }
-                Ok(true)
-            })
-        });
-        let target =
-            tilo_actions::remote::application_action_target(&room, APP, "files.app", "new-window");
-        invoke(&state, &owner, &target.provider, "new-window", None)
-            .expect("delivered to the instance that binds the resource");
-        let delivered = windowless
-            .try_recv()
-            .expect("the windowless instance took it");
-        assert_eq!(delivered.action, "new-window");
-        assert_eq!(delivered.resource, bound, "under the address it published");
-    }
-
     /// A view action (an issue's page, its chat) shows something too: an
     /// instance with no window is no publisher of it, and no closed app is
     /// run without a window for it.
@@ -1621,6 +1567,62 @@ mod tests {
             Some(9),
             "it takes what shows nothing"
         );
+    }
+
+    /// A component surface publishes its resources under its instance's
+    /// alias (as the session's windowless Tasks does): an application target
+    /// written with the app's own resource id reaches it, handed over under
+    /// the alias it published, rather than waiting for a publisher of the
+    /// plain id that never comes.
+    #[test]
+    fn an_application_target_reaches_an_instance_publishing_an_alias() {
+        let (state, room) = broker(&workspace());
+        let launches = app_comes_up_later(&state);
+        let (mut windowless, _) = app_runs_windowless(&state, 9);
+        let alias = format!(
+            "{}5de7eba4-60d5-41f3-bd8a-2c4e5d8d9dd2:464da94a-e962-41ee-b1bf-498c32006984:{}",
+            tilo_actions::BOUND_RESOURCE_PREFIX,
+            "files.app"
+                .bytes()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let owner = Caller::local_person("owner").in_room(&room);
+        let target =
+            tilo_actions::remote::application_action_target(&room, APP, "files.app", "new-window");
+        // The instance comes up on the first ask; from then on it publishes
+        // the alias only.
+        invoke(&state, &owner, &target.provider, "new-window", None).expect("admitted");
+        windowless
+            .try_recv()
+            .expect("the first ask came up the instance");
+        for action in &mut state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .get_mut(&9)
+            .expect("the windowless instance publishes")
+            .actions
+        {
+            action.resource.clone_from(&alias);
+        }
+
+        assert_eq!(
+            state.ready_delivery(
+                APP,
+                &room,
+                None,
+                &tilo_actions::ActionAddress::new("files.app", "new-window"),
+            ),
+            Some((9, tilo_actions::ActionAddress::new(&alias, "new-window"))),
+            "the instance publishing the alias is the one ready"
+        );
+        invoke(&state, &owner, &target.provider, "new-window", None)
+            .expect("the instance publishing the alias takes it");
+        let delivered = windowless.try_recv().expect("delivered");
+        assert_eq!(delivered.action, "new-window");
+        assert_eq!(delivered.resource, alias, "handed over as it was published");
+        assert!(launches.lock().expect("launches").is_empty());
     }
 
     /// Opening shows what it opens: an `open` never goes to an instance with

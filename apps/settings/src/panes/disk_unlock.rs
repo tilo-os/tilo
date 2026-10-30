@@ -43,10 +43,10 @@ use ui::widget::{Button, Element, Row};
 #[effect(operation = "settings.effect")]
 pub enum DiskUnlockEffect {
     /// Read this device's enrolled volumes again.
-    #[effect(job, idempotent)]
+    #[effect(job, idempotent, returns)]
     RefreshDiskUnlock,
     /// Choose the whole list of Wi-Fi connections a volume may use at boot.
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, returns)]
     SetDiskUnlockNetworks {
         #[param("The enrolled volume's LUKS UUID")]
         volume: String,

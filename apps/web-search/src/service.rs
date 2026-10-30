@@ -71,7 +71,7 @@ pub fn run(workspace: uuid::Uuid) -> Result<()> {
         runtime,
         client,
         state: Arc::default(),
-        content: tilo_content_device::device(),
+        content: ui::content::device(),
         tx,
         running: HashMap::new(),
     };
@@ -94,7 +94,7 @@ struct Service {
     /// The workspace's content store a fetched file that is not text is
     /// kept in; `None` when the launcher handed this service none, and such
     /// a fetch then says so.
-    content: Option<tilo_content::ContentStore>,
+    content: Option<ui::content::ContentStore>,
     tx: Sender<Wake>,
     running: HashMap<u64, Running>,
 }

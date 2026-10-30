@@ -1,4 +1,4 @@
-"""Repository-local Git settings must not leak into temporary test histories."""
+"""Neither the caller's repository nor its user's Git settings may leak into temporary test histories."""
 
 import os
 
@@ -13,9 +13,14 @@ GIT_REPOSITORY_ENV = (
 
 
 def isolated_git_environment(**overrides):
-    """Copy the caller environment, removing only repository-local Git inputs."""
+    """Copy the caller environment without repository-local Git inputs, reading no global or
+    system Git configuration: a developer's `tag.gpgSign` turns a fixture's lightweight tag
+    into an annotated one that wants a message, `commit.gpgSign` wants their key, and so on.
+    A fixture sets the identity and settings it needs itself."""
     environment = {key: value for key, value in os.environ.items()
                    if key not in GIT_REPOSITORY_ENV}
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
     # A fixture's commits must not start a detached `git maintenance`: it
     # would write into the repository (and hold its lock) while the test reads it.
     for index, (key, value) in enumerate((("maintenance.auto", "false"), ("gc.auto", "0"))):

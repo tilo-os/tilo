@@ -257,6 +257,98 @@ fn a_typed_endpoint_takes_the_location_its_address_has() {
     }
 }
 
+/// Test `provider`'s connection through its row's action, and require the
+/// answer to be the result the action declares.
+fn list_models_through_the_door(
+    app: &mut TestApp<ProviderSettingsApp>,
+    provider: &str,
+) -> ui::tilo_actions::ActionOutput {
+    let row = format!("settings.agent-provider:{provider}");
+    let listed = app
+        .call_by(
+            ui::tilo_actions::ActionInvoker::actor("provider-administrator"),
+            &row,
+            ProviderEffect::LIST_PROVIDER_MODELS.id(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+    let declared = with_panel(app, |panel| {
+        panel
+            .rows()
+            .into_iter()
+            .find(|candidate| candidate.id() == row)
+            .unwrap()
+            .into_resource()
+            .actions
+            .into_iter()
+            .find(|spec| spec.id == ProviderEffect::LIST_PROVIDER_MODELS.id())
+            .unwrap()
+            .contract
+            .result
+            .clone()
+    });
+    declared.validate(&listed).unwrap();
+    listed
+}
+
+/// A model named by id in a window that never listed its provider takes
+/// what the provider's list says it can do, not only its family's.
+#[test]
+fn a_model_set_by_id_takes_its_capabilities_from_the_providers_list() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let listing = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../agent/provider-config/tests/fixtures/openrouter-models.json"
+    ))
+    .unwrap();
+    let mut profile = agent_provider_config::presets::Preset::OPENROUTER.profile();
+    profile.id = "openrouter-a".into();
+    {
+        let mut state = backend.state.lock_recover();
+        state.listing = Some(agent_provider_config::transform::parse_models(&listing).unwrap());
+        state.config.upsert(profile);
+        state
+            .keys
+            .insert("openrouter-a".into(), CredentialStatus::Configured);
+    }
+    let mut app = mount(backend.clone());
+    run(
+        &mut app,
+        ProviderEffect::SetProviderModel {
+            provider: "openrouter-a".into(),
+            model: "moondream/moondream3-preview".into(),
+        },
+    );
+    app.settle();
+    let taken = backend.state.lock_recover().config.profiles[0].models[0].clone();
+    // The family table does not know it; the list says it sees and takes
+    // no tools.
+    assert!(taken.vision && !taken.tool_calling, "{taken:?}");
+    assert_eq!(
+        taken.capabilities_from,
+        agent_provider_config::CapabilitySource::Provider
+    );
+    // A model the provider does not list falls back to its family.
+    run(
+        &mut app,
+        ProviderEffect::SetProviderModel {
+            provider: "openrouter-a".into(),
+            model: "vendor/gpt-4o-house".into(),
+        },
+    );
+    app.settle();
+    let typed = backend.state.lock_recover().config.profiles[0]
+        .models
+        .iter()
+        .find(|model| model.id == "vendor/gpt-4o-house")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        typed.capabilities_from,
+        agent_provider_config::CapabilitySource::Family
+    );
+}
+
 /// An agent says what a model can do, through the action on its provider,
 /// and is refused a model that calls no tools for an agent.
 #[test]
@@ -281,15 +373,11 @@ fn agents_set_model_capabilities_and_cannot_plan_with_a_model_without_tools() {
     );
     app.settle();
     assert_private(&mut app);
-    // The provider lists its models; one is taken, and is said to call no
-    // tools.
-    run(
-        &mut app,
-        ProviderEffect::ListProviderModels {
-            provider: provider.clone(),
-        },
-    );
+    // The provider lists its models, answered as the action declares.
+    let listed = list_models_through_the_door(&mut app, &provider);
+    assert_eq!(listed.value.as_ref().unwrap()[0]["id"], "listed-a");
     app.settle();
+    // One is taken, and is said to call no tools.
     run(
         &mut app,
         ProviderEffect::SetModelCapabilities {
@@ -336,6 +424,18 @@ fn agents_set_model_capabilities_and_cannot_plan_with_a_model_without_tools() {
     app.settle();
     let config = backend.state.lock_recover().config.clone();
     assert_eq!(config.agent_models["writer"].model, "listed-a");
+    // While writer plans with it, the model cannot be said to call no tools.
+    let refused = invoke(
+        &mut app,
+        ProviderEffect::SetModelCapabilities {
+            provider: provider.clone(),
+            model: "listed-a".into(),
+            vision: None,
+            tool_calling: Some(false),
+        },
+    );
+    let refused = format!("{:?}", refused.unwrap_err());
+    assert!(refused.contains("writer"), "{refused}");
     // Giving the model back to its family table forgets the person's answer.
     run(
         &mut app,

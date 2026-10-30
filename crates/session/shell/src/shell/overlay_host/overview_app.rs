@@ -328,33 +328,7 @@ impl ShellOverlayHost {
                 }
             }
             OverviewPick::MoveWindowToStrip { tab, strip } => {
-                let mut state = chrome.borrow_mut();
-                let group = state
-                    .tree()
-                    .desktop
-                    .active_workspace()
-                    .and_then(|workspace| {
-                        workspace
-                            .strips
-                            .iter()
-                            .flat_map(|strip| &strip.window_groups)
-                            .find(|group| group.tabs.iter().any(|t| t.id == tab))
-                            .map(|group| group.id)
-                    });
-                match group {
-                    Some(group) => state.request_window(
-                        crate::shell::chrome_state::WindowRequest::MoveGroupToStrip {
-                            group,
-                            strip,
-                        },
-                    ),
-                    None => {
-                        state.push_warning_notification(
-                            t("overview-window-move-failed"),
-                            String::new(),
-                        );
-                    }
-                }
+                move_window_to_strip(&chrome, tab, strip);
             }
             OverviewPick::RenameStrip { strip, name } => {
                 let mut state = chrome.borrow_mut();
@@ -515,10 +489,11 @@ impl ShellOverlayHost {
         let moved = flight.progress().to_bits() != progress.to_bits();
         if drawn {
             let listed = self.overview_listed_windows();
+            let to_area = vello::kurbo::Affine::translate(origin).inverse();
             let sources = self
                 .overview_window_sources(&listed)
                 .into_iter()
-                .map(|(tab, rect)| (tab, rect - origin))
+                .map(|(tab, rect)| (tab, to_area.transform_rect_bbox(rect)))
                 .collect();
             flight.set_clock(progress, sources);
             // Its titles and panel move on the same clock: it draws again.
@@ -683,5 +658,35 @@ impl ShellOverlayHost {
     /// otherwise.
     pub fn add_workspace_rect_for_tests(&self) -> Rect {
         self.overview_target("add_workspace").unwrap_or(Rect::ZERO)
+    }
+}
+
+/// Move the window group holding `tab` to `strip` of the active workspace,
+/// or say that it could not be moved.
+fn move_window_to_strip(
+    chrome: &crate::shell::chrome_state::Chrome,
+    tab: crate::shell::state::TabId,
+    strip: crate::shell::state::StripId,
+) {
+    let mut state = chrome.borrow_mut();
+    let group = state
+        .tree()
+        .desktop
+        .active_workspace()
+        .and_then(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .find(|group| group.tabs.iter().any(|t| t.id == tab))
+                .map(|group| group.id)
+        });
+    match group {
+        Some(group) => state.request_window(
+            crate::shell::chrome_state::WindowRequest::MoveGroupToStrip { group, strip },
+        ),
+        None => {
+            state.push_warning_notification(t("overview-window-move-failed"), String::new());
+        }
     }
 }

@@ -189,18 +189,6 @@ fn invite_arguments(terms: &RelayInvitation<'_>) -> serde_json::Map<String, serd
     arguments
 }
 
-/// The arguments of creating `room` on a host, named after the workspace
-/// called `name`: the workspace keeps its room wherever it is hosted.
-pub(super) fn create_arguments(
-    name: &str,
-    room: RoomId,
-) -> serde_json::Map<String, serde_json::Value> {
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("name".into(), room_name(name).into());
-    arguments.insert("room".into(), room.to_string().into());
-    arguments
-}
-
 /// The name a room shared from a workspace called `name` gets.
 pub(super) fn room_name(name: &str) -> String {
     let name: String = name
@@ -844,10 +832,12 @@ impl ShellNetwork {
             tracing::debug!(%error, "host rooms: no device certificate");
             return;
         }
-        let mut hosts: Vec<PersonsHost> = super::configured_host_addrs()
-            .into_iter()
-            .map(PersonsHost::Configured)
-            .collect();
+        let mut hosts: Vec<PersonsHost> = Vec::new();
+        hosts.extend(
+            super::configured_host_addrs()
+                .into_iter()
+                .map(PersonsHost::Configured),
+        );
         if let Some(only) = only {
             hosts.extend(
                 super::registered_home_peer_addrs(self.local_person)
@@ -1001,15 +991,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_room_is_created_on_its_host_as_the_room_the_workspace_is() {
-        let room = RoomId::parse("3291bed4-ee10-492a-877c-dbe6b8027a94").expect("room");
-        assert_eq!(
-            serde_json::Value::Object(create_arguments(" Plans\u{7} ", room)),
-            serde_json::json!({
-                "name": "Plans",
-                "room": "3291bed4-ee10-492a-877c-dbe6b8027a94",
-            })
-        );
+    fn a_room_is_named_after_its_workspace() {
+        assert_eq!(room_name(" Plans\u{7} "), "Plans");
         assert_eq!(room_name(" \n "), "Shared workspace");
         assert_eq!(room_name(&"x".repeat(200)).chars().count(), ROOM_NAME_CHARS);
     }

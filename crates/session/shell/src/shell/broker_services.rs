@@ -1893,18 +1893,15 @@ fn native_workspace_memberships(
 }
 
 /// The room's tracker, read for the broker's runs and for whoever follows
-/// one in the shell: from the room's committed record, or, in a room whose
-/// records are sealed channels, from the sealed writes this device holds.
+/// one in the shell.
 pub(crate) fn native_tracker(
     tree: &WorkspaceTreeHandle,
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
-    sealed_writes: Option<SealedWrites>,
 ) -> Arc<NativeTrackerRuns> {
     Arc::new(tracker_runs::NativeTrackerRuns::new(
         NativeOwnerCommitService {
             history_keys,
-            sealed_writes,
             ..NativeOwnerCommitService::new(tree.clone(), network)
         },
     ))
@@ -1943,12 +1940,8 @@ pub fn native_services(
     sealed_writes: Option<SealedWrites>,
 ) -> HostServices {
     let tracker_runs = membership.as_ref().map(|tree| {
-        native_tracker(
-            tree,
-            network.clone(),
-            history_keys.clone(),
-            sealed_writes.clone(),
-        ) as Arc<dyn tilo_action_broker::services::TrackerRuns>
+        native_tracker(tree, network.clone(), history_keys.clone())
+            as Arc<dyn tilo_action_broker::services::TrackerRuns>
     });
     let committed_documents = membership
         .as_ref()
@@ -2682,6 +2675,7 @@ mod tests {
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
             opens_secondary: false,
+            opens_resource_kinds: Vec::new(),
             offers: Vec::new(),
         };
         let host = |id: &str, name: &str| crate::shell::host_apps::HostApp {

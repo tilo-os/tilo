@@ -48,13 +48,13 @@ fn hello(
     net: &ShellNetwork,
     device: &iroh::SecretKey,
     cert: DeviceCert,
-    revocations: Vec<RevocationEntry>,
+    revocations: &[RevocationEntry],
 ) {
     net.sibling(
         device.public(),
         tilo_network_actor::MembershipEpoch::for_test(1),
         &[cert],
-        &revocations,
+        revocations,
     );
 }
 
@@ -109,7 +109,7 @@ fn a_device_enrolled_elsewhere_is_trusted_dialed_and_kept_once_it_proves_its_cer
         &net,
         &newer,
         cert(&root, &newer, DeviceCapabilities::member()),
-        Vec::new(),
+        &[],
     );
     assert_eq!(own_devices(&net), vec![*newer.public().as_bytes()]);
     assert_eq!(
@@ -135,7 +135,7 @@ fn another_persons_device_and_the_persons_hosts_are_not_admitted_by_a_certificat
         &net,
         &stranger,
         cert(&stranger_root, &stranger, DeviceCapabilities::primary()),
-        Vec::new(),
+        &[],
     );
     // A host the person runs is reached as a home peer, not a direct one.
     let host = iroh::SecretKey::from_bytes(&[0x53; 32]);
@@ -143,7 +143,7 @@ fn another_persons_device_and_the_persons_hosts_are_not_admitted_by_a_certificat
         &net,
         &host,
         cert(&root, &host, DeviceCapabilities::host()),
-        Vec::new(),
+        &[],
     );
     assert!(own_devices(&net).is_empty());
     assert!(after_restart(person, &store, dir.path()).is_empty());
@@ -170,7 +170,7 @@ fn a_revocation_from_the_root_wins_over_a_kept_device_now_and_after_a_restart() 
         &net,
         &lost,
         cert(&root, &lost, DeviceCapabilities::member()),
-        Vec::new(),
+        &[],
     );
     assert_eq!(own_devices(&net), vec![*lost.public().as_bytes()]);
 
@@ -179,7 +179,7 @@ fn a_revocation_from_the_root_wins_over_a_kept_device_now_and_after_a_restart() 
         &net,
         &other,
         cert(&root, &other, DeviceCapabilities::member()),
-        vec![revocation(&root, &lost)],
+        &[revocation(&root, &lost)],
     );
     assert_eq!(own_devices(&net), vec![*other.public().as_bytes()]);
     assert_eq!(
@@ -192,7 +192,7 @@ fn a_revocation_from_the_root_wins_over_a_kept_device_now_and_after_a_restart() 
         &net,
         &lost,
         cert(&root, &lost, DeviceCapabilities::member()),
-        Vec::new(),
+        &[],
     );
     assert_eq!(own_devices(&net), vec![*other.public().as_bytes()]);
 }

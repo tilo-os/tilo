@@ -481,3 +481,104 @@ fn a_change_reaches_outside_by_what_it_queued_in_an_outbox() {
         "a change that queued an upload its claim leaves out reaches outside"
     );
 }
+
+/// One resource kind of a record that holds items of several (a tilolang app's root: its
+/// categories among its channels), publishing one verb.
+struct ItemKind(&'static str, &'static str);
+
+impl ReceiptSurface for ItemKind {
+    fn kind(&self) -> &str {
+        self.0
+    }
+    fn verb(&self, action: &str) -> Option<(ActionKind, Option<String>)> {
+        (action == self.1).then_some((ActionKind::Undoable, None))
+    }
+    fn editable(&self, _: &[PathStep]) -> bool {
+        false
+    }
+    fn footprint(&self, _: &ClaimedAction) -> Vec<UnitPath> {
+        vec![Vec::new()]
+    }
+}
+
+/// The surface of an app whose record holds channels and categories, each kind with its verb.
+struct Channels;
+
+impl SurfaceSource for Channels {
+    fn surface(
+        &self,
+        _: &Record<'_>,
+        kind: Option<&str>,
+        _: Option<&[u8; 32]>,
+    ) -> Option<std::sync::Arc<dyn ReceiptSurface>> {
+        match kind {
+            Some("chat.channels") => Some(std::sync::Arc::new(ItemKind(
+                "chat.channels",
+                "new_category",
+            ))),
+            Some("chat.category") => Some(std::sync::Arc::new(ItemKind(
+                "chat.category",
+                "add_channel",
+            ))),
+            _ => None,
+        }
+    }
+}
+
+/// An op that carries changes of actions on items of different kinds (a record handed to its
+/// room whole: a category made, then a channel added to it) is decided change by change, each
+/// against the kind its own action names, never all against the first one's.
+#[test]
+fn each_change_is_decided_against_the_kind_its_action_names() {
+    let mut doc = AutoCommit::new();
+    for (key, kind, action) in [
+        ("a", "chat.channels", "new_category"),
+        ("b", "chat.category", "add_channel"),
+    ] {
+        doc.put(ROOT, key, 1).unwrap();
+        let entry = ActionContext {
+            what: Some(Did::Verb(VerbCall::new(
+                ActionKey::new(APP, kind, action),
+                [],
+            ))),
+            ..ActionContext::for_resource("channels", kind, "Channels")
+        };
+        doc.commit_with(CommitOptions::default().with_message(entry.change_message().unwrap()));
+    }
+    let payload = crate::op::DocumentMutation::Incremental(doc.save_after(&[]))
+        .encode()
+        .unwrap();
+    let op = crate::op::SignedOp::new_unsigned(
+        payload,
+        crate::document_artifact_id(APP, ROOM, "channels"),
+        crate::Ed25519PublicKey::from_bytes([7; 32]),
+        crate::document_attestation_id(APP, ROOM, "channels"),
+        crate::role::OpKind::Change,
+        std::time::SystemTime::UNIX_EPOCH,
+        1,
+    )
+    .with_surface(Some([1; 32]));
+    let surfaces = Surfaces::from_source(std::sync::Arc::new(Channels));
+    assert_eq!(
+        decide_op(&op, &record(), None, None, &surfaces, &|_, _| true),
+        Ok(Receipt::Admit)
+    );
+    // A claim to a verb its kind does not publish is still refused.
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "c", 1).unwrap();
+    let entry = ActionContext {
+        what: Some(Did::Verb(VerbCall::new(
+            ActionKey::new(APP, "chat.category", "new_category"),
+            [],
+        ))),
+        ..ActionContext::for_resource("channels", "chat.category", "Category")
+    };
+    doc.commit_with(CommitOptions::default().with_message(entry.change_message().unwrap()));
+    let sealed_claims =
+        claims_of(&parse_changes(&doc.save()).unwrap(), |_| vec![Vec::new()]).unwrap();
+    let surface_for = |kind: Option<&str>| Channels.surface(&record(), kind, None);
+    assert!(matches!(
+        check_claims_by_kind(&sealed_claims, &record(), None, &surface_for, &|_, _| true),
+        Err(ReceiptRefusal::NotPublished(_))
+    ));
+}

@@ -53,11 +53,16 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
     // yet — whoever made it — goes to the server from a live window on a
     // device with the account, and the engine's acknowledgement records it
     // as applied.
+    // A window that reaches no server (a past version, one opened offline)
+    // takes none of it: refused there, it would be settled as failed and no
+    // window that can reach the server would carry it out.
     let outbox = window.server_outbox();
-    let shared = Rc::clone(&window.shared);
+    let (shared, carrier) = (Rc::clone(&window.shared), window.room());
     let projection = cx.outbox(
         Mail::paths().server,
-        move |_, update: &ServerUpdate| holds_account(&shared.borrow(), update.account()),
+        move |_, update: &ServerUpdate| {
+            carrier.borrow().reaches_servers() && holds_account(&shared.borrow(), update.account())
+        },
         move |_, update: ServerUpdate, cx| {
             let reply = cx.reply();
             outbox.borrow_mut().push(
@@ -71,10 +76,12 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
     );
     window.follow_projection(projection);
     let outbox = window.server_outbox();
-    let shared = Rc::clone(&window.shared);
+    let (shared, carrier) = (Rc::clone(&window.shared), window.room());
     let delivery = cx.outbox(
         Mail::paths().outbox,
-        move |_, outgoing: &Outgoing| holds_account(&shared.borrow(), &outgoing.account),
+        move |_, outgoing: &Outgoing| {
+            carrier.borrow().reaches_servers() && holds_account(&shared.borrow(), &outgoing.account)
+        },
         move |_, outgoing: Outgoing, cx| {
             let reply = cx.reply();
             outbox.borrow_mut().deliver(
@@ -112,13 +119,22 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
         Rc::clone(&room),
         Rc::clone(&room),
     );
+    let (listed, named) = (cx.live().clone(), cx.live().clone());
     cx.publishing(
         Publishes::new()
-            // The accounts, an in-flight send and a search-index fault.
-            .live_rows(move || rows.borrow().live_rows())
+            // The accounts, an in-flight send, a search-index fault, and
+            // each draft as the item its verbs name.
+            .live_rows(move || {
+                let mut rows = rows.borrow().live_rows();
+                rows.extend(draft_rows(&listed.get()));
+                rows
+            })
             // A loaded message, thread, attachment or account the mailbox
-            // does not publish.
-            .live_row(move |id| row.borrow().live_row(id))
+            // does not publish, or a draft.
+            .live_row(move |id| match id.strip_prefix("mail.draft:") {
+                Some(draft) => draft_row(&named.get(), draft),
+                None => row.borrow().live_row(id),
+            })
             .search_entries(move || entries.borrow().search_entries())
             // Someone searches: the servers are asked too, for mail older
             // than what this device keeps; what they find joins the entries.
@@ -128,6 +144,24 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
             .search_pending(move || room.borrow().searching_servers()),
         Box::new(window),
     )
+}
+
+/// Every draft, as the item (`mail.draft:<id>`) its verbs name.
+fn draft_rows(mail: &Mail) -> Vec<ui::framework::LiveRow> {
+    mail.drafts_listed()
+        .into_iter()
+        .map(|(id, draft)| {
+            ui::framework::LiveRow::from_resource(crate::actions::draft_resource(&id, draft))
+        })
+        .collect()
+}
+
+/// The draft `id`, as the item its verbs name, while it is there.
+fn draft_row(mail: &Mail, id: &str) -> Option<ui::framework::LiveRow> {
+    let id = crate::resource::draft_named(id);
+    let draft = mail.draft_at(Some(id))?;
+    (!crate::resource::is_composer_draft(id) || mail.has_draft())
+        .then(|| ui::framework::LiveRow::from_resource(crate::actions::draft_resource(id, draft)))
 }
 
 /// Answer `effect` from what the window shares with the view; what needs
@@ -176,6 +210,15 @@ fn answer_effect(
             let mail = cx.live().get();
             return room.borrow().attachment_content(&mail, message, *index);
         }
+        MailEffect::OpenAttachment {
+            message,
+            index,
+            group,
+        } => {
+            let mail = cx.live().get();
+            let handed = room.borrow().attachment_content(&mail, message, *index)?;
+            return open_on_desktop(handed, group.as_deref(), cx);
+        }
         _ => {}
     }
     if let MailEffect::Save { message, index } = &effect {
@@ -202,6 +245,45 @@ fn answer_effect(
     }
     room.dirty = true;
     Ok(answer)
+}
+
+/// Open the attachment `handed` over as workspace content through the
+/// desktop's `open`, in the app registered for its media type: as a tab of
+/// the window `group`, else a window of its own. The desktop decides it as
+/// this effect's caller and answers once the window is up; the answer is
+/// the window's, with the content it shows.
+fn open_on_desktop(handed: Effected, group: Option<&str>, cx: &mut EffectCx<Mail>) -> EffectAnswer {
+    use tilo_desktop_model::commands::{RESOURCE, layout};
+    let Effected::Done(handed) = handed else {
+        return Err("the attachment was not handed over".into());
+    };
+    let attachment = handed.value.unwrap_or_default();
+    let content = attachment
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("the attachment has no content address")?
+        .to_owned();
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("target".into(), content.clone().into());
+    if let Some(group) = group {
+        arguments.insert("place".into(), "tab-of".into());
+        arguments.insert("group".into(), group.into());
+    }
+    let open = ui::framework::Call::host(layout::PROVIDER, RESOURCE, layout::OPEN).with(arguments);
+    Ok(cx.call(&open, move |(), opened, _| {
+        let mut answer = opened?.value.unwrap_or_default();
+        if let Some(fields) = answer.as_object_mut() {
+            for key in ["content", "name", "media_type"] {
+                if let Some(value) = attachment.get(key) {
+                    fields.insert(key.into(), value.clone());
+                }
+            }
+        }
+        Ok(Effected::Done(tilo_actions::ActionOutput {
+            value: Some(answer),
+            resources: vec![content],
+        }))
+    }))
 }
 
 /// Why `message` names nothing to read.
@@ -263,6 +345,12 @@ fn draft_reply(
 }
 
 impl Mailroom {
+    /// Whether this window reaches mail servers: it runs the engine that
+    /// carries out what the document asks of them.
+    pub(crate) const fn reaches_servers(&self) -> bool {
+        self.engine.is_some()
+    }
+
     /// The message `item` names, fetched or held: the record's held mail
     /// first, then what this device keeps of its servers. `None` once it
     /// was deleted for good.

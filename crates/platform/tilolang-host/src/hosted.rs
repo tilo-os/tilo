@@ -1066,6 +1066,12 @@ impl Applier {
         &self.spec
     }
 
+    /// The record it changes, as it holds it.
+    #[must_use]
+    pub fn record(&self) -> &RoomRecord {
+        &self.record
+    }
+
     /// The change's connection, to wait on.
     pub fn connection(&self) -> std::os::fd::BorrowedFd<'_> {
         use std::os::fd::AsFd as _;
@@ -1213,10 +1219,17 @@ impl Applier {
                 return serde_json::json!({"failed": format!("the change's invoker does not decode: {error}")});
             }
         };
-        let ambient: Option<ActionContext> = change
+        let ambient: Option<ActionContext> = match change
             .context
             .clone()
-            .and_then(|context| serde_json::from_value(context).ok());
+            .map(serde_json::from_value)
+            .transpose()
+        {
+            Ok(ambient) => ambient,
+            Err(error) => {
+                return serde_json::json!({"failed": format!("the change's context does not decode: {error}")});
+            }
+        };
         // The record as the room holds it now: requirements are decided on what others wrote.
         self.host.sync_from(self.record.doc());
         let address = ActionAddress::new(change.resource.clone(), change.action.clone());
@@ -1248,6 +1261,7 @@ impl Applier {
                 Ok(edit) => edit,
                 Err(error) => return serde_json::json!({"failed": error.to_string()}),
             };
+            let before = self.record.heads();
             return match self.record.history_at_origin(
                 &edit,
                 &address.resource,
@@ -1257,7 +1271,13 @@ impl Applier {
             ) {
                 Ok(value) => {
                     self.host.sync_from(self.record.doc());
-                    serde_json::json!({"ok": {"value": value, "resources": []}})
+                    // What it wrote, for the task to read back at once, as a change's answer.
+                    let wrote = {
+                        use base64::Engine as _;
+                        base64::engine::general_purpose::STANDARD
+                            .encode(self.record.changes_since(&before))
+                    };
+                    serde_json::json!({"ok": {"value": value, "resources": []}, "change": wrote})
                 }
                 Err(error) => serde_json::json!({"failed": error.to_string()}),
             };

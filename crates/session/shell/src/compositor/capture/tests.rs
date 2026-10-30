@@ -752,27 +752,25 @@ fn pip_targets_retire_with_their_app_and_keep_virtual_bounds() {
 
 #[test]
 fn spatial_multi_capture_leaves_unselected_gap_transparent() {
-    fn spatial_multi_capture_leaves_unselected_gap_transparent() {
-        let source = two_source_cards();
-        let regions = [
-            Rect::new(-300.0, 20.0, -100.0, 120.0),
-            Rect::new(900.0, 40.0, 1_100.0, 140.0),
-        ];
-        let (scene, width, height) = compose_scene(&source, &regions, PipLayout::Auto).unwrap();
-        let Ok(mut renderer) = OffscreenRenderer::try_new(width, height) else {
-            eprintln!("skipping pixel assertion: no offscreen GPU adapter");
-            return;
-        };
-        let rgba = renderer.render_rgba(&scene);
-        let alpha = |x: u32, y: u32| rgba[((y * width + x) * 4 + 3) as usize];
-        assert!(alpha(100, 50) > 0, "selected left card is present");
-        assert_eq!(
-            alpha(700, 50),
-            0,
-            "desktop pixels between selected regions must not leak into export"
-        );
-        assert!(alpha(1_300, 70) > 0, "selected right card is present");
-    }
+    let source = two_source_cards();
+    let regions = [
+        Rect::new(-300.0, 20.0, -100.0, 120.0),
+        Rect::new(900.0, 40.0, 1_100.0, 140.0),
+    ];
+    let (scene, width, height) = compose_scene(&source, &regions, PipLayout::Auto).unwrap();
+    let Ok(mut renderer) = OffscreenRenderer::try_new(width, height) else {
+        eprintln!("skipping pixel assertion: no offscreen GPU adapter");
+        return;
+    };
+    let rgba = renderer.render_rgba(&scene);
+    let alpha = |x: u32, y: u32| rgba[((y * width + x) * 4 + 3) as usize];
+    assert!(alpha(100, 50) > 0, "selected left card is present");
+    assert_eq!(
+        alpha(700, 50),
+        0,
+        "desktop pixels between selected regions must not leak into export"
+    );
+    assert!(alpha(1_300, 70) > 0, "selected right card is present");
 }
 
 #[test]

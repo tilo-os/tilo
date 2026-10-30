@@ -609,7 +609,7 @@ mod tests {
         assert!(
             host.quick_settings
                 .app()
-                .and_then(|app| app.accessibility())
+                .and_then(ui::Widget::accessibility)
                 .is_some_and(|panel| !holds_focus(&panel)),
             "the panel no longer claims the reader's focus"
         );

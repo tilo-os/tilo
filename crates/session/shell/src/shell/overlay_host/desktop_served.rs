@@ -42,6 +42,16 @@ fn widths_value(widths: &[(GroupId, WindowWidth)]) -> Value {
 }
 
 impl ShellOverlayHost {
+    /// Reach the broker's published windows and the session's action door
+    /// through `door`, as the session attaches its own.
+    #[cfg(test)]
+    pub(crate) fn attach_open_door(
+        &mut self,
+        door: crate::shell::search::providers::app_content::OpenDoor,
+    ) {
+        self.shared_window_follow.attach(door);
+    }
+
     /// Run what the broker asked of the desktop's layout, then open the
     /// windows waiting to be opened at a resource whose app may be up now.
     pub(crate) fn serve_desktop_jobs(&mut self) {
@@ -68,6 +78,7 @@ impl ShellOverlayHost {
         for Parked {
             tab,
             mut value,
+            mut startup,
             answer,
         } in parked
         {
@@ -75,6 +86,18 @@ impl ShellOverlayHost {
                 answer.complete(Err(refused("this session shows no desktop")));
                 continue;
             };
+            // The launch failed: the open failed, whatever came up since.
+            if let Some(Err(error)) = startup.try_settled()
+                && !error.is_uncertain()
+            {
+                let why = desktop_layout::launch_failed(
+                    &mut chrome.borrow_mut(),
+                    tab,
+                    &error.to_string(),
+                );
+                answer.complete(Err(refused(why)));
+                continue;
+            }
             let (present, failed, instance, opening) = {
                 let state = chrome.borrow();
                 let opening = state
@@ -118,7 +141,12 @@ impl ShellOverlayHost {
                 (None, Some(why)) => {
                     answer.complete(Err(refused(format!("the window did not open: {why}"))));
                 }
-                _ => crate::shell::desktop_door::park(Parked { tab, value, answer }),
+                _ => crate::shell::desktop_door::park(Parked {
+                    tab,
+                    value,
+                    startup,
+                    answer,
+                }),
             }
         }
     }
@@ -164,6 +192,7 @@ impl ShellOverlayHost {
                         "strip": id(opened.strip.raw()),
                         "app": opened.app,
                     }),
+                    startup: opened.startup,
                 },
                 Err(error) => Served::Now(Err(refused(error))),
             };
