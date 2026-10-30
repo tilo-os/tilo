@@ -524,7 +524,7 @@ fn request_params(snapshot: &Snapshot, operation: &str) -> Vec<ActionParam> {
                 ActionParam::required_owned(
                     name,
                     ParamType::Secret,
-                    t("onboarding-backup-save-action"),
+                    tilo_onboarding::t("onboarding-backup-save-action"),
                 )
             })
             .collect();

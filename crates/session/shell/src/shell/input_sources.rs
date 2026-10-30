@@ -203,7 +203,7 @@ mod tests {
             Some("us")
         );
         assert_eq!(
-            section
+            settings_store::load_section("input")
                 .get("keyboard_layout")
                 .and_then(serde_json::Value::as_str),
             Some("de"),

@@ -256,23 +256,28 @@ impl InProcessApps {
         self.store.flush(None).map_err(|error| error.to_string())
     }
 
-    /// Acknowledge startup writes through the fixture's real canonical owner.
+    /// Acknowledge startup writes through the fixture's real canonical owner;
+    /// the records it holds open, by kind and id.
     #[cfg(test)]
     pub(crate) fn flush_fixture_records(
         &mut self,
         app_id: &str,
         room: &str,
-    ) -> Result<usize, String> {
+    ) -> Result<Vec<String>, String> {
         let records = self
             .owners
             .open(app_id, room)
             .map_err(|error| error.to_string())?;
-        let count = records.open_records().len();
-        if count == 0 {
+        let open: Vec<String> = records
+            .open_records()
+            .iter()
+            .map(|record| format!("{:?} {:?}", record.kind, record.id))
+            .collect();
+        if open.is_empty() {
             return Err("fixture must observe mounted records before flushing".into());
         }
         records.try_flush()?;
-        Ok(count)
+        Ok(open)
     }
 
     /// The apps of a session whose state lives in `profile_root`: their
