@@ -456,6 +456,7 @@ choice!(crate::widget::ButtonRole, "ButtonRole", {
     Destructive => "destructive",
     Plain => "plain",
     Key => "key",
+    Bar => "bar",
 });
 
 choice!(crate::widget::ControlSize, "ControlSize", {
@@ -1004,6 +1005,7 @@ pub fn registry() -> &'static [Entry] {
     REGISTRY.get_or_init(|| {
         vec![
             entry::<Text>(),
+            entry::<crate::widget::RelativeTime>(),
             entry::<Button>(),
             entry::<crate::widget::MenuButton>(),
             entry::<crate::search::SearchButton>(),

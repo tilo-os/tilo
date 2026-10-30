@@ -441,6 +441,7 @@ pub const ICONS: &[&str] = &[
     "terminal",
     "thumbs-down",
     "thumbs-up",
+    "tilo",
     "timer",
     "train-front",
     "trash",

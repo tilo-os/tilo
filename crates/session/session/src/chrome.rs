@@ -1,118 +1,21 @@
-//! What the desktop's layers ask of the native session: the bar's source
-//! (the clock, the person, their notifications) and the rules of what the
-//! person may change.
+//! What the desktop's layers ask of the native session: the rules of what
+//! the person may change. The bar above them is the shell's
+//! (`tilo_surface_host::shell_part`), which reads the session's desk
+//! (`crate::desk`) through the door.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
-use tilo_desktop::chrome::{
-    ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, OwnChip,
-};
+use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
-use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_surface_host::{Placement, WidgetHost};
-
-use crate::notifications::NoticeSignals;
-
-/// The bar's view of the session: the desktop's tree, the wall clock, and
-/// the person at this device.
-pub(crate) struct SessionChrome {
-    pub(crate) handle: DesktopHandle,
-    /// Where the bar's intents go: the chrome carries them out.
-    pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    pub(crate) person: String,
-    /// What the bar reads of the notifications: the unread count, the
-    /// silenced bell and each app's own badge.
-    pub(crate) signals: Rc<NoticeSignals>,
-    /// The session has no quick settings panel: the status cluster is the
-    /// bell that opens the notification centre.
-    pub(crate) notifications_only: bool,
-    /// Who is here, when this session takes part in the collaboration
-    /// plane: the bar's trees carry them as the active workspace's
-    /// collaborators.
-    pub(crate) sync: Option<Rc<crate::sync::Client>>,
-    /// `(tree revision, minute, the last wave heard)` the snapshot revision
-    /// was last bumped for.
-    seen: Cell<(u64, i64, Option<String>)>,
-    revision: Cell<u64>,
-}
-
-impl SessionChrome {
-    pub(crate) fn new(
-        handle: DesktopHandle,
-        intents: Rc<RefCell<Vec<ChromeIntent>>>,
-        person: String,
-        signals: Rc<NoticeSignals>,
-        notifications_only: bool,
-        sync: Option<Rc<crate::sync::Client>>,
-    ) -> Self {
-        Self {
-            handle,
-            intents,
-            person,
-            signals,
-            notifications_only,
-            sync,
-            seen: Cell::new((u64::MAX, 0, None)),
-            revision: Cell::new(0),
-        }
-    }
-}
-
-impl DesktopChromeSource for SessionChrome {
-    fn snapshot(&self) -> DesktopChromeSnapshot {
-        let clock = ClockSnapshot::now();
-        let waved = self.sync.as_ref().and_then(|sync| sync.wave_notice());
-        let seen = (
-            self.handle.revision(),
-            clock.unix_seconds.div_euclid(60),
-            waved.as_ref().map(|notice| notice.from.clone()),
-        );
-        if self.seen.replace(seen.clone()) != seen {
-            self.revision.set(self.revision.get().wrapping_add(1));
-        }
-        DesktopChromeSnapshot {
-            revision: self.revision.get(),
-            clock,
-            waved,
-            own: Some(OwnChip {
-                name: self.person.clone(),
-                rgb: ui::presence::user_color(&self.person),
-                identity: String::new(),
-            }),
-            notification_badge: self.signals.unread(),
-            notifications_quiet: self.signals.quiet(),
-            notifications_only: self.notifications_only,
-            ..DesktopChromeSnapshot::default()
-        }
-    }
-
-    fn tree(&self) -> DesktopTree {
-        let mut tree = self.handle.read(Clone::clone);
-        // Who is here, as the active workspace's collaborators: the bar's
-        // faces and every roster read the tree, not a list of their own.
-        if let Some(sync) = &self.sync {
-            sync.show(&mut tree, &|_: &str| None);
-        }
-        tree
-    }
-
-    fn app_notification_badge(&self, app_id: &str) -> u32 {
-        self.signals.badge(app_id)
-    }
-
-    fn intent(&self, intent: ChromeIntent) -> bool {
-        self.intents.borrow_mut().push(intent);
-        true
-    }
-}
 
 /// The person at this device owns its desktop: the desktop's one policy
 /// answers what they may change, as it answers a room's owner.
@@ -165,39 +68,24 @@ impl DesktopRules for SessionRules {
     }
 }
 
-/// The chrome above the windows (the top bar, overview, menus) as the
-/// session hosts it: its own tree beside the desk's, covering the outputs.
+/// The chrome above the windows (overview, menus, the strips' navigator)
+/// as the session hosts it: its own tree beside the desk's, covering the
+/// outputs, under the band the shell's bar stands in.
 pub(crate) fn host(
     handle: &DesktopHandle,
     options: &crate::Options,
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
-    signals: Rc<NoticeSignals>,
-    sync: Option<Rc<crate::sync::Client>>,
 ) -> WidgetHost {
     let rules = Rc::new(SessionRules {
         handle: handle.clone(),
         person: options.person.clone(),
         authors: RefCell::new(std::collections::BTreeMap::new()),
     });
-    let tree = handle.read(Clone::clone);
-    // The bar's source hands its intents to the chrome it sits in.
-    let source = Rc::new(SessionChrome::new(
-        handle.clone(),
-        Rc::clone(&intents),
-        options.person.clone(),
-        signals,
-        options.quick_settings.is_none(),
-        sync,
-    ));
-    let bar = TopBarChrome::from_tree(&tree)
-        .with_chrome(source)
-        .with_tilo_mark();
-    let mut chrome = DesktopChrome::new(
+    let mut chrome = DesktopChrome::under_shell_bar(
         handle.clone(),
         crate::GENERATION.into(),
         rules,
-        bar,
         TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     )
