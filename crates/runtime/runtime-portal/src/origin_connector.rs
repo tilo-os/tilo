@@ -127,7 +127,6 @@ mod tests {
 
     #[test]
     fn an_attachment_reaches_the_connector_with_its_connection() {
-        use std::io::{Read as _, Write as _};
         let (session, connector) = pair().unwrap();
         let (instance, theirs) = connection().unwrap();
         send_attachment(&session, &theirs).unwrap();
