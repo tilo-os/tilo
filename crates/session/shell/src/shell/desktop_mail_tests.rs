@@ -115,9 +115,14 @@ impl Desk {
                 .collect()
         };
         for (tab, app) in opening {
-            self.next_instance += 1;
-            let instance = self.next_instance;
-            let peer = 10_000 + instance;
+            let instance = self
+                .next_instance
+                .checked_add(1)
+                .expect("instance ids outlast a test");
+            self.next_instance = instance;
+            let peer = instance
+                .checked_add(10_000)
+                .expect("peer ids outlast a test");
             self.fixture
                 .chrome
                 .borrow()
@@ -283,6 +288,10 @@ fn mail_shows(window: &mut Window) -> (Option<String>, Option<String>) {
     clippy::too_many_lines,
     reason = "one review, each step building on the last"
 )]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn an_agent_lays_out_eight_applications_with_their_drafts_and_cvs_and_one_undo_takes_it_back() {
     let fixture = fixture();
     let room = fixture.room.clone();
@@ -393,7 +402,7 @@ fn an_agent_lays_out_eight_applications_with_their_drafts_and_cvs_and_one_undo_t
         app_id: MAIL.into(),
         route: tilo_action_broker::route::CrdtRoute {
             app_id: MAIL.into(),
-            cluster_id: room.clone(),
+            cluster_id: room,
             record_id: String::new(),
         },
         actions: inbox

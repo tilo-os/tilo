@@ -6863,12 +6863,10 @@ async fn dispatch_sdk_request(
                     // bridge stays open; a lost terminal may follow an effect
                     // and still stops subsequent outbound work.
                     if refused_by_peer(&error) {
-                        tracing::warn!(
-                            %error,
-                            id,
-                            "collab: the broker refused this invocation update; the bridge stays open"
-                        );
-                        refused_answer::fail(&route.channel, id, &update, &error).await;
+                        if let Some(failed) = refused_answer::failure(id, &update, &error) {
+                            let sent = route.channel.update_invocation(id, &failed).await;
+                            refused_answer::followed(id, sent);
+                        }
                     } else {
                         tracing::warn!(%error, id, "collab: updating action invocation failed");
                         if update.is_terminal() {

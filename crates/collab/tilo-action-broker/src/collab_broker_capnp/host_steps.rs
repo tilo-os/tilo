@@ -1052,6 +1052,7 @@ mod identity_admin_tests {
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 asked.invocation = tilo_actions::InvocationId::new();
                 assert!(f.invoke(&asked).is_err());
+                drop(f);
                 assert_eq!(service.started.lock().unwrap().len(), 1);
             }
         }

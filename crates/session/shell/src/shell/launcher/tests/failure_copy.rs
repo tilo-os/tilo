@@ -94,7 +94,7 @@ fn every_launch_failure_message_is_filled() {
         }
     }
     for body in bodies {
-        assert!(!body.contains("{"), "an unfilled message: {body}");
+        assert!(!body.contains('{'), "an unfilled message: {body}");
     }
     let refused = launch_event(LaunchEventKind::SpawnFailed {
         reason: LaunchFailure::AppAuthorshipRefused,

@@ -35,6 +35,12 @@ tools/ci/test-changed.sh --stage test                  # no Clippy
 tools/ci/test-changed.sh --closure                     # lint every reverse dependency
 ```
 
+Landing on the local `integration` branch (`git push . HEAD:integration`) runs
+the Clippy stage itself: the pre-push hook (`.githooks/pre-push`) runs
+`tools/ci/test-changed.sh --stage clippy` against the integration being pushed
+onto and refuses the landing on any finding, so integration stays promotable to
+`main`. It lints the commit checked out, so land from a clean worktree.
+
 The terminal shows failures as they happen and a summary of each job's wall
 time; each job's whole output is in `target/local-affected/<job>.log`. A
 failing job's diagnostics are printed at the end.

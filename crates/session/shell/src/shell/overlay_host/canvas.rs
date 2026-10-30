@@ -1517,7 +1517,7 @@ impl ShellOverlayHost {
             ticket,
             owner,
             anchor,
-            text: text.clone(),
+            text,
         });
         if start {
             self.start_agent_for(&room_id, &agent);
@@ -1556,18 +1556,15 @@ impl ShellOverlayHost {
                     tracing::info!(%issue, "a question asked on the canvas is with the agent");
                     // The caret where it was asked follows its run.
                     let follows = Some(issue.clone());
-                    match self.canvas.caret.as_mut().filter(|_| caret_waits) {
-                        Some(caret) => {
-                            caret.asking = None;
-                            caret.follows = follows;
-                        }
-                        None => {
-                            let mut caret = Caret::at(anchor_point(ask.anchor));
-                            caret.text.clone_from(&ask.text);
-                            caret.selection = Selection::collapsed(ask.text.len());
-                            caret.follows = follows;
-                            self.canvas.caret = Some(caret);
-                        }
+                    if let Some(caret) = self.canvas.caret.as_mut().filter(|_| caret_waits) {
+                        caret.asking = None;
+                        caret.follows = follows;
+                    } else {
+                        let mut caret = Caret::at(anchor_point(ask.anchor));
+                        caret.text.clone_from(&ask.text);
+                        caret.selection = Selection::collapsed(ask.text.len());
+                        caret.follows = follows;
+                        self.canvas.caret = Some(caret);
                     }
                     self.canvas.follows.push(CanvasFollow {
                         owner: ask.owner,
@@ -1729,7 +1726,7 @@ impl ShellOverlayHost {
         let refused = match (caret.asking, caret.refused) {
             (Some(_), _) => Some(crate::shell::i18n::t("canvas-ask-asking")),
             (None, Some(why)) => Some(why.message()),
-            (None, None) => caret.follows.as_ref().and(caret.said.clone()),
+            (None, None) => caret.follows.as_ref().and_then(|_| caret.said.clone()),
         };
         let theme =
             if caret.text.is_empty() && !caret.composition.is_composing() && refused.is_none() {
