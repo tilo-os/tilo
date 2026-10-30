@@ -1,6 +1,6 @@
 //! Maintaining a sealed record's history: opening any of its writes, and
 //! sealing the checkpoint that replaces the ones it covers.
-use super::*;
+use super::{ChannelAccess, ChannelKeyAccess, EncryptionMetadata, RoomId, SignedOp};
 
 impl ChannelKeyAccess {
     /// Open `envelope`, a write of a sealed record's history (a compaction
