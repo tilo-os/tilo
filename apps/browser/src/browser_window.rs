@@ -178,9 +178,15 @@ impl BrowserWindow {
         self.waker = Some(waker);
     }
 
-    /// Submit the page's bookmark and preference edits through `dispatcher`.
-    pub(crate) fn attach_dispatcher(&mut self, dispatcher: ui::framework::Dispatcher<Browser>) {
+    /// Submit the page's bookmark and preference edits through `dispatcher`,
+    /// and bind its preference controls to `actions`.
+    pub(crate) fn attach_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<Browser>,
+        actions: ui::framework::Actions<Browser>,
+    ) {
         self.page.attach_dispatcher(dispatcher);
+        self.page.attach_actions(actions);
     }
 
     /// Keep what the page publishes now for the view's publications.

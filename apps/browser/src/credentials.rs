@@ -382,6 +382,14 @@ impl Credentials {
         }
         dirty
     }
+    /// Open the saved address `profile` in the address editor.
+    pub fn edit_address(&mut self, profile: String) {
+        self.addresses.edit_profile(profile);
+    }
+    /// Ask whether to delete the saved address `profile`.
+    pub fn delete_address(&mut self, profile: String) {
+        self.addresses.ask_delete(profile);
+    }
     pub fn deadline(&self) -> Option<Instant> {
         self.pending
             .values()
@@ -407,7 +415,7 @@ impl Credentials {
     ) -> ListRow {
         let mut row = ListRow::new(id, title)
             .selected(chosen)
-            .on_activate(self.command(action));
+            .on_view(self.command(action));
         if let Some(detail) = detail {
             row = row.secondary(detail);
         }
@@ -415,7 +423,12 @@ impl Credentials {
     }
     /// The panel's content, `width` wide. It is as tall as it needs to be up
     /// to `max_height`, then scrolls.
-    pub fn panel(&self, width: f32, max_height: f32) -> Box<dyn Widget> {
+    pub fn panel(
+        &self,
+        width: f32,
+        max_height: f32,
+        actions: Option<&ui::framework::Actions<crate::resource::Browser>>,
+    ) -> Box<dyn Widget> {
         let ready = self.pending.is_empty() && !self.document.is_empty();
         let refresh = (!self.private && self.origin.is_some() && !self.addresses.is_editing())
             .then(|| {
@@ -463,7 +476,7 @@ impl Credentials {
             column = column.push(line(&self.notice));
         }
         column = if self.address_mode {
-            self.address_controls(column, ready)
+            self.address_controls(column, ready, actions)
         } else if !self.private && self.origin.is_some() {
             self.password_controls(column, ready)
         } else {
@@ -482,8 +495,13 @@ impl Credentials {
                 )),
         )
     }
-    fn address_controls(&self, mut column: Column, ready: bool) -> Column {
-        column = column.push(self.addresses.panel());
+    fn address_controls(
+        &self,
+        mut column: Column,
+        ready: bool,
+        actions: Option<&ui::framework::Actions<crate::resource::Browser>>,
+    ) -> Column {
+        column = column.push(self.addresses.panel(actions));
         if !self.private && self.origin.is_some() && !self.addresses.is_editing() {
             let bases = vec!["Address form"; self.forms.len()];
             let forms: Vec<Box<dyn Widget>> = self

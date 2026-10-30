@@ -435,7 +435,7 @@ pub(crate) fn browser_view(cx: &ViewCx<Browser>, mut window: BrowserWindow) -> E
 /// content store, and in a live window the person's records, this device's
 /// settings and the engine's wakes.
 fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
-    window.attach_dispatcher(cx.dispatcher());
+    window.attach_dispatcher(cx.dispatcher(), cx.actions());
     window.attach_services(
         cx.me().and_then(crate::service_sessions::identity),
         cx.waker(),
