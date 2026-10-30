@@ -24,7 +24,8 @@ use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
     Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostKey, HostLayer,
     InputEvent, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch, TabletEvent,
-    TabletPadEvent, TabletPhase, WindowEffect, WindowInfo, WindowPicture, WindowPolicy,
+    TabletPadEvent, TabletPhase, WindowEffect, WindowFrame, WindowInfo, WindowPicture,
+    WindowPolicy,
 };
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
@@ -250,11 +251,15 @@ fn a_window_is_composited_where_the_policy_places_it() {
     assert_eq!((frame.width, frame.height), (640, 480));
     assert_eq!(frame.pixel(320, 240), Some([255, 0, 0, 255]));
     assert_eq!(
-        frame.pixel(220, 190),
+        frame.pixel(232, 200),
         Some([255, 0, 0, 255]),
-        "top-left corner"
+        "inside the top left corner"
     );
-    assert_eq!(frame.pixel(219, 190), Some(BACKGROUND));
+    let corner = frame.pixel(221, 191).expect("a corner pixel");
+    assert!(
+        corner[0] < 90 && corner[1] < 90,
+        "the corner is cut round, showing what is behind: {corner:?}"
+    );
     assert_eq!(frame.pixel(10, 10), Some(BACKGROUND));
 
     pump(&mut compositor, &mut [&mut client], |_, clients| {
@@ -275,8 +280,8 @@ fn a_scaled_output_composites_in_physical_pixels() {
     assert_eq!(compositor.windows()[0].1, (220, 190, 200, 100));
     compositor.render().unwrap();
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    assert_eq!(frame.pixel(444, 384), Some([0, 0, 255, 255]));
-    assert_eq!(frame.pixel(836, 576), Some([0, 0, 255, 255]));
+    assert_eq!(frame.pixel(460, 400), Some([0, 0, 255, 255]));
+    assert_eq!(frame.pixel(820, 560), Some([0, 0, 255, 255]));
     assert_eq!(frame.pixel(844, 584), Some(BACKGROUND));
 }
 
@@ -1489,6 +1494,111 @@ fn the_policy_moves_focus_and_closes_windows_through_its_own_controls() {
     assert!(!first.seen.closed);
 }
 
+/// How bright a pixel is to the eye, roughly.
+fn luma(pixel: [u8; 4]) -> u32 {
+    u32::from(pixel[0]) * 3 + u32::from(pixel[1]) * 6 + u32::from(pixel[2])
+}
+
+#[test]
+fn a_window_is_drawn_with_rounded_corners_and_a_shadow_below_it() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let pixel = |x, y| frame.pixel(x, y).expect("on the output");
+    let red = [255, 0, 0, 255];
+    // The window stands at (220, 190) to (420, 290) and the window tile
+    // rounds its corners by 14: the corner pixels are not the window's.
+    assert_eq!(pixel(320, 240), red, "the middle is the window");
+    assert_eq!(pixel(232, 200), red, "just inside the corner");
+    assert_ne!(pixel(221, 191), red, "the corner itself is cut");
+    assert_eq!(pixel(420 - 12, 290 - 20), red, "inside the far corner");
+    // Its shadow falls below it, and the hairline that marks its edge runs
+    // just outside it.
+    assert!(
+        luma(pixel(320, 292)) < luma(BACKGROUND),
+        "the shadow darkens the ground below: {:?}",
+        pixel(320, 292)
+    );
+    assert!(
+        luma(pixel(219, 240)) > luma(BACKGROUND),
+        "the edge is a light hairline: {:?}",
+        pixel(219, 240)
+    );
+    assert!(
+        luma(pixel(320, 380)) == luma(BACKGROUND),
+        "the shadow does not reach the far side of the output"
+    );
+}
+
+#[test]
+fn a_window_keeps_its_corners_and_shadow_when_its_effect_scales_it() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, _) = compositor.windows()[0].clone();
+    // Twice the size about its centre: (120, 140) to (520, 340).
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            scale: 2.0,
+            ..WindowEffect::default()
+        }),
+    );
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let pixel = |x, y| frame.pixel(x, y).expect("on the output");
+    let red = [255, 0, 0, 255];
+    assert_eq!(pixel(320, 240), red, "the middle is the window");
+    assert_ne!(
+        pixel(126, 146),
+        red,
+        "the corner grows with the window: it is cut 28 px in, not 14"
+    );
+    assert_eq!(pixel(146, 166), red, "past the cut it is the window");
+    assert!(
+        luma(pixel(320, 344)) < luma(BACKGROUND),
+        "the shadow is twice as far below the grown window: {:?}",
+        pixel(320, 344)
+    );
+}
+
+#[test]
+fn a_window_framed_square_is_drawn_as_its_buffer_is() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, _) = compositor.windows()[0].clone();
+    // A window that fills the display stands on it: no corners, no shadow.
+    compositor.set_window_frame(WindowFrame::square());
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let pixel = |x, y| frame.pixel(x, y).expect("on the output");
+    assert_eq!(pixel(221, 191), [255, 0, 0, 255], "the corner is square");
+    assert_eq!(pixel(220, 190), [255, 0, 0, 255], "its first pixel");
+    assert!(
+        luma(pixel(320, 292)) == luma(BACKGROUND),
+        "and nothing is cast below it"
+    );
+
+    // A window can say so itself, leaving the rest of the desktop framed.
+    compositor.set_window_frame(WindowFrame::default());
+    compositor.set_window_frame_for(info.id, Some(WindowFrame::square()));
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        frame.pixel(221, 191),
+        Some([255, 0, 0, 255]),
+        "square again"
+    );
+    compositor.set_window_frame_for(info.id, None);
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_ne!(
+        frame.pixel(221, 191),
+        Some([255, 0, 0, 255]),
+        "and round again"
+    );
+}
+
 #[test]
 fn the_desktop_moves_scales_and_fades_a_window_without_moving_it() {
     let mut compositor = headless(Box::new(StackPolicy));
@@ -1546,6 +1656,78 @@ fn the_desktop_moves_scales_and_fades_a_window_without_moving_it() {
 
     compositor.set_window_effect(info.id, None);
     assert_eq!(shown(&mut compositor, 320, 240), red);
+}
+
+#[test]
+fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, rect) = compositor.windows()[0].clone();
+    assert_eq!(rect, (220, 190, 200, 100));
+    let shown = |compositor: &mut Compositor, x, y| {
+        compositor.render().unwrap();
+        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
+    };
+    assert_eq!(shown(&mut compositor, 320, 240), Some([255, 0, 0, 255]));
+
+    client.toplevel.as_ref().unwrap().destroy();
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.windows().is_empty()
+    });
+
+    // The window left the desktop's windows, and its last frame stays where
+    // it stood, kept as an element the desktop animates away.
+    let closing = compositor.closing_windows();
+    assert_eq!(closing.len(), 1, "one snapshot: {closing:?}");
+    assert_eq!(closing[0].0.id, info.id);
+    assert_eq!(closing[0].1, rect, "where it stood");
+    assert_eq!(
+        shown(&mut compositor, 320, 240),
+        Some([255, 0, 0, 255]),
+        "its last buffer is still drawn"
+    );
+    assert_ne!(
+        shown(&mut compositor, 221, 191).unwrap(),
+        [255, 0, 0, 255],
+        "and still framed"
+    );
+
+    // The close runs like any other window effect.
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            scale: 0.5,
+            ..WindowEffect::default()
+        }),
+    );
+    assert_eq!(
+        shown(&mut compositor, 320, 240),
+        Some([255, 0, 0, 255]),
+        "the centre stays"
+    );
+    assert_ne!(
+        shown(&mut compositor, 221, 191).unwrap(),
+        [255, 0, 0, 255],
+        "it shrinks in"
+    );
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            opacity: 0.0,
+            ..WindowEffect::default()
+        }),
+    );
+    assert_eq!(
+        shown(&mut compositor, 320, 240),
+        Some(BACKGROUND),
+        "faded out, it is gone"
+    );
+
+    // The desktop is done with it.
+    compositor.release_snapshot(info.id);
+    assert!(compositor.closing_windows().is_empty());
+    assert_eq!(shown(&mut compositor, 320, 240), Some(BACKGROUND));
+    assert_eq!(shown(&mut compositor, 220, 190), Some(BACKGROUND));
 }
 
 /// A hosted surface that pictures one window.
@@ -1652,13 +1834,16 @@ fn translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes()
             image.rgba[i + 3],
         ]
     };
-    let red_corner = at(&first, 39, 19);
+    let window_texel = at(&first, 35, 15);
     let background_corner = at(&first, 0, 0);
-    assert!(red_corner[0] > 200 && red_corner[1] < 60, "{red_corner:?}");
+    assert!(
+        window_texel[0] > 200 && window_texel[1] < 60,
+        "{window_texel:?}"
+    );
     assert!(background_corner[0] < 60, "{background_corner:?}");
     let edge = at(&first, 10, 15);
     assert!(
-        edge[0] > background_corner[0] + 20 && edge[0] < red_corner[0] - 20,
+        edge[0] > background_corner[0] + 20 && edge[0] < window_texel[0] - 20,
         "the window's edge is blurred: {edge:?}"
     );
 
@@ -1673,7 +1858,7 @@ fn translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes()
     pump(&mut compositor, &mut [&mut client], |_, _| true);
     compositor.render().unwrap();
     let again = handed.borrow_mut().pop().flatten().expect("a new backdrop");
-    assert!(at(&again, 39, 19)[2] > 200, "now blue");
+    assert!(at(&again, 35, 15)[2] > 200, "now blue");
 }
 
 #[test]

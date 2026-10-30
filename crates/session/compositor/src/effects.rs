@@ -1,4 +1,5 @@
-//! Windows drawn other than where they stand: animated, faded, pictured.
+//! Windows drawn other than where they stand: animated, faded, pictured,
+//! and framed the way the desktop draws windows.
 //!
 //! The desktop animates foreign windows (opening, closing, moving between
 //! strips and workspaces, coming into the overview) by telling the
@@ -11,6 +12,12 @@
 //! compositor draws each window's live buffer there, scaled to fit, in
 //! front of that surface's layers. Neither changes where input lands: a
 //! window takes the pointer where it stands.
+//!
+//! Every window is also framed ([`crate::WindowFrame`]): its corners are
+//! cut to the desktop's rounding, and the shadow and hairline that lift it
+//! off the ground are drawn behind it. Both follow the effect, so a window
+//! that is moved, scaled or faded keeps its corners and its shadow with it,
+//! and a window pictured small is framed small.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -18,13 +25,17 @@
 )]
 
 use smithay::backend::renderer::element::AsRenderElements as _;
+use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::{CropRenderElement, RescaleRenderElement};
+use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
+use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::desktop::Window;
-use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
+use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size};
 
 use crate::render::OutputRenderElement;
+use crate::window_frame::{self, FrameImages, WindowFrame};
 
 /// How one window is drawn this frame instead of as it stands.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -62,26 +73,190 @@ pub struct WindowPicture {
     pub clip: Option<(f64, f64, f64, f64)>,
 }
 
-/// One drawn piece of a window moved, scaled and clipped.
-pub type TransformedElement<R> =
-    CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<R>>>;
+/// How the desktop frames windows, and the shadows and edges drawn so far.
+#[derive(Clone, Copy)]
+pub(crate) struct Framing<'a> {
+    /// What every window of this drawing gets.
+    pub(crate) frame: WindowFrame,
+    /// The frames drawn so far, by window size and output scale.
+    pub(crate) images: &'a FrameImages,
+}
 
-/// How a window's elements are placed (all output-local).
-struct Placement {
-    /// Its geometry's top left, logical.
-    at: Point<f64, Logical>,
-    /// What it is scaled about, physical.
-    pivot: Point<i32, Physical>,
-    scale: f64,
-    opacity: f32,
+/// One drawn piece of a window moved, scaled and clipped, its corners cut
+/// to the desktop's rounding.
+pub type TransformedElement<R> =
+    RoundedElement<RescaleRenderElement<WaylandSurfaceRenderElement<R>>>;
+
+/// A window's shadow and edge, drawn where the window is drawn.
+pub type FrameElement<R> =
+    CropRenderElement<RescaleRenderElement<MemoryRenderBufferRenderElement<R>>>;
+
+/// An element with its corners cut to a rounded rect.
+///
+/// The cut is made where the element is drawn ([`RenderElement::draw`]), by
+/// drawing its rows: the corner strips in as many rows as the arc is deep
+/// and the rest once. Every renderer draws a texture into a rows worth of a
+/// destination the same way, so this needs nothing of the GPU and nothing
+/// of the CPU renderer's shape handling.
+#[derive(Debug)]
+pub struct RoundedElement<E> {
+    element: E,
+    /// The corner radius, physical pixels.
+    radius: f64,
     /// What it may cover, physical.
     clip: Rectangle<i32, Physical>,
 }
 
-/// `window`'s elements placed as `placement` says on an output of
-/// `output_scale`.
-fn transformed<R>(
+impl<E> RoundedElement<E> {
+    /// `element`, drawn with corners rounded by `radius` (physical pixels),
+    /// covering no more than `clip`.
+    pub fn new(element: E, radius: f64, clip: Rectangle<i32, Physical>) -> Self {
+        Self {
+            element,
+            radius,
+            clip,
+        }
+    }
+
+    /// The element inside.
+    #[must_use]
+    pub fn inner(&self) -> &E {
+        &self.element
+    }
+}
+
+impl<E: Element> Element for RoundedElement<E> {
+    fn id(&self) -> &Id {
+        self.element.id()
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        self.element.current_commit()
+    }
+
+    fn transform(&self) -> smithay::utils::Transform {
+        self.element.transform()
+    }
+
+    fn src(&self) -> Rectangle<f64, Buffer> {
+        self.element.src()
+    }
+
+    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        self.element
+            .geometry(scale)
+            .intersection(self.clip)
+            .unwrap_or_default()
+    }
+
+    fn damage_since(
+        &self,
+        scale: Scale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
+        self.element.damage_since(scale, commit)
+    }
+
+    fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        // The corners let what is behind them show.
+        OpaqueRegions::default()
+    }
+
+    fn alpha(&self) -> f32 {
+        self.element.alpha()
+    }
+
+    fn kind(&self) -> Kind {
+        self.element.kind()
+    }
+}
+
+impl<R, E> RenderElement<R> for RoundedElement<E>
+where
+    R: Renderer,
+    E: RenderElement<R>,
+{
+    fn draw(
+        &self,
+        frame: &mut R::Frame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) -> Result<(), R::Error> {
+        let bands = window_frame::bands(dst, self.radius);
+        if bands.len() <= 1 {
+            return self.element.draw(frame, src, dst, damage, opaque_regions);
+        }
+        // `damage` and `opaque_regions` are relative to `dst`; each row is
+        // handed its own share of them.
+        let within = |rect: Rectangle<i32, Physical>, row: Rectangle<i32, Physical>| {
+            let absolute = Rectangle::new(rect.loc + dst.loc, rect.size);
+            absolute
+                .intersection(row)
+                .map(|part| Rectangle::new(part.loc - row.loc, part.size))
+        };
+        for row in bands {
+            let damage: Vec<Rectangle<i32, Physical>> = damage
+                .iter()
+                .copied()
+                .filter_map(|rect| within(rect, row))
+                .collect();
+            if damage.is_empty() {
+                continue;
+            }
+            let opaque: Vec<Rectangle<i32, Physical>> = opaque_regions
+                .iter()
+                .copied()
+                .filter_map(|rect| within(rect, row))
+                .collect();
+            // The row's share of the source, so the buffer is drawn as one.
+            let across = |length: i32, whole: i32, of: f64| {
+                if whole > 0 {
+                    of * f64::from(length) / f64::from(whole)
+                } else {
+                    0.0
+                }
+            };
+            let left = across(row.loc.x - dst.loc.x, dst.size.w, src.size.w);
+            let top = across(row.loc.y - dst.loc.y, dst.size.h, src.size.h);
+            let width = across(row.size.w, dst.size.w, src.size.w);
+            let height = across(row.size.h, dst.size.h, src.size.h);
+            let row_src = Rectangle::<f64, Buffer>::new(
+                src.loc + Point::from((left, top)),
+                Size::from((width, height)),
+            );
+            self.element.draw(frame, row_src, row, &damage, &opaque)?;
+        }
+        Ok(())
+    }
+
+    fn underlying_storage(&self, _renderer: &mut R) -> Option<UnderlyingStorage<'_>> {
+        None
+    }
+}
+
+/// How a window's content is placed on an output.
+struct Placement {
+    /// Its geometry's top left, output-local logical.
+    at: Point<f64, Logical>,
+    /// What it is scaled about, physical.
+    pivot: Point<i32, Physical>,
+    /// By how much, about `pivot`.
+    scale: f64,
+    /// Its opacity, 0 to 1.
+    opacity: f32,
+    /// What it may cover, physical.
+    clip: Rectangle<i32, Physical>,
+    /// Its corner radius before the effect, logical.
+    radius: f64,
+}
+
+/// `window`'s content and frame placed as `placement` says on an output of
+/// `output_scale`, front first.
+fn placed<R>(
     renderer: &mut R,
+    framing: Framing<'_>,
     window: &Window,
     output_scale: f64,
     placement: &Placement,
@@ -90,9 +265,14 @@ where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Clone + Send + 'static,
 {
-    let origin =
-        (placement.at - window.geometry().loc.to_f64()).to_physical_precise_round(output_scale);
-    window
+    let geometry = window.geometry();
+    let origin = (placement.at - geometry.loc.to_f64()).to_physical_precise_round(output_scale);
+    let unscaled = Rectangle::<i32, Physical>::new(
+        placement.at.to_physical_precise_round(output_scale),
+        geometry.size.to_physical_precise_round(output_scale),
+    );
+    let radius = placement.radius * placement.scale * output_scale;
+    let mut elements: Vec<OutputRenderElement<R>> = window
         .render_elements::<WaylandSurfaceRenderElement<R>>(
             renderer,
             origin,
@@ -100,20 +280,56 @@ where
             placement.opacity,
         )
         .into_iter()
-        .filter_map(|element| {
+        .map(|element| {
             let scaled =
                 RescaleRenderElement::from_element(element, placement.pivot, placement.scale);
-            CropRenderElement::from_element(scaled, output_scale, placement.clip)
+            OutputRenderElement::Transformed(RoundedElement::new(scaled, radius, placement.clip))
         })
-        .map(OutputRenderElement::Transformed)
-        .collect()
+        .collect();
+    // The shadow and the edge sit under the window, so they come after it.
+    let unscaled_size = geometry.size.to_f64();
+    let image = framing.images.image(
+        &framing.frame,
+        (unscaled_size.w, unscaled_size.h),
+        output_scale,
+    );
+    if let Some(image) = image {
+        let at = unscaled.loc.to_f64() + Point::<f64, Physical>::from(image.origin);
+        let logical = Size::<i32, Logical>::from((
+            window_frame::pixels(image.size.0 / output_scale),
+            window_frame::pixels(image.size.1 / output_scale),
+        ));
+        let element = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            at,
+            &image.buffer,
+            Some(placement.opacity),
+            None,
+            Some(logical),
+            Kind::Unspecified,
+        );
+        match element {
+            Ok(element) => {
+                let scaled =
+                    RescaleRenderElement::from_element(element, placement.pivot, placement.scale);
+                if let Some(element) =
+                    CropRenderElement::from_element(scaled, output_scale, placement.clip)
+                {
+                    elements.push(OutputRenderElement::Frame(element));
+                }
+            }
+            Err(error) => tracing::warn!(?error, "window frame: buffer not imported"),
+        }
+    }
+    elements
 }
 
 /// `window`, standing at `location` (its geometry's top left, output-local
-/// logical) and `size`, drawn with `effect` on an output of `output`
-/// (physical size, scale).
+/// logical) drawn with `effect` on an output of `output` (physical size,
+/// scale).
 pub(crate) fn with_effect<R>(
     renderer: &mut R,
+    framing: Framing<'_>,
     window: &Window,
     location: Point<f64, Logical>,
     effect: &WindowEffect,
@@ -130,8 +346,9 @@ where
     let size = window.geometry().size.to_f64();
     let at = location + Point::from(effect.offset);
     let centre = at + Point::from((size.w / 2.0, size.h / 2.0));
-    transformed(
+    placed(
         renderer,
+        framing,
         window,
         output_scale,
         &Placement {
@@ -140,6 +357,7 @@ where
             scale: effect.scale,
             opacity: effect.opacity.min(1.0),
             clip: bounds,
+            radius: framing.frame.radius,
         },
     )
 }
@@ -164,6 +382,7 @@ pub(crate) fn fit(
 /// logical layout is `output_origin`.
 pub(crate) fn pictured<R>(
     renderer: &mut R,
+    framing: Framing<'_>,
     window: &Window,
     picture: &WindowPicture,
     output_origin: Point<f64, Logical>,
@@ -196,9 +415,11 @@ where
         return Vec::new();
     };
     // Drawn at its own size with its top left on the picture's, then
-    // scaled about that corner.
-    transformed(
+    // scaled about that corner. The shadow is scaled with it, so a
+    // thumbnail carries the window's own lift.
+    placed(
         renderer,
+        framing,
         window,
         output_scale,
         &Placement {
@@ -207,6 +428,7 @@ where
             scale,
             opacity: picture.opacity.min(1.0),
             clip,
+            radius: framing.frame.radius,
         },
     )
 }

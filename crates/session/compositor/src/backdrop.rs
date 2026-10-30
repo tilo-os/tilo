@@ -25,7 +25,7 @@
 
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::{ExportMem, ImportAll, ImportMem, Offscreen, Renderer};
-use smithay::utils::{Logical, Physical, Point, Size, Transform};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Size, Transform};
 
 use crate::backend::BackendError;
 use crate::render::{BACKGROUND, below_host};
@@ -92,7 +92,14 @@ where
         i32::try_from(rows).unwrap_or(i32::MAX),
     ));
     let origin = Point::<f64, Logical>::from((x, y));
-    let elements = below_host(renderer, state, host, origin, scale);
+    let elements = below_host(
+        renderer,
+        state,
+        host,
+        origin,
+        scale,
+        Rectangle::from_size(size),
+    );
     let watches = &mut state.backdrops.watches;
     let fresh = !watches
         .iter()

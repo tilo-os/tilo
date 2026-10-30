@@ -53,6 +53,7 @@ mod state;
 mod tablet;
 mod text_input;
 mod touch;
+mod window_frame;
 mod xdnd;
 mod xdnd_bridge;
 mod xwayland;
@@ -88,6 +89,7 @@ pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
 pub use policy::{Arrangement, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy, WindowRequest};
 pub use selection::Selection;
 pub use state::State;
+pub use window_frame::{Edge, Shadow, WindowFrame};
 
 /// Why the compositor could not start or keep running.
 #[derive(Debug)]
@@ -364,6 +366,42 @@ impl Compositor {
             Some(effect) => self.data.state.effects.insert(id, effect),
             None => self.data.state.effects.remove(&id),
         };
+    }
+
+    /// How every window is framed (its corners, its shadow, its edge) from
+    /// the next frame on. A window that fills the display asks for
+    /// [`WindowFrame::square`] through [`Compositor::set_window_frame_for`].
+    pub fn set_window_frame(&mut self, frame: WindowFrame) {
+        self.data.state.frame = frame;
+    }
+
+    /// Frame the window `id` with `frame` instead of the desktop's, or as
+    /// the desktop frames windows again (`None`).
+    pub fn set_window_frame_for(&mut self, id: u64, frame: Option<WindowFrame>) {
+        match frame {
+            Some(frame) => self.data.state.window_frames.insert(id, frame),
+            None => self.data.state.window_frames.remove(&id),
+        };
+    }
+
+    /// The windows that closed and are still drawn from the last buffer
+    /// they showed, with the place each one stood at, front first. A window
+    /// stays here until the desktop lets it go with
+    /// [`Compositor::release_snapshot`], the same id maps again, or closes
+    /// push it out.
+    pub fn closing_windows(&self) -> Vec<(WindowInfo, (i32, i32, i32, i32))> {
+        self.data
+            .state
+            .closing_windows()
+            .into_iter()
+            .map(|(info, rect)| (info, (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)))
+            .collect()
+    }
+
+    /// Let go of the snapshot of the window `id`: it is gone from the next
+    /// frame on.
+    pub fn release_snapshot(&mut self, id: u64) {
+        self.data.state.release_snapshot(id);
     }
 
     /// Night light's colour temperature, while it is on.
