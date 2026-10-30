@@ -20675,15 +20675,19 @@ dependencies = [
 name = "tilo-quick-settings"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "image",
  "os-actions",
  "parking_lot",
  "serde",
  "settings-store",
  "tilo-app",
  "tilo-audio-service",
+ "tilo-compositor",
  "tilo-media",
  "tilo-power-mgmt",
  "tilo-quick-settings",
+ "tilo-session",
  "tilo-test-env",
  "tracing",
  "workspace-hack",

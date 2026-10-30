@@ -6,6 +6,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "tilo-quick-settings"
+path = "src/main.rs"
+
 [features]
 # The radio dispatcher fixture and the panel's test hooks, for the shell's
 # tests that drive the panel inside a whole chrome.
@@ -26,7 +30,12 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+base64.workspace = true
+image = { workspace = true, features = ["png"] }
+tilo-compositor = { path = "../compositor" }
 tilo-quick-settings = { path = ".", features = ["test-support"] }
+# The session that starts the panel, and the headless presentation it runs.
+tilo-session = { path = "../session" }
 tilo-test-env = { path = "../../dev/test-env" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 
