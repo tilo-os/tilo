@@ -3780,3 +3780,13 @@ pub fn reads_item(table: &'static ModelTable, kind: &str, resource_id: &str) -> 
     }
     true
 }
+
+/// Whether `resource_id` names an item of a collection of published items in
+/// a record of the table `table` and kind `kind`, an item inside an item
+/// included, rather than a part of an item (an issue's body, a channel's
+/// call): what may be opened as an item.
+#[must_use]
+pub fn names_item(table: &'static ModelTable, kind: &str, resource_id: &str) -> bool {
+    steps(kind, resource_id).is_some_and(|steps| matches!(steps.last(), Some(Step::Item(..))))
+        && reads_item(table, kind, resource_id)
+}

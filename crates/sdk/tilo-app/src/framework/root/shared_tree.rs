@@ -480,7 +480,7 @@ impl ResourceRoot {
                         .into_iter()
                         .map(|mut record| {
                             if opens {
-                                offer_item_open(self.resource.item_of, &mut record);
+                                offer_item_open(self.resource.opens_as_item, &mut record);
                             }
                             SharedResource::from_resource(record)
                         }),
@@ -661,7 +661,7 @@ impl ResourceRoot {
             mark_document_jobs(resource);
         }
         if adds.open {
-            offer_item_open(self.resource.item_of, resource);
+            offer_item_open(self.resource.opens_as_item, resource);
         }
         if adds.reads
             && let Some(table) = self.resource.record_table

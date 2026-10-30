@@ -2117,7 +2117,7 @@ impl RootPublishes for ResourceRoot {
             resource = resource.with_action(open_spec());
         }
         if self.stages.opens() {
-            offer_item_open(self.resource.item_of, &mut resource);
+            offer_item_open(self.resource.opens_as_item, &mut resource);
         }
         if let Some(table) = self.resource.record_table {
             offer_item_reads(&mut resource, table, self.resource.kind);
@@ -2181,7 +2181,7 @@ impl RootPublishes for ResourceRoot {
         if let Some(mut resolved) = resolved {
             self.bind_row_declarations(std::slice::from_mut(&mut resolved));
             if self.stages.opens() {
-                offer_item_open(self.resource.item_of, &mut resolved);
+                offer_item_open(self.resource.opens_as_item, &mut resolved);
             }
             return Some(resolved);
         }
