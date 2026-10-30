@@ -208,6 +208,7 @@ pub mod storage_notice;
 pub mod system_sounds;
 pub(crate) mod system_update;
 pub mod tab_binding;
+pub(crate) mod task_agents;
 pub(crate) mod task_programs;
 pub mod test_control;
 #[cfg(unix)]

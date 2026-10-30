@@ -138,6 +138,8 @@ impl Widget for ShellOverlayHost {
             });
         let action_dirty = action_dirty
             | self.pump_agent_asks()
+            | self.launch_task_agents()
+            | self.fix_composer_blocker()
             | self.pump_canvas_asks()
             | self.switch_composer_agent()
             | self.open_composer_answer();

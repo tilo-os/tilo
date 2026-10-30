@@ -341,7 +341,7 @@ impl CapnpBrokerState {
         }
         self.tracker_runs(&run.cluster_id)
             .ok_or("the tracker is unavailable")?
-            .check_agent(&run.cluster_id, &current.agent)?;
+            .check_agent(&run.cluster_id, &current)?;
         if !current.active {
             self.cancel_native_children(run)?;
             return Ok(runtime_collab::TaskRunStatus {

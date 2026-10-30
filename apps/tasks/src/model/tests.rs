@@ -436,6 +436,7 @@ fn asking_an_agent_makes_an_issue_whose_run_the_asking_approved() {
                 }),
                 subject: None,
                 quick: false,
+                delegation: None,
             },
         })
     };
@@ -1016,6 +1017,7 @@ fn a_quick_question_is_a_task_that_ends_when_its_agent_answers_it() {
                 model: None,
                 subject: None,
                 quick: true,
+                delegation: None,
             },
         }))
         .unwrap();
@@ -1057,6 +1059,7 @@ fn work_asked_of_an_agent_waits_for_a_person_to_review_what_came_back() {
                 model: None,
                 subject: None,
                 quick: false,
+                delegation: None,
             },
         }))
         .unwrap();

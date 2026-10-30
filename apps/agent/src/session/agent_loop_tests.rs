@@ -1382,6 +1382,7 @@ fn execution_fixture(
             agent_id: "agent-1".into(),
             endpoint: None,
             endpoint_identity: None,
+            task_agent: false,
             app_id: "so.tilo.agent".into(),
             cluster: Uuid::from_u128(1),
             record: None,

@@ -251,6 +251,7 @@ impl CheckRun for NativeTaskActionRequirement {
             model: None,
             directions: Vec::new(),
             question: None,
+            delegation: None,
         };
         self.check_tracker(peer, room, &run, now)
     }
