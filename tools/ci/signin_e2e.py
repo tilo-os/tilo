@@ -211,6 +211,65 @@ class Cycle:
         if "rror" in reply:
             raise Failed(f"could not hot-plug the test shell port: {reply.strip()}")
 
+    def emergency_shell(self, commands: dict[str, str], limit: float = 300) -> dict[str, str]:
+        """Run `commands` in the initrd's emergency shell, over the serial line (the boot's
+        /dev/console, served on serial.sock by boot-target --serial-socket), and return what
+        each printed. The shell asks for Enter first ("Press Enter for system maintenance")."""
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(str(self.run / "serial.sock"))
+        received = bytearray()
+        deadline = time.monotonic() + limit
+
+        def read_until(pattern: re.Pattern, until: float) -> re.Match | None:
+            while True:
+                found = pattern.search(_plain(bytes(received)))
+                if found:
+                    return found
+                remaining = min(until, deadline) - time.monotonic()
+                if remaining <= 0:
+                    return None
+                sock.settimeout(remaining)
+                try:
+                    chunk = sock.recv(65536)
+                except socket.timeout:
+                    return None
+                if not chunk:
+                    return None
+                received.extend(chunk)
+
+        results: dict[str, str] = {}
+        try:
+            # sulogin reads its Enter with whatever else has arrived by then, so nothing more
+            # is sent until the shell's prompt shows; and a line typed while the shell starts
+            # can still be lost, so the probe is typed again until it answers.
+            sock.sendall(b"\r")
+            read_until(re.compile(rb"# ?$"), time.monotonic() + 30)
+            answered = False
+            for _ in range(4):
+                nonce = secrets.token_hex(6)
+                # The marker is printed in two halves, so the shell's echo of the command
+                # never matches it.
+                sock.sendall(f"printf '%s-%s\\n' E2E-SHELL {nonce}\r".encode())
+                if read_until(re.compile(rf"\nE2E-SHELL-{nonce}\n".encode()), time.monotonic() + 15):
+                    answered = True
+                    break
+            if not answered:
+                results["shell"] = "no shell answered on the serial line:\n" \
+                    + _plain(bytes(received)).decode("utf-8", "replace")[-2000:]
+                return results
+            for name, command in commands.items():
+                received.clear()
+                nonce = secrets.token_hex(6)
+                sock.sendall(f"( {command} ) 2>&1 | sed 's/^/E2E| /'; "
+                             f"printf '%s-%s\\n' E2E-DONE {nonce}\r".encode())
+                found = read_until(re.compile(rf"\nE2E-DONE-{nonce}\n".encode()), deadline)
+                text = _plain(bytes(received)).decode("utf-8", "replace")
+                lines = [line[5:] for line in text.splitlines() if line.startswith("E2E| ")]
+                results[name] = "\n".join(lines) + ("\n" if found else "\n(cut short: time ran out)\n")
+        finally:
+            sock.close()
+        return results
+
     def keep_serial(self, label: str) -> None:
         serial = self.run / "serial.log"
         if serial.is_file():
@@ -286,6 +345,15 @@ class Shell:
     def close(self) -> None:
         if self.sock:
             self.sock.close()
+
+
+_ESCAPES = re.compile(rb"\x1b(?:\[[0-9;?=!]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][^\x1b]*\x1b\\|[=>])|[\x00\r]")
+
+
+def _plain(data: bytes) -> bytes:
+    """The text of terminal output `data`: its control sequences, carriage returns and NULs
+    taken out."""
+    return _ESCAPES.sub(b"", data)
 
 
 def quote(value: str) -> str:
@@ -656,11 +724,15 @@ cryptsetup close e2e-target
                 c.env[name] = before
         self.boot_devices = {name: c.env.get(name) for name in devices}
         c.env.update(devices)
-        c.vm("boot-target", "--2d", "--tpm", timeout=600)
+        # The serial line can be typed into, for the initrd's emergency shell should the boot
+        # end there (wait_screen).
+        c.vm("boot-target", "--2d", "--tpm", "--serial-socket", timeout=600)
         c.hotplug_shell()
 
     def classify(self, text: str) -> str:
         lower = text.lower()
+        if "emergency mode" in lower or "rdsosreport" in lower:
+            return "emergency"
         if "unlock tilo" in lower or "disk passphrase or recovery" in lower:
             return "disk-prompt"
         if "incorrect password" in lower or "incorrect pin" in lower or "tries left" in lower \
@@ -688,12 +760,37 @@ cryptsetup close e2e-target
             kind = self.classify(text)
             if kind in kinds:
                 return kind, path, text, None
+            if kind == "emergency":
+                c.keep_screen(f"{label}-emergency", path, text)
+                self.collect_emergency(label)
+                return kind, path, text, None
             if not c.running():
                 raise Failed(f"the VM stopped while waiting for {sorted(kinds)} ({label})")
             time.sleep(1.5)
         path, text = c.screen()
         c.keep_screen(f"{label}-timeout", path, text)
         return "timeout", path, text, None
+
+    EMERGENCY = {
+        "journal": "journalctl -b --no-pager -o short-monotonic",
+        "rdsosreport": "cat /run/initramfs/rdsosreport.txt",
+        "failed": "systemctl --failed --no-pager --plain --no-legend; systemctl list-jobs --no-pager",
+        "tilo-root": "ls -la /run/tilo-root /run/cryptsetup-keys.d; "
+                     "systemctl status --no-pager -l tilo-root-discover.service sysroot.mount",
+    }
+
+    def collect_emergency(self, label: str) -> None:
+        """The boot ended in the initrd's emergency shell: its journal, rdsosreport.txt and
+        failed units, read in that shell over the serial line. Nothing typed there is a secret,
+        and what it prints is redacted here and scrubbed with every other output."""
+        say(f"{label}: the boot is in the initrd's emergency shell; collecting its journal")
+        try:
+            found = self.cycle.emergency_shell(self.EMERGENCY)
+        except OSError as error:
+            found = {"shell": f"the serial line could not be reached: {error}"}
+        for name, text in found.items():
+            self.save(f"emergency-{label}-{name}.txt", text)
+        self.facts.setdefault("emergency", []).append(label)
 
     def greeter_log(self, label: str, state: dict) -> None:
         with (self.out / f"greeter-states-{label}.jsonl").open("a", encoding="utf-8") as handle:

@@ -12,7 +12,10 @@
 #                                              TILO_VM_HOSTFWD adds forwards to the NIC,
 #                                              e.g. hostfwd=tcp:127.0.0.1:3341-:3340
 #   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
-#   ./os/dev/vm.sh boot-target [--gl]          boot the installed result (target.qcow2)
+#   ./os/dev/vm.sh boot-target [--gl] [--serial-socket]
+#                                              boot the installed result (target.qcow2);
+#                                              --serial-socket also serves the serial
+#                                              line on $TILO_RUN/serial.sock to type into
 #   TILO_VM_CYCLE=NAME ./os/dev/vm.sh init-cycle
 #                                             clear and initialize isolated mutable state
 #
@@ -218,11 +221,12 @@ cmd_boot_installer() {
 # Boot the installed system — the target disk the custom installer wrote
 # (default $TILO_RUN/target.qcow2). This is the post-install result.
 cmd_boot_target() {
-  local mode=2d disk="$TILO_TARGET_DISK"
+  local mode=2d disk="$TILO_TARGET_DISK" serial=()
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
     --tpm) TILO_TPM=1;; --no-tpm) TILO_TPM=0;;
     --secboot) TILO_SECBOOT=1;;
+    --serial-socket) serial=(--serial-socket);;
     *) die "boot-target: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "target disk not found: $disk (run vm.sh boot-installer and install first)"
   msg "boot-target ($mode, ${TILO_XRES}x${TILO_YRES}) disk=$disk (installed system)"
@@ -230,7 +234,7 @@ cmd_boot_target() {
     warn "2D proves the boot/unlock path, but the non-GL virtio display exposes no virgl GPU to the Tilo compositor."
     warn "The framebuffer can go black after Plymouth even when greetd and the session are healthy; use --gl to validate the desktop."
   fi
-  start_vm "$mode" --name tilo-target \
+  start_vm "$mode" --name tilo-target "${serial[@]}" \
     --disk "$disk,format=qcow2,id=tilo-install-target,serial=tilo-install-target" \
     || die "boot-target failed"
   msg "target up. monitor=$TILO_MON serial=$TILO_SERIAL"

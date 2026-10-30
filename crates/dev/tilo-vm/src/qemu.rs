@@ -555,9 +555,10 @@ pub struct MachineArgs {
     /// `ssh.authorized_keys.root` in an SMBIOS type 11 OEM string.
     #[arg(long)]
     pub root_key: Option<PathBuf>,
-    /// The serial line as a socket (<run>/serial.sock) instead of a log
-    /// file. Something must stay attached: with no reader QEMU blocks once
-    /// the buffer fills, which stops the guest mid-boot.
+    /// The serial line as a socket (<run>/serial.sock) something can type
+    /// into, beside the serial log. Nothing has to be attached, but a client
+    /// that connects must keep reading: QEMU blocks on a connected socket
+    /// whose buffer is full, which stops the guest mid-boot.
     #[arg(long)]
     pub serial_socket: bool,
     /// Write the serial log here instead of <run>/serial.log.
@@ -904,12 +905,25 @@ impl Machine {
         if let Some(credential) = &resolved.credential {
             args.extend(["-smbios".into(), credential.clone()]);
         }
+        if self.serial_socket {
+            // QEMU writes everything the guest says on the line to the log
+            // too, whether or not anything is connected; with nothing
+            // connected it goes only there.
+            args.extend([
+                "-chardev".into(),
+                format!(
+                    "socket,id=tiloserial,path={},server=on,wait=off,logfile={}",
+                    path(&run.serial_socket()),
+                    path(&self.serial_log(run))
+                ),
+            ]);
+        }
         args.extend([
             "-monitor".into(),
             format!("unix:{},server,nowait", path(&run.monitor())),
             "-serial".into(),
             if self.serial_socket {
-                format!("unix:{},server=on,wait=off", path(&run.serial_socket()))
+                "chardev:tiloserial".into()
             } else {
                 format!("file:{}", path(&self.serial_log(run)))
             },
@@ -1445,13 +1459,6 @@ struct RunReport {
 /// ready or failed, QEMU exits, or time runs out; then power the guest off.
 pub fn run_command(args: &MachineArgs, wait: &RunArgs) -> Result<Outcome, CliError> {
     let mut machine = Machine::try_from(args)?;
-    if machine.serial_socket {
-        return Err(QemuError::new(
-            "qemu run reads the serial log, which --serial-socket replaces",
-            "drop --serial-socket, or use qemu boot",
-        )
-        .into());
-    }
     let ready = compile(&wait.ready)?;
     let fail = compile(&wait.fail)?;
     let (run, scratch) = foreground_run_dir(args.run.as_deref())?;
@@ -1835,6 +1842,18 @@ mod tests {
             "-device virtio-multitouch-pci -qmp unix:/run/t/qmp.sock,server=on,wait=off"
         ));
         assert!(!text.contains("usb-tablet"));
+    }
+
+    #[test]
+    fn a_serial_socket_keeps_the_serial_log() {
+        let text = line(&machine(&["--serial-socket"]), false, None);
+        assert!(text.contains(
+            "-chardev socket,id=tiloserial,path=/run/t/serial.sock,server=on,wait=off,logfile=/run/t/serial.log"
+        ), "{text}");
+        assert!(
+            text.contains("-serial chardev:tiloserial -pidfile"),
+            "{text}"
+        );
     }
 
     #[test]
