@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tilo-compositor = { path = "../compositor" }
+image = { workspace = true, features = ["png"] }
 tilo-surface-host = { path = "../surface-host" }
 tilo-desktop = { path = "../desktop" }
 tilo-desktop-model = { path = "../desktop-model" }
@@ -48,6 +49,11 @@ tilo-polkit-agent = { path = "../polkit-agent" }
 tilo-network-secret-agent = { path = "../network-secret-agent" }
 tilo-bluetooth-agent = { path = "../bluetooth-agent" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
+tilo-onboarding-host = { path = "../onboarding-host" }
+tilo-sheets = { path = "../sheets" }
+# Checks a password for the lock screen, through the unlock helper.
+bounded-command = { path = "../../system/bounded-command" }
+zeroize.workspace = true
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 os-actions = { path = "../../system/os-actions" }
 serde.workspace = true

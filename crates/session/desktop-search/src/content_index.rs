@@ -103,6 +103,9 @@ struct Inner {
     slots: BTreeMap<SlotKey, BTreeMap<String, IndexEntry>>,
     /// Each app's last word on whether its secrets are unlocked.
     secrets: BTreeMap<String, bool>,
+    /// The ids apps had before: a reference written under one names what
+    /// the renamed app publishes.
+    earlier: tilo_action_policy::EarlierIds,
 }
 
 impl Inner {
@@ -131,7 +134,7 @@ impl Inner {
         }
         Titles {
             by_resource,
-            earlier: crate::shell::launcher::installed_earlier_ids(),
+            earlier: &self.earlier,
         }
     }
 }
@@ -142,7 +145,7 @@ struct Titles<'a> {
     by_resource: HashMap<(&'a str, &'a str), Vec<(&'a str, &'a str)>>,
     /// The ids apps had before: a reference written under one names what
     /// the renamed app publishes.
-    earlier: tilo_action_policy::EarlierIds,
+    earlier: &'a tilo_action_policy::EarlierIds,
 }
 
 impl Titles<'_> {
@@ -227,6 +230,14 @@ impl AppContentIndex {
     /// Which build of the contents a search reads.
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
+    }
+
+    /// The ids installed apps had before, as the catalogue says: what a
+    /// reference written under one of them is called is looked up under
+    /// the app's id now.
+    pub fn set_earlier_ids(&self, ids: tilo_action_policy::EarlierIds) {
+        self.inner.lock_recover().earlier = ids;
+        self.generation.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Wake `waker` whenever the index changes.

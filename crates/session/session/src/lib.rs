@@ -20,10 +20,13 @@
 
 #![cfg(target_os = "linux")]
 
+pub mod capture;
 mod chrome;
 pub mod desktop_services;
 mod config;
 mod controls;
+pub mod desktop_services;
+pub mod displays;
 mod env;
 mod keys;
 mod lists;
@@ -31,6 +34,7 @@ mod panels;
 mod setup;
 mod sheets;
 mod search;
+pub mod unlock;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -54,6 +58,13 @@ use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
 
 pub use lists::{AppLists, Lists};
+pub use config::SessionConfig;
+pub use controls::{
+    DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, SESSION_RESOURCE,
+    SessionCommand,
+};
+pub use env::SessionEnvironment;
+pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA_PLAYER, MICROPHONE, QUICK_SETTINGS};
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
@@ -64,6 +75,7 @@ use setup::Setup;
 use sheets::Sheet;
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::FilePickerSeat;
+use tilo_sheets::lock::LockSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::{PowerEffect, PowerSeat};
 use tilo_sheets::workspace_settings::{
@@ -116,6 +128,16 @@ pub struct Options {
     /// suspend, restart, shut down, switch user); the session locks the
     /// screen itself. Without one, the choice is only logged.
     pub session_actions: fn(SessionAction) -> Result<(), String>,
+    /// Whose session this is, as the system knows them: the user a
+    /// password unlocks the lock screen for.
+    pub user: String,
+    /// Whether a password unlocks the session; without one nothing does.
+    pub verifier: std::sync::Arc<dyn unlock::PasswordVerifier>,
+    /// What the services were handed to wake the session's loop when
+    /// something lands: the session binds it to its loop once started.
+    pub wake: tilo_service::LoopWake,
+    /// The screenshots the portal asks for, which the session takes.
+    pub captures: Option<capture::Captures>,
 }
 
 /// Where quick settings reads the device from.
@@ -215,6 +237,10 @@ impl Layers {
             .unwrap_or_else(|| Err(DoorError::Unknown(address.clone())))
     }
             config: SessionConfig::default(),
+            user: String::new(),
+            verifier: std::sync::Arc::new(unlock::Unavailable),
+            wake: tilo_service::LoopWake::default(),
+            captures: None,
         }
     }
 }
@@ -246,6 +272,8 @@ struct Shared {
     workspace_settings: Option<WorkspaceSettingsSeat>,
     portal: Option<PortalSeat>,
     file_picker: Option<FilePickerSeat>,
+    /// The lock screen, while the session is locked.
+    lock: Option<LockSeat>,
     session_actions: fn(SessionAction) -> Result<(), String>,
     /// The power menu asked to lock the screen.
     lock: Cell<bool>,
@@ -752,6 +780,24 @@ pub struct Session {
     ended: bool,
     /// The magnifier's zoom level and the one its toggle turns on at.
     magnifier: (u8, u8),
+    /// Setup, while it runs: it withholds the desktop's actions.
+    setup: Option<Rc<RefCell<Setup>>>,
+    /// Checking the passwords the lock screen was given.
+    unlocking: Unlocking,
+    /// The screenshots asked for.
+    captures: Option<capture::Captures>,
+}
+
+/// The lock screen's passwords being checked, off the loop.
+struct Unlocking {
+    user: String,
+    verifier: std::sync::Arc<dyn unlock::PasswordVerifier>,
+    verdicts: (
+        std::sync::mpsc::Sender<unlock::Verdict>,
+        std::sync::mpsc::Receiver<unlock::Verdict>,
+    ),
+    /// Wakes the loop when a verdict lands.
+    wake: std::task::Waker,
 }
 
 impl Session {
@@ -782,6 +828,9 @@ impl Session {
         desktop.set_gestures(options.config.gestures);
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         let mut compositor = start(Box::new(policy))?;
+        // What the services take in wakes the loop instead of waiting for
+        // its next pass.
+        options.wake.bind(compositor.waker());
         compositor.set_input_config(options.config.input.clone());
         compositor.add_host(Box::new(desktop.clone()));
         doors.add(Rc::new(RefCell::new(desktop.clone())));
@@ -885,6 +934,41 @@ impl Session {
             Rc::clone(&invocations),
         )));
 
+        let banners = mount_banners(&mut compositor, &mut doors, &options);
+
+        let readings = Rc::new(RefCell::new(None));
+        let (device, quick_settings) =
+            mount_device(&mut compositor, &mut doors, &mut options, &readings);
+
+        // The sheets, over the desktop and its panels.
+        let Sheets {
+            power,
+            workspace_settings,
+            portal,
+            file_picker,
+            lock,
+        } = mount_sheets(&mut compositor, &mut doors, &options);
+
+        let (commands, invocations) = mount_controls(
+            &mut compositor,
+            &mut doors,
+            std::mem::take(&mut options.config.shortcuts),
+            options.scale,
+        );
+
+        // Setup last.
+        let setup = mount_setup(
+            &mut compositor,
+            &mut doors,
+            options.setup.take(),
+            &options.person,
+            options.scale,
+        );
+
+        let services = mount_services(&mut doors, std::mem::take(&mut options.services));
+
+        let search = Rc::new(SessionSearch::new(options.search, options.apps));
+        handle.set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
         let shared = Shared {
             handle,
             desktop,
@@ -895,11 +979,20 @@ impl Session {
             invocations,
             commands,
             readings,
+            services,
+            device,
+            power,
+            workspace_settings,
+            portal,
+            file_picker,
+            lock,
+            session_actions: options.session_actions,
         };
             services: RefCell::new(services),
             observed: Cell::new(None),
         });
         shared.observe();
+        let loop_wake = compositor.waker();
         Ok(Self {
             compositor,
             shared,
@@ -907,6 +1000,13 @@ impl Session {
             surfaces,
             setup,
             input: options.config.input,
+            unlocking: Unlocking {
+                user: options.user,
+                verifier: options.verifier,
+                verdicts: std::sync::mpsc::channel(),
+                wake: loop_wake,
+            },
+            captures: options.captures,
             ended: false,
             magnifier: (
                 settings_store::magnifier::OFF,
@@ -1205,6 +1305,10 @@ impl Session {
     /// the gestures it took, the actions keys asked for, and what those
     /// asked in turn.
     fn settle(&mut self) -> Result<(), Error> {
+        self.follow_lock()?;
+        if let Some(captures) = &self.captures {
+            captures.serve(&mut self.compositor);
+        }
         // Each round can ask for another (a key's shortcut the chrome
         // leaves to the session); a few rounds settle any chain.
         for _ in 0..4 {
@@ -1227,9 +1331,91 @@ impl Session {
         Ok(())
     }
 
+    /// Follow the session's lock: put the lock screen up when it locks
+    /// and down when it unlocks, keep its clock current, check the
+    /// passwords it was given off the loop, and lift the lock for one that
+    /// unlocks. A suspend the idle timers asked for goes to the system.
+    fn follow_lock(&mut self) -> Result<(), Error> {
+        use tilo_compositor::SessionTransition;
+        let lock = self.shared.lock.clone();
+        for event in self.compositor.take_session_events() {
+            match event {
+                SessionTransition::Locked => {
+                    if let Some(lock) = &lock {
+                        lock.lifted();
+                        lock.presentation().open(true);
+                    }
+                }
+                SessionTransition::Unlocked => {
+                    if let Some(lock) = &lock {
+                        lock.lifted();
+                        lock.presentation().close();
+                        lock.presentation().gone();
+                    }
+                }
+                SessionTransition::Suspend => {
+                    if let Err(error) = (self.shared.session_actions)(SessionAction::Suspend) {
+                        tracing::warn!(%error, "suspend");
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(lock) = lock.filter(|lock| lock.presentation().is_open()) else {
+            return Ok(());
+        };
+        lock.show(tilo_sheets::lock::Shown {
+            clock: ui::clock::time_of_day(&ui::clock::local_now()),
+            person: self.unlocking.user.clone(),
+            ..lock.shown()
+        });
+        for password in lock.take_attempts() {
+            let verifier = std::sync::Arc::clone(&self.unlocking.verifier);
+            let user = self.unlocking.user.clone();
+            let verdicts = self.unlocking.verdicts.0.clone();
+            let wake = self.unlocking.wake.clone();
+            let checking = std::thread::Builder::new()
+                .name("tilo-unlock".into())
+                .spawn(move || {
+                    let _ = verdicts.send(verifier.verify(&user, &password));
+                    wake.wake();
+                });
+            if let Err(error) = checking {
+                tracing::warn!(%error, "the password could not be checked");
+                lock.refuse(tilo_sheets::lock::unavailable());
+            }
+        }
+        let mut unlocked = false;
+        while let Ok(verdict) = self.unlocking.verdicts.1.try_recv() {
+            match verdict {
+                unlock::Verdict::Unlocks => {
+                    self.compositor.unlock()?;
+                    unlocked = true;
+                }
+                unlock::Verdict::Wrong => lock.refuse(tilo_sheets::lock::wrong_password()),
+                unlock::Verdict::Unavailable => lock.refuse(tilo_sheets::lock::unavailable()),
+            }
+        }
+        // An unlock lands as a transition: follow it at once.
+        if unlocked {
+            return self.follow_lock();
+        }
+        Ok(())
+    }
+
     fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
         match command {
             SessionCommand::Lock => self.compositor.lock_now(),
+            SessionCommand::Displays { mode } => {
+                let changes = displays::arrange(mode, &self.compositor.outputs());
+                // A refused arrangement leaves the displays as they were.
+                if !changes.is_empty()
+                    && let Err(error) = self.compositor.configure_outputs(&changes)
+                {
+                    tracing::warn!(%error, ?mode, "the displays were not arranged");
+                }
+                Ok(())
+            }
             SessionCommand::Magnifier(step) => {
                 let (zoom, remembered) = self.magnifier;
                 self.magnifier = settings_store::magnifier::step(zoom, remembered, step.into());
@@ -1316,7 +1502,7 @@ fn mount_quick_settings(
     panel: Rc<dyn PanelHost>,
     options: &Options,
     readings: &panels::Readings,
-) -> Option<QuickSettings> {
+) -> Option<QuickSettingsPanel> {
     let open = Rc::new(Cell::new(false));
     let dismissed = Rc::new(Cell::new(None));
     let panel = Rc::new(panels::Tap {
@@ -1335,10 +1521,255 @@ fn mount_quick_settings(
             )));
             compositor.add_host(Box::new(Held(Rc::clone(&surface))));
             doors.add(surface);
-            Some(QuickSettings { open, dismissed })
+            Some(QuickSettingsPanel { open, dismissed })
         }
         Err(error) => {
             tracing::warn!(%error, "quick settings not mounted");
+            None
+        }
+    }
+}
+
+/// The system services' published side, behind the session's door like
+/// every hosted surface: one action host for all of them.
+struct ServiceDoor(Rc<RefCell<Services>>);
+
+impl Published for ServiceDoor {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
+        self.0.borrow().resources()
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        match self
+            .0
+            .borrow_mut()
+            .invoke(&address.resource, &address.action, arguments)
+        {
+            Some(Ok(Started::Done(output))) => Ok(ResourceOperationStart::Completed(output)),
+            Some(Ok(Started::Accepted)) => Ok(ResourceOperationStart::Accepted),
+            Some(Err(error)) => Err(error),
+            None => Err(DoorError::Unknown(address.clone())),
+        }
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+/// A sheet lent `seat`, hosted over the desktop and its panels with its
+/// actions behind the door while it is up; the seat, when it mounted.
+/// Setup, when the person has not been through it: above everything,
+/// first to the keyboard, and while it is up the only surface offering
+/// actions.
+fn mount_setup(
+    compositor: &mut Compositor,
+    doors: &mut Doors,
+    view: Option<OnboardingView>,
+    person: &str,
+    scale: f64,
+) -> Option<Rc<RefCell<Setup>>> {
+    setup::lend(compositor.waker(), person);
+    view.map(|view| {
+        let setup = Rc::new(RefCell::new(Setup::new(view, scale)));
+        compositor.add_host(Box::new(Held(Rc::clone(&setup))));
+        doors.add(Rc::clone(&setup) as tilo_surface_host::Shared);
+        setup
+    })
+}
+
+/// The hardware keys' readout above the apps, and the session's own
+/// resources and the keys it answers wherever the keyboard is: above every
+/// surface, so offered every press first.
+fn mount_controls(
+    compositor: &mut Compositor,
+    doors: &mut Doors,
+    shortcuts: ui::shortcut_table::ShortcutConfig,
+    scale: f64,
+) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations) {
+    let readout = Rc::new(RefCell::new(Readout::new(scale)));
+    compositor.add_host(Box::new(Held(Rc::clone(&readout))));
+    doors.add(readout);
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    doors.add(Rc::new(RefCell::new(SessionControls::new(Rc::clone(
+        &commands,
+    )))));
+    let invocations = Invocations::default();
+    compositor.add_host(Box::new(SessionKeys::new(
+        shortcuts,
+        Rc::clone(&invocations),
+    )));
+    (commands, invocations)
+}
+
+/// The services, published on the door.
+fn mount_services(doors: &mut Doors, started: Vec<Box<dyn Service>>) -> Rc<RefCell<Services>> {
+    let mut services = Services::default();
+    for service in started {
+        services.add(service);
+    }
+    let services = Rc::new(RefCell::new(services));
+    doors.add(Rc::new(RefCell::new(ServiceDoor(Rc::clone(&services)))));
+    services
+}
+
+/// The notification banners, above the windows.
+fn mount_banners(
+    compositor: &mut Compositor,
+    doors: &mut Doors,
+    options: &Options,
+) -> tilo_notification_banners::Link {
+    let banners = tilo_notification_banners::Link::new();
+    match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
+        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
+    {
+        Ok(app) => {
+            let surface = Rc::new(RefCell::new(Banners::new(
+                app,
+                banners.clone(),
+                options.scale,
+            )));
+            compositor.add_host(Box::new(Held(Rc::clone(&surface))));
+            doors.add(surface);
+        }
+        Err(error) => tracing::warn!(%error, "notification banners not mounted"),
+    }
+    banners
+}
+
+/// The device's own backend, when the session runs one, and the quick
+/// settings panel over it.
+fn mount_device(
+    compositor: &mut Compositor,
+    doors: &mut Doors,
+    options: &mut Options,
+    readings: &panels::Readings,
+) -> (Option<DeviceHost>, Option<QuickSettingsPanel>) {
+    let (device, panel) = match options.quick_settings.take() {
+        Some(QuickSettings::Device(make)) => {
+            let waker = compositor.waker();
+            let device = make(Arc::new(move || waker.wake_by_ref()));
+            let panel = device.panel();
+            (Some(device), Some(panel))
+        }
+        Some(QuickSettings::Lent(panel)) => (None, Some(panel)),
+        None => (None, None),
+    };
+    let quick_settings =
+        panel.and_then(|panel| mount_quick_settings(compositor, doors, panel, options, readings));
+    (device, quick_settings)
+}
+
+/// The sheets the session lends its seats to.
+struct Sheets {
+    power: Option<PowerSeat>,
+    workspace_settings: Option<WorkspaceSettingsSeat>,
+    portal: Option<PortalSeat>,
+    file_picker: Option<FilePickerSeat>,
+    lock: Option<LockSeat>,
+}
+
+fn mount_sheets(compositor: &mut Compositor, doors: &mut Doors, options: &Options) -> Sheets {
+    let who = (options.device.as_str(), options.person.as_str());
+    let power = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::power::definition(),
+        PowerSeat::default(),
+        who,
+        options,
+    );
+    let workspace_settings = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::workspace_settings::definition(),
+        WorkspaceSettingsSeat::default(),
+        who,
+        options,
+    );
+    let portal = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::portal::definition(),
+        PortalSeat::default(),
+        who,
+        options,
+    );
+    let file_picker = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::file_picker::definition(),
+        FilePickerSeat::default(),
+        who,
+        options,
+    );
+    let lock = mount_lock_screen(compositor, doors, who, options);
+    Sheets {
+        power,
+        workspace_settings,
+        portal,
+        file_picker,
+        lock,
+    }
+}
+
+fn mount_sheet<S: tilo_sheets::Seat + 'static>(
+    compositor: &mut Compositor,
+    doors: &mut Doors,
+    definition: &'static ui::application::ApplicationDefinition,
+    seat: S,
+    who: (&str, &str),
+    options: &Options,
+) -> Option<S> {
+    match Sheet::mount(
+        definition,
+        seat,
+        who,
+        (options.presentation)(),
+        options.scale,
+    ) {
+        Ok(sheet) => {
+            let seat = sheet.seat().clone();
+            let sheet = Rc::new(RefCell::new(sheet));
+            compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
+            doors.add(sheet);
+            Some(seat)
+        }
+        Err(error) => {
+            tracing::warn!(%error, app = definition.app_id(), "sheet not mounted");
+            None
+        }
+    }
+}
+
+/// The lock screen, hosted over nothing while the session is locked; its
+/// seat, when it mounted.
+fn mount_lock_screen(
+    compositor: &mut Compositor,
+    doors: &mut Doors,
+    who: (&str, &str),
+    options: &Options,
+) -> Option<LockSeat> {
+    match Sheet::mount(
+        tilo_sheets::lock::definition(),
+        LockSeat::default(),
+        who,
+        (options.presentation)(),
+        options.scale,
+    ) {
+        Ok(sheet) => {
+            let seat = sheet.seat().clone();
+            let sheet = Rc::new(RefCell::new(sheet.locking()));
+            compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
+            doors.add(sheet);
+            Some(seat)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "lock screen not mounted");
             None
         }
     }

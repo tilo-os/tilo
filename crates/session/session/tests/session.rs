@@ -158,6 +158,7 @@ impl TestClient {
 }
 
 /// Let the session and clients talk until `done` holds.
+#[track_caller]
 fn pump(
     session: &mut Session,
     clients: &mut [&mut TestClient],
@@ -561,16 +562,88 @@ fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
 }
 
 #[test]
-fn the_lock_action_locks_the_session() {
+fn the_lock_action_locks_the_session_behind_the_lock_screen_which_a_password_unlocks() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    let _client = mapped(&mut session, "org.example.Terminal");
+    let unlocked = session.compositor().screenshot("HEADLESS-1").unwrap();
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
-    // The compositor locks and hands the lock to whatever shows the lock
-    // screen.
-    assert_eq!(
-        session.compositor().take_session_events(),
-        vec![tilo_compositor::SessionTransition::Locked]
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(session.compositor().locked());
+    let unlock = tilo_sheets::lock::LockEffect::UNLOCK.id;
+    assert!(
+        publisher(&session, "toggle-overview").is_none(),
+        "the locked session withholds the desktop's actions"
     );
+    let screen = publisher(&session, unlock).expect("the lock screen publishes unlocking");
+    let locked = session.compositor().screenshot("HEADLESS-1").unwrap();
+    assert_ne!(
+        locked.rgba, unlocked.rgba,
+        "the lock screen hides the desktop"
+    );
+
+    let type_password = tilo_sheets::lock::LockEffect::TYPE_PASSWORD.id;
+    session
+        .invoke(
+            &screen,
+            type_password,
+            &arguments(serde_json::json!({ "password": "wrong" })),
+        )
+        .expect("type");
+    session
+        .invoke(&screen, unlock, &serde_json::Map::new())
+        .expect("unlock");
+    pump(&mut session, &mut [], |session, _| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label.contains("did not unlock"))
+    });
+    assert!(
+        session.compositor().locked(),
+        "a wrong password keeps it locked"
+    );
+
+    session
+        .invoke(
+            &screen,
+            type_password,
+            &arguments(serde_json::json!({ "password": "sesame" })),
+        )
+        .expect("type");
+    session
+        .invoke(&screen, unlock, &serde_json::Map::new())
+        .expect("unlock");
+    pump(&mut session, &mut [], |session, _| {
+        !session.compositor().locked()
+    });
+    assert!(
+        publisher(&session, unlock).is_none(),
+        "the lock screen is gone"
+    );
+    assert!(publisher(&session, "toggle-overview").is_some());
+}
+
+/// Unlocks with "sesame" only.
+struct Sesame;
+
+impl tilo_session::unlock::PasswordVerifier for Sesame {
+    fn verify(&self, _user: &str, password: &str) -> tilo_session::unlock::Verdict {
+        if password == "sesame" {
+            tilo_session::unlock::Verdict::Unlocks
+        } else {
+            tilo_session::unlock::Verdict::Wrong
+        }
+    }
 }
 
 #[test]
@@ -728,6 +801,21 @@ fn publisher(session: &Session, action: &str) -> Option<String> {
         })
     }
     find(&session.resources(), action)
+}
+
+/// Every resource publishing `action`.
+fn publishers(session: &Session, action: &str) -> Vec<String> {
+    fn find(resources: &[ResourceSpec], action: &str, found: &mut Vec<String>) {
+        for resource in resources {
+            if resource.actions.iter().any(|offered| offered.id == action) {
+                found.push(resource.id.as_str().to_owned());
+            }
+            find(&resource.children, action, found);
+        }
+    }
+    let mut found = Vec::new();
+    find(&session.resources(), action, &mut found);
+    found
 }
 
 /// The resource publishing `action`, once the action is available.
@@ -897,8 +985,15 @@ fn the_power_menu_is_a_sheet_whose_lock_locks_the_screen() {
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     let lock = PowerEffect::LOCK.id;
+    // The session's own screen resource locks too; the sheet's is another.
+    let sheets = |session: &Session| {
+        publishers(session, lock)
+            .into_iter()
+            .filter(|resource| resource != tilo_session::SESSION_RESOURCE)
+            .collect::<Vec<_>>()
+    };
     assert!(
-        publisher(&session, lock).is_none(),
+        sheets(&session).is_empty(),
         "a sheet that is down offers nothing"
     );
     session
@@ -907,7 +1002,9 @@ fn the_power_menu_is_a_sheet_whose_lock_locks_the_screen() {
         .presentation()
         .open(false);
     session.step(Duration::from_millis(1)).unwrap();
-    let menu = publisher(&session, lock).expect("the open menu publishes its choices");
+    let menu = sheets(&session)
+        .pop()
+        .expect("the open menu publishes its choices");
     session
         .invoke(&menu, lock, &serde_json::Map::new())
         .expect("lock");
@@ -1193,3 +1290,107 @@ delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlShmPool);
 delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);
+
+/// The display key's action steps the displays from side by side to
+/// showing the same, to only the built-in one, to only the other.
+#[test]
+fn the_display_action_steps_through_the_ways_of_using_two_displays() {
+    let _settled = ui::motion::testing::settled();
+    let mut external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT);
+    external.position = (WIDTH, 0);
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            ..Options::default()
+        },
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
+    )
+    .expect("session");
+    let arrangement = |session: &mut Session| {
+        session
+            .compositor()
+            .outputs()
+            .into_iter()
+            .map(|output| (output.name, output.enabled, output.rect.map(|r| (r.0, r.1))))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let on = |name: &str, x: i32| (name.to_owned(), true, Some((x, 0)));
+    let off = |name: &str| (name.to_owned(), false, None);
+    assert_eq!(
+        arrangement(&mut session),
+        [on("eDP-1", 0), on("HDMI-A-1", WIDTH)].into()
+    );
+    invoke(&mut session, tilo_session::DISPLAYS_RESOURCE, "next-mode");
+    assert_eq!(
+        arrangement(&mut session),
+        [on("eDP-1", 0), on("HDMI-A-1", 0)].into(),
+        "mirrored"
+    );
+    invoke(&mut session, tilo_session::DISPLAYS_RESOURCE, "next-mode");
+    assert_eq!(
+        arrangement(&mut session),
+        [on("eDP-1", 0), off("HDMI-A-1")].into(),
+        "the built-in display only"
+    );
+    invoke(&mut session, tilo_session::DISPLAYS_RESOURCE, "next-mode");
+    let external_only = arrangement(&mut session);
+    assert!(external_only.contains(&off("eDP-1")), "{external_only:?}");
+    invoke(&mut session, tilo_session::DISPLAYS_RESOURCE, "next-mode");
+    let extended = arrangement(&mut session);
+    assert!(
+        extended.iter().all(|(_, enabled, _)| *enabled),
+        "every display on again: {extended:?}"
+    );
+    let corners: std::collections::BTreeSet<_> = extended.iter().map(|output| output.2).collect();
+    assert_eq!(corners.len(), 2, "side by side again: {extended:?}");
+}
+
+/// A screenshot the portal asks for is the session's frames: the loop is
+/// woken and answers with a PNG of every display, side by side.
+#[test]
+fn the_portals_screenshot_is_a_picture_of_every_display() {
+    use tilo_portal::Capture as _;
+
+    let _settled = ui::motion::testing::settled();
+    let directory = tempfile::tempdir().unwrap();
+    let wake = tilo_service::LoopWake::default();
+    let (capture, captures) =
+        tilo_session::capture::channel_to(directory.path().to_owned(), wake.handle());
+    let mut external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT);
+    external.position = (WIDTH, 0);
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            wake,
+            captures: Some(captures),
+            ..Options::default()
+        },
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).unwrap();
+    let asked = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(capture.screenshot())
+    });
+    let started = std::time::Instant::now();
+    while !asked.is_finished() {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the screenshot was never answered"
+        );
+        session.step(Duration::from_secs(1)).unwrap();
+    }
+    let path = asked.join().unwrap().expect("a screenshot");
+    assert!(path.starts_with(directory.path()));
+    let picture = image::open(&path).unwrap().to_rgba8();
+    assert_eq!(
+        picture.dimensions(),
+        (
+            u32::try_from(WIDTH * 2).unwrap(),
+            u32::try_from(HEIGHT).unwrap()
+        )
+    );
+}

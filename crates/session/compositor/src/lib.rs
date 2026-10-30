@@ -84,7 +84,7 @@ pub use input::{
     TabletPadEvent, TabletPhase,
 };
 pub use keys::{KeyClaim, KeyRepeat};
-pub use output::{ModeRequest, OutputChange, OutputConfig};
+pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
 pub use policy::{Arrangement, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy, WindowRequest};
 pub use selection::Selection;
 pub use state::State;
@@ -423,6 +423,18 @@ impl Compositor {
         self.apply_idle(transitions)
     }
 
+    /// Lift the session's own lock: the lock screen verified the person.
+    /// A lock client's lock is the client's to lift.
+    pub fn unlock(&mut self) -> Result<(), Error> {
+        let transitions = self
+            .data
+            .state
+            .idle
+            .session
+            .request_unlock(std::time::Instant::now());
+        self.apply_idle(transitions)
+    }
+
     /// Switch every panel off now, as the idle timeout would (the power
     /// key); input lights them again.
     pub fn blank_now(&mut self) -> Result<(), Error> {
@@ -579,6 +591,11 @@ impl Compositor {
             tracing::warn!(%error, "reverting a display change failed");
         }
         self.configure_from_clients();
+    }
+
+    /// Every known output, on or off.
+    pub fn outputs(&self) -> Vec<output::OutputInfo> {
+        self.data.state.output_infos()
     }
 
     /// Whether the panel of the output named `name` is lit (not blanked,

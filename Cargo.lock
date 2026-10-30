@@ -18585,6 +18585,7 @@ dependencies = [
  "serial_test",
  "settings-store",
  "tempfile",
+ "tilo-action-policy",
  "tilo-actions",
  "tilo-files",
  "tilo-lock",
@@ -21435,6 +21436,9 @@ dependencies = [
 name = "tilo-session"
 version = "0.1.0"
 dependencies = [
+ "app-catalogue",
+ "bounded-command",
+ "image",
  "os-actions",
  "rustix 1.1.4",
  "serde",
@@ -21453,6 +21457,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-desktop-surface",
+ "tilo-installed-apps",
  "tilo-media",
  "tilo-network-secret-agent",
  "tilo-notification-banners",
@@ -21460,6 +21465,7 @@ dependencies = [
  "tilo-onboarding-host",
  "tilo-quick-settings",
  "tilo-service",
+ "tilo-sheets",
  "tilo-surface-host",
  "tilo-system-service",
  "tilo-ui",

@@ -331,6 +331,7 @@ impl DeskLayer {
             ),
             DesktopAction::OpenSearch => self.handle.open_search(None),
             DesktopAction::Launchpad { ref card } => {
+            DesktopAction::Launchpad { card } => {
                 if card == "apps" {
                     self.handle.open_applications();
                 } else if let Some(card) = LaunchpadAction::ALL
@@ -344,14 +345,14 @@ impl DeskLayer {
             }
             DesktopAction::StepFocus { steps } => {
                 self.handle
-                    .step_focus(i32::try_from(steps).unwrap_or_default());
+                    .step_focus(i32::try_from(*steps).unwrap_or_default());
             }
             DesktopAction::FocusDisplay { display } => {
-                self.handle.focus_display(display);
+                self.handle.focus_display(*display);
             }
             DesktopAction::MoveToDisplay { steps } => {
                 self.handle
-                    .move_focused_to_display(i32::try_from(steps).unwrap_or_default());
+                    .move_focused_to_display(i32::try_from(*steps).unwrap_or_default());
             }
             _ => return false,
         }
@@ -1364,12 +1365,12 @@ impl DesktopChrome {
                 return true;
             }
             DesktopAction::Overview { open } => {
-                if self.overview_open() != open {
+                if self.overview_open() != *open {
                     self.toggle_overview();
                 }
                 return true;
             }
-            DesktopAction::Shortcut { ref action } => {
+            DesktopAction::Shortcut { action } => {
                 let Ok(action) = serde_json::from_value::<ShortcutAction>(
                     serde_json::Value::String(action.clone()),
                 ) else {

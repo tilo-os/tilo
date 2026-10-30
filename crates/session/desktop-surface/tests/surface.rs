@@ -1724,10 +1724,14 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
             .collect::<Vec<_>>(),
         ["84", "3.1069 mi"]
     );
-    assert_eq!(
-        recorder.opened_uris(),
-        ["https://duckduckgo.com/?q=tilo%20desktop"]
-    );
+    // The search opens where the host opens web searches, off the loop:
+    // the person's browser takes it, and the web engine only where none
+    // does.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while recorder.opened_uris().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(recorder.opened_uris(), ["web+search:tilo%20desktop"]);
 }
 
 #[test]

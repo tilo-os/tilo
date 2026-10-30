@@ -71,15 +71,21 @@ fn published(resources: &[ResourceSpec], id: &str) -> bool {
 #[test]
 fn a_portal_file_chooser_request_is_the_sessions_question() {
     let bus = SessionBus::start();
-    let desktop = DesktopServices::start(&Buses {
-        session: Bus::Address(bus.address.clone()),
-        system: Bus::None,
-    })
+    let wake = tilo_service::LoopWake::default();
+    let desktop = DesktopServices::start(
+        &Buses {
+            session: Bus::Address(bus.address.clone()),
+            system: Bus::None,
+        },
+        &wake.handle(),
+        std::sync::Arc::new(tilo_portal::NoCapture),
+    )
     .unwrap();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             services: desktop.services(),
+            wake,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", 1280, 720)],
@@ -126,14 +132,21 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
     });
 
     let resource = format!("question:portal:{REQUEST}");
+    // The question wakes the loop: a turn that would wait a minute ends
+    // when it is asked.
     let mut question = None;
-    for _ in 0..2000 {
-        session.step(std::time::Duration::from_millis(1)).unwrap();
+    let asked = std::time::Instant::now();
+    for _ in 0..20 {
+        session.step(std::time::Duration::from_secs(60)).unwrap();
         question = session.read(&resource);
         if question.is_some() {
             break;
         }
     }
+    assert!(
+        asked.elapsed() < std::time::Duration::from_secs(60),
+        "the question woke the session"
+    );
     let question = question.expect("the request is published as a question");
     assert_eq!(question["kind"], json!("portal.file-chooser"));
     assert_eq!(question["app_id"], json!("org.example.Editor"));

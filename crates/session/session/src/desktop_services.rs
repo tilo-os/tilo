@@ -49,23 +49,35 @@ pub struct DesktopServices {
 }
 
 impl DesktopServices {
-    /// Start every desktop service `buses` reach. One that cannot start
+    /// Start every desktop service `buses` reach, the portal taking its
+    /// screenshots with `capture`. One that cannot start
     /// (no bus, the name taken, no daemon behind it) is logged and the rest
     /// carry on; the session bus services are serving when this returns.
     ///
     /// # Errors
     /// The runtime they run on could not be made.
-    pub fn start(buses: &Buses) -> std::io::Result<Self> {
+    pub fn start(
+        buses: &Buses,
+        wake: &tilo_service::Wake,
+        capture: Arc<dyn tilo_portal::Capture>,
+    ) -> std::io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("tilo-desktop-services")
             .enable_all()
             .build()?;
         let questions = Questions::new();
+        let woken = Arc::clone(wake);
+        questions.on_change(move || woken());
         let notifications = tilo_notifications_service::Notifications::new();
         let roaming = RoamingWifiSlot::default();
-        let (portal, session) =
-            runtime.block_on(on_session_bus(&buses.session, &questions, &notifications));
+        let (portal, session) = runtime.block_on(on_session_bus(
+            &buses.session,
+            &questions,
+            &notifications,
+            Arc::clone(wake),
+            capture,
+        ));
         if buses.system != Bus::None {
             runtime.spawn(on_system_bus(
                 buses.system.clone(),
@@ -141,6 +153,8 @@ async fn on_session_bus(
     bus: &Bus,
     questions: &Questions,
     notifications: &tilo_notifications_service::Notifications,
+    wake: tilo_service::Wake,
+    capture: Arc<dyn tilo_portal::Capture>,
 ) -> (
     Option<Portal>,
     Option<(zbus::Connection, tilo_notifications_service::Server)>,
@@ -154,7 +168,8 @@ async fn on_session_bus(
     let portal = Portal::new(
         questions.clone(),
         PortalAuthenticator::session_bus(connection.clone(), resolver),
-    );
+    )
+    .with_capture(capture);
     // The appearance is also written to dconf, the environment's own: only
     // a portal on the environment's bus speaks for it.
     if *bus == Bus::Default {
@@ -170,9 +185,10 @@ async fn on_session_bus(
     // The banners and the centre read the published notifications; the
     // arrivals' queue (which carries their pixels) has no reader in the
     // session, so it is emptied as it fills rather than growing.
-    let (wake, mut woken) = tokio::sync::mpsc::channel::<()>(1);
+    let (drain, mut woken) = tokio::sync::mpsc::channel::<()>(1);
     notifications.on_change(move || {
-        let _ = wake.try_send(());
+        let _ = drain.try_send(());
+        wake();
     });
     let drained = notifications.clone();
     tokio::spawn(async move {

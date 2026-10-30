@@ -286,6 +286,13 @@ impl State {
     /// The hosted surface the pointer at `point` belongs to: one above the
     /// windows where it drew, else, where no window is, one beneath them.
     pub(crate) fn host_under(&self, point: Point<f64, Logical>) -> Option<usize> {
+        if self.locked() {
+            // Only the lock screen shows, so only it takes the pointer.
+            return self
+                .hosts
+                .iter()
+                .rposition(|host| host.lock_screen() && host.accepts_pointer(point.x, point.y));
+        }
         // The last host draws on top, so it is asked first.
         let under = |below: bool| {
             self.hosts.iter().rposition(|host| {
@@ -404,9 +411,11 @@ impl State {
                 }
                 // The topmost hosted surface that wants the keyboard takes
                 // keys from every client.
-                let wanting = (!locked)
-                    .then(|| state.hosts.iter().rposition(|host| host.wants_keyboard()))
-                    .flatten();
+                // While locked, only the lock screen may.
+                let wanting = state
+                    .hosts
+                    .iter()
+                    .rposition(|host| host.wants_keyboard() && (!locked || host.lock_screen()));
                 let Some(index) = wanting else {
                     return FilterResult::Forward;
                 };
@@ -465,7 +474,7 @@ impl State {
             .seat
             .get_pointer()
             .is_some_and(|pointer| pointer.is_grabbed());
-        let target = if self.locked() || grabbed {
+        let target = if grabbed {
             PointerTarget::Clients
         } else {
             self.host_under(location)

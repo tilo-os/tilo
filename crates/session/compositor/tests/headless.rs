@@ -1489,8 +1489,6 @@ fn the_policy_moves_focus_and_closes_windows_through_its_own_controls() {
     assert!(!first.seen.closed);
 }
 
-delegate_noop!(Seen: ignore XdgToplevel);
-
 #[test]
 fn the_desktop_moves_scales_and_fades_a_window_without_moving_it() {
     let mut compositor = headless(Box::new(StackPolicy));

@@ -346,6 +346,15 @@ pub fn read_from_env() -> Result<Vec<InstalledApp>, CatalogError> {
     read(&Catalog::from_env()?)
 }
 
+/// [`earlier_ids`] of the catalogue the environment names.
+///
+/// # Errors
+///
+/// Returns the [`CatalogError`] of a registry that cannot be read.
+pub fn earlier_ids_from_env() -> Result<tilo_action_policy::EarlierIds, CatalogError> {
+    earlier_ids(&Catalog::from_env()?)
+}
+
 /// The directories whose entries change when an app is installed, upgraded
 /// or removed in the stores the environment names: each store's root, where
 /// its registry is replaced. A reader of [`read_from_env`] that must follow

@@ -1304,6 +1304,10 @@ session-magnifier = Lupe
 session-magnifier-toggle = Lupe ein- oder ausschalten
 session-magnifier-zoom-in = Stärker vergrößern
 session-magnifier-zoom-out = Weniger vergrößern
+session-displays = Bildschirme
+session-displays-next = Nächste Bildschirmanordnung
+session-displays-set = Bildschirme anordnen
+session-param-displays-mode = Wie die Bildschirme zusammen genutzt werden: erweitern, spiegeln, eingebaut oder extern
 desktop-action-show-overview = Übersicht zeigen
 desktop-action-hide-overview = Übersicht ausblenden
 

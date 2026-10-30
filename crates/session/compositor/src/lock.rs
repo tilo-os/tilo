@@ -44,9 +44,11 @@ impl Lock {
 }
 
 impl State {
-    /// Whether the session is locked (or a lock is being put up).
+    /// Whether the session is locked (or a lock is being put up): by a
+    /// lock client, or by the session itself (idle, a key, a command), when
+    /// its lock screen shows.
     pub(crate) fn locked(&self) -> bool {
-        self.lock.locked
+        self.lock.locked || self.idle.session.is_locked()
     }
 
     /// Tell the locking client the desktop is hidden: called after a frame

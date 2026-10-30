@@ -34,6 +34,17 @@ pub struct ModeRequest {
     pub refresh_mhz: Option<i32>,
 }
 
+/// An output as the session sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputInfo {
+    /// The connector name (`eDP-1`).
+    pub name: String,
+    /// Whether it is on.
+    pub enabled: bool,
+    /// Its logical rectangle `(x, y, w, h)` while it is on.
+    pub rect: Option<(i32, i32, i32, i32)>,
+}
+
 /// How a configuration (a display tool, Settings) changes one output.
 /// Unset fields keep what the output has.
 #[derive(Clone, Debug, PartialEq)]

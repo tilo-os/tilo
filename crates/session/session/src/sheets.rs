@@ -18,6 +18,8 @@ use crate::panels::Served;
 pub(crate) struct Sheet<S: Seat> {
     host: AppHost,
     seat: S,
+    /// The lock screen: drawn while the session is locked, and only then.
+    lock_screen: bool,
 }
 
 impl<S: Seat> Sheet<S> {
@@ -43,7 +45,15 @@ impl<S: Seat> Sheet<S> {
         Ok(Self {
             host: AppHost::new(app, placement),
             seat,
+            lock_screen: false,
         })
+    }
+
+    /// Show it as the lock screen: while the session is locked, over
+    /// nothing else.
+    pub(crate) const fn locking(mut self) -> Self {
+        self.lock_screen = true;
+        self
     }
 
     pub(crate) fn seat(&self) -> &S {
@@ -71,9 +81,18 @@ impl<S: Seat> Served for Sheet<S> {
     fn offered(&self) -> bool {
         self.open()
     }
+
+    /// The lock screen up withholds everything else.
+    fn exclusive(&self) -> bool {
+        self.lock_screen
+    }
 }
 
 impl<S: Seat> SurfaceHost for Sheet<S> {
+    fn lock_screen(&self) -> bool {
+        self.lock_screen
+    }
+
     fn layers(&self) -> Vec<HostLayer> {
         if self.drawn() {
             self.host.layers()

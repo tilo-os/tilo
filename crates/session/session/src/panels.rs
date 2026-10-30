@@ -164,9 +164,10 @@ impl SurfaceHost for Popover {
     }
 
     fn prepare_frame(&mut self) {
-        if self.open.get() {
-            self.host.prepare_frame();
-        }
+        // Kept current while hidden too: what it offers follows the
+        // readings it was lent, open or not. Nothing is drawn unless
+        // something changed.
+        self.host.prepare_frame();
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {

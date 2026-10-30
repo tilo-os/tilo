@@ -12,6 +12,8 @@ use tilo_actions::{
 };
 use tilo_desktop_surface::i18n::t;
 use tilo_surface_host::Published;
+
+use crate::displays::{self, DisplayMode};
 use ui::host_operation::ResourceOperationStart;
 
 /// The operation type the session's own actions carry.
@@ -22,6 +24,8 @@ pub const INPUT_RESOURCE: &str = "session:input";
 pub const MAGNIFIER_RESOURCE: &str = "session:magnifier";
 /// The resource of the session itself.
 pub const SESSION_RESOURCE: &str = "session:screen";
+/// The resource of how the displays are used together.
+pub const DISPLAYS_RESOURCE: &str = "session:displays";
 
 /// What the session's resources ask of the compositor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +40,8 @@ pub enum SessionCommand {
     LogOut,
     /// Step the magnifier: on or off, stronger or weaker.
     Magnifier(Magnify),
+    /// Use the displays together this way.
+    Displays { mode: DisplayMode },
 }
 
 /// A step of the magnifier.
@@ -127,6 +133,33 @@ fn resources() -> Vec<ResourceSpec> {
                 t("session-magnifier-zoom-out"),
                 Vec::new(),
                 |_| SessionCommand::Magnifier(Magnify::ZoomOut),
+            )),
+        ResourceSpec::new(DISPLAYS_RESOURCE, "session", t("session-displays"))
+            .with_action(action(
+                "next-mode",
+                t("session-displays-next"),
+                Vec::new(),
+                |_| SessionCommand::Displays {
+                    mode: DisplayMode::Next,
+                },
+            ))
+            .with_action(action(
+                "set-mode",
+                t("session-displays-set"),
+                vec![
+                    ActionParam::required_owned(
+                        "mode",
+                        ParamType::Text,
+                        t("session-param-displays-mode"),
+                    )
+                    .with_choices(displays::NAMES),
+                ],
+                |args| SessionCommand::Displays {
+                    mode: args
+                        .text("mode")
+                        .and_then(DisplayMode::named)
+                        .unwrap_or(DisplayMode::Extend),
+                },
             )),
     ]
 }
