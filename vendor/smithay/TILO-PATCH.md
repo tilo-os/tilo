@@ -14,14 +14,29 @@ upstream.
 ## Warning-free on the workspace toolchain
 
 A path dependency's warnings are not capped like a registry crate's, and CI
-builds with `-D warnings`. Five `use tracing::{..., error, ...}` lists drop
+builds with `-D warnings`. Six `use tracing::{..., error, ...}` lists drop
 the `error` macro they never call (`src/backend/drm/surface/gbm.rs`,
-`src/backend/session/libseat.rs`, `src/input/keyboard/mod.rs`,
-`src/wayland/seat/keyboard.rs`, `src/xwayland/xwm/mod.rs`), and
+`src/backend/session/libseat.rs`, `src/backend/winit/mod.rs`,
+`src/input/keyboard/mod.rs`, `src/wayland/seat/keyboard.rs`,
+`src/xwayland/xwm/mod.rs`), and
 `src/wayland/shm/pool.rs` casts its SIGBUS handler through a pointer before
 the integer (`function_casts_as_integer`). No behaviour changes.
 
 Drop these once a smithay release builds without warnings on this toolchain.
+
+## The window backend builds against the toolkit's winit
+
+Tilo's own windows are built with `tilo-winit` (`vendor/winit`), and a
+compositor in a window must run its window on the same crate as the toolkit
+around it rather than a second copy of winit beside it. The manifest therefore
+depends on `winit` as `package = "tilo-winit"`, at the version this release
+asks for, from `../winit`. The fork's event enum has three variants this
+release does not know (`PrivateIme`, `KeyboardLayoutChanged`, `PenSample`),
+which `src/backend/winit/mod.rs` ignores beside the events it already does not
+use.
+
+Remove this once the workspace can redirect a vendored crate's dependency (or
+`tilo-winit` is published and this release takes it).
 
 ## Tablet pads for clients (`zwp_tablet_pad_v2`)
 
