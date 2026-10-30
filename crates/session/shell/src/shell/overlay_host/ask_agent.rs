@@ -352,8 +352,8 @@ impl ShellOverlayHost {
                     background: false,
                 };
                 match self.serve_desktop(room, &actor, command) {
-                    crate::shell::desktop_door::Served::WhenUp { .. } => Ok(()),
-                    crate::shell::desktop_door::Served::Now(Ok(_)) => Ok(()),
+                    crate::shell::desktop_door::Served::WhenUp { .. }
+                    | crate::shell::desktop_door::Served::Now(Ok(_)) => Ok(()),
                     crate::shell::desktop_door::Served::Now(Err(failure)) => Err(failure.message),
                 }
             })();
