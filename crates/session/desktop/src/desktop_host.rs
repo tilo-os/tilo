@@ -21,8 +21,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
-use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceId};
+use tilo_desktop_model::commands::{
+    DesktopCommand, TabLocation, TabPlacement, apply_command, apply_to_active_workspace,
+    move_tab_to_workspace,
+};
+use tilo_desktop_model::{DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::{ActivityView, Command};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource};
 use ui::presence::PresenceCtx;
@@ -53,6 +56,14 @@ use crate::workspace_menu::{
 /// Workspace menu keys: a workspace of this desktop, by id, and one of the
 /// person's others the host opens, by its host action.
 const WORKSPACE_KEY: &str = "workspace:";
+/// The host action that lists the workspaces this computer may join.
+pub const JOIN_WORKSPACE: &str = "join-workspace";
+/// The host action that leaves the workspace the person is in.
+pub const LEAVE_WORKSPACE: &str = "leave-workspace";
+/// The host action that makes a new workspace.
+pub const NEW_WORKSPACE: &str = "new-workspace";
+/// The host action that opens the workspace's settings.
+pub const WORKSPACE_SETTINGS: &str = "workspace-settings";
 const HOST_KEY: &str = "host:";
 
 /// What the host answers about the person at this desktop and the room it
@@ -100,6 +111,8 @@ pub enum DesktopAsk {
     Intent(ChromeIntent),
     /// The person chose a host action (`id`) in the workspace menu.
     HostAction(String),
+    /// The person left the workspace `name` here; the host says so.
+    LeftWorkspace(String),
     /// The person asked to report a problem.
     ReportProblem,
     /// The person chose a card of the empty desk's launchpad.
@@ -243,8 +256,18 @@ pub struct DeskLayer {
     area: Stack,
     handle: DesktopHandle,
     empty: Rc<Cell<bool>>,
+    /// The workspace whose picture the backdrop shows.
+    workspace: Cell<Option<u64>>,
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     rect: Rect,
+}
+
+/// Close the tab `tab` on this device's desk, wherever it stands.
+fn close_tab(handle: &DesktopHandle, tab: TabId) {
+    let mut tree = handle.read(Clone::clone);
+    if tree.close_tab(tab).is_some() {
+        handle.replace_tree(tree);
+    }
 }
 
 impl DeskLayer {
@@ -259,6 +282,7 @@ impl DeskLayer {
         beneath: Vec<Box<dyn Widget>>,
     ) -> Self {
         let empty = Rc::new(Cell::new(handle.read(desk_is_empty)));
+        let workspace = handle.read(|tree| tree.active_workspace().map(|workspace| workspace.id.0));
         let mut area = Stack::new();
         for layer in beneath {
             area = area.push(layer);
@@ -275,6 +299,7 @@ impl DeskLayer {
             area,
             handle,
             empty,
+            workspace: Cell::new(workspace),
             asks: Rc::default(),
             rect: Rect::ZERO,
         }
@@ -308,6 +333,17 @@ impl DeskLayer {
         self.asks = asks;
         self
     }
+
+    /// Take the pictures the desk shows, looked up by the workspace in
+    /// front.
+    #[must_use]
+    pub fn with_wallpaper(
+        mut self,
+        provider: impl Fn(&str) -> Option<ui::peniko::ImageData> + 'static,
+    ) -> Self {
+        self.backdrop.set_wallpaper_provider(provider);
+        self
+    }
 }
 
 impl DeskLayer {
@@ -317,12 +353,7 @@ impl DeskLayer {
             DesktopAction::FocusTab { tab } => {
                 self.handle.focus_tab(*tab);
             }
-            DesktopAction::CloseTab { tab } => {
-                let mut tree = self.handle.read(Clone::clone);
-                if tree.close_tab(*tab).is_some() {
-                    self.handle.replace_tree(tree);
-                }
-            }
+            DesktopAction::CloseTab { tab } => close_tab(&self.handle, *tab),
             DesktopAction::OpenSearch { query } => self.handle.open_search(query.clone()),
             DesktopAction::SearchFor { query } => self.handle.set_search_query(query.clone()),
             DesktopAction::ChooseSearchRow { row, argument } => self.handle.choose_search_row(
@@ -473,6 +504,14 @@ impl Widget for DeskLayer {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // The picture is the one of the workspace in front.
+        let front = self
+            .handle
+            .read(|tree| tree.active_workspace().map(|workspace| workspace.id.0));
+        if self.workspace.replace(front) != front {
+            self.backdrop
+                .set_workspace(front.map_or_else(String::new, |id| id.to_string()));
+        }
         self.backdrop.draw(scene, transform, text, theme, presence);
         ui::widget::draw_child(&mut self.area, scene, transform, text, theme, presence);
     }
@@ -734,6 +773,15 @@ impl DesktopChrome {
         self.workspace_menu.close();
     }
 
+    /// Say what became of an action the person asked for, and say nothing
+    /// when it went through.
+    fn report(&self, done: Result<(), String>) {
+        match done {
+            Ok(()) => {}
+            Err(refusal) => self.handle.acknowledge(refusal),
+        }
+    }
+
     fn dispatch(&self, command: &Command) {
         if let Err(error) = self.handle.dispatch(command, &self.generation) {
             tracing::warn!(%error, "desktop chrome");
@@ -766,11 +814,20 @@ impl DesktopChrome {
                     let next = index.checked_add_signed(isize::try_from(delta).ok()?)?;
                     tree.workspaces.get(next).map(|w| w.id.0.to_string())
                 });
-                if let Some(workspace) = next {
-                    self.dispatch(&Command::Workspace {
+                match next {
+                    Some(workspace) => self.dispatch(&Command::Workspace {
                         generation: self.generation.clone(),
                         workspace,
-                    });
+                    }),
+                    // Stepping past the end says which end it was.
+                    None if delta > 0 => self
+                        .handle
+                        .acknowledge(crate::i18n::t("desk-last-workspace")),
+                    None if delta < 0 => {
+                        self.handle
+                            .acknowledge(crate::i18n::t("desk-first-workspace"));
+                    }
+                    None => {}
                 }
             }
             ChromeIntent::ShowActivity(_) => self.activity_by(None),
@@ -969,26 +1026,220 @@ impl DesktopChrome {
         if pick.closes() {
             self.overview.set_open(false, Vec::new());
         }
-        match pick {
+        // The ones with a published action are that action; the rest are
+        // the desk's own.
+        let action = match pick {
             OverviewPick::Window(tab) => {
                 self.handle.focus_tab(*tab);
+                None
             }
-            OverviewPick::Workspace(id) => self.dispatch(&Command::Workspace {
-                generation: self.generation.clone(),
-                workspace: id.0.to_string(),
+            OverviewPick::Workspace(id) => {
+                self.dispatch(&Command::Workspace {
+                    generation: self.generation.clone(),
+                    workspace: id.0.to_string(),
+                });
+                None
+            }
+            OverviewPick::NewWorkspace => {
+                self.new_workspace();
+                None
+            }
+            OverviewPick::JoinWorkspace => Some(DesktopAction::JoinWorkspace),
+            OverviewPick::LeaveWorkspace(id) => Some(DesktopAction::LeaveWorkspace {
+                workspace: Some(id.0.to_string()),
             }),
-            OverviewPick::NewWorkspace => self.new_workspace(),
-            // The overview here goes somewhere; it has no directory to
-            // join from and no window or strip edits.
-            OverviewPick::JoinWorkspace
-            | OverviewPick::LeaveWorkspace(_)
-            | OverviewPick::CloseWindow(_)
-            | OverviewPick::MoveWindow { .. }
-            | OverviewPick::MoveWindowToStrip { .. }
-            | OverviewPick::RenameStrip { .. }
-            | OverviewPick::MoveStrip { .. }
-            | OverviewPick::Dismiss => {}
+            OverviewPick::CloseWindow(tab) => {
+                self.close_window(*tab);
+                None
+            }
+            OverviewPick::MoveWindow { tab, to } => Some(DesktopAction::MoveTab {
+                tab: *tab,
+                to: to.0.to_string(),
+            }),
+            OverviewPick::MoveWindowToStrip { tab, strip: to } => {
+                Some(DesktopAction::MoveTabToStrip {
+                    tab: *tab,
+                    strip: to.0.to_string(),
+                })
+            }
+            OverviewPick::RenameStrip { strip: id, name } => Some(DesktopAction::RenameStrip {
+                strip: id.0.to_string(),
+                name: name.clone(),
+            }),
+            OverviewPick::MoveStrip { strip: id, before } => Some(DesktopAction::MoveStrip {
+                strip: id.0.to_string(),
+                before: before.map(|strip| strip.0.to_string()),
+            }),
+            OverviewPick::Dismiss => None,
+        };
+        if let Some(action) = action {
+            self.perform(&action);
         }
+    }
+
+    /// Close the window `tab` here, as the close on its own bar does.
+    fn close_window(&self, tab: TabId) {
+        close_tab(&self.handle, tab);
+    }
+
+    /// The workspace `key` names: its id, or its name.
+    fn workspace_named(&self, key: &str) -> Result<WorkspaceId, String> {
+        let key = key.trim();
+        self.handle
+            .read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|workspace| workspace.name.eq_ignore_ascii_case(key))
+                    .or_else(|| {
+                        key.parse::<u64>().ok().and_then(|id| {
+                            tree.workspaces
+                                .iter()
+                                .find(|workspace| workspace.id.0 == id)
+                        })
+                    })
+                    .map(|workspace| workspace.id)
+            })
+            .ok_or_else(|| crate::i18n::t_args("desktop-no-workspace", &[("name", key.into())]))
+    }
+
+    /// The strip `key` names in the workspace the person is in: its id, or
+    /// its name.
+    fn strip_named(&self, key: &str) -> Result<StripId, String> {
+        let key = key.trim();
+        let missing = || crate::i18n::t_args("desktop-no-strip", &[("name", key.into())]);
+        self.handle
+            .read(|tree| {
+                let workspace = tree.active_workspace()?;
+                workspace
+                    .strips
+                    .iter()
+                    .find(|strip| strip.name.eq_ignore_ascii_case(key))
+                    .or_else(|| {
+                        key.parse::<u64>()
+                            .ok()
+                            .and_then(|id| workspace.strips.iter().find(|strip| strip.id.0 == id))
+                    })
+                    .map(|strip| strip.id)
+            })
+            .ok_or_else(missing)
+    }
+
+    /// Where the window `tab` stands, in any workspace.
+    fn locate(&self, tab: TabId) -> Option<(WorkspaceId, TabLocation)> {
+        self.handle.read(|tree| {
+            tree.workspaces.iter().find_map(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .find_map(|strip| {
+                        strip
+                            .window_groups
+                            .iter()
+                            .find(|group| group.tabs.iter().any(|held| held.id == tab))
+                            .map(|group| (strip.id.0, group.id))
+                    })
+                    .map(|(strip, group)| (workspace.id, TabLocation { strip, group, tab }))
+            })
+        })
+    }
+
+    /// Change the workspace `at` by `command`, and keep the result.
+    fn change_workspace(&self, at: WorkspaceId, command: &DesktopCommand) -> Result<(), String> {
+        let mut tree = self.handle.read(Clone::clone);
+        let workspace = tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == at)
+            .ok_or_else(|| crate::i18n::t("desktop-workspace-gone"))?;
+        apply_command(
+            workspace,
+            command,
+            &mut || Ok(self.handle.mint_id()),
+            &mut |_, _| Err(crate::i18n::t("desktop-move-no-record")),
+        )?;
+        self.handle.replace_tree(tree);
+        Ok(())
+    }
+
+    /// Move the window `tab` to the workspace `to`, or onto the strip
+    /// `strip` of the workspace it is in.
+    fn move_window(
+        &self,
+        tab: TabId,
+        to: Option<WorkspaceId>,
+        strip: Option<StripId>,
+    ) -> Result<(), String> {
+        match (to, strip) {
+            (Some(to), _) => {
+                let mut tree = self.handle.read(Clone::clone);
+                move_tab_to_workspace(&mut tree, tab, to, &mut || Ok(self.handle.mint_id()))?;
+                self.handle.replace_tree(tree);
+                Ok(())
+            }
+            (None, Some(strip)) => {
+                let (at, location) = self
+                    .locate(tab)
+                    .ok_or_else(|| crate::i18n::t("desktop-window-not-here"))?;
+                let known = self.handle.read(|tree| {
+                    tree.workspaces.iter().any(|workspace| {
+                        workspace.id == at && workspace.strips.iter().any(|held| held.id == strip)
+                    })
+                });
+                if !known {
+                    return Err(crate::i18n::t("desktop-strip-not-here"));
+                }
+                self.change_workspace(
+                    at,
+                    &DesktopCommand::MoveTab {
+                        location,
+                        placement: TabPlacement::NewGroup {
+                            strip: strip.0,
+                            after: None,
+                        },
+                    },
+                )
+            }
+            (None, None) => Err(crate::i18n::t("desktop-nothing-to-move-to")),
+        }
+    }
+
+    /// Leave the workspace `id` (the one the person is in when absent):
+    /// struck from this device's desktop, the person going to the next one
+    /// when it was the one they were in.
+    fn leave_workspace(&self, id: Option<WorkspaceId>) -> Result<(), String> {
+        let mut tree = self.handle.read(Clone::clone);
+        let id = id.or_else(|| tree.active_workspace().map(|workspace| workspace.id));
+        let id = id.ok_or_else(|| crate::i18n::t("desktop-no-workspace-to-leave"))?;
+        if tree.workspaces.len() <= 1 {
+            return Err(crate::i18n::t("desktop-only-workspace"));
+        }
+        let at = tree
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == id)
+            .ok_or_else(|| crate::i18n::t("desktop-workspace-gone"))?;
+        let left = tree.workspaces.remove(at);
+        if left.id == tree.active {
+            // The next one along, or the one before it when this was the
+            // last: what stood where the person was.
+            let next_at = at.min(tree.workspaces.len().saturating_sub(1));
+            if let Some(next) = tree.workspaces.get(next_at) {
+                tree.active = next.id;
+            }
+        }
+        tree.active_strip.remove(&id);
+        let strips: Vec<StripId> = tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .map(|strip| strip.id)
+            .collect();
+        tree.active_group.retain(|strip, _| strips.contains(strip));
+        self.handle.replace_tree(tree);
+        self.asks
+            .borrow_mut()
+            .push(DesktopAsk::LeftWorkspace(left.name));
+        Ok(())
     }
 
     /// Add an empty workspace after the others and go there; its launchpad
@@ -1037,8 +1288,8 @@ impl DesktopChrome {
     }
 
     /// Go to the strip `pick` chooses from the shown one's index, in the
-    /// active workspace.
-    fn go_to_strip(&self, pick: impl FnOnce(usize) -> Option<usize>) {
+    /// active workspace; whether there was one.
+    fn go_to_strip(&self, pick: impl FnOnce(usize) -> Option<usize>) -> bool {
         let next = self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
             let current = tree
@@ -1055,6 +1306,20 @@ impl DesktopChrome {
                 workspace,
                 strip,
             });
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Step strips by `steps`, saying so when the person steps past an end.
+    fn step_strip(&self, steps: isize) {
+        if !self.go_to_strip(|current| current.checked_add_signed(steps)) {
+            if steps > 0 {
+                self.handle.acknowledge(crate::i18n::t("desk-last-strip"));
+            } else if steps < 0 {
+                self.handle.acknowledge(crate::i18n::t("desk-first-strip"));
+            }
         }
     }
 
@@ -1194,8 +1459,7 @@ impl DesktopChrome {
                 false
             }
             StripNavigation::Strip(StripCommand::Step(steps)) => {
-                let steps = isize::try_from(steps).unwrap_or_default();
-                self.go_to_strip(|current| current.checked_add_signed(steps));
+                self.step_strip(isize::try_from(steps).unwrap_or_default());
                 false
             }
             StripNavigation::Strip(StripCommand::Create(name)) => !self.add_strip(name),
@@ -1300,8 +1564,8 @@ impl DesktopChrome {
                     self.handle.focus_tab(tab);
                 }
             }
-            ShortcutAction::PreviousStrip => self.go_to_strip(|current| current.checked_sub(1)),
-            ShortcutAction::NextStrip => self.go_to_strip(|current| current.checked_add(1)),
+            ShortcutAction::PreviousStrip => self.step_strip(-1),
+            ShortcutAction::NextStrip => self.step_strip(1),
             ShortcutAction::PreviousWorkspace => {
                 self.apply_intent(ChromeIntent::SwitchWorkspace(-1));
             }
@@ -1342,6 +1606,9 @@ impl DesktopChrome {
 impl DesktopChrome {
     /// Carry out a chrome action; false for one of the desk's.
     fn perform(&mut self, action: &DesktopAction) -> bool {
+        if let Some(done) = self.perform_workspace_action(action) {
+            return done;
+        }
         let intent = match action {
             DesktopAction::ToggleOverview => ChromeIntent::ToggleOverview,
             DesktopAction::ToggleQuickSettings => ChromeIntent::ToggleQuickSettings,
@@ -1352,8 +1619,7 @@ impl DesktopChrome {
             }
             DesktopAction::ShowPerson { person } => ChromeIntent::ShowPerson(person.clone()),
             DesktopAction::StepStrip { steps } => {
-                let steps = isize::try_from(*steps).unwrap_or_default();
-                self.go_to_strip(|current| current.checked_add_signed(steps));
+                self.step_strip(isize::try_from(*steps).unwrap_or_default());
                 return true;
             }
             DesktopAction::NewWorkspace => {
@@ -1383,12 +1649,85 @@ impl DesktopChrome {
             | DesktopAction::SearchFor { .. }
             | DesktopAction::ChooseSearchRow { .. }
             | DesktopAction::Launchpad { .. }
+            | DesktopAction::MoveTab { .. }
+            | DesktopAction::MoveTabToStrip { .. }
+            | DesktopAction::RenameStrip { .. }
+            | DesktopAction::MoveStrip { .. }
+            | DesktopAction::JoinWorkspace
+            | DesktopAction::LeaveWorkspace { .. }
+            | DesktopAction::WorkspaceSettings
             | DesktopAction::StepFocus { .. }
             | DesktopAction::FocusDisplay { .. }
             | DesktopAction::MoveToDisplay { .. } => return false,
         };
         self.apply_intent(intent);
         true
+    }
+
+    /// What the desk itself does to offers of workspaces and strips, by
+    /// address: `None` for an action of another kind.
+    fn perform_workspace_action(&self, action: &DesktopAction) -> Option<bool> {
+        match action {
+            DesktopAction::MoveTab { tab, to } => {
+                let at = self.workspace_named(to);
+                let moved = at.and_then(|to| self.move_window(*tab, Some(to), None));
+                self.report(moved);
+                Some(true)
+            }
+            DesktopAction::MoveTabToStrip { tab, strip } => {
+                let held = self.strip_named(strip);
+                let moved = held.and_then(|strip| self.move_window(*tab, None, Some(strip)));
+                self.report(moved);
+                Some(true)
+            }
+            DesktopAction::RenameStrip { strip, name } => {
+                let renamed = self.strip_named(strip).and_then(|strip| {
+                    self.edit_workspace(&DesktopCommand::RenameStrip {
+                        strip: strip.0,
+                        name: name.clone(),
+                    })
+                    .map(drop)
+                });
+                self.report(renamed);
+                Some(true)
+            }
+            DesktopAction::MoveStrip { strip, before } => {
+                let moved = self.strip_named(strip).and_then(|strip| {
+                    let before = before
+                        .as_deref()
+                        .map(|before| self.strip_named(before))
+                        .transpose()?;
+                    self.edit_workspace(&DesktopCommand::MoveStrip {
+                        strip: strip.0,
+                        before: before.map(|before| before.0),
+                    })
+                    .map(drop)
+                });
+                self.report(moved);
+                Some(true)
+            }
+            DesktopAction::JoinWorkspace => {
+                self.asks
+                    .borrow_mut()
+                    .push(DesktopAsk::HostAction(JOIN_WORKSPACE.to_owned()));
+                Some(true)
+            }
+            DesktopAction::LeaveWorkspace { workspace } => {
+                let left = workspace
+                    .as_deref()
+                    .map_or(Ok(None), |id| self.workspace_named(id).map(Some))
+                    .and_then(|id| self.leave_workspace(id));
+                self.report(left);
+                Some(true)
+            }
+            DesktopAction::WorkspaceSettings => {
+                self.asks
+                    .borrow_mut()
+                    .push(DesktopAsk::HostAction(WORKSPACE_SETTINGS.to_owned()));
+                Some(true)
+            }
+            _ => None,
+        }
     }
 }
 

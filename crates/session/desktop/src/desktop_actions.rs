@@ -39,6 +39,30 @@ pub enum DesktopAction {
     StepStrip { steps: i64 },
     /// Add an empty workspace and go there.
     NewWorkspace,
+    /// Move the tab `tab` to the workspace `to` (its id or its name).
+    MoveTab { tab: u64, to: String },
+    /// Move the tab `tab` onto the strip `strip` (its id or its name) of
+    /// the workspace it is in.
+    MoveTabToStrip { tab: u64, strip: String },
+    /// Name the strip `strip` (its id or its name) `name`.
+    RenameStrip { strip: String, name: String },
+    /// Move the strip `strip` (its id or its name) to just before `before`,
+    /// or to the bottom when there is none.
+    MoveStrip {
+        strip: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+    },
+    /// Show the workspaces this computer may join.
+    JoinWorkspace,
+    /// Leave the workspace `workspace` (its id; the one you are in when
+    /// absent), here on this computer.
+    LeaveWorkspace {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+    /// Open the workspace's settings.
+    WorkspaceSettings,
     /// Bring the tab `tab` forward and focus it.
     FocusTab { tab: u64 },
     /// Close the tab `tab` (a window's tab asks its window to close).
@@ -123,7 +147,7 @@ fn count(args: &ActionArgs, name: &str) -> i64 {
 /// The chrome's resource and its actions.
 #[must_use]
 pub fn chrome_resource() -> ResourceSpec {
-    ResourceSpec::new(CHROME_RESOURCE, "desktop", t("desktop-actions-chrome"))
+    let resource = ResourceSpec::new(CHROME_RESOURCE, "desktop", t("desktop-actions-chrome"))
         .with_action(action(
             "toggle-overview",
             t("desktop-action-toggle-overview"),
@@ -213,6 +237,123 @@ pub fn chrome_resource() -> ResourceSpec {
             |args| DesktopAction::ShowPerson {
                 person: text(args, tilo_desktop_search::providers::people::PERSON_PARAM),
             },
+        ));
+    with_workspace_actions(with_strip_actions(resource))
+}
+
+/// A window sent elsewhere, or a strip renamed or moved: what the overview
+/// offers of a strip and its windows, reachable as actions.
+fn with_strip_actions(resource: ResourceSpec) -> ResourceSpec {
+    resource
+        .with_action(action(
+            "move-tab",
+            t("desktop-action-move-tab"),
+            vec![
+                ActionParam::required_owned(
+                    "tab",
+                    ParamType::Integer,
+                    t("desktop-action-param-tab"),
+                ),
+                ActionParam::required_owned(
+                    "workspace",
+                    ParamType::Text,
+                    t("desktop-action-param-workspace"),
+                ),
+            ],
+            |args| DesktopAction::MoveTab {
+                tab: count(args, "tab").try_into().unwrap_or(0),
+                to: text(args, "workspace"),
+            },
+        ))
+        .with_action(action(
+            "move-tab-to-strip",
+            t("desktop-action-move-tab-to-strip"),
+            vec![
+                ActionParam::required_owned(
+                    "tab",
+                    ParamType::Integer,
+                    t("desktop-action-param-tab"),
+                ),
+                ActionParam::required_owned(
+                    "strip",
+                    ParamType::Text,
+                    t("desktop-action-param-strip"),
+                ),
+            ],
+            |args| DesktopAction::MoveTabToStrip {
+                tab: count(args, "tab").try_into().unwrap_or(0),
+                strip: text(args, "strip"),
+            },
+        ))
+        .with_action(action(
+            "rename-strip",
+            t("desktop-action-rename-strip"),
+            vec![
+                ActionParam::required_owned(
+                    "strip",
+                    ParamType::Text,
+                    t("desktop-action-param-strip"),
+                ),
+                ActionParam::required_owned(
+                    "name",
+                    ParamType::Text,
+                    t("desktop-action-param-strip-name"),
+                ),
+            ],
+            |args| DesktopAction::RenameStrip {
+                strip: text(args, "strip"),
+                name: text(args, "name"),
+            },
+        ))
+        .with_action(action(
+            "move-strip",
+            t("desktop-action-move-strip"),
+            vec![
+                ActionParam::required_owned(
+                    "strip",
+                    ParamType::Text,
+                    t("desktop-action-param-strip"),
+                ),
+                ActionParam::optional_owned(
+                    "before",
+                    ParamType::Text,
+                    t("desktop-action-param-before-strip"),
+                ),
+            ],
+            |args| DesktopAction::MoveStrip {
+                strip: text(args, "strip"),
+                before: args.text("before").map(str::to_owned),
+            },
+        ))
+}
+
+/// One workspace joined, left or looked at: what the workspace menu offers
+/// beside this desktop's own, reachable as actions.
+fn with_workspace_actions(resource: ResourceSpec) -> ResourceSpec {
+    resource
+        .with_action(action(
+            "join-workspace",
+            t("desktop-action-join-workspace"),
+            Vec::new(),
+            |_| DesktopAction::JoinWorkspace,
+        ))
+        .with_action(action(
+            "leave-workspace",
+            t("desktop-action-leave-workspace"),
+            vec![ActionParam::optional_owned(
+                "workspace",
+                ParamType::Text,
+                t("desktop-action-param-workspace"),
+            )],
+            |args| DesktopAction::LeaveWorkspace {
+                workspace: args.text("workspace").map(str::to_owned),
+            },
+        ))
+        .with_action(action(
+            "workspace-settings",
+            t("desktop-action-workspace-settings"),
+            Vec::new(),
+            |_| DesktopAction::WorkspaceSettings,
         ))
 }
 

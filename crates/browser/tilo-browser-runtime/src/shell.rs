@@ -1122,6 +1122,8 @@ impl BrowserShell {
                 // The page's own keys reach the browser's shortcuts; the
                 // rest belong to a native session.
                 DesktopAsk::Shortcut(_) => {}
+                // Leaving a workspace is a session's to carry out and say.
+                DesktopAsk::LeftWorkspace(_) => {}
             }
         }
         changed
