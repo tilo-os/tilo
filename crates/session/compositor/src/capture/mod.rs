@@ -817,7 +817,7 @@ where
 /// and read back as rows of R, G, B, A: what a share stream pushes.
 pub(crate) fn read_back<R, T>(
     renderer: &mut R,
-    state: &mut State,
+    state: &State,
     target: &Target,
 ) -> Result<Screenshot, CaptureError>
 where
