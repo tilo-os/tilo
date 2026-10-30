@@ -30,7 +30,6 @@ registry-types = { path = "../../packaging/registry-types" }
 app-cli = { path = "../../packaging/app-cli" }
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 reqwest = { workspace = true, features = ["blocking", "json"] }
-capnp-rpc.workspace = true
 # The broker thread is a panic boundary the session restarts.
 tilo-rt.workspace = true
 futures = { workspace = true, default-features = true }

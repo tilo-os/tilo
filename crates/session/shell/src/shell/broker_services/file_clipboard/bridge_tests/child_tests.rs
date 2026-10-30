@@ -226,10 +226,6 @@ fn run_sandbox(info: &ChildInfo) -> std::process::ExitStatus {
     }
     command.status().expect("production sandbox must execute")
 }
-#[expect(
-    clippy::future_not_send,
-    reason = "Cap'n Proto runs on the disposable child LocalSet"
-)]
 async fn inherited_connection(info: &ChildInfo, record: &str) -> Connection {
     // The production SDK connection over the inherited descriptor, including
     // its one-time executing-task handshake and its descriptor lane.

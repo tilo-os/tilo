@@ -314,10 +314,6 @@ impl Fixture {
         connect(&self.socket, &self.room, &self.identity, record).await
     }
 }
-#[expect(
-    clippy::future_not_send,
-    reason = "Cap'n Proto runs on this test's LocalSet"
-)]
 async fn connect(socket: &Path, room: &str, identity: &[u8], record: &str) -> Connection {
     use tokio::io::AsyncWriteExt as _;
     let mut stream = tokio::net::UnixStream::connect(socket)
@@ -345,10 +341,6 @@ async fn connect(socket: &Path, room: &str, identity: &[u8], record: &str) -> Co
     let stream = runtime_portal::descriptor_lane::DescriptorStream::sending(stream, lane.clone());
     connect_stream(stream, lane, room, identity, record).await
 }
-#[expect(
-    clippy::future_not_send,
-    reason = "Cap'n Proto runs on the test LocalSet"
-)]
 async fn connect_stream<S>(
     stream: S,
     lane: runtime_portal::descriptor_lane::DescriptorSender,
@@ -399,20 +391,12 @@ impl Drop for Connection {
     }
 }
 impl Connection {
-    #[expect(
-        clippy::future_not_send,
-        reason = "Cap'n Proto runs on this test's LocalSet"
-    )]
     async fn command(&self, command: Command) -> Result<Reply, String> {
         self.channel
             .local_file_clipboard_command(&command, None)
             .await
             .map_err(|error| error.to_string())
     }
-    #[expect(
-        clippy::future_not_send,
-        reason = "Cap'n Proto runs on this test's LocalSet"
-    )]
     async fn capture(&self, path: &Path, destination: bool) -> String {
         let (_retained, descriptor) = selected(path);
         let command = if destination {
@@ -440,10 +424,6 @@ impl Connection {
             other => panic!("capture returned {other:?}"),
         }
     }
-    #[expect(
-        clippy::future_not_send,
-        reason = "Cap'n Proto runs on this test's LocalSet"
-    )]
     async fn publish(&self, source: String, cut: bool) -> String {
         let Reply::Published { offer } = self
             .command(Command::Publish {
@@ -1088,10 +1068,6 @@ fn clipboard_bridge_local_home_consent_refuses_foreign_person_without_blocking_s
 }
 
 /// Capture `names` of `folder` by name, `chunk` entries per command.
-#[expect(
-    clippy::future_not_send,
-    reason = "Cap'n Proto runs on this test's LocalSet"
-)]
 async fn capture_named(
     a: &Connection,
     folder: &Path,
@@ -1132,10 +1108,6 @@ async fn capture_named(
 }
 
 /// Paste `offer` into `dest` with `conflict`: the operation and the answer.
-#[expect(
-    clippy::future_not_send,
-    reason = "Cap'n Proto runs on this test's LocalSet"
-)]
 async fn paste_into(
     a: &Connection,
     offer: &str,

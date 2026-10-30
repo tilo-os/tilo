@@ -146,10 +146,6 @@ impl Broker {
     }
 
     /// The window opens `record` and publishes its one action, titled for it.
-    #[expect(
-        clippy::future_not_send,
-        reason = "Cap'n Proto runs on this test's LocalSet"
-    )]
     async fn open(
         &self,
         window: &runtime_collab::CollabClient,
