@@ -490,6 +490,20 @@ impl LaunchReadiness {
         self
     }
 
+    /// How the startup ended, once it has, without waiting: `None` while it
+    /// runs. Asked again after it answered, it answers that the observer
+    /// stopped.
+    pub fn try_settled(&mut self) -> Option<Result<(), LaunchReadinessError>> {
+        match self.receiver.try_recv() {
+            Ok(Ok(())) => Some(Ok(())),
+            Ok(Err(detail)) => Some(Err(LaunchReadinessError::Failed(detail))),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                Some(Err(LaunchReadinessError::ObserverStopped))
+            }
+        }
+    }
+
     /// Wait for an adopted window or a terminal startup failure.
     pub async fn wait(self) -> Result<(), String> {
         self.wait_with_adoption()

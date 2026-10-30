@@ -28,45 +28,11 @@ use tilo_actions::InvocationUpdate;
 use tilo_app::framework::testing::TestApp;
 use tilo_desktop_model::commands::layout;
 
-use super::{AGENT, Fixture, OWNER, fixture, id_of};
+use super::{AGENT, Fixture, OWNER, fixture, id_of, install};
 use crate::shell::state::{StripId, TileContent};
 
 const MAIL: &str = "so.tilo.mail";
 const PDF_VIEWER: &str = "so.tilo.pdf-viewer";
-
-/// A package `package_id` installed under `dir`, opening `mime`.
-fn install(dir: &Path, package_id: &str, mime: &[&str]) {
-    use std::fmt::Write as _;
-    let payload = dir.join("payloads").join(package_id);
-    std::fs::create_dir_all(payload.join("bin")).unwrap();
-    let manifest = payload.join("manifest.toml");
-    let mime = mime
-        .iter()
-        .map(|mime| format!("\"{mime}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-    std::fs::write(
-        &manifest,
-        crate::shell::test_support::canonical_manifest(
-            &format!("id = \"{package_id}\"\nname = \"{package_id}\"\nversion = \"1.0.0\"\nkind = \"app\""),
-            &format!(
-                "[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n\
-                 [providers]\nmime = [{mime}]\next = []\n"
-            ),
-        ),
-    )
-    .unwrap();
-    let registry = dir.join("registry.toml");
-    let mut entries = std::fs::read_to_string(&registry).unwrap_or_default();
-    write!(
-        entries,
-        "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
-        payload.display().to_string(),
-        manifest.display().to_string()
-    )
-    .unwrap();
-    std::fs::write(&registry, entries).unwrap();
-}
 
 /// A stand-in `tilo-launcher` that writes down what it was asked to start,
 /// after its registration gate as the real one waits on it; the file it
@@ -328,8 +294,8 @@ fn an_agent_lays_out_eight_applications_with_their_drafts_and_cvs_and_one_undo_t
     let mut env = tilo_test_env::ScopedEnv::new();
     // Mail and a PDF viewer are installed; nothing of the machine's own.
     let apps = tmp.path().join("apps");
-    install(&apps, MAIL, &[]);
-    install(&apps, PDF_VIEWER, &["application/pdf"]);
+    install(&apps, MAIL, &[], &["mail.message", "mail.draft"]);
+    install(&apps, PDF_VIEWER, &["application/pdf"], &[]);
     let host_data = tmp.path().join("host-data");
     std::fs::create_dir_all(&host_data).unwrap();
     env.set("TILO_APPS_DATA_DIR", &apps)

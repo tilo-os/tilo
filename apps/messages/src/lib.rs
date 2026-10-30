@@ -68,7 +68,7 @@ pub enum MessagesEffect {
         group: String,
     },
     /// Send once using the reviewed membership and original sender account.
-    #[effect(job, sensitive, label = "messages-group-send")]
+    #[effect(job, sensitive, returns, label = "messages-group-send")]
     SendGroupText {
         service: String,
         account: String,

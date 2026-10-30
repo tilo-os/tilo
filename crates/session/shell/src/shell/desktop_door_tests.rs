@@ -157,11 +157,9 @@ impl Fixture {
                 },
             };
         }
-        let mut changes = self.broker.invocation_changes();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap();
+        // The desktop's loop runs on every frame, woken by the broker and by
+        // what launches report: run it until the invocation ends.
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             self.host.serve_desktop_jobs();
             if let Some(observed) = self
@@ -172,10 +170,8 @@ impl Fixture {
             {
                 return observed.update;
             }
-            let woke = runtime.block_on(async {
-                tokio::time::timeout(tilo_test_env::hang_bound(), changes.changed()).await
-            });
-            assert!(woke.is_ok(), "the invocation moves");
+            assert!(std::time::Instant::now() < deadline, "the invocation moves");
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
 
@@ -436,6 +432,84 @@ fn an_agent_opens_a_web_address_as_a_visitor_unless_it_asks_for_the_persons_sign
         Ok(Target::Resource("mail.message:work:INBOX:42".into())),
         "a resource opens as it is"
     );
+}
+
+/// A package `package_id` installed under `dir`, opening `mime` and the
+/// resource kinds `resources`.
+pub(super) fn install(dir: &std::path::Path, package_id: &str, mime: &[&str], resources: &[&str]) {
+    use std::fmt::Write as _;
+    let payload = dir.join("payloads").join(package_id);
+    std::fs::create_dir_all(payload.join("bin")).unwrap();
+    let manifest = payload.join("manifest.toml");
+    let quoted = |values: &[&str]| {
+        values
+            .iter()
+            .map(|value| format!("\"{value}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let (mime, resources) = (quoted(mime), quoted(resources));
+    std::fs::write(
+        &manifest,
+        crate::shell::test_support::canonical_manifest(
+            &format!("id = \"{package_id}\"\nname = \"{package_id}\"\nversion = \"1.0.0\"\nkind = \"app\""),
+            &format!(
+                "[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n\
+                 [providers]\nmime = [{mime}]\next = []\nresources = [{resources}]\n"
+            ),
+        ),
+    )
+    .unwrap();
+    let registry = dir.join("registry.toml");
+    let mut entries = std::fs::read_to_string(&registry).unwrap_or_default();
+    write!(
+        entries,
+        "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+        payload.display().to_string(),
+        manifest.display().to_string()
+    )
+    .unwrap();
+    std::fs::write(&registry, entries).unwrap();
+}
+
+/// An open of an address whose kind an installed app declares it opens
+/// launches that app; when the launch fails, the open is answered failed,
+/// never opened, and the place it held goes.
+#[test]
+#[serial_test::serial(process_env)]
+fn an_open_whose_launch_fails_is_answered_failed_and_holds_no_place() {
+    const NOTES: &str = "org.example.notes";
+    let mut fixture = fixture();
+    fixture.chrome.borrow_mut().act_as(OWNER.into());
+    crate::shell::action_authority::follow_tree(&fixture.chrome.borrow().tree_handle());
+    let tmp = tempfile::tempdir().unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    let apps = tmp.path().join("apps");
+    install(&apps, NOTES, &[], &["notes.page"]);
+    env.set("TILO_APPS_DATA_DIR", &apps);
+    // The launcher is not there: the launch fails to start.
+    crate::shell::launcher::set_test_execution_program(Some(tmp.path().join("missing-launcher")));
+    crate::shell::launcher::set_wayland_socket_path(Some(tmp.path().join("wayland-0")));
+    crate::shell::launcher::invalidate_app_cache();
+    crate::shell::launcher::clear_pending_placements();
+    fixture.host.attach_open_door(
+        crate::shell::search::providers::app_content::OpenDoor::fixture(fixture.broker.clone()),
+    );
+    let before = fixture.strips();
+    let agent = fixture.agent();
+    let ended = fixture.run(&agent, layout::OPEN, json!({ "target": "notes.page:1" }));
+    assert!(
+        matches!(&ended, InvocationUpdate::Failed { error, .. } if error.message.contains("did not open")),
+        "{ended:?}"
+    );
+    assert_eq!(
+        fixture.strips(),
+        before,
+        "the place the launch held is gone"
+    );
+    crate::shell::launcher::set_test_execution_program(None);
+    crate::shell::launcher::set_wayland_socket_path(None);
+    crate::shell::launcher::clear_pending_placements();
 }
 
 #[path = "desktop_mail_tests.rs"]
