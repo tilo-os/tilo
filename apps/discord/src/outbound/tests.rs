@@ -73,6 +73,27 @@ fn shared(id: &str, text: &str, share: &Value) -> Value {
     )
 }
 
+/// The host sends the workspace under the key it has always sent it under, so
+/// a context from a host that still does is read the same.
+#[test]
+fn a_context_naming_the_workspace_as_room_is_read() {
+    let context: Context = serde_json::from_value(json!({
+        "avatars": "https://workspaces.example/avatars/",
+        "link": "https://app.example/#m",
+        "links": {
+            "web_entry": "https://tilo.example/",
+            "origin": "https://lounge.tilo.example",
+            "room": WORKSPACE,
+            "host_device": "ab".repeat(32),
+        },
+    }))
+    .unwrap();
+    assert_eq!(
+        context.links.map(|links| links.workspace).as_deref(),
+        Some(WORKSPACE)
+    );
+}
+
 /// A window shared live goes across as a line that says so and opens the
 /// resource on the workspace's web entry, where `share-link` would send its
 /// reader; its words go first unless they only repeat its name.
