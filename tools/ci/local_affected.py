@@ -8,9 +8,11 @@ local-affected.sh checks a branch's commits as the batch check does: base defaul
 the merge-base with origin/main and the worktree must be clean. test-changed.sh is the
 same run for a change still being edited: base defaults to the merge-base with
 `integration` (origin/main without it), uncommitted and untracked files count, the
-stages are clippy and test, and clippy covers the changed packages and their direct
-dependants (the planner's `near`; `--closure` for the whole reverse-dependency closure
-the batch check lints).
+stages are check (the portable tilo-ui and headless tilo-app builds, when the change
+reaches them), clippy, test and session-e2e, and clippy covers the changed packages and
+their direct dependants (the planner's `near`; `--closure` for the whole
+reverse-dependency closure the batch check lints). Landing on `integration` runs it
+without session-e2e, from .githooks/pre-push.
 
 Selection is the planner's (tools/ci/affected_packages.py): the packages a change
 affects, their checks and tests, the same filters CI uses. What differs from CI is only
@@ -61,7 +63,8 @@ from ci import capability_filter, nextest_filters  # noqa: E402
 from ci.affected_packages import package_cost, recorded_test_seconds  # noqa: E402
 
 DEFAULT_STAGES = "check,clippy,test,policy,goldens,certify,scenarios,scoped"
-CHANGED_STAGES = "check,clippy,test"
+# session-e2e: the headless nested session, for a change to what the session's real paths cross.
+CHANGED_STAGES = "check,clippy,test,session-e2e"
 GOLDEN_PACKAGES = {"shell", "tilo-ui", "ebook"}
 # Above this much recorded test time (seconds, tools/ci/recorded_test_time.json) a
 # test set is split between the builders; below it one builder finishes before a
@@ -453,9 +456,11 @@ def main() -> int:
     if want("clippy") and clippy:
         lint_args = list(flags(clippy))
         extra = []
-        if "tilo-ui" in clippy and want("check"):
+        # The portable toolkit and headless app builds break through any crate below them, not
+        # only through their own edits: each runs whenever the change reaches its package.
+        if "tilo-ui" in plan["selected"] and want("check"):
             extra.append("--portable-ui")
-        if "tilo-app" in clippy and want("check"):
+        if "tilo-app" in plan["selected"] and want("check"):
             extra.append("--headless-app")
         spawn("lint", lambda job: job.run("clippy", primary,
                                           ["bash", "tools/ci/lint-affected.sh", *extra, "--", *lint_args]))
@@ -563,7 +568,7 @@ def main() -> int:
 
     # The session's real paths, end to end: built once on the arm builder, run on this machine.
     changed_files = plan.get("changed_files", [])
-    if args.changed and want("test") and any(path.startswith(SESSION_E2E_PATHS) for path in changed_files):
+    if args.changed and want("session-e2e") and any(path.startswith(SESSION_E2E_PATHS) for path in changed_files):
         spawn("session-e2e", lambda job: job.run(
             "session e2e (scripts/headless-examples/session-e2e.py)", Builder("local", None),
             [sys.executable, "scripts/headless-examples/session-e2e.py", "--build",

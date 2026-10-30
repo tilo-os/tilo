@@ -43,7 +43,10 @@ pub const BROWSER_APP_ID: &str = "so.tilo.browser";
 
 /// The switch a Browser window is launched with when it is opened for an
 /// agent ([`runtime_portal::windows::VISITOR_WINDOW_FLAG`]). Reading such a
-/// page takes no authority beyond a visitor's.
+/// page takes no authority beyond a visitor's. A launch switch is part of
+/// the local window door, so the portable toolkit, which no launcher starts,
+/// has none.
+#[cfg(feature = "local-daemons")]
 pub const VISITOR_WINDOW_FLAG: &str = runtime_portal::windows::VISITOR_WINDOW_FLAG;
 
 #[cfg(feature = "webview-adblock")]
