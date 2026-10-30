@@ -136,7 +136,8 @@ fn find_mut<'a>(w: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
 }
 
 /// Activate the control `id` as Enter, Space or assistive technology
-/// does, then let the greeter take what it reported.
+/// does, deliver what it published, then let the greeter take what it
+/// reported.
 fn press(app: &mut GreeterApp, doc: &mut AutoCommit, id: &str) {
     app.sync(doc, &automerge::ROOT);
     app.composed.replace(app.build_composition(&Theme::dark()));
@@ -153,6 +154,11 @@ fn press(app: &mut GreeterApp, doc: &mut AutoCommit, id: &str) {
             &automerge::ROOT
         ),
         "{id} accepts activation"
+    );
+    ui::widget::controls::start_pending_control_invocations(
+        app,
+        &mut ui::widget::Edits::lend(doc),
+        &automerge::ROOT,
     );
     app.sync(doc, &automerge::ROOT);
 }
@@ -1467,6 +1473,26 @@ fn authentication_and_power_actions_lock_input_and_reset_focus() {
         app.last_power_action = None;
         app.sync(&doc, &root);
         assert_eq!(app.last_power_action, None, "{action:?} ran once");
+    }
+}
+
+#[test]
+fn the_power_menu_choice_becomes_its_action_once_and_leaves_no_value() {
+    for action in PowerAction::ALL {
+        let mut app = GreeterApp::with_sessions(one_session());
+        let doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&doc, &root);
+        app.power_choice.set(action.label());
+        app.sync(&doc, &root);
+        assert_eq!(app.last_power_action, Some(action));
+        assert!(
+            app.power_choice.get().is_empty(),
+            "the menu holds no value once its choice is taken"
+        );
+        app.last_power_action = None;
+        app.sync(&doc, &root);
+        assert_eq!(app.last_power_action, None, "{action:?} runs once");
     }
 }
 

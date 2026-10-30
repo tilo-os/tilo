@@ -661,6 +661,9 @@ pub struct GreeterApp {
     /// The session picker's chosen name. [`Widget::sync`] mirrors it onto
     /// `selected_session`.
     session_choice: ui::LocalState<String>,
+    /// The power menu's chosen action, named as the menu lists it.
+    /// [`Widget::sync`] turns it into the request it is.
+    power_choice: ui::LocalState<String>,
     /// The local accounts this machine offers, in account-database order.
     /// With more than one, the screen lists them to choose from.
     users: Vec<LoginUser>,
@@ -967,6 +970,7 @@ impl GreeterApp {
             sessions,
             selected_session: 0,
             session_choice,
+            power_choice: ui::LocalState::new(String::new()),
             users: login_user.iter().cloned().collect(),
             username: ui::LocalState::new(
                 login_user
@@ -1502,7 +1506,7 @@ impl GreeterApp {
                                     .with_accessible_name(&sign_in)
                                     .tooltip(sign_in.clone())
                                     .control_size(ControlSize::Regular)
-                                    .on_click(move || requests.sign_in.set(true)),
+                                    .on_effect(move || requests.sign_in.set(true)),
                             ),
                         ],
                     )
@@ -1522,7 +1526,7 @@ impl GreeterApp {
                             .as_ref()
                             .is_some_and(AuthSession::can_cancel),
                     )
-                    .on_click(move || requests.cancel_authentication.set(true)),
+                    .on_effect(move || requests.cancel_authentication.set(true)),
             ));
         }
         // While an attempt runs, the alternate factor gives way to the live
@@ -1539,7 +1543,7 @@ impl GreeterApp {
                             .role(ui::widget::ButtonRole::Plain)
                             .with_icon(Icon::Fingerprint)
                             .control_size(ControlSize::Large)
-                            .on_click(move || requests.fingerprint.set(true)),
+                            .on_effect(move || requests.fingerprint.set(true)),
                     )],
                 )
                 .align(align),
@@ -1576,7 +1580,7 @@ impl GreeterApp {
                 .with_icon(Icon::User)
                 .control_size(ControlSize::Large)
                 .with_enabled(!busy)
-                .on_click(move || requests.account.set(Some(index))),
+                .on_view(move || requests.account.set(Some(index))),
             ));
         }
         let mut row = Row::new().with_gap(theme.tokens.spacing.s2);
@@ -1605,7 +1609,7 @@ impl GreeterApp {
                 .with_accessible_name(&label)
                 .tooltip(label)
                 .control_size(ControlSize::Large)
-                .on_click(move || requests.accessibility.set(Some(request)));
+                .on_own_device_effect(move || requests.accessibility.set(Some(request)));
             Box::new(if on {
                 button
             } else {
@@ -1703,28 +1707,14 @@ impl GreeterApp {
                     .with_color(c.text_dim),
             ));
         }
-        let requests = Rc::clone(&self.requests);
-        // The initramfs cannot suspend: what is in memory there is the boot.
-        let actions: &'static [PowerAction] = if self.boot.is_some() {
-            &[PowerAction::Reboot, PowerAction::PowerOff]
-        } else {
-            &PowerAction::ALL
-        };
-        let labels: Vec<String> = actions.iter().map(|a| a.label()).collect();
-        let chosen = labels.clone();
+        let labels: Vec<String> = self.power_actions().iter().map(|a| a.label()).collect();
         trailing.push(Box::new(
-            // A menu: the choice is a command, reported and never kept.
-            Dropdown::from_state(labels, &ui::LocalState::new(String::new()))
+            // A menu: the choice is a command, reported to the screen's own
+            // state and taken on the next sync.
+            Dropdown::from_state(labels, &self.power_choice)
                 .as_menu(Icon::Power)
                 .with_id("greeter.power")
-                .with_accessible_name(t("greeter-power"))
-                .on_change(move |label| {
-                    let action = chosen
-                        .iter()
-                        .position(|candidate| candidate == label)
-                        .and_then(|index| actions.get(index).copied());
-                    requests.power.set(action);
-                }),
+                .with_accessible_name(t("greeter-power")),
         ));
         let trailing = Stack::row(s.s4, trailing).justify(JustifyContent::End);
         if self.content.width() > 0.0 && self.content.width() < 640.0 {
@@ -1891,6 +1881,16 @@ impl GreeterApp {
             .padding(if compact { s.s2 } else { s.s6 })
             .fill_height(),
         )
+    }
+
+    /// The power actions the footer offers: the initramfs cannot suspend,
+    /// because what is in memory there is the boot.
+    fn power_actions(&self) -> &'static [PowerAction] {
+        if self.boot.is_some() {
+            &[PowerAction::Reboot, PowerAction::PowerOff]
+        } else {
+            &PowerAction::ALL
+        }
     }
 
     /// Record + execute a power action. Splitting the record (always) from
@@ -2301,6 +2301,23 @@ impl Widget for GreeterApp {
 
         if let Some(index) = self.requests.account.take() {
             self.choose_account(index);
+        }
+
+        // The power menu reports the command chosen from it; it is taken
+        // here, once, and the menu goes back to holding no value.
+        if let Some(chosen) = self
+            .power_choice
+            .with(|label| (!label.is_empty()).then(|| label.clone()))
+        {
+            self.power_choice.set(String::new());
+            if let Some(action) = self
+                .power_actions()
+                .iter()
+                .find(|action| action.label() == chosen)
+                .copied()
+            {
+                self.requests.power.set(Some(action));
+            }
         }
 
         self.take_touch_keys();
