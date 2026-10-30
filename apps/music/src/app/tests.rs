@@ -2822,18 +2822,13 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             Some(serde_json::json!({ "state": "resolved" })),
             "a no-audio build never labels URL resolution as actual playback"
         );
-        let play = crate::actions::catalog_track_resource(&crate::actions::CatalogTrackResource {
-            id: "tk_g1".into(),
-            label: "Track one".into(),
-            album_id: String::new(),
-            artist_id: String::new(),
-            offline: false,
-            liked: false,
-        })
-        .actions
-        .into_iter()
-        .find(|action| action.id == "play")
-        .expect("play resource action");
+        let play = app
+            .publish_resource(&crate::actions::track_resource_id("tk_g1"))
+            .expect("the song's row")
+            .actions
+            .into_iter()
+            .find(|action| action.id == "play")
+            .expect("play resource action");
         assert_eq!(
             play.contract.execution,
             tilo_actions::ExecutionMode::Background { cancellable: false },
