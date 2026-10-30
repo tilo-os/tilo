@@ -82,7 +82,7 @@ struct Args {
     /// monitor reads CPU usage, etc.). Default 0 — strict.
     max_diff_pixels: u64,
     /// Draw the scenes with the CPU rasterizer (`ui::offscreen::render_picture`
-    /// with no GPU adapter, vello_cpu) instead of vello's GPU pipeline, so a
+    /// with no GPU adapter, `vello_cpu`) instead of vello's GPU pipeline, so a
     /// frame can be put beside one a CPU-rasterizing host draws.
     cpu: bool,
 }

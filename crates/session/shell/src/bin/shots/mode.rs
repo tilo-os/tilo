@@ -219,23 +219,19 @@ pub mod offscreen {
             // The ground the live compositor clears to before drawing the
             // shell, so the capture is opaque and reads as the screen did.
             let ground = driver.ground();
-            match renderer.as_mut() {
-                Some(renderer) => {
-                    renderer.set_backdrop(backdrop);
-                    renderer.render_png(&scene, ground, &path);
-                }
-                None => {
-                    let rgba =
-                        ui::offscreen::render_picture(&scene, viewport.0, viewport.1, ground)?;
-                    image::save_buffer(
-                        &path,
-                        &rgba,
-                        viewport.0,
-                        viewport.1,
-                        image::ColorType::Rgba8,
-                    )
-                    .map_err(|e| format!("write {}: {e}", path.display()))?;
-                }
+            if let Some(renderer) = renderer.as_mut() {
+                renderer.set_backdrop(backdrop);
+                renderer.render_png(&scene, ground, &path);
+            } else {
+                let rgba = ui::offscreen::render_picture(&scene, viewport.0, viewport.1, ground)?;
+                image::save_buffer(
+                    &path,
+                    &rgba,
+                    viewport.0,
+                    viewport.1,
+                    image::ColorType::Rgba8,
+                )
+                .map_err(|e| format!("write {}: {e}", path.display()))?;
             }
             if !first_paint_seen {
                 // Mark AFTER render_png returns so the metric captures
