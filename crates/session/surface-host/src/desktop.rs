@@ -237,6 +237,12 @@ impl DesktopHost {
         std::mem::take(&mut self.desk.borrow_mut().gestures)
     }
 
+    /// What the desktop asked to open since the last call, oldest first:
+    /// the apps the session plans and starts.
+    pub fn take_launches(&self) -> Vec<String> {
+        self.with_policy(DesktopPolicy::take_launches)
+    }
+
     /// The desk's widget tree as hosted: what it publishes, its
     /// accessibility tree, the actions it accepts.
     pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetHost) -> R) -> R {
