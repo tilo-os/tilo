@@ -81,6 +81,7 @@ mod capture;
 mod main_thread_files;
 mod symtab;
 mod wake_trace;
+pub mod watchdog;
 
 pub use main_thread_files::{FileWalk, STORAGE_WAIT};
 
