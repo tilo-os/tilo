@@ -479,7 +479,9 @@ pub(crate) fn statuses(state: &crate::QuickSettingsState) -> Vec<EffectStatus> {
     let radios = &state.radios;
     let can = crate::actions::QsActionAvailability {
         brightness: state.can_set_brightness(),
-        volume: probed.volume || state.volume_available,
+        // The audio service is what carries a volume change out, so its
+        // reading of an output is what makes the volume available.
+        volume: state.volume_available,
         wifi: probed.wifi || radios.wifi_available,
         power_profile: probed.power_profile || !state.power_profiles.is_empty(),
         vpn: probed.vpn || !state.vpns.is_empty(),

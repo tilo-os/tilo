@@ -1,16 +1,16 @@
 //! The device behind the panel: the [`PanelHost`] a desktop lends the panel
 //! to read this machine and carry out its effects.
 //!
-//! [`DeviceHost`] reads battery, network, radios, Bluetooth, the levels and
-//! the power mode through `os-actions` (and the audio graph through
-//! `tilo-media`), follows the media players through the session's audio
-//! helper, and carries out each [`QsEffect`] through the same. Nothing it
-//! does waits on the device: reads and writes run on workers that wake the
-//! session when they are done, and the session lands them on its own
-//! thread with [`DeviceHost::pump`]. The effects only the desktop can carry
-//! out (Settings, the lock screen, the power menu, notifications, the
-//! clipboard history, the device fabric's rows) come back to the session
-//! as [`SessionRequest`]s.
+//! [`DeviceHost`] reads battery, network, radios, Bluetooth and the power
+//! mode through `os-actions`, follows the media players through the
+//! session's audio helper, and is handed the sound the audio service reads
+//! ([`DeviceHost::sound`]), whose actions every sound change becomes.
+//! Nothing it does waits on the device: reads and writes run on workers
+//! that wake the session when they are done, and the session lands them on
+//! its own thread with [`DeviceHost::pump`]. The effects only the desktop
+//! can carry out (Settings, the lock screen, the power menu, notifications,
+//! the clipboard history, the device fabric's rows, the sound) come back to
+//! the session as [`SessionRequest`]s.
 //!
 //! Its seams are the reads ([`DeviceReads`]), the dispatcher
 //! ([`os_actions::Dispatcher`]), the person's settings ([`Preferences`])
@@ -21,6 +21,7 @@ mod apply;
 mod players;
 mod reads;
 mod refresh;
+mod sound;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
@@ -214,6 +215,14 @@ impl DeviceHost {
     pub fn follow_players(&self, link: PlayerLink) {
         let players = players::Players::start(link, Arc::clone(&self.0.wake));
         *self.0.players.borrow_mut() = Some(players);
+    }
+
+    /// Land the sound the audio service reads: which outputs there are and
+    /// which plays, the level and mute, and the microphone. The audio
+    /// service owns the graph, so this is the panel's only sound reading.
+    pub fn sound(&self, sound: &audio::sound::Sound) {
+        sound::land(&mut self.0.state.borrow_mut(), sound);
+        self.feed();
     }
 
     /// The host as the panel takes it ([`crate::prepare`]).
@@ -563,49 +572,33 @@ impl DeviceHost {
                 );
             }
             LevelChange::Volume(level) => {
-                // A positive change unmutes a muted output; otherwise the
-                // slider moves while the sound stays off.
-                let previous = state.status.volume;
-                let level = apply::level_of(*level);
-                let was_muted = previous.is_some_and(|now| now.muted);
-                let unmute = previous.is_some_and(|now| level > 0.0 && level >= now.level);
-                state.status.volume = Some(media::audio::default_node::VolumeState {
-                    level,
-                    muted: was_muted && !unmute,
-                });
+                // The audio service owns the level and the mute: the slider
+                // shows where it was let go until the service's reading
+                // replaces it, and the service decides what raising it out
+                // of silence means.
+                apply::show_level(&mut state, change);
                 drop(state);
-                let pct = level * 100.0;
-                self.write(
-                    "set_volume",
-                    Failure::Value(t("host-qs-change-failed-volume")),
-                    ReadBack::Field(QsField::Volume),
-                    move |d| {
-                        d.set_volume(pct)?;
-                        if was_muted && unmute {
-                            d.set_mute(false)?;
-                        }
-                        Ok(())
-                    },
-                );
+                self.ask(QsEffect::SetVolume { level: *level });
             }
         }
         Ok(())
     }
 
+    /// Show `muted` on the slider, and say whether there was a sound to show
+    /// it on.
+    fn show_muted(&self, muted: bool) -> bool {
+        let mut state = self.0.state.borrow_mut();
+        let Some(volume) = state.status.volume.as_mut() else {
+            return false;
+        };
+        volume.muted = muted;
+        true
+    }
+
     fn set_muted(&self, muted: bool) {
-        {
-            let mut state = self.0.state.borrow_mut();
-            let Some(volume) = state.status.volume.as_mut() else {
-                return;
-            };
-            volume.muted = muted;
+        if self.show_muted(muted) {
+            self.ask(QsEffect::SetMuted { muted });
         }
-        self.write(
-            "set_mute",
-            Failure::Value(t("host-qs-change-failed-volume")),
-            ReadBack::Field(QsField::Volume),
-            move |d| d.set_mute(muted),
-        );
     }
 
     fn accessory(&self, address: &str, connect: bool) {
@@ -789,7 +782,9 @@ impl DeviceHost {
             QsEffect::SetMuted { muted } => self.set_muted(muted),
             QsEffect::ToggleMuted => {
                 let muted = !state().volume_muted();
-                self.set_muted(muted);
+                if self.show_muted(muted) {
+                    self.ask(QsEffect::ToggleMuted);
+                }
             }
             QsEffect::JoinWifi { network } => {
                 {

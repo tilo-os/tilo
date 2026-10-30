@@ -353,7 +353,6 @@ pub(crate) mod tests {
     use crate::DisplayBrightness;
     use crate::actions::QsActionAvailability;
     use crate::device::reads::FieldReading;
-    use media::audio::default_node::VolumeState;
     use os_actions as qs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
@@ -368,12 +367,6 @@ pub(crate) mod tests {
         }
         fn displays(&self) -> Vec<DisplayBrightness> {
             Vec::new()
-        }
-        fn output_device(&self) -> bool {
-            false
-        }
-        fn volume(&self) -> Option<VolumeState> {
-            None
         }
         fn bluetooth(&self) -> Option<bool> {
             None
@@ -659,17 +652,6 @@ pub(crate) mod tests {
             self.hit("displays");
             Vec::new()
         }
-        fn output_device(&self) -> bool {
-            self.hit("output_device");
-            true
-        }
-        fn volume(&self) -> Option<VolumeState> {
-            self.hit("volume");
-            Some(VolumeState {
-                level: 0.5,
-                muted: false,
-            })
-        }
         fn bluetooth(&self) -> Option<bool> {
             self.hit("bluetooth");
             Some(true)
@@ -762,7 +744,7 @@ pub(crate) mod tests {
             "Wi-Fi is taken from the radio snapshot, not a network list: {calls:?}"
         );
 
-        let expected: [(QsField, &[&str]); 9] = [
+        let expected: [(QsField, &[&str]); 8] = [
             (QsField::Wifi, &["radios"]),
             (QsField::Airplane, &["radios"]),
             (QsField::Mobile, &["radios"]),
@@ -771,7 +753,6 @@ pub(crate) mod tests {
             (QsField::Power, &["power"]),
             (QsField::Vpn, &["vpns"]),
             (QsField::Brightness, &["brightness", "displays"]),
-            (QsField::Volume, &["volume"]),
         ];
         for (field, reads) in expected {
             r.kick_field(field);

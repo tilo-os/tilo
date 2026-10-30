@@ -568,6 +568,9 @@ impl Shared {
                 .as_ref()
                 .is_some_and(|panel| panel.open.get()),
         );
+        // The audio service's reading is the only one of the sound: the
+        // panel shows it and its effects change it there.
+        mount::audio::land(self);
         device.pump();
         for request in device.take_requests() {
             match request {
@@ -653,6 +656,7 @@ impl Shared {
                 SessionRequest::Effect(QsEffect::ClearClipboard) => {
                     self.clipboard.clear();
                 }
+                other if mount::audio::follow(self, &other) => {}
                 other => {
                     tracing::debug!(?other, "quick settings asks what the session cannot do yet");
                 }
@@ -982,6 +986,7 @@ impl Shared {
             .map(tilo_quick_settings::host::Feed::current);
         let (level, on) = match (kind, state) {
             (OsdKind::Volume, Some(state)) => (state.volume_level(), !state.volume_muted()),
+            (OsdKind::Microphone, Some(state)) => (0.0, !state.microphone_muted),
             (OsdKind::Brightness, Some(state)) => (state.brightness, true),
             (OsdKind::AirplaneMode, Some(state)) => (0.0, state.radios.airplane_mode),
             _ => (0.0, true),

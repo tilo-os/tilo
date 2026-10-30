@@ -434,6 +434,8 @@ mod keys {
     pub const LEFT_META: u32 = 125;
     pub const VOLUME_UP: u32 = 115;
     pub const MUTE: u32 = 113;
+    /// What the microphone's key sends.
+    pub const MICROPHONE_MUTE: u32 = 248;
     pub const BRIGHTNESS_DOWN: u32 = 224;
     pub const PLAY_PAUSE: u32 = 164;
     pub const WLAN: u32 = 238;
@@ -1084,6 +1086,197 @@ fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Va
         serde_json::Value::Object(map) => map,
         other => panic!("not an object: {other}"),
     }
+}
+
+/// The audio service as the session reaches it: it publishes the sound as
+/// the service does and records every change asked of it.
+struct Audio {
+    sound: RefCell<tilo_audio_service::sound::Sound>,
+    asked: Rc<RefCell<Vec<String>>>,
+}
+
+impl Audio {
+    /// Speakers playing quietly and muted, headphones to switch to, a
+    /// muted microphone.
+    fn speakers(asked: Rc<RefCell<Vec<String>>>) -> Self {
+        use tilo_audio_service::sound::Device;
+        let device = |node, label: &str, chosen| Device {
+            node,
+            label: label.into(),
+            chosen,
+            volume: None,
+            muted: false,
+        };
+        Self {
+            sound: RefCell::new(tilo_audio_service::sound::Sound {
+                output: Some(40),
+                volume: Some(0.25),
+                muted: true,
+                input: Some(50),
+                input_muted: true,
+                outputs: vec![
+                    device(40, "Speakers", true),
+                    device(41, "Headphones", false),
+                ],
+                inputs: vec![device(50, "Microphone", true)],
+                ..tilo_audio_service::sound::Sound::default()
+            }),
+            asked,
+        }
+    }
+}
+
+impl tilo_session::Service for Audio {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        vec![tilo_audio_service::sound::resource(&self.sound.borrow())]
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        (resource == tilo_audio_service::sound::SOUND)
+            .then(|| serde_json::to_value(&*self.sound.borrow()).expect("the sound serialises"))
+    }
+
+    fn invoke(
+        &mut self,
+        _: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        let named = arguments
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.asked
+            .borrow_mut()
+            .push(format!("{action} {named}").trim_end().to_owned());
+        Ok(tilo_service::Started::Accepted)
+    }
+}
+
+#[test]
+fn a_session_without_an_audio_service_offers_no_sound_to_change() {
+    use std::sync::Arc;
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let reads = machine.clone();
+    let session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
+                DeviceHost::new(
+                    Device {
+                        reads: Arc::new(reads.clone()),
+                        dispatcher: Arc::new(reads),
+                        preferences: Box::new(Kept::default()),
+                    },
+                    wake,
+                )
+            }))),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    for action in [QsEffect::SET_VOLUME.id, QsEffect::TOGGLE_MUTED.id] {
+        assert!(
+            offering(&session, action).is_none(),
+            "nothing reads the sound, so {action} is not on offer"
+        );
+    }
+}
+
+#[test]
+fn the_panels_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
+    use std::sync::Arc;
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let reads = machine.clone();
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
+                DeviceHost::new(
+                    Device {
+                        reads: Arc::new(reads.clone()),
+                        dispatcher: Arc::new(reads),
+                        preferences: Box::new(Kept::default()),
+                    },
+                    wake,
+                )
+            }))),
+            services: vec![Box::new(Audio::speakers(Rc::clone(&asked)))],
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+
+    // The sound the service reads is the panel's from the moment it reads it,
+    // so its effects are on offer without anything opening the panel.
+    pump(&mut session, &mut [], |session, _| {
+        offering(session, QsEffect::SET_VOLUME.id).is_some()
+    });
+
+    // What the person does in the panel is the service's action to carry
+    // out, one per change, with the value they chose.
+    let panel = offering(&session, QsEffect::SET_VOLUME.id).unwrap();
+    session
+        .invoke(
+            &panel,
+            QsEffect::SET_VOLUME.id,
+            &arguments(serde_json::json!({ "level": 0.5 })),
+        )
+        .expect("set the volume");
+    session
+        .invoke(&panel, QsEffect::TOGGLE_MUTED.id, &serde_json::Map::new())
+        .expect("mute");
+    let quiet = QsEffect::VOLUME_DOWN.id;
+    session
+        .invoke(&panel, quiet, &serde_json::Map::new())
+        .expect("quieter");
+    pump(&mut session, &mut [], |_, _| asked.borrow().len() == 3);
+    assert_eq!(
+        *asked.borrow(),
+        // Quieter is the panel working out where the step lands and the
+        // service taking that level.
+        [
+            "set-volume level=0.5",
+            "toggle-muted",
+            "set-volume level=0.2"
+        ],
+        "each change is the service's, in the order made"
+    );
+    assert!(
+        !machine
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("volume") || call.starts_with("mute")),
+        "the panel never writes the sound itself: {:?}",
+        machine.calls()
+    );
+
+    // The microphone's key is the service's too, and its answer on screen is
+    // the state the service reads rather than a guess.
+    tap(&mut session, keys::MICROPHONE_MUTE);
+    pump(&mut session, &mut [], |session, _| {
+        session
+            .accessible_labels()
+            .contains(&"Microphone muted".to_owned())
+    });
+    assert!(
+        asked.borrow().contains(&"toggle-input-muted".to_owned()),
+        "the key reaches the service: {:?}",
+        asked.borrow()
+    );
+    assert_eq!(
+        session
+            .read(tilo_audio_service::sound::SOUND)
+            .and_then(|sound| sound.get("output").cloned()),
+        Some(serde_json::json!(40)),
+        "the session reads the service's own sound"
+    );
 }
 
 #[test]

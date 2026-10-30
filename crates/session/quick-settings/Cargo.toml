@@ -35,6 +35,8 @@ tilo-compositor = { path = "../compositor" }
 tilo-quick-settings = { path = ".", features = ["test-support"] }
 # The session that starts the panel, and the headless presentation it runs.
 tilo-session = { path = "../session" }
+# The reading the audio service publishes, which the panel shows.
+audio = { package = "tilo-audio-service", path = "../audio-service", default-features = false }
 tilo-test-env = { path = "../../dev/test-env" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 

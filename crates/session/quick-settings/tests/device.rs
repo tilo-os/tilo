@@ -96,10 +96,13 @@ fn the_device_is_read_off_the_ui_thread_and_lands_in_the_panel() {
     let state = desk.host.state();
     assert!(state.wifi && state.bluetooth && state.bluetooth_available);
     assert_eq!(state.brightness, 0.7);
-    assert_eq!(state.volume_level(), 0.3);
     assert_eq!(state.power_profile, PowerProfile::Performance);
     assert_eq!(state.vpns.len(), 1);
     assert!(state.status.link.is_some(), "the top bar's link too");
+    assert!(
+        !state.volume_available,
+        "the sound is the audio service's to read, and none published"
+    );
     assert!(desk.has("qs-tile-vpn"), "the VPN read is a tile now");
     assert!(desk.has("qs-tile-bluetooth"));
 
@@ -130,9 +133,6 @@ fn effects_reach_the_dispatcher_and_the_device_is_read_back() {
         .unwrap();
     assert!(!desk.host.state().bluetooth, "the switch moves at once");
     desk.app
-        .effect(&QsEffect::SetVolume { level: 0.5 })
-        .unwrap();
-    desk.app
         .effect(&QsEffect::SetPowerMode {
             mode: PowerProfile::Saver,
         })
@@ -144,18 +144,11 @@ fn effects_reach_the_dispatcher_and_the_device_is_read_back() {
         })
         .unwrap();
     desk.until("the writes and their read-backs", |state| {
-        state.power_profile == PowerProfile::Saver
-            && state.volume_level() == 0.5
-            && machine.calls().len() == 4
+        state.power_profile == PowerProfile::Saver && machine.calls().len() == 3
     });
     assert_eq!(
         machine.calls(),
-        [
-            "bluetooth:false",
-            "volume:50",
-            "power:Saver",
-            "vpn:Work:true"
-        ],
+        ["bluetooth:false", "power:Saver", "vpn:Work:true"],
         "each change reaches the machine, in the order made"
     );
     assert!(
@@ -171,6 +164,105 @@ fn effects_reach_the_dispatcher_and_the_device_is_read_back() {
         machine.calls().last().map(String::as_str),
         Some("wifi:false")
     );
+}
+
+#[test]
+fn the_sound_is_what_the_audio_service_reads_and_it_leaves_the_panel() {
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    desk.until("the first reading", |state| state.bluetooth);
+    desk.host.sound(&sound());
+
+    let state = desk.host.state();
+    assert!(state.volume_available);
+    assert_eq!(state.volume_level(), 0.25);
+    assert!(state.volume_muted());
+    assert_eq!(
+        state
+            .sound_outputs
+            .iter()
+            .map(|output| (output.node, output.current))
+            .collect::<Vec<_>>(),
+        [(40, true), (41, false)],
+        "the outputs and the one in use"
+    );
+
+    desk.app
+        .invoke(QuickSettings::OPEN_SECTION.with(QsSection::Sound))
+        .unwrap();
+    desk.app.settle();
+    assert!(desk.has("qs-output-40"), "the output in use is listed");
+    assert!(desk.has("qs-output-41"), "and the one to switch to");
+
+    // Every sound change is the audio service's to make, so the panel asks
+    // the session for it and shows where the person put it meanwhile.
+    for effect in [
+        QsEffect::SetVolume { level: 0.5 },
+        QsEffect::ToggleMuted,
+        QsEffect::RouteSound { node: 41 },
+    ] {
+        desk.app.effect(&effect).unwrap();
+    }
+    assert_eq!(desk.host.state().volume_level(), 0.5, "the slider moved");
+    assert_eq!(
+        desk.host.take_requests(),
+        [
+            SessionRequest::Effect(QsEffect::SetVolume { level: 0.5 }),
+            SessionRequest::Effect(QsEffect::ToggleMuted),
+            SessionRequest::Effect(QsEffect::RouteSound { node: 41 }),
+        ]
+    );
+    assert!(
+        machine.calls().is_empty(),
+        "the panel no longer writes the sound itself: {:?}",
+        machine.calls()
+    );
+
+    // The service's reading is the truth, even against the guess the panel
+    // showed while the change was under way.
+    let mut after = sound();
+    after.volume = Some(0.45);
+    after.muted = false;
+    desk.host.sound(&after);
+    assert_eq!(desk.host.state().volume_level(), 0.45);
+    assert!(!desk.host.state().volume_muted());
+}
+
+/// A reading like the audio service publishes: speakers playing quietly
+/// and muted, headphones to switch to, a muted microphone.
+fn sound() -> audio::sound::Sound {
+    use audio::sound::Device;
+    audio::sound::Sound {
+        output: Some(40),
+        volume: Some(0.25),
+        muted: true,
+        input: Some(50),
+        input_muted: true,
+        outputs: vec![
+            Device {
+                node: 40,
+                label: "Speakers".into(),
+                chosen: true,
+                volume: Some(0.25),
+                muted: true,
+            },
+            Device {
+                node: 41,
+                label: "Headphones".into(),
+                chosen: false,
+                volume: None,
+                muted: false,
+            },
+        ],
+        inputs: vec![Device {
+            node: 50,
+            label: "Microphone".into(),
+            chosen: true,
+            volume: None,
+            muted: true,
+        }],
+        ..audio::sound::Sound::default()
+    }
 }
 
 #[test]

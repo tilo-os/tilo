@@ -31,8 +31,6 @@ pub(crate) fn fast(qs: &mut QuickSettingsState, reading: FastReading) {
     let FastReading {
         brightness,
         displays,
-        volume_available,
-        volume,
         bluetooth,
         bluetooth_available,
         power,
@@ -51,12 +49,6 @@ pub(crate) fn fast(qs: &mut QuickSettingsState, reading: FastReading) {
         qs.power_profiles = profiles.into_iter().map(ui_power_profile).collect();
     }
     brightness_levels(qs, brightness, displays);
-    if let Some(available) = volume_available {
-        qs.volume_available = available;
-    }
-    if let Some(volume) = volume {
-        qs.status.volume = Some(volume);
-    }
     if let Some(radios) = radios {
         self::radios(qs, radios);
     }
@@ -92,14 +84,12 @@ pub(crate) fn field(qs: &mut QuickSettingsState, reading: FieldReading) {
         FieldReading::Brightness(brightness, displays) => {
             brightness_levels(qs, brightness, Some(displays));
         }
-        FieldReading::Volume(Some(volume)) => qs.status.volume = Some(volume),
         // Not read: leave the control as it is.
         FieldReading::Radios(None)
         | FieldReading::Bluetooth(None)
         | FieldReading::Wired(None)
         | FieldReading::Power(None)
-        | FieldReading::Vpns(None)
-        | FieldReading::Volume(None) => {}
+        | FieldReading::Vpns(None) => {}
     }
 }
 

@@ -5,6 +5,7 @@
 pub(crate) mod clipboard;
 pub(crate) mod clipboard_files;
 pub mod apps;
+pub mod audio;
 pub mod comforts;
 pub mod firstboot;
 pub mod lock;

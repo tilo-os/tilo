@@ -145,8 +145,11 @@ pub struct QuickSettingsState {
     pub clipboard: crate::ClipboardView,
     /// Notifications in the history, read when the popover opens.
     pub notification_count: usize,
-    /// This machine's sound outputs, read when the popover opens.
+    /// This machine's sound outputs, as the audio service lists them.
     pub sound_outputs: Vec<crate::SoundOutput>,
+    /// Whether the microphone is muted, as the audio service reads it: the
+    /// key that toggles it answers with this state on screen.
+    pub microphone_muted: bool,
     /// The Devices section's rows, in order. The overlay host reads the
     /// device fabric for them; the root page lays them out and paints them.
     pub device_rows: Vec<crate::hosted::HostedRow>,
@@ -210,6 +213,7 @@ impl Default for QuickSettingsState {
             clipboard: crate::ClipboardView::default(),
             notification_count: 0,
             sound_outputs: Vec::new(),
+            microphone_muted: false,
             device_rows: Vec::new(),
             arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             notifications: crate::NotificationsView::default(),
@@ -282,6 +286,7 @@ impl QuickSettingsState {
             clipboard: crate::ClipboardView::default(),
             notification_count: 0,
             sound_outputs: Vec::new(),
+            microphone_muted: false,
             device_rows: Vec::new(),
             arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             notifications: crate::NotificationsView::default(),

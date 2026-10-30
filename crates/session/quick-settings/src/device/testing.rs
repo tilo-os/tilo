@@ -154,12 +154,6 @@ impl DeviceReads for Machine {
     fn displays(&self) -> Vec<DisplayBrightness> {
         Vec::new()
     }
-    fn output_device(&self) -> bool {
-        true
-    }
-    fn volume(&self) -> Option<VolumeState> {
-        self.0.lock().unwrap().volume
-    }
     fn bluetooth(&self) -> Option<bool> {
         Some(self.0.lock().unwrap().bluetooth)
     }
