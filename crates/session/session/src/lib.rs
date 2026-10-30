@@ -1120,6 +1120,10 @@ pub struct Session {
     _settings_watch: Option<settings_store::watch::SettingsWatch>,
     /// The surface apps the session started, and those still running.
     surfaces: surfaces::Surfaces,
+    /// The surface apps the session starts itself, once its outputs are
+    /// there: the bar and what else the desktop runs as a process of its
+    /// own.
+    surface_apps: Vec<surfaces::Surface>,
     /// The displays as the person arranged them, kept in step with the ones
     /// attached.
     displays: display_settings::Displays,
@@ -1389,6 +1393,7 @@ impl Session {
                 wake.wake_by_ref();
             })
         });
+        let surface_apps = std::mem::take(&mut options.surfaces);
         Ok(Self {
             compositor,
             shared,
@@ -1413,6 +1418,7 @@ impl Session {
             pids: std::collections::BTreeMap::new(),
             _settings_watch: settings_watch,
             surfaces: surfaces::Surfaces::default(),
+            surface_apps,
             displays: display_settings::Displays::default(),
             sources,
             ended: false,
@@ -1470,6 +1476,9 @@ impl Session {
             self.compositor.set_night_light(Some(NIGHT_LIGHT_WARMTH))?;
         }
         self.follow_displays()?;
+        for surface in &self.surface_apps {
+            self.surfaces.start_or_log(&mut self.compositor, surface);
+        }
         Ok(())
     }
 
