@@ -350,11 +350,8 @@ impl ReopenCard {
     pub fn new(tab: TabId, app_id: &str, title: &str, reason: &str) -> Self {
         let app_id = app_id.to_owned();
         let id = format!("reopen-window:{tab}");
-        // Pressed in the desktop's own chrome, which runs its controls'
-        // handlers directly: a published view action has no one here to
-        // dispatch it, and Reopen pressed did nothing.
         let retry = ui::widget::Button::new(&id, &crate::shell::i18n::t("shell-window-retry"))
-            .on_click(move || {
+            .on_view(move || {
                 crate::shell::peer_windows::request(
                     crate::shell::peer_windows::CardRequest::Reopen,
                     tab,
