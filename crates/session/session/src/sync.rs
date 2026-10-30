@@ -18,6 +18,11 @@
 //! on the device's own collaboration key. The device certificate the actor
 //! announces beside it names the device (the label everyone calls it by) and
 //! the person it belongs to, so two devices of one person are one face.
+//!
+//! That endpoint keeps number 0's directory behind a gate and its relays
+//! held back ([`tilo_endpoint_reachability`]): a desktop whose workspaces
+//! have nobody else in them publishes nothing and keeps no relay, and the
+//! first workspace shown with other live members in it starts both.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -31,6 +36,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_desktop::chrome::WaveNotice;
 use tilo_desktop::here::{Here, LiveMember, Wave};
 use tilo_desktop_model::{DesktopTree, TabId};
+use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_network_actor::{HostIdentity, NetCmd, NetEvent, WorkspaceId, room_topic_id};
 
 /// The app id the desktop of a room says its own presence under, as the
@@ -376,6 +382,9 @@ pub struct Client {
     notice: RefCell<Option<WaveNotice>>,
     outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
     arrived: std::sync::mpsc::Receiver<NetEvent>,
+    /// This device's relays, held back until a room this session takes part
+    /// in has someone else in it.
+    reachability: Reachability,
     /// The thread running the peer actor, stopped when this drops.
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -430,7 +439,7 @@ impl Client {
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
             .spawn(move || run(identity, commands, arrivals, ready, wake))?;
-        let publisher = bound
+        let (publisher, reachability) = bound
             .recv()
             .map_err(std::io::Error::other)?
             .map_err(std::io::Error::other)?;
@@ -448,6 +457,7 @@ impl Client {
             notice: RefCell::new(None),
             outgoing,
             arrived,
+            reachability,
             thread: Some(thread),
         };
         // The hosts first: a room joined before them is replayed to this
@@ -535,6 +545,7 @@ impl Client {
             let _ = self.outgoing.send(Outgoing::Leave(ws));
             changed = true;
         }
+        self.note_reachability();
         if changed {
             self.show_here();
         }
@@ -558,6 +569,7 @@ impl Client {
     /// Take one thing the plane heard, and hand the desktop who is here now.
     fn hear(&self, event: NetEvent) {
         self.plane.borrow_mut().apply(event);
+        self.note_reachability();
         self.show_here();
         self.show_waves();
     }
@@ -578,6 +590,33 @@ impl Client {
     #[must_use]
     pub fn wave_notice(&self) -> Option<WaveNotice> {
         self.notice.borrow().clone()
+    }
+
+    /// Why what this session takes part in needs this device reachable, if
+    /// it does: a workspace it shows has someone else here. A host is
+    /// dialled at start and on every reconnect, and the peer actor holds
+    /// the relays up for every remote party it is connected to or keeps
+    /// dialling ([`tilo_endpoint_reachability::Need::Transport`]).
+    fn reachability_need(&self) -> Option<&'static str> {
+        let plane = self.plane.borrow();
+        let own = plane.publisher;
+        plane
+            .rooms
+            .iter()
+            .any(|room| {
+                room.peers
+                    .iter()
+                    .any(|peer| peer.here && peer.publisher != own)
+            })
+            .then_some("a workspace is shown with someone else")
+    }
+
+    /// Tell the relays what this session has recorded: they stay up while a
+    /// workspace it shows has someone else here, and may rest once none
+    /// does ([`tilo_endpoint_reachability::REST_AFTER`]).
+    fn note_reachability(&self) {
+        self.reachability
+            .need(Need::Session, self.reachability_need());
     }
 
     /// Hand the desktop this person and whoever is here with them in the
@@ -825,6 +864,17 @@ impl Client {
         own: OwnPresence,
         hosts: Vec<EndpointAddr>,
     ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Outgoing>) {
+        Self::offline_reaching(publisher, own, hosts, Reachability::default())
+    }
+
+    /// [`Self::offline_at`] with the relays the real client holds back.
+    #[cfg(test)]
+    fn offline_reaching(
+        publisher: EndpointId,
+        own: OwnPresence,
+        hosts: Vec<EndpointAddr>,
+        reachability: Reachability,
+    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Outgoing>) {
         let (outgoing, said) = tokio::sync::mpsc::unbounded_channel();
         let (_unheard, arrived) = std::sync::mpsc::channel();
         for host in hosts {
@@ -845,6 +895,7 @@ impl Client {
                 notice: RefCell::new(None),
                 outgoing,
                 arrived,
+                reachability,
                 thread: None,
             },
             said,
@@ -910,13 +961,42 @@ fn host_addr(value: &str) -> Option<EndpointAddr> {
         .or_else(|| value.parse::<EndpointId>().ok().map(EndpointAddr::new))
 }
 
+/// The endpoint the peer actor binds, and the relays held back from it
+/// until something needs this device dialable: number 0's for a device with
+/// an identity, none for a session that takes part as nobody and stays on
+/// this machine's loopback.
+fn endpoint_for(
+    identity: Option<&HostIdentity>,
+) -> Result<(iroh::endpoint::Builder, iroh::RelayMap), String> {
+    let Some(identity) = identity else {
+        let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .map_err(|error| format!("no loopback address: {error}"))?;
+        return Ok((builder, iroh::RelayMap::empty()));
+    };
+    let key = iroh::SecretKey::from_bytes(&identity.device_signing_key.to_bytes());
+    // What `presets::N0` builds, with its publisher behind number 0's
+    // directory gate and its public relays held back
+    // ([`tilo_endpoint_reachability`]): binding with an empty relay map
+    // keeps net report, address discovery and port mapping off the network
+    // until a workspace this session shows has someone else in it.
+    let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(key)
+        .address_lookup(tilo_endpoint_reachability::collaborating())
+        .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
+        .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()));
+    Ok((builder, iroh::endpoint::default_relay_mode().relay_map()))
+}
+
 /// The thread: bind the endpoint, run the peer actor, and carry what it
 /// hears to the session's loop until it is told to stop.
 fn run(
     identity: Option<HostIdentity>,
     mut commands: tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
     arrivals: std::sync::mpsc::Sender<NetEvent>,
-    ready: std::sync::mpsc::Sender<Result<EndpointId, String>>,
+    ready: std::sync::mpsc::Sender<Result<(EndpointId, Reachability), String>>,
     wake: Arc<dyn Fn() + Send + Sync>,
 ) {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -934,19 +1014,11 @@ fn run(
     };
     runtime.block_on(async move {
         let lookup = iroh::address_lookup::memory::MemoryLookup::new();
-        let builder = if let Some(identity) = &identity {
-            let key = iroh::SecretKey::from_bytes(&identity.device_signing_key.to_bytes());
-            iroh::Endpoint::builder(iroh::endpoint::presets::N0).secret_key(key)
-        } else {
-            let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-                .relay_mode(iroh::RelayMode::Disabled)
-                .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled);
-            match builder.bind_addr((std::net::Ipv4Addr::LOCALHOST, 0)) {
-                Ok(builder) => builder,
-                Err(error) => {
-                    let _ = ready.send(Err(format!("no loopback address: {error}")));
-                    return;
-                }
+        let (builder, deferred_relays) = match endpoint_for(identity.as_ref()) {
+            Ok(building) => building,
+            Err(error) => {
+                let _ = ready.send(Err(error));
+                return;
             }
         };
         let endpoint = match builder
@@ -962,11 +1034,21 @@ fn run(
             }
         };
         let publisher = endpoint.id();
-        let (actor, actor_task) = tilo_network_actor::Actor::spawn_reporting_addrs(
+        // Nothing wakes the held-back relays from here: the peer actor does
+        // when it dials a host or a peer, and the session while a room it
+        // shows has someone else in it (`Client::note_reachability`).
+        let reachability = tilo_endpoint_reachability::Reachability::defer(
+            &endpoint,
+            &deferred_relays,
+            tokio::runtime::Handle::current(),
+            Some(tilo_endpoint_reachability::REST_AFTER),
+        );
+        let (actor, actor_task) = tilo_network_actor::Actor::spawn_deferring_relays(
             endpoint,
             lookup,
             identity,
             Arc::new(std::sync::Mutex::new(Vec::new())),
+            reachability.clone(),
         );
         let (events, mut heard) = tokio::sync::mpsc::channel::<NetEvent>(256);
         let carrying = tokio::spawn(async move {
@@ -977,7 +1059,7 @@ fn run(
                 (wake)();
             }
         });
-        if ready.send(Ok(publisher)).is_err() {
+        if ready.send(Ok((publisher, reachability))).is_err() {
             return;
         }
         while let Some(command) = commands.recv().await {
@@ -1021,6 +1103,9 @@ mod tests {
 
     /// The room the tests' only workspace is.
     const ROOM: &str = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
+
+    /// A room no test's desktop shows.
+    const OTHER_ROOM: &str = "0a2c4e6f-8b1d-4f3a-9c5e-7d9b1f3a5c7e";
 
     /// A device's publisher, from a seed: an endpoint id nobody's identity
     /// certifies.
@@ -1237,6 +1322,77 @@ mod tests {
         let mut tree = desk(ROOM);
         sync.show(&mut tree, &|_| None);
         assert!(tree.workspaces[0].collaborators.is_empty());
+    }
+
+    /// Two relays nobody listens on: this endpoint never has a home relay
+    /// to be published with, so the directory gate cannot open, and nothing
+    /// here waits on a network.
+    fn unused_relays() -> iroh::RelayMap {
+        ["http://127.0.0.1:9/", "http://127.0.0.1:10/"]
+            .into_iter()
+            .map(|url| url.parse::<iroh::RelayUrl>().expect("a relay url"))
+            .collect()
+    }
+
+    #[test]
+    fn the_relays_wait_until_a_workspace_with_someone_else_is_shown() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("a runtime for the collaboration endpoint");
+        // The endpoint the real client binds, its directory gated and its
+        // relays held back.
+        let gate = tilo_endpoint_reachability::collaborating();
+        let (endpoint, reachability) = runtime.block_on(async {
+            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .address_lookup(gate.clone())
+                .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()))
+                .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+                .expect("a loopback address")
+                .secret_key(iroh::SecretKey::generate())
+                .bind()
+                .await
+                .expect("a collaboration endpoint binds");
+            let reachability = Reachability::defer(
+                &endpoint,
+                &unused_relays(),
+                tokio::runtime::Handle::current(),
+                Some(tilo_endpoint_reachability::REST_AFTER),
+            );
+            (endpoint, reachability)
+        });
+        let own = OwnPresence {
+            label: "Quinten".into(),
+            ..OwnPresence::default()
+        };
+        let (sync, _said) =
+            Client::offline_reaching(device(0xf0), own, Vec::new(), reachability.clone());
+        sync.follow_desktop(&desk(ROOM));
+
+        // Nobody else in the workspace this desktop shows: it names no relay,
+        // and number 0's directory is told nothing of this device.
+        assert!(reachability.is_dormant());
+        assert_eq!(reachability.holders(), (None, None));
+        assert!(!gate.is_open());
+        assert_eq!(endpoint.addr().relay_urls().count(), 0);
+
+        // Someone else is here: what could dial this device starts.
+        sync.hear(here(1));
+        assert!(!reachability.is_dormant());
+        assert_eq!(
+            reachability.holders(),
+            (None, Some("a workspace is shown with someone else"))
+        );
+
+        // They leave: nothing here needs this device dialable again.
+        sync.hear(presence(1, ROOM, PeerPresencePayload::Left));
+        assert_eq!(reachability.holders(), (None, None));
+
+        // Someone in a workspace this desktop does not show needs nothing
+        // of this device.
+        sync.hear(presence(2, OTHER_ROOM, PeerPresencePayload::Arrived));
+        assert_eq!(reachability.holders().1, None);
     }
 
     #[test]
