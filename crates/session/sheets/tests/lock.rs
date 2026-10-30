@@ -308,3 +308,28 @@ fn a_key_typed_on_a_real_keyboard_puts_the_screens_own_away() {
         "a keyboard is at hand: the drawn one steps aside"
     );
 }
+
+#[test]
+fn the_same_screen_is_shown_whatever_the_display() {
+    // A lock surface covers one output; its content has to fit the output it
+    // lands on, a small one and one turned upright included.
+    for size in [(1920, 1080), (1080, 1920), (1024, 600)] {
+        let (mut app, _seat) = locked(screen());
+        app.harness().resize(size).unwrap();
+        app.settle();
+        let labels = labels(&mut app);
+        for spoken in ["10:42", "Monday, 27 October", "Ada Lovelace", "Unlock"] {
+            assert!(
+                labels.iter().any(|label| label == spoken),
+                "{size:?} shows {spoken}: {labels:?}"
+            );
+        }
+        let (width, height) = (f64::from(size.0), f64::from(size.1));
+        for (label, rect) in controls(&mut app) {
+            assert!(
+                rect.x0 >= 0.0 && rect.y0 >= 0.0 && rect.x1 <= width && rect.y1 <= height,
+                "{label} at {rect:?} is on {size:?}"
+            );
+        }
+    }
+}
