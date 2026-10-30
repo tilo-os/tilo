@@ -421,6 +421,18 @@ impl DesktopPolicy {
             .is_some_and(|tab| self.handle.focus_tab(tab))
     }
 
+    /// Fill the strip with `window`, or give it its width back: what a
+    /// client asks for itself, and what the window menu asks of it. False
+    /// when the desktop holds no such window (a dialog floats over one).
+    pub fn set_maximized(&mut self, window: u64, maximized: bool) -> bool {
+        if self.floating.contains_key(&window) {
+            return false;
+        }
+        self.handle
+            .read(|tree| tab_of(tree, window))
+            .is_some_and(|tab| self.handle.maximize_tab(tab, maximized))
+    }
+
     /// `window` is waiting for the person: its tab says so until they
     /// look at it. False when the desktop holds no such window or it is
     /// the one in front.

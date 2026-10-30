@@ -164,3 +164,65 @@ fn a_window_refused_the_keyboard_waits_on_its_tab_until_the_person_looks() {
     assert_eq!(policy.focused(), Some(2));
     assert!(!asks(2));
 }
+
+/// A window's own asking to cover the screen is answered by its strip: the
+/// tab fills the strip and gives it back, and the compositor is told the
+/// desktop took it rather than covering the window on the display itself.
+#[test]
+fn a_window_that_asks_to_cover_the_screen_fills_its_strip_and_gives_it_back() {
+    use tilo_compositor::{ResizeEdges, WindowRequest};
+    let _settled = ui::motion::testing::settled();
+    let (host, mut policy) = desktop(7, 1.0);
+    let outputs = output();
+    let first = window(1, "org.gnome.Terminal");
+    let size = policy.initial_size(&first, &outputs).unwrap();
+    let at = policy.place(&first, size, &outputs);
+    let mapped = [(first.clone(), LayoutRect::new(at, size.into()))];
+    policy.arrange(&mapped, &outputs).unwrap();
+    let maximized = || {
+        host.with_policy(|policy| {
+            policy.handle().read(|tree| {
+                tree.active_workspace()
+                    .and_then(|workspace| {
+                        workspace
+                            .strips
+                            .iter()
+                            .flat_map(|strip| &strip.window_groups)
+                            .next()
+                    })
+                    .is_some_and(|group| group.maximized)
+            })
+        })
+    };
+    assert!(!maximized(), "a window opens at its width");
+    assert!(
+        !policy.request(&first, &WindowRequest::Maximize(true)),
+        "its strip answers the asking"
+    );
+    assert!(maximized(), "and fills it");
+    assert!(
+        !policy.request(
+            &first,
+            &WindowRequest::Fullscreen {
+                on: true,
+                output: None
+            }
+        ),
+        "a fullscreen asking is the same cover"
+    );
+    assert!(maximized());
+    assert!(
+        !policy.request(&first, &WindowRequest::Maximize(false)),
+        "and giving it back is answered here too"
+    );
+    assert!(!maximized(), "the window is its own width again");
+    // A tab has no free geometry: a move or a resize asks for nothing.
+    let edges = ResizeEdges {
+        right: true,
+        ..ResizeEdges::default()
+    };
+    for request in [WindowRequest::Move, WindowRequest::Resize(edges)] {
+        assert!(!policy.request(&first, &request));
+        assert!(!maximized());
+    }
+}

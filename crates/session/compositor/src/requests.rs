@@ -106,10 +106,35 @@ impl State {
             return;
         };
         if !self.policy.request(&info, request) {
-            // The policy answers it itself; a toplevel still needs its
-            // configure.
+            // The policy answers it itself, arranging the window where it
+            // belongs: a maximize or a fullscreen it takes is still said
+            // back to the client, so its own toolkit stops asking and draws
+            // no floating frame of its own.
+            let stated = match request {
+                WindowRequest::Maximize(on) => Some((xdg_toplevel::State::Maximized, *on)),
+                WindowRequest::Fullscreen { on, .. } => {
+                    Some((xdg_toplevel::State::Fullscreen, *on))
+                }
+                WindowRequest::Move | WindowRequest::Resize(_) | WindowRequest::Minimize => None,
+            };
             if let Some(toplevel) = window.toplevel() {
+                if let Some((state, on)) = stated {
+                    toplevel.with_pending_state(|pending| {
+                        if on {
+                            pending.states.set(state);
+                        } else {
+                            pending.states.unset(state);
+                        }
+                    });
+                }
                 toplevel.send_pending_configure();
+            }
+            if let Some(x11) = window.x11_surface() {
+                let _ = match stated {
+                    Some((xdg_toplevel::State::Fullscreen, on)) => x11.set_fullscreen(on),
+                    Some((_, on)) => x11.set_maximized(on),
+                    None => Ok(()),
+                };
             }
             self.rearrange();
             return;

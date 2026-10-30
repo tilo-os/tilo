@@ -15,7 +15,7 @@ use tilo_compositor::gestures::{
 };
 use tilo_compositor::{
     Arrangement, GestureEvent, HostLayer, LayoutPoint, LayoutRect, SurfaceHost, WindowInfo,
-    WindowPolicy,
+    WindowPolicy, WindowRequest,
 };
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::floating::centred;
@@ -562,5 +562,24 @@ impl WindowPolicy for StripPolicy {
 
     fn take_close_requests(&mut self) -> Vec<u64> {
         self.desk.borrow_mut().policy.take_closed()
+    }
+
+    /// A window's own asking. A tab has no free geometry: the strip lays it
+    /// out, so a move or a resize asks for nothing, and covering the strip
+    /// is what the window gets instead of a floating window manager's cover
+    /// of the display (maximize, and fullscreen asked of the strip as the
+    /// one window filling it).
+    fn request(&mut self, window: &WindowInfo, request: &WindowRequest) -> bool {
+        let covering = match request {
+            WindowRequest::Maximize(on) | WindowRequest::Fullscreen { on, .. } => *on,
+            WindowRequest::Move | WindowRequest::Resize(_) | WindowRequest::Minimize => {
+                return false;
+            }
+        };
+        let mut desk = self.desk.borrow_mut();
+        if desk.policy.set_maximized(window.id, covering) {
+            desk.host.relayout();
+        }
+        false
     }
 }
