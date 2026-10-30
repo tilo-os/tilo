@@ -612,6 +612,77 @@ impl Store {
         Ok(())
     }
 
+    /// The current query result, as its read answers it: the columns, the
+    /// first [`READ_RESULT_ROWS`] rows, and how many it holds.
+    fn read_result(
+        &self,
+        connection_id: &str,
+        generation: usize,
+    ) -> Result<serde_json::Value, String> {
+        let id = Uuid::parse_str(connection_id)
+            .map_err(|_| "invalid database connection id".to_string())?;
+        let result = self
+            .session
+            .query_result
+            .as_ref()
+            .filter(|_| {
+                self.session.active_connection_id() == Some(id)
+                    && self.session.query_gen == generation
+            })
+            .ok_or_else(|| "the query result is no longer current".to_string())?;
+        let cell = |cell: &crate::model::Cell| match cell {
+            crate::model::Cell::Null => serde_json::Value::Null,
+            crate::model::Cell::Integer(value) => (*value).into(),
+            crate::model::Cell::Real(value) => (*value).into(),
+            crate::model::Cell::Text(value) => value.clone().into(),
+            crate::model::Cell::Blob(bytes) => serde_json::json!({ "binary_bytes": bytes }),
+        };
+        let mut answer = serde_json::json!({
+            "message": result.message(),
+            "returns_rows": result.is_select,
+            "elapsed_ms": result.elapsed_ms,
+        });
+        let fields = answer
+            .as_object_mut()
+            .ok_or("a result reads as an object")?;
+        if let Some(affected) = result.rows_affected {
+            fields.insert("rows_affected".into(), affected.into());
+        }
+        if result.is_select {
+            fields.insert("columns".into(), result.columns.clone().into());
+            fields.insert(
+                "rows".into(),
+                result
+                    .rows
+                    .iter()
+                    .take(READ_RESULT_ROWS)
+                    .map(|row| row.iter().map(cell).collect::<serde_json::Value>())
+                    .collect(),
+            );
+            fields.insert("rows_total".into(), result.rows.len().into());
+            if result.rows.len() > READ_RESULT_ROWS {
+                fields.insert(
+                    "how".into(),
+                    format!(
+                        "the first {READ_RESULT_ROWS} rows; run the query with LIMIT and OFFSET for the rest"
+                    )
+                    .into(),
+                );
+            }
+        }
+        if let Some(truncation) = result.truncation {
+            fields.insert(
+                "collection_stopped".into(),
+                match truncation {
+                    crate::model::Truncation::RowLimit => "row_limit",
+                    crate::model::Truncation::Payload => "payload_limit",
+                }
+                .into(),
+            );
+        }
+        Ok(answer)
+    }
+
     fn run_history(&mut self, connection_id: &str, generation: usize) -> Result<(), String> {
         let id = Uuid::parse_str(connection_id)
             .map_err(|_| "invalid database connection id".to_string())?;
@@ -1509,6 +1580,10 @@ mod editor_sql_tests {
     }
 }
 
+/// The most rows a query result's read answers with; a larger result is
+/// read by querying it in parts.
+const READ_RESULT_ROWS: usize = 200;
+
 impl Store {
     fn execute_effect(&mut self, effect: DbEffect) -> Result<(), String> {
         match effect {
@@ -1522,6 +1597,12 @@ impl Store {
                 connection,
                 generation,
             } => self.show_result(&connection.to_string(), generation)?,
+            DbEffect::ReadResult {
+                connection,
+                generation,
+            } => {
+                self.read_result(&connection.to_string(), generation)?;
+            }
             DbEffect::Rerun {
                 connection,
                 generation,
@@ -1623,6 +1704,16 @@ impl Store {
         Ok(())
     }
     fn answer_effect(&mut self, effect: DbEffect, cx: &mut EffectCx<Record>) -> EffectAnswer {
+        if let DbEffect::ReadResult {
+            connection,
+            generation,
+        } = effect
+        {
+            return self
+                .read_result(&connection.to_string(), generation)
+                .map(Effected::value)
+                .map_err(Into::into);
+        }
         self.changed = true;
         if matches!(
             effect,

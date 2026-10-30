@@ -202,8 +202,16 @@ fn index_current_result(
             connection,
             generation,
         };
+        // The result's read discloses it, so exporting it is offered to
+        // whoever may read it, an agent too, where Show is this window's own
+        // view.
+        let read = DbEffect::ReadResult {
+            connection,
+            generation,
+        };
         let mut result_resource =
             ResourceSpec::new(&result_id, "database.query-result", result.message())
+                .with_action(read.bound().reads_document())
                 .with_action(show.bound());
         if result.is_select {
             result_resource = result_resource.with_action(
