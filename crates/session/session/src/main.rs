@@ -157,6 +157,9 @@ fn start(
     } = line;
     let buses = reach.buses.clone();
     record_panics(backend);
+    // Who sits here, read now and kept current by workers: nothing the loop
+    // asks of the identity directory waits on the disk.
+    tilo_session::identity::install();
     let wake = tilo_service::LoopWake::default();
     // The person's settings, read once here: the power policy they resolve is
     // part of them.

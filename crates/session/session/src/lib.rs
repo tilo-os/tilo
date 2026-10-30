@@ -38,6 +38,7 @@ mod display_settings;
 pub mod displays;
 mod env;
 mod i18n;
+pub mod identity;
 mod keys;
 mod lists;
 pub mod mount;
