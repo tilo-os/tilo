@@ -46,7 +46,6 @@ futures-util.workspace = true
 # EIS, the transport of the input portals: a server per session.
 reis = { version = "0.7.1", features = ["calloop"] }
 calloop = "0.14"
-hex.workspace = true
 uuid.workspace = true
 # The producer side of screen share streams, for a session feeding them
 # frames it captured.

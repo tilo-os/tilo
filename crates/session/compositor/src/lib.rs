@@ -83,8 +83,8 @@ pub use effects::{WindowEffect, WindowPicture};
 pub use host::{CursorIcon, HostDrag, HostLayer, SurfaceHost};
 pub use idle::{IdleConfig, SessionTransition};
 pub use input::{
-    GestureEvent, HostKey, InputEvent, KeyModifiers, ObservedInput, PadAction, Switch,
-    TabletEvent, TabletPadEvent, TabletPhase,
+    GestureEvent, HostKey, InputEvent, KeyModifiers, ObservedInput, PadAction, Switch, TabletEvent,
+    TabletPadEvent, TabletPhase,
 };
 pub use keys::{KeyClaim, KeyRepeat};
 pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};

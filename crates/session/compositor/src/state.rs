@@ -347,7 +347,7 @@ impl State {
     /// desktop drops it with [`crate::Compositor::release_snapshot`] or a
     /// window of the same id maps again.
     pub(crate) fn keep_closing(&mut self, window: &Window) {
-        let Some(info) = describe(window) else {
+        let Some(info) = describe(&self.display, window) else {
             return;
         };
         let Some(location) = self.space.element_location(window) else {
@@ -394,14 +394,14 @@ impl State {
         R: smithay::backend::renderer::Renderer,
         R::TextureId: Clone + 'static,
     {
-        if let Some(id) = describe(window).map(|info| info.id) {
+        if let Some(id) = describe(&self.display, window).map(|info| info.id) {
             self.snapshots.record(id, renderer, window);
         }
     }
 
     /// How `window` is drawn this frame: its effect, or as it stands.
     pub(crate) fn effect_of(&self, window: &Window) -> crate::effects::WindowEffect {
-        describe(window)
+        describe(&self.display, window)
             .and_then(|info| self.effects.get(&info.id))
             .copied()
             .unwrap_or_default()
@@ -410,12 +410,13 @@ impl State {
     /// How `window` is framed: its own frame, or the desktop's.
     pub(crate) fn framing(&self, window: &Window) -> crate::effects::Framing<'_> {
         crate::effects::Framing {
-            frame: describe(window)
+            frame: describe(&self.display, window)
                 .and_then(|info| self.window_frames.get(&info.id))
                 .copied()
                 .unwrap_or(self.frame),
             images: &self.frame_images,
             snapshots: &self.snapshots,
+            display: &self.display,
         }
     }
 
@@ -949,8 +950,8 @@ static NEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 const X11_IDS: u64 = 1 << 40;
 
 /// The id of `window`, when it has one.
-pub(crate) fn window_id(window: &Window) -> Option<u64> {
-    describe(window).map(|info| info.id)
+pub(crate) fn window_id(display: &DisplayHandle, window: &Window) -> Option<u64> {
+    describe(display, window).map(|info| info.id)
 }
 
 /// What a policy learns about a window, Wayland or X11; `None` for

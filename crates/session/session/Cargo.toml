@@ -55,8 +55,6 @@ tilo-network-secret-agent = { path = "../network-secret-agent" }
 tilo-bluetooth-agent = { path = "../bluetooth-agent" }
 tilo-tray-host = { path = "../tray-host" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
-tilo-onboarding-host = { path = "../onboarding-host" }
-tilo-sheets = { path = "../sheets" }
 # The desktop's event sounds (a notification's ring, a screenshot's click).
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 # Checks a password for the lock screen, through the unlock helper.
@@ -64,11 +62,8 @@ bounded-command = { path = "../../system/bounded-command" }
 zeroize.workspace = true
 chrono = { workspace = true, default-features = true }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
-os-actions = { path = "../../system/os-actions" }
 serde.workspace = true
 serde_json.workspace = true
-settings-store = { path = "../../system/settings-store" }
-tilo-paths = { path = "../../platform/tilo-paths" }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tracing.workspace = true
 xkeysym = "0.2.1"
@@ -82,7 +77,6 @@ tempfile.workspace = true
 url.workspace = true
 tilo-audio-service = { path = "../audio-service" }
 rustix = { workspace = true, features = ["fs"] }
-tempfile.workspace = true
 tilo-onboarding = { path = "../onboarding" }
 tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }

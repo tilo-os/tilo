@@ -17,13 +17,17 @@
 //! ([`ui::device_local_door::SharedDoor`]). [`Session::resources`] lists
 //! them and [`Session::invoke`] runs one, as any caller of the action
 //! protocol on this device does.
+//!
+//! The session also hosts the system services it was started with
+//! ([`Options::services`]): connectivity, audio and the rest publish their
+//! resources beside the desktop's, and [`Session::invoke`] reaches their
+//! actions as it reaches the desktop's, by address.
 
 #![cfg(target_os = "linux")]
 
 mod app_icons;
 pub mod capture;
 mod chrome;
-pub mod desktop_services;
 mod config;
 mod controls;
 pub mod desktop_services;
@@ -33,9 +37,6 @@ mod keys;
 mod lists;
 mod notifications;
 mod panels;
-mod setup;
-mod sheets;
-mod search;
 pub mod portal_link;
 mod questions;
 mod search;
@@ -61,30 +62,32 @@ use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
 use tilo_lock::MutexRecover as _;
 use tilo_quick_settings::QsEffect;
-use tilo_surface_host::{DesktopHost, Placement, WidgetHost, desktop_with};
-use tilo_surface_host::{DeskGesture, DesktopHost, Doors, WidgetHost, desktop_with};
+use tilo_service::Started;
+use tilo_surface_host::{DeskGesture, DesktopHost, Doors, Published, WidgetHost, desktop_with};
 use ui::application::ComponentRunnerInputs;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
 
-pub use lists::{AppLists, Lists};
 pub use config::SessionConfig;
 pub use controls::{
-    DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, SESSION_RESOURCE,
-    SessionCommand,
+    DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
+    SESSION_RESOURCE, SessionCommand,
 };
 pub use env::SessionEnvironment;
-pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA_PLAYER, MICROPHONE, QUICK_SETTINGS};
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
 pub use lists::{AppLists, Lists};
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
+pub use tilo_service::{Service, Services};
 
-use chrome::{SessionChrome, SessionRules};
-use panels::{Banners, Held, Popover, Served};
+use controls::SessionControls;
+use keys::{Invocations, SessionKeys};
+use panels::{Banners, Held, Popover, Readout};
+use search::SessionSearch;
 use setup::Setup;
 use sheets::Sheet;
+use tilo_desktop_search::providers::places::Place;
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::lock::LockSeat;
@@ -97,27 +100,19 @@ use tilo_sheets::workspace_settings::{
 pub use os_actions::SessionAction;
 
 pub use tilo_onboarding_host::view::OnboardingView;
-use panels::{Banners, Held, Popover};
-use search::SessionSearch;
-pub use config::SessionConfig;
-pub use controls::{INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, SESSION_RESOURCE, SessionCommand};
-pub use env::SessionEnvironment;
-pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA_PLAYER, MICROPHONE, QUICK_SETTINGS};
-pub use tilo_quick_settings::host::PanelHost;
-
-use controls::SessionControls;
-use keys::{Invocations, SessionKeys};
-use panels::{Banners, Held, Popover, Readout};
-use tilo_desktop_search::providers::places::Place;
 
 /// The generation the session's own desktop commands carry.
 const GENERATION: &str = "session";
 
-/// The workspace menu's action that opens workspace settings.
-const WORKSPACE_SETTINGS: &str = "workspace-settings";
 /// How soon after a press outside quick settings closed it the bar's own
 /// toggle of it is that same press, not a new ask to open it.
 const DISMISS_GRACE: Duration = Duration::from_millis(300);
+
+/// How warm the night light makes the displays, in kelvin.
+const NIGHT_LIGHT_WARMTH: u32 = 3_400;
+
+/// The workspace menu's action that opens workspace settings.
+const WORKSPACE_SETTINGS: &str = "workspace-settings";
 
 /// What a session starts with.
 pub struct Options {
@@ -134,6 +129,17 @@ pub struct Options {
     /// What quick settings reads of the device and carries out on it;
     /// without it, the bar's status cluster opens nothing.
     pub quick_settings: Option<QuickSettings>,
+    /// The person's settings: shortcuts, input, gestures.
+    pub config: SessionConfig,
+    /// The system services the session hosts: what they publish is the
+    /// session's, beside the desktop's.
+    pub services: Vec<Box<dyn Service>>,
+    /// What the desktop's search reaches beyond the desktop.
+    pub search: SearchOptions,
+    /// The action host: what open apps publish and run, and where what is
+    /// chosen in search runs by address. Without one, search finds the
+    /// desktop's own and starts nothing.
+    pub apps: Option<Rc<dyn AppActions>>,
     /// Setup to run over everything before the desktop is used: the first
     /// use of this device, or the recovery of its identity.
     pub setup: Option<OnboardingView>,
@@ -187,22 +193,6 @@ const SETTINGS_APP: &str = "so.tilo.settings";
 fn no_session_actions(action: SessionAction) -> Result<(), String> {
     tracing::info!(?action, "this session carries out no session actions");
     Ok(())
-    /// What the desktop's search reaches beyond the desktop.
-    pub search: SearchOptions,
-    /// The action host: what open apps publish and run, and where what is
-    /// chosen in search runs by address. Without one, search finds the
-    /// desktop's own and starts nothing.
-    pub apps: Option<Rc<dyn AppActions>>,
-    /// without one, the bar's status cluster opens nothing.
-    pub quick_settings: Option<Rc<dyn PanelHost>>,
-    /// The person's settings: shortcuts, input, gestures.
-    pub config: SessionConfig,
-    /// The system services the session hosts: what they publish is the
-    /// session's, beside the desktop's.
-    pub services: Vec<Box<dyn Service>>,
-    /// What apps sent the notifications daemon: shown as banners and kept
-    /// in the desk's notification centre.
-    pub notifications: Option<tilo_notifications_service::Notifications>,
 }
 
 impl Default for Options {
@@ -214,66 +204,16 @@ impl Default for Options {
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
             quick_settings: None,
-            setup: None,
-            session_actions: no_session_actions,
+            config: SessionConfig::default(),
+            services: Vec::new(),
             search: SearchOptions::default(),
             apps: None,
-        }
-    }
-}
-
-/// The desktop's two hosted trees: the desk's under the windows and the
-/// chrome's above them.
-#[derive(Clone)]
-struct Layers {
-    desktop: DesktopHost,
-    chrome: Rc<RefCell<WidgetHost>>,
-}
-
-impl Layers {
-    /// `read` of the desk's hosted tree, then of the chrome's.
-    fn each<R>(&self, mut read: impl FnMut(&mut FrameHarness) -> R) -> [R; 2] {
-        let desk = self.desktop.with_widgets(|host| read(host.host_mut()));
-        let chrome = read(self.chrome.borrow_mut().host_mut());
-        [desk, chrome]
-    }
-
-    fn resources(&self) -> Vec<ResourceSpec> {
-        self.each(|host| host.resources()).concat()
-    }
-
-    /// Where what the desk's and the chrome's trees publish stands.
-    fn revisions(&self) -> [u64; 2] {
-        [
-            self.desktop.with_widgets(|host| host.revision()),
-            self.chrome.borrow().revision(),
-        ]
-    }
-
-    /// Invoke the published action `action` of `resource` on the layer
-    /// that publishes it.
-    fn invoke(
-        &self,
-        resource: &str,
-        action: &str,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ResourceOperationStart, DoorError> {
-        let address = ActionAddress::new(resource, action);
-        let [desk, chrome] = self.each(|host| {
-            tilo_actions::door::resolve(&host.resources(), &address)
-                .is_some()
-                .then(|| host.invoke_published(resource, action, arguments))
-        });
-        desk.or(chrome)
-            .unwrap_or_else(|| Err(DoorError::Unknown(address.clone())))
-    }
-            config: SessionConfig::default(),
+            setup: None,
+            session_actions: no_session_actions,
             user: String::new(),
             verifier: std::sync::Arc::new(unlock::Unavailable),
             wake: tilo_service::LoopWake::default(),
             captures: None,
-            services: Vec::new(),
-            notifications: None,
             desktop: None,
             questions: None,
             portal: None,
@@ -282,7 +222,7 @@ impl Layers {
 }
 
 /// Quick settings as the session shows it.
-struct QuickSettings {
+struct QuickSettingsPanel {
     open: Rc<Cell<bool>>,
     /// When a press outside last closed it.
     dismissed: Rc<Cell<Option<Instant>>>,
@@ -290,16 +230,26 @@ struct QuickSettings {
 
 /// What the session keeps between frames, shared with the loop.
 struct Shared {
-    layers: Layers,
     handle: DesktopHandle,
-    search: Rc<SessionSearch>,
     desktop: DesktopHost,
+    search: Rc<SessionSearch>,
     /// What the desk and the chrome asked of the session.
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// Where the chrome takes intents the session raises.
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    /// Whether quick settings is open, when the session has it.
-    quick_settings: Option<Rc<Cell<bool>>>,
+    quick_settings: Option<QuickSettingsPanel>,
+    /// Every hosted surface's and service's published side: the session's
+    /// action host.
+    doors: Doors,
+    /// Published actions keys and gestures asked for, waiting for the door.
+    invocations: Invocations,
+    /// What the session's own resources asked of the compositor.
+    commands: Rc<RefCell<Vec<SessionCommand>>>,
+    /// Quick settings' readings of the device, which a readout shows.
+    readings: Rc<RefCell<Option<tilo_quick_settings::host::Feed>>>,
+    /// The system services, reached for their readings; their actions go
+    /// through the door like every other.
+    services: Rc<RefCell<Services>>,
     /// The device behind quick settings, when the session reads one.
     device: Option<DeviceHost>,
     /// The power menu, workspace settings, and the questions the session
@@ -311,24 +261,17 @@ struct Shared {
     /// The lock screen, while the session is locked.
     lock: Option<LockSeat>,
     session_actions: fn(SessionAction) -> Result<(), String>,
-    /// The power menu asked to lock the screen.
-    lock: Cell<bool>,
-    quick_settings: Option<QuickSettings>,
-    /// Every hosted surface's published side: the session's action host.
-    doors: Doors,
-    /// Published actions keys and gestures asked for, waiting for the door.
-    invocations: Invocations,
-    /// What the session's own resources asked of the compositor.
-    commands: Rc<RefCell<Vec<SessionCommand>>>,
-    /// Quick settings' readings of the device, which a readout shows.
-    readings: Rc<RefCell<Option<tilo_quick_settings::host::Feed>>>,
-    /// The system services.
-    services: RefCell<Services>,
     /// Where everything the session publishes stood when search last read
-    /// it: the desk's, the chrome's and the services' revisions.
-    observed: Cell<Option<[u64; 3]>>,
+    /// it.
+    observed: RefCell<Option<Vec<(usize, u64)>>>,
     /// The title each window had when search last recorded where it was.
     places_seen: RefCell<std::collections::HashMap<u64, String>>,
+    /// The daemon's notifications on the desktop.
+    notifications: RefCell<notifications::SessionNotifications>,
+    /// The notification centre as the quick settings panel was last fed it.
+    notice_view: RefCell<Option<tilo_quick_settings::NotificationsView>>,
+    /// What the services ask the person, on the sheets.
+    asker: questions::Asker,
 }
 
 /// The app a window shows, by its id.
@@ -341,12 +284,6 @@ fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
         | TileContent::HostedWindow { app_id, .. } => Some(app_id.clone()),
         _ => None,
     }
-    /// The daemon's notifications on the desktop.
-    notifications: RefCell<notifications::SessionNotifications>,
-    /// The notification centre as the quick settings panel was last fed it.
-    notice_view: RefCell<Option<tilo_quick_settings::NotificationsView>>,
-    /// What the services ask the person, on the sheets.
-    asker: questions::Asker,
 }
 
 impl Shared {
@@ -368,10 +305,10 @@ impl Shared {
                 }
                 DesktopAsk::Intent(ChromeIntent::ShowQuickSettings) => self.show_quick_settings(),
                 DesktopAsk::Launchpad(action) => self.launchpad(action),
+                DesktopAsk::Shortcut(action) => self.shortcut(action),
                 DesktopAsk::HostAction(action) if action == WORKSPACE_SETTINGS => {
                     self.open_workspace_settings();
                 }
-                DesktopAsk::Shortcut(action) => self.shortcut(action),
                 other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
             }
         }
@@ -504,23 +441,23 @@ impl Shared {
         let Some(device) = &self.device else {
             return;
         };
-        device.set_open(self.quick_settings.as_ref().is_some_and(|open| open.get()));
+        device.set_open(
+            self.quick_settings
+                .as_ref()
+                .is_some_and(|panel| panel.open.get()),
+        );
         device.pump();
         for request in device.take_requests() {
             match request {
                 SessionRequest::Effect(QsEffect::PowerMenu) => {
-                    if let Some(open) = &self.quick_settings {
-                        open.set(false);
-                    }
+                    self.close_quick_settings();
                     if let Some(power) = &self.power {
                         power.presentation().open(false);
                     }
                 }
                 SessionRequest::Effect(QsEffect::LockScreen) => {
-                    if let Some(open) = &self.quick_settings {
-                        open.set(false);
-                    }
-                    self.lock.set(true);
+                    self.close_quick_settings();
+                    self.commands.borrow_mut().push(SessionCommand::Lock);
                 }
                 SessionRequest::Effect(QsEffect::OpenNotification { notification }) => {
                     self.close_quick_settings();
@@ -569,9 +506,7 @@ impl Shared {
                     }
                 }
                 SessionRequest::Effect(QsEffect::OpenSettings { .. }) => {
-                    if let Some(open) = &self.quick_settings {
-                        open.set(false);
-                    }
+                    self.close_quick_settings();
                     let launch = Command::Launch {
                         generation: GENERATION.into(),
                         app: SETTINGS_APP.into(),
@@ -638,10 +573,13 @@ impl Shared {
                 power.presentation().close();
                 let action = match effect {
                     PowerEffect::Lock => {
-                        self.lock.set(true);
+                        self.commands.borrow_mut().push(SessionCommand::Lock);
                         continue;
                     }
-                    PowerEffect::LogOut => SessionAction::Logout,
+                    PowerEffect::LogOut => {
+                        self.commands.borrow_mut().push(SessionCommand::LogOut);
+                        continue;
+                    }
                     PowerEffect::SwitchUser => SessionAction::SwitchUser,
                     PowerEffect::Suspend => SessionAction::Suspend,
                     PowerEffect::Restart => SessionAction::Restart,
@@ -667,103 +605,6 @@ impl Shared {
                 }
             }
         }
-        let choices = self.handle.take_search_choices();
-        if choices.is_empty() {
-            return;
-        }
-        let room = self.handle.read(|tree| {
-            tree.active_workspace()
-                .map(|workspace| workspace.room().to_string())
-                .unwrap_or_default()
-        });
-        for choice in choices {
-            self.search.perform(&room, choice, &mut |own| {
-                self.layers
-                    .invoke(
-                        own.address.resource.as_str(),
-                        own.address.action.as_str(),
-                        &own.arguments,
-                    )
-                    .map(drop)
-                self.invoke(
-                    own.address.resource.as_str(),
-                    own.address.action.as_str(),
-                    &own.arguments,
-                )
-                .map(drop)
-            });
-        }
-        // What the session's own actions asked of it.
-        self.follow_asks();
-    }
-
-    /// Read what the session publishes for search, after a frame.
-    /// Everything the session publishes: the desk's and the chrome's
-    /// resources, then the services'.
-    fn resources(&self) -> Vec<ResourceSpec> {
-        let mut resources = self.layers.resources();
-        resources.extend(self.services.borrow().resources());
-        resources
-    }
-
-    /// Invoke the published action `action` of `resource` where it is
-    /// published: on the desk's or the chrome's layer, else at the service
-    /// publishing it.
-    fn invoke(
-        &self,
-        resource: &str,
-        action: &str,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ResourceOperationStart, DoorError> {
-        match self.layers.invoke(resource, action, arguments) {
-            Err(DoorError::Unknown(address)) => {
-                match self
-                    .services
-                    .borrow_mut()
-                    .invoke(resource, action, arguments)
-                {
-                    Some(Ok(Started::Done(output))) => {
-                        Ok(ResourceOperationStart::Completed(output))
-                    }
-                    Some(Ok(Started::Accepted)) => Ok(ResourceOperationStart::Accepted),
-                    Some(Err(error)) => Err(error),
-                    None => Err(DoorError::Unknown(address)),
-                }
-            }
-            other => other,
-        }
-    }
-
-    /// Where everything the session publishes stands: it may have changed
-    /// only when this moved.
-    fn revision(&self) -> [u64; 3] {
-        let [desk, chrome] = self.layers.revisions();
-        [desk, chrome, self.services.borrow().revision()]
-    }
-
-    /// Hand search what the session publishes when it changed: read after
-    /// a frame, as the desk cannot read its own tree while it opens search.
-    fn observe(&self) {
-        let now = Some(self.revision());
-        if self.observed.replace(now) == now {
-            return;
-        }
-        let tabs = self.handle.read(|tree| {
-            let mut tabs = Vec::new();
-            for workspace in &tree.workspaces {
-                let room = workspace.room().to_string();
-                for tab in workspace
-                    .strips
-                    .iter()
-                    .flat_map(|strip| &strip.window_groups)
-                    .flat_map(|group| &group.tabs)
-                {
-                    tabs.push((tab.id, room.clone(), tab_app(&tab.tile), tab.title.clone()));
-                }
-            }
-            tabs
-        });
-        self.search.observe(&self.layers.resources(), open_tabs);
         self.asker.follow();
     }
 
@@ -889,52 +730,6 @@ impl Shared {
         if let Err(error) = self.doors.invoke(&address, &arguments) {
             tracing::debug!(?error, "no readout shown");
         }
-        self.record_places(&tabs);
-        let open_tabs = tabs.iter().map(|(tab, ..)| *tab).collect();
-        self.search.observe(&self.resources(), open_tabs);
-        self.keep_history();
-    }
-
-    /// Where each app's window is now, for search's Continue: a window
-    /// whose title changed since it was last seen was at a new place.
-    fn record_places(&self, tabs: &[(u64, String, Option<String>, String)]) {
-        let mut seen = self.places_seen.borrow_mut();
-        seen.retain(|tab, _| tabs.iter().any(|(open, ..)| open == tab));
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
-        for (tab, room, app, title) in tabs {
-            let Some(app) = app else { continue };
-            if title.trim().is_empty() || seen.get(tab) == Some(title) {
-                continue;
-            }
-            seen.insert(*tab, title.clone());
-            self.search.record_place(Place {
-                app: app.clone(),
-                room: room.clone(),
-                tab: *tab,
-                label: title.clone(),
-                value: String::new(),
-                anchor: None,
-                at: now,
-                device: None,
-            });
-        }
-    }
-
-    /// Keep what changed of search's history in its settings section,
-    /// through the section's field edits; without a settings service it
-    /// lasts as long as the session.
-    fn keep_history(&self) {
-        for edit in self.search.take_unkept() {
-            let kept = self
-                .services
-                .borrow_mut()
-                .invoke(search::HISTORY, "field-edit", &edit);
-            if let Some(Err(error)) = kept {
-                tracing::warn!(%error, "search history not kept");
-            }
-        }
     }
 
     /// A card of the empty desk's launchpad: its app, else the desktop's
@@ -961,119 +756,26 @@ impl Shared {
     }
 }
 
-/// What mounts the session's surface apps, each on a layer of its own
-/// with its actions among the session's.
-struct Mount<'a> {
-    compositor: &'a mut Compositor,
-    surfaces: Vec<Rc<RefCell<dyn Served>>>,
-    /// This device and the person at it.
-    who: (String, String),
-    presentation: fn() -> ComponentRunnerInputs,
-    scale: f64,
-}
-
-impl Mount<'_> {
-    /// Host `surface` above what was mounted before, and publish its
-    /// actions.
-    fn add<T: tilo_compositor::SurfaceHost + Served + 'static>(
-        &mut self,
-        surface: T,
-    ) -> Rc<RefCell<T>> {
-        let held = Rc::new(RefCell::new(surface));
-        self.compositor.add_host(Box::new(Held(Rc::clone(&held))));
-        self.surfaces
-            .push(Rc::clone(&held) as Rc<RefCell<dyn Served>>);
-        held
-    }
-
-    /// The notification banners; their link, mounted or not.
-    fn banners(&mut self) -> tilo_notification_banners::Link {
-        let link = tilo_notification_banners::Link::new();
-        match tilo_notification_banners::prepare(link.clone(), &self.who.0, &self.who.1)
-            .and_then(|component| ui::App::from_component(component, (self.presentation)()))
-        {
-            Ok(app) => {
-                self.add(Banners::new(app, link.clone(), self.scale));
-            }
-            Err(error) => tracing::warn!(%error, "notification banners not mounted"),
-        }
-        link
-    }
-
-    /// Quick settings, reading the device as `reads` says: the device
-    /// host it reads, when the session drives one, and whether it is
-    /// open, when it mounted.
-    fn quick_settings(
-        &mut self,
-        reads: QuickSettings,
-    ) -> (Option<DeviceHost>, Option<Rc<Cell<bool>>>) {
-        let (device, panel) = match reads {
-            QuickSettings::Device(make) => {
-                let waker = self.compositor.waker();
-                let device = make(Arc::new(move || waker.wake_by_ref()));
-                let panel = device.panel();
-                (Some(device), panel)
-            }
-            QuickSettings::Lent(panel) => (None, panel),
-        };
-        (device, self.panel(panel))
-    }
-
-    /// Quick settings' panel, reading the device through `panel`; whether
-    /// it is open, when it mounted.
-    fn panel(&mut self, panel: Rc<dyn PanelHost>) -> Option<Rc<Cell<bool>>> {
-        let open = Rc::new(Cell::new(false));
-        match tilo_quick_settings::prepare(panel, &self.who.0, &self.who.1, 1)
-            .and_then(|component| ui::App::from_component(component, (self.presentation)()))
-        {
-            Ok(app) => {
-                self.add(Popover::new(app, Rc::clone(&open), self.scale));
-                Some(open)
-            }
-            Err(error) => {
-                tracing::warn!(%error, "quick settings not mounted");
-                None
-            }
-        }
-    }
-
-    /// A sheet lent `seat`; the seat, when it mounted.
-    fn sheet<S: tilo_sheets::Seat>(
-        &mut self,
-        definition: &'static ui::application::ApplicationDefinition,
-        seat: S,
-    ) -> Option<S> {
-        match Sheet::mount(
-            definition,
-            seat,
-            (&self.who.0, &self.who.1),
-            (self.presentation)(),
-            self.scale,
-        ) {
-            Ok(sheet) => {
-                let seat = sheet.seat().clone();
-                self.add(sheet);
-                Some(seat)
-            }
-            Err(error) => {
-                tracing::warn!(%error, app = definition.app_id(), "sheet not mounted");
-                None
-            }
-        }
-    }
 /// The notification banners, mounted on a layer of their own over the
 /// first output; the desk then shows only the centre of `notices`.
 fn mount_banners(
     compositor: &mut Compositor,
-    options: &Options,
+    doors: &mut Doors,
     notices: &tilo_desktop_surface::DesktopNotifications,
+    options: &Options,
 ) -> tilo_notification_banners::Link {
     let banners = tilo_notification_banners::Link::new();
     match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
         .and_then(|component| ui::App::from_component(component, (options.presentation)()))
     {
         Ok(app) => {
-            compositor.add_host(Box::new(Banners::new(app, banners.clone(), options.scale)));
+            let surface = Rc::new(RefCell::new(Banners::new(
+                app,
+                banners.clone(),
+                options.scale,
+            )));
+            compositor.add_host(Box::new(Held(Rc::clone(&surface))));
+            doors.add(surface);
             notices.show_banners_elsewhere();
         }
         Err(error) => tracing::warn!(%error, "notification banners not mounted"),
@@ -1084,12 +786,6 @@ fn mount_banners(
 /// A running session: the compositor and the desktop it hosts.
 pub struct Session {
     compositor: Compositor,
-    shared: Rc<Shared>,
-    banners: tilo_notification_banners::Link,
-    /// The surface apps whose actions the session publishes.
-    surfaces: Vec<Rc<RefCell<dyn Served>>>,
-    /// Setup, while it runs: it withholds the desktop's actions.
-    setup: Option<Rc<RefCell<Setup>>>,
     shared: Shared,
     banners: tilo_notification_banners::Link,
     /// The input preferences the compositor runs with now.
@@ -1106,6 +802,9 @@ pub struct Session {
     captures: Option<capture::Captures>,
     /// The windows opening and closing.
     windows: window_motion::WindowMotions,
+    /// Whether the night light is on, and whether a change is kept in the
+    /// person's settings.
+    night_light: (bool, bool),
     /// The portal's link to the loop, while the portal serves.
     portal: Option<portal_link::SessionLink>,
     /// The desktop services the portal and the notifications daemon run
@@ -1134,43 +833,6 @@ struct Unlocking {
     wake: std::task::Waker,
 }
 
-/// The notification banners over the windows, and the link they are fed
-/// through.
-fn mount_banners(
-    compositor: &mut Compositor,
-    options: &Options,
-) -> tilo_notification_banners::Link {
-    let banners = tilo_notification_banners::Link::new();
-    match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
-        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
-    {
-        Ok(app) => {
-            compositor.add_host(Box::new(Banners::new(app, banners.clone(), options.scale)));
-        }
-        Err(error) => tracing::warn!(%error, "notification banners not mounted"),
-    }
-    banners
-}
-
-/// Quick settings, when the session has a panel for them: whether they are
-/// open.
-fn mount_quick_settings(compositor: &mut Compositor, options: &Options) -> Option<Rc<Cell<bool>>> {
-    let panel = options.quick_settings.clone()?;
-    let open = Rc::new(Cell::new(false));
-    match tilo_quick_settings::prepare(panel, &options.device, &options.person, 1)
-        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
-    {
-        Ok(app) => {
-            compositor.add_host(Box::new(Popover::new(app, Rc::clone(&open), options.scale)));
-            Some(open)
-        }
-        Err(error) => {
-            tracing::warn!(%error, "quick settings not mounted");
-            None
-        }
-    }
-}
-
 impl Session {
     /// A session on the compositor `start` makes with the desktop's window
     /// policy.
@@ -1182,7 +844,7 @@ impl Session {
         reason = "the session is wired in one pass, where every part sees the others"
     )]
     pub fn new(
-        options: Options,
+        mut options: Options,
         start: impl FnOnce(Box<dyn WindowPolicy>) -> Result<Compositor, Error>,
     ) -> Result<Self, Error> {
         let mut doors = Doors::default();
@@ -1242,99 +904,7 @@ impl Session {
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
         doors.add(chrome);
 
-        let mut mount = Mount {
-            compositor: &mut compositor,
-            surfaces: Vec::new(),
-            who: (options.device.clone(), options.person.clone()),
-            presentation: options.presentation,
-            scale: options.scale,
-        };
-        let banners = mount.banners();
-        let (device, quick_settings) = options
-            .quick_settings
-            .map_or((None, None), |reads| mount.quick_settings(reads));
-
-        // The sheets, over the desktop and its panels.
-        let power = mount.sheet(tilo_sheets::power::definition(), PowerSeat::default());
-        let workspace_settings = mount.sheet(
-            tilo_sheets::workspace_settings::definition(),
-            WorkspaceSettingsSeat::default(),
-        );
-        let portal = mount.sheet(tilo_sheets::portal::definition(), PortalSeat::default());
-        let file_picker = mount.sheet(
-            tilo_sheets::file_picker::definition(),
-            FilePickerSeat::default(),
-        );
-
-        // Setup last: above everything, and first to the keyboard.
-        setup::lend(mount.compositor.waker(), &options.person);
-        let setup = options
-            .setup
-            .map(|view| mount.add(Setup::new(view, options.scale)));
-        let surfaces = mount.surfaces;
-
-        let search = Rc::new(SessionSearch::new(options.search, options.apps));
-        handle.set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
-        let shared = Rc::new(Shared {
-            layers: Layers { desktop, chrome },
-            handle,
-            search,
-            asks,
-            intents,
-            quick_settings,
-            device,
-            power,
-            workspace_settings,
-            portal,
-            file_picker,
-            session_actions: options.session_actions,
-            lock: Cell::new(false),
-        });
-        shared.observe();
-        let banners = tilo_notification_banners::Link::new();
-        match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
-            .and_then(|component| ui::App::from_component(component, (options.presentation)()))
-        {
-            Ok(app) => {
-                let surface = Rc::new(RefCell::new(Banners::new(
-                    app,
-                    banners.clone(),
-                    options.scale,
-                )));
-                compositor.add_host(Box::new(Held(Rc::clone(&surface))));
-                doors.add(surface);
-            }
-            Err(error) => tracing::warn!(%error, "notification banners not mounted"),
-        }
-        let presentation = options.presentation;
-        let banners = mount_banners(&mut compositor, &options, &notices);
-
-        let readings = Rc::new(RefCell::new(None));
-        let quick_settings = options.quick_settings.clone().and_then(|panel| {
-            mount_quick_settings(&mut compositor, &mut doors, panel, &options, &readings)
-        });
-        let banners = mount_banners(&mut compositor, &options);
-        let quick_settings = mount_quick_settings(&mut compositor, &options);
-
-        // The hardware keys' readout, above the apps.
-        let readout = Rc::new(RefCell::new(Readout::new(options.scale)));
-        compositor.add_host(Box::new(Held(Rc::clone(&readout))));
-        doors.add(readout);
-
-        // The session's own resources, and the keys it answers wherever
-        // the keyboard is: above every surface, so offered every press
-        // first.
-        let commands = Rc::new(RefCell::new(Vec::new()));
-        doors.add(Rc::new(RefCell::new(SessionControls::new(Rc::clone(
-            &commands,
-        )))));
-        let invocations = Invocations::default();
-        compositor.add_host(Box::new(SessionKeys::new(
-            options.config.shortcuts,
-            Rc::clone(&invocations),
-        )));
-
-        let banners = mount_banners(&mut compositor, &mut doors, &options);
+        let banners = mount_banners(&mut compositor, &mut doors, &notices, &options);
 
         let readings = Rc::new(RefCell::new(None));
         let (device, quick_settings) =
@@ -1380,7 +950,6 @@ impl Session {
         let services = mount_services(&mut doors, std::mem::take(&mut options.services));
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
-        handle.set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
         let asker = questions::Asker::new(
             options.questions.clone().or_else(|| {
                 options
@@ -1394,6 +963,7 @@ impl Session {
         let shared = Shared {
             handle,
             desktop,
+            search,
             asks,
             intents,
             quick_settings,
@@ -1409,9 +979,7 @@ impl Session {
             file_picker,
             lock,
             session_actions: options.session_actions,
-        };
-            services: RefCell::new(services),
-            observed: Cell::new(None),
+            observed: RefCell::new(None),
             places_seen: RefCell::default(),
             notifications: RefCell::new(notifications::SessionNotifications::new(
                 options
@@ -1423,16 +991,10 @@ impl Session {
                 notification_policy,
                 notice_signals,
             )),
-        });
-        if let Some(kept) = shared.services.borrow().read(search::HISTORY) {
-            shared.search.restore(&kept);
-        }
-        shared.observe();
-        shared.start_search();
             asker,
             notice_view: RefCell::new(None),
         };
-        shared.observe();
+        shared.start_search();
         // What the portal brings comes from any thread, and wakes the loop
         // instead of waiting for its next turn.
         if let Some(portal) = &options.portal {
@@ -1443,9 +1005,8 @@ impl Session {
             compositor,
             shared,
             banners,
-            surfaces,
-            setup,
             input: options.config.input,
+            setup,
             unlocking: Unlocking {
                 user: options.user,
                 verifier: options.verifier,
@@ -1454,6 +1015,7 @@ impl Session {
             },
             captures: options.captures,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
+            night_light: (options.config.night_light, options.config.kept),
             portal: options.portal,
             screen_locked: false,
             desktop: options.desktop,
@@ -1477,6 +1039,7 @@ impl Session {
         for output in outputs {
             session.compositor.add_output(output)?;
         }
+        session.warm()?;
         Ok(session)
     }
 
@@ -1485,7 +1048,17 @@ impl Session {
     /// # Errors
     /// The compositor did not start.
     pub fn drm(options: Options, config: DisplayConfig) -> Result<Self, Error> {
-        Self::new(options, |policy| Compositor::drm(policy, config))
+        let mut session = Self::new(options, |policy| Compositor::drm(policy, config))?;
+        session.warm()?;
+        Ok(session)
+    }
+
+    /// Warm the displays when the person left the night light on.
+    fn warm(&mut self) -> Result<(), Error> {
+        if self.night_light.0 {
+            self.compositor.set_night_light(Some(NIGHT_LIGHT_WARMTH))?;
+        }
+        Ok(())
     }
 
     /// The compositor, to connect clients, route input and read frames.
@@ -1496,7 +1069,6 @@ impl Session {
     /// The desktop under the windows and its policy.
     #[must_use]
     pub fn desktop(&self) -> &DesktopHost {
-        &self.shared.layers.desktop
         &self.shared.desktop
     }
 
@@ -1520,66 +1092,40 @@ impl Session {
         self.shared.doors.add(surface);
     }
 
-    /// Whether setup is up: it withholds the desktop until it is done.
-    #[must_use]
-    pub fn setup_up(&self) -> bool {
-        self.setup.as_ref().is_some_and(|setup| setup.borrow().up())
-    }
-
-    /// The doors of the surface apps offering their actions now, each
-    /// freshly published.
-    fn doors(&self) -> Vec<(ui::device_local_door::SharedDoor, Rc<RefCell<dyn Served>>)> {
-        self.surfaces
-            .iter()
-            .filter_map(|surface| {
-                let mut served = surface.borrow_mut();
-                served.offered().then(|| {
-                    served.serve();
-                    (served.door(), Rc::clone(surface))
-                })
-            })
-            .collect()
-    }
-
     /// Everything the session publishes now: the desk's resource (its
-    /// windows among its children), the chrome's, and each surface app's,
-    /// with their actions. While setup is up, only setup's.
-    #[must_use]
-    pub fn resources(&self) -> Vec<ResourceSpec> {
-        let mut resources = if self.setup_up() {
-            Vec::new()
-        } else {
-            self.each_layer(|host| host.resources()).concat()
-        };
-        for (door, _) in self.doors() {
-            resources.extend(door.resources());
-        }
-        resources
-    /// Everything the desktop publishes now: the desk's resource (its
-    /// windows and the open search among its children) and the chrome's,
-    /// with their actions.
-    #[must_use]
-    pub fn resources(&self) -> Vec<ResourceSpec> {
-        self.shared.layers.resources()
-    }
-
-    /// A window was at `place`: where search's Continue reopens it.
-    pub fn record_place(&self, place: tilo_desktop_search::providers::places::Place) {
-        self.shared.search.record_place(place);
-    /// Everything the session publishes now: the desk's resource (its
-    /// windows among its children), the chrome's, the surface apps' and
-    /// the session's own, with their actions.
+    /// windows among its children), the chrome's, the surface apps', the
+    /// session's own and the services', with their actions.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
         self.shared.doors.resources()
     }
 
+    /// What the service publishing `resource` reads of it now, as JSON;
+    /// `None` when no service publishes it.
+    #[must_use]
+    pub fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        self.shared.services.borrow().read(resource)
+    }
+
+    /// Wait until every device call the services started has landed, and
+    /// take them in: what a headless run does before it reads.
+    pub fn settle_services(&self) {
+        self.shared.services.borrow_mut().settle();
+    }
+
+    /// A window was at `place`: where search's Continue reopens it.
+    pub fn record_place(&self, place: tilo_desktop_search::providers::places::Place) {
+        self.shared.search.record_place(place);
+    }
+
     /// Invoke the published action `action` of resource `resource`, as
     /// any caller of the action protocol does, and carry out what it asked
-    /// of the session.
+    /// of the session. A service's action that runs on the device is
+    /// accepted at once; its result lands in the service's reading.
     ///
     /// # Errors
-    /// The door's refusal: no such resource or action, or bad arguments.
+    /// The door's refusal: no such resource or action, bad arguments, or
+    /// one the device cannot do now.
     pub fn invoke(
         &mut self,
         resource: &str,
@@ -1587,51 +1133,12 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
         let address = ActionAddress::new(resource, action);
-        let started = match self.invoke_desktop(&address, arguments) {
-            Some(started) => started,
-            None => self.invoke_surface(&address, arguments)?,
-        }?;
-        self.shared.follow_asks();
-        self.follow_lock();
+        let started = self.shared.doors.invoke(&address, arguments)?;
+        self.settle()
+            .map_err(|error| DoorError::Failed(error.to_string()))?;
         Ok(started)
     }
 
-    /// Invoke `address` on the desk or the chrome, when one publishes it
-    /// and setup is not up.
-    fn invoke_desktop(
-        &self,
-        address: &ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Option<Result<ResourceOperationStart, DoorError>> {
-        if self.setup_up() {
-            return None;
-        }
-        let [desk, chrome] = self.each_layer(|host| {
-            tilo_actions::door::resolve(&host.resources(), address)
-                .is_some()
-                .then(|| {
-                    host.invoke_published(address.resource.as_str(), &address.action, arguments)
-                })
-        });
-        desk.or(chrome)
-    }
-
-    /// Invoke `address` through the door of the surface app publishing it,
-    /// served at once.
-    fn invoke_surface(
-        &self,
-        address: &ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Result<ResourceOperationStart, DoorError>, DoorError> {
-        let (door, surface) = self
-            .doors()
-            .into_iter()
-            .find(|(door, _)| tilo_actions::door::resolve(&door.resources(), address).is_some())
-            .ok_or_else(|| DoorError::Unknown(address.clone()))?;
-        let answer = door.invoke(address.clone(), arguments.clone());
-        surface.borrow_mut().serve();
-        let answered = answer.borrow_mut().take();
-        answered.ok_or_else(|| DoorError::Unknown(address.clone()))
     /// Invoke a service's action the person confirmed (restart, power
     /// off): one [`Session::invoke`] refused with
     /// [`DoorError::ConfirmationRequired`].
@@ -1656,37 +1163,19 @@ impl Session {
             Some(Err(error)) => Err(error),
             None => Err(DoorError::Unknown(ActionAddress::new(resource, action))),
         }
-        let started = self.shared.layers.invoke(resource, action, arguments)?;
-        self.shared.follow_asks();
-        let started = self.shared.doors.invoke(&address, arguments)?;
-        self.settle()
-            .map_err(|error| DoorError::Failed(error.to_string()))?;
-        Ok(started)
     }
 
     /// The labels of what the session shows to assistive technology: the
     /// desk's, the chrome's and every open surface app's.
     #[must_use]
     pub fn accessible_labels(&self) -> Vec<String> {
-        if let Some(setup) = self.setup.as_ref().filter(|setup| setup.borrow().up()) {
-            return setup.borrow_mut().accessible_labels();
-        }
-        self.each_layer(|host| {
-            host.a11y_nodes()
-                .into_iter()
-                .filter_map(|(_, node)| node.label().map(str::to_owned))
-                .collect::<Vec<_>>()
-        })
-        .concat()
-        self.shared
-            .layers
-            .each(|host| {
-                host.a11y_nodes()
-                    .into_iter()
-                    .filter_map(|(_, node)| node.label().map(str::to_owned))
-                    .collect::<Vec<_>>()
-            })
-            .concat()
+        self.shared.doors.accessible_labels()
+    }
+
+    /// Whether the person logged out, which ends the session's loop.
+    #[must_use]
+    pub const fn ended(&self) -> bool {
+        self.ended
     }
 
     /// The power menu's seat: the session puts it up.
@@ -1716,13 +1205,10 @@ impl Session {
         self.shared.file_picker.as_ref()
     }
 
-    /// Lock the screen when the power menu asked to.
-    fn follow_lock(&mut self) {
-        if self.shared.lock.replace(false)
-            && let Err(error) = self.compositor.lock_now()
-        {
-            tracing::warn!(%error, "lock the screen");
-        }
+    /// Whether setup is up: it withholds the desktop until it is done.
+    #[must_use]
+    pub fn setup_up(&self) -> bool {
+        self.setup.as_ref().is_some_and(|setup| setup.borrow().up())
     }
 
     /// The verified browser projection a carried-over setup brought: the
@@ -1730,13 +1216,6 @@ impl Session {
     #[must_use]
     pub fn browser_continuity(&self) -> Option<std::path::PathBuf> {
         setup::browser_continuity()
-        self.shared.doors.accessible_labels()
-    }
-
-    /// Whether the person logged out, which ends the session's loop.
-    #[must_use]
-    pub const fn ended(&self) -> bool {
-        self.ended
     }
 
     /// Whether quick settings is open.
@@ -1921,6 +1400,17 @@ impl Session {
                 self.ended = true;
                 Ok(())
             }
+            SessionCommand::NightLight { on } => {
+                let (now, kept) = self.night_light;
+                let on = on.unwrap_or(!now);
+                self.night_light.0 = on;
+                self.compositor
+                    .set_night_light(on.then_some(NIGHT_LIGHT_WARMTH))?;
+                if kept && let Err(error) = settings_store::hardware::NIGHT_LIGHT.set(on) {
+                    tracing::warn!(%error, "the night light setting was not kept");
+                }
+                Ok(())
+            }
             SessionCommand::SetTouchpad { on } => {
                 let enabled = on.unwrap_or(!self.input.touchpad_enabled);
                 self.input.touchpad_enabled = enabled;
@@ -1942,11 +1432,7 @@ impl Session {
     /// The compositor failed.
     pub fn step(&mut self, timeout: Duration) -> Result<(), Error> {
         self.compositor.dispatch(timeout)?;
-        self.settle()?;
-        self.windows.step(&mut self.compositor, Instant::now());
         self.shared.services.borrow_mut().poll();
-        self.shared.notifications.borrow_mut().step();
-        self.shared.follow_asks();
         let compositor = &mut self.compositor;
         self.shared
             .notifications
@@ -1954,12 +1440,11 @@ impl Session {
             .step(&mut || Some(compositor.activation_token()));
         self.shared.open_notifications();
         self.settle()?;
+        self.windows.step(&mut self.compositor, Instant::now());
         self.compositor.render()?;
-        self.shared.follow_asks();
-        self.follow_lock();
+        self.settle()?;
         self.shared.observe();
         Ok(())
-        self.settle()
     }
 
     /// Run until `stop` holds or the backend is done.
@@ -1967,28 +1452,6 @@ impl Session {
     /// # Errors
     /// The compositor failed.
     pub fn run(&mut self, mut stop: impl FnMut(&Compositor) -> bool) -> Result<(), Error> {
-        let shared = Rc::clone(&self.shared);
-        loop {
-            let mut stopped = false;
-            self.compositor.run(|compositor| {
-                shared.follow_asks();
-                // The loop lends no compositor to lock with: leave it to
-                // lock, then go on.
-                stopped = stop(compositor);
-                stopped || shared.lock.get()
-            })?;
-            if stopped || !shared.lock.get() {
-                return Ok(());
-            }
-            self.follow_lock();
-        }
-        self.compositor.run(|compositor| {
-            shared.services.borrow_mut().poll();
-            shared.notifications.borrow_mut().step();
-            shared.follow_asks();
-            shared.observe();
-            stop(compositor)
-        })
         while !self.ended && !self.compositor.closed() && !stop(&self.compositor) {
             let timeout = self.compositor.next_wait();
             self.step(timeout)?;
@@ -2065,6 +1528,10 @@ struct ServiceDoor(Rc<RefCell<Services>>);
 impl Published for ServiceDoor {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         self.0.borrow().resources()
+    }
+
+    fn revision(&self) -> Option<u64> {
+        Some(self.0.borrow().revision())
     }
 
     fn invoke(
@@ -2145,30 +1612,6 @@ fn mount_services(doors: &mut Doors, started: Vec<Box<dyn Service>>) -> Rc<RefCe
     let services = Rc::new(RefCell::new(services));
     doors.add(Rc::new(RefCell::new(ServiceDoor(Rc::clone(&services)))));
     services
-}
-
-/// The notification banners, above the windows.
-fn mount_banners(
-    compositor: &mut Compositor,
-    doors: &mut Doors,
-    options: &Options,
-) -> tilo_notification_banners::Link {
-    let banners = tilo_notification_banners::Link::new();
-    match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
-        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
-    {
-        Ok(app) => {
-            let surface = Rc::new(RefCell::new(Banners::new(
-                app,
-                banners.clone(),
-                options.scale,
-            )));
-            compositor.add_host(Box::new(Held(Rc::clone(&surface))));
-            doors.add(surface);
-        }
-        Err(error) => tracing::warn!(%error, "notification banners not mounted"),
-    }
-    banners
 }
 
 /// The device's own backend, when the session runs one, and the quick

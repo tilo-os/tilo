@@ -666,38 +666,13 @@ where
     let region = match &scene {
         Scene::Output(_, region) => region.size,
         // A window's frame is its whole buffer.
-        Scene::Window(..) => size,
+        Scene::Window(..) | Scene::Cursor(_) => size,
     };
-    let Some((elements, clear)) = scene_elements(renderer, state, &scene, frame.cursor, scale)
+    let Some((elements, clear)) =
+        scene_elements(renderer, state, &scene, &frame.target, frame.cursor, scale)
     else {
         // A locked session shows no windows: their frames wait for the
         // unlock.
-        Scene::Window(..) if state.locked() => return Ok(Copied::Waiting),
-        Scene::Window(window, origin) => {
-            let mut elements = match state.pointer_on(&frame.target) {
-                Some(at) if frame.cursor => state.cursor_elements_at(renderer, at, scale),
-                _ => Vec::new(),
-            };
-            elements.extend(
-                window.render_elements::<OutputRenderElement<R>>(
-                    renderer,
-                    Point::<i32, Logical>::from((-origin.x, -origin.y))
-                        .to_physical_precise_round(scale),
-                    Scale::from(scale),
-                    1.0,
-                ),
-            );
-            // Around and behind a window is nothing: clear, for formats with
-            // alpha.
-            (elements, Point::default(), size, [0.0; 4])
-        }
-        Scene::Cursor(hotspot) => {
-            let elements = match hotspot {
-                Some(hotspot) => state.cursor_elements_at(renderer, hotspot, scale),
-                None => Vec::new(),
-            };
-            (elements, Point::default(), size, [0.0; 4])
-        }
         return Ok(Copied::Waiting);
     };
     let damage = state
@@ -783,6 +758,7 @@ fn scene_elements<R>(
     renderer: &mut R,
     state: &mut State,
     scene: &Scene,
+    target: &Target,
     cursor: bool,
     scale: f64,
 ) -> Option<SceneElements<R>>
@@ -803,15 +779,28 @@ where
         }
         Scene::Window(..) if state.locked() => return None,
         Scene::Window(window, origin) => {
-            let elements = window.render_elements::<OutputRenderElement<R>>(
-                renderer,
-                Point::<i32, Logical>::from((-origin.x, -origin.y))
-                    .to_physical_precise_round(scale),
-                Scale::from(scale),
-                1.0,
+            let mut elements = match state.pointer_on(target) {
+                Some(at) if cursor => state.cursor_elements_at(renderer, at, scale),
+                _ => Vec::new(),
+            };
+            elements.extend(
+                window.render_elements::<OutputRenderElement<R>>(
+                    renderer,
+                    Point::<i32, Logical>::from((-origin.x, -origin.y))
+                        .to_physical_precise_round(scale),
+                    Scale::from(scale),
+                    1.0,
+                ),
             );
             // Around and behind a window is nothing: clear, for formats with
             // alpha.
+            (elements, Point::default(), [0.0; 4])
+        }
+        Scene::Cursor(hotspot) => {
+            let elements = match hotspot {
+                Some(hotspot) => state.cursor_elements_at(renderer, *hotspot, scale),
+                None => Vec::new(),
+            };
             (elements, Point::default(), [0.0; 4])
         }
     };
@@ -843,7 +832,7 @@ where
     } = state
         .view(target)
         .ok_or_else(|| BackendError("the captured output or window is gone".into()))?;
-    let (elements, clear) = scene_elements(renderer, state, &scene, false, scale)
+    let (elements, clear) = scene_elements(renderer, state, &scene, target, false, scale)
         .ok_or_else(|| BackendError("the session is locked".into()))?;
     let rgba = render_to_memory::<R, T, _>(renderer, size, scale, transform, &elements, clear)?;
     Ok(Screenshot {

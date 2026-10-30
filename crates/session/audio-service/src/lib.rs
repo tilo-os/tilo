@@ -43,17 +43,6 @@ pub fn publish(
 /// MPRIS names must not grow the compositor's copy without bound.
 pub const MAX_PLAYERS: usize = 16;
 
-/// What the audio service publishes, from its readings as they travel on
-/// its pipes: the sound resource and what plays.
-#[must_use]
-pub fn publish(
-    readings: &std::collections::BTreeMap<String, serde_json::Value>,
-) -> Vec<tilo_actions::ResourceSpec> {
-    let mut resources = sound::publish(readings);
-    resources.extend(media::publish(readings));
-    resources
-}
-
 /// An audio device arrived or left: the one thing the helper tells the
 /// compositor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -206,11 +206,6 @@ fn until<T>(session: &mut Session, mut asked: impl FnMut(&mut Session) -> Option
 #[test]
 fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
     let bus = SessionBus::start();
-    let desktop = DesktopServices::start(&Buses {
-        session: Bus::Address(bus.address.clone()),
-        system: Bus::None,
-    })
-    .unwrap();
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
     let desktop = Rc::new(

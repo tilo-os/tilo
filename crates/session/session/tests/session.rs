@@ -598,11 +598,7 @@ fn the_play_key_reaches_whatever_publishes_the_player() {
     session.publish(Rc::new(RefCell::new(Player {
         asked: Rc::clone(&asked),
     })));
-    assert!(publishes(
-        &session,
-        tilo_session::MEDIA,
-        "play-pause"
-    ));
+    assert!(publishes(&session, tilo_session::MEDIA, "play-pause"));
     tap(&mut session, keys::PLAY_PAUSE);
     assert_eq!(*asked.borrow(), ["play-pause"]);
 }
@@ -1368,7 +1364,7 @@ fn every_portal_question_kind_is_asked_on_the_sheet() {
         (
             "portal.wallpaper",
             serde_json::json!({
-                "uri": "file:///var/home/ada/beach.png",
+                "uri": "file:///var/home/you/beach.png",
                 "set_on": "both",
                 "preview": false,
             }),

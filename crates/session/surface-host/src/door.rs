@@ -11,6 +11,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use ui::device_local_door::SharedDoor;
 use ui::host_operation::ResourceOperationStart;
 use ui::tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 
@@ -31,6 +32,41 @@ pub trait Published {
 
     /// The labels of its accessibility tree, in reading order.
     fn accessible_labels(&mut self) -> Vec<String>;
+
+    /// Where what it publishes stands: equal revisions publish the same.
+    /// `None` when it cannot tell, and is read again every time.
+    fn revision(&self) -> Option<u64> {
+        None
+    }
+
+    /// Whether it offers its actions now: a sheet only while it is up.
+    fn offered(&self) -> bool {
+        true
+    }
+
+    /// Whether, while offered, it withholds every other surface: setup
+    /// over the whole desktop until the person finished it.
+    fn exclusive(&self) -> bool {
+        false
+    }
+}
+
+/// Run `address` through `door` (the surface app's own door on this
+/// device, which every caller shares), `serve` it at once, and take the
+/// answer.
+///
+/// # Errors
+/// The app's refusal, or none came: nothing there publishes `address`.
+pub fn through_door(
+    door: &SharedDoor,
+    address: &ActionAddress,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    serve: impl FnOnce(),
+) -> Result<ResourceOperationStart, DoorError> {
+    let answer = door.invoke(address.clone(), arguments.clone());
+    serve();
+    let answered = answer.borrow_mut().take();
+    answered.unwrap_or_else(|| Err(DoorError::Unknown(address.clone())))
 }
 
 /// A hosted surface the session keeps beside the compositor's hold of it.
@@ -49,13 +85,6 @@ impl Doors {
         self.surfaces.push(surface);
     }
 
-    /// Everything the hosted surfaces publish now, in the order they were
-    /// added.
-    #[must_use]
-    pub fn resources(&self) -> Vec<ResourceSpec> {
-        self.surfaces
-            .iter()
-            .flat_map(|surface| surface.borrow_mut().resources())
     /// The surfaces offering their actions now, with their place: only
     /// the exclusive ones while one is up.
     fn offered(&self) -> Vec<(usize, &Shared)> {
@@ -113,7 +142,6 @@ impl Doors {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        for surface in &self.surfaces {
         for (_, surface) in self.offered() {
             let mut surface = surface.borrow_mut();
             if ui::tilo_actions::door::resolve(&surface.resources(), address).is_some() {
@@ -126,9 +154,6 @@ impl Doors {
     /// The labels of every hosted surface's accessibility tree.
     #[must_use]
     pub fn accessible_labels(&self) -> Vec<String> {
-        self.surfaces
-            .iter()
-            .flat_map(|surface| surface.borrow_mut().accessible_labels())
         self.offered()
             .into_iter()
             .flat_map(|(_, surface)| surface.borrow_mut().accessible_labels())

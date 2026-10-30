@@ -72,7 +72,7 @@ pub fn valid_icon_payload(bytes: &[u8]) -> bool {
         return false;
     }
     if let Some((format, width, height)) = tilo_content_types::image_size(bytes) {
-        return matches!(format.extension, "png" | "jpg") && width <= 512 && height <= 512;
+        return matches!(format.extension, "png" | "jpg") && width <= 512 && height <= 512; // allow-breakpoint: the icon size an app may hand over, not a layout width
     }
     if bytes.len() > 256 * 1024 {
         return false;

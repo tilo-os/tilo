@@ -9,9 +9,7 @@ use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, reading};
 use zbus::blocking::{Connection, MessageIterator, Proxy, fdo::DBusProxy};
 use zbus::zvariant::OwnedValue;
 
-use super::{
-    MEDIA, Media, MediaAction, Player, PlayerAction, player_token, resource, token_of,
-};
+use super::{MEDIA, Media, MediaAction, Player, PlayerAction, player_token, resource, token_of};
 
 const PREFIX: &str = "org.mpris.MediaPlayer2.";
 const PATH: &str = "/org/mpris/MediaPlayer2";
@@ -378,14 +376,11 @@ mod tests {
         service.settle();
         let media = &service.resources()[0];
         assert!(
-            media
-                .actions
-                .iter()
-                .any(|spec| spec.id == "previous"
-                    && matches!(
-                        spec.contract.availability,
-                        tilo_actions::Availability::Unavailable { .. }
-                    )),
+            media.actions.iter().any(|spec| spec.id == "previous"
+                && matches!(
+                    spec.contract.availability,
+                    tilo_actions::Availability::Unavailable { .. }
+                )),
             "the player in front cannot go back"
         );
         assert_eq!(
@@ -398,7 +393,10 @@ mod tests {
             fake.calls.lock().unwrap().as_slice(),
             [
                 ("org.mpris.MediaPlayer2.music".to_owned(), "Stop".to_owned()),
-                ("org.mpris.MediaPlayer2.music".to_owned(), "Pause".to_owned()),
+                (
+                    "org.mpris.MediaPlayer2.music".to_owned(),
+                    "Pause".to_owned()
+                ),
             ],
             "the key reaches the one playing, the pause only what plays"
         );

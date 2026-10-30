@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(middle.size.h, 40);
         for band in &bands {
             assert!(band.size.w > 0 && band.size.h > 0);
-            assert!(band.loc.x >= 10 && band.loc.x + band.size.w <= 110);
+            assert!(band.loc.x >= 10 && band.loc.x + band.size.w <= 110); // allow-breakpoint: a fixed-size fixture window, not a layout width
             assert!(band.loc.y >= 20 && band.loc.y + band.size.h <= 80);
         }
         // Rows from the top and from the bottom together cover every row of

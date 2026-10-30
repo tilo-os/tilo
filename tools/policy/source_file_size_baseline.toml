@@ -104,11 +104,13 @@
 "crates/sdk/ui-core/src/widget/tree_view.rs" = 7000
 "crates/sdk/ui-core/src/widget/window_group.rs" = 6500
 "crates/session/desktop-surface/src/activity/pane.rs" = 4000
+"crates/session/desktop-surface/src/surface.rs" = 3008
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/desktop/src/workspace_settings.rs" = 6000
 "crates/session/device-fabric/src/lib.rs" = 5000
 "crates/session/network-actor/src/lib.rs" = 5500
+"crates/session/onboarding-host/src/view.rs" = 7000
 "crates/session/shell/examples/redraw_bench.rs" = 7000
 "crates/session/shell/src/bin/shots/driver.rs" = 4492
 "crates/session/shell/src/bin/shots/scenario.rs" = 6500
@@ -119,7 +121,6 @@
 "crates/session/shell/src/compositor/native.rs" = 21500
 "crates/session/shell/src/compositor/selection.rs" = 3500
 "crates/session/shell/src/compositor/state.rs" = 10500
-"crates/session/onboarding-host/src/view.rs" = 7000
 "crates/session/shell/src/shell/chrome_state.rs" = 4500
 "crates/session/shell/src/shell/device_fabric_runtime/mod.rs" = 11000
 "crates/session/shell/src/shell/foreign.rs" = 8500

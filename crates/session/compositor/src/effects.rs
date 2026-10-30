@@ -33,6 +33,7 @@ use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, Unde
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::desktop::Window;
+use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size};
 
 use crate::render::OutputRenderElement;
@@ -83,6 +84,8 @@ pub(crate) struct Framing<'a> {
     pub(crate) images: &'a FrameImages,
     /// The frames the windows last drew, kept for their close.
     pub(crate) snapshots: &'a crate::snapshot::Snapshots,
+    /// The display a window's id is read through, as `describe` reads it.
+    pub(crate) display: &'a DisplayHandle,
 }
 
 /// What a window's effect draws: its live surfaces, or the last frame it
@@ -316,7 +319,7 @@ where
             );
             // What the window drew is kept while it stands, so its close
             // has a frame to animate even once its surface is gone.
-            if let Some(id) = crate::state::window_id(window) {
+            if let Some(id) = crate::state::window_id(framing.display, window) {
                 framing.snapshots.record(id, renderer, window);
             }
             elements

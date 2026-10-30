@@ -7,9 +7,10 @@
 /// with `with_id`); any other control by its id.
 #[test]
 fn the_walk_presses_the_sessions_own_controls() {
-    let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../onboarding/src");
-    let mut view = String::new();
-    for entry in std::fs::read_dir(app).unwrap() {
+    // The view and the page modules beside it.
+    let host = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../onboarding-host/src");
+    let mut view = std::fs::read_to_string(host.join("view.rs")).unwrap();
+    for entry in std::fs::read_dir(host.join("view")).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|ext| ext == "rs") {
             view.push_str(&std::fs::read_to_string(path).unwrap());

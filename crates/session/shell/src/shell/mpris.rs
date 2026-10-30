@@ -165,9 +165,14 @@ impl Client {
 
 fn decode_artwork(image: ArtworkImage) -> Option<Artwork> {
     use base64::Engine as _;
-    let rgba = base64::engine::general_purpose::STANDARD
-        .decode(image.rgba)
-        .ok()?;
+    let Ok(rgba) = base64::engine::general_purpose::STANDARD.decode(image.rgba) else {
+        tracing::warn!(
+            width = image.width,
+            height = image.height,
+            "a player sent artwork that is not base64; it shows without it"
+        );
+        return None;
+    };
     (u64::try_from(rgba.len()).ok()? == u64::from(image.width) * u64::from(image.height) * 4).then(
         || Artwork {
             width: image.width,

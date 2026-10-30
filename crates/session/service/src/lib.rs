@@ -248,8 +248,6 @@ impl Services {
     }
 }
 
-/// Several services as one: what a process serving more than one resource
-/// family serves over lines ([`lines::serve`]).
 /// Several services served as one: what a helper process serving more
 /// than one over its pipes ([`lines::serve`]) hands it. The session asked
 /// the person first where an action asks it, so what arrives is confirmed.
@@ -268,7 +266,6 @@ impl Service for Services {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
-        Self::invoke(self, resource, action, arguments)
         self.invoke_confirmed(resource, action, arguments)
             .unwrap_or_else(|| Err(DoorError::Unknown(ActionAddress::new(resource, action))))
     }

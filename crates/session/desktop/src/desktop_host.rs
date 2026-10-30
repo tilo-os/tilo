@@ -329,8 +329,6 @@ impl DeskLayer {
                 usize::try_from(*row).unwrap_or(usize::MAX),
                 argument.clone(),
             ),
-            DesktopAction::OpenSearch => self.handle.open_search(None),
-            DesktopAction::Launchpad { ref card } => {
             DesktopAction::Launchpad { card } => {
                 if card == "apps" {
                     self.handle.open_applications();
@@ -376,9 +374,7 @@ impl ui::resources::PublishesResources for DeskLayer {
             .handle
             .search_open()
             .then_some((query.as_str(), rows.as_slice()));
-        vec![desk_resource(&tabs, search)]
-        let mut resources = vec![desk_resource(&tabs)];
-        let mut resources = vec![desk_resource(&tabs, &self.handle.displays())];
+        let mut resources = vec![desk_resource(&tabs, &self.handle.displays(), search)];
         if self.handle.read(desk_is_empty) {
             resources.push(launchpad_resource());
         }
@@ -1385,8 +1381,7 @@ impl DesktopChrome {
             | DesktopAction::CloseTab { .. }
             | DesktopAction::OpenSearch { .. }
             | DesktopAction::SearchFor { .. }
-            | DesktopAction::ChooseSearchRow { .. } => return false,
-            | DesktopAction::OpenSearch
+            | DesktopAction::ChooseSearchRow { .. }
             | DesktopAction::Launchpad { .. }
             | DesktopAction::StepFocus { .. }
             | DesktopAction::FocusDisplay { .. }

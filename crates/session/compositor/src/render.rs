@@ -245,6 +245,7 @@ where
         frame: closing.frame,
         images: &state.frame_images,
         snapshots: &state.snapshots,
+        display: &state.display,
     };
     // The frame the window last drew, kept before its surface went: the
     // desktop animates that away.
@@ -279,10 +280,9 @@ where
     let scale = Scale::from(output_scale);
     let bounds = Rectangle::from_size(geometry.size.to_physical_precise_round(output_scale));
     let window_of = |id: u64| {
-        state
-            .space
-            .elements()
-            .find(|window| crate::state::describe(window).is_some_and(|info| info.id == id))
+        state.space.elements().find(|window| {
+            crate::state::describe(&state.display, window).is_some_and(|info| info.id == id)
+        })
     };
     let locked = state.locked();
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();

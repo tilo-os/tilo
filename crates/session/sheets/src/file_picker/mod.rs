@@ -622,7 +622,7 @@ impl ResourceApp for FilePickerApp {
 
 /// What the chooser is asked in one of its scenarios, for captures.
 pub fn scenario(name: Option<&str>) -> FileRequest {
-    let home = PathBuf::from("/var/home/ada");
+    let home = PathBuf::from("/var/home/you");
     let request = FileRequest {
         handle: "scenario".to_owned(),
         title: "Choose a picture".to_owned(),

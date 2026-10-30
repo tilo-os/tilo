@@ -1,12 +1,4 @@
 //! The native session: `tilo-session [--backend drm|headless] [--size WxH]
-//! [--host-desktop] [-- command args...]`. Listens on a fresh `wayland-N` socket, prints its
-//! name and starts `command` with `WAYLAND_DISPLAY` set to it; with a
-//! command, the session lasts as long as it does.
-//! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none] [-- command
-//! args...]`. Listens on a fresh `wayland-N` socket, prints its name and
-//! starts `command` with `WAYLAND_DISPLAY` set to it; with a command, the
-//! session lasts as long as it does. The desktop services serve on the
-//! buses the environment names unless a flag names another (or none).
 //! [--host-desktop] [--no-x11] [--session-bus ADDRESS|none] [--system-bus
 //! ADDRESS|none] [-- command args...]`. Listens on a fresh `wayland-N`
 //! socket, starts Xwayland for X11 clients (unless `--no-x11`), prints both
@@ -20,11 +12,6 @@ fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     use std::sync::Arc;
     use tilo_compositor::{DisplayConfig, OutputConfig};
-    use tilo_quick_settings::device::PlayerLink;
-    use tilo_session::{DeviceHost, Options, QuickSettings, Session};
-    use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
-    use tilo_session::{Options, Session};
-    use tilo_session::{Options, Session, SessionConfig, SessionEnvironment};
     use tilo_session::desktop_services::{Bus, Buses};
     use tilo_session::{Options, Session};
 
@@ -60,19 +47,6 @@ fn main() -> std::process::ExitCode {
     let (mut services, _following) = services(&wake);
     let (capture, captures) =
         tilo_session::capture::channel_to(tilo_session::capture::directory(), wake.handle());
-    let _desktop = desktop_services(&buses, &wake, Arc::new(capture), &mut services);
-    let options = Options {
-        setup: setup(ours.iter().any(|arg| arg == "--host-desktop")),
-        quick_settings: Some(QuickSettings::Device(Box::new(|wake| {
-            let device = DeviceHost::os(wake);
-            match PlayerLink::helper() {
-                Ok(players) => device.follow_players(players),
-                Err(error) => eprintln!("tilo-session: no media helper: {error}"),
-            }
-            device
-        }))),
-        session_actions: os_actions::perform_session_action,
-        search: search_options(),
     // The portal's side of the desktop, which the session answers.
     let (portal_side, link) = tilo_session::portal_link::channel(wake.handle());
     let desktop = desktop_services(
@@ -89,22 +63,6 @@ fn main() -> std::process::ExitCode {
         .and_then(|desktop| desktop.portal())
         .map(|serving| link.with_captures(serving.input_captures().clone()));
     let options = Options {
-        config: SessionConfig::load(),
-    let (mut services, _following) = services();
-    let desktop = match DesktopServices::start(&buses) {
-        Ok(desktop) => {
-            services.extend(desktop.services());
-            Some(desktop)
-        }
-        Err(error) => {
-            tracing::warn!(%error, "the desktop services did not start");
-            None
-        }
-    };
-    let options = Options {
-        services,
-        notifications: desktop.as_ref().map(DesktopServices::notifications),
-        ..Options::default()
         services,
         wake,
         setup: setup(ours.iter().any(|arg| arg == "--host-desktop")),
@@ -178,20 +136,6 @@ fn run(
     }
 }
 
-/// The setup this device needs before its desktop is used: the first use
-/// when it has no identity yet, the recovery of its identity when startup
-/// found it unusable; `None` when the identity is ready.
-#[cfg(target_os = "linux")]
-fn setup(host_desktop: bool) -> Option<tilo_session::OnboardingView> {
-    use tilo_onboarding_host::identity_provisioning::{
-        DiskIdentityStore, IDENTITY_RECOVERY_ENV, needs_first_run_flow,
-    };
-    use tilo_session::OnboardingView;
-    let store = match DiskIdentityStore::from_env() {
-        Ok(store) => store,
-        Err(error) => {
-            eprintln!("tilo-session: no identity store: {error}");
-            return None;
 /// The desktop services on `buses`, their resources added to `services`;
 /// what keeps them running.
 #[cfg(target_os = "linux")]
@@ -295,11 +239,10 @@ fn services(wake: &tilo_service::LoopWake) -> (Vec<Box<dyn tilo_session::Service
 
     let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
     let mut following: Following = Vec::new();
-    match Connectivity::new(Arc::new(OsDevice), Some(wake.handle())) {
     services.push(Box::new(tilo_settings_service::SettingsService::new(
         &tilo_session::Options::default().person,
     )));
-    match Connectivity::new(Arc::new(OsDevice), None) {
+    match Connectivity::new(Arc::new(OsDevice), Some(wake.handle())) {
         Ok(connectivity) => {
             match connectivity.follow() {
                 Ok(follow) => following.push(Box::new(follow)),
@@ -307,10 +250,6 @@ fn services(wake: &tilo_service::LoopWake) -> (Vec<Box<dyn tilo_session::Service
             }
             services.push(Box::new(connectivity));
         }
-    };
-    let recovery = std::env::var_os(IDENTITY_RECOVERY_ENV).is_some();
-    if !recovery && !needs_first_run_flow(&store) {
-        return None;
         Err(error) => tracing::warn!(%error, "connectivity service not started"),
     }
     match tilo_system_service::SystemService::new(
@@ -333,19 +272,11 @@ fn services(wake: &tilo_service::LoopWake) -> (Vec<Box<dyn tilo_session::Service
             tilo_audio_service::publish,
             Some(wake.handle()),
         )
-        tilo_service::lines::Process::spawn(command, tilo_audio_service::publish, None)
     }) {
         Some(Ok(audio)) => services.push(Box::new(audio)),
         Some(Err(error)) => tracing::warn!(%error, "the audio service did not start"),
         None => tracing::warn!("the audio service is not installed here"),
     }
-    let identity_dir = store.path().parent()?.to_path_buf();
-    Some(match (host_desktop, recovery) {
-        (false, false) => OnboardingView::new(identity_dir),
-        (false, true) => OnboardingView::new_for_recovery(identity_dir),
-        (true, false) => OnboardingView::new_for_host_desktop(identity_dir),
-        (true, true) => OnboardingView::new_for_host_desktop_recovery(identity_dir),
-    })
     (services, following)
 }
 
@@ -389,10 +320,6 @@ fn search_options() -> tilo_session::SearchOptions {
     }
     tilo_session::SearchOptions {
         lists: tilo_session::Lists::of_device(),
-        content: Some(tilo_desktop_search::content_index::session()),
-        applications,
-        host_apps,
-        catalogue,
         content: Some(content),
         files,
         preferences: tilo_desktop_search::SearchPreferences::from_values(
