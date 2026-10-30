@@ -203,12 +203,9 @@ fn pump(session: &mut Session) {
     session.step(REFRESH).expect("a turn of the session");
 }
 
-/// Keep `frame` for a person to look at: written to the directory
-/// `TILO_SURFACE_SHOTS` names when it is set, and printed base64 either way,
-/// so a run whose files nobody keeps shows its shots when its output is not
-/// captured.
+/// Write `frame` where a person can look at it, when the run asked for
+/// shots: `TILO_SURFACE_SHOTS` names the directory.
 fn save(frame: &Screenshot, name: &str) {
-    use base64::Engine as _;
     let Some(pixels) = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())
     else {
         panic!("the frame's pixels do not fill it");
@@ -217,10 +214,6 @@ fn save(frame: &Screenshot, name: &str) {
     pixels
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .expect("the shot");
-    println!(
-        "tilo-shot {name} {}",
-        base64::engine::general_purpose::STANDARD.encode(&png)
-    );
     let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(PathBuf::from) else {
         return;
     };

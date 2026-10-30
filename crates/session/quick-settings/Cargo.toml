@@ -30,7 +30,6 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-base64.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-compositor = { path = "../compositor" }
 tilo-quick-settings = { path = ".", features = ["test-support"] }

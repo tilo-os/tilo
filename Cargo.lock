@@ -20069,7 +20069,6 @@ dependencies = [
 name = "tilo-notification-banners"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "image",
  "tilo-app",
  "tilo-compositor",
@@ -20679,7 +20678,6 @@ dependencies = [
 name = "tilo-quick-settings"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "image",
  "os-actions",
  "parking_lot",

@@ -16,6 +16,12 @@ winit.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+libc.workspace = true
+tempfile.workspace = true
+image = { workspace = true, features = ["png"] }
+tilo-compositor = { path = "../compositor" }
+# The session that starts the bar, and the headless presentation it runs.
+tilo-session = { path = "../session" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 
 [lints]

@@ -19,7 +19,6 @@ winit.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-base64.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-compositor = { path = "../compositor" }
 # The session that starts the banners, and the headless presentation it runs.
