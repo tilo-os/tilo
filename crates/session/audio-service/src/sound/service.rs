@@ -249,6 +249,7 @@ impl Service for SoundService {
             SoundAction::RouteOutput { node } => Change::Output(node),
             SoundAction::SelectInput { node } => Change::Input(node),
             SoundAction::SetInputMuted { muted } => Change::InputMute(muted),
+            SoundAction::ToggleInputMuted => Change::InputMute(!self.sound.input_muted),
         };
         Ok(self.start(id, change))
     }

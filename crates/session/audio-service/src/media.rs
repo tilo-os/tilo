@@ -1,8 +1,9 @@
 //! What plays: the media players on the session bus (MPRIS), published as
 //! the `media` resource with one child per player and the actions its
-//! controls offer (play or pause, next, previous). Quick settings, the
-//! desktop's search, a media key, a script and an agent all run the same
-//! actions by address.
+//! controls offer (play or pause, next, previous). The `media` resource
+//! itself controls the player in front (the one playing, else the first):
+//! what a media key runs. Quick settings, the desktop's search, a media key,
+//! a script and an agent all run the same actions by address.
 
 use std::collections::BTreeMap;
 
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_actions::ResourceSpec;
 use tilo_resource::Effect;
+use tilo_service::{offer, unavailable};
 
 /// The resource the players are published under.
 pub const MEDIA: &str = "media";
@@ -61,6 +63,18 @@ impl Player {
             (Some(title), _) if !title.is_empty() => title.clone(),
             _ => self.identity.clone(),
         }
+    }
+}
+
+impl Media {
+    /// The player the `media` resource's own controls reach: the one
+    /// playing, else the first.
+    #[must_use]
+    pub fn front(&self) -> Option<&Player> {
+        self.players
+            .iter()
+            .find(|player| player.playing)
+            .or_else(|| self.players.first())
     }
 }
 
@@ -116,6 +130,73 @@ pub enum PlayerAction {
     Previous,
 }
 
+impl PlayerAction {
+    /// The MPRIS method it calls.
+    #[must_use]
+    pub const fn method(&self) -> &'static str {
+        match self {
+            Self::PlayPause => "PlayPause",
+            Self::Next => "Next",
+            Self::Previous => "Previous",
+        }
+    }
+}
+
+/// The controls of the player in front, on the `media` resource itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "so.tilo.audio.media")]
+pub enum MediaAction {
+    /// Play when paused, pause when playing.
+    #[effect(
+        own_device,
+        label = "Play or pause",
+        icon = "play",
+        keywords = "music, video, resume, wiedergabe"
+    )]
+    PlayPause,
+    /// Skip to the next track.
+    #[effect(own_device, label = "Next track", icon = "skip-forward", keywords = "skip")]
+    Next,
+    /// Go back to the previous track.
+    #[effect(own_device, label = "Previous track", icon = "skip-back", keywords = "back")]
+    Previous,
+    /// Stop playing.
+    #[effect(own_device, label = "Stop", icon = "square", keywords = "halt")]
+    Stop,
+}
+
+impl MediaAction {
+    /// The MPRIS method it calls.
+    #[must_use]
+    pub const fn method(self) -> &'static str {
+        match self {
+            Self::PlayPause => "PlayPause",
+            Self::Next => "Next",
+            Self::Previous => "Previous",
+            Self::Stop => "Stop",
+        }
+    }
+}
+
+/// The `media` resource's own controls, as the player in front allows them.
+fn front_controls(media: &Media, resource: &mut ResourceSpec) {
+    let Some(front) = media.front() else {
+        for action in ["play-pause", "next", "previous", "stop"] {
+            unavailable(resource, action, "no_player", "Nothing is playing");
+        }
+        return;
+    };
+    if !(front.can_play || front.can_pause) {
+        unavailable(resource, "play-pause", "no_play", "The player cannot play");
+    }
+    if !front.can_next {
+        unavailable(resource, "next", "no_next", "The player cannot skip");
+    }
+    if !front.can_previous {
+        unavailable(resource, "previous", "no_previous", "The player cannot go back");
+    }
+}
+
 /// The resource of one player, with the controls it offers now.
 fn player_spec(player: &Player) -> ResourceSpec {
     let mut controls = Vec::new();
@@ -146,8 +227,9 @@ fn player_spec(player: &Player) -> ResourceSpec {
 /// The `media` resource reading `media`.
 #[must_use]
 pub fn resource(media: &Media) -> ResourceSpec {
-    ResourceSpec::new(MEDIA, MEDIA_KIND, "Now playing")
-        .with_children(media.players.iter().map(player_spec))
+    let mut resource = offer::<MediaAction>(ResourceSpec::new(MEDIA, MEDIA_KIND, "Now playing"));
+    front_controls(media, &mut resource);
+    resource.with_children(media.players.iter().map(player_spec))
 }
 
 /// What the media service publishes, from its readings as they travel on
@@ -164,4 +246,4 @@ pub fn publish(readings: &BTreeMap<String, Value>) -> Vec<ResourceSpec> {
 #[cfg(feature = "service")]
 mod service;
 #[cfg(feature = "service")]
-pub use service::{MediaService, Mpris, Players};
+pub use service::{MediaService, Mpris, Players, pause_playing};

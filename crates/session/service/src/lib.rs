@@ -32,7 +32,7 @@ pub use questions::{
     Answer, Asked, QUESTION_KIND, QUESTIONS_KIND, QUESTIONS_RESOURCE, Question, QuestionEffect,
     Questions, question_resource,
 };
-pub use worker::{Jobs, Wake, Worker};
+pub use worker::{Jobs, LoopWake, Wake, Worker};
 
 /// What an invocation started.
 #[derive(Clone, Debug, PartialEq)]
@@ -245,6 +245,36 @@ impl Services {
             service.settle();
         }
         self.changed();
+    }
+}
+
+/// Several services as one: what a process serving more than one resource
+/// family serves over lines ([`lines::serve`]).
+impl Service for Services {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        Self::resources(self)
+    }
+
+    fn read(&self, resource: &str) -> Option<Value> {
+        Self::read(self, resource)
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        Self::invoke(self, resource, action, arguments)
+            .unwrap_or_else(|| Err(DoorError::Unknown(ActionAddress::new(resource, action))))
+    }
+
+    fn poll(&mut self) -> bool {
+        Self::poll(self)
+    }
+
+    fn settle(&mut self) {
+        Self::settle(self);
     }
 }
 

@@ -9,7 +9,9 @@ use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, reading};
 use zbus::blocking::{Connection, MessageIterator, Proxy, fdo::DBusProxy};
 use zbus::zvariant::OwnedValue;
 
-use super::{MEDIA, Media, Player, PlayerAction, player_token, resource, token_of};
+use super::{
+    MEDIA, Media, MediaAction, Player, PlayerAction, player_token, resource, token_of,
+};
 
 const PREFIX: &str = "org.mpris.MediaPlayer2.";
 const PATH: &str = "/org/mpris/MediaPlayer2";
@@ -21,7 +23,7 @@ pub trait Players: Send + Sync {
     /// Every player there is now.
     fn players(&self) -> Vec<Player>;
 
-    /// Call the player method `method` (`PlayPause`, `Next`, `Previous`) of
+    /// Call the player method `method` (`PlayPause`, `Pause`, `Stop`, `Next`, `Previous`) of
     /// exactly the player on bus name `bus`.
     ///
     /// # Errors
@@ -147,6 +149,19 @@ impl Players for Mpris {
     }
 }
 
+/// Pause every player playing on `players`: for the audio policy, when
+/// the private output they played on leaves. `false` when one did not
+/// take it.
+pub fn pause_playing(players: &dyn Players) -> bool {
+    players
+        .players()
+        .iter()
+        .filter(|player| player.playing && player.can_pause)
+        .fold(true, |paused, player| {
+            players.control(&player.bus, "Pause").is_ok() && paused
+        })
+}
+
 /// What lands from the worker.
 enum Landed {
     Read(Vec<Player>),
@@ -215,21 +230,21 @@ impl Service for MediaService {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
-        let control = decode::<PlayerAction>(&self.resources(), resource, action, arguments)?;
-        let player = token_of(resource)
-            .and_then(|token| {
-                self.media
-                    .players
-                    .iter()
-                    .find(|player| player.token == token)
-            })
-            .ok_or_else(|| {
-                DoorError::Unknown(tilo_actions::ActionAddress::new(resource, action))
-            })?;
-        let method = match control {
-            PlayerAction::PlayPause => "PlayPause",
-            PlayerAction::Next => "Next",
-            PlayerAction::Previous => "Previous",
+        let unknown = || DoorError::Unknown(tilo_actions::ActionAddress::new(resource, action));
+        let (player, method) = if resource == MEDIA {
+            let control = decode::<MediaAction>(&self.resources(), resource, action, arguments)?;
+            (self.media.front().ok_or_else(unknown)?, control.method())
+        } else {
+            let control = decode::<PlayerAction>(&self.resources(), resource, action, arguments)?;
+            let player = token_of(resource)
+                .and_then(|token| {
+                    self.media
+                        .players
+                        .iter()
+                        .find(|player| player.token == token)
+                })
+                .ok_or_else(unknown)?;
+            (player, control.method())
         };
         let bus = player.bus.clone();
         self.worker.run(move |players| {
@@ -348,5 +363,50 @@ mod tests {
             "Play",
             "it paused"
         );
+    }
+
+    #[test]
+    fn the_media_resource_controls_the_player_in_front() {
+        let fake = Arc::new(Fake::default());
+        let mut paused = playing("org.mpris.MediaPlayer2.radio");
+        paused.playing = false;
+        fake.players
+            .lock()
+            .unwrap()
+            .extend([paused, playing("org.mpris.MediaPlayer2.music")]);
+        let mut service = MediaService::new(Arc::clone(&fake) as Arc<dyn Players>, None).unwrap();
+        service.settle();
+        let media = &service.resources()[0];
+        assert!(
+            media
+                .actions
+                .iter()
+                .any(|spec| spec.id == "previous"
+                    && matches!(
+                        spec.contract.availability,
+                        tilo_actions::Availability::Unavailable { .. }
+                    )),
+            "the player in front cannot go back"
+        );
+        assert_eq!(
+            service.invoke(MEDIA, "stop", &Map::new()),
+            Ok(Started::Accepted)
+        );
+        service.settle();
+        assert!(pause_playing(&*fake));
+        assert_eq!(
+            fake.calls.lock().unwrap().as_slice(),
+            [
+                ("org.mpris.MediaPlayer2.music".to_owned(), "Stop".to_owned()),
+                ("org.mpris.MediaPlayer2.music".to_owned(), "Pause".to_owned()),
+            ],
+            "the key reaches the one playing, the pause only what plays"
+        );
+
+        fake.players.lock().unwrap().clear();
+        service.settle();
+        (service.refresher())();
+        service.settle();
+        assert!(service.invoke(MEDIA, "play-pause", &Map::new()).is_err());
     }
 }

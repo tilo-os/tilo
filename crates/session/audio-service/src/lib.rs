@@ -28,6 +28,17 @@ pub mod sound;
 
 use serde::{Deserialize, Serialize};
 
+/// The specs the readings a `tilo-audio --serve` publishes stand for: the
+/// session's side of it ([`tilo_service::lines::Process`]).
+#[must_use]
+pub fn publish(
+    readings: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Vec<tilo_actions::ResourceSpec> {
+    let mut specs = sound::publish(readings);
+    specs.extend(media::publish(readings));
+    specs
+}
+
 /// The most players the helper describes; a client claiming thousands of
 /// MPRIS names must not grow the compositor's copy without bound.
 pub const MAX_PLAYERS: usize = 16;
