@@ -1510,7 +1510,7 @@ fn parity_dir() -> std::path::PathBuf {
 }
 
 /// Write the screen as `name.png` into [`parity_dir`].
-fn capture(session: &Session, name: &str) {
+fn capture(session: &mut Session, name: &str) {
     let dir = parity_dir();
     std::fs::create_dir_all(&dir).expect("create the parity directory");
     let shot = session
@@ -1578,10 +1578,10 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
     {
         let mut session = session();
         settle(&mut session, 4);
-        capture(&session, "empty-desk");
+        capture(&mut session, "empty-desk");
         let mut session = light_session();
         settle(&mut session, 4);
-        capture(&session, "empty-desk-light");
+        capture(&mut session, "empty-desk-light");
     }
 
     // One window: the old shell's `desktop` (one tabbed group).
@@ -1589,7 +1589,7 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
         let mut session = session();
         let client = mapped(&mut session, "org.example.Terminal");
         settle(&mut session, 4);
-        capture(&session, "one-window");
+        capture(&mut session, "one-window");
         drop(client);
     }
 
@@ -1599,10 +1599,10 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
         let a = mapped(&mut session, "org.example.Terminal");
         let b = mapped(&mut session, "so.tilo.file-explorer");
         settle(&mut session, 6);
-        capture(&session, "two-windows");
+        capture(&mut session, "two-windows");
         invoke(&mut session, CHROME_RESOURCE, "toggle-overview");
         settle(&mut session, 8);
-        capture(&session, "overview");
+        capture(&mut session, "overview");
         drop((a, b));
     }
 
@@ -1612,7 +1612,7 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
         settle(&mut session, 2);
         invoke(&mut session, CHROME_RESOURCE, "toggle-quick-settings");
         settle(&mut session, 8);
-        capture(&session, "quick-settings");
+        capture(&mut session, "quick-settings");
     }
 
     // Search, opened from the desk.
@@ -1625,15 +1625,13 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
             find_resource(&session.resources(), SEARCH_RESOURCE).is_some()
         });
         settle(&mut session, 8);
-        capture(&session, "search");
+        capture(&mut session, "search");
     }
 
     // One notification banner over the desk, saying what the old shell's
     // `notifications-one` says.
     {
-        use tilo_desktop::notifications::{
-            Banner, BannerFeed, Notification, NotificationSeverity,
-        };
+        use tilo_desktop::notifications::{Banner, BannerFeed, Notification, NotificationSeverity};
         let mut session = session();
         settle(&mut session, 2);
         let arrived = ui::time::now()
@@ -1650,7 +1648,7 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
             held: false,
         });
         settle(&mut session, 12);
-        capture(&session, "notification");
+        capture(&mut session, "notification");
     }
 
     // A dialog over a window: the portal asking to share a screen.
@@ -1672,7 +1670,7 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
             ..Dialog::default()
         }));
         settle(&mut session, 8);
-        capture(&session, "dialog");
+        capture(&mut session, "dialog");
         drop(client);
     }
 
@@ -1693,7 +1691,7 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
         invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
         settle(&mut session, 8);
         assert!(session.compositor().locked(), "the session locked");
-        capture(&session, "lock");
+        capture(&mut session, "lock");
         drop(client);
     }
 }
