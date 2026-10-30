@@ -220,6 +220,18 @@ pub struct WifiNetwork {
     pub known: bool,
 }
 
+/// A network profile `NetworkManager` keeps, so the machine joins it again
+/// without a password typed and without being asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedNetwork {
+    pub name: String,
+    /// The profile's `NetworkManager` UUID: what forgetting it, or turning
+    /// its autoconnect off, names.
+    pub profile: String,
+    /// It joins by itself whenever it is in reach.
+    pub autoconnect: bool,
+}
+
 /// An in-flight "join this protected network" prompt. `connect_wifi(ssid,
 /// None)` fails for every protected network not seen before — every
 /// network on first boot — and there's nowhere else to type a passphrase
@@ -260,6 +272,43 @@ impl WifiPasswordPrompt {
     /// An empty passphrase is rejected by every WPA network.
     pub fn can_submit(&self, password: &str) -> bool {
         !self.connecting && !password.is_empty()
+    }
+}
+
+/// The form for joining a network that broadcasts no name: only its name
+/// and its password find it. Neither is chrome state: the fields hold them
+/// while the form is up, and the machine saves them with the profile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HiddenNetworkPrompt {
+    /// Tells this form from any other, so nothing typed into one is ever
+    /// shown in the next.
+    pub id: u64,
+    /// The name being joined, once the machine is.
+    pub ssid: String,
+    /// Set after a failed attempt, so a wrong password says so instead of
+    /// the form reopening empty.
+    pub error: Option<String>,
+    /// True while the machine is associating, so the form stays inert
+    /// instead of looking unresponsive.
+    pub connecting: bool,
+}
+
+impl HiddenNetworkPrompt {
+    #[must_use]
+    pub fn new() -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            ssid: String::new(),
+            error: None,
+            connecting: false,
+        }
+    }
+}
+
+impl Default for HiddenNetworkPrompt {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

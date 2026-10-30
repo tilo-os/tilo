@@ -49,6 +49,10 @@ pub trait DeviceReads: Send + Sync {
     /// # Errors
     /// Why the scan failed.
     fn scan_wifi(&self) -> Result<(), String>;
+    /// The Wi-Fi network profiles `NetworkManager` keeps, in reach or not.
+    fn saved_networks(&self) -> Vec<qs::SavedNetworkProfile> {
+        Vec::new()
+    }
     fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>>;
     /// The Bluetooth devices in reach that are not paired, strongest first.
     fn nearby_bluetooth(&self) -> Vec<qs::NearbyBtDevice> {
@@ -138,6 +142,17 @@ impl DeviceReads for OsReads {
 
     fn scan_wifi(&self) -> Result<(), String> {
         qs::scan_wifi()
+    }
+
+    fn saved_networks(&self) -> Vec<qs::SavedNetworkProfile> {
+        qs::log_get(
+            "list_saved_network_profiles",
+            qs::list_saved_network_profiles(),
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|profile| profile.kind == "802-11-wireless")
+        .collect()
     }
 
     fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
@@ -403,6 +418,8 @@ pub(crate) enum ReadBack {
     Field(QsField),
     /// The accessories, which are `BlueZ`'s.
     Accessories,
+    /// The networks and the saved profiles, which are `NetworkManager`'s.
+    Networks,
 }
 
 /// A write the panel made, as it ended.
@@ -423,13 +440,22 @@ pub(crate) struct BluetoothReading {
     pub(crate) scanning: Option<bool>,
 }
 
+/// What the panel lists of Wi-Fi: the networks in reach as
+/// `NetworkManager` knows them, and the profiles it keeps to join them
+/// again.
+#[derive(Debug)]
+pub(crate) struct WifiReading {
+    pub(crate) networks: Result<Vec<qs::WifiNetworkInfo>, String>,
+    pub(crate) saved: Vec<qs::SavedNetworkProfile>,
+}
+
 /// What a worker hands back.
 #[derive(Debug)]
 pub(crate) enum QsReading {
     Fast(Box<FastReading>),
     Field(FieldReading),
     Firmware(Option<usize>),
-    WifiNetworks(Result<Vec<qs::WifiNetworkInfo>, String>),
+    WifiNetworks(WifiReading),
     BtDevices(BluetoothReading),
     WifiJoin(WifiJoinResult),
     Wrote(WriteDone),

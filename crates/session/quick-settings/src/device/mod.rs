@@ -366,9 +366,9 @@ impl DeviceHost {
             match reading {
                 QsReading::Fast(reading) => apply::fast(&mut state, *reading),
                 QsReading::Field(reading) => apply::field(&mut state, reading),
-                QsReading::WifiNetworks(result) => {
+                QsReading::WifiNetworks(reading) => {
                     state.wifi_scanning = false;
-                    match result {
+                    match reading.networks {
                         Ok(networks) => {
                             state.wifi_scan_error = None;
                             apply::wifi_networks(&mut state, networks);
@@ -378,6 +378,7 @@ impl DeviceHost {
                             state.wifi_scan_error = Some(error);
                         }
                     }
+                    apply::saved_networks(&mut state, reading.saved);
                 }
                 QsReading::BtDevices(reading) => apply::bluetooth(&mut state, reading),
                 QsReading::Firmware(updates) => state.firmware_updates = updates,
@@ -407,6 +408,7 @@ impl DeviceHost {
         match done.read_back {
             ReadBack::Field(field) => refresh.kick_field(field),
             ReadBack::Accessories => refresh.kick_bt_devices(),
+            ReadBack::Networks => refresh.kick_wifi_networks(),
         }
     }
 
@@ -679,6 +681,16 @@ impl DeviceHost {
             });
     }
 
+    fn join_hidden_wifi(&self, network: String, password: Option<String>) {
+        let dispatcher = Arc::clone(&self.0.dispatcher);
+        self.0
+            .refresh
+            .borrow_mut()
+            .kick_wifi_join(network, password, move |ssid, password| {
+                dispatcher.connect_hidden_wifi(ssid, password)
+            });
+    }
+
     /// Carry out one of the panel's effects.
     #[expect(
         clippy::too_many_lines,
@@ -806,6 +818,38 @@ impl DeviceHost {
                 self.join_wifi(network, Some(password));
             }
             QsEffect::CancelWifiPassword => state().wifi_password = None,
+            QsEffect::AskHiddenNetwork => {
+                state().wifi_hidden = Some(crate::HiddenNetworkPrompt::new());
+            }
+            QsEffect::CancelHiddenNetwork => state().wifi_hidden = None,
+            QsEffect::ConnectHiddenWifi { network, password } => {
+                if network.is_empty() {
+                    return Err("a network whose name is hidden still has a name".into());
+                }
+                {
+                    let mut state = state();
+                    let prompt = state
+                        .wifi_hidden
+                        .get_or_insert_with(crate::HiddenNetworkPrompt::new);
+                    prompt.ssid.clone_from(&network);
+                    prompt.connecting = true;
+                    prompt.error = None;
+                    state.wifi_joining = Some(network.clone());
+                }
+                self.join_hidden_wifi(network, (!password.is_empty()).then_some(password));
+            }
+            QsEffect::SetNetworkAutoconnect { profile, on } => self.write(
+                "set_network_autoconnect",
+                Failure::Refreshing(t("host-qs-change-failed-wifi")),
+                ReadBack::Networks,
+                move |d| d.set_network_autoconnect(&profile, on),
+            ),
+            QsEffect::ForgetNetwork { profile } => self.write(
+                "forget_network",
+                Failure::Refreshing(t("host-qs-change-failed-wifi")),
+                ReadBack::Networks,
+                move |d| d.forget_network(&profile),
+            ),
             QsEffect::ConnectBluetooth { address } => self.accessory(&address, true),
             QsEffect::DisconnectBluetooth { address } => self.accessory(&address, false),
             QsEffect::ScanBluetooth { on } => {
@@ -1004,6 +1048,14 @@ impl Dispatcher for ValidatedQsActions<'_> {
 
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
         self.inner.connect_wifi(ssid, password)
+    }
+
+    fn forget_network(&self, profile: &str) -> Result<(), String> {
+        self.inner.forget_network(profile)
+    }
+
+    fn set_network_autoconnect(&self, profile: &str, on: bool) -> Result<(), String> {
+        self.inner.set_network_autoconnect(profile, on)
     }
 
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {

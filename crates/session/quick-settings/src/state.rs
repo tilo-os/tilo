@@ -93,6 +93,11 @@ pub struct QuickSettingsState {
     /// Quick Settings. Cleared whenever Quick Settings opens another way.
     pub paste_origin: Option<PasteOrigin>,
     pub wifi_networks: Vec<WifiNetwork>,
+    /// The profiles `NetworkManager` keeps, in reach or not.
+    pub saved_networks: Vec<crate::SavedNetwork>,
+    /// The form for joining a network that broadcasts no name; `None`
+    /// except while it is up.
+    pub wifi_hidden: Option<crate::HiddenNetworkPrompt>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
     /// A typed radio mutation is admitted but has not completed.
@@ -185,6 +190,8 @@ impl Default for QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            saved_networks: Vec::new(),
+            wifi_hidden: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
@@ -255,6 +262,8 @@ impl QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            saved_networks: Vec::new(),
+            wifi_hidden: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,

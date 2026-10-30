@@ -610,6 +610,9 @@ pub(crate) struct NetworkFace {
     pub press: Option<QsEffect>,
     /// The password prompt opens under it.
     pub asking: Option<crate::WifiPasswordPrompt>,
+    /// The saved profile this network is, when the machine joins it by
+    /// itself.
+    pub profile: Option<String>,
 }
 
 /// One item of an open section.
@@ -618,6 +621,14 @@ pub(crate) enum Item {
     /// A sentence standing for an empty or unavailable list.
     Message(String),
     Network(NetworkFace),
+    /// A saved network this machine cannot see now; it can still be
+    /// forgotten, or kept from joining by itself.
+    Saved(crate::SavedNetwork),
+    /// The way into a network that broadcasts no name: the row that asks
+    /// for its name and password, or the form itself once it is up.
+    Hidden {
+        prompt: Option<crate::HiddenNetworkPrompt>,
+    },
     /// The wired link, when this machine has an ethernet device.
     Wired {
         connected: bool,
@@ -706,50 +717,7 @@ fn wifi(state: &QuickSettingsState) -> Vec<Item> {
         // The tile the section opens under turns the radio on.
         items.push(Item::Message(wifi_off_message(state)));
     } else {
-        for network in ordered_networks(&state.wifi_networks) {
-            let joining = state.wifi_joining.as_deref() == Some(network.ssid.as_str());
-            let value = if joining {
-                Some(t("qs-connecting"))
-            } else if network.connected {
-                Some(t("qs-connected"))
-            } else if network.known {
-                Some(t("qs-wifi-known"))
-            } else {
-                None
-            };
-            let press = (!network.connected && state.wifi_joining.is_none()).then(|| {
-                if network.secure && !network.known {
-                    QsEffect::AskWifiPassword {
-                        network: network.ssid.clone(),
-                    }
-                } else {
-                    QsEffect::JoinWifi {
-                        network: network.ssid.clone(),
-                    }
-                }
-            });
-            items.push(Item::Network(NetworkFace {
-                ssid: network.ssid.clone(),
-                signal: network.signal,
-                secure: network.secure,
-                connected: network.connected,
-                value,
-                press,
-                asking: state
-                    .wifi_password
-                    .clone()
-                    .filter(|prompt| prompt.ssid == network.ssid),
-            }));
-        }
-        if state.wifi_networks.is_empty() {
-            items.push(Item::Message(t(if state.wifi_scanning {
-                "qs-wifi-scanning"
-            } else if state.wifi_scan_error.is_some() {
-                "qs-wifi-scan-failed"
-            } else {
-                "qs-wifi-none"
-            })));
-        }
+        items.extend(wifi_on(state));
     }
     items.push(Item::Settings {
         label: t(if state.radios.wifi_available {
@@ -758,6 +726,81 @@ fn wifi(state: &QuickSettingsState) -> Vec<Item> {
             "qs-network-settings"
         }),
         link: "settings://network",
+    });
+    items
+}
+
+/// What the section lists while the radio is on: the networks in reach, the
+/// saved ones this machine cannot see, and the way to join one whose name is
+/// hidden.
+fn wifi_on(state: &QuickSettingsState) -> Vec<Item> {
+    let mut items = Vec::new();
+    for network in ordered_networks(&state.wifi_networks) {
+        let joining = state.wifi_joining.as_deref() == Some(network.ssid.as_str());
+        let value = if joining {
+            Some(t("qs-connecting"))
+        } else if network.connected {
+            Some(t("qs-connected"))
+        } else if network.known {
+            Some(t("qs-wifi-known"))
+        } else {
+            None
+        };
+        let press = (!network.connected && state.wifi_joining.is_none()).then(|| {
+            if network.secure && !network.known {
+                QsEffect::AskWifiPassword {
+                    network: network.ssid.clone(),
+                }
+            } else {
+                QsEffect::JoinWifi {
+                    network: network.ssid.clone(),
+                }
+            }
+        });
+        items.push(Item::Network(NetworkFace {
+            ssid: network.ssid.clone(),
+            signal: network.signal,
+            secure: network.secure,
+            connected: network.connected,
+            value,
+            press,
+            asking: state
+                .wifi_password
+                .clone()
+                .filter(|prompt| prompt.ssid == network.ssid),
+            profile: state
+                .saved_networks
+                .iter()
+                .find(|saved| saved.name == network.ssid)
+                .map(|saved| saved.profile.clone()),
+        }));
+    }
+    if state.wifi_networks.is_empty() {
+        items.push(Item::Message(t(if state.wifi_scanning {
+            "qs-wifi-scanning"
+        } else if state.wifi_scan_error.is_some() {
+            "qs-wifi-scan-failed"
+        } else {
+            "qs-wifi-none"
+        })));
+    }
+    // Saved networks this machine cannot see: the only place they can be
+    // forgotten from, or kept from joining by themselves.
+    let mut unseen: Vec<crate::SavedNetwork> = state
+        .saved_networks
+        .iter()
+        .filter(|saved| {
+            !state
+                .wifi_networks
+                .iter()
+                .any(|network| network.ssid == saved.name)
+        })
+        .cloned()
+        .collect();
+    unseen.sort_by_key(|saved| saved.name.to_lowercase());
+    items.extend(unseen.into_iter().map(Item::Saved));
+    items.push(Item::Hidden {
+        prompt: state.wifi_hidden.clone(),
     });
     items
 }

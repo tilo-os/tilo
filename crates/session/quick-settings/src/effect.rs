@@ -240,6 +240,43 @@ pub enum QsEffect {
     /// Stop asking for a Wi-Fi password.
     #[effect(own_device, audience = "people")]
     CancelWifiPassword,
+    /// Ask for the name and password of a network that broadcasts no name.
+    #[effect(own_device, audience = "people", icon = "wifi")]
+    AskHiddenNetwork,
+    /// Stop asking for a hidden network's name and password.
+    #[effect(own_device, audience = "people")]
+    CancelHiddenNetwork,
+    /// Join a network that broadcasts no name, by the name and password
+    /// typed for it.
+    #[effect(own_device)]
+    ConnectHiddenWifi {
+        #[param("The network's name")]
+        network: String,
+        #[param(secret, "The network's password")]
+        password: String,
+    },
+    /// Join a saved network by itself whenever it is in reach, or wait to be
+    /// asked.
+    #[effect(own_device, idempotent, icon = "wifi", keywords = "saved network")]
+    SetNetworkAutoconnect {
+        #[param("The saved network")]
+        profile: String,
+        #[param("Whether it joins by itself")]
+        on: bool,
+    },
+    /// Forget a saved network, so this machine joins it only when asked and
+    /// its password must be typed again: the profile and the password it
+    /// keeps go.
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash-2",
+        keywords = "saved network, forget, remove"
+    )]
+    ForgetNetwork {
+        #[param("The saved network")]
+        profile: String,
+    },
     /// Connect a paired Bluetooth accessory.
     #[effect(own_device)]
     ConnectBluetooth {
@@ -502,6 +539,11 @@ fn radio_statuses(can: crate::actions::QsActionAvailability, pending: bool) -> V
         shown(QsEffect::JOIN_WIFI, None, lacks(can.wifi)),
         shown(QsEffect::ASK_WIFI_PASSWORD, None, lacks(can.wifi)),
         shown(QsEffect::CONNECT_WIFI, None, lacks(can.wifi)),
+        shown(QsEffect::ASK_HIDDEN_NETWORK, None, lacks(can.wifi)),
+        shown(QsEffect::CANCEL_HIDDEN_NETWORK, None, lacks(can.wifi)),
+        shown(QsEffect::CONNECT_HIDDEN_WIFI, None, lacks(can.wifi)),
+        shown(QsEffect::SET_NETWORK_AUTOCONNECT, None, lacks(can.wifi)),
+        shown(QsEffect::FORGET_NETWORK, None, lacks(can.wifi)),
         shown(
             QsEffect::SET_AIRPLANE_MODE,
             Some(t("qs-action-set-airplane-mode")),

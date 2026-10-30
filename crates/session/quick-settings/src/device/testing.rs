@@ -26,6 +26,7 @@ struct Inner {
     wired: Option<os_actions::WiredInfo>,
     vpns: Vec<os_actions::VpnConnectionInfo>,
     networks: Vec<os_actions::WifiNetworkInfo>,
+    saved: Vec<os_actions::SavedNetworkProfile>,
     accessories: Vec<os_actions::BtDeviceInfo>,
     nearby: Vec<os_actions::NearbyBtDevice>,
     scanning: bool,
@@ -69,6 +70,22 @@ impl Machine {
                 connected: true,
                 known: true,
             }];
+            inner.saved = vec![
+                os_actions::SavedNetworkProfile {
+                    name: "Home".into(),
+                    uuid: "home-profile".into(),
+                    kind: "802-11-wireless".into(),
+                    autoconnect: true,
+                    last_used: Some(1_700_000_000),
+                },
+                os_actions::SavedNetworkProfile {
+                    name: "Grandma's".into(),
+                    uuid: "grandma-profile".into(),
+                    kind: "802-11-wireless".into(),
+                    autoconnect: true,
+                    last_used: Some(1_600_000_000),
+                },
+            ];
             inner.accessories = vec![os_actions::BtDeviceInfo {
                 name: "Headphones".into(),
                 mac: "00:1B:66:A1:B2:C3".into(),
@@ -101,6 +118,7 @@ impl Machine {
                 ipv4: Some("10.0.0.5".into()),
             });
             inner.networks.clear();
+            inner.saved.clear();
             inner.accessories.clear();
             inner.nearby.clear();
         }
@@ -189,6 +207,9 @@ impl DeviceReads for Machine {
     }
     fn scan_wifi(&self) -> Result<(), String> {
         Ok(())
+    }
+    fn saved_networks(&self) -> Vec<os_actions::SavedNetworkProfile> {
+        self.0.lock().unwrap().saved.clone()
     }
     fn bt_devices(&self) -> Option<Vec<os_actions::BtDeviceInfo>> {
         Some(self.0.lock().unwrap().accessories.clone())
@@ -306,9 +327,33 @@ impl os_actions::Dispatcher for Machine {
             "connect_wifi",
         )
     }
+    fn connect_hidden_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+        self.change(
+            format!("join-hidden:{ssid}:{}", password.unwrap_or("")),
+            "connect_hidden_wifi",
+        )
+    }
     fn set_power_profile(&self, profile: os_actions::PowerProfile) -> Result<(), String> {
         self.change(format!("power:{profile:?}"), "power")?;
         self.0.lock().unwrap().power = Some(profile);
+        Ok(())
+    }
+    fn forget_network(&self, profile: &str) -> Result<(), String> {
+        self.change(format!("forget-network:{profile}"), "forget_network")?;
+        self.0
+            .lock()
+            .unwrap()
+            .saved
+            .retain(|saved| saved.uuid != profile);
+        Ok(())
+    }
+    fn set_network_autoconnect(&self, profile: &str, on: bool) -> Result<(), String> {
+        self.change(format!("autoconnect:{profile}:{on}"), "autoconnect")?;
+        for saved in &mut self.0.lock().unwrap().saved {
+            if saved.uuid == profile {
+                saved.autoconnect = on;
+            }
+        }
         Ok(())
     }
 }

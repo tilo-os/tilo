@@ -21,7 +21,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use super::reads::{
     BluetoothReading, DeviceReads, Failure, FastReading, QsField, QsReading, ReadBack, Reader,
-    WifiJoinResult, WriteDone,
+    WifiJoinResult, WifiReading, WriteDone,
 };
 
 /// What wakes the session's loop when a worker is done.
@@ -173,13 +173,16 @@ impl QsRefresh {
         });
     }
 
-    /// Read the networks `NetworkManager` already knows. Never waits for a
-    /// radio scan, which takes over ten seconds on some adapters: the tile's
-    /// "connected to" must not depend on one.
+    /// Read the networks `NetworkManager` already knows, and the profiles it
+    /// keeps. Never waits for a radio scan, which takes over ten seconds on
+    /// some adapters: the tile's "connected to" must not depend on one.
     pub(crate) fn kick_wifi_networks(&mut self) {
         let reads = Arc::clone(&self.reads);
         self.spawn(Tier::Wifi, move || {
-            QsReading::WifiNetworks(reads.wifi_networks())
+            QsReading::WifiNetworks(WifiReading {
+                networks: reads.wifi_networks(),
+                saved: reads.saved_networks(),
+            })
         });
     }
 
@@ -191,7 +194,10 @@ impl QsRefresh {
             if let Err(error) = reads.scan_wifi() {
                 tracing::warn!(target: "tilo::os_actions", op = "scan_wifi", %error, "Wi-Fi scan failed");
             }
-            QsReading::WifiNetworks(reads.wifi_networks())
+            QsReading::WifiNetworks(WifiReading {
+                networks: reads.wifi_networks(),
+                saved: reads.saved_networks(),
+            })
         });
     }
 

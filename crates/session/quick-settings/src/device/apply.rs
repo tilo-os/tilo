@@ -155,6 +155,17 @@ pub(crate) fn wifi_networks(qs: &mut QuickSettingsState, networks: Vec<qs::WifiN
         .collect();
 }
 
+pub(crate) fn saved_networks(qs: &mut QuickSettingsState, saved: Vec<qs::SavedNetworkProfile>) {
+    qs.saved_networks = saved
+        .into_iter()
+        .map(|profile| crate::SavedNetwork {
+            name: profile.name,
+            profile: profile.uuid,
+            autoconnect: profile.autoconnect,
+        })
+        .collect();
+}
+
 pub(crate) fn bluetooth(qs: &mut QuickSettingsState, reading: BluetoothReading) {
     if let Some(devices) = reading.paired {
         qs.bt_devices = devices
@@ -198,6 +209,7 @@ pub(crate) fn wifi_join(
     match result {
         Ok(()) => {
             qs.wifi_password = None;
+            qs.wifi_hidden = None;
             for network in &mut qs.wifi_networks {
                 network.connected = network.ssid == ssid;
             }
@@ -224,6 +236,13 @@ pub(crate) fn wifi_join(
             {
                 prompt.connecting = false;
                 // Said in the prompt, under its field.
+                prompt.error = Some(t("host-wifi-join-check-password"));
+                None
+            } else if let Some(prompt) =
+                qs.wifi_hidden.as_mut().filter(|prompt| prompt.ssid == ssid)
+            {
+                prompt.connecting = false;
+                // Said in the form, under its fields.
                 prompt.error = Some(t("host-wifi-join-check-password"));
                 None
             } else if qs

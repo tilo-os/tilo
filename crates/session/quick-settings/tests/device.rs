@@ -264,6 +264,117 @@ fn the_wired_link_is_switched_from_the_network_section() {
 }
 
 #[test]
+fn saved_networks_are_kept_from_joining_by_themselves_and_forgotten() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    desk.until("the first reading", |state| state.wifi);
+    desk.host.set_open(true);
+    desk.app
+        .invoke(QuickSettings::OPEN_SECTION.with(QsSection::Wifi))
+        .unwrap();
+    desk.app.settle();
+    desk.until("the section's reads", |state| {
+        !state.wifi_networks.is_empty() && !state.saved_networks.is_empty()
+    });
+    assert!(
+        desk.has("qs-saved-network-grandma-profile"),
+        "a saved network out of reach is still listed"
+    );
+    assert!(
+        desk.has("qs-forget-network-home-profile"),
+        "the network in use can be forgotten from its own row"
+    );
+
+    desk.app
+        .harness()
+        .click_named("qs-autoconnect-grandma-profile")
+        .unwrap();
+    desk.until("the autoconnect change and its read-back", |state| {
+        state
+            .saved_networks
+            .iter()
+            .any(|saved| saved.profile == "grandma-profile" && !saved.autoconnect)
+    });
+
+    desk.app
+        .harness()
+        .click_named("qs-forget-network-grandma-profile")
+        .unwrap();
+    desk.app.settle();
+    assert!(
+        desk.app.confirm_asked().is_some(),
+        "the person agrees to forget it"
+    );
+    desk.app.settle();
+    desk.until("the forgetting and its read-back", |state| {
+        !state
+            .saved_networks
+            .iter()
+            .any(|saved| saved.profile == "grandma-profile")
+    });
+    assert!(
+        !desk.has("qs-saved-network-grandma-profile"),
+        "forgotten, it is gone from the section"
+    );
+    assert_eq!(
+        machine.calls(),
+        [
+            "autoconnect:grandma-profile:false",
+            "forget-network:grandma-profile"
+        ]
+    );
+}
+
+#[test]
+fn a_hidden_network_is_joined_by_its_name_and_password() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    desk.until("the first reading", |state| state.wifi);
+    desk.host.set_open(true);
+    desk.app
+        .invoke(QuickSettings::OPEN_SECTION.with(QsSection::Wifi))
+        .unwrap();
+    desk.app.settle();
+    desk.until("the section's reads", |state| {
+        !state.wifi_networks.is_empty()
+    });
+    assert!(desk.has("qs-wifi-hidden"), "a way into a hidden network");
+
+    desk.app.effect(&QsEffect::AskHiddenNetwork).unwrap();
+    desk.app.settle();
+    assert!(
+        desk.has("qs-wifi-hidden-form"),
+        "the form asks for its name and password"
+    );
+
+    desk.app
+        .effect(&QsEffect::ConnectHiddenWifi {
+            network: "Basement".into(),
+            password: "hunter22".into(),
+        })
+        .unwrap();
+    assert!(
+        desk.host
+            .state()
+            .wifi_hidden
+            .is_some_and(|prompt| prompt.connecting),
+        "the form says it is joining"
+    );
+    desk.until("the join and its read-back", |state| {
+        state.wifi_joining.is_none()
+    });
+    assert!(
+        desk.host.state().wifi_hidden.is_none(),
+        "joined, the form is gone"
+    );
+    assert_eq!(machine.calls(), ["join-hidden:Basement:hunter22"]);
+}
+
+#[test]
 fn bluetooth_devices_are_looked_for_paired_and_forgotten_in_the_section() {
     // Where things rest: the motion on the way is its own test.
     let _settled = ui::motion::testing::settled();

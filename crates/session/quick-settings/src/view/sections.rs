@@ -5,7 +5,7 @@
 
 use ui::LocalState;
 use ui::TextRole;
-use ui::framework::{ActionControl as _, ViewCx};
+use ui::framework::{ActionControl as _, Actions, ViewCx};
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
@@ -173,6 +173,33 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
                 },
             ))]
         }
+        Item::Saved(saved) => {
+            let auto = actions.bind_effect(
+                Toggle::from_state(&LocalState::new(saved.autoconnect))
+                    .with_id(&format!("qs-autoconnect-{}", saved.profile))
+                    .with_accessible_name(&t("qs-wifi-autoconnect")),
+                QsEffect::SET_NETWORK_AUTOCONNECT.map({
+                    let profile = saved.profile.clone();
+                    move |on: bool| (profile.clone(), on)
+                }),
+            );
+            let mut trailing = Row::new().no_wrap().with_rhythm(Rhythm::Related);
+            trailing = trailing.push(Box::new(auto) as Element);
+            trailing = trailing.push(Box::new(forget_network(&actions, &saved.profile)) as Element);
+            vec![Box::new(
+                ListRow::new(format!("qs-saved-network-{}", saved.profile), &saved.name)
+                    .icon(Icon::Wifi)
+                    .secondary(t("qs-wifi-saved"))
+                    .trailing(Box::new(trailing)),
+            )]
+        }
+        Item::Hidden { prompt } => match prompt {
+            Some(prompt) => vec![hidden_prompt(cx, prompt)],
+            None => vec![Box::new(actions.bind_effect_invocation(
+                ListRow::new("qs-wifi-hidden", t("qs-wifi-hidden")).icon(Icon::Wifi),
+                &QsEffect::AskHiddenNetwork,
+            ))],
+        },
         Item::Profile { name, active } => {
             let switch = actions.bind_effect(
                 Toggle::from_state(&LocalState::new(*active)).with_accessible_name(name),
@@ -305,6 +332,9 @@ fn network_rows(cx: &ViewCx<QuickSettings>, network: &NetworkFace) -> Vec<Elemen
     if let Some(value) = &network.value {
         row = row.value(value);
     }
+    if let Some(profile) = &network.profile {
+        row = row.trailing(Box::new(forget_network(&actions, profile)));
+    }
     let row: Element = Box::new(match &network.press {
         Some(press) => actions.bind_effect_invocation(row, press),
         None => row,
@@ -314,6 +344,23 @@ fn network_rows(cx: &ViewCx<QuickSettings>, network: &NetworkFace) -> Vec<Elemen
         rows.push(password_prompt(cx, &network.ssid, prompt));
     }
     rows
+}
+
+/// The button that forgets the saved profile `profile`, after the person
+/// confirms it.
+fn forget_network(actions: &Actions<QuickSettings>, profile: &str) -> Row {
+    let effect = QsEffect::ForgetNetwork {
+        profile: profile.to_owned(),
+    };
+    let button = Button::icon_only(
+        &format!("qs-forget-network-{profile}"),
+        Icon::Trash2,
+        &t("qs-wifi-forget"),
+    );
+    match actions.effect(&effect) {
+        Some(binding) => Row::new().push(Box::new(button.bind_action(binding)) as Element),
+        None => Row::new().push(Box::new(button) as Element),
+    }
 }
 
 /// The prompt for a protected network's password: the field (whose text
@@ -370,6 +417,71 @@ fn password_prompt(
             .role(ButtonRole::Primary)
             .with_enabled(!prompt.connecting),
         QsEffect::CONNECT_WIFI.map(move |(): ()| (network.clone(), submitted.with(Clone::clone))),
+    );
+    column
+        .push(Box::new(
+            Row::new()
+                .no_wrap()
+                .with_justify(ui::taffy::JustifyContent::FlexEnd)
+                .with_rhythm(Rhythm::Related)
+                .push(Box::new(cancel))
+                .push(Box::new(join)),
+        ))
+        .into_widget()
+}
+
+/// The form for joining a network that broadcasts no name: its name and
+/// password (which never leave the fields but to join it), what went wrong
+/// last time, Cancel and Connect.
+fn hidden_prompt(cx: &ViewCx<QuickSettings>, prompt: &crate::HiddenNetworkPrompt) -> Element {
+    let actions = cx.actions();
+    let name = LocalState::new(String::new());
+    let password = LocalState::new(String::new());
+    let mut column = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_rhythm(Rhythm::Related)
+        .with_id("qs-wifi-hidden-form")
+        .push(Box::new(
+            Text::new(&t("qs-wifi-hidden-caption")).with_role(TextRole::Caption),
+        ))
+        .push(Box::new(
+            TextInput::from_state(&name)
+                .with_id(&format!("qs-hidden-network-name-{}", prompt.id))
+                .with_placeholder(t("qs-wifi-hidden-name"))
+                .disabled(prompt.connecting),
+        ))
+        .push(Box::new(
+            TextInput::from_state(&password)
+                .with_id(&format!("qs-hidden-network-password-{}", prompt.id))
+                .with_secret(true)
+                .with_placeholder(t("qs-wifi-password"))
+                .disabled(prompt.connecting),
+        ));
+    if let Some(error) = &prompt.error {
+        column = column.push(Box::new(
+            Text::new(error)
+                .with_role(TextRole::Caption)
+                .with_id("qs-hidden-network-error")
+                .with_live(ui::a11y::Politeness::Polite),
+        ));
+    } else if prompt.connecting {
+        column = column.push(Box::new(
+            Text::new(&t("qs-connecting"))
+                .with_role(TextRole::Caption)
+                .with_live(ui::a11y::Politeness::Polite),
+        ));
+    }
+    let cancel = actions.bind_effect_invocation(
+        Button::new("qs-hidden-network-cancel", &t("qs-wifi-password-cancel")),
+        &QsEffect::CancelHiddenNetwork,
+    );
+    let join = actions.bind_effect(
+        Button::new("qs-hidden-network-connect", &t("qs-wifi-password-connect"))
+            .role(ButtonRole::Primary)
+            .with_enabled(!prompt.connecting),
+        QsEffect::CONNECT_HIDDEN_WIFI
+            .map(move |(): ()| (name.with(Clone::clone), password.with(Clone::clone))),
     );
     column
         .push(Box::new(
