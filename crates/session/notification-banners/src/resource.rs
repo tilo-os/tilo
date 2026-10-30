@@ -105,6 +105,10 @@ impl ResourceApp for NotificationBanners {
     };
     // Nothing is kept: there is nothing to look back on.
     const DOCUMENT_HISTORY: bool = false;
+    // The banners show this device's desktop: they are nobody's workspace
+    // participant and open before anyone is chosen.
+    const ATTACHES_RUNTIME: bool = false;
+    const OPENS_WITHOUT_IDENTITY: bool = true;
 
     fn view(cx: &mut ViewCx<Banners>) -> Element {
         let lent = cx.take_lent::<BannerService>();
