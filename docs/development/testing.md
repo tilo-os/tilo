@@ -13,13 +13,16 @@ tools/ci/test-changed.sh
 It plans what your change affects against the merge-base with `integration`
 (`origin/main` where there is no `integration` branch; `--base REF` for
 another), with uncommitted and untracked files included, and runs Clippy over
-those packages and the tests of the packages whose behavior can change, with
-the filters, features and test environment CI uses. Clippy and the tests run at
+the changed packages and their direct dependants and the tests of the packages
+whose behavior can change, with the filters, features and test environment CI
+uses. A dependant further away is linted by the batch check (below), or here
+with `--closure`. Clippy and the tests run at
 the same time on the builders the `cargo` shim forwards to (rcargo; tests and
 lints go to the x86 builder): each job runs inside the builder's container, so
 the binaries the tests need are built there and nothing is fetched to your
-machine. Tests that failed in your last run against the same base run first,
-alone, so a fix is confirmed within the time of its own tests. A big test set
+machine. Tests that failed in your last run against the same base run as a job
+of their own beside the rest, so a fix is confirmed within the time of its own
+tests. A big test set
 is shared between the x86 and arm builders.
 
 Narrow it while you iterate:
@@ -28,6 +31,7 @@ Narrow it while you iterate:
 tools/ci/test-changed.sh -- overview_add_workspace::  # tests whose names match
 tools/ci/test-changed.sh -E 'package(shell) and binary(it)'
 tools/ci/test-changed.sh --stage test                  # no Clippy
+tools/ci/test-changed.sh --closure                     # lint every reverse dependency
 ```
 
 The terminal shows failures as they happen and a summary of each job's wall

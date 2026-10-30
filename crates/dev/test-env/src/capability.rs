@@ -196,8 +196,12 @@ pub fn mount_namespace() -> std::io::Result<()> {
     }
 }
 
-/// Whether this process can start bubblewrap with a user namespace of its own,
-/// tried on the read-only root the bundle fixtures use.
+/// Whether this process can start bubblewrap as Tilo's sandboxes do, tried on
+/// a throwaway `true`: every namespace of its own, the read-only root the
+/// bundle fixtures use, and a fresh `/proc` and `/dev`. A container that lets
+/// a process make namespaces may still refuse it a new `/proc` (its own is
+/// partly masked), and every sandbox mounts one: the probe asks for it too, so
+/// it never passes where the sandboxes cannot start.
 #[cfg(target_os = "linux")]
 pub fn bubblewrap() -> std::io::Result<()> {
     namespace(
@@ -208,6 +212,10 @@ pub fn bubblewrap() -> std::io::Result<()> {
             "--ro-bind",
             "/",
             "/",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
             "--",
             "true",
         ],

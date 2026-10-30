@@ -145,8 +145,26 @@ struct InProcessLaunch {
     /// of the launch whose instance it is ([`register_tilolang_instance`]).
     creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
     launch_ticket: Option<u64>,
+    /// For an instance of the app the session runs with no window
+    /// ([`register_windowless_launch`]).
+    windowless: bool,
 }
 static IN_PROCESS_LAUNCHES: Mutex<Vec<InProcessLaunch>> = Mutex::new(Vec::new());
+
+/// Record that the session is about to connect the instance of `app_id` it
+/// runs with no window in room `workspace_id`: the broker records the
+/// connection as the app's, and as one that takes no `open`. Spent by that
+/// connection.
+pub(crate) fn register_windowless_launch(app_id: &str, workspace_id: &str) {
+    lock(&IN_PROCESS_LAUNCHES).push(InProcessLaunch {
+        app_id: app_id.to_owned(),
+        workspace_id: workspace_id.to_owned(),
+        window_instance: None,
+        creation: None,
+        launch_ticket: None,
+        windowless: true,
+    });
+}
 
 /// Record that the session itself is about to connect `app_id` in room
 /// `workspace_id`, for no window of its own, as it records a process it
@@ -158,6 +176,7 @@ pub fn register_in_process_launch(app_id: &str, workspace_id: &str) {
         window_instance: None,
         creation: None,
         launch_ticket: None,
+        windowless: false,
     });
 }
 
@@ -176,6 +195,7 @@ pub(crate) fn register_tilolang_change(
         window_instance: None,
         creation: Some(creation),
         launch_ticket: None,
+        windowless: false,
     });
 }
 
@@ -191,6 +211,7 @@ pub(crate) fn register_in_process_window(app_id: &str, workspace_id: &str, insta
         window_instance: Some(instance),
         creation: None,
         launch_ticket: None,
+        windowless: false,
     });
 }
 
@@ -232,6 +253,7 @@ pub(crate) fn register_tilolang_instance(
         window_instance: Some(instance),
         creation,
         launch_ticket,
+        windowless: false,
     });
     true
 }
@@ -288,6 +310,7 @@ pub(crate) fn authenticated_window_launch(
                     creation: launch.identity.application_creation.clone(),
                     continuation_instance: launch.continuation_instance,
                     launch_ticket: launch.launch_ticket,
+                    windowless: false,
                 },
             );
         }
@@ -315,6 +338,7 @@ fn take_in_process_window_launch(
             creation: launch.creation,
             continuation_instance: launch.window_instance,
             launch_ticket: launch.launch_ticket,
+            windowless: launch.windowless,
         },
     )
 }

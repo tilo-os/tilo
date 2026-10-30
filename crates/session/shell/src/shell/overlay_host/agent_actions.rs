@@ -1227,8 +1227,9 @@ fn provider_step(
         return invoke_operation(session, operation, target.clone(), None);
     }
     let app = operation.app.as_str();
-    // The tracker is reached whether or not Tasks runs: the host launches it
-    // to take the issue.
+    // The tracker is reached whether or not Tasks runs: with no Tasks window
+    // in the room, the host runs Tasks without one to take the issue
+    // (`crate::shell::windowless`); nothing is shown but where it was asked.
     if app == TRACKER_APP {
         return invoke_operation(
             session,

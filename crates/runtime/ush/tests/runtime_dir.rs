@@ -17,6 +17,11 @@ use crate::serve_handoff::{RUNTIME, fixture_images, guest_unavailable};
 /// guest's user owns, where programs keep their sockets and locks.
 #[test]
 fn a_guest_has_a_private_runtime_directory() {
+    tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap(),
+        "the guest's sandbox"
+    );
     if let Some(reason) = guest_unavailable() {
         eprintln!("runtime_dir: not exercising a guest here — {reason}");
         return;

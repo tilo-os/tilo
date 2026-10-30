@@ -356,6 +356,7 @@ impl LauncherServices for Apps {
             creation: self.launched.creation(pid, app, room),
             continuation_instance: None,
             launch_ticket: self.launched.ticket(pid),
+            windowless: false,
         }))
     }
     fn application_creation_evidence(
