@@ -298,6 +298,7 @@ fn a_paired_device_is_forgotten_from_its_own_button() {
     );
 }
 
+#[test]
 fn a_copy_is_pinned_and_removed_from_its_own_buttons() {
     // Where things rest: the motion on the way is its own test.
     let _settled = ui::motion::testing::settled();
