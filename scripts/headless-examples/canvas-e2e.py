@@ -33,10 +33,9 @@ Usage:
 --start starts a fresh session, opens the windows and seeds it, prints its ready JSON (control
 socket, runtime directory, the script's pid) and, with --keep, leaves it running: stop it with
 `kill -TERM -<pid>`. Without --build the session's build (target/nested-session, or
-TILO_NESTED_SESSION_BUILD) and target/debug/tilolang must exist. --build makes both, on the
-remote builder: the session's build runs there whole (`rcargo --fetch nested-session exec
-dist/dev/nested-session-build.sh`), since it stages what this machine may lack (a dbus-daemon,
-the build's timings), and comes back as target/nested-session.
+TILO_NESTED_SESSION_BUILD) and target/debug/tilolang must exist. --build makes both with
+dist/dev/nested-session-build.sh, which stages what the session needs (a dbus-daemon, the
+build's timings) into target/nested-session.
 """
 
 from __future__ import annotations
@@ -265,10 +264,7 @@ def prepare(state: Path, build: bool) -> None:
     """Install the session's build into `state`; with `build`, build it first."""
     if build:
         print("==> building the nested session", file=sys.stderr)
-        if shutil.which("rcargo"):
-            run(["rcargo", "--fetch", "nested-session", "exec", "dist/dev/nested-session-build.sh"], cwd=REPO)
-        else:
-            run([REPO / "dist/dev/nested-session-build.sh"], cwd=REPO)
+        run([REPO / "dist/dev/nested-session-build.sh"], cwd=REPO)
     print("==> preparing the session", file=sys.stderr)
     run([SESSION_SH, "--no-build", "--prepare-only", "--apps", NATIVE_APPS, "--state", state])
 

@@ -24,7 +24,7 @@ the task:
   scripts/headless-examples/agent-tilolang-e2e.py [--no-build] [--out DIR] [--keep]
 
 Without --no-build it prepares the session (nested-session.sh --prepare-only, building through
-TILO_REMOTE_CARGO, default rcargo) and builds the tilolang tool. The verdict is
+TILO_REMOTE_CARGO, any cargo drop-in, default cargo) and builds the tilolang tool. The verdict is
 OUT/summary.json; the exit status is non-zero when a check fails. Never touches the live
 desktop.
 """
@@ -232,7 +232,7 @@ def main() -> int:
     tool = REPO / "target/debug/tilolang"
     os.environ.setdefault("TMPDIR", str(Path.home() / "tmp"))
     Path(os.environ["TMPDIR"]).mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "TILO_REMOTE_CARGO": os.environ.get("TILO_REMOTE_CARGO", "rcargo"),
+    env = {**os.environ, "TILO_REMOTE_CARGO": os.environ.get("TILO_REMOTE_CARGO", "cargo"),
            "TILO_NESTED_APPS": NATIVE}
     build = [] if not args.no_build else ["--no-build"]
     print("==> preparing the session", file=sys.stderr)
