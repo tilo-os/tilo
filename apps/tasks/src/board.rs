@@ -9,19 +9,17 @@ use crate::model::{Issue, Status, Tracker, tracker};
 use ui::prelude::*;
 use ui::widget::{Badge, Board, BoardDrop, Card, ChipStyle, Tone};
 
-use crate::{Filter, Nav, reference, tr};
+use crate::{Filter, Nav, TasksEffect, reference, tr};
 
 pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
     let chosen = nav.filter.clone();
     let me = cx.me().map(str::to_owned);
-    let nav = nav.clone();
     let board = cx.switch(&chosen, move |cx, chosen| {
         let filter = chosen.as_deref().and_then(Filter::of).unwrap_or_default();
         let tracker = cx.value(Tracker::clone);
-        let nav = nav.clone();
         let me = me.clone();
         cx.switch(&tracker, move |cx, tracker| {
-            lanes(cx, tracker, &nav, &filter, me.as_deref())
+            lanes(cx, tracker, &filter, me.as_deref())
         })
     });
     // The board's name is the window's location: the bar says where the
@@ -46,13 +44,7 @@ fn status_of(lane: &str) -> Option<Status> {
         .find(|status| status.label_key() == lane)
 }
 
-fn lanes(
-    cx: &ViewCx<Tracker>,
-    tracker: &Tracker,
-    nav: &Nav,
-    filter: &Filter,
-    me: Option<&str>,
-) -> Element {
+fn lanes(cx: &ViewCx<Tracker>, tracker: &Tracker, filter: &Filter, me: Option<&str>) -> Element {
     let people = cx.people();
     let mut board = Board::new().with_id("tasks-board");
     for status in Status::ALL {
@@ -60,7 +52,7 @@ fn lanes(
             .issues
             .iter()
             .filter(|(_, issue)| issue.status == status && filter.matches(issue, me))
-            .map(|(id, issue)| (id.to_string(), card(cx, tracker, id, issue, &people, nav)))
+            .map(|(id, issue)| (id.to_string(), card(cx, tracker, id, issue, &people)))
             .collect();
         let header = Text::new(&ui::i18n::I18nManager::format(
             "tasks-lane-heading",
@@ -103,7 +95,6 @@ fn card(
     id: &Id,
     issue: &Issue,
     people: &ui::framework::People,
-    nav: &Nav,
 ) -> Element {
     let mut facts = Row::new().with_rhythm(ui::tokens::Rhythm::Tight);
     facts = facts.push(Box::new(
@@ -135,12 +126,14 @@ fn card(
     for label in issue.labels.iter() {
         facts = facts.push(Box::new(Badge::text(label.clone())));
     }
-    let open = nav.clone();
-    let issue_id = id.clone();
-    Box::new(
-        Card::new(Box::new(facts))
-            .with_title(issue.title.clone())
-            .with_accessible_name(format!("{} {}", reference(issue.number), issue.title))
-            .on_activate(format!("tasks-card-{id}"), move || open.open(&issue_id)),
-    )
+    let card = Card::new(Box::new(facts))
+        .with_title(issue.title.clone())
+        .with_accessible_name(format!("{} {}", reference(issue.number), issue.title));
+    // The card opens its issue through the app's published effect, the one
+    // the list, a script and an agent invoke.
+    let open = TasksEffect::OpenIssue { issue: id.clone() };
+    Box::new(match cx.actions().effect(&open) {
+        Some(binding) => card.on_action(format!("tasks-card-{id}"), binding),
+        None => card,
+    })
 }
