@@ -471,9 +471,21 @@ def main() -> int:
     # The repository policy suite (tools/policy/run.sh: the policy checks and every Python
     # test under tools/tests and .codex/hooks), as CI's quality job runs it: here, beside the
     # builder jobs, since its tests build Git repositories of their own from this checkout.
+    # Its tests of Node.js scripts (steps.toml `node_tests`) need Node.js, which the builder's
+    # container has and this machine may not, and no Git checkout, which the builder's copy of
+    # the worktree lacks: without Node.js here they run there, the rest here.
     if want("policy"):
-        spawn("policy", lambda job: job.run("repository policy suite", Builder("local", None),
-                                            ["bash", "tools/policy/run.sh"]))
+        if shutil.which("node") or primary.prefix is None:
+            spawn("policy", lambda job: job.run("repository policy suite", Builder("local", None),
+                                                ["bash", "tools/policy/run.sh"]))
+        else:
+            spawn("policy", lambda job: job.run("repository policy suite without its Node.js tests",
+                                                Builder("local", None),
+                                                ["bash", "tools/policy/run.sh", "--no-node"]))
+            # No bytecode: the copy's __pycache__ would come back as conflicts with this one's.
+            spawn("policy-node", lambda job: job.run(
+                "repository policy tests of Node.js scripts", primary,
+                ["env", "PYTHONDONTWRITEBYTECODE=1", "bash", "tools/policy/run.sh", "--node"]))
 
     # Type-check only (other architectures, `--full`): on the arm builder when there is one.
     if want("check") and checks:

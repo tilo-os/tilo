@@ -50,7 +50,6 @@ fn a_live_peer_joins_through_the_user_action() {
 /// last read whole stays.
 #[test]
 fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
-    use automerge::transaction::Transactable as _;
     let mut app = ChatApp::new(
         crate::identity::LocalIdentity::for_participant("person-1"),
         ChatRuntime::Unavailable,
@@ -64,9 +63,13 @@ fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
     let mut state = ui::State::new();
     crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");
     let mut broken = state.doc.clone();
-    broken
-        .put(automerge::ROOT, "people", "not a roster")
-        .expect("the field is written");
+    ui::tilo_resource::write_key(
+        &mut broken,
+        &automerge::ROOT,
+        "people",
+        &"not a roster".to_owned(),
+    )
+    .expect("the field is written");
     assert!(<crate::record::Chat as ui::tilo_resource::Resource>::read(&broken).is_err());
 
     app.reload(&state.doc);
