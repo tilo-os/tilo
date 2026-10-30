@@ -35,10 +35,12 @@ use super::types::xdg_activation::XdgActivationTokenData;
 use super::{ActiveEventLoop, WaylandError, WindowId};
 
 pub(crate) mod layer;
+pub(crate) mod lock;
 pub(crate) mod state;
 pub(crate) mod surface;
 
 use layer::LayerSurfaceAttributes;
+use lock::LockSurface;
 pub use state::WindowState;
 pub use surface::Surface;
 
@@ -125,13 +127,26 @@ impl Window {
             WindowDecorations::RequestClient
         };
 
-        let window = match attributes.platform_specific.layer.as_ref() {
-            Some(layer) => Surface::Layer(new_layer_surface(&state, layer, surface.clone().into(), &queue_handle)?),
-            None => Surface::Toplevel(state.xdg_shell.create_window(
-                surface.clone(),
-                default_decorations,
+        let window = if attributes.platform_specific.session_lock {
+            Surface::Lock(new_lock_surface(
+                &state,
+                surface.clone().into(),
                 &queue_handle,
-            )),
+            )?)
+        } else {
+            match attributes.platform_specific.layer.as_ref() {
+                Some(layer) => Surface::Layer(new_layer_surface(
+                    &state,
+                    layer,
+                    surface.clone().into(),
+                    &queue_handle,
+                )?),
+                None => Surface::Toplevel(state.xdg_shell.create_window(
+                    surface.clone(),
+                    default_decorations,
+                    &queue_handle,
+                )),
+            }
         };
         let is_layer = window.is_layer();
 
@@ -214,8 +229,11 @@ impl Window {
             xdg_activation.activate(token.token, &surface);
         }
 
-        // XXX Do initial commit.
-        window.commit();
+        // XXX Do initial commit. A lock surface has nothing to commit yet:
+        // its role exists once the compositor confirmed the lock.
+        if !window.is_lock() {
+            window.commit();
+        }
 
         // Add the window and window requests into the state.
         let window_state = Arc::new(Mutex::new(window_state));
@@ -275,6 +293,22 @@ impl Window {
             window_requests,
             window_events_sink,
         })
+    }
+
+    /// Whether the window is the session's lock screen, and the compositor
+    /// confirmed the lock: it can draw now.
+    pub fn is_session_lock_up(&self) -> bool {
+        self.window
+            .lock_surface()
+            .is_some_and(LockSurface::is_up)
+    }
+
+    /// End the session's lock: the compositor takes the lock screen down
+    /// and the session shows its desktop again.
+    pub fn unlock_session(&self) {
+        if let Some(lock) = self.window.lock_surface() {
+            lock.unlock();
+        }
     }
 
     pub(crate) fn xdg_toplevel(&self) -> Option<NonNull<c_void>> {
@@ -875,6 +909,28 @@ impl WindowRequests {
     pub fn take_redraw_requested(&self) -> bool {
         self.redraw_requested.swap(false, Ordering::Relaxed)
     }
+}
+
+/// Ask the session's compositor for the lock, and hold the window's
+/// surface for the role it gets once the lock is confirmed: the compositor
+/// sizes the lock screen to each output and gives it every input.
+fn new_lock_surface(
+    state: &WinitState,
+    surface: sctk::compositor::Surface,
+    queue_handle: &QueueHandle<WinitState>,
+) -> Result<LockSurface, RootOsError> {
+    let Some(session_lock) = state.session_lock.as_ref() else {
+        return Err(os_error!(OsError::Misc(
+            "the compositor has no ext_session_lock_manager_v1 for a lock surface"
+        )));
+    };
+    let lock = session_lock.lock(queue_handle).map_err(|error| {
+        tracing::warn!(%error, "the compositor refused the session lock");
+        os_error!(OsError::Misc(
+            "the compositor refused the session lock"
+        ))
+    })?;
+    Ok(LockSurface::new(surface, lock))
 }
 
 /// Ask the compositor for a surface on a layer of an output, saying where

@@ -1,6 +1,6 @@
 //! The role a window's surface has on the compositor: an ordinary toplevel
-//! the desktop places, or a surface that places itself on a layer of an
-//! output (a session's own bars, panels and dialogs).
+//! the desktop places, a surface that places itself on a layer of an output
+//! (a session's own bars, panels and dialogs), or the session's lock screen.
 //!
 //! Everything about the surface itself — buffers, frame callbacks, input,
 //! text input, scale — is the same for both, so the window state and the
@@ -18,6 +18,8 @@ use sctk::shell::xdg::window::Window;
 use sctk::shell::xdg::XdgSurface;
 use sctk::shell::WaylandSurface;
 
+use super::lock::LockSurface;
+
 /// A window's surface on the compositor.
 #[derive(Clone)]
 pub enum Surface {
@@ -25,6 +27,9 @@ pub enum Surface {
     Toplevel(Window),
     /// A surface on a layer of an output, placed by its own anchors.
     Layer(LayerSurface),
+    /// The session's lock screen: shown on every output, taking every
+    /// input, until the client lifts the lock.
+    Lock(LockSurface),
 }
 
 impl Surface {
@@ -33,6 +38,7 @@ impl Surface {
         match self {
             Self::Toplevel(window) => window.wl_surface(),
             Self::Layer(layer) => layer.wl_surface(),
+            Self::Lock(lock) => lock.wl_surface(),
         }
     }
 
@@ -41,6 +47,9 @@ impl Surface {
         match self {
             Self::Toplevel(window) => window.commit(),
             Self::Layer(layer) => layer.commit(),
+            // A lock surface has no double buffered state of its own: what
+            // it draws is committed with the frame that attached it.
+            Self::Lock(_) => {}
         }
     }
 
@@ -49,11 +58,33 @@ impl Surface {
         matches!(self, Self::Layer(_))
     }
 
+    /// Whether the surface is the session's lock screen.
+    pub fn is_lock(&self) -> bool {
+        matches!(self, Self::Lock(_))
+    }
+
+    /// The lock surface, for the requests only it has.
+    pub fn lock_surface(&self) -> Option<&LockSurface> {
+        match self {
+            Self::Lock(lock) => Some(lock),
+            _ => None,
+        }
+    }
+
+    /// Whether the compositor confirmed the window's lock and gave it its
+    /// surface: a window that is not the lock screen always has one.
+    pub fn is_session_lock_up(&self) -> bool {
+        match self {
+            Self::Lock(lock) => lock.is_up(),
+            _ => true,
+        }
+    }
+
     /// The toplevel, for the requests only a toplevel has.
     pub fn toplevel(&self) -> Option<&Window> {
         match self {
             Self::Toplevel(window) => Some(window),
-            Self::Layer(_) => None,
+            Self::Layer(_) | Self::Lock(_) => None,
         }
     }
 
@@ -93,6 +124,12 @@ impl Surface {
         let _ = match self {
             Self::Toplevel(window) => window.set_buffer_scale(scale),
             Self::Layer(layer) => layer.set_buffer_scale(scale),
+            Self::Lock(lock) => {
+                lock.wl_surface().set_buffer_scale(
+                    i32::try_from(scale).unwrap_or(i32::MAX),
+                );
+                return;
+            }
         };
     }
 

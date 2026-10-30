@@ -205,6 +205,16 @@ pub trait WindowExtWayland {
         damage: &[(i32, i32, i32, i32)],
         observer: Option<WaylandPresentationObserver>,
     ) -> bool;
+
+    /// Whether this window is the session's lock screen and the compositor
+    /// confirmed the lock: it has its surface, sized to the output, and
+    /// every input is its. Before that it draws nothing.
+    fn is_session_lock_up(&self) -> bool;
+
+    /// End the session's lock this window holds, after it established that
+    /// the person may: the session's desktop shows again. A window that is
+    /// not the lock screen does nothing.
+    fn unlock_session(&self);
 }
 
 #[cfg(wayland_platform)]
@@ -267,6 +277,29 @@ impl WindowExtWayland for Window {
             crate::platform_impl::Window::X(_) => None,
             #[cfg(wayland_platform)]
             crate::platform_impl::Window::Wayland(window) => window.xdg_toplevel(),
+        }
+    }
+
+    /// Whether this window is the session's lock screen and the compositor
+    /// confirmed the lock: it has its surface, sized to the output, and
+    /// every input is its. Before that it draws nothing.
+    fn is_session_lock_up(&self) -> bool {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => false,
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.is_session_lock_up(),
+        }
+    }
+
+    /// End the session's lock this window holds. The session's desktop
+    /// shows again. A window that is not the lock screen does nothing.
+    fn unlock_session(&self) {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => (),
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.unlock_session(),
         }
     }
 
@@ -388,6 +421,21 @@ pub trait WindowAttributesExtWayland {
     /// menu) are ignored. The surface is configured with the size its
     /// anchors give it, like any layer surface.
     fn with_layer_surface(self, attributes: LayerSurfaceAttributes) -> Self;
+
+    /// Make this window the session's lock screen instead of a toplevel
+    /// the desktop places.
+    ///
+    /// The window asks the compositor for the session's lock when it is
+    /// created: once every output shows it and nothing else draws, the
+    /// window gets its surface, sized to the output, and every input goes
+    /// to it. Leaving the lock is the window's own request
+    /// ([`WindowExtWayland::unlock_session`]), after it established that the
+    /// person may.
+    ///
+    /// The attributes that only a toplevel has (a title, client side
+    /// decorations, minimizing, maximizing, fullscreen, moving, a window
+    /// menu) are ignored.
+    fn with_session_lock(self) -> Self;
 }
 
 impl WindowAttributesExtWayland for WindowAttributes {
@@ -403,6 +451,12 @@ impl WindowAttributesExtWayland for WindowAttributes {
     #[inline]
     fn with_layer_surface(mut self, attributes: LayerSurfaceAttributes) -> Self {
         self.platform_specific.layer = Some(attributes);
+        self
+    }
+
+    #[inline]
+    fn with_session_lock(mut self) -> Self {
+        self.platform_specific.session_lock = true;
         self
     }
 }

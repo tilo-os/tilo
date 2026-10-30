@@ -77,6 +77,9 @@ pub struct PlatformSpecificWindowAttributes {
     pub activation_token: Option<ActivationToken>,
     #[cfg(wayland_platform)]
     pub layer: Option<wayland::LayerSurfaceAttributes>,
+    /// The window is the session's lock screen.
+    #[cfg(wayland_platform)]
+    pub session_lock: bool,
     #[cfg(x11_platform)]
     pub x11: X11WindowAttributes,
 }
@@ -102,6 +105,8 @@ impl Default for PlatformSpecificWindowAttributes {
             activation_token: None,
             #[cfg(wayland_platform)]
             layer: None,
+            #[cfg(wayland_platform)]
+            session_lock: false,
             #[cfg(x11_platform)]
             x11: X11WindowAttributes {
                 visual_id: None,

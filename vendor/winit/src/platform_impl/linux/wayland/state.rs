@@ -16,6 +16,10 @@ use sctk::output::{OutputHandler, OutputState};
 use sctk::registry::{ProvidesRegistryState, RegistryState};
 use sctk::seat::pointer::ThemedPointer;
 use sctk::seat::SeatState;
+use sctk::session_lock::{
+    SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
+    SessionLockSurfaceConfigure,
+};
 use sctk::shell::wlr_layer::{LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure};
 use sctk::shell::xdg::window::{Window, WindowConfigure, WindowHandler};
 use sctk::shell::xdg::XdgShell;
@@ -73,6 +77,10 @@ pub struct WinitState {
     /// a layer of an output. `None` when the compositor has no
     /// `zwlr_layer_shell_v1`.
     pub layer_shell: Option<LayerShell>,
+
+    /// `ext-session-lock`, which a window asks for to become the session's
+    /// lock screen. `None` when the compositor offers none.
+    pub session_lock: Option<SessionLockState>,
 
     /// The currently present windows.
     pub windows: RefCell<AHashMap<WindowId, Arc<Mutex<WindowState>>>>,
@@ -222,6 +230,10 @@ impl WinitState {
 
             xdg_shell: XdgShell::bind(globals, queue_handle).map_err(WaylandError::Bind)?,
             layer_shell: LayerShell::bind(globals, queue_handle).ok(),
+            // Binding is lazy: a compositor without `ext-session-lock`
+            // refuses a window's lock request, and every other window is
+            // unaffected.
+            session_lock: Some(SessionLockState::new(globals, queue_handle)),
             xdg_activation: XdgActivationState::bind(globals, queue_handle).ok(),
 
             windows: Default::default(),
@@ -418,6 +430,89 @@ impl LayerShellHandler for WinitState {
     }
 }
 
+impl SessionLockHandler for WinitState {
+    fn locked(&mut self, _: &Connection, queue_handle: &QueueHandle<Self>, session_lock: SessionLock) {
+        // The compositor shows the lock and nothing else: every window that
+        // asked for it gets its surface now, sized to an output.
+        let Some(output) = self.monitors.lock().unwrap().first().map(|monitor| monitor.proxy.clone()) else {
+            tracing::warn!("no output to lock: the lock screen has nowhere to show");
+            return;
+        };
+        let windows: Vec<_> = self
+            .windows
+            .borrow()
+            .values()
+            .filter_map(|window| {
+                let window = window.lock().unwrap();
+                window.lock_surface().cloned()
+            })
+            .collect();
+        drop(session_lock);
+        for lock in windows {
+            if lock.put_up(&output, queue_handle) {
+                // The compositor sends the lock surface's size next; the
+                // window draws in it once it has it.
+                self.dispatched_events = true;
+            }
+        }
+    }
+
+    fn finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: SessionLock) {
+        // The lock ended, by the client or by the session: what the lock
+        // screen showed is gone, and an app whose window it was ends.
+        let locked: Vec<WindowId> = self
+            .windows
+            .borrow()
+            .iter()
+            .filter(|(_, window)| window.lock().unwrap().lock_surface().is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        for window_id in locked {
+            Self::queue_close(&mut self.window_compositor_updates, window_id);
+        }
+        self.dispatched_events = true;
+    }
+
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        surface: SessionLockSurface,
+        configure: SessionLockSurfaceConfigure,
+        _serial: u32,
+    ) {
+        let window_id = super::make_wid(surface.wl_surface());
+
+        let Some(window_state) = self.windows.get_mut().get_mut(&window_id) else {
+            return;
+        };
+        let resized = window_state
+            .lock()
+            .unwrap()
+            .lock_configure(configure.new_size);
+
+        let pos = if let Some(pos) = self
+            .window_compositor_updates
+            .iter()
+            .position(|update| update.window_id == window_id)
+        {
+            pos
+        } else {
+            self.window_compositor_updates
+                .push(WindowCompositorUpdate::new(window_id));
+            self.window_compositor_updates.len() - 1
+        };
+        self.window_compositor_updates[pos].resized |= resized;
+
+        // The size is acked, but only a commit shows what was drawn for it:
+        // ask for a redraw, as for a layer surface.
+        if let Some(requests) = self.window_requests.get_mut().get(&window_id) {
+            requests.redraw_requested.store(true, Ordering::Relaxed);
+        }
+        self.dispatched_events = true;
+    }
+}
+
 impl OutputHandler for WinitState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
@@ -552,5 +647,6 @@ sctk::delegate_output!(WinitState);
 sctk::delegate_registry!(WinitState);
 sctk::delegate_shm!(WinitState);
 sctk::delegate_layer!(WinitState);
+sctk::delegate_session_lock!(WinitState);
 sctk::delegate_xdg_shell!(WinitState);
 sctk::delegate_xdg_window!(WinitState);

@@ -295,6 +295,12 @@ impl WindowState {
         damage: &[(i32, i32, i32, i32)],
         observer: Option<crate::platform::wayland::WaylandPresentationObserver>,
     ) -> bool {
+        // A lock screen has no surface on the compositor until the lock is
+        // confirmed: nothing it drew before that can be shown, and the
+        // compositor configures it again once it can.
+        if self.window.is_lock() && !self.window.is_session_lock_up() {
+            return false;
+        }
         let observed = match observer {
             Some(observer) => self.observe_next_present(observer),
             None => false,
@@ -719,6 +725,22 @@ impl WindowState {
     #[inline]
     pub fn is_configured(&self) -> bool {
         self.last_configure.is_some() || self.layer_configured
+    }
+
+    /// The window's lock surface, when it is the session's lock screen.
+    #[inline]
+    pub fn lock_surface(&self) -> Option<&super::lock::LockSurface> {
+        self.window.lock_surface()
+    }
+
+    /// The compositor gave the lock screen the size of an output. Takes the
+    /// size and says whether it changed.
+    pub fn lock_configure(&mut self, size: (u32, u32)) -> bool {
+        self.layer_configured = true;
+        let size = LogicalSize::new(size.0.max(1), size.1.max(1));
+        let resized = size != self.size;
+        self.resize(size);
+        resized
     }
 
     /// The compositor gave a layer surface its size. Takes the size and says
