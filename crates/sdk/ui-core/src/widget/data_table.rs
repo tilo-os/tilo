@@ -640,7 +640,7 @@ pub trait TableModel {
 
 mod row_action;
 
-use row_action::{CHECK_ROW, CLICK_ROW, ROW_OPERATION_HANDLERS, RowAction};
+use row_action::{CHECK_ROW, CLICK_ROW, RowAction};
 
 /// Absent values sort last; numbers by value; text without regard to case.
 fn compare_text(a: Option<&str>, b: Option<&str>, numeric: bool) -> Ordering {
