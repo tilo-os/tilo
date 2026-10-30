@@ -301,7 +301,8 @@ impl Compositor {
         let now = std::time::Instant::now();
         let backend = self.data.backend.next_deadline();
         // A running visual alert fades frame by frame.
-        let alert = a11y::flashing(&self.data.state, now).then(|| now + a11y::FLASH_STEP);
+        let alert = a11y::flashing(&self.data.state, now)
+            .then(|| now.checked_add(a11y::FLASH_STEP).unwrap_or(now));
         backend
             .into_iter()
             .chain(self.keys.next_deadline())
@@ -431,9 +432,21 @@ impl Compositor {
     }
 
     /// Magnify the whole scene `zoom` times about the pointer, which stays
-    /// on what it points at; 1 (or less) turns the magnifier off.
+    /// on what it points at; 1 (or less) turns the magnifier off. The
+    /// settings in force follow, so the step a shortcut takes and what they
+    /// hold is one zoom, not two.
     pub fn set_zoom(&mut self, zoom: f64) {
-        self.data.state.zoom = if zoom.is_finite() { zoom.max(1.0) } else { 1.0 };
+        let zoom = if zoom.is_finite() { zoom.max(1.0) } else { 1.0 };
+        self.data.state.zoom = zoom;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the zoom steps are whole numbers of a small range"
+        )]
+        {
+            self.a11y.magnifier.zoom = zoom.min(f64::from(u8::MAX)) as u8;
+        }
+        self.data.state.mark_redraw_all();
     }
 
     /// The magnifier's zoom; 1 is off.
@@ -464,14 +477,9 @@ impl Compositor {
 
     /// Bring every output's visuals in line with the settings, outputs a
     /// backend found on its own since the last frame included.
-    fn seed_visuals(&mut self) {
-        let a11y = &self.a11y;
+    fn seed_visuals(&self) {
         for output in self.data.state.space.outputs() {
-            a11y::change(output, |visual| {
-                visual.color_filter = a11y.color_filter;
-                visual.magnifier_view = a11y.magnifier.view;
-                visual.crosshair = a11y.cursor.crosshair;
-            });
+            a11y::seed(output, &self.a11y);
         }
     }
 
@@ -1079,7 +1087,13 @@ impl Compositor {
     /// Draw a frame on every output that can take one and tell clients it
     /// was shown.
     pub fn render(&mut self) -> Result<(), Error> {
+        self.sync_text_input();
         self.seed_visuals();
+        // The visual alert fades frame by frame, so each frame it covers is
+        // a new one to draw.
+        if a11y::flashing(&self.data.state, Instant::now()) {
+            self.data.state.mark_redraw_all();
+        }
         let mut drew = false;
         for host in &mut self.data.state.hosts {
             let _ = host.prepare_frame();

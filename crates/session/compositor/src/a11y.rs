@@ -7,6 +7,11 @@
 //! ([`crate::Compositor::set_a11y`]). Everything here applies live, and to
 //! the outputs and devices that appear later.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "smithay geometry: logical coordinates of windows and outputs, far from i32 limits"
+)]
+
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
@@ -212,6 +217,16 @@ pub(crate) fn change(output: &Output, change: impl FnOnce(&mut Visual)) {
     }
 }
 
+/// Put `a11y` on `output`: the filter, the magnifier's view and the
+/// crosshair, for an output found now or later.
+pub(crate) fn seed(output: &Output, a11y: &A11y) {
+    change(output, |visual| {
+        visual.color_filter = a11y.color_filter;
+        visual.magnifier_view = a11y.magnifier.view;
+        visual.crosshair = a11y.cursor.crosshair;
+    });
+}
+
 /// Where the magnifier looks on `output` at `now`, in its physical pixels:
 /// the pointer or the focused window, whichever moved last. `None` when
 /// neither is on this output.
@@ -290,6 +305,8 @@ pub(crate) fn lens_rect(
     reason = "test fixture: instants offset by whole milliseconds from one start"
 )]
 mod tests {
+    use smithay::output::{PhysicalProperties, Subpixel};
+
     use super::*;
 
     fn ms(n: u64) -> Duration {
@@ -325,6 +342,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the alert is exactly full or exactly gone at its ends"
+    )]
     fn a_visual_alert_opens_at_full_strength_and_fades_out() {
         let t0 = Instant::now();
         let mut visual = Visual::default();
@@ -338,6 +359,49 @@ mod tests {
         assert_eq!(visual.flash_alpha(t0 + FLASH), 0.0);
         assert!(!visual.flashing(t0 + FLASH + FLASH));
         assert!(visual.flashing(t0 + ms(100)));
+    }
+
+    #[test]
+    fn an_output_carries_what_the_scene_and_the_final_pass_read() {
+        let output = Output::new(
+            "HEADLESS-1".to_owned(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "Tilo".into(),
+                model: "test".into(),
+            },
+        );
+        seed(&output, &A11y::default());
+        let plain = visual(&output);
+        assert_eq!(plain.color_filter, ColorFilter::Off);
+        assert!(!plain.crosshair);
+
+        let a11y = A11y {
+            color_filter: ColorFilter::GrayscaleInverted,
+            magnifier: Magnifier {
+                zoom: 2,
+                view: MagnifierView::FullScreen,
+            },
+            cursor: CursorA11y {
+                crosshair: true,
+                ..CursorA11y::default()
+            },
+            ..A11y::default()
+        };
+        seed(&output, &a11y);
+        assert_eq!(
+            visual(&output).color_filter,
+            ColorFilter::GrayscaleInverted,
+            "the filter the output's final pass draws"
+        );
+        assert_eq!(visual(&output).magnifier_view, MagnifierView::FullScreen);
+        assert!(visual(&output).crosshair);
+
+        // And off again.
+        seed(&output, &A11y::default());
+        assert_eq!(visual(&output).color_filter, ColorFilter::Off);
+        assert!(!visual(&output).crosshair);
     }
 
     #[test]

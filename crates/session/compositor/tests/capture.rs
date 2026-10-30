@@ -592,6 +592,46 @@ fn a_cursor_session_carries_the_pointer_image_and_where_it_is() {
     assert_eq!(tool.seen.cursor, vec!["position 40 10".to_owned()]);
 }
 
+/// The pointer's image size as a cursor session copies it, from a
+/// compositor showing it at `size` logical pixels.
+fn pointer_image_size(compositor: &mut Compositor, size: u32) -> (u32, u32) {
+    let mut a11y = compositor.a11y().clone();
+    a11y.cursor.size = size;
+    compositor.set_a11y(a11y).expect("a pointer size");
+    let mut tool = trusted_tool(compositor);
+    pump(compositor, &mut tool, |seen| seen.seat.is_some());
+    let qh = tool.queue.handle();
+    let pointer = tool.seen.seat.as_ref().unwrap().get_pointer(&qh, ());
+    let source = tool.seen.sources.clone().unwrap().create_source(
+        tool.seen.output.as_ref().unwrap(),
+        &qh,
+        (),
+    );
+    compositor
+        .input(InputEvent::PointerMotion { x: 30.0, y: 20.0 })
+        .unwrap();
+    let cursor = tool
+        .seen
+        .image_copy
+        .clone()
+        .unwrap()
+        .create_pointer_cursor_session(&source, &pointer, &qh, ());
+    let _session = cursor.get_capture_session(&qh, ());
+    pump(compositor, &mut tool, |seen| seen.session_size.is_some());
+    tool.seen.session_size.expect("the pointer's size")
+}
+
+#[test]
+fn a_bigger_pointer_is_the_size_the_person_asked_for() {
+    let mut compositor = compositor();
+    let plain = pointer_image_size(&mut compositor, 24);
+    let large = pointer_image_size(&mut compositor, 48);
+    assert!(
+        large.0 > plain.0 && large.1 > plain.1,
+        "the pointer is drawn bigger: {plain:?} then {large:?}"
+    );
+}
+
 #[test]
 fn a_window_capture_shows_the_pointer_over_it_when_asked() {
     let mut compositor = compositor();
