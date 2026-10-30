@@ -1148,6 +1148,26 @@ impl BrowserWidget {
         }
     }
 
+    /// A page action that typed (`fill-page`, `press-page`, a secret) has
+    /// ended, however it ended: if the field it typed into is a password
+    /// field, a credential was entered and the page holds a sign-in. The
+    /// field's type decides, not the action: the engine reports the focused
+    /// field as the action focuses it, before it answers, so the field
+    /// reported now is the one the keys went to.
+    fn note_text_entered(&mut self, acted: &PageRequest) {
+        if acted.enters_text() && self.focused_field_is_password() {
+            self.hold_sign_in();
+        }
+    }
+
+    /// Whether the page's focused field, as the engine reports it, is a
+    /// password field.
+    fn focused_field_is_password(&self) -> bool {
+        self.engine
+            .text_field()
+            .is_some_and(|field| field.purpose == ui::ime::InputPurpose::Password)
+    }
+
     /// Whether `event`, reaching the page, is the person typing into the
     /// page's focused password field: entering a credential. Moving between
     /// fields, modifiers alone and Escape enter nothing.
@@ -1171,12 +1191,7 @@ impl BrowserWidget {
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => !text.is_empty(),
             _ => false,
         };
-        typing
-            && self.control_focused("browser.surface")
-            && self
-                .engine
-                .text_field()
-                .is_some_and(|field| field.purpose == ui::ime::InputPurpose::Password)
+        typing && self.control_focused("browser.surface") && self.focused_field_is_password()
     }
 
     pub fn engine_handle(&self) -> SharedEngine {
@@ -2147,6 +2162,7 @@ impl BrowserWidget {
         let Some(operation) = self.page_operation.take() else {
             return;
         };
+        self.note_text_entered(&operation.acted);
         self.reader_request = None;
         self.page_operation_result = Some(match operation.phase {
             PagePhase::Navigating { reply } => self.page_success(
@@ -2170,6 +2186,7 @@ impl BrowserWidget {
         let Some(operation) = self.page_operation.take() else {
             return;
         };
+        self.note_text_entered(&operation.acted);
         self.reader_request = None;
         let dialog = self.page_dialogs.current();
         // The page asked and the question went before it could be read:
@@ -2192,6 +2209,7 @@ impl BrowserWidget {
         }) else {
             return;
         };
+        self.note_text_entered(&operation.acted);
         if let Some(enabled) = self.reader_request.take()
             && result.is_ok()
         {
