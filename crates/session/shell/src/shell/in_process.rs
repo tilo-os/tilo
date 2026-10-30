@@ -1729,7 +1729,13 @@ mod tests {
                         .as_any()
                         .and_then(|any| any.downcast_ref::<ui::app::EmbeddedApp>())
                         .map_or_else(String::new, |embedded| {
-                            format!("{:?}", embedded.app().collaboration_state())
+                            let app = embedded.app();
+                            // Offered, and (taken, refused) by the broker.
+                            format!(
+                                "{:?} directory {:?}",
+                                app.collaboration_state(),
+                                app.action_directory_observation()
+                            )
                         })
                 })
                 .collect();
