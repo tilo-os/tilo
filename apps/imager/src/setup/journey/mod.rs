@@ -5178,7 +5178,7 @@ impl InstallerPreview {
         // Enter in the password moves on to its confirmation, in any other
         // field it continues.
         let input = if focus_confirmation {
-            input.on_submit(move |_| {
+            input.on_submit_view(move |_| {
                 if submit_enabled {
                     next_focus.set(true);
                 }
@@ -5192,7 +5192,7 @@ impl InstallerPreview {
             // would be said over the window as a refused action, and the
             // announcement would take the focus the field needs.
             let commands = self.commands.clone();
-            input.on_submit(move |_| {
+            input.on_submit_view(move |_| {
                 commands
                     .borrow_mut()
                     .push(InstallerPreviewEffect::ContinuePreview);
