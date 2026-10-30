@@ -327,14 +327,21 @@ tilo-wayland-ext = { path = "../wayland-ext" }
 tilo-color-pipeline = { path = "../color-pipeline" }
 # The GPU passes that put a frame on an output.
 tilo-output-passes = { path = "../output-passes" }
-# The peer-to-peer transport: gossip topics, room host sessions, direct
-# links and the person's private device lane.
+# The peer-to-peer transport: room host sessions, sessions with the
+# person's own devices, direct links and the private device lane.
 tilo-network-actor = { path = "../network-actor" }
 # The Quick Settings panel, its sections and state, and the status line
 # the top bar shares.
 tilo-quick-settings = { path = "../quick-settings" }
 # The sheets over the desktop (the power menu), as apps this process mounts.
 tilo-sheets = { path = "../sheets" }
+tilo-onboarding = { path = "../onboarding" }
+# The notification banners, an app the shell hosts over the desktop.
+tilo-notification-banners = { path = "../notification-banners" }
+# The workspace overview, an app this process mounts.
+tilo-overview = { path = "../overview" }
+# The top bar, an app the shell hosts over the desktop.
+tilo-topbar = { path = "../topbar" }
 # The share session, encoders, viewer registry and counters of a window
 # shared with the workspace's other devices.
 tilo-window-share = { path = "../window-share" }

@@ -20,25 +20,41 @@ pub fn width_for_text_scale(scale: f32) -> f64 {
     SIDEBAR_WIDTH * f64::from(scale.clamp(0.5, 4.0))
 }
 
-/// Build the sectioned category list with `selected` chosen. Choosing a row
-/// runs its pane's open effect.
-pub fn build(cx: &crate::host::PaneCx, selected: Category, query: &str) -> Box<dyn ui::Widget> {
+/// The sectioned category list, choosing what `selection` holds and
+/// narrowed to what `filter` holds; both follow the list, so the window bar's
+/// search writes what it asks for to `filter`. Choosing a row runs its
+/// pane's open effect through `actions`.
+pub fn build(
+    actions: &ui::framework::Actions<crate::resource::Settings>,
+    selection: &ui::LocalState<Option<String>>,
+    filter: &ui::LocalState<String>,
+) -> NavList {
     let bindings = Category::ALL
         .iter()
         .filter_map(|category| {
-            cx.invocation_binding(crate::effects::NavigationEffect::OpenPane {
-                pane: category.slug().to_owned(),
-            })
-            .map(|binding| (category.slug().to_owned(), binding))
+            actions
+                .effect(&crate::effects::SettingsEffect::from(
+                    crate::effects::NavigationEffect::OpenPane {
+                        pane: category.slug().to_owned(),
+                    },
+                ))
+                .map(|binding| (category.slug().to_owned(), binding))
         })
         .collect::<Vec<_>>();
-    let mut list = NavList::new(sections())
+    list(selection, filter).selection_actions(bindings)
+}
+
+/// The sectioned category list, as [`build`] makes it, its rows opening
+/// nothing.
+pub fn list(
+    selection: &ui::LocalState<Option<String>>,
+    filter: &ui::LocalState<String>,
+) -> NavList {
+    NavList::new(sections())
         .with_id(NAV_ID)
         .with_accessible_name(crate::i18n::t("settings-nav-name"))
-        .selected(selected.slug())
-        .selection_actions(bindings);
-    list.set_filter(query);
-    list.into_widget()
+        .bind_selection(selection)
+        .bind_filter(filter)
 }
 
 /// The sections of the list, in render order.
@@ -103,8 +119,6 @@ mod tests {
     /// setting matched: "where is the keyboard layout".
     #[test]
     fn the_filter_finds_pages_by_the_settings_on_them() {
-        let cx =
-            crate::host::PaneCx::detached(ui::storage::AppStorage::for_app("so.tilo.settings"));
         for (query, page) in [
             ("layout", Category::Keyboard),
             ("qwertz", Category::Keyboard),
@@ -114,13 +128,11 @@ mod tests {
             ("tap to click", Category::Pointing),
             ("disable touchpad while typing", Category::Pointing),
         ] {
-            let mut widget = build(&cx, Category::Network, query);
-            let list = widget
-                .as_any_mut()
-                .unwrap()
-                .downcast_mut::<ui::widget::NavList>()
-                .unwrap();
-            let shown = list.visible_item_ids();
+            let shown = list(
+                &ui::LocalState::new(Some(Category::Network.slug().to_owned())),
+                &ui::LocalState::new(query.to_owned()),
+            )
+            .visible_item_ids();
             assert!(
                 shown.iter().any(|id| id == page.slug()),
                 "{query:?} shows {page:?}, got {shown:?}"

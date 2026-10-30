@@ -1,8 +1,10 @@
 name: Release / imager WinGet acceptance
 
 on:
-  schedule:
-    - cron: "23 */6 * * *"
+  # No `schedule:`: a scheduled run's actor is forgejo-actions, which the hosted-runner
+  # admission patch does not admit, so such a run would wait for a runner that never takes it.
+  # The CI host controller dispatches this workflow at its cron slots instead
+  # (apps/ci-runners/host_controller.py, TIMER_WORKFLOWS), as a user the patch admits.
   workflow_dispatch:
 
 concurrency:

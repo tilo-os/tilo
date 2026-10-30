@@ -141,6 +141,9 @@ pub struct AppWindow {
     /// The control to take the keyboard once the window's tree is laid out, by key in the
     /// composed tree ([`Widget::take_focus_request`]).
     focus_request: Option<String>,
+    /// How many presses the window had sent when the app last opened a view for the person's
+    /// input, until the app says it ran them (`ToUi::Took`).
+    opened: Option<u64>,
     /// One `rem` in logical pixels under the theme the window was last laid out in.
     rem: f32,
     /// The space last told the app each lane's view has, in rem.
@@ -210,6 +213,7 @@ impl AppWindow {
             typed: std::collections::VecDeque::new(),
             pointed_after: None,
             focus_request: None,
+            opened: None,
             rem: 16.0,
             root_space: None,
             detail_space: None,
@@ -313,7 +317,12 @@ impl AppWindow {
                     }
                     self.track_rows();
                     content = true;
-                    opened_for_input |= lane == Lane::Detail && brought == Some(wire::Front::Input);
+                    if lane == Lane::Detail && brought == Some(wire::Front::Input) {
+                        opened_for_input = true;
+                        // Its Took may come in a later batch: what is typed until then follows
+                        // the press into it.
+                        self.opened = Some(self.fired);
+                    }
                     front = brought.or(front);
                 }
                 ToUi::Close => {
@@ -351,7 +360,9 @@ impl AppWindow {
                     self.took = self.took.max(fired);
                     // What was typed after the presses it ran goes to what they opened, before
                     // what a later press opened (further on in this batch) takes its place.
-                    self.send_typed_into(std::mem::take(&mut opened_for_input));
+                    opened_for_input = false;
+                    let opened = self.opened.take().is_some();
+                    self.send_typed_into(opened);
                 }
             }
         }
@@ -360,6 +371,9 @@ impl AppWindow {
             self.compose();
         }
         self.send_typed_into(opened_for_input);
+        if self.fired <= self.took {
+            self.opened = None;
+        }
         if let Some(front) = front {
             self.show_content(match front {
                 wire::Front::Input => by_input(),
@@ -1034,6 +1048,41 @@ impl AppWindow {
         true
     }
 
+    /// Enter in a field of one line that submits nothing moves the keyboard on to the next field
+    /// of its view, as native Notes goes from a note's title to its body. A field with `submit`
+    /// keeps Enter: it submits. Whether it moved.
+    fn enter_moves_on(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        modifiers: ui::winit::keyboard::ModifiersState,
+    ) -> bool {
+        use ui::winit::keyboard::{Key, NamedKey};
+        let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if key.state != ui::winit::event::ElementState::Pressed
+            || key.logical_key != Key::Named(NamedKey::Enter)
+            || self.composing
+            || modifiers.shift_key()
+            || modifiers.control_key()
+            || modifiers.alt_key()
+            || modifiers.super_key()
+        {
+            return false;
+        }
+        let Some(next) = self
+            .focused_field()
+            .zip(self.built.as_ref())
+            .and_then(|(field, built)| field_after_enter(built, &field))
+        else {
+            return false;
+        };
+        // The window's own request, taken once its tree is laid out again.
+        self.focus_request = Some(next);
+        self.structure_dirty = true;
+        true
+    }
+
     /// Send what the person typed after each press the app ran since, into the view a press
     /// opened for them when `opened` (its first field takes the keyboard).
     fn send_typed_into(&mut self, opened: bool) {
@@ -1312,6 +1361,42 @@ fn lane_of(key: &str) -> (Lane, String) {
     }
 }
 
+/// The field Enter in the field `key` of the composed tree `tree` moves the keyboard on to: the
+/// next field of its view, when `key` is a text field of one line that submits nothing.
+fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
+    fn in_order<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
+        out.push(node);
+        for child in &node.children {
+            in_order(child, out);
+        }
+    }
+    let text_input = crate::adapter::kind("TextInput");
+    let takes_typing = |node: &UiNode| {
+        node.binding.is_some()
+            && (node.kind == text_input || node.kind == crate::adapter::kind("RichInput"))
+    };
+    let mut nodes = Vec::new();
+    in_order(tree, &mut nodes);
+    let at = nodes.iter().position(|node| node.key == key)?;
+    let field = nodes.get(at)?;
+    // Given `lines`, the field wraps and Enter breaks its line (a document's title still ends
+    // at Enter, and wraps only to fit).
+    let one_line = field.kind == text_input
+        && matches!(
+            field.props.get("lines"),
+            None | Some(Value::Unit | Value::Opt(None))
+        );
+    if !one_line || field.events.contains_key("submit") {
+        return None;
+    }
+    let lane = lane_of(key).0;
+    nodes
+        .get(at.saturating_add(1)..)?
+        .iter()
+        .find(|node| takes_typing(node) && lane_of(&node.key).0 == lane)
+        .map(|node| node.key.clone())
+}
+
 /// The virtual lists of a view's tree, by key.
 fn virtual_lists(tree: &UiNode) -> Vec<String> {
     fn walk(node: &UiNode, out: &mut Vec<String>) {
@@ -1531,7 +1616,7 @@ impl ui::widget::Decorator for AppWindow {
         {
             self.pointed_after = Some(self.fired);
         }
-        if self.hold_typing(event) {
+        if self.hold_typing(event) || self.enter_moves_on(event, ctx.modifiers.state()) {
             *ctx.handled = true;
             return;
         }
@@ -1912,6 +1997,33 @@ mod tests {
         assert_eq!(
             window.bound_value(&title),
             Some(Value::text("UntitledEcho"))
+        );
+    }
+
+    #[test]
+    fn typing_between_what_a_press_opened_and_its_took_follows_into_the_opened_field() {
+        let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+        let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+        send(&mut app, &titled_page());
+        send(&mut app, &opened_note("a", "Alpha"));
+        window.receive();
+        let title = format!("{DETAIL}title");
+        window.act(UiEvent::Press("new".to_owned()));
+        window.flush();
+        let _ = sent(&mut app);
+        // The note the press opened arrives in one batch, the app's Took in the next; the
+        // person types in between, in the field that had the keyboard, which shows note b now.
+        send(&mut app, &opened_note("b", ""));
+        window.receive();
+        window.act(UiEvent::Edit(title, "Echo".to_owned()));
+        window.flush();
+        assert!(sent(&mut app).is_empty(), "the typing waits for the press");
+        send(&mut app, &[ToUi::Took { fired: 1 }]);
+        window.receive();
+        window.flush();
+        assert!(
+            matches!(&sent(&mut app)[..], [ToApp::Splice { target, insert, .. }] if *target == note("b") && insert == "Echo"),
+            "the typing goes to the opened note's field"
         );
     }
 

@@ -133,6 +133,17 @@ mod unix {
         Asking,
         /// The devices this identity trusts.
         Devices,
+        /// Which account on this device is the person it is bound to: the
+        /// one whose proof, signed by the identity's key, names its uid.
+        /// Prints `NAME UID:GID`. The system asks this as root at boot.
+        LocalPerson {
+            /// The device's identity tree.
+            #[arg(long, value_name = "DIR", default_value = "/var/lib/tilo")]
+            identity_root: PathBuf,
+            /// The accounts, in passwd format; default `getent passwd`.
+            #[arg(long, value_name = "FILE")]
+            passwd: Option<PathBuf>,
+        },
         /// Revoke a device: it can no longer act as this identity.
         Revoke {
             /// The device's key, or the start of it, as `devices` lists it.
@@ -245,6 +256,28 @@ mod unix {
     pub fn main() -> ExitCode {
         let cli = Cli::parse();
         let json = cli.json;
+        // The system's question, about every account, asked as root.
+        if let Cmd::LocalPerson {
+            identity_root,
+            passwd,
+        } = &cli.command
+        {
+            return match local_person(identity_root, passwd.as_deref()) {
+                Ok(line) => {
+                    println!("{line}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("{error:#}");
+                    // Several accounts hold the key: a person must say which.
+                    if error.downcast_ref::<SeveralHoldIt>().is_some() {
+                        ExitCode::from(2)
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                }
+            };
+        }
         let result = refuse_root()
             .and_then(|()| PersonPaths::from_env().map_err(anyhow::Error::msg))
             .and_then(|person| {
@@ -274,8 +307,57 @@ mod unix {
         }
     }
 
+    /// Several accounts prove they hold the device's identity.
+    #[derive(Debug)]
+    struct SeveralHoldIt(Vec<String>);
+
+    impl std::fmt::Display for SeveralHoldIt {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "several accounts hold this device's identity: {}",
+                self.0.join(", ")
+            )
+        }
+    }
+
+    impl std::error::Error for SeveralHoldIt {}
+
+    fn local_person(identity_root: &Path, passwd: Option<&Path>) -> anyhow::Result<String> {
+        use tilo_identity_host::local_person::{self, Person};
+        let text = if let Some(path) = passwd {
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?
+        } else {
+            let out = Command::new("getent")
+                .arg("passwd")
+                .output()
+                .context("run getent passwd")?;
+            anyhow::ensure!(out.status.success(), "getent passwd failed");
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let accounts = local_person::regular_accounts(&text);
+        let paths = IdentityPaths::under(identity_root);
+        match local_person::find(&paths, &accounts)? {
+            Person::One(account) => Ok(format!("{} {}:{}", account.name, account.uid, account.gid)),
+            Person::Nobody => anyhow::bail!(
+                "no account here proves it holds this device's identity; the person's next \
+                 sign-in writes the proof"
+            ),
+            Person::Several(accounts) => Err(SeveralHoldIt(
+                accounts.into_iter().map(|account| account.name).collect(),
+            )
+            .into()),
+        }
+    }
+
     fn run(context: &Context, command: Cmd) -> anyhow::Result<()> {
         match command {
+            // Answered in `main`, before an account is resolved; the same
+            // answer if it ever arrives here.
+            Cmd::LocalPerson {
+                identity_root,
+                passwd,
+            } => local_person(&identity_root, passwd.as_deref()).map(|line| println!("{line}")),
             Cmd::Status => status(context),
             Cmd::Create {
                 acknowledge_no_recovery_service,

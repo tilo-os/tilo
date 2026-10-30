@@ -37,6 +37,7 @@ mod route_access;
 use route_access::{RouteAccess, attested_route_access, identity_reads_record};
 mod committed_document;
 mod content_put;
+mod record_read;
 pub use content_put::CONTENT_PUT_REFUSED;
 #[cfg(test)]
 mod directory_disclosure_tests;
@@ -1153,11 +1154,9 @@ fn verify_join_identity_with_host_scope(
     Ok(admitted)
 }
 
-/// Whether `cert` may join `route` at all: the host worker scope for a host
-/// certificate, else the room's certificate authority (its device list and
-/// revocations), else the trusted device keys. Answers the root expected to
-/// have certified it and whether it is revoked or enrolled where only the
-/// trusted keys decide.
+/// Whether `cert` may join `route`: the host worker scope, else the room's
+/// certificate authority (device list, revocations), else the trusted keys.
+/// Answers the root expected to certify it, and whether it is revoked or enrolled.
 fn authorize_join_certificate(
     route: &CrdtRoute,
     cert: &tilo_user_identity::DeviceCert,

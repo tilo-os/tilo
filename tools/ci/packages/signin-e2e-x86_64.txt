@@ -1,0 +1,6 @@
+# QEMU and firmware for signin-e2e on x86_64: the PC machine with OVMF (its 4 MB build has the
+# TPM) and virtio VGA.
+edk2-ovmf
+qemu-system-x86-core
+qemu-device-display-virtio-vga
+ipxe-roms-qemu

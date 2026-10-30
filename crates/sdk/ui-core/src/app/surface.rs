@@ -48,7 +48,6 @@ impl App {
                 .history
                 .as_ref()
                 .is_none_or(|history| history.live_interactive())
-            && self.history_layout.is_none_or(|layout| layout.app_visible)
             && let Some(layout) = self.input.keyboard_layout.clone()
         {
             self.root_widget
@@ -112,7 +111,6 @@ impl App {
             && self.accessibility.semantic_tree_marks == marks
             && !self.unsettled()
             && !self.root_widget.needs_redraw()
-            && !self.history_needs_redraw()
             && self.root_widget.floating_surface_presentations().is_empty();
         if inert {
             self.accessibility.semantic_tree_stale = stale;
@@ -213,9 +211,6 @@ impl App {
                 .history
                 .as_ref()
                 .is_some_and(|history| !history.live_interactive())
-            || self
-                .history_layout
-                .is_some_and(|layout| !layout.app_visible)
         {
             self.root_widget
                 .observe_physical_input(crate::widget::PhysicalInput::Focused(false));
@@ -327,10 +322,7 @@ impl App {
         let capture = app.begin_local_input_event(&event);
         let mut handled = false;
         let mut view_only_scroll = false;
-        let mut history_handled = matches!(event, WindowEvent::KeyboardInput { .. })
-            && app
-                .focused_node
-                .is_some_and(|node| app.is_history_node(node));
+        let mut history_handled = false;
         let mut focus_target = None;
         // A synthesized hover-clear may be handled by a control, but it is
         // presentation state and must not create an empty undo boundary.
@@ -825,11 +817,7 @@ impl App {
             if !is_pointer_move || app.root_widget.is_layout_dirty() {
                 app.layout.layout_dirty = true;
             }
-            if !is_pointer_move
-                || floating_pointer_needs_redraw
-                || app.root_widget.needs_redraw()
-                || app.history_needs_redraw()
-            {
+            if !is_pointer_move || floating_pointer_needs_redraw || app.root_widget.needs_redraw() {
                 window.request_redraw();
             }
         }
@@ -1209,7 +1197,6 @@ impl App {
         let culls = damage.culls
             && full.is_none()
             && self.history.is_none()
-            && self.history_layout.is_none()
             && !crate::scene_parts::is_tracked(scene);
         let mut culling = culls.then(|| std::mem::take(&mut self.layout.cull));
         let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
@@ -1393,7 +1380,6 @@ impl App {
         search_pending
             || self.needs_sync
             || self.layout.layout_dirty
-            || self.history_needs_redraw()
             // The palette arrives outside the app's root too: a host that
             // repaints the app only when it asks (an embedded app) would
             // otherwise keep its first, nearly transparent pose on screen.

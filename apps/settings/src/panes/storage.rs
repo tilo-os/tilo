@@ -7,6 +7,10 @@
 //! `storage-summary` effect, which another of the person's devices asks
 //! for too, and the other devices' are theirs, asked of each through the
 //! host (`other_devices`).
+//!
+//! The page is view code over what the area keeps of the device ([`view`]),
+//! with the drives the person chose to remember beneath it: each area moves
+//! what its part of the page is keyed by when what it shows changes.
 
 mod other_devices;
 mod residency;
@@ -19,20 +23,26 @@ use runtime_fs::storage::{
     CachePolicy, DEFAULT_STORAGE_SOCKET, EvictionReport, EvictionSelection, ResidencySummary,
     StorageClient, SyncStorageSnapshot,
 };
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use provider_settings_ui::bound::SettingRows as _;
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected};
+use ui::framework::{Actions, EffectAnswer, EffectCx, EffectReply, Effected, ViewCx};
 use ui::i18n::ArgValue;
 use ui::tilo_resource;
-use ui::widget::{Button, Widget};
+use ui::widget::{Button, Element};
 
+use crate::area::AreaContext;
 use crate::device_read::{Landed, Landing};
-use crate::effects::effect;
-use crate::host::PaneCx;
+use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
-use crate::panes::model::{PaneModel, Replies, Shared};
+use crate::replies::Replies;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{SettingsSection, note, rows, section, section_with, value_row};
+use provider_settings_ui::widgets::{
+    SettingsSection, note, rows, section, section_with, value_row,
+};
 
 crate::effects::effect_family!(StorageEffect => answer);
 
@@ -40,6 +50,9 @@ crate::area::pane_area! {
     StorageArea;
     fn poll(&self) {
         StorageArea::poll(self);
+    }
+    fn busy(&self) -> bool {
+        StorageArea::busy(self)
     }
 }
 
@@ -195,20 +208,20 @@ pub enum StorageEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: StorageEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let area = crate::panes::storage::area(app).ok_or_else(crate::area::missing)?;
     match effect {
         StorageEffect::CleanUpCaches => {
             let preview = area.model().borrow_mut().begin_clean_up()?;
             let device = area.device();
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 move || -> Result<StorageScan, String> {
                     device.clean_up(&preview)?;
                     Ok(device.scan())
                 },
-                |app: &mut SettingsApp, cleaned: Result<StorageScan, String>, _| {
+                |app: &SettingsApp, cleaned: Result<StorageScan, String>, _| {
                     crate::panes::storage::area(app)
                         .ok_or_else(crate::area::missing)?
                         .model()
@@ -263,6 +276,7 @@ pub(crate) fn answer(
             Ok(Effected::Pending)
         }
         StorageEffect::OpenDisks => Ok(open_tool(
+            app,
             area,
             cx,
             ToolIntent::Disks {
@@ -271,6 +285,7 @@ pub(crate) fn answer(
             "settings-storage-opened-disks",
         )),
         StorageEffect::OpenBackups => Ok(open_tool(
+            app,
             area,
             cx,
             ToolIntent::Backups {
@@ -284,17 +299,18 @@ pub(crate) fn answer(
 /// Ask the shell to open `intent` off the UI thread; `opened` names the
 /// message it answers with once the shell took it.
 fn open_tool(
+    app: &SettingsApp,
     area: &StorageArea,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
     intent: ToolIntent,
     opened: &'static str,
 ) -> Effected {
     let device = area.device();
     let on_behalf_of = ui::invocation_scope::delivered_invocation().map(|id| id.0.into_bytes());
-    crate::device_read::job(
+    app.job(
         cx,
         move || device.open_tool(intent, on_behalf_of),
-        move |_: &mut SettingsApp, result: Result<(), String>, _| {
+        move |_: &SettingsApp, result: Result<(), String>, _| {
             result.map(|()| Effected::value(t(opened)))
         },
     )
@@ -303,10 +319,7 @@ fn open_tool(
 /// The Storage pane: this device's storage, then the drives the person
 /// chose to remember ([`crate::panes::drives`]), which say nothing when
 /// there are none.
-pub(crate) fn build_with_drives(
-    storage: crate::widgets::El,
-    drives: crate::widgets::El,
-) -> Box<dyn Widget> {
+fn build_with_drives(storage: Element, drives: Element) -> Element {
     Box::new(
         ui::widget::Column::new()
             .with_no_padding()
@@ -385,8 +398,8 @@ struct DeviceStorage {
 }
 
 impl DeviceStorage {
-    fn of(cx: &PaneCx) -> Self {
-        if cx.reaches_devices() {
+    fn of(devices: bool) -> Self {
+        if devices {
             Self {
                 roots: StorageRoots::discover(),
                 disk: std::env::var_os("HOME").map(std::path::PathBuf::from),
@@ -433,21 +446,28 @@ impl StorageDevice for DeviceStorage {
 /// What the storage area keeps for the window: the device, and the model,
 /// scanned when first needed.
 pub struct StorageArea {
-    cx: PaneCx,
+    /// Whether it measures this device and asks its storage service.
+    devices: bool,
+    /// The stand-in devices a capture shows; `None` in a live window.
+    scene: Option<Rc<crate::scenarios::CaptureScene>>,
     device: std::cell::OnceCell<std::sync::Arc<dyn StorageDevice>>,
-    model: std::cell::OnceCell<Shared<StorageModel>>,
+    model: std::cell::OnceCell<Rc<RefCell<StorageModel>>>,
     /// The window's client for the action door, which asks the person's
     /// other devices for their summaries.
     remote: ui::RemoteActions,
+    /// Moves whenever what the page shows of the model does.
+    shown: LocalState<u64>,
 }
 
 impl StorageArea {
-    pub fn new(cx: &PaneCx, remote: ui::RemoteActions) -> Self {
+    pub fn new(cx: &AreaContext, remote: ui::RemoteActions) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            scene: cx.scene.clone(),
             device: std::cell::OnceCell::new(),
             model: std::cell::OnceCell::new(),
             remote,
+            shown: LocalState::new(0),
         }
     }
 
@@ -456,7 +476,7 @@ impl StorageArea {
     fn device(&self) -> std::sync::Arc<dyn StorageDevice> {
         std::sync::Arc::clone(
             self.device
-                .get_or_init(|| std::sync::Arc::new(DeviceStorage::of(&self.cx))),
+                .get_or_init(|| std::sync::Arc::new(DeviceStorage::of(self.devices))),
         )
     }
 
@@ -473,37 +493,78 @@ impl StorageArea {
     /// The model, created on first use: its scan runs off the UI thread,
     /// and only a window someone uses asks the storage service and the
     /// person's other devices; a capture shows its stand-in devices.
-    pub fn model(&self) -> &Shared<StorageModel> {
+    pub fn model(&self) -> &Rc<RefCell<StorageModel>> {
         self.model.get_or_init(|| {
-            let mut model = StorageModel::over(self.cx.clone(), self.device());
-            if self.cx.reaches_devices() {
+            let mut model = StorageModel::over(self.devices, self.device());
+            if self.devices {
                 model.refresh_sync();
                 model.ask_other_devices(other_devices::OtherDevices::new(self.remote.clone()));
             } else {
                 for device in self
-                    .cx
-                    .scene()
+                    .scene
+                    .as_deref()
                     .map(|scene| scene.storage_devices.clone())
                     .unwrap_or_default()
                 {
                     model.fleet.adopt(device);
                 }
-                model.capacity_stand_in = self.cx.scene().and_then(|scene| scene.storage_capacity);
+                model.capacity_stand_in = self
+                    .scene
+                    .as_deref()
+                    .and_then(|scene| scene.storage_capacity);
             }
-            std::rc::Rc::new(std::cell::RefCell::new(model))
+            Rc::new(RefCell::new(model))
         })
     }
 
-    /// Take in finished background work, if the model exists.
+    /// Take in finished background work, if the model exists, and move
+    /// what the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
-        if let Some(model) = self.model.get() {
-            model.borrow_mut().take_in();
+        let Some(model) = self.model.get() else {
+            return;
+        };
+        let Ok(mut model) = model.try_borrow_mut() else {
+            return;
+        };
+        model.take_in();
+        if std::mem::take(&mut model.changed) {
+            self.shown.set(self.shown.get().wrapping_add(1));
         }
+    }
+
+    /// Whether background work is still running, so the window keeps
+    /// polling.
+    fn busy(&self) -> bool {
+        self.model
+            .get()
+            .and_then(|model| model.try_borrow().ok())
+            .is_some_and(|model| model.busy())
     }
 }
 
+/// The Storage page as view code over what the storage area keeps of this
+/// device and, beneath it, the drives area's remembered drives: each part
+/// is built again whenever what it shows changes ([`StorageArea::poll`],
+/// [`crate::panes::drives::DrivesArea::poll`]).
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
+    let held = area(app)?;
+    let model = Rc::clone(held.model());
+    // What landed while no page showed the model is taken in before the
+    // page is built.
+    held.poll();
+    let storage = cx.switch(&held.shown, move |cx, _| model.borrow().page(cx));
+    let drives = crate::panes::drives::view(cx, app)
+        .unwrap_or_else(|| provider_settings_ui::widgets::page(Vec::new()));
+    Some(build_with_drives(storage, drives))
+}
+
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts: whether it asks the device, what runs, what changed"
+)]
 pub struct StorageModel {
-    cx: PaneCx,
+    /// Whether it asks this device's storage service.
+    devices: bool,
     /// What was last measured; `None` until the first scan lands.
     scan: Option<StorageScan>,
     /// The scan on its way, off the UI thread.
@@ -574,9 +635,9 @@ impl SyncRead {
 impl StorageModel {
     /// `device`'s storage, measured off the UI thread: the pane shows that
     /// it is being measured until the scan lands.
-    fn over(cx: PaneCx, device: std::sync::Arc<dyn StorageDevice>) -> Self {
+    fn over(devices: bool, device: std::sync::Arc<dyn StorageDevice>) -> Self {
         Self {
-            cx,
+            devices,
             scan: None,
             scanning: Some(Landing::start(move || device.scan())),
             cleaning: false,
@@ -716,7 +777,7 @@ impl StorageModel {
     /// storage service, or, in a capture, its stand-in.
     fn summarize(&mut self, reply: EffectReply) {
         self.wait(StorageEffect::STORAGE_SUMMARY.id, reply);
-        if !self.cx.reaches_devices() {
+        if !self.devices {
             let summary = self
                 .fleet
                 .this_device()
@@ -785,7 +846,7 @@ impl StorageModel {
             self.replies.fail(id, t("settings-storage-residency-busy"));
             return;
         }
-        if !self.cx.reaches_devices() {
+        if !self.devices {
             self.replies
                 .fail(id, t("settings-storage-accounting-unavailable"));
             return;
@@ -822,7 +883,7 @@ impl StorageModel {
 
     /// Take in the background work that ended, marking the pane changed.
     /// The window's sync takes it in whether or not the pane is open, so
-    /// this leaves telling the pane to [`PaneModel::poll`].
+    /// this leaves moving the page to [`StorageArea::poll`].
     pub(crate) fn take_in(&mut self) {
         let waiting = (self.snapshot_result.is_some(), self.sync_result.is_some());
         let measured = self.poll_scan();
@@ -927,17 +988,23 @@ impl StorageModel {
         true
     }
 
-    fn build_composition(&self) -> Box<dyn Widget> {
+    /// The page as the model shows this device's storage now.
+    fn page(&self, cx: &ViewCx<Settings>) -> Element {
+        let actions = cx.actions();
         let mut sections = vec![self.overview_card()];
         sections.extend(residency::page(
-            &self.cx,
+            &actions,
             &self.fleet,
             self.residency_job.is_some(),
         ));
-        sections.push(self.synced_card());
-        sections.extend(self.cache_card());
-        sections.extend([self.apps_card(), self.cleanup_card(), self.tools_card()]);
-        crate::widgets::page(sections)
+        sections.push(self.synced_card(&actions));
+        sections.extend(self.cache_card(cx));
+        sections.extend([
+            self.apps_card(),
+            self.cleanup_card(&actions),
+            Self::tools_card(cx),
+        ]);
+        provider_settings_ui::widgets::page(sections)
     }
 
     /// This device's disk first: how big it is and how full, as the
@@ -959,7 +1026,7 @@ impl StorageModel {
                         ("total", ui::format::size(capacity.total_bytes).into()),
                     ],
                 );
-                items.push(crate::widgets::block(Box::new(
+                items.push(provider_settings_ui::widgets::block(Box::new(
                     ui::widget::ProgressBar::new(capacity.used_fraction())
                         .level(ui::widget::GaugeThresholds {
                             warning: 0.8,
@@ -1001,7 +1068,7 @@ impl StorageModel {
         section(&t("settings-storage-use"), rows(items))
     }
 
-    fn synced_card(&self) -> SettingsSection {
+    fn synced_card(&self, actions: &Actions<Settings>) -> SettingsSection {
         if let Some(snapshot) = &self.sync_snapshot {
             let local: u64 = snapshot.workspaces.iter().map(|w| w.local_bytes).sum();
             let remote: u64 = snapshot
@@ -1043,9 +1110,9 @@ impl StorageModel {
                 );
                 section_with(
                     &t("settings-storage-synced-card"),
-                    Box::new(self.cx.bind_invocation(
+                    Box::new(actions.bind_effect_invocation(
                         Button::new("storage.sync.free", &free),
-                        StorageEffect::FreeSyncedFiles,
+                        &SettingsEffect::from(StorageEffect::FreeSyncedFiles),
                     )),
                     rows(sync_rows),
                 )
@@ -1105,7 +1172,7 @@ impl StorageModel {
         )
     }
 
-    fn cleanup_card(&self) -> SettingsSection {
+    fn cleanup_card(&self, actions: &Actions<Settings>) -> SettingsSection {
         let Some(scan) = &self.scan else {
             return section(
                 &t("settings-storage-cleanup"),
@@ -1128,9 +1195,9 @@ impl StorageModel {
                     "settings-storage-remove",
                     &[("size", ui::format::size(preview.total_bytes).into())],
                 );
-                let action = Box::new(self.cx.bind_invocation(
+                let action = Box::new(actions.bind_effect_invocation(
                     Button::new("storage.clean", &remove),
-                    StorageEffect::CleanUpCaches,
+                    &SettingsEffect::from(StorageEffect::CleanUpCaches),
                 ));
                 let mut preview_rows = vec![note(&t("settings-storage-cleanup-caption"))];
                 let cache_item = t("settings-storage-cache-item");
@@ -1158,18 +1225,18 @@ impl StorageModel {
 
     /// Prediction and the space fetched workspace files may use; nothing
     /// until the storage service says its policy.
-    fn cache_card(&self) -> Option<SettingsSection> {
+    fn cache_card(&self, cx: &ViewCx<Settings>) -> Option<SettingsSection> {
         let prefetch_label = t("settings-storage-prefetch");
         let size_label = t("settings-storage-cache-size");
         let policy = self.cache_policy?;
         let size_row = match cache_size(policy.budget_bytes) {
-            Some(size) => self
-                .cx
-                .row(size_label)
+            Some(size) => cx
+                .setting(size_label)
                 .id("storage.cache-size")
                 .choice_effect(
                     CACHE_SIZES.iter().map(|size| cache_size_shown(size)),
                     &LocalState::new(cache_size_shown(size)),
+                    &cx.actions(),
                     effect(StorageEffect::SET_CACHE_SIZE)
                         .map(|shown: String| cache_size_from_label(&shown)),
                 ),
@@ -1182,12 +1249,12 @@ impl StorageModel {
         Some(section(
             &t("settings-storage-cache-card"),
             rows(vec![
-                self.cx
-                    .row(prefetch_label)
+                cx.setting(prefetch_label)
                     .described(t("settings-storage-prefetch-desc"))
                     .id("storage.prefetch")
                     .toggle_effect(
                         &LocalState::new(policy.prefetch),
+                        &cx.actions(),
                         effect(StorageEffect::SET_PREFETCH),
                     ),
                 size_row,
@@ -1196,40 +1263,34 @@ impl StorageModel {
         ))
     }
 
-    fn tools_card(&self) -> SettingsSection {
+    fn tools_card(cx: &ViewCx<Settings>) -> SettingsSection {
         let open_disks = t("settings-storage-open-disks");
         let open_backups = t("settings-storage-open-backups");
+        let actions = cx.actions();
+        let open = |effect: StorageEffect| {
+            let actions = actions.clone();
+            move |button| actions.bind_effect_invocation(button, &SettingsEffect::from(effect))
+        };
         section(
             &t("settings-storage-tools"),
             rows(vec![
-                self.cx
-                    .row(t("settings-storage-disks"))
+                cx.setting(t("settings-storage-disks"))
                     .described(t("settings-storage-disks-desc"))
-                    .button("storage.disks", &open_disks, StorageEffect::OpenDisks),
-                self.cx
-                    .row(t("settings-storage-backups"))
+                    .id("storage.disks")
+                    .button(&open_disks, open(StorageEffect::OpenDisks)),
+                cx.setting(t("settings-storage-backups"))
                     .described(t("settings-storage-backups-desc"))
-                    .button("storage.backups", &open_backups, StorageEffect::OpenBackups),
+                    .id("storage.backups")
+                    .button(&open_backups, open(StorageEffect::OpenBackups)),
                 note(&t("settings-storage-tools-caption")),
             ]),
         )
     }
 }
 
-impl PaneModel for StorageModel {
-    fn compose(&self) -> Box<dyn Widget> {
-        self.build_composition()
-    }
-
-    fn poll(&mut self) -> bool {
-        self.take_in();
-        std::mem::take(&mut self.changed)
-    }
-
-    fn name(&self) -> &'static str {
-        "StoragePane"
-    }
-
+impl StorageModel {
+    /// Whether background work is still running, so the window keeps
+    /// polling.
     fn busy(&self) -> bool {
         self.sync_result.is_some()
             || self.snapshot_result.is_some()
@@ -1349,30 +1410,46 @@ fn reclaimable_selections(snapshot: &SyncStorageSnapshot) -> Vec<EvictionSelecti
 mod tests {
     use super::*;
 
+    /// A Settings window on the Storage page measuring `device`, its model
+    /// holding the person's devices of the storage fixture.
+    fn window_over(device: DeviceStorage) -> ui::prelude::TestApp<crate::SettingsShell> {
+        let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
+            let held = area(settings).unwrap();
+            held.use_device(std::sync::Arc::new(device));
+            let mut model = held.model().borrow_mut();
+            for device in crate::scenarios::storage_fixture() {
+                model.fleet.adopt(device);
+            }
+            model.changed = true;
+        })
+        .expect("the Settings window is mounted");
+        crate::effects::show_pane(&mut app, crate::categories::Category::Storage);
+        app.settle();
+        app
+    }
+
+    /// What the window says, line by line.
+    fn said(app: &mut ui::prelude::TestApp<crate::SettingsShell>) -> Vec<String> {
+        provider_settings_ui::widgets::announced_text(app.harness().root_widget())
+    }
+
     /// Each device's card names its workspaces and what of them no other
     /// device holds; only this device's rows offer to free its cache and
     /// keep a workspace here.
     #[test]
     fn the_pane_shows_what_only_one_device_holds() {
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
-        let mut pane = StorageModel::over(
-            cx,
-            std::sync::Arc::new(DeviceStorage {
-                roots: StorageRoots {
-                    app_payloads: None,
-                    room_data: None,
-                    app_cache: None,
-                    sync_replica: None,
-                },
-                disk: None,
-                reaches_shell: false,
-            }),
-        );
-        for device in crate::scenarios::storage_fixture() {
-            pane.fleet.adopt(device);
-        }
-        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        let mut app = window_over(DeviceStorage {
+            roots: StorageRoots {
+                app_payloads: None,
+                room_data: None,
+                app_cache: None,
+                sync_replica: None,
+            },
+            disk: None,
+            reaches_shell: false,
+        });
+        let text = said(&mut app);
         let says = |needle: &str| text.iter().any(|line| line.contains(needle));
         let at_risk = t_args(
             "settings-storage-only-here-mark",
@@ -1410,41 +1487,42 @@ mod tests {
     #[test]
     fn each_workspace_is_listed_once_under_the_disks_real_capacity() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
-        let mut pane = StorageModel::over(
-            cx,
-            std::sync::Arc::new(DeviceStorage {
-                roots: StorageRoots {
-                    app_payloads: None,
-                    room_data: None,
-                    app_cache: None,
-                    sync_replica: None,
-                },
-                disk: Some(profile.path().to_path_buf()),
-                reaches_shell: false,
-            }),
-        );
-        for device in crate::scenarios::storage_fixture() {
-            pane.fleet.adopt(device);
-        }
+        let mut app = window_over(DeviceStorage {
+            roots: StorageRoots {
+                app_payloads: None,
+                room_data: None,
+                app_cache: None,
+                sync_replica: None,
+            },
+            disk: Some(profile.path().to_path_buf()),
+            reaches_shell: false,
+        });
+        let scanned = |app: &mut ui::prelude::TestApp<crate::SettingsShell>| {
+            app.with_widget::<crate::window::Inspected, _>(|settings| {
+                area(settings).unwrap().model().borrow().scan.clone()
+            })
+            .expect("the Settings window is mounted")
+        };
         let deadline = tilo_test_env::hang_deadline();
-        while pane.scan.is_none() {
-            pane.take_in();
+        let scan = loop {
+            app.harness()
+                .poll_frame()
+                .expect("the window draws its next frame");
+            if let Some(scan) = scanned(&mut app) {
+                break scan;
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "the scan never landed"
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        };
+        app.settle();
         // The capacity the scan read from the profile's disk. Read again
         // here, a pooled filesystem (ZFS, a shared overlay) can already
         // report another total: its size moves as other writers use the pool.
-        let capacity = pane
-            .scan
-            .as_ref()
-            .and_then(|scan| scan.capacity)
-            .expect("the scan read the disk's capacity");
-        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        let capacity = scan.capacity.expect("the scan read the disk's capacity");
+        let text = said(&mut app);
         let total = ui::format::size(capacity.total_bytes);
         assert!(
             text.iter().any(|line| line.contains(&total)),
@@ -1503,10 +1581,8 @@ mod tests {
             let cache = tmp.path().join("cache");
             std::fs::create_dir_all(cache.join("so.tilo.browser")).unwrap();
             std::fs::write(cache.join("so.tilo.browser/http"), vec![0u8; 24]).unwrap();
-            let profile = tempfile::tempdir().unwrap();
-            let cx = PaneCx::in_profile(profile.path().to_path_buf());
             let mut pane = StorageModel::over(
-                cx,
+                false,
                 std::sync::Arc::new(DeviceStorage {
                     roots: StorageRoots {
                         app_payloads: None,
@@ -1522,7 +1598,7 @@ mod tests {
             let deadline = tilo_test_env::hang_deadline();
             while pane.scan.is_none() {
                 assert!(std::time::Instant::now() < deadline, "the scan lands");
-                pane.poll();
+                pane.take_in();
                 std::thread::yield_now();
             }
             let scan = pane.scan.as_ref().unwrap();
@@ -1617,7 +1693,7 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let gate = crate::stall::Stall::new();
         let stalled = std::sync::Arc::clone(&gate);
-        app.with_widget::<SettingsApp, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             settings
                 .areas()
                 .find::<crate::panes::storage::StorageArea>()
@@ -1731,7 +1807,7 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let record = std::sync::Arc::clone(&asked);
-        app.with_widget::<SettingsApp, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             settings
                 .areas()
                 .find::<crate::panes::storage::StorageArea>()

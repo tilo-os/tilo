@@ -520,8 +520,7 @@ impl ContactsApp {
     /// The live app. Never fabricates sample content.
     ///
     /// Nothing here touches the disk: the address book lives in the shared
-    /// Automerge document, which the launcher opens through `ui::persist`
-    /// and writes back on autosave.
+    /// Automerge document, which the host opens and writes back on autosave.
     pub fn new() -> Self {
         Self::configured()
     }

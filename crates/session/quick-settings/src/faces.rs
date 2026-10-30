@@ -47,14 +47,16 @@ impl Sliders {
     pub(crate) fn of(state: &QuickSettingsState) -> Self {
         let mut sliders = Vec::new();
         let several = state.displays.len() > 1;
-        if state.displays.is_empty() {
+        // A machine with nothing to dim (no backlight, no monitor whose
+        // brightness can be set) shows no brightness slider, not a dead one.
+        if state.displays.is_empty() && state.can_set_brightness() {
             sliders.push(SliderFace {
                 id: "qs-brightness".into(),
                 kind: SliderKind::Brightness,
                 name: t("qs-brightness"),
                 caption: None,
                 level: f64::from(state.brightness),
-                available: state.brightness_available,
+                available: true,
             });
         }
         for display in &state.displays {
@@ -129,7 +131,7 @@ pub(crate) fn tiles(state: &QuickSettingsState) -> Vec<TileFace> {
 }
 
 /// The controls of `arrangement` this machine has what they control for.
-pub(crate) fn visible_controls(
+pub fn visible_controls(
     arrangement: &QuickSettingsConfig,
     state: &QuickSettingsState,
 ) -> Vec<QuickSettingsControl> {
@@ -907,6 +909,26 @@ mod tests {
             connected,
             known,
         }
+    }
+
+    #[test]
+    fn no_brightness_slider_without_anything_to_dim() {
+        let mut state = QuickSettingsState::fixture();
+        state.brightness_available = false;
+        state.available.brightness = false;
+        let ids: Vec<String> = Sliders::of(&state)
+            .rows
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(ids, ["qs-volume"]);
+        state.available.brightness = true;
+        let ids: Vec<String> = Sliders::of(&state)
+            .rows
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(ids, ["qs-brightness", "qs-volume"]);
     }
 
     #[test]

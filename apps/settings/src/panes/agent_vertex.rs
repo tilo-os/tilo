@@ -27,15 +27,16 @@ use agent_provider_config::{
     vertex_endpoint, vertex_model_id, vertex_target,
 };
 use ui::LocalState;
+use ui::framework::Actions;
 use ui::widget::{Button, Row, TextInput};
 
-use super::agent_models::AgentModelsEffect;
+use super::agent_models::{AgentModelsEffect, invoking};
 use crate::channel::{self, Receiver, TryRecvError};
 use crate::effects::effect;
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::panes::accounts::BrowserOpener;
-use crate::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
+use crate::resource::Settings;
+use provider_settings_ui::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
 
 /// The use a Vertex AI grant is signed in and refreshed through.
 pub(crate) const GOOGLE_MODELS: OAuthUse = OAuthUse::new(OAuthIssuer::Google, Capability::Models);
@@ -310,10 +311,11 @@ impl VertexSetup {
     }
 
     /// The setup card of a provider being added.
-    pub(crate) fn section(&self, cx: &PaneCx) -> SettingsSection {
+    pub(crate) fn section(&self, actions: &Actions<Settings>) -> SettingsSection {
         let mut body: Vec<Item> = Vec::new();
         let cancel = || {
-            Box::new(cx.bind_invocation(
+            Box::new(invoking(
+                actions,
                 Button::new("agent-models-vertex-cancel", &t("agent-cancel")),
                 AgentModelsEffect::CancelSignIn,
             ))
@@ -327,11 +329,14 @@ impl VertexSetup {
                 })));
                 body.push(row(Box::new(
                     Row::new()
-                        .push(Box::new(cx.bind_invocation(
+                        .push(Box::new(invoking(
+                            actions,
                             Button::new("agent-models-vertex-sign-in", &t("agent-vertex-sign-in")),
                             AgentModelsEffect::SignInWithGoogle { provider: None },
                         )))
-                        .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                        .push(provider_settings_ui::widgets::gap(
+                            ui::tokens::SpacingStep::S2,
+                        ))
                         .push(cancel()),
                 )));
             }
@@ -345,7 +350,7 @@ impl VertexSetup {
                 } else {
                     "agent-vertex-choose"
                 })));
-                self.push_projects(cx, &mut body);
+                self.push_projects(actions, &mut body);
                 self.push_fields(&mut body, "new");
                 body.push(note(&t(if self.gemini {
                     "agent-gemini-requirements"
@@ -359,13 +364,13 @@ impl VertexSetup {
                 );
                 let add = Button::new("agent-models-vertex-add", &t("agent-vertex-add-provider"));
                 let add = if self.gemini {
-                    cx.bind(
+                    actions.bind_effect(
                         add,
                         effect(AgentModelsEffect::SET_GEMINI_PROVIDER)
                             .map(move |()| (None, project.with(|value| value.trim().to_string()))),
                     )
                 } else {
-                    cx.bind(
+                    actions.bind_effect(
                         add,
                         effect(AgentModelsEffect::SET_VERTEX_PROVIDER)
                             .map(move |()| fields_value(None, &project, &location, &model)),
@@ -374,13 +379,15 @@ impl VertexSetup {
                 body.push(row(Box::new(
                     Row::new()
                         .push(Box::new(add))
-                        .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                        .push(provider_settings_ui::widgets::gap(
+                            ui::tokens::SpacingStep::S2,
+                        ))
                         .push(cancel()),
                 )));
             }
         }
         if let Some(message) = &self.message {
-            body.push(row(crate::widgets::error_caption(message)));
+            body.push(row(provider_settings_ui::widgets::error_caption(message)));
         }
         section(
             &t(if self.gemini {
@@ -392,7 +399,7 @@ impl VertexSetup {
         )
     }
 
-    fn push_projects(&self, cx: &PaneCx, body: &mut Vec<Item>) {
+    fn push_projects(&self, actions: &Actions<Settings>, body: &mut Vec<Item>) {
         if let Some(error) = &self.projects_error {
             body.push(note(&t_args(
                 "agent-vertex-projects-unlisted",
@@ -407,7 +414,9 @@ impl VertexSetup {
         let mut buttons = Row::new();
         for (index, project) in self.projects.iter().take(SHOWN_PROJECTS).enumerate() {
             if index > 0 {
-                buttons = buttons.push(crate::widgets::gap(ui::tokens::SpacingStep::S2));
+                buttons = buttons.push(provider_settings_ui::widgets::gap(
+                    ui::tokens::SpacingStep::S2,
+                ));
             }
             let label = if project.name.is_empty() || project.name == project.id {
                 project.id.clone()
@@ -420,7 +429,8 @@ impl VertexSetup {
                     ],
                 )
             };
-            buttons = buttons.push(Box::new(cx.bind_invocation(
+            buttons = buttons.push(Box::new(invoking(
+                actions,
                 Button::new(
                     &format!("agent-models-vertex-project-{}", project.id),
                     &label,
@@ -481,7 +491,7 @@ impl VertexFields {
     }
 
     /// The fields and their save button for the provider `profile_id`.
-    pub(crate) fn push(&self, cx: &PaneCx, body: &mut Vec<Item>, profile_id: &str) {
+    pub(crate) fn push(&self, actions: &Actions<Settings>, body: &mut Vec<Item>, profile_id: &str) {
         push_vertex_fields(
             body,
             profile_id,
@@ -495,7 +505,7 @@ impl VertexFields {
             &t("agent-save-details"),
         );
         let save = if self.gemini {
-            cx.bind(
+            actions.bind_effect(
                 save,
                 effect(AgentModelsEffect::SET_GEMINI_PROVIDER).map(move |()| {
                     (
@@ -505,7 +515,7 @@ impl VertexFields {
                 }),
             )
         } else {
-            cx.bind(
+            actions.bind_effect(
                 save,
                 effect(AgentModelsEffect::SET_VERTEX_PROVIDER).map(move |()| {
                     fields_value(

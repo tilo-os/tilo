@@ -30,7 +30,7 @@ impl StatePeer {
         let bound = roles::foreign_device_bound();
         let authority = member.authority(&bound);
         let seconds = now
-            .duration_since(std::time::UNIX_EPOCH)
+            .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
         let mut workspace = self.settings_workspace()?;
         let refused = |error: &dyn std::fmt::Display| error.to_string();
@@ -97,19 +97,7 @@ impl StatePeer {
                 )
             }
             SettingsChange::RevokeAppAction(action) => {
-                // Every grant given for the action, through a grant here or
-                // by answering the app's ask in place.
-                let subject = Subject::App(action.app.clone());
-                let node = action.node(&workspace.node());
-                let revoked: Vec<_> = workspace
-                    .policy
-                    .grants
-                    .iter()
-                    .filter(|grant| {
-                        grant.subject == subject && (grant.node == node || node.covers(&grant.node))
-                    })
-                    .map(|grant| grant.id.clone())
-                    .collect();
+                let revoked = app_action_grants(&workspace, action);
                 if revoked.is_empty() {
                     return Ok(false);
                 }
@@ -117,7 +105,10 @@ impl StatePeer {
                     .remove_governed_grants(&revoked, key, now)
             }
             SettingsChange::GrantSandbox { capability } => {
-                self.grant_room_sandbox(&mut workspace, &member.person, capability, key, now)
+                let by = collab_types::caps::Principal::Person(member.person.clone());
+                grant_sandbox(&mut workspace, capability, by)?;
+                self.governance_mut()
+                    .put_governed_sandbox(&workspace.sandbox, key, now)
             }
             SettingsChange::RevokeSandbox { capability } => {
                 if !workspace.revoke_sandbox(capability) {
@@ -127,34 +118,6 @@ impl StatePeer {
                     .put_governed_sandbox(&workspace.sandbox, key, now)
             }
         }
-    }
-
-    /// Write `capability` into the room's sandbox as granted by `person`.
-    /// Only a capability that outlives a restart is ever written there.
-    fn grant_room_sandbox(
-        &mut self,
-        workspace: &mut tilo_desktop_model::Workspace,
-        person: &str,
-        capability: &collab_types::caps::CapOverride,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        if !capability.persists_across_restart() {
-            return Err(
-                "a capability that ends with a session or a single use is never \
-                 written into the room"
-                    .into(),
-            );
-        }
-        let mut capability = capability.clone();
-        if capability.id.trim().is_empty() {
-            capability.id = format!("cap-{}", uuid::Uuid::new_v4().simple());
-        }
-        workspace.grant_sandbox(
-            capability.granted_by(collab_types::caps::Principal::Person(person.to_owned())),
-        );
-        self.governance_mut()
-            .put_governed_sandbox(&workspace.sandbox, key, now)
     }
 
     /// The room's governance as a workspace reads it: its name, policy,
@@ -175,6 +138,47 @@ impl StatePeer {
         crate::room::adopt_room(&mut workspace, doc, &[]);
         Ok(workspace)
     }
+}
+
+/// Every grant given for `action`, through a grant here or by answering the
+/// app's ask in place.
+fn app_action_grants(
+    workspace: &tilo_desktop_model::Workspace,
+    action: &crate::workspace_membership::AppAction,
+) -> Vec<tilo_action_policy::GrantId> {
+    let subject = Subject::App(action.app.clone());
+    let node = action.node(&workspace.node());
+    workspace
+        .policy
+        .grants
+        .iter()
+        .filter(|grant| {
+            grant.subject == subject && (grant.node == node || node.covers(&grant.node))
+        })
+        .map(|grant| grant.id.clone())
+        .collect()
+}
+
+/// Record `capability` in `workspace`'s sandbox as granted `by` a member,
+/// under an id of its own when it came without one. One that ends with a
+/// session or a single use is never written into the room.
+fn grant_sandbox(
+    workspace: &mut tilo_desktop_model::Workspace,
+    capability: &collab_types::caps::CapOverride,
+    by: collab_types::caps::Principal,
+) -> Result<(), String> {
+    if !capability.persists_across_restart() {
+        return Err(
+            "a capability that ends with a session or a single use is never written into the room"
+                .into(),
+        );
+    }
+    let mut capability = capability.clone();
+    if capability.id.trim().is_empty() {
+        capability.id = format!("cap-{}", uuid::Uuid::new_v4().simple());
+    }
+    workspace.grant_sandbox(capability.granted_by(by));
+    Ok(())
 }
 
 impl PeerGovernance<'_> {

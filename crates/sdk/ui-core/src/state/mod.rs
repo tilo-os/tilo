@@ -1,6 +1,6 @@
 use crate::application::InstanceId;
 use crate::permissions::UserId;
-use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc};
+use automerge::{AutoCommit, ChangeHash, ObjId};
 use tilo_automerge::ApplyIncoming;
 
 pub(crate) mod owned_restore;
@@ -11,11 +11,6 @@ pub use collaboration::state::{UndoEntry, UndoLog};
 pub use collaboration::state::{write_patches, write_revert_patches, write_revert_patches_where};
 #[cfg(test)]
 pub(crate) mod owned_restore_tests;
-
-pub mod diagnostics;
-pub use diagnostics::{DocumentDiagnostics, FrontierDiagnostics};
-pub mod revision;
-pub use revision::{Revision, RevisionHistory, RevisionId, UnknownRevision};
 
 /// An explicit outbound synchronization frontier for one document route.
 ///
@@ -163,9 +158,6 @@ impl DocumentReplica {
 
 /// The unified state object that holds our CRDT document.
 pub struct State {
-    /// Process-local document lifetime, distinct from a persistent record name
-    /// or committed frontier. Captured readers must not survive replacement.
-    document_identity: uuid::Uuid,
     pub doc: AutoCommit,
     pub root: ObjId,
     /// The primary collaboration route's explicit outbound frontier. Kept
@@ -189,7 +181,6 @@ impl State {
         let undo = UndoLog::new(&mut doc);
         let outbound = DocumentFrontier::at_document(&mut doc);
         Self {
-            document_identity: uuid::Uuid::new_v4(),
             doc,
             root,
             outbound,
@@ -213,7 +204,6 @@ impl State {
             return false;
         };
         self.doc = doc;
-        self.document_identity = uuid::Uuid::new_v4();
         self.root = automerge::ROOT;
         self.undo = UndoLog::new(&mut self.doc);
         self.outbound = DocumentFrontier::at_document(&mut self.doc);
@@ -221,49 +211,10 @@ impl State {
         true
     }
 
-    /// The lifetime of the currently adopted document. Commit, undo, merge and
-    /// save keep it stable; successful `adopt_doc` changes it even for identical
-    /// bytes. Replace documents through `adopt_doc`, not direct field assignment.
-    pub fn document_identity(&self) -> uuid::Uuid {
-        self.document_identity
-    }
-
-    /// This document's history, for a caller that drives undo itself.
-    pub fn history_mut(&mut self) -> &mut UndoLog {
-        &mut self.undo
-    }
-
     /// A counter that changes whenever this document's history does. See
     /// [`UndoLog::revision`].
     pub fn history_revision(&self) -> u64 {
         self.undo.revision()
-    }
-
-    /// Reconstruct the document's persistent causal history, including
-    /// branches and merges. No app-defined history schema is required.
-    pub fn revision_history(&mut self) -> RevisionHistory {
-        RevisionHistory::from_document(&mut self.doc)
-    }
-
-    /// Restore the content at one persistent revision as a new forward,
-    /// undoable change. The old branch remains in [`Self::revision_history`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`UnknownRevision`] when `revision` belongs to another
-    /// document or is otherwise absent from this document's change graph.
-    pub fn restore_revision(
-        &mut self,
-        revision: RevisionId,
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-    ) -> Result<bool, UnknownRevision> {
-        let hash = revision.as_hash();
-        if self.doc.get_change_by_hash(&hash).is_none() {
-            return Err(UnknownRevision(revision));
-        }
-        Ok(self.restore_to_heads(&[hash], focused_node_idx, metadata, author))
     }
 
     /// Commit the current transaction and push a change-based undo entry
@@ -313,12 +264,6 @@ impl State {
         self.undo.undo_depth(&self.doc)
     }
 
-    /// How many undos of this session redo can bring back. See
-    /// [`UndoLog::redo_depth`].
-    pub fn redo_depth(&self) -> usize {
-        self.undo.redo_depth(&self.doc)
-    }
-
     /// Whether `author` has anything to undo / redo. See
     /// [`UndoLog::can_undo_as`].
     pub fn can_undo_as(&self, author: Option<&UserId>) -> bool {
@@ -332,29 +277,11 @@ impl State {
     /// What the history can do for `author` right now, ready to hand to a
     /// widget — see [`UndoStatus`](crate::undo::UndoStatus).
     ///
-    /// The summaries are derived from the bracketed changes themselves through
-    /// [`history_source::change_summary`](crate::history_source::change_summary),
-    /// the same producer the history pane uses, so a control and the timeline
-    /// describe an action the same way. Both read "the action, as performed":
-    /// an undo entry brackets `before → after`, while a redo entry holds the
-    /// *inverse* change, so its summary reads `after → before`.
-    pub fn undo_status(&mut self, author: Option<&UserId>) -> crate::undo::UndoStatus {
-        let undo_span = self
-            .undo
-            .next_undo_as(&self.doc, author)
-            .map(|e| (e.before, e.after));
-        let redo_span = self
-            .undo
-            .next_redo_as(&self.doc, author)
-            .map(|e| (e.after, e.before));
-        crate::undo::UndoStatus {
-            can_undo: undo_span.is_some(),
-            can_redo: redo_span.is_some(),
-            undo_summary: undo_span
-                .map(|(from, to)| crate::history_source::change_summary(&mut self.doc, &from, &to)),
-            redo_summary: redo_span
-                .map(|(from, to)| crate::history_source::change_summary(&mut self.doc, &from, &to)),
-        }
+    /// The summaries are what each step's action record says it did
+    /// ([`crate::undo::step_summary`]), the sentence its history row reads,
+    /// so a control and the timeline describe an action the same way.
+    pub fn undo_status(&self, author: Option<&UserId>) -> crate::undo::UndoStatus {
+        crate::undo::status_snapshot(&self.doc, &self.undo, author)
     }
 
     /// Record an action that has *already* been committed into `doc`
@@ -416,26 +343,6 @@ impl State {
             focused_node_idx,
             metadata,
             author,
-        )
-    }
-
-    /// [`Self::restore_to_heads`], stamping the restore change with `context`
-    /// so History names it rather than describing its raw patch set.
-    pub fn restore_to_heads_with_context(
-        &mut self,
-        target_heads: &[ChangeHash],
-        focused_node_idx: Option<usize>,
-        metadata: Option<String>,
-        author: Option<UserId>,
-        context: &tilo_actions::ActionContext,
-    ) -> bool {
-        self.undo.restore_to_heads_with_message(
-            &mut self.doc,
-            target_heads,
-            focused_node_idx,
-            metadata,
-            author,
-            context.change_message(),
         )
     }
 
@@ -512,14 +419,13 @@ impl State {
 
     /// Wrap an already-loaded document.
     ///
-    /// The entry point for persistence (`tilo_ui::persist`): the store hands back
+    /// The entry point for persistence: the store hands back
     /// the previous session's `AutoCommit` — history, actor identity and all
     /// — and this adopts it as the live document without a byte round-trip.
     pub fn from_doc(mut doc: AutoCommit) -> Self {
         let undo = UndoLog::new(&mut doc);
         let outbound = DocumentFrontier::at_document(&mut doc);
         Self {
-            document_identity: uuid::Uuid::new_v4(),
             doc,
             root: automerge::ROOT,
             outbound,
@@ -534,7 +440,6 @@ impl State {
         let undo = UndoLog::new(&mut doc);
         let outbound = DocumentFrontier::at_document(&mut doc);
         Ok(Self {
-            document_identity: uuid::Uuid::new_v4(),
             doc,
             root,
             outbound,
@@ -820,57 +725,22 @@ mod tests {
     }
 
     #[test]
-    fn document_identity_is_stable_for_edits_and_unique_per_document() {
-        // phase: document_identity_is_stable_for_edits_and_fresh_for_adoption
-        {
-            let mut state = State::new();
-            let identity = state.document_identity();
-            state.doc.put(automerge::ROOT, "body", "first").unwrap();
-            state.commit_action(None, None);
-            assert_eq!(state.document_identity(), identity);
-            assert!(state.undo(None, None).is_some());
-            assert_eq!(state.document_identity(), identity);
-            assert!(state.redo(None, None).is_some());
-            assert_eq!(state.document_identity(), identity);
-            let bytes = state.save();
-            assert_eq!(state.document_identity(), identity);
-
-            assert!(state.adopt_doc(AutoCommit::load(&bytes).unwrap()));
-            assert_ne!(state.document_identity(), identity);
-            assert_eq!(
-                state
-                    .doc
-                    .get(automerge::ROOT, "body")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_str(),
-                Some("first")
-            );
-        }
-        // phase: document_identity_is_unique_for_each_constructor_and_stable_on_failed_adoption
-        {
-            let mut original = State::new();
-            let bytes = original.save();
-            let loaded = State::load(&bytes).unwrap();
-            let wrapped = State::from_doc(AutoCommit::load(&bytes).unwrap());
-            let identities = [
-                original.document_identity(),
-                loaded.document_identity(),
-                wrapped.document_identity(),
-            ];
-            assert_eq!(
-                identities
-                    .into_iter()
-                    .collect::<std::collections::HashSet<_>>()
-                    .len(),
-                3
-            );
-            let identity = original.document_identity();
-            original.undo.set_revision(u64::MAX);
-            assert!(!original.adopt_doc(AutoCommit::new()));
-            assert_eq!(original.document_identity(), identity);
-        }
+    fn adoption_refused_at_an_exhausted_revision_keeps_the_live_document() {
+        let mut state = State::new();
+        state.doc.put(automerge::ROOT, "body", "first").unwrap();
+        state.commit_action(None, None);
+        state.undo.set_revision(u64::MAX);
+        assert!(!state.adopt_doc(AutoCommit::new()));
+        assert_eq!(
+            state
+                .doc
+                .get(automerge::ROOT, "body")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_str(),
+            Some("first")
+        );
     }
 
     #[test]
@@ -1469,9 +1339,24 @@ mod tests {
             .unwrap();
         state.doc.splice_text(&obj, 0, 0, text).unwrap();
         assert!(
-            state.commit_action_authored(None, None, Some(author.clone())),
+            state.commit_action_authored_with_context(
+                None,
+                None,
+                Some(author.clone()),
+                Some(typed()),
+            ),
             "the edit must actually have committed"
         );
+    }
+
+    /// The entry [`type_action`] commits its edit with.
+    fn typed() -> tilo_actions::ActionContext {
+        tilo_actions::ActionContext::for_resource("note", "note", "Note").with_described(
+            tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new("org.tilo.Notes", "note", "type"),
+                [],
+            )),
+        )
     }
 
     #[test]
@@ -1481,8 +1366,8 @@ mod tests {
     )]
     fn undo_status_and_revision_describe_and_bound_every_stack_change() {
         // phase: undo_status_describes_the_action_on_the_stack
-        // The status a widget receives describes the change that is on the
-        // stack, through the same producer the history pane uses.
+        // The status a widget receives describes the step that is on the
+        // stack as its action record says it, as the history pane does.
         {
             let mut state = State::new();
             let a = alice();
@@ -1494,9 +1379,9 @@ mod tests {
             let s = state.undo_status(Some(&a));
             assert!(s.can_undo && !s.can_redo);
             assert_eq!(
-                s.undo_summary.as_deref(),
-                Some("+5 -0 chars"),
-                "the summary counts the characters the action actually inserted"
+                s.undo_summary,
+                Some(crate::history_source::sentence::sentence(&typed())),
+                "the summary is the step's own sentence"
             );
             assert_eq!(s.redo_summary, None, "nothing has been undone yet");
         }
@@ -1513,9 +1398,9 @@ mod tests {
             let s = state.undo_status(Some(&a));
             assert!(!s.can_undo && s.can_redo);
             assert_eq!(
-                s.redo_summary.as_deref(),
-                Some("+5 -0 chars"),
-                "redo puts five characters back"
+                s.redo_summary,
+                Some(crate::history_source::sentence::sentence(&typed())),
+                "redo names the step it puts back"
             );
         }
         // phase: the_revision_moves_on_every_stack_change

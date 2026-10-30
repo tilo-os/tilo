@@ -79,7 +79,7 @@ impl ShellOverlayHost {
             | WorkspaceSettingsOutcome::ComposerSubmit => {}
             WorkspaceSettingsOutcome::ManagePermissionProfiles => {
                 self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.palette
+                self.search
                     .set_query(&crate::shell::i18n::t("palette-query-permission-roles"));
                 self.last_search_query = "\0workspace-permission-roles\0".to_string();
             }
@@ -123,7 +123,7 @@ impl ShellOverlayHost {
                     action
                 });
                 self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.palette
+                self.search
                     .set_query(action.as_deref().unwrap_or("ownership"));
                 self.last_search_query = "\0workspace-ownership\0".to_string();
             }
@@ -163,7 +163,7 @@ impl ShellOverlayHost {
                     // parameter flow. It keeps setup usable with keyboard,
                     // pointer, accessibility tools, and automation alike.
                     self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                    self.palette
+                    self.search
                         .set_query(&crate::shell::i18n::t("search-action-agent-invite"));
                     self.last_search_query = "\0agent-onboarding\0".to_string();
                 }
@@ -319,7 +319,7 @@ impl ShellOverlayHost {
                 // field, where `workspace.publish` takes it, like every
                 // other text an action takes.
                 self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.palette
+                self.search
                     .set_query(&crate::shell::i18n::t("search-action-workspace-publish"));
                 self.last_search_query = "\0workspace-publish\0".to_string();
             }
@@ -622,6 +622,9 @@ fn agent_models(
             profile
                 .models
                 .iter()
+                // An agent plans by calling tools: a model that calls none
+                // is not offered (`ProviderConfig::set_agent_model`).
+                .filter(|model| model.tool_calling)
                 .map(move |model| option(profile, model))
         })
         .collect();

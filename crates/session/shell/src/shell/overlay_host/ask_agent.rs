@@ -360,14 +360,17 @@ impl ShellOverlayHost {
             if !live && actions.start_once(Instant::now()) {
                 starts.push((ask.room, owner.agent.clone()));
             }
-            if actions.open_and_ask(
-                source,
-                &owner,
-                (&ask.title, &ask.body),
-                None,
-                ask.show,
-                ask.quick,
-            ) {
+            if actions
+                .open_and_ask(
+                    source,
+                    &owner,
+                    (&ask.title, &ask.body),
+                    None,
+                    ask.show,
+                    ask.quick,
+                )
+                .is_some()
+            {
                 asked = true;
             } else {
                 tracing::warn!(agent = %owner.agent, "work could not be handed to the agent");

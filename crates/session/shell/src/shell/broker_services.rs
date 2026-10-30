@@ -122,47 +122,12 @@ impl NativeOwnerCommitService {
     }
 }
 impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
-    fn commit_member_effect_receipt(
-        &self,
-        request: tilo_owner_commit::OwnerCommitRequest,
-        caller: tilo_user_identity::DeviceCert,
-    ) -> tilo_owner_commit::CommitFuture {
-        let owner = self.owner.clone();
-        let network = self.network.clone();
-        let writes = self.writes.clone();
-        Box::pin(writes.run(move || {
-            let owner = owner
-                .resolve()
-                .map_err(|error| format!("native effect governor unavailable: {error}"))?;
-            let room = super::state::RoomId::parse(&request.room).ok_or("invalid effect room")?;
-            if let Some(network) = network.as_ref() {
-                network.check_native_custody(&owner, room)?;
-                if network.governed_elsewhere(room) {
-                    return Err("member receipt requires the actual governing owner".into());
-                }
-            }
-            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
-                .map_err(|error| format!("effect governor custody unavailable: {error}"))?;
-            let receipt = owner.commit_member_effect_receipt(
-                &request,
-                &caller,
-                &governor,
-                &key,
-                std::time::SystemTime::now(),
-            )?;
-            if let Some(network) = network {
-                network.schedule_native_owner_publication(room);
-            }
-            Ok(receipt)
-        }))
-    }
     fn requires_room(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
     }
-    /// A held room's effect receipts are its governance, whichever model its
-    /// records follow: committed here when this device governs it, or at the
-    /// host that governs it ([`Committed::Elsewhere`]).
+    /// A held room's effect receipts are this device's own to record in it,
+    /// whichever model its records follow.
     fn records_effects(&self, room: &str) -> bool {
         super::state::RoomId::parse(room).is_some_and(|room| self.tree.read().projects_room(room))
     }
@@ -177,68 +142,37 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
         let owner = self.owner.clone();
         let network = self.network.clone();
         let writes = self.writes.clone();
-        Box::pin(async move {
-            let committed = writes
-                .run({
-                    let network = network.clone();
-                    move || {
-                        let owner = owner.resolve().map_err(|error| {
-                            format!("native durable owner unavailable: {error}")
-                        })?;
-                        let room = super::state::RoomId::parse(&request.room)
-                            .ok_or("invalid native room")?;
-                        if let Some(network) = network.as_ref() {
-                            network.check_native_custody(&owner, room)?;
-                            // The room's receipts are its governor's to record:
-                            // its host's, never this device's.
-                            if matches!(
-                                request.operation,
-                                tilo_owner_commit::CommitOperation::EffectReceipt { .. }
-                            ) {
-                                return Ok(Committed::Elsewhere(Box::new(Elsewhere {
-                                    owner,
-                                    room,
-                                    request,
-                                })));
-                            }
-                        }
-                        let now = std::time::SystemTime::now();
-                        if matches!(
-                            request.operation,
-                            tilo_owner_commit::CommitOperation::EffectReceipt { .. }
-                        ) {
-                            let (key, governor) =
-                                tilo_identity_host::broker::trusted_current_device(&request.room)
-                                    .map_err(|error| {
-                                    format!("effect governor custody unavailable: {error}")
-                                })?;
-                            owner
-                                .commit_effect_receipt(&request, &governor, &key, now)
-                                .map(Committed::Here)
-                        } else {
-                            owner.commit_document(request, now).map(Committed::Here)
-                        }
-                    }
-                })
-                .await?;
-            match committed {
-                Committed::Here(receipt) => Ok(receipt),
-                Committed::Elsewhere(elsewhere) => {
-                    let Elsewhere {
-                        owner,
-                        room,
-                        request,
-                    } = *elsewhere;
-                    let network = network.ok_or("effect governor unavailable")?;
-                    let tilo_owner_commit::CommitOperation::EffectReceipt { redacted, .. } =
-                        &request.operation
-                    else {
-                        return Err("missing effect receipt operation".into());
-                    };
-                    record_receipt_elsewhere(&network, &owner, room, &request, redacted).await
+        Box::pin(writes.run(move || {
+            let owner = owner
+                .resolve()
+                .map_err(|error| format!("native durable owner unavailable: {error}"))?;
+            let room = super::state::RoomId::parse(&request.room).ok_or("invalid native room")?;
+            let now = std::time::SystemTime::now();
+            if !matches!(
+                request.operation,
+                tilo_owner_commit::CommitOperation::EffectReceipt { .. }
+            ) {
+                if let Some(network) = network.as_ref() {
+                    network.check_native_custody(&owner, room)?;
                 }
+                return owner.commit_document(request, now);
             }
-        })
+            // A receipt is this device's own, recorded in its person's slice
+            // of the room with its own key and published as its own change.
+            let key = match network.as_ref() {
+                Some(network) => network.native_signing_key_of(&owner, room)?,
+                None => {
+                    tilo_identity_host::broker::trusted_current_device(&request.room)
+                        .map_err(|error| format!("this device's key is unavailable: {error}"))?
+                        .0
+                }
+            };
+            let receipt = owner.commit_effect_receipt(&request, &key, now)?;
+            if let Some(network) = network {
+                network.schedule_native_owner_publication(room);
+            }
+            Ok(receipt)
+        }))
     }
 }
 
@@ -412,9 +346,8 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         })
     }
 
-    /// A room whose channels its node takes part in: this owner forwards an
-    /// opening app's authorship to that host
-    /// ([`host_membership::grant_app_authorship_at_host`]).
+    /// A room whose channels its node takes part in: this device writes its
+    /// membership changes there itself, as in any room it holds.
     fn grants_authorship_at_host(&self, room: &str) -> bool {
         super::state::RoomId::parse(room).is_some_and(|room| self.tree.read().seals_records(room))
     }
@@ -426,9 +359,9 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
 
     /// A membership change this device writes itself, signed with its own
     /// key: the room's admission decides it against the caller's grants,
-    /// and its host admits it as it admits every member's change. Only an
-    /// app's authorship, the owner's to give, is the host's to commit in a
-    /// room a host governs.
+    /// and its host admits it as it admits every member's change. In a room
+    /// this device's own host governs, that host commits it
+    /// ([`host_membership::commit_at_own_host`]).
     fn execute(
         &self,
         request: tilo_owner_commit::OwnerCommitRequest,
@@ -443,21 +376,6 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 .ok_or("invalid native membership room")?;
             if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
-                if let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
-                    caller,
-                    command:
-                        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-                            app,
-                        },
-                    ..
-                } = &request.operation
-                    && let Some(receipt) = self::host_membership::grant_app_authorship_at_host(
-                        network, &owner, room, &request, caller, app,
-                    )
-                    .await
-                {
-                    return receipt;
-                }
                 if let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
                     caller,
                     command,
@@ -490,76 +408,6 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             Ok(receipt)
         })
     }
-}
-
-/// A commit's outcome on the owner's thread: done here, or a receipt for
-/// the room's governor on another device, recorded over the network.
-enum Committed {
-    Here(tilo_owner_commit::OwnerCommitReceipt),
-    Elsewhere(Box<Elsewhere>),
-}
-struct Elsewhere {
-    owner: super::native_workspace_owner::NativeWorkspaceOwner,
-    room: super::state::RoomId,
-    request: tilo_owner_commit::OwnerCommitRequest,
-}
-
-/// Have the governor of `room` record an effect receipt this device's broker
-/// produced, and answer with this device's committed view of the room.
-async fn record_receipt_elsewhere(
-    network: &super::network::ShellNetwork,
-    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
-    room: super::state::RoomId,
-    request: &tilo_owner_commit::OwnerCommitRequest,
-    redacted: &[u8],
-) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
-    let tilo_owner_commit::CommitOperation::EffectReceipt { invocation, .. } = &request.operation
-    else {
-        return Err("missing effect receipt operation".into());
-    };
-    let expected = tilo_peer_state::PeerWorkspace::validate_workspace_effect_receipt_encoding(
-        *invocation,
-        redacted,
-    )?;
-    network
-        .record_governed_effect_receipt(room, *invocation, redacted.to_vec())
-        .await?;
-    // A transport acknowledgement is not our commit barrier: wait until the
-    // governor's signed receipt is in this device's actual admitted room.
-    tokio::time::timeout(governed_receipt_wait(), async {
-        loop {
-            network.check_native_custody(owner, room)?;
-            let receipt = owner.with_current(room, |view| {
-                let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(
-                    view.peer()
-                        .admitted_room()
-                        .ok_or("effect room unavailable")?,
-                );
-                if let Some(actual) = effects
-                    .iter()
-                    .find(|effect| effect.invocation == expected.invocation)
-                {
-                    if actual != &expected {
-                        return Err(
-                            "admitted terminal receipt differs from this broker's outcome".into(),
-                        );
-                    }
-                    return Ok(Some(tilo_owner_commit::OwnerCommitReceipt {
-                        binding: request.binding()?,
-                        generation: view.generation(),
-                        aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
-                    }));
-                }
-                Ok(None)
-            })?;
-            if let Some(receipt) = receipt {
-                return Ok(receipt);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .map_err(|_| "signed effect receipt did not reach the native owner in time; outcome unknown")?
 }
 
 pub struct NativeWorkspaceAuthority(pub WorkspaceTreeHandle);
@@ -872,93 +720,11 @@ fn stage_launch_content(
     Ok(Some(path))
 }
 
-/// Launches installed apps. With the session's workspace tree it can record
-/// a workspace author granting an app authorship before launching it; with
-/// the network, an app opened in a room another device governs is opened by
-/// that governor, which creates and places its record.
-pub struct NativeLauncher(
-    pub Option<WorkspaceTreeHandle>,
-    pub Option<Arc<super::network::ShellNetwork>>,
-);
-
-/// How long an effect receipt recorded at a room's governor may take to come
-/// back into this device's admitted room.
-#[cfg(not(test))]
-fn governed_receipt_wait() -> std::time::Duration {
-    GOVERNED_OPEN_TIMEOUT
-}
-/// How long an effect receipt recorded at a room's governor may take to come
-/// back into this device's admitted room: in test builds, whose fixture
-/// governor and relay share a loaded runner, the shared test hang bound.
-/// Running out reports the outcome unknown and turns the app's collaboration
-/// off for good, so a slow round trip would otherwise read as a refusal.
-#[cfg(test)]
-fn governed_receipt_wait() -> std::time::Duration {
-    tilo_test_env::hang_bound()
-}
-
-/// How long a launch waits for a room's governor to open the app.
-const GOVERNED_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
+/// Launches installed apps, in every room on this device itself: with the
+/// session's workspace tree it places their windows.
+pub struct NativeLauncher(pub Option<WorkspaceTreeHandle>);
 
 impl NativeLauncher {
-    /// Open `app` through the governor of `workspace`'s room, when another
-    /// device governs it and opens its apps. `None` when this session opens
-    /// it itself.
-    ///
-    /// Such a room only holds records its governor created, so a local
-    /// launch would open an app whose document the room does not hold. The
-    /// governor's open places the window in the room; the session then opens
-    /// its own instance of that window through [`super::peer_windows`]. A
-    /// host governing the room (a node's relay) runs no apps: the session
-    /// runs the app and publishes its window as its own, as it does a legacy
-    /// window, for the room's members to watch.
-    fn open_through_governor(
-        &self,
-        app: &str,
-        workspace: &tilo_desktop_model::Workspace,
-        place: &LaunchPlace,
-    ) -> Option<Result<(), String>> {
-        let resource = format!(
-            "{}{app}",
-            tilo_desktop_model::commands::OPEN_APP_RESOURCE_PREFIX
-        );
-        let answer = self
-            .1
-            .as_ref()
-            .filter(|network| network.governor_opens_apps(workspace.room()))?
-            .invoke_governor(
-                workspace.room(),
-                tilo_desktop_model::commands::APP_ID,
-                &resource,
-                tilo_desktop_model::commands::OPEN_APP_ACTION,
-                self.beside_group(workspace, place)
-                    .map(|group| serde_json::json!({ "beside": group })),
-            );
-        Some(match answer.wait_timeout(GOVERNED_OPEN_TIMEOUT) {
-            Ok(Some(result)) => result.map(drop),
-            Ok(None) => Err("the workspace host stopped before opening the app".into()),
-            Err(_) => Err("the workspace host did not open the app in time".into()),
-        })
-    }
-
-    /// The group of `workspace` an open at `place` goes beside, as the
-    /// governor of a room names it: the view the actor works in.
-    fn beside_group(
-        &self,
-        workspace: &tilo_desktop_model::Workspace,
-        place: &LaunchPlace,
-    ) -> Option<u64> {
-        let LaunchPlace::Beside { app_id } = place else {
-            return None;
-        };
-        let tree = self.0.as_ref()?.read();
-        tree.desktop
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.room() == workspace.room())
-            .and_then(|workspace| super::placement::group_showing(workspace, app_id))
-    }
-
     /// Note where `app`'s window lands when it arrives: at `place` in
     /// `workspace`, decided now against the desk as it stands.
     fn place(&self, app: &str, workspace: &tilo_desktop_model::Workspace, place: &LaunchPlace) {
@@ -1154,14 +920,10 @@ impl LauncherServices for NativeLauncher {
                 },
             );
         }
-        if let Some(opened) = self.open_through_governor(app, workspace, place) {
-            return opened;
-        }
         self.place(app, workspace, place);
-        // Opening an app yourself makes it an author: the app asks the
-        // room's host for that through the native owner
-        // ([`NativeWorkspaceMembership`]), and opens as a viewer until the
-        // authorship arrives.
+        // Opening an app yourself makes it an author: this device writes
+        // that through the native owner ([`NativeWorkspaceMembership`]), and
+        // the app opens as a viewer until the authorship arrives.
         let launched = match record {
             Some(record) => {
                 let record = ui::record::RecordId::parse(record)
@@ -1193,15 +955,6 @@ impl LauncherServices for NativeLauncher {
                     .map(drop)
                     .map_err(|error| error.to_string())
             });
-        }
-        if self
-            .1
-            .as_ref()
-            .is_some_and(|network| network.governor_opens_apps(workspace.room()))
-        {
-            return Err(
-                "observed package startup must be requested from the workspace host".into(),
-            );
         }
         let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
         let selected = match package_root {
@@ -1240,15 +993,6 @@ impl LauncherServices for NativeLauncher {
         };
         if app.starts_with(HOST_APPLICATION_PREFIX) {
             return self.begin_launch(app, package_root, workspace, author);
-        }
-        if self
-            .1
-            .as_ref()
-            .is_some_and(|network| network.governor_opens_apps(workspace.room()))
-        {
-            return Err(
-                "observed package startup must be requested from the workspace host".into(),
-            );
         }
         let original =
             original.ok_or("native observed launch requires its original certified caller")?;
@@ -1290,11 +1034,6 @@ impl LauncherServices for NativeLauncher {
         if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
             return launch_host_application(desktop_id, workspace, content)
                 .map(|()| Launched::Unconfirmed);
-        }
-        if content.hash.is_empty()
-            && let Some(opened) = self.open_through_governor(app, workspace, place)
-        {
-            return opened.map(|()| Launched::Unconfirmed);
         }
         let mut workspace = workspace.clone();
         let document = stage_launch_content(app, content, &mut workspace, &SessionContentStore)?;
@@ -1456,11 +1195,10 @@ pub struct NativeShortcutLibrary(
     pub Option<Arc<super::network::ShellNetwork>>,
 );
 impl NativeShortcutLibrary {
-    /// `change` committed in `room` by its governor: the host governing it
-    /// (the owner's device or a node), or this device's own owner when it
-    /// governs the room itself. A saved shortcut carries this device's proof
-    /// that its person, `actor`, saved it. Runs on the session runtime; the
-    /// owner's durable publication on a blocking thread.
+    /// `change` written into `room` by this device, signed with its own key.
+    /// A saved shortcut carries this device's proof that its person,
+    /// `actor`, saved it. Runs on the session runtime; the owner's durable
+    /// publication on a blocking thread.
     pub(crate) async fn commit(
         tree: WorkspaceTreeHandle,
         network: Option<Arc<super::network::ShellNetwork>>,
@@ -1501,20 +1239,6 @@ impl NativeShortcutLibrary {
         };
         if let Some(network) = &network {
             network.check_native_custody(&owner, room)?;
-            if let Some(committed) = Arc::clone(network)
-                .save_shortcut_at_host(room, change.clone())
-                .await
-            {
-                trace::note(|| format!("shortcut commit in {room}: {committed:?}"));
-                return committed;
-            }
-        }
-        trace::note(|| format!("shortcut commit in {room}: no host governs it"));
-        // No host governs the room: this device does, or it holds a room a
-        // device governed before rooms had hosts, which takes no shortcuts.
-        let governs = owner.with_current(room, |view| Ok(view.device() == view.governor()))?;
-        if !governs {
-            return Err("this workspace's governing device has no host to save shortcuts".into());
         }
         let request = tilo_owner_commit::OwnerCommitRequest {
             room: room.to_string(),
@@ -1525,7 +1249,7 @@ impl NativeShortcutLibrary {
             },
         };
         tokio::task::spawn_blocking(move || {
-            owner.commit_shortcut_change(&request, &device, &key, std::time::SystemTime::now())
+            owner.commit_shortcut_change(&request, &key, std::time::SystemTime::now())
         })
         .await
         .map_err(|_| "the shortcut's commit stopped".to_owned())??;
@@ -2204,7 +1928,7 @@ pub fn native_services(
     let approved_checks = membership
         .as_ref()
         .map(|tree| approved_checks::service(tree.clone(), network.clone()));
-    let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
+    let launcher = Arc::new(NativeLauncher(membership.clone()));
     let display_control = membership
         .as_ref()
         .zip(settings_store::installed_source())
@@ -2402,7 +2126,7 @@ pub(crate) fn test_broker_with_membership(
     let authority = Arc::new(NativeWorkspaceAuthority(membership.clone()));
     let services = HostServices {
         legacy_workspace: Some(authority.clone()),
-        launcher: Some(Arc::new(NativeLauncher(Some(membership.clone()), None))),
+        launcher: Some(Arc::new(NativeLauncher(Some(membership.clone())))),
         workspace_governance: Some(Arc::new(NativeWorkspaceGovernance(
             membership.clone(),
             None,
@@ -2978,7 +2702,7 @@ mod tests {
             crate::shell::state::WorkspaceId(3),
             "host launch test",
         );
-        let refused = NativeLauncher(None, None).launch_content(
+        let refused = NativeLauncher(None).launch_content(
             "host:chromium-browser",
             &workspace,
             LaunchContent {

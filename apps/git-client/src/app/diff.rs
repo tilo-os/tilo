@@ -1,11 +1,11 @@
 //! What the selection becomes: the diff a row names, staging and unstaging a file or a hunk, the commit, discard, and the branch verbs.
 
 use super::{
-    ChangeArea, DiffKey, Field, FileChange, GitClientApp, Invoke, RemoteAction, Screen, Widget,
+    ChangeArea, DiffKey, Field, FileChange, GitClientState, Invoke, RemoteAction, Screen, Widget,
     first_change, graph,
 };
 
-impl GitClientApp {
+impl GitClientState {
     /// The diff-map key for the currently selected change, if any. Resolves
     /// the staged vs. worktree side from the selected area so a partially
     /// staged file shows the correct diff on each side.

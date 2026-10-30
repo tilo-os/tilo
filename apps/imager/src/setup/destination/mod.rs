@@ -126,9 +126,12 @@ pub(crate) const SCENARIOS: &[&str] = &[
 /// The installer's window: the wizard live, probing this computer, or a
 /// sample one that a screenshot scenario stages.
 pub(crate) fn view(cx: &mut ui::framework::ViewCx<crate::resource::Imager>) -> ui::widget::Element {
-    if cx.mode().is_live() {
-        cx.surface(InstallerApp::new())
+    let app = if cx.mode().is_live() {
+        let mut app = InstallerApp::new();
+        app.attach_live(cx.waker());
+        app
     } else {
-        cx.surface(InstallerApp::for_shot(Step::Keyboard))
-    }
+        InstallerApp::for_shot(Step::Keyboard)
+    };
+    crate::window_view::window_view(cx, app, InstallerApp::effect)
 }

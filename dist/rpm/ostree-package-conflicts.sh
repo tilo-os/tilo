@@ -36,6 +36,7 @@ fs_root=${TILO_PAYLOAD_ROOT:-}
 # collide, and the packaged payload is what dist/verify-payload.sh asserts.
 payload=(
     /usr/bin/tilo-shell
+    /usr/bin/tilo
     /usr/bin/tilo-launcher
     /usr/libexec/tilo-import-folders
     /usr/libexec/tilo-session

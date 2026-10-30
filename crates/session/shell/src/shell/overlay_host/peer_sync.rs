@@ -198,27 +198,6 @@ impl ShellOverlayHost {
             .map_or_else(Vec::new, |bridge| bridge(action))
     }
 
-    pub(super) fn filtered_clipboard_history(
-        &self,
-    ) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot> {
-        self.filter_clipboard_history(self.clipboard_manager_call(ClipboardManagerAction::Snapshot))
-    }
-
-    /// `history` narrowed to what the Clipboard section's search matches.
-    pub(super) fn filter_clipboard_history(
-        &self,
-        mut history: Vec<crate::compositor::selection::ClipboardHistorySnapshot>,
-    ) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot> {
-        if self.qs_clipboard_query.trim().is_empty() {
-            return history;
-        }
-        let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot).ok();
-        history.retain(|item| {
-            clipboard_history_matches_query(item, &self.qs_clipboard_query, fabric.as_ref())
-        });
-        history
-    }
-
     /// Supply identities the host has already verified (for example, through
     /// Contacts or a previous in-person verification). The invite sheet may
     /// reuse only these exact keys for its “someone I know” choices.
@@ -342,7 +321,7 @@ impl ShellOverlayHost {
     /// While the directory sheet is up, its rows follow the joins. Answers
     /// whether anything changed.
     pub(super) fn pump_arrivals(&mut self) -> bool {
-        if self.directory_sheet.visible() {
+        if self.directory_sheet.is_open() {
             self.directory_sheet.set_joins(self.peer_sync.site_joins());
         }
         let arrivals = self.peer_sync.arrive();
@@ -377,13 +356,6 @@ impl ShellOverlayHost {
         true
     }
 
-    /// Open "Join a workspace…" and ask the directories for what they list.
-    pub(in crate::shell) fn open_directory(&mut self) {
-        let request = self.directory_sheet.open();
-        tracing::info!("directory sheet opened: a link or code typed there joins");
-        self.run_directory_request(request);
-    }
-
     /// Carry out what the directory sheet asked: reading directories and
     /// joining off the frame loop, switching and the join field here.
     pub(super) fn run_directory_request(
@@ -401,6 +373,7 @@ impl ShellOverlayHost {
                 }
                 return;
             }
+            DirectoryRequest::Close => return,
             DirectoryRequest::LinkOrCode(text) => {
                 self.directory_sheet.close();
                 self.peer_sync_overlay.prompt_connect_with(&text);
@@ -561,33 +534,6 @@ impl ShellOverlayHost {
                 tracing::debug!(%error, "a directory request failed");
             }
         }
-    }
-
-    /// Route one event to the directory sheet while it is open; whether it
-    /// took it. Every key belongs to it, as to the join field.
-    pub(super) fn handle_directory_event(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: winit::event::Modifiers,
-    ) -> bool {
-        let outcome = self
-            .directory_sheet
-            .handle_event(event, modifiers, self.last_cursor);
-        if let Some(request) = outcome.request {
-            self.run_directory_request(request);
-        }
-        outcome.consumed
-    }
-
-    pub(super) fn draw_directory_sheet(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.directory_sheet
-            .draw(self.rect, scene, transform, text_renderer, theme);
     }
 
     /// Carry out one pairing request on the worker.

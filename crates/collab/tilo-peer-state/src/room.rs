@@ -9,6 +9,7 @@ pub(crate) mod policy;
 pub(crate) mod private_policy;
 pub(crate) mod read;
 pub mod saved_shortcut;
+pub mod share;
 pub use admit::{
     AdmittedRoom, RoomAdmission, RoomRefusal, Standing, Writer, admit_room_changes, check_candidate,
 };
@@ -317,8 +318,10 @@ fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
     }
     settings
 }
-/// The governance key holding effect receipts: `{invocation id → JSON receipt}`.
-const EFFECT_RECEIPTS: &str = "effect_receipts_v1";
+/// The key holding effect receipts: `{person → {invocation id → JSON receipt}}`.
+const EFFECT_RECEIPTS: &str = tilo_desktop_model::projection::ROOM_EFFECT_RECEIPTS_KEY;
+/// The key anchoring archived receipts: `{person → {device → root}}`.
+const EFFECT_HISTORY: &str = tilo_desktop_model::projection::ROOM_EFFECT_HISTORY_KEY;
 #[cfg(test)]
 thread_local! { pub(crate) static RECEIPT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
@@ -330,23 +333,162 @@ fn decode_receipt(bytes: &[u8]) -> Option<serde_json::Value> {
     serde_json::from_slice(bytes).ok()
 }
 
-/// Every effect receipt `doc` stores, borrowed, with no decoding.
-fn visit_receipt_bytes<E>(
+/// Every byte value two levels down `key`, `{outer → {inner → bytes}}`,
+/// borrowed, with no decoding.
+fn visit_nested_bytes<E>(
     doc: &AutoCommit,
-    mut visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
+    key: &str,
+    mut visit: impl FnMut(&str, &str, &[u8]) -> Result<(), E>,
 ) -> Result<(), E> {
-    let Some((_, obj)) = doc.get(ROOT, EFFECT_RECEIPTS).ok().flatten() else {
+    let Some((Value::Object(_), outer)) = doc.get(ROOT, key).ok().flatten() else {
         return Ok(());
     };
-    for key in doc.keys(&obj) {
-        if let Some((Value::Scalar(value), _)) = doc.get(&obj, &key).ok().flatten()
-            && let ScalarValue::Bytes(bytes) = value.as_ref()
-        {
-            visit(&key, bytes)?;
+    for first in doc.keys(&outer) {
+        let Some((Value::Object(_), inner)) = doc.get(&outer, &first).ok().flatten() else {
+            continue;
+        };
+        for second in doc.keys(&inner) {
+            if let Some((Value::Scalar(value), _)) = doc.get(&inner, &second).ok().flatten()
+                && let ScalarValue::Bytes(bytes) = value.as_ref()
+            {
+                visit(&first, &second, bytes)?;
+            }
         }
     }
     Ok(())
 }
+
+/// Every effect receipt `doc` stores, borrowed, with no decoding: its
+/// invocation id and bytes.
+fn visit_receipt_bytes<E>(
+    doc: &AutoCommit,
+    mut visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
+) -> Result<(), E> {
+    visit_nested_bytes(doc, EFFECT_RECEIPTS, |_, invocation, bytes| {
+        visit(invocation, bytes)
+    })
+}
+
+/// What `doc` holds under `key`, `{outer → {inner → bytes}}`, as stored,
+/// with any value of another shape counted too: the slices a member writes.
+fn nested_values(doc: Option<&AutoCommit>, key: &str) -> BTreeMap<(String, String), Vec<u8>> {
+    let mut values = BTreeMap::new();
+    let Some(doc) = doc else {
+        return values;
+    };
+    let held = |value: &Value<'_>| match value {
+        Value::Scalar(value) => match value.as_ref() {
+            ScalarValue::Bytes(bytes) => bytes.clone(),
+            other => format!("{other:?}").into_bytes(),
+        },
+        Value::Object(kind) => format!("{kind:?}").into_bytes(),
+    };
+    let Some((top, outer)) = doc.get(ROOT, key).ok().flatten() else {
+        return values;
+    };
+    values.insert((String::new(), String::new()), held(&top));
+    for first in doc.keys(&outer) {
+        let Some((value, inner)) = doc.get(&outer, &first).ok().flatten() else {
+            continue;
+        };
+        values.insert((first.clone(), String::new()), held(&value));
+        if matches!(value, Value::Object(_)) {
+            for second in doc.keys(&inner) {
+                if let Some((value, _)) = doc.get(&inner, &second).ok().flatten() {
+                    values.insert((first.clone(), second), held(&value));
+                }
+            }
+        }
+    }
+    values
+}
+
+/// Whether every effect receipt and history anchor `after` adds or changes
+/// against `before` is `person`'s own (none is when no person is known):
+/// in their slice, each new receipt
+/// naming them or an agent acting for them as its actor, and each anchor
+/// in their slice. A receipt is its
+/// recorder's: only that member's devices write their slice.
+#[must_use]
+pub fn effect_slices_kept(
+    before: Option<&AutoCommit>,
+    after: &AutoCommit,
+    person: Option<&[u8; 32]>,
+) -> bool {
+    let person = person.map(hex::encode).unwrap_or_default();
+    let own = |slice: &str| slice.is_empty() || (!person.is_empty() && slice == person);
+    let held = nested_values(before, EFFECT_RECEIPTS);
+    let receipts = nested_values(Some(after), EFFECT_RECEIPTS);
+    for ((slice, invocation), bytes) in &receipts {
+        if held.get(&(slice.clone(), invocation.clone())) == Some(bytes) {
+            continue;
+        }
+        if !own(slice) {
+            return false;
+        }
+        if invocation.is_empty() {
+            continue;
+        }
+        let Ok(receipt) =
+            serde_json::from_slice::<tilo_desktop_model::WorkspaceEffectReceipt>(bytes)
+        else {
+            return false;
+        };
+        if receipt.invocation.0.to_string() != *invocation
+            || !(receipt.actor == person || receipt.actor.starts_with(AGENT_ACTOR_PREFIX))
+        {
+            return false;
+        }
+    }
+    let anchors = nested_values(before, EFFECT_HISTORY);
+    let written = nested_values(Some(after), EFFECT_HISTORY);
+    anchors
+        .keys()
+        .chain(written.keys())
+        .filter(|key| anchors.get(*key) != written.get(*key))
+        .all(|(slice, _)| own(slice))
+}
+
+/// What one who only reads a room may still change in it: their own effect
+/// receipts and history anchors ([`effect_slices_kept`]), and its grants,
+/// as the shares they give ([`share`], decided as membership).
+const READER_WRITES: [&str; 3] = [EFFECT_RECEIPTS, EFFECT_HISTORY, "grants"];
+
+/// Whether `after` differs from `before` only in what one who only reads
+/// the room may change in it ([`READER_WRITES`]).
+#[must_use]
+pub fn only_reader_writes_differ(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
+    use automerge::{Prop, patches::PatchAction};
+    let mut after = after.clone();
+    let from = before
+        .map(|doc| doc.clone().get_heads())
+        .unwrap_or_default();
+    let to = after.get_heads();
+    after.diff(&from, &to).iter().all(|patch| {
+        let key = match patch.path.first() {
+            Some((_, Prop::Map(key))) => Some(key.as_str()),
+            Some((_, Prop::Seq(_))) => None,
+            None => match &patch.action {
+                PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => {
+                    Some(key.as_str())
+                }
+                PatchAction::Conflict {
+                    prop: Prop::Map(key),
+                }
+                | PatchAction::Increment {
+                    prop: Prop::Map(key),
+                    ..
+                } => Some(key.as_str()),
+                _ => None,
+            },
+        };
+        key.is_some_and(|key| READER_WRITES.contains(&key))
+    })
+}
+
+/// How an effect receipt names an agent as its actor (`agent:<id>`), as
+/// against a person, named by the hex of their key.
+pub(crate) const AGENT_ACTOR_PREFIX: &str = "agent:";
 
 /// Whether `new` carries different evidence than `prior` for one invocation.
 /// Equal bytes are the same receipt and are never decoded; only a differing
@@ -363,20 +505,24 @@ fn receipt_rewritten(prior: &[u8], new: &[u8]) -> bool {
 /// Effect receipts are immutable by value; omission cannot erase old evidence.
 ///
 /// Compares the stored bytes of each receipt `before` holds against the same
-/// key in `after`; a receipt is decoded only when its bytes changed.
+/// place in `after`; a receipt is decoded only when its bytes changed.
 pub fn immutable_receipts(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
     let Some(before) = before else {
         return true;
     };
-    let Some((_, after_obj)) = after.get(ROOT, EFFECT_RECEIPTS).ok().flatten() else {
+    let Some((_, ledger)) = after.get(ROOT, EFFECT_RECEIPTS).ok().flatten() else {
         return true;
     };
-    visit_receipt_bytes(before, |key, prior| {
-        let rewritten = matches!(
-            after.get(&after_obj, key).ok().flatten(),
-            Some((Value::Scalar(value), _))
-                if matches!(value.as_ref(), ScalarValue::Bytes(new) if receipt_rewritten(prior, new))
-        );
+    visit_nested_bytes(before, EFFECT_RECEIPTS, |person, invocation, prior| {
+        let rewritten = after
+            .get(&ledger, person)
+            .ok()
+            .flatten()
+            .and_then(|(_, slice)| after.get(&slice, invocation).ok().flatten())
+            .is_some_and(|(value, _)| {
+                matches!(value, Value::Scalar(value)
+                    if matches!(value.as_ref(), ScalarValue::Bytes(new) if receipt_rewritten(prior, new)))
+            });
         if rewritten { Err(()) } else { Ok(()) }
     })
     .is_ok()

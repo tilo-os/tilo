@@ -468,17 +468,6 @@ impl NativeProfile {
         })
     }
 
-    /// This process's own profile and continuity instance, when the trusted
-    /// launcher started it as an instance of a room's app.
-    pub(crate) fn of_launch() -> Option<(Self, InstanceId)> {
-        let environment = NativeProcessEnvironment::capture();
-        let instance = environment.continuity_instance.as_deref()?.parse().ok()?;
-        let root = environment.persistent_profile_root().ok()?;
-        Self::open(&root, environment.workspace_id.as_deref())
-            .ok()
-            .map(|profile| (profile, instance))
-    }
-
     pub fn store(&self) -> &Rc<dyn durable_store::DurableStore> {
         &self.store
     }

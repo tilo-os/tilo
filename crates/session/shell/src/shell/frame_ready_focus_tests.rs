@@ -38,11 +38,14 @@ fn the_ready_screen_holds_focus_on_its_action_and_tab_keeps_a_named_focus() {
     fb.relayout();
     let mut doc = AutoCommit::new();
     let mut focus = None;
+    // Setup is an app: it lays out its page in the frame that draws it.
     let settle = |fb: &mut FrameBuilder, doc: &mut AutoCommit| {
         fb.pump_apps(doc, &automerge::ROOT);
         fb.relayout();
+        let _ = fb.paint();
         fb.pump_apps(doc, &automerge::ROOT);
         fb.relayout();
+        let _ = fb.paint();
     };
     press(crate::onboarding_view::KEY_BEGIN);
     settle(&mut fb, &mut doc);
@@ -79,15 +82,17 @@ fn the_ready_screen_holds_focus_on_its_action_and_tab_keeps_a_named_focus() {
         "the walk reaches the ready screen"
     );
     fb.reconcile_native_focus(&mut focus);
+    // The app moves its own focus in the frame after it is given the keyboard.
+    let _ = fb.paint();
     assert_eq!(
         name_of(&fb, focus).as_deref(),
-        Some("Continue to desktop"),
-        "the ready screen puts focus on its one action"
+        Some("Setup"),
+        "the shell's keyboard is with the setup app"
     );
     assert_eq!(
         exported_focus(&fb, focus).as_deref(),
         Some("Continue to desktop"),
-        "and says so over AT-SPI"
+        "which puts focus on the ready screen's one action and says so over AT-SPI"
     );
 
     let tab = ui::synthetic_input::key_press(Key::Named(NamedKey::Tab), None);

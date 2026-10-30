@@ -15,7 +15,6 @@ use super::idle_quiet_tests::{
 use super::{NetCmd, Reach, ShellNetwork, host_identity_for_key, needs_reachability};
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::{GovernanceRequest, RoomId, WorkspaceTree, WorkspaceTreeHandle};
-use tilo_network_actor::{gossip_caches_drain_within, shorten_gossip_retention_for_this_process};
 
 /// How long a test desktop's relays stay up once nothing needs them: long
 /// enough that a pair still converging keeps them, short enough to watch
@@ -23,17 +22,11 @@ use tilo_network_actor::{gossip_caches_drain_within, shorten_gossip_retention_fo
 pub(super) const REST_AFTER: Duration = Duration::from_secs(2);
 
 /// Most times per second a desktop whose collaborator left may wake once its
-/// relays rest and gossip's caches have drained. Measured 0.05/s in five
+/// relays rest. Measured 0.05/s in five
 /// focused runs (96954-96958): the test thread's own `/proc` read, which is
 /// no longer counted, and not one wakeup of the network runtime. The budget
 /// allows two wakeups in [`LONE_IDLE`]: 0.10/s.
 const RESTED_WAKEUP_BUDGET: f64 = 0.1;
-
-/// How long gossip keeps the pair's message ids and messages in
-/// [`after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps`]:
-/// far longer than a graft or a duplicate takes over loopback, and short
-/// enough that the caches drain within [`LONE_SETTLE`].
-const GOSSIP_RETENTION: Duration = Duration::from_secs(5);
 
 /// Relays nobody listens on, so a woken test desktop's probes fail at once
 /// and its peers are reached directly over loopback.
@@ -199,13 +192,9 @@ fn two_desktops_holding_their_relays_back_still_sync_and_then_wake_them() {
 /// still a member they could come back and dial, so the relays stay up; once
 /// their membership lapses, nobody else is a member and the delay passes, the
 /// desktop left alone rests its relays, and from then on it wakes no more
-/// than one that never collaborated ([`RESTED_WAKEUP_BUDGET`]). Gossip sweeps
-/// the topics the pair linked until their last messages expire
-/// ([`gossip_caches_drain_within`], 100 s on a real desktop), long before a
-/// real desktop rests its relays five minutes after the last collaborator;
-/// this one rests them after [`REST_AFTER`] and keeps gossip's messages only
-/// [`GOSSIP_RETENTION`], and waits until the caches drained before it is
-/// measured.
+/// than one that never collaborated ([`RESTED_WAKEUP_BUDGET`]). A real
+/// desktop rests its relays five minutes after the last collaborator; this
+/// one rests them after [`REST_AFTER`].
 #[test]
 #[serial_test::serial]
 fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
@@ -217,10 +206,6 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
     )) {
         return;
     }
-    // Gossip's caches drain [`GOSSIP_RETENTION`] plus one sweep after the
-    // pair's last message instead of 100 s; the sweep itself, and everything
-    // measured once they have drained, stays as on a real desktop.
-    shorten_gossip_retention_for_this_process(GOSSIP_RETENTION);
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[46; 32]);
@@ -260,11 +245,6 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
         Reach::LoopbackHoldingRelays,
     );
     assert!(second.join_default_workspace());
-    let first_addr = until("the first device to listen", || first.dial_addr());
-    second
-        .cmd_tx
-        .try_send(NetCmd::Connect { addr: first_addr })
-        .unwrap();
     let invitation = first.issue_invite(home_workspace, 3600).unwrap();
     assert_eq!(
         first.pending_invitations(room).len(),
@@ -340,7 +320,7 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
         "the removed collaborator is still a member of the room hosted here"
     );
     let rested = Instant::now();
-    std::thread::sleep(LONE_SETTLE.max(gossip_caches_drain_within()));
+    std::thread::sleep(LONE_SETTLE);
     eprintln!(
         "a desktop whose collaborator left is measured {} s after it rested its relays",
         rested.elapsed().as_secs()
@@ -513,11 +493,6 @@ fn a_room_hosted_here_takes_in_the_membership_its_device_writes() {
         Reach::LoopbackHoldingRelays,
     );
     assert!(second.join_default_workspace());
-    let first_addr = until("the first device to listen", || first.dial_addr());
-    second
-        .cmd_tx
-        .try_send(NetCmd::Connect { addr: first_addr })
-        .unwrap();
     let invitation = first.issue_invite(workspace, 3600).unwrap();
     let PeerSyncResponse::EnrollmentPending { id } =
         second.accept_peer_invitation(&invitation).unwrap()

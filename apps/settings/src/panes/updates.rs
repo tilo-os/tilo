@@ -4,34 +4,44 @@
 //! Every change is an [`UpdatesEffect`], answered by the [`UpdatesModel`]
 //! the app keeps for the window: the model runs the system's update tools
 //! off the UI thread, and the pane shows where each request stands.
+//!
+//! The page is view code over the model ([`view`]): the area takes in
+//! what finished and moves what the page is keyed by when what it shows
+//! changed. What the machine reports of its timer and its last check is
+//! kept in the update preferences through the section's verbs.
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::device_read::{Landed, Landing};
 use std::time::Duration;
 
+use provider_settings_ui::bound::SettingRows as _;
 use tracing::warn;
-use ui::framework::{EffectReply, Effected};
+use ui::framework::{EffectReply, Effected, ViewCx};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, ProgressBar, Row, Text, Widget};
+use ui::widget::{Button, Element, ProgressBar, Row, Text};
 use ui::{LocalState, WakeHandle};
 
+use crate::area::AreaContext;
 #[cfg(test)]
 use crate::channel;
 use crate::codec_pack::{CodecAction, CodecPackStatus, MesaState, PackState};
-use crate::effects::effect;
-use crate::host::PaneCx;
+use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
 use crate::prefs::UpdatePrefs;
-use crate::widgets::{
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
+use crate::windows_compat::{Readiness as WindowsReadiness, WindowsSupportAction};
+use provider_settings_ui::widgets::{
     Body, El, Item, SettingsSection, block, error_caption, error_row, note, row, rows, section,
     setting_row_described, thing_row, value_row,
 };
-use crate::windows_compat::{Readiness as WindowsReadiness, WindowsSupportAction};
 
 crate::effects::effect_family!(UpdatesEffect => answer);
 
@@ -39,6 +49,9 @@ crate::area::pane_area! {
     UpdatesArea;
     fn poll(&self) {
         UpdatesArea::poll(self);
+    }
+    fn busy(&self) -> bool {
+        UpdatesArea::busy(self)
     }
 }
 
@@ -900,11 +913,11 @@ pub struct UpdatesModel {
     /// must surface here, not only in the journal.
     notice: Option<String>,
     dispatched_restart: bool,
-    /// The settings document the update preferences are kept in, and the
-    /// door the pane's controls go through.
-    cx: PaneCx,
+    /// The update preferences' actions, which keep what the machine
+    /// reported.
+    sections: crate::sections::Sections,
     /// The callers waiting for a request to finish.
-    replies: crate::panes::model::Replies,
+    replies: crate::replies::Replies,
     /// What the pane shows changed since it last looked.
     changed: bool,
 }
@@ -912,8 +925,8 @@ pub struct UpdatesModel {
 impl UpdatesModel {
     /// The model of this device's updates. It opens empty and reads the
     /// system off the UI thread; the pane says it is reading until then.
-    pub fn new(cx: PaneCx) -> Self {
-        let mut model = Self::reading(cx, DeviceReaders::system());
+    pub fn new(storage: &ui::storage::AppStorage, sections: crate::sections::Sections) -> Self {
+        let mut model = Self::reading(storage, sections, DeviceReaders::system());
         model.codec_runner = Arc::new(crate::codec_pack::run);
         model.windows_support_runner = Arc::new(crate::windows_compat::run);
         model.watch_codec_status();
@@ -922,15 +935,24 @@ impl UpdatesModel {
 
     /// A model that reads `readers` off the UI thread before it shows
     /// anything; requests that arrive meanwhile wait for the read.
-    fn reading(cx: PaneCx, readers: DeviceReaders) -> Self {
-        let prefs = cx.settings::<UpdatePrefs>().get();
-        let mut model = Self::assemble(cx, readers.clone(), Arc::new(now_stamp), prefs);
+    fn reading(
+        storage: &ui::storage::AppStorage,
+        sections: crate::sections::Sections,
+        readers: DeviceReaders,
+    ) -> Self {
+        let prefs = storage.settings::<UpdatePrefs>().get();
+        let mut model = Self::assemble(sections, readers.clone(), Arc::new(now_stamp), prefs);
         model.first_read = Some(Landing::start(move || readers.read()));
         model
     }
 
     /// The model's parts, showing nothing read yet.
-    fn assemble(cx: PaneCx, readers: DeviceReaders, clock: Clock, prefs: UpdatePrefs) -> Self {
+    fn assemble(
+        sections: crate::sections::Sections,
+        readers: DeviceReaders,
+        clock: Clock,
+        prefs: UpdatePrefs,
+    ) -> Self {
         Self {
             status: UpdateStatus {
                 current_version: String::new(),
@@ -979,8 +1001,8 @@ impl UpdatesModel {
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
-            cx,
-            replies: crate::panes::model::Replies::default(),
+            sections,
+            replies: crate::replies::Replies::default(),
             changed: false,
         }
     }
@@ -1013,7 +1035,7 @@ impl UpdatesModel {
     /// a test written before that existed neither reaches systemd nor gets a
     /// switch that silently reports "off".
     pub fn with_parts(
-        cx: PaneCx,
+        sections: crate::sections::Sections,
         status: UpdateStatus,
         prefs: UpdatePrefs,
         status_provider: StatusProvider,
@@ -1021,7 +1043,7 @@ impl UpdatesModel {
         rebooter: Arc<dyn Rebooter>,
     ) -> Self {
         Self::with_parts_and_control(
-            cx,
+            sections,
             status,
             prefs,
             status_provider,
@@ -1038,7 +1060,7 @@ impl UpdatesModel {
     /// stand-in that answers at once ([`UnavailableControl`], a test's), so
     /// a capture and a test show it from their first frame.
     pub fn with_parts_and_control(
-        cx: PaneCx,
+        sections: crate::sections::Sections,
         status: UpdateStatus,
         prefs: UpdatePrefs,
         status_provider: StatusProvider,
@@ -1071,7 +1093,7 @@ impl UpdatesModel {
             codec_status: Arc::new(CodecPackStatus::default),
             windows_support: Arc::new(|| WindowsReadiness::NotOffered),
         };
-        let mut model = Self::assemble(cx, readers, clock, prefs);
+        let mut model = Self::assemble(sections, readers, clock, prefs);
         model.adopt(read);
         model.changed = false;
         model
@@ -1079,7 +1101,7 @@ impl UpdatesModel {
 
     /// What a capture shows: a staged image waiting for a restart, and
     /// nothing that reaches the system.
-    pub fn sample(cx: PaneCx) -> Self {
+    pub fn sample(sections: crate::sections::Sections) -> Self {
         let status = UpdateStatus {
             current_version: "Tilo 2026.06".into(),
             staged_version: Some("Tilo 2026.07".into()),
@@ -1087,7 +1109,7 @@ impl UpdatesModel {
         };
         let staged = status.clone();
         Self::with_parts_and_control(
-            cx,
+            sections,
             status,
             UpdatePrefs::default(),
             Arc::new(move || staged.clone()),
@@ -1327,7 +1349,7 @@ impl UpdatesModel {
             .collect()
     }
 
-    fn codecs_card(&self) -> SettingsSection {
+    fn codecs_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         // The pack's state, with what can be done about it on its trailing
         // edge; how far an install got under it.
         let mut buttons = Row::new()
@@ -1338,9 +1360,8 @@ impl UpdatesModel {
         let any = !offered.is_empty();
         for (label, control_id, effect) in offered {
             let primary = matches!(&effect, UpdatesEffect::InstallCodecs);
-            let button = self
-                .button(control_id, &label, effect)
-                .control_size(ui::widget::ControlSize::Small);
+            let button =
+                button(cx, control_id, &label, effect).control_size(ui::widget::ControlSize::Small);
             buttons = buttons.push(Box::new(if primary {
                 button.role(ui::widget::ButtonRole::Primary)
             } else {
@@ -1516,24 +1537,25 @@ impl UpdatesModel {
         &self.prefs
     }
 
-    fn build_composition(&self) -> Box<dyn Widget> {
+    /// The page as the model shows the device now.
+    fn page(&self, cx: &ViewCx<Settings>) -> Element {
         if self.first_read.is_some() {
             // Nothing read yet: say so rather than show placeholders a
             // person could take for the device's state.
-            return crate::widgets::page(vec![section(
+            return provider_settings_ui::widgets::page(vec![section(
                 &t("upd-software"),
                 rows(vec![note(&t("upd-reading"))]),
             )]);
         }
         let mut all: Vec<SettingsSection> = vec![
             self.overview_card(),
-            self.status_card(),
-            self.firmware_card(),
-            self.codecs_card(),
-            self.windows_card(),
-            self.detail_card(),
+            self.status_card(cx),
+            self.firmware_card(cx),
+            self.codecs_card(cx),
+            self.windows_card(cx),
+            self.detail_card(cx),
             self.lifecycle_card(),
-            self.rollback_card(),
+            self.rollback_card(cx),
             self.help_card(),
         ];
         // Firmware history is useful only when fwupd answered and there is a
@@ -1556,11 +1578,11 @@ impl UpdatesModel {
                 ),
             );
         }
-        crate::widgets::page(all)
+        provider_settings_ui::widgets::page(all)
     }
 
     /// Status card — current + staged + the primary action.
-    fn status_card(&self) -> SettingsSection {
+    fn status_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         if let Some(error) = &self.status.staged_error {
             return section(
                 &t("upd-software"),
@@ -1575,7 +1597,8 @@ impl UpdatesModel {
                 &t_args("upd-ready", &[("version", staged.as_str().into())]),
                 &t("upd-restart-apply"),
                 Box::new(
-                    self.button(
+                    button(
+                        cx,
                         "settings.updates.restart",
                         &t("upd-restart-update"),
                         UpdatesEffect::RestartToUpdate,
@@ -1591,32 +1614,6 @@ impl UpdatesModel {
             ))),
         };
         section(&t("upd-software"), rows(vec![body]))
-    }
-
-    /// A line holding one button, at the leading edge of its section.
-    fn button_row(&self, control_id: &str, label: &str, effect: UpdatesEffect) -> Item {
-        row(Box::new(
-            Row::new().push(Box::new(self.button(control_id, label, effect))),
-        ))
-    }
-
-    /// A state with the one button that acts on it on its trailing edge.
-    fn status_row(
-        &self,
-        status: &str,
-        control_id: &str,
-        label: &str,
-        effect: UpdatesEffect,
-    ) -> Item {
-        row(Box::new(thing_row(
-            &format!("{control_id}.status"),
-            status,
-            &[],
-            Some(Box::new(
-                self.button(control_id, label, effect)
-                    .control_size(ui::widget::ControlSize::Small),
-            )),
-        )))
     }
 
     fn overview_card(&self) -> SettingsSection {
@@ -1641,7 +1638,7 @@ impl UpdatesModel {
         section(&t("upd-overview"), rows(overview))
     }
 
-    fn detail_card(&self) -> SettingsSection {
+    fn detail_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         let automatic = t("upd-automatic");
         let unavailable = t("upd-unavailable");
         let schedule_label = t("upd-schedule");
@@ -1658,8 +1655,9 @@ impl UpdatesModel {
                 value_row(&t("upd-last-checked"), &self.prefs.last_checked),
                 value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
                 match self.timer_enabled {
-                    Some(_) => self.cx.row(automatic).id("updates.auto").toggle_effect(
+                    Some(_) => cx.setting(automatic).id("updates.auto").toggle_effect(
                         &LocalState::new(self.prefs.auto),
+                        &cx.actions(),
                         effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
                     ),
                     // Not a switch stuck in one position: a switch that cannot
@@ -1668,26 +1666,28 @@ impl UpdatesModel {
                     None => value_row(&automatic, &unavailable),
                 },
                 match &schedule_placeholder {
-                    Some(schedule) => self.cx.row(schedule_label).choice_effect(
+                    Some(schedule) => cx.setting(schedule_label).choice_effect(
                         UPDATE_SCHEDULES.iter().map(|id| schedule_shown(id)),
                         &LocalState::new(schedule.clone()),
+                        &cx.actions(),
                         effect(UpdatesEffect::SET_UPDATE_SCHEDULE)
                             .map(|shown: String| schedule_from_label(&shown)),
                     ),
                     None => value_row(&schedule_label, &unavailable),
                 },
                 match self.allow_metered {
-                    Some(_) => self
-                        .cx
-                        .row(t("upd-metered"))
+                    Some(_) => cx
+                        .setting(t("upd-metered"))
                         .id("updates.metered")
                         .toggle_effect(
                             &LocalState::new(self.allow_metered.unwrap_or(false)),
+                            &cx.actions(),
                             effect(UpdatesEffect::SET_METERED_UPDATES),
                         ),
                     None => value_row(&t("upd-metered-short"), &t("upd-metered-unavailable")),
                 },
-                self.button_row(
+                button_row(
+                    cx,
                     "settings.updates.check",
                     &check_label,
                     UpdatesEffect::CheckForUpdates,
@@ -1718,23 +1718,24 @@ impl UpdatesModel {
         section(&t("upd-lifecycle"), rows(lifecycle_rows))
     }
 
-    fn firmware_card(&self) -> SettingsSection {
+    fn firmware_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         let body = match &self.firmware_updates {
-            Err(error) => self.firmware_card_error(error),
-            Ok(updates) if updates.is_empty() => self.firmware_card_up_to_date(),
-            Ok(updates) => self.firmware_card_available(updates),
+            Err(error) => self.firmware_card_error(cx, error),
+            Ok(updates) if updates.is_empty() => self.firmware_card_up_to_date(cx),
+            Ok(updates) => self.firmware_card_available(cx, updates),
         };
         section(&t("upd-firmware"), body)
     }
 
-    fn firmware_card_error(&self, error: &str) -> Body {
+    fn firmware_card_error(&self, cx: &ViewCx<Settings>, error: &str) -> Body {
         let refresh_label = if self.firmware_refresh_pending {
             t("upd-refreshing")
         } else {
             t("upd-try-again")
         };
         rows(vec![
-            self.status_row(
+            status_row(
+                cx,
                 &t("upd-fw-query-failed"),
                 "settings.updates.firmware.refresh",
                 &refresh_label,
@@ -1744,14 +1745,15 @@ impl UpdatesModel {
         ])
     }
 
-    fn firmware_card_up_to_date(&self) -> Body {
+    fn firmware_card_up_to_date(&self, cx: &ViewCx<Settings>) -> Body {
         if matches!(
             self.firmware_state,
             FirmwareUiState::Complete { needs_reboot: true }
         ) {
             return rows(vec![
                 value_row(&t("upd-fw-status"), &t("upd-fw-current-status")),
-                self.status_row(
+                status_row(
+                    cx,
                     &t("upd-restart-required"),
                     "settings.updates.firmware.restart",
                     &t("upd-restart-now"),
@@ -1764,7 +1766,8 @@ impl UpdatesModel {
         } else {
             t("upd-check-firmware")
         };
-        rows(vec![self.status_row(
+        rows(vec![status_row(
+            cx,
             &t("upd-fw-current-status"),
             "settings.updates.firmware.refresh",
             &check_fw,
@@ -1772,7 +1775,11 @@ impl UpdatesModel {
         )])
     }
 
-    fn firmware_card_available(&self, updates: &[os_actions::FirmwareUpdate]) -> Body {
+    fn firmware_card_available(
+        &self,
+        cx: &ViewCx<Settings>,
+        updates: &[os_actions::FirmwareUpdate],
+    ) -> Body {
         let mut items: Vec<Item> = updates
             .iter()
             .map(|update| {
@@ -1804,7 +1811,8 @@ impl UpdatesModel {
             })
             .collect();
         match &self.firmware_state {
-            FirmwareUiState::Idle => items.push(self.button_row(
+            FirmwareUiState::Idle => items.push(button_row(
+                cx,
                 "settings.updates.firmware.install",
                 &t("upd-install-firmware"),
                 UpdatesEffect::InstallFirmware,
@@ -1821,7 +1829,8 @@ impl UpdatesModel {
                 };
                 items.push(value_row(&t("upd-installation"), &installed));
                 if *needs_reboot {
-                    items.push(self.button_row(
+                    items.push(button_row(
+                        cx,
                         "settings.updates.firmware.restart",
                         &t("upd-restart-now"),
                         UpdatesEffect::RestartToUpdate,
@@ -1877,7 +1886,7 @@ impl UpdatesModel {
     /// card reads as an absent feature.
     /// Built from the same strings `rollback_card_lines` reports, so what a
     /// test asserts on and what a person reads cannot come apart.
-    fn rollback_card(&self) -> SettingsSection {
+    fn rollback_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         let lines = self.rollback_card_lines();
         let rollback_body = match (&self.rollback_target, self.rollback_armed, lines.as_slice()) {
             (Err(_), _, [_, error, ..]) => vec![row(error_caption(error))],
@@ -1891,7 +1900,8 @@ impl UpdatesModel {
                 vec![setting_row_described(
                     previous,
                     intro,
-                    Box::new(self.button(
+                    Box::new(button(
+                        cx,
                         "settings.updates.rollback",
                         button_label,
                         UpdatesEffect::ReviewRollback,
@@ -1903,7 +1913,8 @@ impl UpdatesModel {
                 vec![setting_row_described(
                     prompt,
                     &caveats.join("\n"),
-                    Box::new(self.button(
+                    Box::new(button(
+                        cx,
                         "settings.updates.rollback.confirm",
                         confirm_label,
                         UpdatesEffect::RollBack,
@@ -1926,9 +1937,11 @@ impl UpdatesModel {
         )
     }
 
-    fn persist(&self) {
-        if let Err(e) = self.cx.settings::<UpdatePrefs>().set(&self.prefs) {
-            warn!(target: "tilo::settings", op = "update_prefs_save", error = %e, "failed to persist update prefs");
+    /// Keep what the machine reported in the update preferences, through
+    /// the section's verb `record`.
+    fn record(&self, record: impl Into<ui::tilo_resource::Invoke<UpdatePrefs>>) {
+        if let Err(e) = self.sections.invoke::<UpdatePrefs>(record) {
+            warn!(target: "tilo::settings", op = "update_prefs_save", error = %e, "failed to keep update prefs");
         }
     }
 
@@ -2036,7 +2049,7 @@ impl UpdatesModel {
                 self.prefs.last_checked = (self.clock)();
                 self.last_prefs.last_checked = self.prefs.last_checked.clone();
                 self.notice = None;
-                self.persist();
+                self.record(UpdatePrefs::RECORD_CHECK.with(self.prefs.last_checked.clone()));
                 self.operation_succeeded(
                     UpdatesEffect::CHECK_FOR_UPDATES.id,
                     "update check finished",
@@ -2306,7 +2319,7 @@ impl UpdatesModel {
                         if effective { "on" } else { "off" }
                     )
                 });
-                self.persist();
+                self.record(UpdatePrefs::RECORD_AUTOMATIC.with(effective));
                 if effective == b {
                     self.operation_succeeded(operation, "automatic-update timer changed");
                 } else {
@@ -2627,40 +2640,80 @@ impl UpdatesModel {
     fn operation_failed(&mut self, operation: &'static str, message: impl Into<String>) {
         self.replies.fail(operation, message);
     }
+}
 
-    /// A button running `effect`.
-    fn button(&self, control_id: &str, label: &str, effect: UpdatesEffect) -> Button {
-        self.cx
-            .bind_invocation(Button::new(control_id, label), effect)
-    }
+/// A line holding one button, at the leading edge of its section.
+fn button_row(cx: &ViewCx<Settings>, control_id: &str, label: &str, effect: UpdatesEffect) -> Item {
+    row(Box::new(
+        Row::new().push(Box::new(button(cx, control_id, label, effect))),
+    ))
+}
+
+/// A state with the one button that acts on it on its trailing edge.
+fn status_row(
+    cx: &ViewCx<Settings>,
+    status: &str,
+    control_id: &str,
+    label: &str,
+    effect: UpdatesEffect,
+) -> Item {
+    row(Box::new(thing_row(
+        &format!("{control_id}.status"),
+        status,
+        &[],
+        Some(Box::new(
+            button(cx, control_id, label, effect).control_size(ui::widget::ControlSize::Small),
+        )),
+    )))
+}
+
+/// A button running `effect`.
+fn button(cx: &ViewCx<Settings>, control_id: &str, label: &str, effect: UpdatesEffect) -> Button {
+    cx.actions().bind_effect_invocation(
+        Button::new(control_id, label),
+        &SettingsEffect::from(effect),
+    )
 }
 
 /// What the updates area keeps for the window: the model, read from the
 /// system when first needed.
 pub struct UpdatesArea {
-    cx: PaneCx,
-    model: std::cell::OnceCell<crate::panes::model::Shared<UpdatesModel>>,
+    /// The settings document the update preferences are read from.
+    storage: ui::storage::AppStorage,
+    /// The update preferences' actions.
+    sections: crate::sections::Sections,
+    /// Whether the model reads this device's system tools.
+    devices: bool,
+    /// The installed formats a capture shows; `None` in a live window.
+    codec_status: Option<CodecPackStatus>,
+    model: std::cell::OnceCell<Rc<RefCell<UpdatesModel>>>,
+    /// Moves whenever what the page shows of the model does.
+    shown: LocalState<u64>,
 }
 
 impl UpdatesArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            storage: cx.storage.clone(),
+            sections: cx.sections.clone(),
+            devices: cx.devices,
+            codec_status: cx.scene().and_then(|scene| scene.codec_status.clone()),
             model: std::cell::OnceCell::new(),
+            shown: LocalState::new(0),
         }
     }
 
     /// The model, created on first use: a capture's reaches no system tool.
     /// A live model reads the system off the UI thread.
-    pub fn model(&self) -> &crate::panes::model::Shared<UpdatesModel> {
+    pub fn model(&self) -> &Rc<RefCell<UpdatesModel>> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                UpdatesModel::new(self.cx.clone())
+            let model = if self.devices {
+                UpdatesModel::new(&self.storage, self.sections.clone())
             } else {
-                UpdatesModel::sample(self.cx.clone())
+                UpdatesModel::sample(self.sections.clone())
             };
-            let model = if !self.cx.reaches_devices()
-                && let Some(status) = self.cx.scene().and_then(|scene| scene.codec_status.clone())
+            let model = if !self.devices
+                && let Some(status) = self.codec_status.clone()
             {
                 model.with_codec_pack(
                     Arc::new(move || status.clone()),
@@ -2669,16 +2722,31 @@ impl UpdatesArea {
             } else {
                 model
             };
-            std::rc::Rc::new(std::cell::RefCell::new(model))
+            Rc::new(RefCell::new(model))
         })
     }
 
-    /// Take in finished background work, if the model exists. Whether the
-    /// pane must show it is left for the pane's own look, which follows.
+    /// Take in finished background work, if the model exists, and move
+    /// what the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
-        if let Some(model) = self.model.get() {
-            model.borrow_mut().drain();
+        let Some(model) = self.model.get() else {
+            return;
+        };
+        let Ok(mut model) = model.try_borrow_mut() else {
+            return;
+        };
+        if model.poll() {
+            self.shown.set(self.shown.get().wrapping_add(1));
         }
+    }
+
+    /// Whether a check, a firmware refresh or install is running, which
+    /// the page shows moving.
+    fn busy(&self) -> bool {
+        self.model
+            .get()
+            .and_then(|model| model.try_borrow().ok())
+            .is_some_and(|model| model.busy())
     }
 }
 
@@ -2686,7 +2754,7 @@ impl UpdatesArea {
 pub(crate) fn answer(
     app: &crate::settings_app::SettingsApp,
     effect: UpdatesEffect,
-    cx: &mut ui::framework::EffectCx<crate::resource::Settings, crate::settings_app::SettingsApp>,
+    cx: &mut ui::framework::EffectCx<crate::resource::Settings>,
 ) -> ui::framework::EffectAnswer {
     let reply = cx.reply();
     crate::panes::updates::area(app)
@@ -2697,23 +2765,29 @@ pub(crate) fn answer(
     Ok(Effected::Pending)
 }
 
-impl crate::panes::model::PaneModel for UpdatesModel {
-    fn compose(&self) -> Box<dyn Widget> {
-        self.build_composition()
-    }
-
+impl UpdatesModel {
+    /// Take in what background work finished; whether what the page shows
+    /// changed.
     fn poll(&mut self) -> bool {
         self.drain();
         std::mem::take(&mut self.changed)
     }
 
-    fn name(&self) -> &'static str {
-        "UpdatesPane"
-    }
-
+    /// Whether a check, a firmware refresh or install is running.
     fn busy(&self) -> bool {
         self.check_pending || self.firmware_refresh_pending || self.firmware_events.is_some()
     }
+}
+
+/// The Updates page as view code over what the area reads of the device:
+/// built again whenever what it shows changes ([`UpdatesArea::poll`]).
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
+    let held = area(app)?;
+    let model = Rc::clone(held.model());
+    // What finished while no page showed the model is taken in before the
+    // page is built.
+    model.borrow_mut().poll();
+    Some(cx.switch(&held.shown, move |cx, _| model.borrow().page(cx)))
 }
 
 /// What the update settings found by search are set to, as the page last
@@ -2721,13 +2795,16 @@ impl crate::panes::model::PaneModel for UpdatesModel {
 pub(crate) mod values {
     use ui::LocalState;
 
+    use provider_settings_ui::bound::SettingRows as _;
+    use ui::framework::ViewCx;
+
     use super::{UpdatesEffect, UpdatesModel, area};
     use crate::effects::effect;
-    use crate::host::PaneCx;
     use crate::i18n::t;
+    use crate::resource::Settings;
     use crate::setting::{Follows, Read};
     use crate::settings_app::SettingsApp;
-    use crate::widgets::Item;
+    use provider_settings_ui::widgets::Item;
 
     fn read<V>(app: &SettingsApp, read: impl FnOnce(&UpdatesModel) -> Option<V>) -> Option<V> {
         let model = area(app)?.model.get()?;
@@ -2743,11 +2820,14 @@ pub(crate) mod values {
         .map_or(Read::Value(None), Read::Switch)
     }
 
-    pub(crate) fn automatic_switch(cx: &PaneCx, on: bool) -> Item {
-        cx.row(t("upd-automatic")).id("updates.auto").toggle_effect(
-            &LocalState::new(on),
-            effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
-        )
+    pub(crate) fn automatic_switch(cx: &ViewCx<Settings>, on: bool) -> Item {
+        cx.setting(t("upd-automatic"))
+            .id("updates.auto")
+            .toggle_effect(
+                &LocalState::new(on),
+                &cx.actions(),
+                effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
+            )
     }
 
     /// Updating over metered connections, a switch once the machine said
@@ -2756,11 +2836,12 @@ pub(crate) mod values {
         read(app, |model| model.allow_metered).map_or(Read::Value(None), Read::Switch)
     }
 
-    pub(crate) fn metered_switch(cx: &PaneCx, on: bool) -> Item {
-        cx.row(t("upd-metered"))
+    pub(crate) fn metered_switch(cx: &ViewCx<Settings>, on: bool) -> Item {
+        cx.setting(t("upd-metered"))
             .id("updates.metered")
             .toggle_effect(
                 &LocalState::new(on),
+                &cx.actions(),
                 effect(UpdatesEffect::SET_METERED_UPDATES),
             )
     }

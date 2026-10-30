@@ -264,65 +264,62 @@ mod tests {
     }
 
     #[test]
-    fn matching_or_updated_snapshots_pass_and_missing_goldens_are_seeded() {
-        // Phase `identical_pngs_pass`.
-        {
-            let dir = scratch_dir();
-            let rendered = dir.join("rendered.png");
-            let golden = dir.join("golden.png");
-            write_png(&rendered, 4, 4, [10, 20, 30, 255]);
-            write_png(&golden, 4, 4, [10, 20, 30, 255]);
+    fn identical_pngs_pass() {
+        let dir = scratch_dir();
+        let rendered = dir.join("rendered.png");
+        let golden = dir.join("golden.png");
+        write_png(&rendered, 4, 4, [10, 20, 30, 255]);
+        write_png(&golden, 4, 4, [10, 20, 30, 255]);
 
-            SnapshotAssertion::new(rendered, golden).assert_with(false);
-        }
+        SnapshotAssertion::new(rendered, golden).assert_with(false);
+    }
 
-        // Phase `diff_within_tolerance_passes`.
-        {
-            let dir = scratch_dir();
-            let rendered = dir.join("rendered.png");
-            let golden = dir.join("golden.png");
-            // Delta = 3, below the default tolerance of 4.
-            let mut rendered_px = vec![
-                10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255,
-            ];
-            let golden_px = rendered_px.clone();
-            rendered_px[0] = 13;
-            write_png_bytes(&rendered, 2, 2, &rendered_px);
-            write_png_bytes(&golden, 2, 2, &golden_px);
+    #[test]
+    fn diff_within_tolerance_passes() {
+        let dir = scratch_dir();
+        let rendered = dir.join("rendered.png");
+        let golden = dir.join("golden.png");
+        // Delta = 3, below the default tolerance of 4.
+        let mut rendered_px = vec![
+            10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255,
+        ];
+        let golden_px = rendered_px.clone();
+        rendered_px[0] = 13;
+        write_png_bytes(&rendered, 2, 2, &rendered_px);
+        write_png_bytes(&golden, 2, 2, &golden_px);
 
-            SnapshotAssertion::new(rendered, golden).assert_with(false);
-        }
+        SnapshotAssertion::new(rendered, golden).assert_with(false);
+    }
 
-        // Phase `update_snapshots_overwrites_golden`.
-        {
-            let dir = scratch_dir();
-            let rendered = dir.join("rendered.png");
-            let golden = dir.join("golden.png");
-            // Render is red, golden is blue — would fail without the flag.
-            write_png(&rendered, 4, 4, [255, 0, 0, 255]);
-            write_png(&golden, 4, 4, [0, 0, 255, 255]);
+    #[test]
+    fn update_snapshots_overwrites_golden() {
+        let dir = scratch_dir();
+        let rendered = dir.join("rendered.png");
+        let golden = dir.join("golden.png");
+        // Render is red, golden is blue — would fail without the flag.
+        write_png(&rendered, 4, 4, [255, 0, 0, 255]);
+        write_png(&golden, 4, 4, [0, 0, 255, 255]);
 
-            SnapshotAssertion::new(&rendered, &golden).assert_with(true);
+        SnapshotAssertion::new(&rendered, &golden).assert_with(true);
 
-            let g = decode_png(&golden);
-            assert_eq!(&g.rgba[..4], &[255, 0, 0, 255]);
-        }
+        let g = decode_png(&golden);
+        assert_eq!(&g.rgba[..4], &[255, 0, 0, 255]);
+    }
 
-        // Phase `missing_golden_writes_it_and_passes`.
-        {
-            let dir = scratch_dir();
-            let rendered = dir.join("rendered.png");
-            // Deliberately NOT creating the golden ahead of time.
-            let golden = dir.join("subdir/golden.png");
-            write_png(&rendered, 4, 4, [100, 120, 140, 255]);
+    #[test]
+    fn missing_golden_writes_it_and_passes() {
+        let dir = scratch_dir();
+        let rendered = dir.join("rendered.png");
+        // Deliberately NOT creating the golden ahead of time.
+        let golden = dir.join("subdir/golden.png");
+        write_png(&rendered, 4, 4, [100, 120, 140, 255]);
 
-            SnapshotAssertion::new(&rendered, &golden).assert_with(false);
+        SnapshotAssertion::new(&rendered, &golden).assert_with(false);
 
-            assert!(
-                golden.exists(),
-                "golden should have been seeded on first run"
-            );
-        }
+        assert!(
+            golden.exists(),
+            "golden should have been seeded on first run"
+        );
     }
 
     #[test]

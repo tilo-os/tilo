@@ -86,10 +86,9 @@ impl SheetsApp {
                 palette
             },
             dispatch: None,
-            content: None,
             people: None,
             opening: Rc::default(),
-            selection_decls: std::cell::RefCell::default(),
+            store: Rc::default(),
             file: None,
         }
     }

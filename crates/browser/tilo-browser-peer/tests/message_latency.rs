@@ -17,13 +17,16 @@
 mod participant;
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use std::time::{Duration, Instant};
 
 use collab_types::DocumentMutation;
 use tilo_browser_peer::{Host, PeerEvent};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, ready, route, start_host, start_peer, wait_for, workspace};
+use support::{enrol, ready, route, start_host, start_peer, wait_for};
 
 const MESSAGES: usize = 20;
 
@@ -53,7 +56,7 @@ async fn a_message_reaches_the_other_page_without_waiting_for_a_poll() {
     let (a, b) = (page(&sender), page(&receiver));
     let b_events = b.events();
     for peer in [&a, &b] {
-        peer.join(workspace()).unwrap();
+        peer.join_placed(support::ROOM, "Workspace").unwrap();
     }
     ready(&[&a, &b]).await;
 

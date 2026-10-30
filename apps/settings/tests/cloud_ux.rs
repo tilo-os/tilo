@@ -9,7 +9,6 @@ use std::time::Instant;
 use settings::SettingsShell;
 use settings::accounts::AccountRoot;
 use settings::panes::accounts::{AccountsPane, BrowserOpener};
-use settings::panes::model::PaneModel;
 use ui::framework::testing::TestApp;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -45,7 +44,7 @@ fn capture<A: ui::framework::ResourceApp>(app: &mut TestApp<A>, name: &str) -> T
         })
         .ok_or("mounted Files surface")?
     } else {
-        app.surface::<settings::SettingsApp, _>(|surface| {
+        app.with_widget::<settings::Inspected, _>(|surface| {
             ui::widget::controls::control_action_bindings(surface)
         })
         .ok_or("mounted Settings surface")?
@@ -62,7 +61,7 @@ fn capture<A: ui::framework::ResourceApp>(app: &mut TestApp<A>, name: &str) -> T
 fn wait_for_accounts_work(settings: &mut TestApp<SettingsShell>) -> TestResult {
     let started = Instant::now();
     while settings
-        .surface::<settings::SettingsApp, _>(|app| {
+        .with_widget::<settings::Inspected, _>(|app| {
             app.areas()
                 .find::<AccountsArea>()
                 .is_some_and(|area| area.model().borrow().busy())
@@ -412,7 +411,7 @@ fn open_settings(
         &root.path().ok_or("explicit isolated Settings profile")?,
     )?;
     settings
-        .surface::<settings::SettingsApp, _>(|app| {
+        .with_widget::<settings::Inspected, _>(|app| {
             // Preserve the live pane's host action door while replacing only
             // its provider dependencies with deterministic local services.
             let mut model = app
@@ -475,7 +474,7 @@ fn sign_in(
     capture(settings, "google-services-import-selected")?;
     settings.call_on("settings.root", "save-account-form", serde_json::json!({}))?;
     let finished = settings
-        .surface::<settings::SettingsApp, _>(|app| {
+        .with_widget::<settings::Inspected, _>(|app| {
             app.areas()
                 .find::<AccountsArea>()
                 .unwrap()
@@ -727,7 +726,7 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
     )?;
     settings.call_on("settings.root", "save-account-form", serde_json::json!({}))?;
     let finished = settings
-        .surface::<settings::SettingsApp, _>(|app| {
+        .with_widget::<settings::Inspected, _>(|app| {
             app.areas()
                 .find::<AccountsArea>()
                 .unwrap()
@@ -783,7 +782,7 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
     loop {
         settings.settle();
         let busy = settings
-            .surface::<settings::SettingsApp, _>(|app| {
+            .with_widget::<settings::Inspected, _>(|app| {
                 app.areas()
                     .find::<AccountsArea>()
                     .unwrap()
@@ -836,7 +835,7 @@ fn google_mail_only_is_not_presented_as_drive() -> TestResult {
     )?;
     settings.call_on("settings.root", "save-account-form", serde_json::json!({}))?;
     let finished = settings
-        .surface::<settings::SettingsApp, _>(|app| {
+        .with_widget::<settings::Inspected, _>(|app| {
             app.areas()
                 .find::<AccountsArea>()
                 .unwrap()

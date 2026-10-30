@@ -522,7 +522,7 @@ pub struct TextInput {
     text_actions: Vec<RegisteredTextAction>,
     pending_text_action: Option<TextActionRequest>,
     /// Reuses [`ContextMenu`]; rendered via the overlay pass so it floats above the field.
-    context_menu: ContextMenu,
+    context_menu: Box<ContextMenu>,
     /// Per-row action parallel to `context_menu`'s items (separators → `None`).
     context_actions: Vec<Option<CtxAction>>,
     accessible_name: String,
@@ -848,7 +848,7 @@ impl TextInput {
             pending_autocorrection: None,
             text_actions: Vec::new(),
             pending_text_action: None,
-            context_menu: ContextMenu::new(),
+            context_menu: Box::new(ContextMenu::new()),
             context_actions: Vec::new(),
             accessible_name: String::new(),
             placeholder: String::new(),
@@ -5191,7 +5191,7 @@ impl TextInput {
             }),
         );
         menu.open_at(pos);
-        self.context_menu = menu;
+        *self.context_menu = menu;
         self.context_actions = actions;
     }
 
@@ -6056,7 +6056,7 @@ impl Widget for TextInput {
         // An open menu owns the keyboard: arrows move through its rows and
         // Enter runs the highlighted one, never editing the text beneath.
         if self.context_menu.is_open() && matches!(event, WindowEvent::KeyboardInput { .. }) {
-            Widget::handle_event(&mut self.context_menu, event, ctx);
+            Widget::handle_event(&mut *self.context_menu, event, ctx);
             if let Some(index) = self.context_menu.take_selection() {
                 self.dispatch_context_action(index);
             }
@@ -6558,7 +6558,7 @@ impl Widget for TextInput {
         // Drawn while it is open and while it leaves (`motion::Appear`);
         // a closed menu draws nothing.
         Widget::draw_overlay(
-            &mut self.context_menu,
+            &mut *self.context_menu,
             scene,
             transform,
             text_renderer,

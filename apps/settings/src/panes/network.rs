@@ -6,8 +6,9 @@
 //! and in what order) with the controls under it, and drills into pages
 //! ([`crate::pages`]): every network in range, one network's page, the known
 //! networks, the VPNs and a VPN's page (`vpn`), the hotspot and the
-//! advanced settings. Every page is the same model; the
-//! page on top of the window's trail says which one it composes.
+//! advanced settings. Every page is view code over the same model
+//! ([`view`]); the page on top of the window's trail says which one it
+//! builds.
 //!
 //! Every read and change may block on `nmcli` or the system bus for
 //! seconds, so none runs on the UI thread: the model reads a snapshot in the
@@ -45,12 +46,11 @@ use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_resource::{self, ActionRef, Effect};
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::area::AreaContext;
 use crate::categories::Category;
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::SettingsEffect;
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 
@@ -62,6 +62,9 @@ mod page;
 pub(crate) mod values;
 mod view;
 pub(crate) mod vpn;
+
+use view::Page;
+pub(crate) use view::view;
 
 pub(crate) use labels::{
     HOTSPOT_BANDS, IPV6_METHODS, MAC_POLICIES, METERED_POLICIES, PROXY_MODES, band_from_label,
@@ -344,12 +347,18 @@ crate::area::pane_area! {
     fn poll(&self) {
         NetworkArea::poll(self);
     }
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        NetworkArea::next_wake(self)
+    }
+    fn pending_visual_work(&self) -> bool {
+        NetworkArea::pending_visual_work(self)
+    }
     fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
         NetworkArea::statuses(self)
     }
     fn query(&self, category: Category) -> Option<&dyn crate::area::PaneQuery> {
         (category == Category::Network
-            && self.cx.pages().top(Category::Network).is_some_and(|page| page.key == PAGE_ALL))
+            && self.reach.pages.top(Category::Network).is_some_and(|page| page.key == PAGE_ALL))
         .then_some(self as &dyn crate::area::PaneQuery)
     }
 }
@@ -441,7 +450,7 @@ fn take_secret(buffer: &Mutex<String>) -> Zeroizing<String> {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: NetworkEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     if effect == NetworkEffect::InspectNetworkState {
         return crate::panes::network::area(app)
@@ -451,30 +460,32 @@ pub(crate) fn answer(
     }
     if effect == NetworkEffect::RefreshNetworks {
         // A dongle plugged in a moment ago is seen without waiting.
-        app.host().radios().look_again();
+        app.radios().look_again();
     }
     let begun = crate::panes::network::area(app)
         .ok_or_else(crate::area::missing)?
         .model()
         .borrow_mut()
         .begin(effect)?;
-    Ok(answer_begun(begun, cx))
+    Ok(answer_begun(app, begun, cx))
 }
 
 /// Carry out what an effect began: nothing more, or its work on a worker,
 /// landing in the model.
-pub(crate) fn answer_begun(begun: Begun, cx: &mut EffectCx<Settings, SettingsApp>) -> Effected {
+pub(crate) fn answer_begun(
+    app: &SettingsApp,
+    begun: Begun,
+    cx: &mut EffectCx<Settings>,
+) -> Effected {
     match begun {
         Begun::Done => Effected::done(),
-        Begun::Work(work) => {
-            crate::device_read::job(cx, work, |app: &mut SettingsApp, landed: Landed, _| {
-                crate::panes::network::area(app)
-                    .ok_or_else(crate::area::missing)?
-                    .model()
-                    .borrow_mut()
-                    .land(landed)
-            })
-        }
+        Begun::Work(work) => app.job(cx, work, |app: &SettingsApp, landed: Landed, _| {
+            crate::panes::network::area(app)
+                .ok_or_else(crate::area::missing)?
+                .model()
+                .borrow_mut()
+                .land(landed)
+        }),
     }
 }
 
@@ -1486,6 +1497,34 @@ struct Shown {
     secret: Zeroizing<String>,
 }
 
+/// What the network areas and their models reach of the window: this
+/// device (when `devices`), the settings document and its sections' actions,
+/// the radios, the pages drilled into and the password prompt.
+#[derive(Clone)]
+pub(crate) struct Reach {
+    /// Whether they read and drive this device's networks and modem.
+    pub(crate) devices: bool,
+    pub(crate) storage: ui::storage::AppStorage,
+    pub(crate) sections: crate::sections::Sections,
+    pub(crate) radios: crate::radios::Radios,
+    pub(crate) pages: crate::pages::PanePages,
+    pub(crate) secrets: crate::secrets::SecretAsks,
+}
+
+impl Reach {
+    /// What the areas made in `cx` reach.
+    pub(crate) fn of(cx: &AreaContext) -> Self {
+        Self {
+            devices: cx.devices,
+            storage: cx.storage.clone(),
+            sections: cx.sections.clone(),
+            radios: cx.radios.clone(),
+            pages: cx.pages.clone(),
+            secrets: cx.secrets.clone(),
+        }
+    }
+}
+
 /// Which radios Network can switch, each as the kernel lists it or
 /// `NetworkManager` reported it: either one seeing a radio is enough, so a
 /// dongle plugged in counts at once and a modem only `NetworkManager` knows
@@ -1497,8 +1536,8 @@ struct NetworkRadios {
 }
 
 impl NetworkRadios {
-    fn of(cx: &PaneCx, reported: Option<&os_actions::RadioState>) -> Self {
-        let listed = cx.radios().now();
+    fn of(radios: &crate::radios::Radios, reported: Option<&os_actions::RadioState>) -> Self {
+        let listed = radios.now();
         let either = |listed: Option<bool>, reported: Option<bool>| match (listed, reported) {
             (Some(true), _) | (_, Some(true)) => Some(true),
             (None, None) => None,
@@ -1520,31 +1559,37 @@ impl NetworkRadios {
 /// What the Network area keeps for the window: the model, read when first
 /// needed.
 pub struct NetworkArea {
-    cx: PaneCx,
-    model: std::cell::OnceCell<Shared<NetworkModel>>,
+    reach: Reach,
+    /// The networks a capture shows; `None` in a live window.
+    sample: Option<crate::scenarios::NetworkSample>,
+    model: std::cell::OnceCell<Rc<RefCell<NetworkModel>>>,
+    /// Moves whenever what the page shows of the model does.
+    shown: LocalState<u64>,
 }
 
 impl NetworkArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            reach: Reach::of(cx),
+            sample: cx.scene().and_then(|scene| scene.network),
             model: std::cell::OnceCell::new(),
+            shown: LocalState::new(0),
         }
     }
 
     /// The model, where the networks were read; never reads them.
-    pub(crate) fn read(&self) -> Option<&Shared<NetworkModel>> {
+    pub(crate) fn read(&self) -> Option<&Rc<RefCell<NetworkModel>>> {
         self.model.get()
     }
 
     /// The model over this device's networks, or over sample networks for a
     /// screenshot.
-    pub fn model(&self) -> &Shared<NetworkModel> {
+    pub fn model(&self) -> &Rc<RefCell<NetworkModel>> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                NetworkModel::of_device(self.cx.clone())
+            let model = if self.reach.devices {
+                NetworkModel::of_device(self.reach.clone())
             } else {
-                NetworkModel::sample(self.cx.clone())
+                NetworkModel::sample(self.reach.clone(), self.sample)
             };
             Rc::new(std::cell::RefCell::new(model))
         })
@@ -1556,7 +1601,7 @@ impl NetworkArea {
             Some(model) => model.borrow().inspection(),
             None => Ok(
                 serde_json::json!({"state":"unopened", "loaded":false, "networks":[],
-                "source": if self.cx.reaches_devices() { "device" } else { "preview" }}),
+                "source": if self.reach.devices { "device" } else { "preview" }}),
             ),
         }
     }
@@ -1570,7 +1615,7 @@ impl NetworkArea {
             let model = model.try_borrow().ok()?;
             model.reported_radios().cloned()
         });
-        let radios = NetworkRadios::of(&self.cx, reported.as_ref());
+        let radios = NetworkRadios::of(&self.reach.radios, reported.as_ref());
         let mut statuses = Vec::new();
         let mut unavailable = |effects: &[&'static str], code: &str, reason: &str| {
             statuses.extend(effects.iter().map(|&id| {
@@ -1604,11 +1649,38 @@ impl NetworkArea {
         statuses
     }
 
-    /// Take in background results, if the model exists.
+    /// Take in background results, if the model exists. While a page shows
+    /// the model, also take in what the device reported, scan when due and
+    /// move what the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
-        if let Some(model) = self.model.get() {
-            model.borrow_mut().poll_background();
+        let Some(model) = self.model.get() else {
+            return;
+        };
+        let Ok(mut model) = model.try_borrow_mut() else {
+            return;
+        };
+        if !model.shown() {
+            model.poll_background();
+            return;
         }
+        if model.poll() {
+            self.shown.set(self.shown.get().wrapping_add(1));
+        }
+    }
+
+    /// When the page next scans for networks, while one shows them.
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        let model = self.model.get()?.try_borrow().ok()?;
+        model.shown().then(|| model.next_wake()).flatten()
+    }
+
+    /// Whether a page shows "Scanning…" for a scan already under way, which
+    /// its networks replace when it lands.
+    fn pending_visual_work(&self) -> bool {
+        self.model
+            .get()
+            .and_then(|model| model.try_borrow().ok())
+            .is_some_and(|model| model.shown() && model.scan_in_flight)
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -1658,7 +1730,7 @@ impl crate::area::PaneQuery for NetworkArea {
     reason = "each flag is an independent disclosure or read state of the pane"
 )]
 pub struct NetworkModel {
-    cx: PaneCx,
+    reach: Reach,
     service: Arc<dyn NetworkService>,
     /// False until the first snapshot arrives; until then the pane shows a
     /// pending view.
@@ -1735,8 +1807,8 @@ pub struct NetworkModel {
     jobs: Vec<crate::channel::Receiver<Landed>>,
     /// The modem's model, whose card the first page shows next to Wi-Fi
     /// and whose page is one of this pane's: the window's [`mobile::MobileArea`]
-    /// keeps it, the pane composes and polls it.
-    mobile: Option<Shared<mobile::MobileModel>>,
+    /// keeps it, the page shows it and the model polls it.
+    mobile: Option<Rc<RefCell<mobile::MobileModel>>>,
     /// What follows the device while a pane shows the model.
     following: std::rc::Weak<crate::watch::Counted>,
     /// The device's change count when the model last started a read.
@@ -1784,7 +1856,7 @@ impl NetworkModel {
             }
         });
         let value = serde_json::json!({
-            "source":if self.cx.reaches_devices() { "device" } else { "preview" },
+            "source":if self.reach.devices { "device" } else { "preview" },
             "state":if self.loaded { "ready" } else { "loading" }, "loaded":self.loaded,
             "page": self.page_key(),
             "wifi": { "available":known_radios.then_some(self.radios.wifi_available),
@@ -1815,9 +1887,9 @@ impl NetworkModel {
 
     /// This device's networks: the pane is pending until the first
     /// snapshot, read in the background, arrives.
-    fn of_device(cx: PaneCx) -> Self {
+    fn of_device(reach: Reach) -> Self {
         let mut model = Self::with_service(
-            cx,
+            reach,
             Arc::new(DeviceNetwork {
                 dispatcher: dispatcher_or_real(None),
             }),
@@ -1827,10 +1899,9 @@ impl NetworkModel {
     }
 
     /// Sample networks, on the page a network capture asks for.
-    fn sample(cx: PaneCx) -> Self {
+    fn sample(reach: Reach, wanted: Option<crate::scenarios::NetworkSample>) -> Self {
         use crate::scenarios::NetworkSample;
-        let wanted = cx.scene().and_then(|scene| scene.network);
-        let mut model = Self::loaded_from(cx, Arc::new(SampleNetwork));
+        let mut model = Self::loaded_from(reach, Arc::new(SampleNetwork));
         match wanted {
             Some(NetworkSample::WifiOff) => {
                 model.wifi_enabled = false;
@@ -1912,18 +1983,18 @@ impl NetworkModel {
     }
 
     /// A model over `service`, its first snapshot read at once.
-    fn loaded_from(cx: PaneCx, service: Arc<dyn NetworkService>) -> Self {
-        let mut model = Self::with_service(cx, service);
+    fn loaded_from(reach: Reach, service: Arc<dyn NetworkService>) -> Self {
+        let mut model = Self::with_service(reach, service);
         let snapshot = model.service.snapshot(true);
         let _ = model.adopt_snapshot(snapshot);
         model
     }
 
-    fn with_service(cx: PaneCx, service: Arc<dyn NetworkService>) -> Self {
+    fn with_service(reach: Reach, service: Arc<dyn NetworkService>) -> Self {
         Self {
-            listed: cx.radios().now(),
-            pages_seen: cx.pages().revision(),
-            cx,
+            listed: reach.radios.now(),
+            pages_seen: reach.pages.revision(),
+            reach,
             service,
             loaded: false,
             snapshot: None,
@@ -1979,7 +2050,7 @@ impl NetworkModel {
     }
 
     /// Show the modem `mobile` describes on the first page and its own page.
-    pub(crate) fn host_mobile(&mut self, mobile: &Shared<mobile::MobileModel>) {
+    pub(crate) fn host_mobile(&mut self, mobile: &Rc<RefCell<mobile::MobileModel>>) {
         if !self
             .mobile
             .as_ref()
@@ -1997,7 +2068,7 @@ impl NetworkModel {
 
     /// Which radios Network can switch now.
     fn radios_present(&self) -> NetworkRadios {
-        NetworkRadios::of(&self.cx, self.reported_radios())
+        NetworkRadios::of(&self.reach.radios, self.reported_radios())
     }
 
     /// Whether this device has no Wi-Fi radio.
@@ -2013,12 +2084,12 @@ impl NetworkModel {
     /// The page the pane shows: its key in the window's trail, `None` on the
     /// first page.
     pub(crate) fn page_key(&self) -> Option<String> {
-        self.cx.pages().top(Category::Network).map(|page| page.key)
+        self.reach.pages.top(Category::Network).map(|page| page.key)
     }
 
     /// Drill into the page `key`, titled `title`.
     fn open_page(&mut self, key: &str, title: String) {
-        self.cx.pages().open(Category::Network, key, title);
+        self.reach.pages.open(Category::Network, key, title);
         self.changed = true;
     }
 
@@ -3372,8 +3443,8 @@ impl NetworkModel {
             (NetworkChange::Forget { uuid, name }, Ok(())) => {
                 self.profiles.retain(|p| &p.uuid != uuid);
                 if self.in_range(name).is_none() {
-                    self.cx
-                        .pages()
+                    self.reach
+                        .pages
                         .close(Category::Network, &wifi_page_key(name));
                 }
                 if self
@@ -3624,11 +3695,14 @@ fn join_with_shared_password(
     }
 }
 
-impl PaneModel for NetworkModel {
-    fn compose(&self) -> Box<dyn ui::widget::Widget> {
-        self.build_composition()
+impl NetworkModel {
+    /// Whether a page shows the model: it follows the device while it does.
+    fn shown(&self) -> bool {
+        self.following.strong_count() > 0
     }
 
+    /// Take in what background work finished and what the device reports
+    /// now, scanning when due; whether what the page shows changed.
     fn poll(&mut self) -> bool {
         self.poll_background();
         self.read_reported_changes();
@@ -3645,7 +3719,7 @@ impl PaneModel for NetworkModel {
             self.seen_selection = selection;
             self.changed = true;
         }
-        let pages = self.cx.pages().revision();
+        let pages = self.reach.pages.revision();
         if pages != self.pages_seen {
             self.pages_seen = pages;
             self.left_pages();
@@ -3662,30 +3736,23 @@ impl PaneModel for NetworkModel {
         std::mem::take(&mut self.changed)
     }
 
-    fn name(&self) -> &'static str {
-        "NetworkPane"
-    }
-
+    /// When the page next scans for networks while nothing else happens.
     fn next_wake(&self) -> Option<ui::time::Instant> {
         self.scans_networks()
             .then(|| self.scanned_at?.checked_add(SCAN_EVERY))
             .flatten()
     }
 
-    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
+    /// Follow the device, and the modems whose card and page are Network's,
+    /// for a page that shows the model, for as long as the answer is held;
+    /// pages share one follow.
+    fn follow(&mut self) -> Rc<dyn std::any::Any> {
         let device = self.follow_device();
-        // The modem's card and page are this pane's: it follows the modems
-        // too.
         let mobile = self
             .mobile
             .as_ref()
-            .and_then(|mobile| mobile.try_borrow_mut().ok()?.follow());
-        Some(Rc::new((device, self.follow_device_vpn(), mobile)))
-    }
-
-    // The scan's networks replace "Scanning…" when it lands.
-    fn pending_visual_work(&self) -> bool {
-        self.scan_in_flight
+            .and_then(|mobile| Some(mobile.try_borrow_mut().ok()?.follow()));
+        Rc::new((device, self.follow_device_vpn(), mobile))
     }
 }
 
@@ -3700,8 +3767,8 @@ impl NetworkModel {
     /// or a code drawn on a network's page, a filter of the full list.
     fn left_pages(&mut self) {
         let trail: Vec<String> = self
-            .cx
-            .pages()
+            .reach
+            .pages
             .trail(Category::Network)
             .into_iter()
             .map(|page| page.key)
@@ -3761,14 +3828,15 @@ impl NetworkModel {
         if started.is_ok() {
             self.snapshot = Some(receiver);
             self.scan_in_flight = true;
-            self.changed = true;
+            // "Scanning…" shows only where no network is listed yet.
+            self.changed |= self.networks.is_empty();
         }
     }
 
     /// Take in a snapshot, a chosen file or work of the pane's own that
     /// arrived.
     fn poll_background(&mut self) {
-        let listed = self.cx.radios().now();
+        let listed = self.reach.radios.now();
         if listed != self.listed {
             let plugged = self.listed.is_some();
             self.listed = listed;
@@ -3783,8 +3851,10 @@ impl NetworkModel {
             match receiver.try_recv() {
                 Ok(snapshot) => {
                     self.snapshot = None;
-                    // "Scanning…" gives way to the list, whatever it holds.
-                    self.changed |= std::mem::take(&mut self.scan_in_flight);
+                    // "Scanning…" gives way to the list, whatever it holds;
+                    // a list shown stays unless the scan changed it.
+                    self.changed |=
+                        std::mem::take(&mut self.scan_in_flight) && self.networks.is_empty();
                     let _ = self.adopt_snapshot(snapshot);
                 }
                 Err(crate::channel::TryRecvError::Disconnected) => {

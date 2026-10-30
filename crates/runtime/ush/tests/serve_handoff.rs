@@ -213,7 +213,8 @@ pub fn fixture_images(root: &Path) {
     let runtime = root.join(PackageId::from_bytes(RUNTIME).to_hex());
     std::fs::create_dir_all(runtime.join("etc")).unwrap();
     // base64 and tr: the run marks encode a command line and its directory.
-    for program in ["bash", "id", "touch", "cat", "base64", "tr"] {
+    // stat: what a guest's own directories are.
+    for program in ["bash", "id", "touch", "cat", "base64", "tr", "stat"] {
         let source = PathBuf::from("/usr/bin").join(program);
         fixture_file(&runtime, &source);
         if let Some(closure) = ush::helper_runtime::HelperRuntime::resolve(&source).unwrap() {

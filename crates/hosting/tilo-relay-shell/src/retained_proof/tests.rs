@@ -690,8 +690,11 @@ fn historical_room_proof_preserves_effect_receipts_and_exact_governor_roster() {
         .unwrap();
     let source = authority.governor().device_public_key;
     let mut doc = room_document(&batch[0]);
-    let receipts = doc
+    let ledger = doc
         .put_object(ROOT, "effect_receipts_v1", automerge::ObjType::Map)
+        .unwrap();
+    let receipts = doc
+        .put_object(&ledger, "governor", automerge::ObjType::Map)
         .unwrap();
     doc.put(
         &receipts,

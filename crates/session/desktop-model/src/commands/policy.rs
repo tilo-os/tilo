@@ -233,7 +233,6 @@ pub fn may_command(
         | DesktopCommand::ClaimNamespace { .. }
         | DesktopCommand::SavePreset { .. }
         | DesktopCommand::AssignPreset { .. }
-        | DesktopCommand::RecordEffectReceipt { .. }
         | DesktopCommand::GrantAppAction { .. }
         | DesktopCommand::RevokeAppAction { .. } => Ok(()),
     }

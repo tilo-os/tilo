@@ -33,14 +33,13 @@ fn original_omission_roundtrip_preserves_full_user_home_and_rejects_replaced_nam
     fs::write(home.join(".hidden/private/settings"), b"user-private-state").unwrap();
     fs::write(home.join("document"), b"user-document").unwrap();
     let preparation = OriginalPreparation::review(&home).unwrap().unwrap();
-    let proof = preparation
+    let proofs = preparation
         .validate_original(&home, rustix::process::getuid().as_raw())
         .unwrap();
     environment.set("HOME", root.join("unrelated-receiver"));
     environment.set("XDG_STATE_HOME", root.join("unrelated-state"));
     let pin = PinnedDirectory::open_absolute(&home).unwrap();
-    let inventory =
-        SourceInventory::capture_original_home(&pin, std::slice::from_ref(&proof)).unwrap();
+    let inventory = SourceInventory::capture_original_home(&pin, &proofs).unwrap();
     assert_eq!(inventory.summary().unwrap().files, 3);
     let limits = Limits {
         plaintext_bytes: 4 * 1024 * 1024,
@@ -110,5 +109,5 @@ fn original_omission_roundtrip_preserves_full_user_home_and_rejects_replaced_nam
             .is_err()
     );
     assert!(inventory.validate(&pin).is_err());
-    assert!(SourceInventory::capture_original_home(&pin, &[proof]).is_err());
+    assert!(SourceInventory::capture_original_home(&pin, &proofs).is_err());
 }

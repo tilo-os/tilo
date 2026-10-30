@@ -105,6 +105,43 @@ impl Joined {
         .unwrap();
         (joined, directory)
     }
+
+    /// [`Self::test_empty`] running its own room host, with `room` placed
+    /// on it and held: admitted as every joined room is, its session not
+    /// held yet.
+    pub(in crate::standalone) async fn test_hosting(
+        room: RoomId,
+    ) -> (Arc<Self>, tempfile::TempDir) {
+        let (joined, directory) = Self::test_empty().await;
+        let host = tilo_room_host::host::RoomHost::open(
+            tilo_room_host::host::HostConfig::new(
+                directory.path().join("room-host"),
+                tilo_room_host::host::HostMode::Device,
+            ),
+            tilo_room_host::host::HostIdentity {
+                user_public_key: joined.custody.device_cert.user_public_key,
+                device_signing_key: joined.custody.device_signing_key.clone(),
+                device_cert: joined.custody.device_cert.clone(),
+                revocations: RevocationList::new(),
+            },
+            joined.endpoint(),
+        )
+        .await
+        .unwrap();
+        joined
+            .install_host(
+                Arc::new(host),
+                super::RecordCreation {
+                    declared_kinds: Box::new(|app| {
+                        (app == "dev.tilo.declared").then(|| vec!["dev.tilo.note".to_owned()])
+                    }),
+                    dev: false,
+                },
+            )
+            .unwrap();
+        joined.place(room, "Home").await.unwrap();
+        (joined, directory)
+    }
 }
 
 /// A room its governor's certified host serves over a relay with the join
@@ -285,6 +322,10 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         keys: joined.keys.clone(),
         content: std::sync::OnceLock::new(),
         requesters: content::Requesters::default(),
+        own_host: std::sync::OnceLock::new(),
+        commits: Mutex::new(std::collections::HashMap::new()),
+        live_changed: Notify::new(),
+        this: std::sync::Weak::new(),
     };
     assert!(
         probe.action_room(actor, &room.to_string()).is_ok(),
@@ -296,9 +337,7 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
             .is_err(),
         "a default root must not borrow the selected root's admission"
     );
-    let run = probe
-        .admit_mcp_execution(&room.to_string(), &room.to_string(), actor)
-        .unwrap();
+    let run = probe.admit_mcp_execution(&room.to_string(), actor).unwrap();
     let retained = run.caller().clone();
     probe.recheck_mcp_executions(room).unwrap();
     assert!(retained.execution_is_live());
@@ -358,9 +397,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     let origin = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
         .unwrap()
         .new_origin();
-    let admission = joined
-        .admit_mcp_execution(&room, "private-profile-room", actor)
-        .unwrap();
+    let admission = joined.admit_mcp_execution(&room, actor).unwrap();
     let mut services = membership.services();
     services.native_certificates = Some(Arc::new(super::admission_tests::FixtureAuthority {
         room: uuid::Uuid::parse_str(&room).unwrap(),
@@ -536,7 +573,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     assert!(joined.action_room(&actor, &own_room.to_string()).is_err());
     assert!(joined.action_room(&actor, "not-a-room").is_err());
     let execution = joined
-        .admit_mcp_execution(&room.to_string(), &own_room.to_string(), &actor)
+        .admit_mcp_execution(&room.to_string(), &actor)
         .unwrap();
     let presentation = runtime_collab::CertifiedJoinIdentity::decode(execution.presentation())
         .unwrap()
@@ -593,11 +630,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     );
     assert!(
         joined
-            .admit_mcp_execution(
-                &room.to_string(),
-                &own_room.to_string(),
-                "forged-profile-actor"
-            )
+            .admit_mcp_execution(&room.to_string(), "forged-profile-actor")
             .is_err()
     );
     joined
@@ -758,7 +791,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     assert!(execution.check(&joined).is_err());
     assert!(
         joined
-            .admit_mcp_execution(&room.to_string(), &own_room.to_string(), &actor)
+            .admit_mcp_execution(&room.to_string(), &actor)
             .is_err()
     );
     assert!(
@@ -1015,10 +1048,6 @@ struct GovernorDirectory {
 }
 
 impl ChannelDirectory for GovernorDirectory {
-    fn governs(&self, room: RoomId) -> bool {
-        room == self.room
-    }
-
     fn governor_of(&self, _room: RoomId) -> Option<collab_types::Ed25519PublicKey> {
         Some(self.governor)
     }
@@ -1029,11 +1058,11 @@ impl ChannelDirectory for GovernorDirectory {
         _channel: collab_types::ChannelId,
         _route: Option<&collab_types::ChannelRoute>,
         _now: u64,
-    ) -> BTreeSet<collab_types::Ed25519PublicKey> {
+    ) -> Option<BTreeSet<collab_types::Ed25519PublicKey>> {
         if room != self.room {
-            return BTreeSet::new();
+            return Some(BTreeSet::new());
         }
-        self.readers.lock().unwrap().clone()
+        Some(self.readers.lock().unwrap().clone())
     }
 }
 
@@ -1096,21 +1125,14 @@ fn settled_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
 fn the_rooms_the_desktop_session_enrolled_are_refused() {
     let directory = tempfile::tempdir().unwrap();
     assert!(desktop_enrolled(directory.path()).unwrap().is_empty());
-    std::fs::write(
-        directory
+    let record = tilo_joined_room::owner_file_of(
+        &directory
             .path()
             .join(super::super::workspace::DESKTOP_WORKSPACE),
-        br#"{"native_authority": {"revision": 1, "rooms": {}, "pending": {}}}"#,
-    )
-    .unwrap();
+    );
+    std::fs::write(&record, br#"{"revision": 1, "rooms": {}, "pending": {}}"#).unwrap();
     assert!(desktop_enrolled(directory.path()).unwrap().is_empty());
-    std::fs::write(
-        directory
-            .path()
-            .join(super::super::workspace::DESKTOP_WORKSPACE),
-        b"not a workspace file",
-    )
-    .unwrap();
+    std::fs::write(&record, b"not an owner record").unwrap();
     assert!(
         desktop_enrolled(directory.path()).is_err(),
         "an unreadable desktop record refuses rather than guesses"
@@ -1434,4 +1456,124 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
         .unwrap();
     assert_eq!(arrived.state, ContentState::Resolved, "here");
     assert_eq!(arrived.bytes, book);
+}
+
+/// A write as the SDK signs one, of `app`'s record in `room`, signed by `key`.
+fn signed_write(
+    room: RoomId,
+    app: &str,
+    key: &SigningKey,
+) -> tilo_owner_commit::OwnerCommitRequest {
+    const RECORD: &str = "tab:0000000000000001";
+    let room = room.to_string();
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "text", "written").unwrap();
+    doc.commit();
+    let now = SystemTime::now();
+    let sequence = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        collab_types::DocumentMutation::Snapshot(doc.save())
+            .encode()
+            .unwrap(),
+        collab_types::document_artifact_id(app, &room, RECORD),
+        collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+        collab_types::document_attestation_id(app, &room, RECORD),
+        collab_types::OpKind::Change,
+        now,
+        u64::try_from(sequence).unwrap(),
+    );
+    collab_types::sign_op(&mut envelope, key).unwrap();
+    tilo_owner_commit::OwnerCommitRequest {
+        room,
+        operation: CommitOperation::Document {
+            app: app.into(),
+            record: RECORD.into(),
+            envelope: Box::new(envelope),
+        },
+    }
+}
+
+/// The profile's room is placed on the room host the profile runs and held
+/// as a joined room, admitted like any other; placing it again finds it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_profile_room_is_placed_once_on_its_own_host_and_held() {
+    let room = RoomId::new();
+    let (joined, _directory) = Joined::test_hosting(room).await;
+    assert!(joined.hosted_here(room));
+    assert!(joined.workspace(room).is_some());
+    joined.place(room, "Home").await.unwrap();
+    assert_eq!(joined.owner.rooms(), vec![room]);
+    let actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        joined.test_certificate().user_public_key,
+    );
+    assert_eq!(
+        joined.action_room(&actor, &room.to_string()).unwrap(),
+        room.to_string()
+    );
+    assert!(joined.requires_room(&room.to_string()));
+    assert!(
+        !joined.records_effects(&room.to_string()),
+        "the profile keeps its own room's effect records"
+    );
+}
+
+/// An app's write to a record the profile's room does not hold yet is
+/// taken only in a kind its installed manifest declares, and only signed by
+/// this device; nothing refused reaches the host.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_to_a_record_the_room_lacks_is_taken_only_in_a_declared_kind() {
+    let room = RoomId::new();
+    let (joined, _directory) = Joined::test_hosting(room).await;
+    let key = joined.custody.device_signing_key.clone();
+    for (app, kind) in [
+        ("dev.tilo.declared", None),
+        ("dev.tilo.declared", Some("dev.tilo.other")),
+        ("dev.tilo.not-installed", Some("dev.tilo.note")),
+    ] {
+        let refused = joined
+            .commit_with_record_kind(signed_write(room, app, &key), kind.map(str::to_owned))
+            .await
+            .unwrap_err();
+        assert!(refused.contains("kind"), "{app} {kind:?}: {refused}");
+    }
+    let stranger = SigningKey::from_bytes(&[7; 32]);
+    let refused = joined
+        .commit_with_record_kind(
+            signed_write(room, "dev.tilo.declared", &stranger),
+            Some("dev.tilo.note".into()),
+        )
+        .await
+        .unwrap_err();
+    assert!(refused.contains("signer"), "{refused}");
+}
+
+/// The rooms the desktop session governs here are refused, writes included.
+#[tokio::test(flavor = "multi_thread")]
+async fn writes_to_a_room_the_desktop_session_governs_are_refused() {
+    let room = RoomId::new();
+    let (empty, directory) = Joined::test_empty().await;
+    let joined = Joined::open(
+        directory.path(),
+        empty.custody.clone(),
+        empty.endpoint(),
+        BTreeSet::from([room]),
+        (
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        ),
+    )
+    .unwrap();
+    assert!(joined.requires_room(&room.to_string()));
+    let refused = joined
+        .commit(signed_write(
+            room,
+            "dev.tilo.declared",
+            &empty.custody.device_signing_key,
+        ))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("read only"), "{refused}");
 }

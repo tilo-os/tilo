@@ -12,36 +12,30 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use provider_settings_ui::widgets::spacing;
 use settings::categories::Category;
-use settings::widgets::spacing;
-use ui::headless::{FrameHarness, Framed};
+use ui::headless::FrameHarness;
 use ui::widget::Widget;
 use vello::kurbo::Rect;
 
-use crate::composition_balance::lay_out_at;
-
-/// The production layout cycle under a large-text preference: the theme
-/// carries `text_scale` and the renderer is told the same scale, exactly as
-/// the live host, the shared launcher and the headless harness do.
-fn lay_out_scaled<T: Widget + 'static>(
-    widget: T,
-    (w, h): (f32, f32),
+/// Settings on `category` under a large-text preference: the theme carries
+/// `text_scale` and the renderer is told the same scale, exactly as the live
+/// host, the shared launcher and the headless harness do. Not on Appearance,
+/// whose page shows the window in the person's own look.
+fn window_scaled(
+    category: Category,
+    viewport: (f32, f32),
     text_scale: f32,
-) -> Framed<T> {
-    Framed::new(
-        ui::State::new(),
-        widget,
-        ui::headless::viewport((w, h)),
+) -> crate::support::Window {
+    crate::support::window_themed(
+        category,
+        viewport,
         ui::Theme::dark().with_text_scale(text_scale),
     )
 }
 
 const WIDE: (f32, f32) = (1200.0, 760.0);
 const NARROW: (f32, f32) = (440.0, 820.0);
-
-fn lay_out<T: Widget + 'static>(widget: T, (w, h): (f32, f32)) -> Framed<T> {
-    lay_out_at(widget, w, h)
-}
 
 fn walk(w: &dyn Widget, f: &mut dyn FnMut(&dyn Widget)) {
     f(w);
@@ -135,11 +129,9 @@ fn same_centre_line(a: f64, b: f64, what: &str) {
 #[test]
 fn sidebar_rows_share_an_edge_and_the_toolkit_row_height() {
     // Case `rows_share_one_leading_edge_and_one_height_at_1x`.
-    let config = crate::support::ScratchConfig::new();
     let metrics = ui::tokens::Metrics::default();
-    let app = config.app().with_category(Category::Appearance);
-    let app = lay_out(app, WIDE);
-    let rows: Vec<_> = crate::support::nav_rows(&*app)
+    let mut app = crate::support::window_on(Category::Appearance, WIDE);
+    let rows: Vec<_> = crate::support::nav_rows(app.harness().root_widget())
         .into_iter()
         .filter(|row| Category::ALL.iter().any(|c| c.label() == row.label))
         .collect();
@@ -162,9 +154,8 @@ fn sidebar_rows_share_an_edge_and_the_toolkit_row_height() {
 
     // Case `rows_grow_with_large_text`.
     // 1800 px is above the scaled breakpoint, so the sidebar stays docked.
-    let large = config.app().with_category(Category::Appearance);
-    let large = lay_out_scaled(large, (1800.0, 900.0), 2.0);
-    let rows: Vec<_> = crate::support::nav_rows(&*large)
+    let mut large = window_scaled(Category::About, (1800.0, 900.0), 2.0);
+    let rows: Vec<_> = crate::support::nav_rows(large.harness().root_widget())
         .into_iter()
         .filter(|row| Category::ALL.iter().any(|c| c.label() == row.label))
         .collect();
@@ -187,14 +178,13 @@ fn sidebar_rows_share_an_edge_and_the_toolkit_row_height() {
 fn row_captions_and_hero_follow_the_spacing_steps() {
     // Case `described_row_keeps_its_explanation_and_centres_its_control`.
     {
-        let config = crate::support::ScratchConfig::new();
-        let app = config.app().with_category(Category::Accessibility);
-        let app = lay_out(app, WIDE);
+        let mut app = crate::support::window_on(Category::Accessibility, WIDE);
+        let root = app.harness().root_widget();
         // The row speaks its label and the line explaining it together, so
         // the explanation belongs to its row, not to the next one.
         let mut described = None;
         let mut next = None;
-        walk(&*app, &mut |w| {
+        walk(root, &mut |w| {
             if w.name() != "ListRow" {
                 return;
             }
@@ -220,7 +210,7 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
             next.y0 >= row.y1 - 0.5,
             "the next row starts below the explanation: {row:?} then {next:?}"
         );
-        let toggles = by_widget_name(&*app, "Toggle");
+        let toggles = by_widget_name(root, "Toggle");
         let row_toggle = toggles
             .iter()
             .find(|t| t.y0 >= row.y0 && t.y1 <= row.y1)
@@ -237,7 +227,7 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
     {
         let hero = FrameHarness::new(
             ui::State::new(),
-            settings::widgets::hero(ui::icons::Icon::Monitor, "Device name"),
+            provider_settings_ui::widgets::hero(ui::icons::Icon::Monitor, "Device name"),
             (600, 200),
         );
         let icon = by_widget_name(hero.root_widget(), "IconWidget")[0];
@@ -258,11 +248,10 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
 fn region_form_and_large_text_breakpoint_stay_fluid() {
     // Case `region_pane_keeps_a_readable_form_measure_and_stays_fluid_when_narrow`.
     {
-        let config = crate::support::ScratchConfig::new();
-        let app = config.app().with_category(Category::RegionFormats);
-        let app = lay_out(app, WIDE);
-        let (row, wrapped) = row_of_control(&*app, "region.currency");
-        let control = by_test_id(&*app, "region.currency");
+        let mut app = crate::support::window_on(Category::RegionFormats, WIDE);
+        let root = app.harness().root_widget();
+        let (row, wrapped) = row_of_control(root, "region.currency");
+        let control = by_test_id(root, "region.currency");
         assert!(!wrapped, "wide: the currency chooser sits beside its label");
         same_centre_line(
             row.center().y,
@@ -284,7 +273,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             "region.first_day",
         ] {
             close(
-                by_test_id(&*app, id).x1,
+                by_test_id(root, id).x1,
                 control.x1,
                 &format!("{id} trailing edge"),
             );
@@ -292,10 +281,10 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
 
         // A narrow window is a maximum, not a fixed width: the chooser stays
         // inside its row and the window.
-        let narrow = config.app().with_category(Category::RegionFormats);
-        let narrow = lay_out(narrow, NARROW);
-        let control = by_test_id(&*narrow, "region.currency");
-        let (row, _) = row_of_control(&*narrow, "region.currency");
+        let mut narrow = crate::support::window_on(Category::RegionFormats, NARROW);
+        let narrow = narrow.harness().root_widget();
+        let control = by_test_id(narrow, "region.currency");
+        let (row, _) = row_of_control(narrow, "region.currency");
         assert!(
             control.x1 <= row.x1 + 0.5 && control.x1 <= f64::from(NARROW.0),
             "narrow chooser {control:?} stays inside its row {row:?}"
@@ -309,7 +298,6 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
     // text), beside them once they do. No row is left inline while its
     // neighbours wrap.
     {
-        let config = crate::support::ScratchConfig::new();
         let rows = [
             ("region.currency", "Currency"),
             ("region.date", "Date format"),
@@ -319,11 +307,11 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             ("region.first_day", "First day of week"),
         ];
         let phone = (320.0, 844.0);
-        let app = config.app().with_category(Category::RegionFormats);
-        let app = lay_out(app, phone);
+        let mut app = crate::support::window_on(Category::RegionFormats, phone);
+        let root = app.harness().root_widget();
         for (id, _label) in rows {
-            let control = by_test_id(&*app, id);
-            let (row, wrapped) = row_of_control(&*app, id);
+            let control = by_test_id(root, id);
+            let (row, wrapped) = row_of_control(root, id);
             assert!(
                 wrapped,
                 "phone: {id} {control:?} sits beneath its label in {row:?}"
@@ -337,11 +325,11 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         // A page wide enough for the chooser and a label (beside the docked
         // category list): every row sits inline.
         let medium = (900.0, 820.0);
-        let app = config.app().with_category(Category::RegionFormats);
-        let app = lay_out(app, medium);
+        let mut app = crate::support::window_on(Category::RegionFormats, medium);
+        let root = app.harness().root_widget();
         for (id, _label) in rows {
-            let control = by_test_id(&*app, id);
-            let (row, wrapped) = row_of_control(&*app, id);
+            let control = by_test_id(root, id);
+            let (row, wrapped) = row_of_control(root, id);
             assert!(
                 !wrapped,
                 "medium: {id} {control:?} sits beside its label in {row:?}"
@@ -359,19 +347,19 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
     // the sidebar at 1× and collapses to the single content screen at 200 %,
     // where the breakpoint and the sidebar width have grown with the type.
     {
-        let config = crate::support::ScratchConfig::new();
-        let one_x = config.app().with_category(Category::Appearance);
-        let one_x = lay_out(one_x, (900.0, 900.0));
-        assert!(!one_x.is_narrow(), "900 px docks the sidebar at 1×");
+        let mut one_x = crate::support::window_on(Category::About, (900.0, 900.0));
         assert!(
-            !crate::support::nav_rows(&*one_x).is_empty(),
+            !crate::support::shell(&mut one_x).narrow,
+            "900 px docks the sidebar at 1×"
+        );
+        assert!(
+            !crate::support::nav_rows(one_x.harness().root_widget()).is_empty(),
             "1×: the docked sidebar lists its categories"
         );
 
-        let two_x = config.app().with_category(Category::Appearance);
-        let two_x = lay_out_scaled(two_x, (900.0, 900.0), 2.0);
+        let mut two_x = window_scaled(Category::About, (900.0, 900.0), 2.0);
         assert!(
-            two_x.is_narrow(),
+            crate::support::shell(&mut two_x).narrow,
             "900 px is below the 200 % breakpoint, so the shell shows one screen"
         );
     }
@@ -383,7 +371,6 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
 /// sections ever touch.
 #[test]
 fn pane_sections_stack_on_the_s6_step_and_never_touch() {
-    let config = crate::support::ScratchConfig::new();
     let sp = spacing();
     assert_eq!(
         sp.rhythm.group, sp.s6,
@@ -395,11 +382,10 @@ fn pane_sections_stack_on_the_s6_step_and_never_touch() {
         (Category::Users, WIDE),
         (Category::RegionFormats, NARROW),
     ] {
-        let app = config.app().with_category(category);
-        let app = lay_out(app, viewport);
+        let mut app = crate::support::window_on(category, viewport);
         // Top-level sections only: a section nested inside another is that
         // section's own content, not a sibling.
-        let mut sections: Vec<Rect> = by_widget_name(&*app, "Section")
+        let mut sections: Vec<Rect> = by_widget_name(app.harness().root_widget(), "Section")
             .into_iter()
             .filter(|r| r.width() > 0.0 && r.height() > 0.0)
             .collect();

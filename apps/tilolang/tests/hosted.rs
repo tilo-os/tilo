@@ -222,6 +222,22 @@ impl Window {
         }
     }
 
+    /// The named key `key` pressed and released.
+    fn press_key(&mut self, key: ui::winit::keyboard::NamedKey) {
+        use ui::winit::event::ElementState;
+        use ui::winit::keyboard::Key;
+        match self {
+            Self::Harness(window) => window.key(&format!("{key:?}")),
+            Self::Live(app) => {
+                Self::live_input(app, ui::synthetic_input::named_key(key));
+                Self::live_input(
+                    app,
+                    ui::synthetic_input::key_input(&Key::Named(key), ElementState::Released),
+                );
+            }
+        }
+    }
+
     fn root(&mut self) -> &mut dyn Widget {
         match self {
             Self::Harness(window) => window.root_widget_mut(),
@@ -443,7 +459,8 @@ impl Session {
 
     /// The centre of the open note's body.
     fn body(&mut self) -> (f64, f64) {
-        let rect = widget_by_id(self.window.root(), "block_editor")
+        let body = self.field_key("Write something");
+        let rect = widget_by_id(self.window.root(), &body)
             .expect("the open note's body is laid out")
             .get_rect();
         (rect.center().x, rect.center().y)
@@ -531,7 +548,7 @@ fn new_notes_take_the_keys_typed_right_after_new_note(mut session: Session) {
     let plus = session.new_note_button();
     session.window.click_at(plus.0, plus.1);
     session.settle();
-    let title = session.field("Title");
+    let title = session.field("Untitled");
     session.window.click_at(title.0, title.1);
     session.window.type_text("First ");
     session.settle();
@@ -547,10 +564,10 @@ fn new_notes_take_the_keys_typed_right_after_new_note(mut session: Session) {
         titles,
         [
             // Clicked past its end: typed after it.
-            "UntitledFirst ",
-            "UntitledNote title",
-            "UntitledNote title",
-            "UntitledNote title"
+            "First ",
+            "Note title",
+            "Note title",
+            "Note title"
         ],
         "every key typed after New note lands in the new note's title, none lost"
     );
@@ -580,7 +597,7 @@ fn keys_typed_after_each_of_several_presses_land_in_the_note_that_press_made(mut
     titles.sort();
     assert_eq!(
         titles,
-        ["UntitledAlpha", "UntitledBeta", "UntitledGamma"],
+        ["Alpha", "Beta", "Gamma"],
         "each note has the keys typed after its own press"
     );
 }
@@ -606,7 +623,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_room_onc
     // The connection's queue fills up while the person types fast into notes, open and new.
     busy.store(true, Ordering::SeqCst);
     let before = changes.lock().unwrap().len();
-    let title = session.field("Title");
+    let title = session.field("Untitled");
     session.window.click_at(title.0 + 40.0, title.1);
     for key in ["Be", "ta", "Gam", "ma"] {
         session.window.type_text(key);
@@ -624,7 +641,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_room_onc
     titles.sort();
     assert_eq!(
         titles,
-        ["UntitledBetaGamma", "UntitledWV"],
+        ["BetaGamma", "WV"],
         "every key is kept while the room cannot take it yet"
     );
     assert_eq!(
@@ -668,7 +685,7 @@ fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() 
         session.window.click_at(body.0 + shift, body.1);
         session.window.type_text("Body");
         session.settle();
-        let title = session.field("Title");
+        let title = session.field("Untitled");
         session.window.click_at(title.0 + shift, title.1);
         session.window.type_text("XY");
         session.settle();
@@ -806,7 +823,7 @@ fn a_bar_press_runs_between_the_keys_before_and_after_it_and_typing_after_it_whe
     titles.sort();
     assert_eq!(
         titles,
-        ["UntitledEcho", "UntitledFirst"],
+        ["Echo", "First"],
         "the keys typed after the press are the new note's title"
     );
     let shown = session.shown();
@@ -816,4 +833,84 @@ fn a_bar_press_runs_between_the_keys_before_and_after_it_and_typing_after_it_whe
             .any(|text| text.contains("Body") || text.contains("Echo\n")),
         "the new note's body has none of the other's typing: {shown:?}"
     );
+}
+
+/// The texts of the open note's title and body, as the window shows them.
+fn open_note(session: &mut Session) -> (String, String) {
+    let text = |value: Option<tilo_ui_host::Value>| match value {
+        Some(tilo_ui_host::Value::Text(text)) => text,
+        None => String::new(),
+        Some(other) => panic!("a text field: {other:?}"),
+    };
+    let title = text(session.field_value("Untitled"));
+    let body = text(session.field_value("Write something"));
+    (title, body)
+}
+
+/// With the keyboard in a note's body, "+" in the window's bar, run by the window before the
+/// next keys reach it, and the new note's title typed: the keys go to the new note's title,
+/// never its body, round after round.
+#[test]
+fn after_a_bar_press_the_window_ran_from_the_body_typing_goes_to_the_new_notes_title() {
+    ui::window_toolbar::set_hosted(true);
+    for notebook in 0..4 {
+        let mut session = Session::live_notes();
+        let mut bar = Bar::over(&mut session);
+        for round in 0..6 {
+            if round % 2 == 1 {
+                let body = session.body();
+                session.window.click_at(body.0, body.1);
+                session.settle();
+                session.window.type_text("Text");
+                session.settle();
+            }
+            bar.press(&mut session, "New note", input_after(0));
+            // The press reaches the host, which runs it and answers, before the window's next
+            // frame: the keys come first.
+            if round % 3 == 2 {
+                session.settle();
+            } else {
+                for _ in 0..20 {
+                    session.host.turn();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+            session.window.type_text("Note title");
+            session.settle();
+            assert_eq!(
+                open_note(&mut session),
+                ("Note title".to_owned(), String::new()),
+                "notebook {notebook}, round {round}: the typing is the new note's title"
+            );
+        }
+    }
+}
+
+/// "+", the title, Enter, the body: Enter in the title, which submits nothing, moves the
+/// keyboard to the body, as native Notes does.
+fn enter_in_a_new_notes_title_moves_to_its_body(mut session: Session) {
+    let plus = session.new_note_button();
+    session.window.click_at(plus.0, plus.1);
+    session.settle();
+    session.window.type_text("Groceries");
+    session.settle();
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
+    session.settle();
+    session.window.type_text("Milk");
+    session.settle();
+    let (title, body) = open_note(&mut session);
+    assert_eq!(title, "Groceries");
+    assert_eq!(body.trim_end(), "Milk");
+}
+
+#[test]
+fn enter_in_a_new_notes_title_moves_the_keyboard_to_its_body() {
+    enter_in_a_new_notes_title_moves_to_its_body(Session::notes());
+}
+
+#[test]
+fn enter_in_a_new_notes_title_moves_the_keyboard_to_its_body_in_the_live_window() {
+    enter_in_a_new_notes_title_moves_to_its_body(Session::live_notes());
 }

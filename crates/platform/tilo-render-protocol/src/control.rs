@@ -127,8 +127,8 @@ pub enum Refusal {
     OverLimit(String),
     /// The GPU failed the frame; the app should send a full frame again.
     RenderFailed(String),
-    /// The app used more GPU time than its share; the frame waited for the
-    /// app's budget to recover and was superseded.
+    /// The app used more GPU time than its share; nothing was drawn. The
+    /// app should send a full frame again once its budget recovers.
     Throttled,
 }
 

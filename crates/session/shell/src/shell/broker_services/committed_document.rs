@@ -30,10 +30,9 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             context.revalidate()?;
             return Ok(None);
         }
-        // A missing record is made by the host that governs the room
-        // ([`Self::prepare_application_elsewhere`]). This device never signs
-        // a record's genesis into a room document itself: a room hosted on
-        // a device, this one included, keeps its records in sealed
+        // A missing record of a room another device governs is made empty
+        // by this device ([`Self::prepare_application_elsewhere`]): a room
+        // hosted on a device, this one included, keeps its records in sealed
         // channels each app opens itself.
         Err("this room's records are sealed channels its apps open themselves".into())
     }
@@ -42,10 +41,10 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         context: &NativeDocumentReadContext,
     ) -> Option<tilo_action_broker::services::PreparingElsewhere> {
         let room = super::super::state::RoomId::parse(&context.route().cluster_id)?;
-        if !self.host_governs(room) {
+        if !self.network.as_ref()?.governed_elsewhere(room) {
             return None;
         }
-        Some(preparing_at_host(
+        Some(preparing_here(
             Arc::clone(self.network.as_ref()?),
             self.opened_owner("").ok()?,
             (context.clone(), self.tree.clone()),
@@ -510,14 +509,6 @@ impl NativeOwnerCommitService {
             tilo_identity_host::policy_change::announce();
         });
     }
-    /// Whether another device governs `room` and it is a host (a home
-    /// relay), which creates the room's records on a member's request.
-    fn host_governs(&self, room: super::super::state::RoomId) -> bool {
-        self.network.as_ref().is_some_and(|network| {
-            self.opened_owner("")
-                .is_ok_and(|owner| network.host_creates_records(&owner, room))
-        })
-    }
     /// Say why an app's first read of a record its room does not hold
     /// failed: whether its launch carried the signed original's creation
     /// evidence, and who governs the room. Only a failed read logs.
@@ -563,10 +554,9 @@ impl NativeOwnerCommitService {
     }
 }
 
-/// How long the record a host created may take to reach this device's
-/// admitted room. With the host's own answer (at most the room-admin
-/// timeout) it stays inside what a launching app waits for its first read.
-const HOST_RECORD_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long an on-demand record the room's hosts may keep may take to
+/// reach this device once asked for, before this device creates it.
+const ON_DEMAND_RECORD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The workspace a record created in `room` names to the app initializing
 /// it: the room's id and its workspace's name.
@@ -589,9 +579,9 @@ fn creation_workspace(
     }
 }
 
-/// [`prepare_at_host`] as the broker awaits it: logged, and answered as the
+/// [`prepare_here`] as the broker awaits it: logged, and answered as the
 /// workspace a created record names.
-fn preparing_at_host(
+fn preparing_here(
     network: Arc<super::super::network::ShellNetwork>,
     owner: super::super::native_workspace_owner::NativeWorkspaceOwner,
     (context, tree): (
@@ -601,31 +591,32 @@ fn preparing_at_host(
     room: super::super::state::RoomId,
 ) -> tilo_action_broker::services::PreparingElsewhere {
     Box::pin(async move {
-        let prepared = prepare_at_host(&network, &owner, &context, room).await;
+        let prepared = prepare_here(&network, &owner, &context, room).await;
         let route = context.route();
         match &prepared {
             Ok(created) => tracing::info!(
                 app = %route.app_id, record = %route.record_id, %room, created,
-                "the room's host holds the app's record"
+                "the room holds the app's record"
             ),
             Err(error) => tracing::error!(
                 app = %route.app_id, record = %route.record_id, %room, %error,
-                "the room's host did not prepare the app's record"
+                "this device did not create the app's record"
             ),
         }
         prepared.map(|created| created.then(|| creation_workspace(&tree, room)))
     })
 }
 
-/// In a room a host governs (a home relay), have the host create the
-/// channel's missing record, empty and signed by the host, then wait until
-/// it is in this device's admitted room. The same original launch evidence
-/// and declared kind a local creation requires are checked first; the host
-/// checks the caller's membership and the app's authorship again. Answers
-/// whether the host created the record for this caller, which then
-/// initializes it as its own change.
-async fn prepare_at_host(
-    network: &super::super::network::ShellNetwork,
+/// In a room another device governs, create the channel's missing
+/// record empty, signed by this device, as every receiver admits a member's
+/// record: the room lets its app author records and this person change the
+/// record. The same original launch evidence and declared kind a local
+/// creation requires are checked first. An on-demand record the room's
+/// hosts may keep already is asked for first, and taken when it comes.
+/// Answers whether this device created the record, which it then
+/// initializes as its own change.
+async fn prepare_here(
+    network: &Arc<super::super::network::ShellNetwork>,
     owner: &super::super::native_workspace_owner::NativeWorkspaceOwner,
     context: &NativeDocumentReadContext,
     room: super::super::state::RoomId,
@@ -647,7 +638,7 @@ async fn prepare_at_host(
         .application_creation()
         .filter(|evidence| evidence.valid())
         .ok_or("application creation requires original signed launch declarations")?;
-    tilo_joined_room::ApplicationRecord::declared(
+    let record = tilo_joined_room::ApplicationRecord::declared(
         &route.app_id,
         &route.record_id,
         context
@@ -656,38 +647,45 @@ async fn prepare_at_host(
         &evidence.declared_kinds,
     )?;
     network.check_native_custody(owner, room)?;
-    let created = network
-        .prepare_application_record_at_host(
-            room,
-            context.certificate(),
-            &route.app_id,
-            &route.record_id,
-        )
-        .await
-        .ok_or("no host governs the room")??;
-    // A record the host sends a device only once it asks (an earlier part
-    // of a chain) is asked for: the host found it, and replays it no one.
-    if on_demand(&route.record_id) {
-        let _ = network.read_on_demand(room, &route.app_id, &route.record_id);
-    }
-    // The host's answer is not this device's barrier: wait until the record
-    // it published is in this device's admitted room, which the room's
-    // owner announces when it publishes.
-    let arrived = Arc::new(tokio::sync::Notify::new());
-    let wake = Arc::clone(&arrived);
-    let watch = tilo_identity_host::policy_change::Watch::new(move || wake.notify_one());
-    tokio::time::timeout(HOST_RECORD_ADMISSION_TIMEOUT, async {
-        loop {
-            watch.arm();
-            network.check_native_custody(owner, room)?;
-            if holds()? {
-                return Ok::<(), String>(());
+    if on_demand(&route.record_id)
+        && network.read_on_demand(room, &route.app_id, &route.record_id)
+            == crate::shell::network::OnDemand::Arriving
+    {
+        let arrived = Arc::new(tokio::sync::Notify::new());
+        let wake = Arc::clone(&arrived);
+        let watch = tilo_identity_host::policy_change::Watch::new(move || wake.notify_one());
+        let came = tokio::time::timeout(ON_DEMAND_RECORD_TIMEOUT, async {
+            loop {
+                watch.arm();
+                if holds()? {
+                    return Ok::<(), String>(());
+                }
+                arrived.notified().await;
             }
-            arrived.notified().await;
+        })
+        .await;
+        if let Ok(came) = came {
+            came?;
+            context.revalidate()?;
+            return Ok(false);
         }
+    }
+    let creator = context.certificate().clone();
+    let (network, owner) = (Arc::clone(network), owner.clone());
+    let created = tokio::task::spawn_blocking(move || {
+        let key = network.native_signing_key_of(&owner, room)?;
+        let created = owner.prepare_application_record(
+            room,
+            &creator,
+            &key,
+            &record,
+            std::time::SystemTime::now(),
+        )?;
+        network.schedule_native_owner_publication(room);
+        Ok::<_, String>(created)
     })
     .await
-    .map_err(|_| "the host created the app's record but it did not reach this device in time")??;
+    .map_err(|_| "creating the app's record stopped")??;
     context.revalidate()?;
     Ok(created)
 }

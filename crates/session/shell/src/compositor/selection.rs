@@ -2534,11 +2534,10 @@ mod tests {
         }
     }
 
+    // Offered mimes must lead with the specific UTF-8 type — the first match
+    // wins, and a client stuck with `STRING` has to guess the encoding.
     #[test]
-    fn selection_mime_offers_preserve_text_and_binary_payloads() {
-        // Phase `text_mimes_lead_with_utf8`.
-        // Offered mimes must lead with the specific UTF-8 type — the first match
-        // wins, and a client stuck with `STRING` has to guess the encoding.
+    fn text_mimes_lead_with_utf8() {
         {
             let mimes = text_mime_types();
             assert_eq!(mimes.first().map(String::as_str), Some(TEXT_MIME));
@@ -2566,9 +2565,12 @@ mod tests {
             assert!(mimes.iter().any(|mime| mime == "image/png"));
             assert!(mimes.iter().any(|mime| mime == "UTF8_STRING"));
         }
-        // Phase `chrome_image_copy_offers_png_and_replaces_the_earlier_copy`.
-        // An image copy (a screenshot) is a new copy: the text copied before
-        // it is no longer offered, else apps that prefer text paste that.
+    }
+
+    // An image copy (a screenshot) is a new copy: the text copied before
+    // it is no longer offered, else apps that prefer text paste that.
+    #[test]
+    fn chrome_image_copy_offers_png_and_replaces_the_earlier_copy() {
         {
             let s = store();
             set_mirror_text(&s, Target::Clipboard, "copied before");

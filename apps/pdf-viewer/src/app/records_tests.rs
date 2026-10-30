@@ -276,52 +276,6 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         let mut app = crate::scenarios::sample_reader();
         let mut state = crate::scenarios::sample_state();
         app.sync_settled(&mut state.doc, &state.root);
-        let author = ui::collaboration::local_user_id();
-
-        app.perform_action(
-            &mut Edits::lend(&mut state.doc),
-            highlight("first", "source-1", 100.0),
-        );
-        let history = state.revision_history();
-        let after_first = history.heads().to_vec();
-        app.perform_action(
-            &mut Edits::lend(&mut state.doc),
-            highlight("second", "source-1", 300.0),
-        );
-        assert!(ids(&state.doc).iter().any(|(id, _)| id == "second"));
-
-        // Every edit is a revision with an author and a time in the document's
-        // own history.
-        let history = state.revision_history();
-        let latest = history
-            .revisions()
-            .iter()
-            .find(|r| history.heads().contains(&r.id))
-            .expect("the latest revision");
-        assert!(latest.timestamp.is_some(), "edits are time-stamped");
-        assert!(!latest.actor.is_empty(), "edits carry their author's actor");
-
-        // Restoring the version after the first highlight drops the second as a
-        // new, undoable change; the later version stays in history.
-        let target = after_first.first().copied().expect("a head");
-        assert!(
-            state
-                .restore_revision(target, None, None, Some(author))
-                .expect("known revision")
-        );
-        let now: Vec<String> = ids(&state.doc).into_iter().map(|(id, _)| id).collect();
-        assert!(now.contains(&"first".to_string()));
-        assert!(!now.contains(&"second".to_string()));
-        assert!(
-            state.revision_history().revisions().len() > history.revisions().len(),
-            "the restore is recorded as a new revision"
-        );
-    }
-
-    {
-        let mut app = crate::scenarios::sample_reader();
-        let mut state = crate::scenarios::sample_state();
-        app.sync_settled(&mut state.doc, &state.root);
         let before = PdfMarkup::of(&state.doc).annotations_with_hidden().len();
 
         // The host says the participant may only view.
@@ -692,4 +646,39 @@ fn a_reading_position_records_a_page_fraction_and_zoom() {
     let unchanged = PdfMarkup::of(&doc).reading_position();
     apply(&mut doc, PdfMarkup::START_PAGE_PLAN.with(2));
     assert_eq!(PdfMarkup::of(&doc).reading_position(), unchanged);
+}
+
+#[test]
+fn markup_that_does_not_read_is_not_exported_as_none() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("form.pdf");
+    std::fs::copy(engine_fixture("form.pdf"), &path).expect("copy fixture");
+    let Some(mut app) = tests::open_settled(&path) else {
+        return;
+    };
+    let mut state = crate::scenarios::record_state();
+    tests::settle_record(&mut app, &mut state);
+    app.create_note(&mut Edits::lend(&mut state.doc), 1, (250.0, 30.0));
+    app.editing.as_mut().unwrap().set_text("Please confirm");
+    app.commit_edit(&mut Edits::lend(&mut state.doc));
+    app.reload(&state.doc);
+    let held = app.export_markup().annotations.len();
+    assert!(held > 0, "the note is markup to export");
+
+    let mut broken = state.doc.clone();
+    automerge::transaction::Transactable::put(
+        &mut broken,
+        automerge::ROOT,
+        "annotations",
+        "not a map of annotations",
+    )
+    .expect("the field is written");
+    assert!(<PdfMarkup as ui::tilo_resource::Resource>::read(&broken).is_err());
+    app.reload(&broken);
+
+    assert_eq!(
+        app.export_markup().annotations.len(),
+        held,
+        "what last read whole is what a save writes, not a page without markup"
+    );
 }

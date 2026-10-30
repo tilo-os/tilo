@@ -41,6 +41,12 @@ pub enum MlsGovernanceAction {
         commit: Vec<u8>,
         /// What `added` join from; `None` exactly when `added` is empty.
         joining: Option<Joining>,
+        /// Content keys of a branch of the channel that lost (a genesis or
+        /// a commit whose sibling had the lower digest) that the committer
+        /// held, sealed for the post-commit epoch: every member keeps them,
+        /// so what was sealed under that branch stays readable. A commit may
+        /// carry only this, changing no one.
+        history: Option<Vec<u8>>,
     },
 }
 
@@ -113,11 +119,13 @@ impl MlsGovernanceAction {
                 added,
                 commit,
                 joining,
+                history,
             } => ActionView::Commit {
                 removed,
                 added,
                 commit,
                 joining: joining.as_ref().map(Joining::digest).transpose()?,
+                history: history.as_deref(),
             },
         })
     }
@@ -131,6 +139,7 @@ enum ActionView<'a> {
         added: &'a [Ed25519PublicKey],
         commit: &'a [u8],
         joining: Option<[u8; 32]>,
+        history: Option<&'a [u8]>,
     },
 }
 
@@ -298,6 +307,7 @@ impl MlsGovernanceFrame {
             added,
             commit,
             joining: Some(Joining::Material(material)),
+            history,
         } = &self.action
         else {
             return Ok(None);
@@ -308,6 +318,7 @@ impl MlsGovernanceFrame {
                 added: added.clone(),
                 commit: commit.clone(),
                 joining: Some(Joining::Withheld(material.digest()?)),
+                history: history.clone(),
             },
             ..self.clone()
         }))
@@ -337,8 +348,8 @@ impl MlsGovernanceFrame {
 
     /// Check the version, the signature and the shape of the action: a
     /// genesis opens the chain at epoch 0, and a commit names distinct
-    /// devices within bounds, carries bounded MLS bytes, and joining
-    /// material exactly when it adds anyone. Whether the changes match the
+    /// devices within bounds (or hands over history), carries bounded MLS
+    /// bytes, and joining material exactly when it adds anyone. Whether the changes match the
     /// membership is for the receiver's projection to decide.
     ///
     /// # Errors
@@ -362,6 +373,7 @@ impl MlsGovernanceFrame {
                 added,
                 commit,
                 joining,
+                history,
             } => {
                 let distinct = |devices: &[Ed25519PublicKey]| {
                     devices.len() <= MAX_COMMIT_DEVICES
@@ -372,7 +384,7 @@ impl MlsGovernanceFrame {
                             == devices.len()
                 };
                 if self.epoch == 0
-                    || (removed.is_empty() && added.is_empty())
+                    || (removed.is_empty() && added.is_empty() && history.is_none())
                     || !distinct(removed)
                     || !distinct(added)
                     || removed.contains(&self.signed_by)
@@ -385,7 +397,7 @@ impl MlsGovernanceFrame {
                     .as_ref()
                     .and_then(Joining::material)
                     .is_some_and(|material| bad(&material.welcome) || bad(&material.key_history));
-                if bad(commit) || material_bad {
+                if bad(commit) || material_bad || history.as_deref().is_some_and(bad) {
                     return Err(MlsGovernanceError::InvalidControlPayload);
                 }
             }
@@ -635,6 +647,7 @@ mod tests {
                     welcome: vec![2],
                     key_history: vec![3],
                 })),
+                history: None,
             },
             &signer,
         )
@@ -661,6 +674,7 @@ mod tests {
                 added,
                 commit: vec![1],
                 joining,
+                history: None,
             }
         };
         frame([0; 32], 0, MlsGovernanceAction::Genesis)
@@ -669,6 +683,20 @@ mod tests {
         frame([1; 32], 1, commit(vec![other], Vec::new()))
             .check()
             .unwrap();
+        // A commit that only hands the members another branch's keys.
+        frame(
+            [1; 32],
+            1,
+            MlsGovernanceAction::Commit {
+                removed: Vec::new(),
+                added: Vec::new(),
+                commit: vec![1],
+                joining: None,
+                history: Some(vec![4]),
+            },
+        )
+        .check()
+        .unwrap();
         for malformed in [
             frame([3; 32], 0, MlsGovernanceAction::Genesis),
             frame([0; 32], 1, MlsGovernanceAction::Genesis),
@@ -684,6 +712,7 @@ mod tests {
                     added: vec![other],
                     commit: vec![1],
                     joining: None,
+                    history: None,
                 },
             ),
         ] {

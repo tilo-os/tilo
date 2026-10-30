@@ -338,7 +338,7 @@ pub fn certified_fixture() -> (tempfile::TempDir, Pairing) {
     use std::os::unix::fs::PermissionsExt as _;
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = crate::test_support::qualified_tempdir();
     let state = temporary.path().canonicalize().unwrap();
     let directory = state
         .join("tilo/installer/preparations")
@@ -425,7 +425,7 @@ pub fn certified_fixture() -> (tempfile::TempDir, Pairing) {
 #[cfg(any(test, feature = "test-support"))]
 pub fn waiting_fixture() -> (tempfile::TempDir, Pairing) {
     use std::os::unix::fs::PermissionsExt as _;
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = crate::test_support::qualified_tempdir();
     let directory = temporary.path().canonicalize().unwrap();
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     let root = directory.join("future-device");
@@ -456,7 +456,7 @@ pub fn waiting_fixture() -> (tempfile::TempDir, Pairing) {
 pub fn failed_fixture() -> (tempfile::TempDir, Pairing) {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = crate::test_support::qualified_tempdir();
     let directory = temporary.path().canonicalize().unwrap();
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     let root = directory.join("future-device");

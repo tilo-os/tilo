@@ -796,13 +796,13 @@ async fn list_models(
         Ok((profile, secret))
     })
     .await?;
+    let url = provider_transform::models_url(&profile)
+        .ok_or_else(|| ModelError::new(ErrorKind::Unsupported))?;
     let headers =
         provider_transform::profile_headers(&profile, secret.as_ref().map(|key| key.as_str()))
             .map_err(|_| ModelError::new(ErrorKind::Authentication))?;
     drop(secret);
-    let mut request = http
-        .get(provider_transform::models_url(&profile))
-        .timeout(MODEL_LIST_TIMEOUT);
+    let mut request = http.get(url).timeout(MODEL_LIST_TIMEOUT);
     for header in headers {
         let mut value = reqwest::header::HeaderValue::from_str(header.value.as_str())
             .map_err(|_| ModelError::new(ErrorKind::Authentication))?;

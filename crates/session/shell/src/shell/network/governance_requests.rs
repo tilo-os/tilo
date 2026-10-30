@@ -84,39 +84,7 @@ fn settings_change(
     })
 }
 
-/// The room host this device runs, answering for the rooms placed on it
-/// through its in-process caller: a request for one of those rooms is
-/// asked there, with or without a running network.
-pub(crate) trait LocalGovernor: Send + Sync {
-    /// Whether this device's own host governs `room`.
-    fn governs(&self, room: RoomId) -> bool;
-    /// Have the host record `receipt` in `room`, this device's member
-    /// receipt, and wait for its answer.
-    ///
-    /// # Errors
-    /// The host refused it, or could not be asked; a governor that holds no
-    /// room's receipts says so.
-    fn record_receipt(
-        &self,
-        room: RoomId,
-        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
-    ) -> Result<(), String> {
-        let _ = (room, receipt);
-        Err("this governor records no receipts".into())
-    }
-}
-
 impl ShellNetwork {
-    /// Install the room host this device runs as the governor of the rooms
-    /// placed on it.
-    pub(crate) fn install_local_governor(&self, governor: std::sync::Arc<dyn LocalGovernor>) {
-        let _ = self.local_governor.set(governor);
-        // Changes waiting for a host out of reach may reach this one.
-        if let Ok(mut waiting) = self.outbox_waiting.lock() {
-            *waiting = None;
-        }
-    }
-
     /// Take what the tree's outbox holds to ask
     /// ([`crate::shell::state::Outgoing`]) to the rooms' hosts: on the
     /// peer-sync worker, each waiting for its host's answer. An entry stays
@@ -226,9 +194,9 @@ impl ShellNetwork {
     }
 
     /// Stop sharing this device's window `tab` of `app_id` with `room`,
-    /// whose window it no longer shows, when the room's host can be reached
-    /// now. A room this device no longer holds has nothing more to ask: its
-    /// shares were stopped as it was let go.
+    /// whose window it no longer shows, written here as its sharer. A room
+    /// this device no longer holds has nothing more to end: its shares were
+    /// stopped as it was let go.
     fn stop_outlived_share(
         &self,
         room: RoomId,
@@ -239,15 +207,10 @@ impl ShellNetwork {
         if !self.tree.read().room_docs.contains_key(&room) {
             return HostAnswer::Accepted;
         }
-        // A member's own action: any member holding a session with the
-        // room's host may ask it.
-        if self.runtime.is_none() || self.hosted_room(room).is_none() {
-            return HostAnswer::Unreachable;
-        }
         match self.share_window(room, tab, app_id, false, None) {
             Ok(()) => HostAnswer::Accepted,
             Err(error) => {
-                tracing::info!(%room, tab, %error, "the workspace host did not stop sharing a closed window");
+                tracing::info!(%room, tab, %error, "the room did not stop sharing a closed window");
                 HostAnswer::Refused(error)
             }
         }
@@ -284,8 +247,7 @@ impl ShellNetwork {
             // Its host may not be open yet: asked again once it is.
             let host = self.local_host().map_err(HostAskError::Unreachable)?;
             return self
-                .commit_membership_at_own_host(&host, room, caller, command)
-                .map(drop)
+                .commit_membership_at_own_host(&host, &owner, room, caller, command)
                 .map_err(HostAskError::Refused);
         }
         self.commit_membership_here(&owner, room, caller, command)
@@ -317,6 +279,7 @@ impl ShellNetwork {
     pub(crate) fn commit_membership_at_own_host(
         &self,
         host: &std::sync::Arc<tilo_network_actor::local_host::room_host::RoomHost>,
+        owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
         room: RoomId,
         caller: tilo_user_identity::DeviceCert,
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
@@ -331,15 +294,16 @@ impl ShellNetwork {
             })?
             .map_err(|error| error.to_string())?;
         tracing::debug!(%room, generation = completion.generation, "this device's host committed its membership change");
-        self.take_own_host_write(room, governor, added)
+        self.take_own_host_write(owner, room, governor, added)
     }
 
     /// Take `added`, what this device's own host just wrote to `room` as its
-    /// governor `governor`, into this device's replica, as the host's
+    /// governor `governor`, into `owner`, this device's replica, as the host's
     /// publication would bring it: in process, so the change is in force
     /// here when the call that made it returns.
     pub(crate) fn take_own_host_write(
         &self,
+        owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
         room: RoomId,
         governor: [u8; 32],
         added: Vec<Vec<u8>>,
@@ -347,7 +311,6 @@ impl ShellNetwork {
         if added.is_empty() {
             return Ok(());
         }
-        let owner = self.native_owner()?;
         owner.receive(
             room,
             tilo_peer_state::TransportOrigin::RelayDelta(governor),
@@ -373,9 +336,7 @@ impl ShellNetwork {
     ) -> Result<(), String> {
         if self.own_host_governs(room, &caller) {
             let host = self.local_host()?;
-            return self
-                .commit_membership_at_own_host(&host, room, caller, command)
-                .map(drop);
+            return self.commit_membership_at_own_host(&host, owner, room, caller, command);
         }
         let request = tilo_owner_commit::OwnerCommitRequest {
             room: room.to_string(),

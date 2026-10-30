@@ -289,3 +289,159 @@ mod tests {
         );
     }
 }
+
+/// What an agent's `search-messages` asks for: every word of `query`
+/// anywhere, words of the sender and the subject, a folder, a span of dates
+/// and whether there are attachments.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MessageQuery {
+    words: Vec<String>,
+    from: Vec<String>,
+    subject: Vec<String>,
+    folder: Option<Folder>,
+    since_min: Option<i64>,
+    until_min: Option<i64>,
+    has_attachment: Option<bool>,
+}
+
+/// The most messages one search answers, newest first.
+const MOST_FOUND: usize = 50;
+
+fn words_of(text: Option<&str>) -> Vec<String> {
+    text.unwrap_or("")
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// `date` (RFC 3339, a day or a time) as minutes since the Unix epoch.
+fn minutes_at(date: &str) -> Result<i64, String> {
+    let date = date.trim();
+    let parsed = mail_parser::DateTime::parse_rfc3339(date)
+        .or_else(|| mail_parser::DateTime::parse_rfc3339(&format!("{date}T00:00:00Z")))
+        .or_else(|| mail_parser::DateTime::parse_rfc822(date))
+        .ok_or_else(|| format!("`{date}` is not a date: give RFC 3339, as 2026-10-29"))?;
+    Ok(parsed.to_timestamp().div_euclid(60))
+}
+
+impl MessageQuery {
+    /// The query `effect` asks, or why it asks none.
+    pub(crate) fn of(effect: &crate::actions::MailEffect) -> Result<Self, String> {
+        let crate::actions::MailEffect::SearchMessages {
+            query,
+            folder,
+            from,
+            subject,
+            since,
+            until,
+            has_attachment,
+        } = effect
+        else {
+            return Err("not a search".into());
+        };
+        let query = Self {
+            words: words_of(query.as_deref()),
+            from: words_of(from.as_deref()),
+            subject: words_of(subject.as_deref()),
+            folder: *folder,
+            since_min: since.as_deref().map(minutes_at).transpose()?,
+            until_min: until.as_deref().map(minutes_at).transpose()?,
+            has_attachment: *has_attachment,
+        };
+        if query.words.is_empty()
+            && query.from.is_empty()
+            && query.subject.is_empty()
+            && query.folder.is_none()
+            && query.since_min.is_none()
+            && query.until_min.is_none()
+            && query.has_attachment.is_none()
+        {
+            return Err(
+                "give words, a sender, a subject, a folder, dates or attachments to search by"
+                    .into(),
+            );
+        }
+        Ok(query)
+    }
+
+    /// Whether `message` is one this query finds.
+    pub(crate) fn finds(&self, message: &Message) -> bool {
+        let holds = |text: &str, words: &[String]| {
+            let text = text.to_lowercase();
+            words.iter().all(|word| text.contains(word.as_str()))
+        };
+        let sender = format!(
+            "{} {}",
+            message.from.name.as_deref().unwrap_or(""),
+            message.from.email
+        );
+        let everything = format!(
+            "{sender}\n{}\n{}\n{}\n{}",
+            message
+                .to
+                .iter()
+                .chain(&message.cc)
+                .map(crate::model::Addr::rfc5322)
+                .collect::<Vec<_>>()
+                .join(", "),
+            message.subject,
+            message.body,
+            message
+                .attachments
+                .iter()
+                .map(|attachment| attachment.filename.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        self.folder.is_none_or(|folder| message.folder == folder)
+            && self
+                .since_min
+                .is_none_or(|since| message.timestamp_min >= since)
+            && self
+                .until_min
+                .is_none_or(|until| message.timestamp_min < until)
+            && self
+                .has_attachment
+                .is_none_or(|wanted| message.has_attachments() == wanted)
+            && holds(&sender, &self.from)
+            && holds(&message.subject, &self.subject)
+            && holds(&everything, &self.words)
+    }
+
+    /// The messages of `messages` this query finds, newest first, at most
+    /// [`MOST_FOUND`], as a search answers them.
+    pub(crate) fn answer<'a>(
+        &self,
+        messages: impl Iterator<Item = &'a Message>,
+    ) -> serde_json::Value {
+        let mut found: Vec<&Message> = messages.filter(|message| self.finds(message)).collect();
+        let total = found.len();
+        found.sort_by(|a, b| {
+            b.timestamp_min
+                .cmp(&a.timestamp_min)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        serde_json::json!({
+            "found": total,
+            "messages": found.iter().take(MOST_FOUND).map(|message| listed(message)).collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// One message as a search lists it.
+pub(crate) fn listed(message: &Message) -> serde_json::Value {
+    serde_json::json!({
+        "id": message.id.to_string(),
+        "item": format!("mail.message:{}", message.id),
+        "label": crate::actions::message_label_of(message),
+        "from": message.from.rfc5322(),
+        "to": message.to.iter().map(crate::model::Addr::rfc5322).collect::<Vec<_>>(),
+        "subject": message.subject,
+        "date": mail_parser::DateTime::from_timestamp(message.timestamp_min.saturating_mul(60)).to_rfc3339(),
+        "folder": message.folder.as_key(),
+        "read": message.read,
+        "account": message.account,
+        "snippet": message.snippet(),
+        "attachments": message.shown_attachments().map(|(_, attachment)| attachment.filename.clone()).collect::<Vec<_>>(),
+    })
+}

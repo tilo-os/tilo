@@ -93,6 +93,10 @@ fn save_case_config(case: &str) -> ProviderProtocol {
 
 fn child_selection(case: &str) {
     let protocol = save_case_config(case);
+    // Settings are saved by the store's writer thread: the configuration is
+    // on disk only once it has run, so the query's "changes nothing" is
+    // measured from there.
+    settings_store::flush_pending_writes();
     let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap());
     let before = files(&root);
     let mut payload = serde_json::json!({

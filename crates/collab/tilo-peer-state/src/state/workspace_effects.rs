@@ -1,5 +1,6 @@
 use super::SystemTime;
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
+use crate::room::AGENT_ACTOR_PREFIX;
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::WorkspaceEffectReceipt;
 
@@ -107,20 +108,38 @@ impl PeerWorkspace<'_> {
             _ => Err("conflicting native checkpoint roots".into()),
         }
     }
-    /// Read the cold-history anchor from actual admitted governance state.
+    /// The anchor of `device`'s archived effect receipts, in its person's
+    /// slice of the room.
     ///
     /// # Errors
     /// A malformed anchor must not be mistaken for an empty index.
-    pub fn workspace_effect_history_root(self) -> Result<Option<[u8; 32]>, String> {
+    pub fn workspace_effect_history_root(
+        self,
+        device: &tilo_user_identity::DeviceCert,
+    ) -> Result<Option<[u8; 32]>, String> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        use tilo_desktop_model::projection::ROOM_EFFECT_HISTORY_KEY;
         let doc = self
             .peer
             .core
             .room_doc
             .as_deref()
             .ok_or("effect room is absent")?;
+        let malformed = || "malformed effect history root".to_owned();
+        let Some((Value::Object(_), history)) = doc
+            .get(&ROOT, ROOM_EFFECT_HISTORY_KEY)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        let Some((Value::Object(_), slice)) = doc
+            .get(&history, hex::encode(device.user_public_key))
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
         match doc
-            .get(&ROOT, "effect_history_root_v1")
+            .get(&slice, hex::encode(device.device_public_key))
             .map_err(|e| e.to_string())?
         {
             None => Ok(None),
@@ -129,96 +148,45 @@ impl PeerWorkspace<'_> {
                     .as_slice()
                     .try_into()
                     .map(Some)
-                    .map_err(|_| "malformed effect history root".into()),
-                _ => Err("malformed effect history root".into()),
+                    .map_err(|_| malformed()),
+                _ => Err(malformed()),
             },
-            _ => Err("malformed effect history root".into()),
+            _ => Err(malformed()),
         }
     }
 }
-/// How an effect receipt names an agent as its actor (`agent:<id>`), as
-/// against a person, named by the hex of their key.
-const AGENT_ACTOR_PREFIX: &str = "agent:";
 
 impl PeerWorkspaceMut<'_> {
-    /// Record a currently admitted person's own terminal audit at its governor.
-    /// Transport authentication must independently bind the caller's device key.
-    ///
-    /// A member records what its own person did. The governor's own device,
-    /// a device hosting the rooms it governs, also records what its agents
-    /// did (an actor `agent:<id>`), as its governor custody writes any
-    /// receipt ([`Self::apply_workspace_effect_receipt`]). No device records
-    /// what another person did.
+    /// Record `receipt`, the terminal audit of an invocation this device
+    /// served, in its person's own slice of the room, signed by `key`, the
+    /// device's own: the rule every receiver holds a writer to
+    /// ([`crate::room::effect_slices_kept`]). The actor is the device's
+    /// person, or an agent acting for them. This creates no application
+    /// record or capability. Answers whether the room changed.
     ///
     /// # Errors
-    /// Refuses stale certificates, revoked or unreadable rooms, impersonation,
-    /// malformed payloads and conflicting terminal outcomes.
-    pub fn apply_member_effect_receipt(
+    /// Refuses a caller that is not current admitted evidence or cannot
+    /// read the room, a key that is not the caller's, another's receipt, a
+    /// malformed encoding, a conflicting terminal outcome or a failed CRDT
+    /// write.
+    pub fn apply_own_effect_receipt(
         self,
         caller: &tilo_user_identity::DeviceCert,
-        invocation: uuid::Uuid,
-        redacted: &[u8],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        if self.peer.certificate(&caller.device_public_key, now)? != caller {
-            return Err("effect caller is not exact current admitted evidence".into());
-        }
-        now.duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|_| "effect clock precedes Unix epoch")?;
-        let member = self.peer.permissions(caller.device_public_key, now)?;
-        if !member.allows(
-            &tilo_action_policy::TreePath::room(&self.peer.core.room),
-            tilo_action_policy::ActionKind::Read,
-            now,
-        ) {
-            return Err("effect caller cannot currently read this workspace".into());
-        }
-        let receipt =
-            PeerWorkspace::validate_workspace_effect_receipt_encoding(invocation, redacted)?;
-        let own_person = receipt.actor == hex::encode(caller.user_public_key);
-        let governors_agent = key.verifying_key().to_bytes() == caller.device_public_key
-            && receipt.actor.starts_with(AGENT_ACTOR_PREFIX);
-        if !own_person && !governors_agent {
-            return Err("effect actor is not the authenticated person's own identity".into());
-        }
-        let existing = tilo_desktop_model::projection::workspace_effect_receipts_of(
-            self.peer.admitted_room().ok_or("effect room is absent")?,
-        );
-        if !existing
-            .iter()
-            .any(|entry| entry.invocation == receipt.invocation)
-            && (existing.len() >= 1024
-                || existing
-                    .iter()
-                    .filter(|entry| entry.actor == receipt.actor)
-                    .count()
-                    >= 128)
-        {
-            return Err("member terminal receipt capacity exhausted".into());
-        }
-        self.apply_workspace_effect_receipt(&receipt, key, now)
-    }
-    /// Publish a bounded terminal audit receipt using actual governor custody.
-    /// This creates no application record or capability.
-    ///
-    /// # Errors
-    /// Refuses unavailable governance custody, conflicting outcomes, exhausted
-    /// receipt capacity or a failed CRDT write.
-    pub fn apply_workspace_effect_receipt(
-        self,
         receipt: &WorkspaceEffectReceipt,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
-        let room = self
-            .peer
-            .core
-            .room_doc
-            .as_deref()
-            .ok_or("effect room is absent")?;
-        let existing = tilo_desktop_model::projection::workspace_effect_receipts_of(room);
+        let candidate = self.own_effect_candidate(caller, key, now)?;
+        let Some(mut candidate) = candidate else {
+            return Err("effect room is absent".into());
+        };
+        let redacted = serde_json::to_vec(receipt).map_err(|error| error.to_string())?;
+        PeerWorkspace::validate_workspace_effect_receipt_encoding(receipt.invocation.0, &redacted)?;
+        let person = hex::encode(caller.user_public_key);
+        if receipt.actor != person && !receipt.actor.starts_with(AGENT_ACTOR_PREFIX) {
+            return Err("effect actor is not the recording person or their agent".into());
+        }
+        let existing = tilo_desktop_model::projection::workspace_effect_receipts_of(&candidate);
         if let Some(previous) = existing
             .iter()
             .find(|entry| entry.invocation == receipt.invocation)
@@ -229,9 +197,9 @@ impl PeerWorkspaceMut<'_> {
                 Err("effect invocation already has another terminal receipt".into())
             };
         }
-        let mut candidate = room.clone();
         tilo_desktop_model::projection::project_effect_receipts(
             &mut candidate,
+            &person,
             std::slice::from_ref(receipt),
         )
         .map_err(|error| error.to_string())?;
@@ -243,6 +211,38 @@ impl PeerWorkspaceMut<'_> {
         self.peer.core.room_doc = Some(candidate.into());
         Ok(true)
     }
+
+    /// The room as `caller`, this device, writes its own effect receipts
+    /// into it: under its actor, once its certificate and read permission
+    /// hold and `key` is its own.
+    fn own_effect_candidate(
+        &self,
+        caller: &tilo_user_identity::DeviceCert,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Option<automerge::AutoCommit>, String> {
+        if key.verifying_key().to_bytes() != caller.device_public_key {
+            return Err("an effect receipt is signed by its recorder's own device".into());
+        }
+        if self.peer.certificate(&caller.device_public_key, now)? != caller {
+            return Err("effect recorder is not exact current admitted evidence".into());
+        }
+        let member = self.peer.permissions(caller.device_public_key, now)?;
+        if !member.allows(
+            &tilo_action_policy::TreePath::room(&self.peer.core.room),
+            tilo_action_policy::ActionKind::Read,
+            now,
+        ) {
+            return Err("effect recorder cannot currently read this workspace".into());
+        }
+        let Some(room) = self.peer.core.room_doc.as_deref() else {
+            return Ok(None);
+        };
+        let mut candidate = room.clone();
+        candidate.set_actor(self.peer.room_actor_for(&caller.device_public_key));
+        Ok(Some(candidate))
+    }
+
     /// Anchor retained checkpoint content under current governor signing custody.
     ///
     /// # Errors
@@ -272,29 +272,44 @@ impl PeerWorkspaceMut<'_> {
         self.peer.core.room_doc = Some(candidate.into());
         Ok(())
     }
-    /// Anchor retained cold history under genuine current governor signing custody.
+
+    /// Anchor `caller`'s archived effect receipts at `root`, in its
+    /// person's slice of the room, signed by `key`, the device's own.
     ///
     /// # Errors
-    /// Invalid governance custody or a failed CRDT write.
+    /// A caller that may not record receipts here, or a failed CRDT write.
     pub fn set_workspace_effect_history_root(
         self,
+        caller: &tilo_user_identity::DeviceCert,
         root: [u8; 32],
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
-        use automerge::{ROOT, ScalarValue, transaction::Transactable};
-        self.peer.require_governance_writer(key, now)?;
+        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        use tilo_desktop_model::projection::ROOM_EFFECT_HISTORY_KEY;
         let mut candidate = self
-            .peer
-            .core
-            .room_doc
-            .as_deref()
-            .ok_or("effect room is absent")?
-            .clone();
+            .own_effect_candidate(caller, key, now)?
+            .ok_or("effect room is absent")?;
+        let object =
+            |doc: &mut automerge::AutoCommit, parent: &automerge::ObjId, key: &str| match doc
+                .get(parent, key)
+                .map_err(|e| e.to_string())?
+            {
+                Some((Value::Object(ObjType::Map), id)) => Ok(id),
+                _ => doc
+                    .put_object(parent, key, ObjType::Map)
+                    .map_err(|e| e.to_string()),
+            };
+        let history = object(&mut candidate, &ROOT, ROOM_EFFECT_HISTORY_KEY)?;
+        let slice = object(
+            &mut candidate,
+            &history,
+            &hex::encode(caller.user_public_key),
+        )?;
         candidate
             .put(
-                &ROOT,
-                "effect_history_root_v1",
+                &slice,
+                hex::encode(caller.device_public_key),
                 ScalarValue::Bytes(root.to_vec()),
             )
             .map_err(|e| e.to_string())?;

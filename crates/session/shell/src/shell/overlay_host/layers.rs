@@ -66,6 +66,9 @@ pub(crate) enum LayerId {
     PowerMenu,
     CommandPalette,
     MemberSheet,
+    /// "Join a workspace…", an app ([`tilo_sheets::directory`]).
+    Directory,
+    /// The workspace overview, an app ([`tilo_overview`]).
     Overview,
     WorkspaceSettings,
     Collaborators,
@@ -76,7 +79,7 @@ pub(crate) enum LayerId {
 }
 
 impl LayerId {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::DisplayConfirmation,
         Self::WindowSwitcher,
         Self::Dictation,
@@ -86,6 +89,7 @@ impl LayerId {
         Self::PowerMenu,
         Self::CommandPalette,
         Self::MemberSheet,
+        Self::Directory,
         Self::Overview,
         Self::WorkspaceSettings,
         Self::Collaborators,
@@ -99,7 +103,12 @@ impl LayerId {
     pub(crate) const fn is_app(self) -> bool {
         matches!(
             self,
-            Self::PowerMenu | Self::DisplayConfirmation | Self::ShortcutHelp
+            Self::PowerMenu
+                | Self::DisplayConfirmation
+                | Self::ShortcutHelp
+                | Self::Directory
+                | Self::Overview
+                | Self::DisplayLayouts
         )
     }
 
@@ -146,6 +155,7 @@ impl LayerId {
             Self::DisplayLayouts
             | Self::WorkspaceSettings
             | Self::MemberSheet
+            | Self::Directory
             | Self::ShortcutHelp => Surface::shell(
                 Role::Dialog,
                 Anchor::Center,
@@ -614,14 +624,23 @@ pub(crate) struct OverlayStack {
     pub(crate) display_confirm: SheetHost<tilo_sheets::display_confirm::ConfirmSeat>,
     /// The transaction that question waits on.
     pub(crate) display_question: DisplayQuestion,
+    /// "Join a workspace…", an app the host routes itself.
+    pub(crate) directory: SheetHost<tilo_sheets::directory::DirectorySeat>,
     /// The shortcut guide, an app ([`tilo_sheets::shortcut_guide`]). The
     /// host routes it itself: a chord the guide waits for is the shell's.
     pub(crate) shortcut_guide: SheetHost<tilo_sheets::shortcut_guide::GuideSeat>,
+    /// The Super+P display sheet, an app ([`tilo_sheets::displays`]) the
+    /// host routes itself.
+    pub(crate) display_sheet: SheetHost<tilo_sheets::displays::DisplaysSeat>,
     pub(crate) window_switcher: WindowSwitcher,
     pub(crate) dictation: super::dictation_layer::DictationSurface,
     pub(crate) emoji_picker: EmojiPicker,
     pub(crate) tab_menu: TabMenuLayer,
     pub(crate) power_menu: SheetHost<tilo_sheets::power::PowerSeat>,
+    /// The workspace overview, an app ([`tilo_overview`]). The host routes
+    /// and draws it at its own place, so it is not among
+    /// [`Self::layers`].
+    pub(crate) overview: SheetHost<tilo_overview::OverviewSeat>,
     /// The layer that consumed a press whose release has not arrived yet.
     release_owner: Option<LayerId>,
 }
@@ -777,6 +796,15 @@ impl OverlayStack {
             .into_iter()
             .filter(|layer| layer.is_open())
             .any(ShellLayer::dismiss)
+    }
+
+    /// Close every open menu and flyout ([`Band::Popover`]); `true` when one
+    /// was open.
+    pub(crate) fn dismiss_popovers(&mut self) -> bool {
+        self.layers_mut()
+            .into_iter()
+            .filter(|layer| layer.id().band() == Some(Band::Popover) && layer.is_open())
+            .fold(false, |closed, layer| layer.dismiss() | closed)
     }
 
     /// Advance every layer's clock; `true` when any of them changed.

@@ -14,23 +14,29 @@
 //! A change is a device-local [`DiskUnlockEffect`]: the buttons here and
 //! the Ctrl+K entries build it with [`network_change`], and both reach
 //! [`DiskUnlockModel::start`].
+//!
+//! The section is view code over the model the area keeps ([`view`]): the
+//! area moves what it is keyed by whenever what it shows changes.
 
+use crate::area::AreaContext;
 use crate::channel;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
-use crate::panes::model::{PaneModel, Replies, Shared};
+use crate::replies::Replies;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use serde::Deserialize;
+use std::cell::{OnceCell, RefCell};
+use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
 use std::time::Duration;
+use ui::LocalState;
 use ui::framework::ActionControl;
-use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
+use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::i18n::ArgValue;
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Row, Widget};
+use ui::widget::{Button, Element, Row};
 
 /// Read the enrolled disks or replace one disk's whole unlock-network list.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -56,7 +62,7 @@ pub enum DiskUnlockEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     operation: DiskUnlockEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let model = crate::panes::disk_unlock::area(app)
         .ok_or_else(crate::area::missing)?
@@ -71,36 +77,78 @@ pub(crate) fn answer(
 
 /// The host keeps the disk-unlock model when its pane is closed.
 pub struct DiskUnlockArea {
-    cx: PaneCx,
-    model: std::cell::OnceCell<Shared<DiskUnlockModel>>,
+    /// Whether the enrolment is this device's.
+    devices: bool,
+    model: OnceCell<Rc<RefCell<DiskUnlockModel>>>,
+    /// What the enrolment is read and changed through, where it is not the
+    /// device's or the detached stand-in: a test's.
+    #[cfg(test)]
+    over: Option<Arc<dyn UnlockAuthority>>,
+    /// Moves whenever what the section shows of the model does.
+    shown: LocalState<u64>,
 }
 
 impl DiskUnlockArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
-            model: std::cell::OnceCell::new(),
+            devices: cx.devices,
+            model: OnceCell::new(),
+            #[cfg(test)]
+            over: None,
+            shown: LocalState::new(0),
         }
     }
 
-    pub fn model(&self) -> &Shared<DiskUnlockModel> {
+    /// The area over `authority` in place of the device's.
+    #[cfg(test)]
+    fn over(cx: &AreaContext, authority: Arc<dyn UnlockAuthority>) -> Self {
+        Self {
+            over: Some(authority),
+            ..Self::new(cx)
+        }
+    }
+
+    fn authority(&self) -> Arc<dyn UnlockAuthority> {
+        #[cfg(test)]
+        if let Some(authority) = &self.over {
+            return Arc::clone(authority);
+        }
+        if self.devices {
+            Arc::new(PolkitAuthority)
+        } else {
+            Arc::new(DetachedAuthority)
+        }
+    }
+
+    pub fn model(&self) -> &Rc<RefCell<DiskUnlockModel>> {
         self.model.get_or_init(|| {
-            let authority: Arc<dyn UnlockAuthority> = if self.cx.reaches_devices() {
-                Arc::new(PolkitAuthority)
-            } else {
-                Arc::new(DetachedAuthority)
-            };
-            std::rc::Rc::new(std::cell::RefCell::new(DiskUnlockModel::with_authority(
-                self.cx.clone(),
-                authority,
+            Rc::new(RefCell::new(DiskUnlockModel::with_authority(
+                self.authority(),
             )))
         })
     }
 
+    /// Take in what the background reads and changes answered, and move
+    /// what the section is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
-        if let Some(model) = self.model.get() {
-            model.borrow_mut().poll();
+        let Some(model) = self.model.get() else {
+            return;
+        };
+        let Ok(mut model) = model.try_borrow_mut() else {
+            return;
+        };
+        model.poll();
+        if std::mem::take(&mut model.structure_dirty) {
+            self.shown.set(self.shown.get().wrapping_add(1));
         }
+    }
+
+    /// Whether a read or a change runs, which the window keeps polling for.
+    fn busy(&self) -> bool {
+        self.model
+            .get()
+            .and_then(|model| model.try_borrow().ok().map(|model| model.busy()))
+            .unwrap_or(false)
     }
 
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
@@ -140,7 +188,7 @@ impl UnlockAuthority for DetachedAuthority {
 }
 
 use crate::i18n::{t, t_args};
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, error_caption, note, row, rows, section,
     semantic_status_pill, setting_row, setting_row_described, value_row,
 };
@@ -152,6 +200,20 @@ crate::area::pane_area! {
     fn poll(&self) {
         DiskUnlockArea::poll(self);
     }
+    fn busy(&self) -> bool {
+        DiskUnlockArea::busy(self)
+    }
+}
+
+/// The Disk unlock section of Privacy & Security as view code over the
+/// model the area keeps: the volumes are read again each time it is shown,
+/// and it is built again whenever what it shows changes
+/// ([`DiskUnlockArea::poll`]).
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
+    let held = area(app)?;
+    let model = Rc::clone(held.model());
+    model.borrow_mut().request_read();
+    Some(cx.switch(&held.shown, move |cx, _| model.borrow().page(cx)))
 }
 
 /// The window's [`DiskUnlockArea`].
@@ -467,17 +529,15 @@ pub struct DiskUnlockModel {
     change_rx: Option<channel::Receiver<(DiskUnlockEffect, Result<String, String>)>>,
     /// The last change's outcome: `Ok` said plainly, `Err` as a failure.
     outcome: Option<Result<String, String>>,
-    cx: PaneCx,
     replies: Replies,
     structure_dirty: bool,
 }
 
 impl DiskUnlockModel {
     /// A model over `authority`, reading it once.
-    pub fn with_authority(cx: PaneCx, authority: Arc<dyn UnlockAuthority>) -> Self {
+    pub fn with_authority(authority: Arc<dyn UnlockAuthority>) -> Self {
         let mut card = Self {
             authority,
-            cx,
             replies: Replies::default(),
             volumes: None,
             saved_wifi: Ok(Vec::new()),
@@ -594,7 +654,14 @@ impl DiskUnlockModel {
         self.saved_wifi.as_deref().unwrap_or(&[])
     }
 
-    fn build_composition(&self) -> Box<dyn Widget> {
+    /// Whether a read or a change runs.
+    fn busy(&self) -> bool {
+        self.read_rx.is_some() || self.change_rx.is_some()
+    }
+
+    /// The section as the model shows the enrolment now.
+    fn page(&self, cx: &ViewCx<Settings>) -> Element {
+        let dispatcher = cx.dispatcher();
         // The volumes are read again each time the page is shown and after
         // every change: no refresh.
         let mut body: Vec<Item> = vec![note(&t("settings-disk-unlock-intro"))];
@@ -623,13 +690,17 @@ impl DiskUnlockModel {
         let mut items: Vec<SettingsSection> =
             vec![section(&t("settings-disk-unlock-title"), rows(body))];
         for volume in self.shown_volumes() {
-            items.extend(self.volume_cards(volume));
+            items.extend(self.volume_cards(&dispatcher, volume));
         }
-        crate::widgets::page(items)
+        provider_settings_ui::widgets::page(items)
     }
 
     /// One volume: how its secrets are kept, then the networks it may unlock over.
-    fn volume_cards(&self, volume: &UnlockVolume) -> [SettingsSection; 2] {
+    fn volume_cards(
+        &self,
+        dispatcher: &ui::framework::Dispatcher<Settings>,
+        volume: &UnlockVolume,
+    ) -> [SettingsSection; 2] {
         let (pill, tone, explanation) = match volume.sealing {
             Sealing::Tpm2 => (
                 t("settings-disk-unlock-sealed"),
@@ -673,7 +744,7 @@ impl DiskUnlockModel {
         }
         let busy = self.change_rx.is_some();
         for network in offered {
-            body.push(self.network_row(volume, &network, busy));
+            body.push(self.network_row(dispatcher, volume, &network, busy));
         }
         [
             section(&volume.short_name(), rows(secrets)),
@@ -681,7 +752,13 @@ impl DiskUnlockModel {
         ]
     }
 
-    fn network_row(&self, volume: &UnlockVolume, network: &str, busy: bool) -> Item {
+    fn network_row(
+        &self,
+        dispatcher: &ui::framework::Dispatcher<Settings>,
+        volume: &UnlockVolume,
+        network: &str,
+        busy: bool,
+    ) -> Item {
         let chosen = volume.networks.iter().any(|name| name == network);
         let saved = self.saved_wifi().iter().any(|name| name == network);
         let key = format!(
@@ -704,7 +781,8 @@ impl DiskUnlockModel {
             ));
         }
         let args = network_arguments(volume, network, !chosen);
-        let binding = self.cx.row_binding(
+        let binding = crate::on_row::binding(
+            dispatcher,
             &network_resource(volume, network).into_resource(),
             effect(DiskUnlockEffect::SET_DISK_UNLOCK_NETWORKS).map(move |()| args.clone()),
         );
@@ -719,29 +797,6 @@ impl DiskUnlockModel {
         } else {
             setting_row(network, control)
         }
-    }
-}
-
-impl PaneModel for DiskUnlockModel {
-    fn compose(&self) -> Box<dyn Widget> {
-        self.build_composition()
-    }
-    fn poll(&mut self) -> bool {
-        DiskUnlockModel::poll(self);
-        std::mem::take(&mut self.structure_dirty)
-    }
-    fn name(&self) -> &'static str {
-        "DiskUnlockCard"
-    }
-    fn busy(&self) -> bool {
-        self.read_rx.is_some() || self.change_rx.is_some()
-    }
-
-    /// Shown again: read the volumes again, so the page says what the
-    /// device holds now.
-    fn follow(&mut self) -> Option<std::rc::Rc<dyn std::any::Any>> {
-        self.request_read();
-        None
     }
 }
 
@@ -808,25 +863,21 @@ mod tests {
         }
     }
 
-    fn texts(widget: &dyn Widget) -> Vec<String> {
-        let mut out = Vec::new();
-        let mut stack = vec![widget];
-        while let Some(next) = stack.pop() {
-            if let Some(node) = next.accessibility() {
-                out.extend(node.name);
-                out.extend(node.value);
-            }
-            stack.extend(next.children());
-        }
-        out
-    }
-
-    fn test_cx() -> PaneCx {
-        PaneCx::in_profile(std::env::temp_dir().join("tilo-disk-unlock-test-settings"))
-    }
-
-    fn laid_out(card: &DiskUnlockModel) -> Vec<String> {
-        texts(card.compose().as_ref())
+    /// A Settings window on Privacy & Security whose Disk unlock reads
+    /// `authority`, once its first read is shown; what the window shows.
+    fn shown_over(authority: Arc<dyn UnlockAuthority>) -> String {
+        crate::area::replace_in_next_window(move |context| {
+            DiskUnlockArea::over(context, authority)
+        });
+        let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
+        app.harness().resize((1280, 4096)).unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Permissions);
+        app.with_widget::<crate::window::Inspected, _>(|app| {
+            area(app).unwrap().model().borrow_mut().settle();
+        })
+        .unwrap();
+        app.settle();
+        app.harness().inspection_json().unwrap()
     }
 
     /// The helper's answer becomes volumes only when every field Settings
@@ -859,9 +910,7 @@ mod tests {
     #[test]
     fn the_card_says_how_secrets_are_kept() {
         let authority = FakeAuthority::new(Ok(vec![volume(Sealing::Cleartext, &["Home"])]));
-        let mut card = DiskUnlockModel::with_authority(test_cx(), authority);
-        card.settle();
-        let shown = laid_out(&card).join("\n");
+        let shown = shown_over(authority);
         assert!(
             shown.contains(&t("settings-disk-unlock-cleartext")),
             "{shown}"
@@ -877,9 +926,7 @@ mod tests {
         assert!(shown.contains("Ada's laptop"), "{shown}");
 
         let authority = FakeAuthority::new(Ok(vec![volume(Sealing::Tpm2, &[])]));
-        let mut card = DiskUnlockModel::with_authority(test_cx(), authority);
-        card.settle();
-        let shown = laid_out(&card).join("\n");
+        let shown = shown_over(authority);
         assert!(shown.contains(&t("settings-disk-unlock-sealed")), "{shown}");
         assert!(!shown.contains("Anyone holding this disk"), "{shown}");
     }
@@ -889,9 +936,7 @@ mod tests {
     #[test]
     fn a_refused_read_is_not_an_empty_list() {
         let authority = FakeAuthority::new(Err("Not authorized".into()));
-        let mut card = DiskUnlockModel::with_authority(test_cx(), authority);
-        card.settle();
-        let shown = laid_out(&card).join("\n");
+        let shown = shown_over(authority);
         assert!(shown.contains("Not authorized"), "{shown}");
         assert!(!shown.contains(&t("settings-disk-unlock-none")), "{shown}");
     }
@@ -902,14 +947,14 @@ mod tests {
     fn a_network_button_runs_the_enrolment_with_the_new_list() {
         let authority = FakeAuthority::new(Ok(vec![volume(Sealing::Cleartext, &["Home"])]));
         let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
-        app.surface::<SettingsApp, _>(|app| {
-            let mut model = DiskUnlockModel::with_authority(app.host().clone(), authority.clone());
+        app.with_widget::<crate::window::Inspected, _>(|app| {
+            let mut model = DiskUnlockModel::with_authority(authority.clone());
             model.settle();
             *crate::panes::disk_unlock::area(app)
                 .unwrap()
                 .model()
                 .borrow_mut() = model;
-            app.select(crate::categories::Category::Permissions);
+            app.request_pane(crate::categories::Category::Permissions);
         })
         .unwrap();
         app.harness().resize((1280, 4096)).unwrap();
@@ -923,7 +968,7 @@ mod tests {
         app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
             authority.calls.lock().unwrap().len() == 1
         });
-        app.surface::<SettingsApp, _>(|app| {
+        app.with_widget::<crate::window::Inspected, _>(|app| {
             crate::panes::disk_unlock::area(app)
                 .unwrap()
                 .model()
@@ -938,7 +983,7 @@ mod tests {
                 vec!["Home".to_owned(), "Office 5G".to_owned()]
             )]
         );
-        app.surface::<SettingsApp, _>(|app| {
+        app.with_widget::<crate::window::Inspected, _>(|app| {
             assert_eq!(
                 crate::panes::disk_unlock::area(app)
                     .unwrap()
@@ -983,7 +1028,7 @@ mod tests {
             authority.calls.lock().unwrap().last().unwrap().1,
             vec!["Office 5G".to_owned()]
         );
-        app.surface::<SettingsApp, _>(|app| {
+        app.with_widget::<crate::window::Inspected, _>(|app| {
             let model = crate::panes::disk_unlock::area(app)
                 .unwrap()
                 .model()
@@ -1006,7 +1051,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             refuse: true,
         });
-        let mut card = DiskUnlockModel::with_authority(test_cx(), authority);
+        let mut card = DiskUnlockModel::with_authority(authority);
         card.settle();
         card.start(
             &network_change(&volume(Sealing::Tpm2, &[]), "Home", true),

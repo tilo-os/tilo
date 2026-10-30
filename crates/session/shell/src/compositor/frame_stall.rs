@@ -145,15 +145,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_stall_parses_reads_only_behind_the_gate_and_jitters_within_its_range() {
+    fn frame_stall_parses_a_delay_or_a_range() {
         assert_eq!(parse("80"), Ok((80, 80)));
         assert_eq!(parse(" 50-130 "), Ok((50, 130)));
         assert_eq!(parse("50 - 130"), Ok((50, 130)));
         for refused in ["", "0", "0-10", "130-50", "fast", "50-", "3000", "-5"] {
             assert!(parse(refused).is_err(), "{refused:?} parsed");
         }
+    }
 
-        // Phase `gate`: a shipped build never stalls, whatever is set.
+    #[test]
+    fn a_shipped_build_never_stalls_whatever_is_set() {
         let set = || Some(std::ffi::OsString::from("50-130"));
         assert_eq!(FrameStall::from_env(false, set(), 7), None);
         assert_eq!(
@@ -163,8 +165,10 @@ mod tests {
         assert_eq!(FrameStall::from_env(true, None, 7), None);
         assert_eq!(FrameStall::from_env(true, Some("".into()), 7), None);
         assert_eq!(FrameStall::from_env(true, Some("slow".into()), 7), None);
+    }
 
-        // Phase `jitter`: every delay inside the range, and not all alike.
+    #[test]
+    fn every_delay_is_inside_the_range_and_not_all_alike() {
         let mut stall = FrameStall::new(50, 130, 0);
         let delays: Vec<_> = (0..200).map(|_| stall.next_delay()).collect();
         assert!(

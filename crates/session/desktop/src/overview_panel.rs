@@ -185,6 +185,8 @@ pub struct OverviewPanel {
     revision: u64,
     /// The flight's clock as last drawn.
     drawn_progress: f64,
+    /// The keyboard is on the overview.
+    focused: bool,
     dirty: bool,
 }
 
@@ -218,6 +220,7 @@ impl OverviewPanel {
             cache_fills: 0,
             revision: 0,
             drawn_progress: 0.0,
+            focused: false,
             dirty: true,
         }
     }
@@ -330,6 +333,16 @@ impl OverviewPanel {
     /// Whether a strip's name is being typed.
     pub fn is_naming(&self) -> bool {
         self.naming.is_some()
+    }
+
+    /// A key pressed while the overview is up, as the person pressed it;
+    /// whether it was taken.
+    pub fn press_key(
+        &mut self,
+        key: &winit::keyboard::Key,
+        mods: winit::keyboard::ModifiersState,
+    ) -> bool {
+        self.open && self.key(key, mods)
     }
 
     /// Choose `pick`, as the person did.
@@ -650,6 +663,28 @@ impl Widget for OverviewPanel {
 
     fn modal_capture(&self) -> Option<Rect> {
         self.open.then_some(self.rect)
+    }
+
+    /// The open overview holds the keyboard: its rooms and windows are
+    /// walked by keys, Tab included.
+    fn is_focusable(&self) -> bool {
+        self.open
+    }
+
+    fn is_default_keyboard_focus(&self) -> bool {
+        self.open
+    }
+
+    fn wants_tab_input(&self) -> bool {
+        self.open
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
     }
 
     fn traps_focus(&self) -> bool {

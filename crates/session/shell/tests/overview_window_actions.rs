@@ -1,5 +1,5 @@
 //! The overview's window previews act on their windows, end to end through
-//! the real overlay host: a click or a tap goes to the window and closes
+//! the real overlay host and the overview's app: a click or a tap goes to the window and closes
 //! the overview, a middle click closes the window, dragging a preview onto
 //! another workspace moves the window there, and the arrow keys and Enter
 //! do the same without a pointer.
@@ -22,7 +22,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, Touch, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::support::host::{dispatch, layout_host};
+use crate::support::host::{dispatch, layout_host, paint};
 
 /// The client window: an app process the sandbox of "Home" launched.
 const CLIENT_TAB: u64 = 4;
@@ -128,12 +128,26 @@ impl Harness {
             state.bump();
         }
         h.host.force_overview_settled(true);
+        h.frame();
         h
+    }
+
+    /// One frame: the overview's app serviced, laid out and drawn, as the
+    /// compositor runs one after every input.
+    fn frame(&mut self) {
+        self.host
+            .update(&automerge::AutoCommit::new(), &automerge::ROOT);
+        let (taffy, node) = layout_host(&mut self.host);
+        self.taffy = taffy;
+        self.node = node;
+        paint(&mut self.host);
     }
 
     fn event(&mut self, event: &WindowEvent) -> bool {
         let modifiers = Modifiers::default();
-        dispatch(&mut self.host, &self.taffy, self.node, modifiers, event)
+        let taken = dispatch(&mut self.host, &self.taffy, self.node, modifiers, event);
+        self.frame();
+        taken
     }
 
     fn key(&mut self, key: Key) -> bool {
@@ -208,16 +222,16 @@ impl Harness {
         self.chrome.borrow().tree().desktop.workspaces[0].id
     }
 
+    /// The overview's own semantic tree, which its app publishes as a child
+    /// of the host.
     fn overview_node(&self) -> AccessNode {
-        self.host
-            .accessibility()
-            .expect("the host publishes a semantic tree")
-            .children
-            .into_iter()
-            .find(|node| {
-                node.role == Role::Dialog && node.name.as_deref() == Some("Workspace overview")
-            })
-            .expect("the overview is on screen")
+        let node = self
+            .host
+            .overview_accessibility()
+            .expect("the overview is on screen");
+        assert_eq!(node.role, Role::Dialog);
+        assert_eq!(node.name.as_deref(), Some("Workspace overview"));
+        node
     }
 
     /// The overview's window row: each window's title, bounds and whether

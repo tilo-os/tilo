@@ -60,8 +60,8 @@ fn first_frame(shown: &mut Vec<String>) -> Duration {
 
     let started = Instant::now();
     let cached = store::catalogue::cache::load().expect("the kept catalogue reads back");
-    let mut app = StoreApp::new();
-    app.set_items(cached.items);
+    let app = StoreApp::new();
+    app.state().set_items(cached.items);
     let framed = Framed::new(
         ui::State::new(),
         app,

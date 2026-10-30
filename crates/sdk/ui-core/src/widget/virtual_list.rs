@@ -802,7 +802,9 @@ impl<M: ListModel> VirtualList<M> {
 
     /// Enable row reordering. `validate` controls which stable-key targets
     /// receive a preview; `commit` mutates the model after a valid drop and
-    /// returns whether the collection changed.
+    /// returns whether the collection changed. A drag moves a row, and so
+    /// does Ctrl+Up or Ctrl+Down (Alt+Up or Alt+Down, as a tree's rows
+    /// move) on the focused row, through the same `validate` and `commit`.
     #[must_use]
     pub fn with_reorder(
         mut self,
@@ -1412,6 +1414,75 @@ impl<M: ListModel> VirtualList<M> {
                     .as_mut()
                     .is_some_and(|validate| validate(model, source, target))
             });
+    }
+
+    /// The direction a reorder chord moves the focused row, up being
+    /// `true`, when this list reorders and `key` with `modifiers` is one.
+    fn reorder_chord(&self, key: &Key, modifiers: winit::keyboard::ModifiersState) -> Option<bool> {
+        if self.reorder_validator.is_none() || self.reorder_commit.is_none() {
+            return None;
+        }
+        let chord = modifiers.control_key() != modifiers.alt_key()
+            && !modifiers.shift_key()
+            && !modifiers.super_key();
+        match key {
+            Key::Named(NamedKey::ArrowUp) if chord => Some(true),
+            Key::Named(NamedKey::ArrowDown) if chord => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Move the focused row past its neighbour above or below, as a drop
+    /// there would, keeping it focused. Whether it moved: a move the list
+    /// refuses, or one past either end, moves nothing.
+    fn move_focused(&mut self, up: bool) -> bool {
+        let focused_row = self
+            .mounted
+            .iter()
+            .find(|row| row.widget.is_focused())
+            .map(|row| row.key.clone());
+        let Some(source) =
+            focused_row.or_else(|| self.focused_key.clone().filter(|_| self.is_focused))
+        else {
+            return false;
+        };
+        let Some(index) = self.model.index_of(&source) else {
+            return false;
+        };
+        let neighbour = if up {
+            index.checked_sub(1)
+        } else {
+            index.checked_add(1)
+        };
+        let Some(neighbour) = neighbour.and_then(|at| self.model.key_at(at)) else {
+            return false;
+        };
+        let target = DropTarget::new(
+            neighbour,
+            if up {
+                DropPlacement::Before
+            } else {
+                DropPlacement::After
+            },
+        );
+        let model = &self.model;
+        let accepted = self
+            .reorder_validator
+            .as_mut()
+            .is_some_and(|validate| validate(model, &source, &target));
+        if !accepted
+            || !self.commit_reorder(ReorderDrop {
+                source: source.clone(),
+                target,
+            })
+        {
+            return false;
+        }
+        if let Some(at) = self.model.index_of(&source) {
+            self.scroll_to_index(at);
+        }
+        self.focused_key = Some(source);
+        true
     }
 
     fn commit_reorder(&mut self, dropped: ReorderDrop<M::Key>) -> bool {
@@ -2326,6 +2397,27 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 self.momentum.stop();
                 if event.logical_key == Key::Named(NamedKey::Escape) && self.reorder.cancel() {
                     *ctx.handled = true;
+                } else if let Some(up) =
+                    self.reorder_chord(&event.logical_key, ctx.modifiers.state())
+                {
+                    // The row moves and keeps the focus; a refused move is
+                    // no navigation either. A row that takes the keyboard
+                    // holds it from here, so the focus stays on that row
+                    // when whoever owns the order rebuilds the list.
+                    *ctx.handled = self.move_focused(up);
+                    if *ctx.handled
+                        && self.is_focused
+                        && let Some(node) = self
+                            .mounted
+                            .iter()
+                            .find(|row| {
+                                Some(&row.key) == self.focused_key.as_ref()
+                                    && row.widget.is_focusable()
+                            })
+                            .and_then(|row| row.node)
+                    {
+                        *ctx.focus_target = Some(node);
+                    }
                 } else {
                     let toggle =
                         ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();

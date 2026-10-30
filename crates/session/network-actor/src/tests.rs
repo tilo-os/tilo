@@ -225,46 +225,6 @@ fn upkeep_is_armed_only_while_something_needs_it() {
     );
 }
 
-/// What a desktop alone with its rooms broadcasts reaches nobody, so it
-/// never arms gossip's per-topic cache sweep, which would otherwise run
-/// until the message expires (`gossip_caches_drain_within`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_topic_with_no_neighbour_never_arms_the_gossip_sweep() {
-    const SWEEP: Duration = Duration::from_millis(20);
-    let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .relay_mode(iroh::RelayMode::Disabled)
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap();
-    let gossip = Gossip::builder()
-        .broadcast_config(iroh_gossip::proto::PlumtreeConfig {
-            cache_evict_interval: SWEEP,
-            ..broadcast_config()
-        })
-        .spawn(endpoint.clone());
-    let (sender, _receiver) = gossip
-        .subscribe(topic_id(42), Vec::new())
-        .await
-        .unwrap()
-        .split();
-    let timers = || gossip.metrics().actor_tick_timers.get();
-
-    for _ in 0..3 {
-        sender
-            .broadcast(Bytes::from_static(b"a local change"))
-            .await
-            .unwrap();
-        sender
-            .broadcast_neighbors(Bytes::from_static(b"an identity"))
-            .await
-            .unwrap();
-    }
-    tokio::time::sleep(SWEEP.saturating_mul(10)).await;
-    assert_eq!(timers(), 0, "gossip woke for a topic nobody else is on");
-    endpoint.close().await;
-}
 use getrandom::{SysRng, rand_core::UnwrapErr};
 
 #[test]
@@ -320,7 +280,6 @@ fn active_personal_transfer(generation: u64) -> ActivePersonalTransfer {
     let (cancel, _receiver) = tokio::sync::watch::channel(false);
     ActivePersonalTransfer {
         generation,
-        workspace: 7,
         total_bytes: 8,
         sent_bytes: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         cancel,
@@ -353,33 +312,9 @@ fn personal_bindings_are_exact_generation_and_membership_scoped() {
         assert!(take_personal_transfer_generation(&mut active, key, 12).is_some());
         assert!(active.contains_key(&sibling_key));
     }
-    // Phase `departed_personal_connection_cannot_rebind_after_membership_reconnect`.
-    {
-        let peer = iroh::SecretKey::from_bytes(&[0xA1; 32]).public();
-        let old_epoch = MembershipEpoch::for_test(7);
-        let new_epoch = MembershipEpoch::for_test(8);
-        let mut ingress = HashMap::new();
-        assert!(bind_personal_fabric_ingress(
-            &mut ingress,
-            peer,
-            11,
-            21,
-            old_epoch,
-        ));
-        revoke_personal_fabric_ingress(&mut ingress, 21, old_epoch);
-        assert!(
-            !bind_personal_fabric_ingress(&mut ingress, peer, 11, 21, new_epoch),
-            "the old QUIC connection stays tombstoned after reconnect"
-        );
-        assert!(
-            bind_personal_fabric_ingress(&mut ingress, peer, 12, 21, new_epoch),
-            "a fresh connection may bind the fresh membership epoch"
-        );
-    }
     // Phase `nearby_transfer_frame_round_trips_exact_binding_and_bounded_chunk`.
     {
         let wire = PersonalFabricWireFrame {
-            workspace: 42,
             user_public_key: [3; 32],
             payload: PersonalFabricPayload::NearbyTransfer(PersonalNearbyTransferFrame::Chunk {
                 transfer_id: [4; 16],
@@ -407,7 +342,6 @@ fn personal_bindings_are_exact_generation_and_membership_scoped() {
     }
 }
 
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use tokio::time::timeout;
 
 async fn endpoint() -> (Endpoint, MemoryLookup) {
@@ -415,61 +349,127 @@ async fn endpoint() -> (Endpoint, MemoryLookup) {
 }
 
 /// Reads personal fabric frames on every connection it accepts, as the
-/// actor does on each gossip connection it is handed.
+/// actor does on the connection of each session with one of the person's
+/// devices.
 #[derive(Debug, Clone)]
 struct FabricReader(mpsc::Sender<InternalEvent>);
 
 impl ProtocolHandler for FabricReader {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        read_personal_fabric(connection, self.0.clone(), &AtomicU64::new(1));
+        read_personal_fabric(connection, self.0.clone(), MembershipEpoch::for_test(1));
         Ok(())
     }
 }
 
-/// Two of a person's devices on their personal topic `ws`, which travels
-/// directly between them over gossip, the first dialling the second, once
-/// each has seen the other join.
-async fn linked_pair(
+/// One of a person's devices as a test runs it ([`crate::siblings`]),
+/// joined to one topic, its events and its siblings' heard.
+pub(super) struct Device {
+    pub(super) cmd: mpsc::Sender<NetCmd>,
+    pub(super) rx: mpsc::Receiver<NetEvent>,
+    pub(super) task: tokio::task::JoinHandle<()>,
+    pub(super) id: EndpointId,
+    pub(super) addr: EndpointAddr,
+    pub(super) endpoint: Endpoint,
+    pub(super) lookup: MemoryLookup,
+    /// The person's root key.
+    pub(super) root: [u8; 32],
+    _state: tempfile::TempDir,
+}
+
+/// The device `key` of the person `root`, joined to topic `ws`, hearing the
+/// person's other devices, retrying what is missing every `tick`.
+pub(super) async fn device_of(
+    root: &ed25519_dalek::SigningKey,
+    key: ed25519_dalek::SigningKey,
     ws: WorkspaceId,
-    a: (Endpoint, MemoryLookup),
-    b: (Endpoint, MemoryLookup),
-) -> [(
-    mpsc::Sender<NetCmd>,
-    mpsc::Receiver<NetEvent>,
-    tokio::task::JoinHandle<()>,
-); 2] {
-    let (a_id, b_id) = (a.0.id(), b.0.id());
-    let b_addr = b.0.addr();
-    let mut pair = [a, b].map(|(endpoint, lookup)| {
-        let (cmd, task) = Actor::spawn(endpoint, lookup);
-        let (events, rx) = mpsc::channel(64);
-        (cmd, rx, task, events)
-    });
-    for (cmd, _, _, events) in &pair {
-        cmd.send(NetCmd::JoinPersonalTopic {
+    tick: Duration,
+) -> Device {
+    let state = tempfile::tempdir().unwrap();
+    let sibling = crate::siblings::spawn_ticking(root, key, state.path(), tick).await;
+    let (on_event, rx) = mpsc::channel(256);
+    sibling
+        .cmd
+        .send(NetCmd::JoinWorkspace {
             ws,
-            on_event: events.clone(),
+            on_event: on_event.clone(),
         })
         .await
         .unwrap();
-    }
-    pair[0]
-        .0
-        .send(NetCmd::Connect { addr: b_addr })
+    sibling
+        .cmd
+        .send(NetCmd::WatchSiblings { on_event })
         .await
         .unwrap();
-    for ((_, rx, _, _), other) in pair.iter_mut().zip([b_id, a_id]) {
-        wait_for_event(
-            "the pair links",
-            rx,
-            |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == other),
-        )
-        .await;
+    Device {
+        cmd: sibling.cmd,
+        rx,
+        task: sibling.task,
+        id: sibling.addr.id,
+        addr: sibling.addr,
+        endpoint: sibling.endpoint,
+        lookup: sibling.lookup,
+        root: root.verifying_key().to_bytes(),
+        _state: state,
     }
-    pair.map(|(cmd, rx, task, _)| (cmd, rx, task))
 }
 
-async fn wait_for_event(
+/// `count` devices of one person on topic `ws`, each told where the others
+/// are, once each has a session with every other.
+pub(super) async fn linked(ws: WorkspaceId, count: usize) -> Vec<Device> {
+    let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    let mut devices = Vec::new();
+    for _ in 0..count {
+        let key = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        devices.push(device_of(&root, key, ws, HEARTBEAT_INTERVAL).await);
+    }
+    link(&devices.iter().collect::<Vec<_>>()).await;
+    let ids: Vec<_> = devices.iter().map(|device| device.id).collect();
+    for device in &mut devices {
+        let mut waiting: HashSet<_> = ids.iter().copied().filter(|id| *id != device.id).collect();
+        tilo_test_env::within("the devices link", async {
+            while !waiting.is_empty() {
+                if let Some(NetEvent::Sibling { peer, .. }) = device.rx.recv().await {
+                    waiting.remove(&peer);
+                }
+            }
+        })
+        .await;
+    }
+    devices
+}
+
+/// Two linked devices, by name.
+pub(super) fn two(devices: Vec<Device>) -> [Device; 2] {
+    let Ok(two) = <[Device; 2]>::try_from(devices) else {
+        panic!("two devices were linked")
+    };
+    two
+}
+
+/// Three linked devices, by name.
+pub(super) fn three(devices: Vec<Device>) -> [Device; 3] {
+    let Ok(three) = <[Device; 3]>::try_from(devices) else {
+        panic!("three devices were linked")
+    };
+    three
+}
+
+/// Tell each of `devices` where each other one is.
+pub(super) async fn link(devices: &[&Device]) {
+    for device in devices {
+        for other in devices.iter().filter(|other| other.id != device.id) {
+            device
+                .cmd
+                .send(NetCmd::Connect {
+                    addr: other.addr.clone(),
+                })
+                .await
+                .unwrap();
+        }
+    }
+}
+
+pub(super) async fn wait_for_event(
     what: &str,
     rx: &mut mpsc::Receiver<NetEvent>,
     wanted: impl Fn(&NetEvent) -> bool + Send + Sync,
@@ -478,39 +478,6 @@ async fn wait_for_event(
         loop {
             if wanted(&rx.recv().await.expect("the actor is running")) {
                 return;
-            }
-        }
-    })
-    .await;
-}
-
-/// Have `send` publish now, and again each time `publisher` hears a link
-/// come up (`NetEvent::PeerJoined`), until `receiver` hears what `heard`
-/// waits for. A message is sent once: one sent while the link is down, as
-/// when both devices stood still past its idle timeout, is gone, and the
-/// link coming back is what says so. The session states what a peer needs
-/// on every join; this is that.
-pub(crate) async fn publish_until_heard<F: Future<Output = ()> + Send>(
-    what: &str,
-    publisher: &mut mpsc::Receiver<NetEvent>,
-    receiver: &mut mpsc::Receiver<NetEvent>,
-    send: impl Fn() -> F + Send + Sync,
-    mut heard: impl FnMut(&NetEvent) -> bool + Send,
-) {
-    tilo_test_env::within(what, async {
-        send().await;
-        loop {
-            tokio::select! {
-                event = publisher.recv() => {
-                    if matches!(event.expect("the actor is running"), NetEvent::PeerJoined { .. }) {
-                        send().await;
-                    }
-                }
-                event = receiver.recv() => {
-                    if heard(&event.expect("the actor is running")) {
-                        return;
-                    }
-                }
             }
         }
     })
@@ -537,54 +504,56 @@ fn open_connections(endpoint: &Endpoint) -> u64 {
         .saturating_sub(socket.num_conns_closed.get())
 }
 
-/// Two linked devices keep one connection between them: personal fabric
-/// frames, both ways, share the one gossip runs.
+/// Two of a person's devices keep one connection between them: their
+/// session and every fabric frame and transfer run on it, both ways, as an
+/// idle connection costs both devices its keep-alives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_linked_pair_keeps_one_connection_for_gossip_and_personal_fabric() {
-    let (a, lookup_a) = endpoint().await;
-    let (b, lookup_b) = endpoint().await;
-    let (a_id, b_id) = (a.id(), b.id());
-    let [(cmd_a, mut rx_a, _task_a), (cmd_b, mut rx_b, _task_b)] =
-        linked_pair(45, (a.clone(), lookup_a), (b.clone(), lookup_b)).await;
-
-    for (cmd, target) in [(&cmd_a, b_id), (&cmd_b, a_id)] {
-        cmd.send(NetCmd::PublishPersonalFabricTarget {
-            ws: 45,
-            user_public_key: [0xB5; 32],
-            target,
-            payload: PersonalFabricPayload::Action(vec![5, 5]),
+async fn two_devices_keep_one_connection_for_their_session_both_ways() {
+    let [mut a, mut b] = two(linked(45, 2).await);
+    let (a_id, b_id, root) = (a.id, b.id, a.root);
+    let update = |author: EndpointId| NeighbourMsg::PersonalWorkspaces {
+        user_public_key: root,
+        update: Box::new(tilo_user_identity::DirectoryUpdate {
+            author_device_public_key: *author.as_bytes(),
+            authored_at_ns: 1,
+            delta: vec![1, 2, 3],
+            signature: [0; 64],
+        }),
+    };
+    for (cmd, rx, from) in [(&a.cmd, &mut b.rx, a_id), (&b.cmd, &mut a.rx, b_id)] {
+        cmd.send(NetCmd::PublishToSiblings { msg: update(from) })
+            .await
+            .unwrap();
+        wait_for_event("the other device's workspace list", rx, |event| {
+            matches!(
+                event,
+                NetEvent::SiblingMsg {
+                    peer,
+                    msg: NeighbourMsg::PersonalWorkspaces { .. },
+                    ..
+                } if *peer == from
+            )
         })
-        .await
-        .unwrap();
-    }
-    wait_for_event("A's fabric frame at B", &mut rx_b, |event| {
-        fabric_action_from(event, a_id, &[5, 5])
-    })
-    .await;
-    wait_for_event("B's fabric frame at A", &mut rx_a, |event| {
-        fabric_action_from(event, b_id, &[5, 5])
-    })
-    .await;
-    cmd_a
-        .send(NetCmd::PublishPersonalFabric {
-            ws: 45,
-            user_public_key: [0xB5; 32],
+        .await;
+        cmd.send(NetCmd::PublishPersonalFabric {
+            user_public_key: root,
             payload: PersonalFabricPayload::Request,
         })
         .await
         .unwrap();
-    wait_for_event("A's fabric request at B", &mut rx_b, |event| {
-        matches!(
-            event,
-            NetEvent::PersonalFabric {
-                payload: PersonalFabricPayload::Request,
-                ..
-            }
-        )
-    })
-    .await;
-
-    for (name, endpoint) in [("A", &a), ("B", &b)] {
+        wait_for_event("the other device's fabric request", rx, |event| {
+            matches!(
+                event,
+                NetEvent::PersonalFabric {
+                    peer,
+                    payload: PersonalFabricPayload::Request,
+                    ..
+                } if *peer == from
+            )
+        })
+        .await;
+    }
+    for (name, endpoint) in [("A", &a.endpoint), ("B", &b.endpoint)] {
         assert_eq!(
             open_connections(endpoint),
             1,
@@ -598,14 +567,21 @@ async fn a_linked_pair_keeps_one_connection_for_gossip_and_personal_fabric() {
     }
 }
 
-/// Join the personal topic `ws` on the actor `cmd` drives, and hear its
-/// events.
-async fn joined(cmd: &mpsc::Sender<NetCmd>, ws: WorkspaceId) -> mpsc::Receiver<NetEvent> {
-    let (on_event, events) = mpsc::channel(64);
-    cmd.send(NetCmd::JoinPersonalTopic { ws, on_event })
-        .await
-        .unwrap();
-    events
+/// A device proves who it is with a certificate of the person's root for
+/// its own endpoint; a device of another person is no sibling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_of_another_person_is_no_sibling() {
+    let key = || ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    let (mine, theirs) = (key(), key());
+    let mut a = device_of(&mine, key(), 48, HEARTBEAT_INTERVAL).await;
+    let b = device_of(&theirs, key(), 48, HEARTBEAT_INTERVAL).await;
+    link(&[&a, &b]).await;
+    while let Ok(Some(event)) = timeout(Duration::from_secs(1), a.rx.recv()).await {
+        assert!(
+            !matches!(event, NetEvent::Sibling { .. }),
+            "another person's device became a sibling"
+        );
+    }
 }
 
 /// A device on a runtime of its own, on a thread of its own, that a test
@@ -657,74 +633,49 @@ impl Drop for Sleeper {
     }
 }
 
-/// A device asleep for longer than its link's idle timeout loses the link,
-/// and what was sent meanwhile. On waking it is linked again at once, each
-/// side hears the other join, and what the device asks for on that join
-/// reaches its sibling: the join is when the session catches up.
+/// A device asleep for longer than its connection's idle timeout loses its
+/// session, and its sibling drops it. On waking the two are linked again
+/// soon, each side hears the other join, and what the device asks for on
+/// that join reaches its sibling.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_device_asleep_past_the_idle_timeout_is_linked_again_on_waking() {
-    let (a, lookup_a) = endpoint().await;
-    let a_id = a.id();
-    let (cmd_a, _task_a) = Actor::spawn(a, lookup_a);
-    let mut rx_a = joined(&cmd_a, 47).await;
+    let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    let key = || ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    let mut a = device_of(&root, key(), 47, HEARTBEAT_INTERVAL).await;
     let sleeper = Sleeper::new();
-    let (cmd_b, mut rx_b, b_addr, b_id) = sleeper
+    let b_root = root.clone();
+    let b_key = key();
+    let mut b = sleeper
         .runtime
-        .spawn(async {
-            let (b, lookup_b) = endpoint().await;
-            let (b_addr, b_id) = (b.addr(), b.id());
-            let (cmd_b, task_b) = Actor::spawn(b, lookup_b);
-            drop(task_b);
-            let rx_b = joined(&cmd_b, 47).await;
-            (cmd_b, rx_b, b_addr, b_id)
-        })
+        .spawn(async move { device_of(&b_root, b_key, 47, HEARTBEAT_INTERVAL).await })
         .await
         .unwrap();
-    cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-    wait_for_event(
-        "A hears B join",
-        &mut rx_a,
-        |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == b_id),
-    )
-    .await;
-    wait_for_event(
-        "B hears A join",
-        &mut rx_b,
-        |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == a_id),
-    )
-    .await;
+    let (a_id, b_id) = (a.id, b.id);
+    link(&[&a, &b]).await;
+    let joined = |peer: EndpointId| move |event: &NetEvent| matches!(event, NetEvent::Sibling { peer: joined, .. } if *joined == peer);
+    wait_for_event("A hears B join", &mut a.rx, joined(b_id)).await;
+    wait_for_event("B hears A join", &mut b.rx, joined(a_id)).await;
 
     let waker = sleeper.freeze();
     wait_for_event(
         "A drops the sleeping device",
-        &mut rx_a,
-        |event| matches!(event, NetEvent::PeerLeft { peer, .. } if *peer == b_id),
+        &mut a.rx,
+        |event| matches!(event, NetEvent::SiblingLeft { peer, .. } if *peer == b_id),
     )
     .await;
     let woke = Instant::now();
     drop(waker);
 
-    wait_for_event(
-        "A hears B join again",
-        &mut rx_a,
-        |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == b_id),
-    )
-    .await;
-    wait_for_event(
-        "B hears A join again",
-        &mut rx_b,
-        |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == a_id),
-    )
-    .await;
-    cmd_b
+    wait_for_event("A hears B join again", &mut a.rx, joined(b_id)).await;
+    wait_for_event("B hears A join again", &mut b.rx, joined(a_id)).await;
+    b.cmd
         .send(NetCmd::PublishPersonalFabric {
-            ws: 47,
-            user_public_key: [0xB7; 32],
+            user_public_key: b.root,
             payload: PersonalFabricPayload::Request,
         })
         .await
         .unwrap();
-    wait_for_event("B's request after waking", &mut rx_a, |event| {
+    wait_for_event("B's request after waking", &mut a.rx, |event| {
         matches!(
             event,
             NetEvent::PersonalFabric {
@@ -743,45 +694,50 @@ async fn a_device_asleep_past_the_idle_timeout_is_linked_again_on_waking() {
 }
 
 /// A device that restarts on the same key hears its sibling's fabric at
-/// once: the sibling answers on the connection the restarted device just
-/// reached it on, before the membership of its old run has lapsed.
+/// once: the sibling answers on a link to the restarted device, not on the
+/// one its old run left behind.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restarted_device_hears_its_siblings_fabric_at_once() {
+    let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
     let b_key = ed25519_dalek::SigningKey::from_bytes(&[0x5B; 32]);
-    let a = endpoint().await;
-    let a_addr = a.0.addr();
-    let a_id = a.0.id();
-    let b = identified_endpoint(&b_key).await;
-    let b_id = b.0.id();
-    let [(cmd_a, mut rx_a, _task_a), (cmd_b, _rx_b, task_b)] = linked_pair(46, a, b).await;
+    let a_key = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    let mut pair = vec![
+        device_of(&root, a_key, 46, HEARTBEAT_INTERVAL).await,
+        device_of(&root, b_key.clone(), 46, HEARTBEAT_INTERVAL).await,
+    ];
+    link(&[&pair[0], &pair[1]]).await;
+    let (a_id, b_id) = (pair[0].id, pair[1].id);
+    wait_for_event(
+        "the pair links",
+        &mut pair[0].rx,
+        |event| matches!(event, NetEvent::Sibling { peer, .. } if *peer == b_id),
+    )
+    .await;
     // B's first run ends: its actor stops and its endpoint closes.
-    drop(cmd_b);
-    task_b.await.unwrap();
+    let b = pair.pop().unwrap();
+    drop(b.cmd);
+    b.task.await.unwrap();
+    let mut a = pair.pop().unwrap();
 
-    let (b_restarted, lookup_restarted) = identified_endpoint(&b_key).await;
-    let (cmd_restarted, _task_restarted) = Actor::spawn(b_restarted, lookup_restarted);
-    let mut rx_restarted = joined(&cmd_restarted, 46).await;
-    cmd_restarted
-        .send(NetCmd::Connect { addr: a_addr })
-        .await
-        .unwrap();
+    let mut restarted = device_of(&root, b_key, 46, HEARTBEAT_INTERVAL).await;
+    link(&[&a, &restarted]).await;
     wait_for_event(
         "the restarted device links",
-        &mut rx_restarted,
-        |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == a_id),
+        &mut restarted.rx,
+        |event| matches!(event, NetEvent::Sibling { peer, .. } if *peer == a_id),
     )
     .await;
 
     let started = Instant::now();
-    cmd_restarted
+    restarted
+        .cmd
         .send(NetCmd::PublishPersonalFabric {
-            ws: 46,
-            user_public_key: [0xB6; 32],
+            user_public_key: a.root,
             payload: PersonalFabricPayload::Request,
         })
         .await
         .unwrap();
-    wait_for_event("the restarted device's request", &mut rx_a, |event| {
+    wait_for_event("the restarted device's request", &mut a.rx, |event| {
         matches!(
             event,
             NetEvent::PersonalFabric {
@@ -792,16 +748,15 @@ async fn a_restarted_device_hears_its_siblings_fabric_at_once() {
         )
     })
     .await;
-    cmd_a
+    a.cmd
         .send(NetCmd::PublishPersonalFabricTarget {
-            ws: 46,
-            user_public_key: [0xB6; 32],
+            user_public_key: a.root,
             target: b_id,
             payload: PersonalFabricPayload::Action(vec![6, 6]),
         })
         .await
         .unwrap();
-    wait_for_event("the sibling's answer", &mut rx_restarted, |event| {
+    wait_for_event("the sibling's answer", &mut restarted.rx, |event| {
         fabric_action_from(event, a_id, &[6, 6])
     })
     .await;
@@ -823,14 +778,13 @@ async fn personal_fabric_unknown_extension_preserves_following_streams() {
         .spawn();
     let connection = a.connect(b.addr(), FIXTURE_ALPN).await.unwrap();
     let frame = PersonalFabricWireFrame {
-        workspace: 43,
         user_public_key: [0xA5; 32],
         payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
     };
     let valid = postcard::to_allocvec(&frame).unwrap();
-    assert_eq!(valid[33], 1, "the legacy Snapshot payload tag stays fixed");
+    assert_eq!(valid[32], 1, "the legacy Snapshot payload tag stays fixed");
     let mut future = valid.clone();
-    future[33] = 9; // First unsupported tag after optional connector observations.
+    future[32] = 9; // First unsupported tag after optional connector observations.
     assert!(postcard::from_bytes::<PersonalFabricWireFrame>(&future).is_err());
     for bytes in [&future, &valid] {
         let (mut stream, _) = connection.open_bi().await.unwrap();
@@ -841,7 +795,7 @@ async fn personal_fabric_unknown_extension_preserves_following_streams() {
         .await
         .unwrap();
     assert!(matches!(event, InternalEvent::PersonalFabric {
-        ws: 43, payload: PersonalFabricPayload::Snapshot(bytes), ..
+        payload: PersonalFabricPayload::Snapshot(bytes), ..
     } if bytes == vec![1, 2, 3]));
     connection.close(0u32.into(), b"fixture complete");
     router.shutdown().await.unwrap();
@@ -855,7 +809,7 @@ async fn remote_input_bypasses_a_saturated_surface_frame_queue() {
     let (media_tx, mut media_rx) = mpsc::channel(1);
     let (input_tx, mut input_rx) = mpsc::channel(1);
     media_tx
-        .send(InternalEvent::Closed { ws: 7 })
+        .send(InternalEvent::IdentityMaterialChanged)
         .await
         .unwrap();
 
@@ -886,220 +840,83 @@ async fn remote_input_bypasses_a_saturated_surface_frame_queue() {
     ));
     assert!(matches!(
         media_rx.try_recv(),
-        Ok(InternalEvent::Closed { ws: 7 })
+        Ok(InternalEvent::IdentityMaterialChanged)
     ));
 }
 
-async fn identified_endpoint(key: &ed25519_dalek::SigningKey) -> (Endpoint, MemoryLookup) {
-    crate::loopback_endpoint(Some(iroh::SecretKey::from_bytes(&key.to_bytes()))).await
-}
-
-fn enrol(
-    root: &ed25519_dalek::SigningKey,
-    capabilities: DeviceCapabilities,
-    label: &str,
-) -> (ed25519_dalek::SigningKey, DeviceCert) {
-    let key = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities,
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    (key, cert)
-}
-
+/// Two of a person's devices hear who the other is as soon as they link,
+/// from the certificate it proves on their session, and stream a window
+/// directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
-async fn two_actors_exchange_and_announce_identity_over_iroh() {
-    // Phase `two_actors_exchange_over_iroh`.
-    {
-        let (a, lookup_a) = endpoint().await;
-        let (b, lookup_b) = endpoint().await;
-        let source_peer = crate::behaviour::peer_liveness_handle(&a.id());
-        let b_addr = b.addr();
-        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
-        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
-        let (event_a, mut rx_a) = mpsc::channel(16);
-        let (event_b, mut rx_b) = mpsc::channel(16);
-        cmd_a
-            .send(NetCmd::JoinPersonalTopic {
-                ws: 42,
-                on_event: event_a,
-            })
-            .await
-            .unwrap();
-        cmd_b
-            .send(NetCmd::JoinPersonalTopic {
-                ws: 42,
-                on_event: event_b,
-            })
-            .await
-            .unwrap();
-        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        loop {
-            let event = tilo_test_env::within("a message on rx_a", rx_a.recv())
-                .await
-                .unwrap();
-            if matches!(event, NetEvent::PeerJoined { .. }) {
-                break;
-            }
-        }
-        publish_until_heard(
-            "B's request at A",
-            &mut rx_b,
-            &mut rx_a,
-            || async {
-                cmd_b
-                    .send(NetCmd::Publish {
-                        at: tokio::time::Instant::now(),
-                        ws: 42,
-                        msg: NeighbourMsg::SyncReq {
-                            since: vec![],
-                            room: String::new(),
-                            invite_id: None,
-                            nonce: 0,
-                        },
-                    })
-                    .await
-                    .unwrap();
-            },
-            |event| {
-                matches!(
-                    event,
-                    NetEvent::Msg {
-                        msg: NeighbourMsg::SyncReq { .. },
-                        ..
-                    }
-                )
-            },
-        )
-        .await;
-
-        let dedicated_before =
-            DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed);
-        publish_until_heard(
-            "A's surface frame at B",
-            &mut rx_a,
-            &mut rx_b,
-            || async {
-                cmd_a
-                    .send(NetCmd::Publish {
-                        at: tokio::time::Instant::now(),
-                        ws: 42,
-                        msg: NeighbourMsg::SurfaceFrame {
-                            surface: 7,
-                            source_peer,
-                            encoded_h264: vec![0, 0, 0, 1, 0x65],
-                            ts: 99,
-                            seq: 0,
-                        },
-                    })
-                    .await
-                    .unwrap();
-            },
-            |event| {
-                matches!(
-                    event,
-                    NetEvent::Msg {
-                        msg: NeighbourMsg::SurfaceFrame {
-                            surface: 7,
-                            ts: 99,
-                            ..
-                        },
-                        ..
-                    }
-                )
-            },
-        )
-        .await;
-        assert!(
-            DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed)
-                > dedicated_before,
-            "surface frame should arrive through the dedicated QUIC ALPN"
-        );
+async fn two_devices_exchange_and_announce_identity_over_iroh() {
+    let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    let mut pair = Vec::new();
+    for _ in 0..2 {
+        let key = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        pair.push(device_of(&root, key, 42, HEARTBEAT_INTERVAL).await);
     }
-    // Phase `actors_announce_identity_when_a_neighbor_connects`.
-    {
-        let root_a = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let root_b = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (key_a, cert_a) = enrol(&root_a, DeviceCapabilities::primary(), "a");
-        let (key_b, cert_b) = enrol(&root_b, DeviceCapabilities::primary(), "b");
-        let expected_a = cert_a.device_public_key;
-        let expected_b = cert_b.device_public_key;
-        let (endpoint_a, lookup_a) = identified_endpoint(&key_a).await;
-        let (endpoint_b, lookup_b) = identified_endpoint(&key_b).await;
-        let addr_b = endpoint_b.addr();
-        let identity_a = HostIdentity {
-            device_cert: cert_a,
-            device_signing_key: key_a,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let identity_b = HostIdentity {
-            device_cert: cert_b,
-            device_signing_key: key_b,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
-            endpoint_a,
-            lookup_a,
-            Some(identity_a),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
-            endpoint_b,
-            lookup_b,
-            Some(identity_b),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (events_a, mut rx_a) = mpsc::channel(16);
-        let (events_b, mut rx_b) = mpsc::channel(16);
-        cmd_a
-            .send(NetCmd::JoinPersonalTopic {
-                ws: 42,
-                on_event: events_a,
-            })
-            .await
-            .unwrap();
-        cmd_b
-            .send(NetCmd::JoinPersonalTopic {
-                ws: 42,
-                on_event: events_b,
-            })
-            .await
-            .unwrap();
-        cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
+    link(&[&pair[0], &pair[1]]).await;
+    let ids = [pair[0].id, pair[1].id];
+    for (device, other) in pair.iter_mut().zip([ids[1], ids[0]]) {
+        wait_for_event(
+            "the other device's certificate should not wait for the heartbeat",
+            &mut device.rx,
+            |event| {
+                matches!(
+                    event,
+                    NetEvent::Sibling { peer, certs, .. }
+                        if *peer == other
+                            && certs.iter().any(|cert| {
+                                cert.device_public_key == *other.as_bytes()
+                                    && cert.user_public_key == root.verifying_key().to_bytes()
+                            })
+                )
+            },
+        )
+        .await;
+    }
 
-        for (rx, expected) in [(&mut rx_a, expected_b), (&mut rx_b, expected_a)] {
-            tilo_test_env::within(
-                "identity announcement should not wait for the heartbeat",
-                async {
-                    loop {
-                        if let Some(NetEvent::Msg {
-                            msg: NeighbourMsg::IdentityHello { cert, .. },
-                            ..
-                        }) = rx.recv().await
-                            && cert.device_public_key == expected
-                        {
-                            break;
-                        }
-                    }
+    let dedicated_before =
+        DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed);
+    pair[0]
+        .cmd
+        .send(NetCmd::Publish {
+            ws: 42,
+            msg: NeighbourMsg::SurfaceFrame {
+                surface: 7,
+                source_peer: crate::behaviour::peer_liveness_handle(&ids[0]),
+                encoded_h264: vec![0, 0, 0, 1, 0x65],
+                ts: 99,
+                seq: 0,
+            },
+        })
+        .await
+        .unwrap();
+    wait_for_event("A's window frame at B", &mut pair[1].rx, |event| {
+        matches!(
+            event,
+            NetEvent::Msg {
+                msg: NeighbourMsg::SurfaceFrame {
+                    surface: 7,
+                    ts: 99,
+                    ..
                 },
-            )
-            .await;
-        }
-    }
+                ..
+            }
+        )
+    })
+    .await;
+    tilo_test_env::within(
+        "surface frame should arrive through the dedicated QUIC ALPN",
+        async {
+            while DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed)
+                <= dedicated_before
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        },
+    )
+    .await;
 }
 
 /// What this actor's peers delivered to it so far, by kind.
@@ -1109,61 +926,17 @@ async fn tally_of(cmd: &mpsc::Sender<NetCmd>) -> std::collections::BTreeMap<&'st
     answer.await.unwrap().snapshot()
 }
 
-/// An identified actor that runs its upkeep tick every `tick`, joined
-/// to workspace 42.
-async fn idle_test_actor(
-    root: &ed25519_dalek::SigningKey,
-    label: &str,
-    tick: Duration,
-) -> (
-    mpsc::Sender<NetCmd>,
-    mpsc::Receiver<NetEvent>,
-    EndpointAddr,
-    tokio::task::JoinHandle<()>,
-) {
-    let (key, cert) = enrol(root, DeviceCapabilities::primary(), label);
-    let (endpoint, lookup) = identified_endpoint(&key).await;
-    let addr = endpoint.addr();
-    let identity = HostIdentity {
-        device_cert: cert,
-        device_signing_key: key,
-        workspace_device_certs: HashMap::new(),
-        workspace_revocations: HashMap::new(),
-        identity_paths: None,
-    };
-    let (cmd, task) = Actor::spawn_with_heartbeat(
-        endpoint,
-        lookup,
-        Some(identity),
-        Arc::new(Mutex::new(Vec::new())),
-        tick,
-        Reachability::default(),
-        None,
-    );
-    let (events, rx) = mpsc::channel(64);
-    cmd.send(NetCmd::JoinPersonalTopic {
-        ws: 42,
-        on_event: events,
-    })
-    .await
-    .unwrap();
-    (cmd, rx, addr, task)
-}
-
-/// Wait on `rx` until the neighbour has said who it is and what it can
-/// decode, as it does once when the link comes up.
+/// Wait on `rx` until the other device has said who it is and what it can
+/// decode, as it does once when their session comes up.
 async fn await_identity_and_codecs(rx: &mut mpsc::Receiver<NetEvent>) {
     let (mut identity, mut codecs) = (false, false);
     while !(identity && codecs) {
-        match tilo_test_env::within("the neighbour's identity and codecs", rx.recv())
+        match tilo_test_env::within("the other device's identity and codecs", rx.recv())
             .await
             .unwrap()
         {
-            NetEvent::Msg {
-                msg: NeighbourMsg::IdentityHello { .. },
-                ..
-            } => identity = true,
-            NetEvent::Msg {
+            NetEvent::Sibling { .. } => identity = true,
+            NetEvent::SiblingMsg {
                 msg: NeighbourMsg::MediaCapabilities { .. },
                 ..
             } => codecs = true,
@@ -1173,65 +946,65 @@ async fn await_identity_and_codecs(rx: &mut mpsc::Receiver<NetEvent>) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn linked_actors_keep_liveness_on_the_transport_and_say_nothing_while_idle() {
+async fn linked_devices_keep_liveness_on_the_transport_and_say_nothing_while_idle() {
     // The upkeep tick runs every 50 ms here, a hundred times its pace in
     // a session, so a second of idling is a hundred ticks.
     const TICK: Duration = Duration::from_millis(50);
     let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-    let (cmd_a, mut rx_a, _, task_a) = idle_test_actor(&root, "a", TICK).await;
-    let (cmd_b, mut rx_b, addr_b, task_b) = idle_test_actor(&root, "b", TICK).await;
-    cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
+    let key = || ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    let mut a = device_of(&root, key(), 42, TICK).await;
+    let mut b = device_of(&root, key(), 42, TICK).await;
+    link(&[&a, &b]).await;
 
-    // Phase `a_new_neighbour_hears_identity_and_codecs_once_per_link`.
-    await_identity_and_codecs(&mut rx_a).await;
-    await_identity_and_codecs(&mut rx_b).await;
+    // Phase `a_new_device_hears_identity_and_codecs_once_per_session`.
+    await_identity_and_codecs(&mut a.rx).await;
+    await_identity_and_codecs(&mut b.rx).await;
 
     // Phase `a_linked_idle_pair_sends_no_application_message`. Before
     // the transport carried liveness every tick sent a heartbeat, an
     // identity hello and a codec advert per topic.
     tokio::time::sleep(TICK * 4).await;
-    let (before_a, before_b) = (tally_of(&cmd_a).await, tally_of(&cmd_b).await);
+    let (before_a, before_b) = (tally_of(&a.cmd).await, tally_of(&b.cmd).await);
     tokio::time::sleep(TICK * 20).await;
     assert_eq!(
-        tally_of(&cmd_a).await,
+        tally_of(&a.cmd).await,
         before_a,
         "a heard nothing while idle"
     );
     assert_eq!(
-        tally_of(&cmd_b).await,
+        tally_of(&b.cmd).await,
         before_b,
         "b heard nothing while idle"
     );
     assert!(
-        std::iter::from_fn(|| rx_a.try_recv().ok())
-            .chain(std::iter::from_fn(|| rx_b.try_recv().ok()))
-            .all(|event| !matches!(event, NetEvent::PeerLeft { .. })),
-        "a silent, linked peer stays a member"
+        std::iter::from_fn(|| a.rx.try_recv().ok())
+            .chain(std::iter::from_fn(|| b.rx.try_recv().ok()))
+            .all(|event| !matches!(event, NetEvent::SiblingLeft { .. })),
+        "a silent, linked device stays a sibling"
     );
 
-    // Phase `a_departed_peer_is_dropped_within_the_departure_grace`. A
-    // peer that shuts down closes its links; it is dropped that grace
-    // later, not after a heartbeat timeout.
-    drop(cmd_b);
-    task_b.await.unwrap();
+    // Phase `a_departed_device_is_dropped_when_its_session_ends`. A device
+    // that shuts down closes its session; it is dropped then, not after a
+    // timeout.
+    drop(b.cmd);
+    b.task.await.unwrap();
     let gone = Instant::now();
-    let left = tilo_test_env::within("the departed peer to be dropped", async {
+    tilo_test_env::within("the departed device to be dropped", async {
         loop {
-            if let Some(NetEvent::PeerLeft { cause, .. }) = rx_a.recv().await {
-                return cause;
+            if let Some(NetEvent::SiblingLeft { .. }) = a.rx.recv().await {
+                return;
             }
         }
     })
     .await;
-    assert_eq!(left, PeerDepartureCause::LivenessTimedOut);
     let took = gone.elapsed();
     assert!(
-        took <= DEPARTURE_GRACE + Duration::from_secs(3),
+        took <= Duration::from_secs(3),
         "dropped {took:?} after it left"
     );
-    drop(rx_b);
-    drop(cmd_a);
-    task_a.await.unwrap();
+    drop(b.rx);
+    drop(a.cmd);
+    a.task.await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1242,45 +1015,15 @@ async fn linked_actors_keep_liveness_on_the_transport_and_say_nothing_while_idle
 async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
     // Phase `dead_surface_viewer_does_not_stall_later_collaboration_messages`.
     {
-        let (a, lookup_a) = endpoint().await;
-        let (b, lookup_b) = endpoint().await;
-        let (c, lookup_c) = endpoint().await;
-        let source_peer = crate::behaviour::peer_liveness_handle(&a.id());
-        let b_addr = b.addr();
-        let c_addr = c.addr();
-        let (cmd_a, task_a) = Actor::spawn(a, lookup_a);
-        let (cmd_b, task_b) = Actor::spawn(b, lookup_b);
-        let (cmd_c, task_c) = Actor::spawn(c, lookup_c);
-        let (event_a, mut rx_a) = mpsc::channel(32);
-        let (event_b, _rx_b) = mpsc::channel(32);
-        let (event_c, mut rx_c) = mpsc::channel(32);
-        for (command, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
-            command
-                .send(NetCmd::JoinPersonalTopic {
-                    ws: 44,
-                    on_event: events,
-                })
-                .await
-                .unwrap();
-        }
-        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
-        let mut joined = HashSet::new();
-        while joined.len() < 2 {
-            if let NetEvent::PeerJoined { peer, .. } =
-                tilo_test_env::within("a message on rx_a", rx_a.recv())
-                    .await
-                    .unwrap()
-            {
-                joined.insert(peer);
-            }
-        }
+        let [a, b, mut c] = three(linked(44, 3).await);
+        let (cmd_a, rx_c, c_id, root) = (&a.cmd, &mut c.rx, c.id, a.root);
+        let source_peer = crate::behaviour::peer_liveness_handle(&a.id);
 
         // Leave A's authenticated membership evidence intact while making B's
         // dedicated media address unreachable. A direct dial may consume the
         // full media timeout, but it must happen outside the actor loop.
-        task_b.abort();
-        let _ = task_b.await;
+        b.task.abort();
+        let _ = b.task.await;
         tokio::time::sleep(Duration::from_millis(25)).await;
         // A dial to the dead viewer takes up to its 300 ms timeout. Inside
         // the actor loop every attempt would wait it out; outside it, an
@@ -1289,110 +1032,63 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
         let mut fastest = Duration::MAX;
         for attempt in 0..5_u32 {
             let started = Instant::now();
-            publish_until_heard(
-                "dead media viewer stalled the collaboration actor",
-                &mut rx_a,
-                &mut rx_c,
-                || async {
-                    for msg in [
-                        NeighbourMsg::SurfaceFrame {
-                            surface: 9 + u64::from(attempt),
-                            source_peer,
-                            encoded_h264: vec![0, 0, 0, 1, 0x65],
-                            ts: 1,
-                            seq: 0,
-                        },
-                        NeighbourMsg::SyncReq {
-                            since: vec![],
-                            room: "responsive".into(),
-                            invite_id: None,
-                            nonce: u64::from(attempt),
-                        },
-                    ] {
-                        cmd_a
-                            .send(NetCmd::Publish {
-                                at: tokio::time::Instant::now(),
-                                ws: 44,
-                                msg,
-                            })
-                            .await
-                            .unwrap();
-                    }
-                },
-                |event| {
-                    matches!(
-                        event,
-                        NetEvent::Msg {
-                            msg: NeighbourMsg::SyncReq { room, nonce, .. },
-                            ..
-                        } if room == "responsive" && *nonce == u64::from(attempt)
-                    )
-                },
-            )
-            .await;
+            cmd_a
+                .send(NetCmd::Publish {
+                    ws: 44,
+                    msg: NeighbourMsg::SurfaceFrame {
+                        surface: 9 + u64::from(attempt),
+                        source_peer,
+                        encoded_h264: vec![0, 0, 0, 1, 0x65],
+                        ts: 1,
+                        seq: 0,
+                    },
+                })
+                .await
+                .unwrap();
+            let probe = vec![0x7e, u8::try_from(attempt).unwrap()];
+            cmd_a
+                .send(NetCmd::PublishPersonalFabricTarget {
+                    user_public_key: root,
+                    target: c_id,
+                    payload: PersonalFabricPayload::Action(probe.clone()),
+                })
+                .await
+                .unwrap();
+            loop {
+                let event = tilo_test_env::within(
+                    "dead media viewer stalled the collaboration actor",
+                    rx_c.recv(),
+                )
+                .await
+                .unwrap();
+                if matches!(
+                    event,
+                    NetEvent::PersonalFabric {
+                        payload: PersonalFabricPayload::Action(ref bytes),
+                        ..
+                    } if *bytes == probe
+                ) {
+                    break;
+                }
+            }
             fastest = fastest.min(started.elapsed());
         }
         assert!(
             fastest < Duration::from_millis(250),
             "every attempt waited for the dead viewer's dial: {fastest:?}"
         );
-        task_a.abort();
-        task_c.abort();
+        a.task.abort();
+        c.task.abort();
     }
     // Phase `personal_fabric_action_reaches_only_the_exact_target`.
     {
-        let (a, lookup_a) = endpoint().await;
-        let (b, lookup_b) = endpoint().await;
-        let (c, lookup_c) = endpoint().await;
-        let a_id = a.id();
-        let b_id = b.id();
-        let c_id = c.id();
-        let b_addr = b.addr();
-        let c_addr = c.addr();
-        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
-        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
-        let (cmd_c, _c_task) = Actor::spawn(c, lookup_c);
-        let (event_a, mut rx_a) = mpsc::channel(16);
-        let (event_b, mut rx_b) = mpsc::channel(16);
-        let (event_c, mut rx_c) = mpsc::channel(16);
-        for (cmd, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
-            cmd.send(NetCmd::JoinPersonalTopic {
-                ws: 44,
-                on_event: events,
-            })
-            .await
-            .unwrap();
-        }
-        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
-
-        let mut a_saw_b = false;
-        let mut a_saw_c = false;
-        while !(a_saw_b && a_saw_c) {
-            match tilo_test_env::within("a message on rx_a", rx_a.recv())
-                .await
-                .unwrap()
-            {
-                NetEvent::PeerJoined { peer, .. } if peer == b_id => a_saw_b = true,
-                NetEvent::PeerJoined { peer, .. } if peer == c_id => a_saw_c = true,
-                _ => {}
-            }
-        }
-        for receiver in [&mut rx_b, &mut rx_c] {
-            loop {
-                let event = tilo_test_env::within("a message on receiver", receiver.recv())
-                    .await
-                    .unwrap();
-                if matches!(event, NetEvent::PeerJoined { peer, .. } if peer == a_id) {
-                    break;
-                }
-            }
-        }
+        let [a, mut b, mut c] = three(linked(44, 3).await);
+        let (cmd_a, b_id) = (&a.cmd, b.id);
+        let (rx_b, rx_c) = (&mut b.rx, &mut c.rx);
 
         cmd_a
             .send(NetCmd::PublishPersonalFabricTarget {
-                ws: 44,
-                user_public_key: [0xB4; 32],
+                user_public_key: a.root,
                 target: b_id,
                 payload: PersonalFabricPayload::Action(vec![4, 4]),
             })
@@ -1427,53 +1123,9 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
     }
     // Phase `direct_workspace_control_input_reaches_only_the_exact_target`.
     {
-        let (a, lookup_a) = endpoint().await;
-        let (b, lookup_b) = endpoint().await;
-        let (c, lookup_c) = endpoint().await;
-        let a_id = a.id();
-        let b_id = b.id();
-        let c_id = c.id();
-        let b_addr = b.addr();
-        let c_addr = c.addr();
-        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
-        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
-        let (cmd_c, _c_task) = Actor::spawn(c, lookup_c);
-        let (event_a, mut rx_a) = mpsc::channel(16);
-        let (event_b, mut rx_b) = mpsc::channel(16);
-        let (event_c, mut rx_c) = mpsc::channel(16);
-        for (cmd, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
-            cmd.send(NetCmd::JoinPersonalTopic {
-                ws: 43,
-                on_event: events,
-            })
-            .await
-            .unwrap();
-        }
-        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
-
-        let mut a_saw_b = false;
-        let mut a_saw_c = false;
-        while !(a_saw_b && a_saw_c) {
-            match tilo_test_env::within("a message on rx_a", rx_a.recv())
-                .await
-                .unwrap()
-            {
-                NetEvent::PeerJoined { peer, .. } if peer == b_id => a_saw_b = true,
-                NetEvent::PeerJoined { peer, .. } if peer == c_id => a_saw_c = true,
-                _ => {}
-            }
-        }
-        for receiver in [&mut rx_b, &mut rx_c] {
-            loop {
-                let event = tilo_test_env::within("a message on receiver", receiver.recv())
-                    .await
-                    .unwrap();
-                if matches!(event, NetEvent::PeerJoined { peer, .. } if peer == a_id) {
-                    break;
-                }
-            }
-        }
+        let [a, mut b, mut c] = three(linked(43, 3).await);
+        let (cmd_a, a_id, b_id) = (&a.cmd, a.id, b.id);
+        let (rx_b, rx_c) = (&mut b.rx, &mut c.rx);
 
         for _ in 0..2 {
             cmd_a
@@ -1526,98 +1178,41 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
     reason = "the integration test verifies both receiver framing and the sender's ordered progress lifecycle"
 )]
 async fn personal_fabric_reaches_members_and_streams_verified_media() {
-    // Phase `personal_fabric_reaches_the_topics_member`.
+    // Phase `personal_fabric_reaches_the_persons_device`.
     {
-        let (a, lookup_a) = endpoint().await;
-        let (b, lookup_b) = endpoint().await;
-        let b_addr = b.addr();
-        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
-        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
-        let (event_a, mut rx_a) = mpsc::channel(16);
-        let (event_b, mut rx_b) = mpsc::channel(16);
-        cmd_a
-            .send(NetCmd::JoinPersonalTopic {
-                ws: 43,
-                on_event: event_a,
-            })
-            .await
-            .unwrap();
-        cmd_b
-            .send(NetCmd::JoinPersonalTopic {
-                ws: 43,
-                on_event: event_b,
-            })
-            .await
-            .unwrap();
-        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        while !matches!(
-            tilo_test_env::within("a message on rx_a", rx_a.recv())
-                .await
-                .unwrap(),
-            NetEvent::PeerJoined { .. }
-        ) {}
+        let [a, mut b] = two(linked(43, 2).await);
+        let (cmd_a, rx_b, root) = (&a.cmd, &mut b.rx, a.root);
 
-        publish_until_heard(
-            "A's fabric snapshot at B",
-            &mut rx_a,
-            &mut rx_b,
-            || async {
-                cmd_a
-                    .send(NetCmd::PublishPersonalFabric {
-                        ws: 43,
-                        user_public_key: [0xA5; 32],
-                        payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
-                    })
-                    .await
-                    .unwrap();
-            },
-            |event| {
-                matches!(
-                    event,
-                    NetEvent::PersonalFabric {
-                        ws: 43,
-                        user_public_key,
-                        payload: PersonalFabricPayload::Snapshot(bytes),
-                        ..
-                    } if *user_public_key == [0xA5; 32] && *bytes == vec![1, 2, 3]
-                )
-            },
-        )
-        .await;
+        cmd_a
+            .send(NetCmd::PublishPersonalFabric {
+                user_public_key: root,
+                payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
+            })
+            .await
+            .unwrap();
+        loop {
+            let event = tilo_test_env::within("a message on rx_b", rx_b.recv())
+                .await
+                .unwrap();
+            if matches!(
+                event,
+                NetEvent::PersonalFabric {
+                    user_public_key,
+                    payload: PersonalFabricPayload::Snapshot(bytes),
+                    ..
+                } if user_public_key == root && bytes == vec![1, 2, 3]
+            ) {
+                break;
+            }
+        }
     }
     // Phase `personal_transfer_streams_in_order_with_a_verified_finish_hash`.
     {
-        let (a, lookup_a) = endpoint().await;
-        let (b, lookup_b) = endpoint().await;
-        let a_id = a.id();
-        let b_id = b.id();
-        let b_addr = b.addr();
-        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
-        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
-        // Progress is best-effort; leave room for every chunk's report
-        // while the receiver side is drained first.
-        let (event_a, mut rx_a) = mpsc::channel(256);
-        let (event_b, mut rx_b) = mpsc::channel(256);
-        for (command, events) in [(&cmd_a, event_a), (&cmd_b, event_b)] {
-            command
-                .send(NetCmd::JoinPersonalTopic {
-                    ws: 45,
-                    on_event: events,
-                })
-                .await
-                .unwrap();
-        }
-        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        while !matches!(
-            tilo_test_env::within("a message on rx_a", rx_a.recv()).await
-                .unwrap(),
-            NetEvent::PeerJoined { peer, .. } if peer == b_id
-        ) {}
-        while !matches!(
-            tilo_test_env::within("a message on rx_b", rx_b.recv()).await
-                .unwrap(),
-            NetEvent::PeerJoined { peer, .. } if peer == a_id
-        ) {}
+        // Progress is best-effort; each device's events leave room for every
+        // chunk's report while the receiver side is drained first.
+        let [mut a, mut b] = two(linked(45, 2).await);
+        let (cmd_a, a_id, b_id, root) = (&a.cmd, a.id, b.id, a.root);
+        let (rx_a, rx_b) = (&mut a.rx, &mut b.rx);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("private-host-name.flac");
@@ -1628,8 +1223,7 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
         let request_id = [0x46; 16];
         cmd_a
             .send(NetCmd::PublishNearbyTransfer {
-                ws: 45,
-                user_public_key: [0xA6; 32],
+                user_public_key: root,
                 target: b_id,
                 transfer: NearbyTransferCheckpoint {
                     transfer_id,
@@ -1727,8 +1321,7 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
         let cancelled_id = [0x47; 16];
         cmd_a
             .send(NetCmd::PublishNearbyTransfer {
-                ws: 45,
-                user_public_key: [0xA6; 32],
+                user_public_key: root,
                 target: b_id,
                 transfer: NearbyTransferCheckpoint {
                     transfer_id: cancelled_id,

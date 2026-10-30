@@ -1262,6 +1262,8 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     title: String,
     /// Leads the title ([`ModalSpec::icon`]).
     icon: Option<Icon>,
+    /// What assistive technology says about the dialog after its name.
+    description: Option<String>,
     primary_action: Option<DialogAction>,
     secondary_action: Option<DialogAction>,
     tertiary_action: Option<DialogAction>,
@@ -1344,6 +1346,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             test_id: None,
             title: title.into(),
             icon: None,
+            description: None,
             content,
             primary_action: None,
             secondary_action: None,
@@ -1407,6 +1410,14 @@ impl<C: Widget + 'static> ModalDialog<C> {
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// What assistive technology says about the dialog after its title:
+    /// what is going on in it, and how its keys work.
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
         self
     }
 
@@ -2623,6 +2634,7 @@ impl Widget for ModalDialog<dyn Widget> {
                 hidden: self.accessibility_hidden(),
                 ..Default::default()
             });
+        node.description.clone_from(&self.description);
         // Footer actions a host laid out are buttons of their own focus
         // nodes; a dialog no host has built names them itself.
         if self.open && self.keys.is_empty() {

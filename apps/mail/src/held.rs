@@ -13,15 +13,16 @@
 //! server and nothing is ever sent from here.
 //!
 //! What is read from it — the mailbox's `read`, `search-messages`,
-//! `export-content` — is projected from the record alone. Drafting a reply
-//! writes the mailbox's one draft, which a person reviews and sends.
+//! `export-content` — is projected from the record, beside the mail this
+//! device keeps of its servers. Drafting a reply starts a draft of its own,
+//! which a person reviews and sends.
 
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, ActionCx, Id, JsonSchema, Model, Refusal, Set};
 
-use crate::actions::{DraftData, bounded_text};
+use crate::actions::bounded_text;
 use crate::model::{Addr, Folder, Message, MessageId, normalize_subject};
 use crate::resource::{
     MAX_DRAFT_ADDRESS_CHARS, MAX_DRAFT_BODY_CHARS, MAX_DRAFT_SUBJECT_CHARS, Mail, MessageState,
@@ -217,7 +218,7 @@ fn bare_key(value: &str) -> String {
 
 /// The message id an item names: a bare id, `message:<id>`,
 /// `mail.message:<id>` or a published path ending in one.
-fn message_named(item: &str) -> Option<&str> {
+pub(crate) fn message_named(item: &str) -> Option<&str> {
     let last = item.rsplit('/').next().unwrap_or(item);
     let id = last
         .strip_prefix("mail.message:")
@@ -288,6 +289,7 @@ impl Mail {
             ),
             _ => None,
         };
+        let (subject_label, from_label) = (subject.clone(), from.clone());
         let message_id = format!("{id}@mail.tilo.local");
         let conversation = delivery
             .conversation
@@ -320,6 +322,7 @@ impl Mail {
                 labels: Set::new(),
                 server: None,
                 purged: false,
+                label: label_of(&subject_label, &from_label, minutes),
             },
         );
         Ok(key)
@@ -362,80 +365,11 @@ impl Mail {
         held
     }
 
-    /// Write the mailbox's draft to `to` about `subject` saying `body`,
-    /// as a person would in the composer. A draft this wrote that nobody
-    /// changed since is written over; any other is the work of the person
-    /// writing it, and is left alone. The refusal names no other verb: an
-    /// agent may neither save over a draft nor discard it without asking,
-    /// since both reach outside the mailbox.
-    pub(crate) fn draft_held(
-        &mut self,
-        to: &str,
-        cc: &str,
-        subject: &str,
-        body: &str,
-    ) -> Result<(), Refusal> {
-        if self.has_draft() && !self.draft.untouched_since_drafted() {
-            return Err(Refusal::new(
-                "a person is writing a draft here, and it is theirs: leave it, or ask them to \
-                 send or discard it",
-            ));
-        }
-        let to = bounded_text(to, MAX_DRAFT_ADDRESS_CHARS, false);
-        if crate::transport::parse_addr_list(&to).is_empty() {
-            return Err(Refusal::new("a draft goes to at least one address"));
-        }
-        let body = bounded_text(body, MAX_DRAFT_BODY_CHARS, true);
-        let started = crate::resource::started_body(&body, None);
-        self.start_draft_body(body.clone(), None);
-        self.save_draft(DraftData {
-            to,
-            cc: bounded_text(cc, MAX_DRAFT_ADDRESS_CHARS, false),
-            subject: bounded_text(subject, MAX_DRAFT_SUBJECT_CHARS, false),
-            body,
-            ..DraftData::default()
-        });
-        let drafted = self.draft.fingerprint(&tilo_content::hash_bytes(&started));
-        self.draft.drafted = Some(drafted);
-        Ok(())
-    }
-
-    /// Draft a reply to the held message `message` saying `body` above the
-    /// original, quoted; `all` copies everyone else it went to.
-    pub(crate) fn draft_reply_held(
-        &mut self,
-        message: &str,
-        body: &str,
-        all: bool,
-    ) -> Result<(), Refusal> {
-        let (_, held) = self.held_message(message).ok_or(
-            "no such message held in this mailbox: read the mailbox for the messages it holds",
-        )?;
-        let held = held.clone();
-        let subject = if normalize_subject(&held.subject) == held.subject.trim() {
-            format!("Re: {}", held.subject.trim())
-        } else {
-            held.subject.trim().to_owned()
-        };
-        let cc = if all {
-            let sender = held.sender().email.to_ascii_lowercase();
-            crate::transport::parse_addr_list(&format!("{}, {}", held.to, held.cc))
-                .into_iter()
-                .filter(|addr| addr.email.to_ascii_lowercase() != sender)
-                .map(|addr| addr.rfc5322())
-                .collect::<Vec<_>>()
-                .join(", ")
-        } else {
-            String::new()
-        };
-        let text = format!(
-            "{}\n\nOn {}, {} wrote:\n{}",
-            body.trim_end(),
-            held.date(),
-            held.from,
-            quoted(&held.body)
-        );
-        self.draft_held(&held.from, &cc, &subject, &text)
+    /// The held message `item` names as the window's mailbox shows one.
+    pub(crate) fn held_shown(&self, item: &str) -> Option<Message> {
+        let (id, held) = self.held_message(item)?;
+        let state = self.message(id.as_str())?;
+        Some(held.shown(id.as_str().parse().ok()?, state))
     }
 
     /// What the mailbox holds, for a caller with no screen: with no item,
@@ -455,7 +389,7 @@ impl Mail {
                     }))
                     .collect::<Vec<_>>(),
                 "messages": self.listing(None),
-                "draft": self.has_draft().then(|| self.draft_summary()),
+                "drafts": self.drafts_listed().iter().map(|(id, draft)| draft_summary(id, draft)).collect::<Vec<_>>(),
             }));
         }
         if let Some(folder) = folder_named(item) {
@@ -464,8 +398,11 @@ impl Mail {
                 "messages": self.listing(Some(folder)),
             }));
         }
-        if item.ends_with("draft") {
-            return Ok(serde_json::json!({ "draft": self.draft_summary() }));
+        if let Some((id, draft)) = self.drafts_listed().into_iter().find(|(id, _)| {
+            item.ends_with(&format!("draft:{id}"))
+                || (item.ends_with("draft") && crate::resource::is_composer_draft(id))
+        }) {
+            return Ok(serde_json::json!({ "draft": draft_summary(&id, draft) }));
         }
         let (id, held) = self.held_message(item).ok_or_else(|| {
             format!("no message `{item}` is held here; read the mailbox for the messages it holds")
@@ -514,47 +451,13 @@ impl Mail {
         })
     }
 
-    fn draft_summary(&self) -> serde_json::Value {
-        serde_json::json!({
-            "to": self.draft.to,
-            "cc": self.draft.cc,
-            "subject": self.draft.subject,
-            "body": self.draft.body,
-        })
-    }
-
-    /// The held messages whose sender, recipients, subject or body hold
-    /// every word of `query` (ignoring case), newest first, in `folder`
-    /// when one is named.
-    pub(crate) fn search_held(
-        &self,
-        query: &str,
-        folder: Option<Folder>,
-    ) -> Result<serde_json::Value, String> {
-        let words: Vec<String> = query
-            .split_whitespace()
-            .map(str::to_lowercase)
-            .filter(|word| !word.is_empty())
-            .collect();
-        if words.is_empty() {
-            return Err("give words to search for".into());
-        }
-        let found: Vec<serde_json::Value> = self
-            .held_newest()
+    /// Every held message not deleted for good, as the window's mailbox
+    /// shows one.
+    pub(crate) fn held_all(&self) -> Vec<Message> {
+        self.held_newest()
             .into_iter()
-            .filter(|(_, _, state)| folder.is_none_or(|folder| state.folder == folder))
-            .filter(|(_, held, _)| {
-                let text = format!(
-                    "{}\n{}\n{}\n{}\n{}",
-                    held.from, held.to, held.cc, held.subject, held.body
-                )
-                .to_lowercase();
-                words.iter().all(|word| text.contains(word.as_str()))
-            })
-            .take(MOST_LISTED)
-            .map(|(id, held, state)| line(id, held, state))
-            .collect();
-        Ok(serde_json::json!({ "query": query.trim(), "messages": found }))
+            .filter_map(|(id, held, state)| Some(held.shown(id.as_str().parse().ok()?, state)))
+            .collect()
     }
 
     /// Keep held mail as a file in the window's content store: one message
@@ -579,20 +482,27 @@ impl Mail {
                 .map(|(id, held, _)| (id, held))
                 .collect(),
         };
-        // The draft being written is the mailbox's, not a held message: it is
-        // exported with every message or the Drafts folder, marked a draft.
-        let draft = self.written_draft().filter(|_| {
-            message.is_none_or(|m| m.trim().is_empty())
-                && folder.is_none_or(|folder| folder == Folder::Drafts)
-        });
-        if chosen.is_empty() && draft.is_none() {
+        // The drafts being written are the mailbox's, not held messages:
+        // they are exported with every message or the Drafts folder, each
+        // marked a draft. Their notes are private and stay out.
+        let drafts: Vec<WrittenDraft> = if message.is_none_or(|m| m.trim().is_empty())
+            && folder.is_none_or(|folder| folder == Folder::Drafts)
+        {
+            self.drafts_listed()
+                .into_iter()
+                .filter_map(|(_, draft)| written_draft(draft))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if chosen.is_empty() && drafts.is_empty() {
             return Err("there is no held mail to export".into());
         }
-        let exported = chosen.len() + usize::from(draft.is_some());
+        let exported = chosen.len() + drafts.len();
         let (bytes, media_type, extension) = match format.as_str() {
             "md" | "markdown" => {
                 let mut text = markdown(&chosen);
-                if let Some(draft) = &draft {
+                for draft in &drafts {
                     if !text.is_empty() {
                         text.push_str("\n---\n\n");
                     }
@@ -605,8 +515,8 @@ impl Mail {
                     .iter()
                     .map(|(id, held)| self.whole(id, held))
                     .collect();
-                if let Some(draft) = &draft {
-                    all.push(serde_json::json!({
+                all.extend(drafts.iter().map(|draft| {
+                    serde_json::json!({
                         "draft": true,
                         "folder": Folder::Drafts.as_key(),
                         "to": draft.to,
@@ -614,14 +524,14 @@ impl Mail {
                         "bcc": draft.bcc,
                         "subject": draft.subject,
                         "body": draft.body,
-                    }));
-                }
+                    })
+                }));
                 let text = serde_json::to_string_pretty(&all)
                     .map_err(|error| format!("the mail does not encode: {error}"))?;
                 (text.into_bytes(), "application/json", "json")
             }
             "eml" => match chosen.as_slice() {
-                [(_, held)] if draft.is_none() => (eml(held)?, "message/rfc822", "eml"),
+                [(_, held)] if drafts.is_empty() => (eml(held)?, "message/rfc822", "eml"),
                 _ => {
                     return Err(
                         "an .eml file holds one message: name it, or export as md or json".into(),
@@ -642,34 +552,9 @@ impl Mail {
             "format": extension,
             "media_type": media_type,
             "messages": exported,
-            "drafts": usize::from(draft.is_some()),
+            "drafts": drafts.len(),
             "bytes": bytes.len(),
         }))
-    }
-
-    /// The mailbox's draft as it is written now — its body the text being
-    /// written when it was not saved yet — or `None` when nothing is in it.
-    fn written_draft(&self) -> Option<WrittenDraft> {
-        let draft = &self.draft;
-        let body = if draft.body.trim().is_empty() {
-            draft
-                .rich_body
-                .as_ref()
-                .map(tilo_document::RichText::text)
-                .unwrap_or_default()
-        } else {
-            draft.body.clone()
-        };
-        let written = [&draft.to, &draft.cc, &draft.subject, &body]
-            .iter()
-            .any(|field| !field.trim().is_empty());
-        written.then(|| WrittenDraft {
-            to: draft.to.clone(),
-            cc: draft.cc.clone(),
-            bcc: draft.bcc.clone(),
-            subject: draft.subject.clone(),
-            body,
-        })
     }
 
     /// Show the held mail in the window's mailbox, beside what its servers
@@ -706,7 +591,138 @@ fn line(id: &Id, held: &HeldMessage, state: &MessageState) -> serde_json::Value 
     })
 }
 
-/// The mailbox's draft, as an export carries it.
+/// A draft as `read` and a drafting verb answer it.
+pub(crate) fn draft_summary(id: &str, draft: &crate::resource::DraftState) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "item": format!("mail.draft:{id}"),
+        "to": draft.to,
+        "cc": draft.cc,
+        "subject": draft.subject,
+        "body": draft.body,
+        "in_reply_to": draft.in_reply_to,
+        "notes": draft.notes,
+    })
+}
+
+/// A held message's label: subject, sender and date, as a fetched one's.
+fn label_of(subject: &str, from: &str, minutes: i64) -> String {
+    let sender = crate::transport::parse_addr_list(from)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| Addr::bare(from.to_owned()));
+    let shown = Message {
+        id: MessageId::nil(),
+        rfc_message_id: None,
+        in_reply_to: None,
+        from: sender,
+        to: Vec::new(),
+        cc: Vec::new(),
+        subject: subject.to_owned(),
+        body: String::new(),
+        html_body: None,
+        attachments: Vec::new(),
+        timestamp_min: minutes,
+        read: false,
+        starred: false,
+        folder: Folder::Inbox,
+        labels: Vec::new(),
+        account: String::new(),
+        server: None,
+    };
+    crate::actions::message_label_of(&shown)
+}
+
+/// What a new draft says: who it goes to, from which account, what it
+/// answers, its text and private notes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Drafted {
+    pub to: String,
+    pub cc: String,
+    pub subject: String,
+    pub body: String,
+    pub in_reply_to: Option<String>,
+    pub sender: Option<crate::model::DraftSender>,
+    pub notes: String,
+}
+
+impl Drafted {
+    /// A reply to `message` saying `body` above the original, quoted;
+    /// `all` copies everyone else it went to but `me`.
+    pub(crate) fn reply(message: &Message, body: &str, all: bool, me: &str) -> Self {
+        let subject = message.subject.trim();
+        let subject = if normalize_subject(subject) == subject {
+            format!("Re: {subject}")
+        } else {
+            subject.to_owned()
+        };
+        let cc = if all {
+            let sender = message.from.email.to_ascii_lowercase();
+            let me = me.to_ascii_lowercase();
+            message
+                .to
+                .iter()
+                .chain(&message.cc)
+                .filter(|addr| {
+                    let email = addr.email.to_ascii_lowercase();
+                    email != sender && email != me
+                })
+                .map(Addr::rfc5322)
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else {
+            String::new()
+        };
+        let date = mail_parser::DateTime::from_timestamp(message.timestamp_min.saturating_mul(60))
+            .to_rfc3339();
+        Self {
+            to: message.from.rfc5322(),
+            cc,
+            subject,
+            body: format!(
+                "{}\n\nOn {date}, {} wrote:\n{}",
+                body.trim_end(),
+                message.from.rfc5322(),
+                quoted(&message.body)
+            ),
+            in_reply_to: Some(message.id.to_string()),
+            sender: None,
+            notes: String::new(),
+        }
+    }
+}
+
+/// A draft id derived from an action's own id, the same on every replica
+/// that applies it.
+pub(crate) fn draft_id(seed: &str) -> String {
+    derived_id(&["mail.draft", seed]).to_string()
+}
+
+/// A draft as it is written now — its body the text being written when it
+/// was not saved yet — or `None` when nothing is in it.
+fn written_draft(draft: &crate::resource::DraftState) -> Option<WrittenDraft> {
+    let body = if draft.body.trim().is_empty() {
+        draft
+            .rich_body
+            .as_ref()
+            .map(tilo_document::RichText::text)
+            .unwrap_or_default()
+    } else {
+        draft.body.clone()
+    };
+    let written = [&draft.to, &draft.cc, &draft.subject, &body]
+        .iter()
+        .any(|field| !field.trim().is_empty());
+    written.then(|| WrittenDraft {
+        to: draft.to.clone(),
+        cc: draft.cc.clone(),
+        bcc: draft.bcc.clone(),
+        subject: draft.subject.clone(),
+        body,
+    })
+}
+
+/// A draft, as an export carries it.
 struct WrittenDraft {
     to: String,
     cc: String,
@@ -808,9 +824,15 @@ pub(crate) fn answer(
     action: &str,
     changes: &[automerge::Patch],
 ) -> Option<serde_json::Value> {
-    if action == "draft-message" || action == "draft-reply" {
+    if action == "draft-message" || action == "create-draft" {
         let mail = crate::resource::read_mail(doc)?;
-        return Some(serde_json::json!({ "draft": mail.draft_summary() }));
+        return changes.iter().find_map(|patch| {
+            let automerge::PatchAction::PutMap { key, .. } = &patch.action else {
+                return None;
+            };
+            let draft = mail.drafts.get(&Id::from_raw(key.as_str()))?;
+            Some(serde_json::json!({ "draft": draft_summary(key, draft) }))
+        });
     }
     if action != "deliver-message" {
         return None;
@@ -830,15 +852,14 @@ pub(crate) fn answer(
     })
 }
 
-/// The answer to `effect` when it reads held mail (`search-messages`,
-/// `export-content`), from `mail` alone; `None` for any other effect.
+/// The answer to `effect` when it reads held mail alone
+/// (`export-content`); `None` for any other effect.
 pub(crate) fn effect(
     effect: &crate::actions::MailEffect,
     mail: &Mail,
 ) -> Option<ui::framework::EffectAnswer> {
     use crate::actions::MailEffect;
     let answer = match effect {
-        MailEffect::SearchMessages { query, folder } => mail.search_held(query, *folder),
         MailEffect::ExportContent {
             format,
             message,

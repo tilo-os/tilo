@@ -1,13 +1,8 @@
 //! The notes app on the framework: the [`Notebook`] record, its window and
 //! what launching it on a Markdown file does.
 
-use std::rc::Rc;
-
 use ui::application::OpenFile;
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, LaunchInput, ResourceApp, ResourceSurface, SeedCx,
-    SurfaceCx, ViewCx,
-};
+use ui::framework::{LaunchInput, ResourceApp, SeedCx, ViewCx};
 #[cfg(feature = "samples")]
 use ui::headless::FrameHarness;
 use ui::permissions::UserId;
@@ -19,7 +14,7 @@ use crate::model::PageId;
 pub use crate::notebook::Notebook;
 use ui::widget::Element;
 
-/// Framework app: the notes widget is the surface over [`Notebook`].
+/// Framework app: the notes widget is the window over [`Notebook`].
 pub struct NotesShell;
 
 impl ResourceApp for NotesShell {
@@ -41,7 +36,6 @@ impl ResourceApp for NotesShell {
     const ROOM_RECORD: bool = true;
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
-        // `present` installs the framework's workspace before the first frame.
         let author = UserId(cx.me().unwrap_or("local").to_owned());
         // A note's save status sits in its header row beside the title, on
         // the note's own save status surface, so the window paints none.
@@ -51,7 +45,22 @@ impl ResourceApp for NotesShell {
         }
         // A search hit, or an agent's `open`, shows the note it names.
         cx.on_open_item(app.opener());
-        cx.surface(app)
+        app.wake_asset_reads_through(cx.waker());
+        app.attach_framework(cx.dispatcher(), cx.actions(), cx.live().clone());
+        app.attach_people(cx.people());
+        // The window shows the notebook as it stands on its first sync.
+        app.follow(cx.live().clone());
+        #[cfg(feature = "samples")]
+        cx.on_stage(app.stager());
+        // Effects answer at once from what the window shows: the editor's
+        // caret, the note open, its way back and forward.
+        let steps = app.steps();
+        cx.window_effects(|notes: &mut NotesApp, effect: NotesEffect, cx| {
+            notes.answer_effect(effect, cx)
+        })
+        // Back and forward are offered only where they lead.
+        .status(move || crate::app::navigation_statuses(steps.get()));
+        Box::new(app)
     }
 
     /// A Markdown file the app is launched on becomes a note.
@@ -143,32 +152,6 @@ fn launched_note<'a>(input: &LaunchInput<'a>) -> Option<(PageId, &'a OpenFile)> 
         .finalize();
     let bytes = *digest.as_bytes().first_chunk::<16>()?;
     Some((uuid::Builder::from_random_bytes(bytes).into_uuid(), file))
-}
-
-impl ResourceSurface<Notebook, NotesEffect> for NotesApp {
-    fn effect(&mut self, effect: NotesEffect, cx: &mut EffectCx<Notebook, Self>) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    /// Back and forward are offered only where they lead.
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.navigation_statuses()
-    }
-
-    fn present(&mut self, state: &Rc<Notebook>) {
-        self.adopt_resource_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Notebook>) {
-        self.wake_asset_reads_through(cx.waker());
-        self.attach_framework(cx.dispatcher(), cx.actions(), cx.live());
-        self.attach_people(cx.people());
-    }
-
-    #[cfg(feature = "samples")]
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
 }
 
 ui::reach_tests!(NotesShell, shares: [share_0, share_1, share_2, share_3]);

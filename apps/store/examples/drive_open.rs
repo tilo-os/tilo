@@ -16,12 +16,12 @@
 //!
 //! Exit code 0 = the driven action's outcome was ok.
 
-use store::app::Admitted;
+use store::StoreEffect;
+use store::app::{Admitted, StoreState};
 use store::model::{
     ActionKind, InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust,
 };
 use store::worker::Request;
-use store::{StoreApp, StoreEffect};
 
 fn main() {
     let action = std::env::args().nth(1).unwrap_or_else(|| "open".into());
@@ -74,7 +74,7 @@ fn main() {
         installed,
     };
 
-    let mut app = StoreApp::new();
+    let mut app = StoreState::new();
     app.set_items(vec![item.clone()]);
 
     // Admit the exact effect the visible button and an agent invoke: the

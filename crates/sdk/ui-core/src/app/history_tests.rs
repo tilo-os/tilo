@@ -309,7 +309,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         layout(&mut app);
         let old = named(&mut app, "Restore version");
         let heads = app.state.doc.base_heads();
-        app = app.with_autosave(crate::persist::DocWriter::disabled("replacement"));
+        app = app.with_autosave(app_state::DocWriter::disabled("replacement"));
         layout(&mut app);
         assert!(app.validate_history_registration().is_err());
         app.dispatch_a11y_action(old, &crate::a11y::Action::Activate);
@@ -4172,7 +4172,7 @@ fn component_control_root(
                 crate::permissions::PermissionContext::permissive(),
             ),
             author: crate::permissions::UserId("component-control-author".into()),
-            operation_context: tilo_actions::ActionContext::default(),
+            operation_context: std::rc::Rc::default(),
             writes_as_author: false,
         };
         let live = ComponentControlOwner::new(
@@ -6534,7 +6534,7 @@ fn a_documents_genesis_is_a_version_in_history_but_never_a_recent_change() {
         .map(|command| command.label)
         .collect();
     assert_eq!(recent.len(), 1, "only the change someone made: {recent:?}");
-    assert!(recent[0].contains("Edited body"), "{recent:?}");
+    assert!(recent[0].contains("Changed the document"), "{recent:?}");
 }
 
 #[test]
@@ -6569,7 +6569,7 @@ fn host_chrome_lists_framework_history_changes_and_opens_at_the_chosen_one() {
     let selected: Vec<_> = history
         .timeline_selection()
         .into_iter()
-        .map(crate::standalone_history_host::encode_entry)
+        .map(crate::history_mode::door::encode_entry)
         .collect();
     assert_eq!(selected, [entry(chosen)]);
     assert!(

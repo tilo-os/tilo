@@ -1,28 +1,21 @@
 //! A member sharing one record, or one item of it, with a room this relay
 //! governs ([`tilo_action_policy::share`]).
 //!
-//! A share is grants on the shared resource's node, written into the room's
-//! governance by this host as it writes any governed grant, so the room
-//! decides the members' reads and writes there with them, at every door and
-//! on receipt. The sharer asks it themselves: it gives only what they hold
-//! on that node, and only they (or whoever may govern `revoke`) end it. Two
-//! doors reach the same methods: the member actions
-//! (`super::actions::member`) and a page's `/rooms` requests
-//! (`super::pages`).
+//! A share is grants on the shared resource's node. A member's device
+//! writes its own shares into the room; a page, which holds no copy of the
+//! room, asks this host through its `/rooms` requests (`super::pages`), and
+//! the host writes the same grants as the room's governor, decided as every
+//! receiver decides a device's share ([`tilo_peer_state::room::share`]): it
+//! gives only what the sharer holds on that node, and only they (or whoever
+//! may govern `revoke`) end it.
 
-use tilo_action_policy::share::{self, ShareAccess};
-use tilo_action_policy::{ActionKind, Context, GrantId, Subject, TreePath, roles::governance};
+use tilo_action_policy::share::ShareAccess;
+use tilo_action_policy::{Context, TreePath};
 use tilo_peer_state::join_ledger::request_digest;
+use tilo_peer_state::room::share;
 use tilo_user_identity::DeviceCert;
 
 use super::{CollaborationError, Rooms, system_time};
-
-/// What a member may do at a node of the room.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Permits {
-    pub read: bool,
-    pub undoable: bool,
-}
 
 /// A request id of its own for each change: a share ended and made again
 /// is a new change, which a repeated id would answer as done.
@@ -30,46 +23,6 @@ fn fresh_request() -> Result<[u8; 32], CollaborationError> {
     let mut id = [0; 32];
     getrandom::fill(&mut id).map_err(|error| CollaborationError::new(error.to_string()))?;
     Ok(id)
-}
-
-/// Whether `device` may share `node` of the room `room` holds as the share
-/// `share`, as far as windows go ([`tilo_desktop_model::window_share`]): a
-/// window is shared only under its own share id, what a Tilo app's window
-/// shows only under that window's, and either only by the device that
-/// minted the window's tab, which hosts it
-/// ([`tilo_desktop_model::window_share::device_salts`]).
-/// Nobody shares another device's window, or says what it shows.
-fn window_is_the_callers(
-    room: Option<&automerge::AutoCommit>,
-    device: &DeviceCert,
-    share: &str,
-    node: &TreePath,
-) -> Result<(), CollaborationError> {
-    use tilo_desktop_model::window_share::{window_of_node, window_of_share_id};
-    let window = window_of_node(node).map(|(_, tab)| tab);
-    let named = window_of_share_id(share);
-    let tab = match (window, named) {
-        (None, None) => return Ok(()),
-        // The window's own node: under its share id, or as what the window
-        // shows when that is its app's own record as a whole.
-        (Some(tab), Some((named, _))) if named == tab => tab,
-        // What a window shows: any one resource of the room.
-        (None, Some((tab, true))) => tab,
-        _ => {
-            return Err(CollaborationError::new(
-                "a window is shared under its own share id",
-            ));
-        }
-    };
-    let host = room
-        .map(tilo_desktop_model::window_share::device_salts)
-        .and_then(|owners| owners.get(&tilo_desktop_model::peer_salt_of(tab)).cloned());
-    if host.as_deref() != Some(hex::encode(device.device_public_key).as_str()) {
-        return Err(CollaborationError::new(
-            "only the device a window runs on can share it",
-        ));
-    }
-    Ok(())
 }
 
 impl Rooms {
@@ -102,20 +55,16 @@ impl Rooms {
             .permissions(device.device_public_key, at)
             .map_err(CollaborationError::new)?;
         let cx = Context::at_time(at);
-        let person = member.person.clone();
-        if member.policy.is_blocked(&person)
-            || member.policy.restricted_until(&person, &cx).is_some()
-        {
-            return Err(CollaborationError::new(
-                "you can't share in this room right now",
-            ));
-        }
-        let grants = share::share_grants(governed.room(), &person, share, node, access)
-            .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
-        window_is_the_callers(governed.peer().admitted_room(), device, share, node)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
-        share::check_held(&member.authority(&bound), &grants, &cx)
-            .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
+        let device_key = hex::encode(device.device_public_key);
+        let grants = share::share_grants(
+            (governed.peer().admitted_room(), &member.policy),
+            (&member.person, &device_key, &member.authority(&bound), &cx),
+            share,
+            node,
+            access,
+        )
+        .map_err(CollaborationError::new)?;
         let count = u32::try_from(grants.len()).unwrap_or(u32::MAX);
         if grants
             .iter()
@@ -163,19 +112,11 @@ impl Rooms {
             .map_err(CollaborationError::new)?;
         let cx = Context::at_time(at);
         let bound = tilo_action_policy::roles::foreign_device_bound();
-        let governs = member
-            .policy
-            .check_action(&member.authority(&bound), governance::REVOKE, &cx, false)
-            .is_ok();
-        let sharer = Subject::Person(member.person.clone());
-        let ids: Vec<GrantId> = member
-            .policy
-            .grants
-            .iter()
-            .filter(|grant| share::is_of_share(grant, share))
-            .filter(|grant| governs || grant.granted_by == sharer)
-            .map(|grant| grant.id.clone())
-            .collect();
+        let ids = share::ended_by(
+            &member.policy,
+            (&member.person, &member.authority(&bound), &cx),
+            share,
+        );
         if ids.is_empty() {
             return Ok(0);
         }
@@ -191,36 +132,5 @@ impl Rooms {
         )
         .await?;
         Ok(count)
-    }
-
-    /// What `device`'s person may do at `node` of `room`, decided as the
-    /// room decides their reads and writes there. The room's spectator
-    /// person writes nothing.
-    ///
-    /// # Errors
-    /// A node of another room, or a device that is no current member's.
-    pub async fn resource_permits(
-        &self,
-        room: &str,
-        device: &DeviceCert,
-        node: &TreePath,
-    ) -> Result<Permits, CollaborationError> {
-        let at = system_time(tilo_clock::unix_now_ns());
-        let state = self.room(room).await?;
-        let governed = state.lock().await;
-        if node.room_id() != Some(governed.room()) {
-            return Err(CollaborationError::new("the node is not in this room"));
-        }
-        let workspace_id = governed.workspace_id();
-        let member = governed
-            .peer()
-            .permissions(device.device_public_key, at)
-            .map_err(CollaborationError::new)?;
-        drop(governed);
-        let watches = self.watches_only(workspace_id, device).await;
-        Ok(Permits {
-            read: member.allows(node, ActionKind::Read, at),
-            undoable: !watches && member.allows(node, ActionKind::Undoable, at),
-        })
     }
 }

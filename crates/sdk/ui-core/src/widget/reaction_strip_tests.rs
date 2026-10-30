@@ -397,3 +397,36 @@ fn the_add_button_opens_the_shared_picker_and_a_pick_reacts() {
         "the picked emoji is my reaction"
     );
 }
+
+/// On touch a pill's face stays compact while its target grows about its
+/// centre to the touch minimum: assistive technology and layout audits see
+/// the target, and a press just above the face toggles it.
+#[test]
+fn on_touch_a_pill_is_pressed_within_its_grown_target_and_its_face_stays_compact() {
+    let theme = Theme::dark();
+    let face_height = StripMetrics::of(&theme).height;
+    let side = f64::from(crate::interaction::InteractionEnvironment::TOUCH.minimum_target());
+    assert!(face_height < side, "the face is compact: {face_height}");
+    let mut widget = ReactionStripWidget::new(vec![group("👍", &["bo"])], "ada");
+    widget.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+    lay_out_and_draw(&mut widget, 320.0, &theme);
+    assert!(
+        (widget.get_rect().height() - face_height).abs() < 0.5,
+        "the strip is as tall as its faces: {:?}",
+        widget.get_rect()
+    );
+
+    let access = widget.accessibility().expect("the strip's node");
+    let pill = access.children.first().expect("the pill's node");
+    let target = pill.bounds.expect("its bounds").to_rect();
+    assert!(
+        target.width() >= side - 0.5 && target.height() >= side - 0.5,
+        "{target:?}"
+    );
+
+    let above_the_face = Point::new(target.center().x, target.center().y - side / 2.0 + 2.0);
+    click(&mut widget, above_the_face);
+    let toggles = widget.take_toggles();
+    assert_eq!(toggles.len(), 1, "a press within the target toggles");
+    assert_eq!(toggles[0].emoji, "👍");
+}

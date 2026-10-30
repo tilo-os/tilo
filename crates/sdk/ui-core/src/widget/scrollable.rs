@@ -1072,6 +1072,16 @@ impl Widget for Scrollable {
     fn child_clip_rect(&self) -> Option<Rect> {
         Some(self.content_viewport_rect())
     }
+    /// Which way its content may go on past it.
+    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+        use crate::widget::{LayoutInfo, ScrollDirection, ScrollLayout};
+        let direction = match self.axis {
+            ScrollAxis::Vertical => ScrollDirection::Vertical,
+            ScrollAxis::Horizontal => ScrollDirection::Horizontal,
+            ScrollAxis::Both => ScrollDirection::Both,
+        };
+        Some(LayoutInfo::Scroll(ScrollLayout { direction }))
+    }
     fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         if let Some(c) = &mut self.child {
             c.sync(s, p);

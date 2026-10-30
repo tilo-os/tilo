@@ -52,6 +52,8 @@ pub(crate) struct StagedChange {
     pub(crate) commit: Vec<u8>,
     /// The Welcome and the joiners' key history, when the commit adds.
     pub(crate) joining: Option<(Vec<u8>, Vec<u8>)>,
+    /// The keys handed to every member, sealed for the post-commit epoch.
+    pub(crate) history: Option<Vec<u8>>,
     pub(crate) epoch: u64,
 }
 
@@ -440,7 +442,7 @@ impl ChannelGroup {
                 None
             };
             let epoch = self.epoch().saturating_add(1);
-            let key_history = self.pending_key_history(epoch)?;
+            let key_history = self.pending_key_history(epoch, &ContentKeyring::new())?;
             Ok(MemberAddition {
                 welcome,
                 commit,
@@ -459,11 +461,14 @@ impl ChannelGroup {
     /// frame, then merges it ([`Self::merge_pending_transaction`]) or drops
     /// it ([`Self::discard_pending_transaction`]). A removal needs an update
     /// path (RFC 9420, 12.4); an add alone does not, which keeps each commit
-    /// in a busy channel from growing with the members added before.
+    /// in a busy channel from growing with the members added before. A
+    /// commit that only hands every member `history` (keys of a branch that
+    /// lost) changes no one and carries an update path instead.
     pub(crate) fn stage_commit(
         &mut self,
         removed: &[u32],
         added: &[KeyPackage],
+        history: &ContentKeyring,
     ) -> Result<StagedChange> {
         let provider = &self.member.provider;
         let bundle = self
@@ -471,7 +476,7 @@ impl ChannelGroup {
             .commit_builder()
             .propose_removals(removed.iter().copied().map(LeafNodeIndex::new))
             .propose_adds(added.iter().cloned())
-            .force_self_update(!removed.is_empty())
+            .force_self_update(!removed.is_empty() || added.is_empty())
             .load_psks(openmls_traits::OpenMlsProvider::storage(provider))
             .map_err(Error::openmls)?
             .build(
@@ -490,13 +495,19 @@ impl ChannelGroup {
             let joining = match welcome {
                 Some(welcome) => Some((
                     welcome.tls_serialize_detached().map_err(Error::tls_codec)?,
-                    self.pending_key_history(epoch)?,
+                    self.pending_key_history(epoch, history)?,
                 )),
                 None => None,
+            };
+            let history = if history.is_empty() {
+                None
+            } else {
+                Some(self.pending_bundle(epoch, history)?)
             };
             Ok(StagedChange {
                 commit,
                 joining,
+                history,
                 epoch,
             })
         })();
@@ -593,33 +604,42 @@ impl ChannelGroup {
             .map_err(Error::storage)
     }
 
-    /// Seal the key history for the epoch the pending commit moves to. The
-    /// bundle includes that epoch's content key too, derived from the staged
-    /// commit, so the joiner's keyring is complete on arrival.
-    fn pending_key_history(&self, epoch: u64) -> Result<Vec<u8>> {
+    /// Seal the key history for the epoch the pending commit moves to, with
+    /// the keys of `extra` too. The bundle includes that epoch's content key,
+    /// derived from the staged commit, so the joiner's keyring is complete
+    /// on arrival.
+    fn pending_key_history(&self, epoch: u64, extra: &ContentKeyring) -> Result<Vec<u8>> {
+        let mut keyring = self.keyring.clone();
+        keyring.insert(
+            epoch,
+            self.pending_export(CONTENT_KEY_EXPORTER_LABEL, self.channel_id.0.as_bytes())?,
+        )?;
+        keyring.merge(extra)?;
+        self.pending_bundle(epoch, &keyring)
+    }
+
+    /// `keyring` sealed for the epoch the pending commit moves to: every
+    /// member of that epoch opens it ([`Self::import_key_history`]).
+    fn pending_bundle(&self, epoch: u64, keyring: &ContentKeyring) -> Result<Vec<u8>> {
+        let transport = self.pending_export(
+            HISTORY_TRANSPORT_EXPORTER_LABEL,
+            &self.history_transport_context(epoch),
+        )?;
+        KeyHistory::seal(self.channel_id, epoch, &transport, keyring)?.to_bytes()
+    }
+
+    fn pending_export(&self, label: &str, context: &[u8]) -> Result<SymmetricKey> {
         let staged = self
             .group
             .pending_commit()
             .ok_or_else(|| Error::InvalidState("no pending commit".into()))?;
         let crypto = openmls_traits::OpenMlsProvider::crypto(&self.member.provider);
-        let export = |label: &str, context: &[u8]| -> Result<SymmetricKey> {
-            let exported = Zeroizing::new(
-                staged
-                    .export_secret(crypto, label, context, 32)
-                    .map_err(Error::openmls)?,
-            );
-            SymmetricKey::from_slice(&exported).map_err(Error::ContentCrypto)
-        };
-        let mut keyring = self.keyring.clone();
-        keyring.insert(
-            epoch,
-            export(CONTENT_KEY_EXPORTER_LABEL, self.channel_id.0.as_bytes())?,
-        )?;
-        let transport = export(
-            HISTORY_TRANSPORT_EXPORTER_LABEL,
-            &self.history_transport_context(epoch),
-        )?;
-        KeyHistory::seal(self.channel_id, epoch, &transport, &keyring)?.to_bytes()
+        let exported = Zeroizing::new(
+            staged
+                .export_secret(crypto, label, context, 32)
+                .map_err(Error::openmls)?,
+        );
+        SymmetricKey::from_slice(&exported).map_err(Error::ContentCrypto)
     }
 
     /// Same as [`add_member`](Self::add_member) but also returns the commit

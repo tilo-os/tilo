@@ -15,6 +15,9 @@
 mod participant;
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,7 +27,7 @@ use collab_types::DocumentMutation;
 use tilo_browser_peer::{Host, HttpClient, HttpFuture, PeerEvent, PeerHandle};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{admitted, enrol, ready, route, start_host, start_peer, wait_for, workspace};
+use support::{admitted, enrol, ready, route, start_host, start_peer, wait_for};
 
 /// Holds `/events` polls while paused, and counts the polls it held and the
 /// sessions.
@@ -64,10 +67,15 @@ impl HttpClient for Gated {
 const CHANGE: usize = 64 * 1024;
 
 fn documents(peer: &PeerHandle, into: &mut Vec<DocumentMutation>) {
-    into.extend(peer.drain().into_iter().filter_map(|event| match event {
-        PeerEvent::Document(document) => document.mutation(),
-        _ => None,
-    }));
+    into.extend(
+        peer.drain()
+            .into_iter()
+            .filter(support::members_document)
+            .filter_map(|event| match event {
+                PeerEvent::Document(document) => document.mutation(),
+                _ => None,
+            }),
+    );
 }
 
 /// The published changes in `received`: the peer joins a run of incremental
@@ -128,8 +136,8 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
         host_device.cert.clone(),
         observer.key,
     );
-    author.join(workspace()).unwrap();
-    observer.join(workspace()).unwrap();
+    author.join_placed(support::ROOM, "Workspace").unwrap();
+    observer.join_placed(support::ROOM, "Workspace").unwrap();
     ready(&[&author, &observer]).await;
     // Both hold the channel's keys before the flood: what follows measures
     // the host's queue, not admission.

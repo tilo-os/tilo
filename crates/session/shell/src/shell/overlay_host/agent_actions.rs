@@ -76,6 +76,24 @@ impl RunSource for crate::shell::broker_services::NativeTrackerRuns {
     }
 }
 
+/// An ask handed to [`AgentActions::open_and_ask`]: how it ends comes back
+/// under it ([`AgentActions::take_ask_outcomes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct AskTicket(u64);
+
+/// How an ask handed to [`AgentActions::open_and_ask`] ended. Every ask ends
+/// in one of these: asked, refused, or not known to have been asked (it ran
+/// out of time, or its answer named no issue).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AskOutcome {
+    /// The agent has the work: the issue it is in.
+    Asked { issue: String },
+    /// The room refused the ask.
+    Refused,
+    /// The ask may not have been made.
+    Unknown,
+}
+
 #[derive(Clone)]
 enum Purpose {
     Respond(ComposerRequest),
@@ -89,6 +107,9 @@ enum Purpose {
         /// The agent made for the task, launched once its run carries the
         /// delegation; `None` when a collaborator is asked.
         task_agent: Option<Arc<crate::shell::task_agents::MintedTaskAgent>>,
+        /// The ask [`AgentActions::open_and_ask`] handed out for it, whose
+        /// outcome is told.
+        ticket: Option<AskTicket>,
     },
     /// A message to, or Stop of, the followed run.
     Submit(ComposerRequest),
@@ -252,6 +273,8 @@ pub(super) struct AgentActions {
     launches: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)>,
     /// Requests that could not become a task, and why.
     refused: Vec<(ComposerRequest, String)>,
+    /// How asks handed out ended, until the host takes them.
+    outcomes: Vec<(AskTicket, AskOutcome)>,
 }
 
 impl AgentActions {
@@ -507,22 +530,39 @@ impl AgentActions {
         about: Option<&SelectionSeed>,
         show: bool,
         quick: bool,
-    ) -> bool {
+    ) -> Option<AskTicket> {
         if !self.open(source, owner.clone()) {
-            return false;
+            return None;
         }
+        // Unique across every owner's asks, so a ticket names one ask.
+        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let issued = AskTicket(LAST.fetch_add(1, Ordering::Relaxed) + 1);
         let mut operation = match queue_operation(owner, None, (title, body), about, None, quick) {
             Ok(operation) => operation,
             Err(error) => {
                 tracing::warn!(%error, "work could not become a task");
-                return false;
+                return None;
             }
         };
-        if let Purpose::Queue { show: shown, .. } = &mut operation.purpose {
+        if let Purpose::Queue {
+            show: shown,
+            ticket,
+            ..
+        } = &mut operation.purpose
+        {
             *shown = show;
+            *ticket = Some(issued);
         }
+        // `open` left a session and an owner, so the ask starts, and its
+        // call ends asked, refused or out of time: an outcome either way.
         self.begin(operation);
-        true
+        Some(issued)
+    }
+
+    /// How the asks handed out by [`Self::open_and_ask`] ended since the
+    /// last call.
+    pub(super) fn take_ask_outcomes(&mut self) -> Vec<(AskTicket, AskOutcome)> {
+        std::mem::take(&mut self.outcomes)
     }
 
     /// Whether to start the agent for work asked of it now that it is not
@@ -632,6 +672,7 @@ impl AgentActions {
                 title,
                 show,
                 task_agent,
+                ticket,
             } => {
                 let asked = asked_issue(operation);
                 // The task exists and its run carries the delegation: its
@@ -641,6 +682,12 @@ impl AgentActions {
                 {
                     self.launches
                         .push((owner.room.clone(), Arc::clone(task_agent)));
+                }
+                if let Some(ticket) = ticket {
+                    let outcome = asked
+                        .clone()
+                        .map_or(AskOutcome::Unknown, |issue| AskOutcome::Asked { issue });
+                    self.outcomes.push((*ticket, outcome));
                 }
                 if *show && let Some(issue) = &asked {
                     self.begin(show_operation(issue));
@@ -696,6 +743,20 @@ impl AgentActions {
     }
 
     fn refuse(&mut self, operation: &Operation, composer: &mut AgentQuickComposer, unknown: bool) {
+        if let Purpose::Queue {
+            ticket: Some(ticket),
+            ..
+        } = &operation.purpose
+        {
+            self.outcomes.push((
+                *ticket,
+                if unknown {
+                    AskOutcome::Unknown
+                } else {
+                    AskOutcome::Refused
+                },
+            ));
+        }
         match &operation.purpose {
             // The agent could not be asked: the run decides instead. Asking
             // has no effect, so this never does anything twice.
@@ -920,6 +981,7 @@ fn queue_operation(
             title,
             show: false,
             task_agent,
+            ticket: None,
         },
         app: TRACKER_APP.into(),
         target: None,
@@ -2185,7 +2247,8 @@ mod tests {
             let room = Room::new(None);
             let owner = owner(&room.id);
             let mut actions = AgentActions::default();
-            assert!(actions.open_and_ask(
+            let ticket = actions
+                .open_and_ask(
                 ActionSessionSource::with_mock(
                     crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
                     room.clone(),
@@ -2195,9 +2258,11 @@ mod tests {
                 None,
                 show,
                 show,
-            ));
+            )
+                .expect("the ask is handed out");
             let mut composer = AgentQuickComposer::default();
             settle(&mut actions, &mut composer, &Tracker::default());
+            let outcomes = actions.take_ask_outcomes();
             drop(actions);
             let asked = room.arguments("ask-agent");
             assert_eq!(asked["title"], query);
@@ -2220,6 +2285,16 @@ mod tests {
                 expected.push(format!("{issue}#open"));
             }
             assert_eq!(room.invoked(), expected, "show: {show}");
+            assert_eq!(
+                outcomes,
+                vec![(
+                    ticket,
+                    AskOutcome::Asked {
+                        issue: issue.clone()
+                    }
+                )],
+                "the ask says how it ended"
+            );
             assert!(
                 !room.invoked().iter().any(|call| call.ends_with("#respond")),
                 "handing a query on asks for work, not a quick answer"

@@ -22,81 +22,11 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::shell::i18n::t;
-
-/// Where the ceremony currently is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Screen {
-    /// What an identity is and what it enables.
-    Intro,
-    /// Use an identity that already exists: choose how to bring it here.
-    Existing,
-    /// Receive the identity from a nearby trusted device.
-    Nearby,
-    /// Restore the identity from an encrypted backup file.
-    Restore,
-    /// Restore the identity from the 24 words of its recovery key.
-    RecoveryKey,
-    /// The consequence of losing the device, and the acknowledgement.
-    NoRecovery,
-    /// The minted key: fingerprint and path.
-    Done,
-}
-
-/// Title and body for the first screen.
-#[must_use]
-pub fn intro_title() -> String {
-    t("onboarding-intro-title")
-}
-
-#[must_use]
-pub fn intro_body() -> String {
-    t("onboarding-intro-body")
-}
-
-/// The specific things the identity does today, without promising that every
-/// application operation already carries a signature.
-#[must_use]
-pub fn intro_points() -> Vec<String> {
-    vec![
-        t("onboarding-intro-point-collaboration"),
-        t("onboarding-intro-point-local"),
-        t("onboarding-intro-point-not-account"),
-    ]
-}
-
-/// Heading for the consequence screen — stated as a fact, not a warning to be dismissed.
-#[must_use]
-pub fn no_recovery_title() -> String {
-    t("onboarding-no-recovery-title")
-}
-
-/// The plain truth, without making people read an implementation tour before
-/// they can reach the backup step. Read `tests::onboarding_copy_is_honest_about_identity_and_recovery`
-/// before editing these statements.
-#[must_use]
-pub fn no_recovery_points() -> Vec<String> {
-    vec![
-        t("onboarding-no-recovery-point-no-service"),
-        t("onboarding-no-recovery-point-backup"),
-    ]
-}
-
-/// The acknowledgement, phrased as the consequence rather than "I agree" — the user confirms they understood a fact, not accepted terms.
-#[must_use]
-pub fn acknowledgement() -> String {
-    t("onboarding-acknowledgement")
-}
-
-#[must_use]
-pub fn done_title() -> String {
-    t("onboarding-done-title")
-}
-
-#[must_use]
-pub fn done_body() -> String {
-    t("onboarding-done-body")
-}
+pub use tilo_onboarding::Screen;
+pub use tilo_onboarding::copy::{
+    acknowledgement, done_body, done_title, intro_body, intro_points, intro_title,
+    no_recovery_points, no_recovery_title,
+};
 
 /// The ceremony's state. Pure: no widgets, no I/O, no clock.
 #[derive(Clone, Debug, PartialEq, Eq)]

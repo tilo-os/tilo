@@ -31,9 +31,9 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 
 use super::{
-    ACTIVE_BAND_FILL_ALPHA, CARET_WIDTH, DragKind, Edges, GUIDE_GRAB, GuideDrag, LayoutMode,
-    NumField, PAPER_INK, PAPER_MUTED, PAPER_SELECTION_ALPHA, PanelCtx, PanelHit, RegionLaid,
-    RunningBand, Side, WordProcessorWidget, shown_byte,
+    ACTIVE_BAND_FILL_ALPHA, CARET_WIDTH, DragKind, Edges, Editor, GUIDE_GRAB, GuideDrag,
+    LayoutMode, NumField, PAPER_INK, PAPER_MUTED, PAPER_SELECTION_ALPHA, PanelCtx, PanelHit,
+    RegionLaid, RunningBand, Side, shown_byte,
 };
 
 /// Screen axis of a margin/border guide for `side`: `(is_vertical, coordinate)`.
@@ -84,7 +84,7 @@ fn apply_edges(e: &mut Edges, page: Rect, side: Side, p: Point, kind: DragKind) 
     }
 }
 
-impl WordProcessorWidget {
+impl Editor {
     /// The selection highlight painted on paper: the paper accent, translucent
     /// so the text reads through it.
     pub(super) fn paper_selection(&self) -> Color {

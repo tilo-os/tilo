@@ -3,7 +3,7 @@
 [[resources]]
 kind = "word-processor.document"
 label = "Document"
-version = 2
+version = 3
 fields = [
   { path = "body", type = "RichText", ops = "sha256:10bf507639fdd4f3" },
   { path = "comments", type = "Collection<Comment>", stored = "collection", unit = true },
