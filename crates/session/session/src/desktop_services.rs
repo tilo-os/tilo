@@ -336,20 +336,11 @@ async fn on_session_bus(
             None
         }
     };
-    // The banners and the centre read the published notifications; the
-    // arrivals' queue (which carries their pixels) has no reader in the
-    // session, so it is emptied as it fills rather than growing.
-    let (drain, mut woken) = tokio::sync::mpsc::channel::<()>(1);
-    notifications.on_change(move || {
-        let _ = drain.try_send(());
-        wake();
-    });
-    let drained = notifications.clone();
-    tokio::spawn(async move {
-        while woken.recv().await.is_some() {
-            drop(drained.drain());
-        }
-    });
+    // What the daemon receives wakes the loop: the session's banners read
+    // the arrivals on its next turn, pixels and all. Nothing else takes
+    // them, so they reach the person rather than being thrown away.
+    let woken = Arc::clone(&wake);
+    notifications.on_change(move || woken());
     // Sandboxed apps' notifications are the daemon's, shown the same way.
     if let Some(portal) = &portal
         && let Err(error) =
