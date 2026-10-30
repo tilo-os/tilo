@@ -21628,6 +21628,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-ask-password",
+ "tilo-files",
  "tilo-nm",
  "tilo-seal",
  "tilo-unlock-protocol",

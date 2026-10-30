@@ -409,19 +409,8 @@ fn write_status(status: &Status, volume_uuid: &[u8; 16]) {
 
 /// Writes the description root-only, replacing an earlier one whole.
 fn write_status_in(dir: &Path, status: &Status, volume_uuid: &[u8; 16]) -> Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    let mut file = tempfile::Builder::new()
-        .permissions(std::fs::Permissions::from_mode(0o600))
-        .tempfile_in(dir)?;
-    file.write_all(&serde_json::to_vec_pretty(status)?)?;
-    file.as_file().sync_all()?;
-    file.persist(dir.join(format!("{}.json", hex::encode(volume_uuid))))?;
+    let path = dir.join(format!("{}.json", hex::encode(volume_uuid)));
+    tilo_files::native::atomic::write_private(&path, &serde_json::to_vec_pretty(status)?)?;
     Ok(())
 }
 
