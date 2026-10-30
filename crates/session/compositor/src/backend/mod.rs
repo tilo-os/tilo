@@ -46,6 +46,20 @@ pub trait Backend {
     /// later (the compositor applies it to the present ones).
     fn set_display_config(&mut self, _config: &crate::config::DisplayConfig) {}
 
+    /// What each output's sink and the pipeline driving it can do beyond
+    /// what the output reports: a built-in panel, HDR and adaptive sync, the
+    /// colour profiles on offer, why a connected display is dark. Backends
+    /// without hardware of their own have nothing to add.
+    fn output_capabilities(&self) -> Vec<crate::settings_bridge::Capability> {
+        Vec::new()
+    }
+
+    /// How this backend drives its outputs (`drm-kms`, `headless`), as
+    /// Settings names it when it explains a display.
+    fn describe(&self) -> &'static str {
+        "unknown"
+    }
+
     /// Add an output the backend simulates. Backends with real outputs find
     /// them themselves and refuse.
     fn add_output(

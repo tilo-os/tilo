@@ -236,6 +236,10 @@ fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: X11Event) 
 }
 
 impl Backend for NestedBackend {
+    fn describe(&self) -> &'static str {
+        "nested"
+    }
+
     fn render(&mut self, state: &mut State) -> Result<(), BackendError> {
         let mut guard = self.inner.borrow_mut();
         let inner = &mut *guard;

@@ -50,6 +50,7 @@ mod protocols;
 pub mod render;
 mod requests;
 pub mod selection;
+pub mod settings_bridge;
 mod snapshot;
 mod state;
 mod tablet;
@@ -91,6 +92,8 @@ pub use keys::{KeyClaim, KeyRepeat};
 pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
 pub use policy::{Arrangement, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy, WindowRequest};
 pub use selection::Selection;
+/// The quarter turns an output is shown at.
+pub use smithay::utils::Transform;
 pub use state::State;
 pub use window_frame::{Edge, Shadow, WindowFrame};
 
@@ -154,6 +157,12 @@ pub struct Compositor {
     event_loop: EventLoop<'static, LoopData>,
     display: Display<State>,
     data: LoopData,
+    /// It runs in a window of a desktop it did not start: that desktop owns
+    /// idle, blanking, locking and suspend, so this one runs no idle timers.
+    hosted: bool,
+    /// The outputs as Settings and the session last read them
+    /// ([`Compositor::display_snapshot`]).
+    displays: settings_bridge::Published,
 }
 
 impl Compositor {
@@ -181,11 +190,15 @@ impl Compositor {
             .map_err(io)?;
         state.loop_handle = Some(event_loop.handle());
         let backend = make_backend(&event_loop.handle(), &mut state)?;
-        Ok(Self {
+        let mut compositor = Self {
             event_loop,
             display,
             data: LoopData { state, backend },
-        })
+            hosted: false,
+            displays: settings_bridge::Published::default(),
+        };
+        compositor.publish_displays();
+        Ok(compositor)
     }
 
     /// A compositor whose outputs have no display (see [`backend::headless`]).
@@ -244,6 +257,7 @@ impl Compositor {
     /// Add an output the backend simulates.
     pub fn add_output(&mut self, config: &OutputConfig) -> Result<(), Error> {
         self.data.backend.add_output(&mut self.data.state, config)?;
+        self.publish_displays();
         Ok(())
     }
 
@@ -331,6 +345,7 @@ impl Compositor {
         }
         self.data.state.tick_idle();
         self.sync_power();
+        self.publish_displays();
         self.display.flush_clients()?;
         Ok(())
     }
@@ -674,6 +689,41 @@ impl Compositor {
         self.data.state.output_infos()
     }
 
+    /// The outputs as Settings reads them: each one's connector, modes,
+    /// scale, place and what its sink and the pipeline driving it can do.
+    /// Updated by [`Compositor::publish_displays`], which the loop runs on
+    /// every pass; `None` before any output exists.
+    pub fn display_snapshot(&self) -> Option<&settings_store::hardware::DisplayHardwareSnapshot> {
+        self.displays.snapshot()
+    }
+
+    /// A counter that changes exactly when the published displays do, for a
+    /// reader that watches them without copying the snapshot every pass.
+    pub fn displays_generation(&self) -> u64 {
+        self.displays.generation()
+    }
+
+    /// Take the outputs as they are now for Settings and the session: what
+    /// changed since the last pass is written where Settings reads it.
+    pub fn publish_displays(&mut self) {
+        let state = &self.data.state;
+        let outputs: Vec<(smithay::output::Output, bool)> = state
+            .space
+            .outputs()
+            .map(|output| (output.clone(), true))
+            .chain(
+                state
+                    .disabled_outputs
+                    .iter()
+                    .map(|output| (output.clone(), false)),
+            )
+            .collect();
+        let backend = &*self.data.backend;
+        let capabilities = backend.output_capabilities();
+        self.displays
+            .refresh(&outputs, &capabilities, backend.describe());
+    }
+
     /// Whether the panel of the output named `name` is lit (not blanked,
     /// switched off by a tool or turned off).
     pub fn output_lit(&self, name: &str) -> bool {
@@ -772,6 +822,11 @@ impl Compositor {
         Ok(())
     }
 
+    /// Show the pointer at the person's size, in logical pixels.
+    pub fn set_cursor_size(&mut self, size: u32) {
+        self.data.state.cursor.set_size(size);
+    }
+
     /// Type with the person's keyboard layout.
     pub fn set_keyboard_layout(&mut self, layout: &KeyboardLayout) {
         let LoopData { state, .. } = &mut self.data;
@@ -792,6 +847,19 @@ impl Compositor {
                 "keyboard layout did not compile"
             );
         }
+    }
+
+    /// The layout the keyboard types in now, as XKB names it; `None` without
+    /// a keyboard.
+    pub fn keyboard_layout(&mut self) -> Option<String> {
+        let LoopData { state, .. } = &mut self.data;
+        let keyboard = state.seat.get_keyboard()?;
+        Some(keyboard.with_xkb_state(state, |context| {
+            context.xkb().lock().map_or_else(
+                |_| String::new(),
+                |xkb| xkb.layout_name(xkb.active_layout()).to_owned(),
+            )
+        }))
     }
 
     /// Apply the person's input preferences (pointer, touchpad, tablets,

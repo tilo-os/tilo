@@ -13,7 +13,7 @@
 )]
 
 use std::cell::RefCell;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::os::fd::AsFd as _;
 use std::rc::Rc;
 use std::time::Duration;
@@ -23,9 +23,9 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
     Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostFrame,
-    HostKey, HostLayer, InputEvent, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch,
-    TabletEvent, TabletPadEvent, TabletPhase, WindowEffect, WindowFrame, WindowInfo, WindowPicture,
-    WindowPolicy,
+    HostKey, HostLayer, InputEvent, KeyboardLayout, OutputConfig, PadAction, StackPolicy,
+    SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, WindowEffect, WindowFrame,
+    WindowInfo, WindowPicture, WindowPolicy,
 };
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
@@ -85,6 +85,9 @@ struct Seen {
     buttons: Vec<(u32, bool)>,
     keyboard_focused: bool,
     keys: Vec<(u32, bool)>,
+    /// The keymap the keyboard sent, as XKB text: the client's own answer to
+    /// which characters its keys type.
+    keymap: Option<String>,
     frames_done: u32,
     closed: bool,
     tablet_manager: Option<ZwpTabletManagerV2>,
@@ -777,6 +780,35 @@ fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window()
 }
 
 #[test]
+fn the_keyboard_types_in_the_persons_layout() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "typing", (200, 100), [0, 255, 0, 255]);
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.keymap.is_some()
+    });
+    let before = client.seen.keymap.clone().expect("the client has a keymap");
+
+    compositor.set_keyboard_layout(&KeyboardLayout {
+        layout: "de".into(),
+        ..KeyboardLayout::default()
+    });
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0]
+            .seen
+            .keymap
+            .as_ref()
+            .is_some_and(|keymap| keymap.contains("German"))
+    });
+    let after = client.seen.keymap.clone().expect("the new keymap");
+    assert_ne!(before, after, "the client's keys type other characters now");
+    assert!(
+        after.contains("German"),
+        "the client's keymap is the German one the person chose"
+    );
+    assert_eq!(compositor.keyboard_layout().as_deref(), Some("German"));
+}
+
+#[test]
 fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
@@ -1351,6 +1383,16 @@ impl Dispatch<WlKeyboard, ()> for Seen {
             wl_keyboard::Event::Key { key, state, .. } => {
                 seen.keys
                     .push((key, state == WEnum::Value(wl_keyboard::KeyState::Pressed)));
+            }
+            wl_keyboard::Event::Keymap { fd, size, .. } => {
+                let mut text = Vec::new();
+                if std::fs::File::from(fd)
+                    .take(u64::from(size))
+                    .read_to_end(&mut text)
+                    .is_ok()
+                {
+                    seen.keymap = Some(String::from_utf8_lossy(&text).into_owned());
+                }
             }
             _ => {}
         }

@@ -36,7 +36,7 @@ pub struct KeyboardLayout {
 }
 
 /// What the person configured for the outputs, by connector name.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct DisplayConfig {
     /// A chosen mode per connector (`eDP-1`).
     pub modes: HashMap<String, RequestedMode>,

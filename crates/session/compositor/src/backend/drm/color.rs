@@ -32,6 +32,7 @@ use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Size, Transform}
 use super::Renderer;
 use crate::config::Hdr;
 use crate::render::OutputRenderElement;
+use settings_store::hardware::HdrUnavailable;
 
 /// Grid points a side of the calibration lookup table.
 pub(crate) const GRID: u32 = 33;
@@ -117,6 +118,134 @@ pub(crate) fn hdr_output_metadata(hdr: &Hdr) -> [u8; HDR_OUTPUT_METADATA_BYTES] 
     }
     blob
 }
+
+/// Whether HDR can be signalled on `connector` at all: the driver offers the
+/// metadata property, a BT.2020 colourspace and ten bits a channel. What
+/// [`signal_hdr`] needs, asked without switching anything.
+pub(crate) fn hdr_supported(
+    device: &DrmDevice,
+    connector: connector::Handle,
+) -> Result<(), HdrUnavailable> {
+    let properties = device
+        .get_properties(connector)
+        .map_err(|_| HdrUnavailable::DriverUnsupported)?;
+    let find = |name: &[u8]| -> Option<(property::Handle, property::Info, u64)> {
+        properties.iter().find_map(|(handle, value)| {
+            let info = device.get_property(*handle).ok()?;
+            (info.name().to_bytes() == name).then_some((*handle, info, *value))
+        })
+    };
+    if find(b"HDR_OUTPUT_METADATA").is_none() {
+        return Err(HdrUnavailable::DriverUnsupported);
+    }
+    let bt2020 = find(b"Colorspace").is_some_and(|(_, info, _)| {
+        let property::ValueType::Enum(values) = info.value_type() else {
+            return false;
+        };
+        let (_, entries) = values.values();
+        colorspace_values(
+            entries
+                .iter()
+                .map(|entry| (entry.value(), entry.name().to_bytes())),
+        )
+        .is_some()
+    });
+    if !bt2020 {
+        return Err(HdrUnavailable::DriverUnsupported);
+    }
+    let deep_enough = find(b"max bpc").is_none_or(|(_, info, current)| {
+        let property::ValueType::UnsignedRange(_, max) = info.value_type() else {
+            return true;
+        };
+        hdr_max_bpc(current, max).is_some()
+    });
+    if deep_enough {
+        Ok(())
+    } else {
+        Err(HdrUnavailable::DriverUnsupported)
+    }
+}
+
+/// The ICC profiles a person may choose, path → the name they read: every
+/// profile in the system's and the person's ICC directories that qcms can
+/// build a transform from, so the list never offers a profile that cannot be
+/// applied. Read once; the directories do not change under a session.
+pub(crate) fn color_profiles() -> std::collections::BTreeMap<String, String> {
+    static PROFILES: std::sync::OnceLock<std::collections::BTreeMap<String, String>> =
+        std::sync::OnceLock::new();
+    PROFILES
+        .get_or_init(|| {
+            let mut roots = vec![
+                PathBuf::from("/usr/share/color/icc"),
+                PathBuf::from("/usr/local/share/color/icc"),
+                PathBuf::from("/var/lib/colord/icc"),
+            ];
+            if let Some(data) = std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+                })
+            {
+                roots.push(data.join("icc"));
+                roots.push(data.join("color/icc"));
+            }
+            let mut profiles = std::collections::BTreeMap::new();
+            'roots: for root in roots {
+                let Ok(root) = root.canonicalize() else {
+                    continue;
+                };
+                let Ok(entries) = std::fs::read_dir(&root) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    if profiles.len() >= MAX_PROFILES {
+                        break 'roots;
+                    }
+                    let path = entry.path();
+                    let extension = path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .unwrap_or_default();
+                    if !extension.eq_ignore_ascii_case("icc")
+                        && !extension.eq_ignore_ascii_case("icm")
+                    {
+                        continue;
+                    }
+                    let Ok(path) = path.canonicalize() else {
+                        continue;
+                    };
+                    if !path.starts_with(&root)
+                        || !path.is_file()
+                        || path
+                            .metadata()
+                            .is_ok_and(|metadata| metadata.len() > MAX_PROFILE_BYTES)
+                    {
+                        continue;
+                    }
+                    if icc_atlas(&path).is_none() {
+                        continue;
+                    }
+                    let Some(key) = path.to_str() else {
+                        continue;
+                    };
+                    let label = path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or(key)
+                        .to_owned();
+                    profiles.insert(key.to_owned(), label);
+                }
+            }
+            profiles
+        })
+        .clone()
+}
+
+/// The most profiles offered, so a machine with a profile library cannot
+/// make the list endless.
+const MAX_PROFILES: usize = 128;
+/// The largest file read as an ICC profile.
+const MAX_PROFILE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The `Colorspace` enum values for SDR (`Default`) and HDR (`BT2020_RGB`).
 pub(crate) fn colorspace_values<'a>(

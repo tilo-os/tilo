@@ -56,6 +56,10 @@ impl HeadlessBackend {
 }
 
 impl Backend for HeadlessBackend {
+    fn describe(&self) -> &'static str {
+        "headless"
+    }
+
     fn add_output(&mut self, state: &mut State, config: &OutputConfig) -> Result<(), BackendError> {
         let output = config.create(&state.display, "headless");
         let size = Size::<i32, Buffer>::from(config.size);

@@ -68,6 +68,16 @@ impl Cursor {
         }
     }
 
+    /// Show the pointer at `size` logical pixels; `0` keeps the size it has.
+    pub(crate) fn set_size(&mut self, size: u32) {
+        if size == 0 || size == self.size {
+            return;
+        }
+        self.size = size;
+        // Images are cached per pixel size, so the old ones only take room.
+        self.images.borrow_mut().clear();
+    }
+
     /// The image of `icon` at `pixels` physical size, loaded on first use.
     fn image(&self, icon: CursorIcon, pixels: u32) -> Image {
         let theme = &self.theme;

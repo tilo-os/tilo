@@ -58,6 +58,7 @@ use smithay::reexports::drm::control::{
 use smithay::reexports::input::Libinput as LibinputContext;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::{DeviceFd, Point, Transform};
+use settings_store::hardware::{AdaptiveSyncUnavailable, HdrUnavailable};
 
 use super::{Backend, BackendError, failed};
 use crate::output::{ModeRequest, OutputChange, apply_placement, find_mode, refresh_interval};
@@ -104,6 +105,12 @@ struct Lit {
     /// When the last frame was queued.
     queued_at: Instant,
     vrr: Vrr,
+    /// Why adaptive sync cannot be engaged here, when it cannot.
+    vrr_unavailable: Option<AdaptiveSyncUnavailable>,
+    /// Whether the display's EDID asks for HDR, and why HDR cannot be
+    /// driven here when it does.
+    sink_hdr: bool,
+    hdr_unavailable: Option<HdrUnavailable>,
     color: LitColor,
     /// What clients on this output are told to allocate, when its planes
     /// can show their buffers directly.
@@ -365,6 +372,31 @@ impl Backend for DrmBackend {
     fn render(&mut self, state: &mut State) -> Result<(), BackendError> {
         render_ready(&self.inner, state);
         Ok(())
+    }
+
+    fn describe(&self) -> &'static str {
+        "drm-kms"
+    }
+
+    fn output_capabilities(&self) -> Vec<crate::settings_bridge::Capability> {
+        let inner = self.inner.borrow();
+        let profiles = color::color_profiles();
+        inner
+            .gpus
+            .values()
+            .flat_map(|gpu| gpu.outputs.values())
+            .filter(|lit| !lit.dark)
+            .map(|lit| crate::settings_bridge::Capability {
+                connector: lit.output.name(),
+                builtin: lit.builtin,
+                sink_hdr: lit.sink_hdr,
+                hdr_unavailable: lit.hdr_unavailable,
+                sink_vrr: lit.vrr_unavailable.is_none(),
+                vrr_unavailable: lit.vrr_unavailable,
+                unavailable_reason: None,
+                color_profiles: profiles.clone(),
+            })
+            .collect()
     }
 
     fn backdrop(
@@ -945,6 +977,7 @@ impl Lit {
                     "variable refresh refused"
                 );
                 self.vrr = Vrr::Unable;
+                self.vrr_unavailable = Some(AdaptiveSyncUnavailable::DriverRejected);
             }
         }
     }
@@ -1538,6 +1571,55 @@ fn monitor_identity(
     tilo_wayland_ext::edid::parse_monitor_identity(&edid)
 }
 
+/// Whether the display on `connector` of `card` asks for HDR in its EDID: a
+/// CTA-861 extension carrying the HDR static metadata block. Only a display
+/// that says it wants HDR is offered it, since a PQ signal on a panel that
+/// does not understand it arrives washed out.
+fn edid_wants_hdr(card: &DrmNode, connector: &str) -> bool {
+    let connector = connector
+        .rsplit_once('/')
+        .map_or(connector, |(_, label)| label);
+    let Some(card) = card.dev_path().and_then(|path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    }) else {
+        return false;
+    };
+    let Ok(edid) = std::fs::read(format!("/sys/class/drm/{card}-{connector}/edid")) else {
+        return false;
+    };
+    // The base block is 128 bytes and says how many extension blocks follow.
+    let extensions = edid.get(126).copied().unwrap_or(0);
+    for index in 0..extensions {
+        let start = 128 * (usize::from(index) + 1);
+        let Some(block) = edid.get(start..start.saturating_add(128)) else {
+            break;
+        };
+        // A CTA-861 extension: its data block collection runs from byte 4 to
+        // its DTD offset.
+        if block.first() != Some(&0x02) {
+            continue;
+        }
+        let end = block
+            .get(2)
+            .map_or(4, |offset| usize::from(*offset))
+            .clamp(4, block.len());
+        let mut at = 4;
+        while at < end {
+            let header = block[at];
+            let length = usize::from(header & 0x1f);
+            let body = block.get(at.saturating_add(1)..at.saturating_add(1).saturating_add(length));
+            // An extended data block whose extended tag is the HDR static
+            // metadata block.
+            if header >> 5 == 7 && body.and_then(|body| body.first()) == Some(&0x06) {
+                return true;
+            }
+            at = at.saturating_add(1).saturating_add(length);
+        }
+    }
+    false
+}
+
 /// The output of the connector `name` (`info`) on the card `card`, named
 /// after the monitor on it.
 fn new_output(card: &DrmNode, info: &connector::Info, name: &str) -> Output {
@@ -1631,6 +1713,10 @@ fn light(
     } else {
         Vrr::Unable
     };
+    let sink_hdr = edid_wants_hdr(&gpu.node, name);
+    let hdr_unavailable = sink_hdr
+        .then(|| color::hdr_supported(gpu.manager.device(), info.handle()).err())
+        .flatten();
     let feedback = if gpu.render == primary {
         renderers
             .single_renderer(&primary)
@@ -1664,6 +1750,9 @@ fn light(
         wake: None,
         queued_at: Instant::now(),
         vrr,
+        vrr_unavailable: (vrr == Vrr::Unable).then_some(AdaptiveSyncUnavailable::DriverUnsupported),
+        sink_hdr,
+        hdr_unavailable,
         color: LitColor::default(),
         feedback,
         next_frame: Instant::now(),
