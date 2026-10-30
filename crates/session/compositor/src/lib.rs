@@ -381,8 +381,10 @@ impl Compositor {
         self.display.dispatch_clients(&mut self.data.state)?;
         self.data.state.refresh();
         if let Some(x11) = self.data.x11_windows.as_mut() {
-            // The X server's own focus follows the session's.
+            // The X server's own focus follows the session's, and X clients
+            // hear how dense the display is.
             x11.follow_keyboard(&self.data.state);
+            x11.publish_scale(&mut self.data.state);
         }
         self.configure_from_clients();
         if let Some(undo) = self.data.state.display_changes.due(Instant::now()) {

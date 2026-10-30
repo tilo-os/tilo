@@ -79,7 +79,7 @@ fn start_wm(
     client: smithay::reexports::wayland_server::Client,
     display: u32,
 ) {
-    match X11Wm::start_wm(handle.clone(), socket, client) {
+    match X11Wm::start_wm(handle.clone(), socket, client.clone()) {
         Ok(wm) => data.state.xwm = Some(wm),
         Err(error) => {
             tracing::warn!(%error, "X11 window manager did not start");
@@ -87,9 +87,13 @@ fn start_wm(
         }
     }
     // The session's own connection to the X server: it reads what a window
-    // says about its program and gives X input focus.
-    match crate::x11_windows::X11Windows::connect(display) {
-        Ok(x11) => data.x11_windows = Some(x11),
+    // says about its program, gives X input focus and tells X clients how
+    // dense the display is.
+    match crate::x11_windows::X11Windows::connect(display, client) {
+        Ok(mut x11) => {
+            x11.publish_scale(&mut data.state);
+            data.x11_windows = Some(x11);
+        }
         Err(error) => tracing::warn!(%error, "X11 windows have no identity"),
     }
 }

@@ -1,4 +1,5 @@
-//! What an X11 window says about its own program, and the focus X gives it.
+//! What an X11 window says about its own program, the focus X gives it and
+//! how dense its display is.
 //!
 //! An X11 window carries its program's identity as window properties: its
 //! class, the desktop start-up it belongs to and its icons. Those are read
@@ -8,12 +9,19 @@
 //! Xwayland runs with a window manager, so the X input focus is the window
 //! manager's to give: [`X11Windows::follow_keyboard`] keeps it on the X11
 //! window that has the session's keyboard focus.
+//!
+//! X clients size themselves from what they are told the display's density
+//! is: [`X11Windows::publish_scale`] says it over XSETTINGS and over the
+//! root window's `RESOURCE_MANAGER`, and Xwayland draws their buffers at the
+//! same scale.
 
 use std::collections::HashMap;
 
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::Client;
 use smithay::xwayland::X11Surface;
+use smithay::xwayland::XWaylandClientData;
 use smithay::xwayland::xwm::X11Window;
+use smithay::xwayland::xwm::settings::Value;
 use x11rb::connection::Connection as _;
 use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt as _, InputFocus, PropMode};
 use x11rb::rust_connection::RustConnection;
@@ -30,6 +38,10 @@ const MAX_EDGE: u32 = 512;
 /// [`MAX_EDGE`] square is far below it, and a hostile client cannot make the
 /// session read a property that big.
 const MAX_ICON_UNITS: u32 = 1 << 19;
+
+/// The density a display is assumed to have at scale 1: the DPI X clients
+/// and their font settings are written in.
+const BASE_DPI: i32 = 96;
 
 /// What an X11 window says about its program.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -67,11 +79,15 @@ pub(crate) struct X11Windows {
     identities: HashMap<X11Window, Identity>,
     /// The window X input focus was last set to.
     focused: Option<X11Window>,
+    /// Xwayland's own Wayland client, whose scale its buffers are drawn at.
+    client: Client,
+    /// The scale last published to X clients; `0` until the first time.
+    scale: f64,
 }
 
 impl X11Windows {
-    /// Connect to the X11 display `display`.
-    pub(crate) fn connect(display: u32) -> Result<Self, Error> {
+    /// Connect to the X11 display `display`, Xwayland running as `client`.
+    pub(crate) fn connect(display: u32, client: Client) -> Result<Self, Error> {
         let (connection, _) = x11rb::connect(Some(&format!(":{display}"))).map_err(io)?;
         let icon = connection
             .intern_atom(false, b"_NET_WM_ICON")
@@ -84,7 +100,67 @@ impl X11Windows {
             icon,
             identities: HashMap::new(),
             focused: None,
+            client,
+            scale: 0.0,
         })
+    }
+
+    /// Tell X clients how dense the display is, and tell them again whenever
+    /// its densest output changes. GTK sizes fonts from XSETTINGS, while Xft,
+    /// Qt and Xt clients read `Xft.dpi` from the root window's
+    /// `RESOURCE_MANAGER`; both are published so every toolkit sees one
+    /// display. Xwayland draws their buffers at the same scale, so a window
+    /// asked for one logical size covers the pixels the clients drew for it.
+    pub(crate) fn publish_scale(&mut self, state: &mut State) {
+        let scale = display_scale(state);
+        if (scale - self.scale).abs() < f64::EPSILON {
+            return;
+        }
+        self.scale = scale;
+        if let Some(client) = self.client.get_data::<XWaylandClientData>() {
+            client.compositor_state.set_client_scale(scale);
+        }
+        // A screen of `BASE_DPI` at scale 1, and `Xft/DPI` in 1/1024ths.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a display's DPI, far below i32's range"
+        )]
+        let dpi = (f64::from(BASE_DPI) * scale).round() as i32;
+        // Fonts and cursors are drawn at scale 1's size times the scale, as
+        // X clients have no other way to grow them.
+        let cursor = dpi.saturating_mul(24).saturating_div(BASE_DPI).max(24);
+        if let Some(wm) = state.xwm.as_mut() {
+            let settings = [
+                (
+                    "Xft/DPI".to_owned(),
+                    Value::Integer(dpi.saturating_mul(1024)),
+                ),
+                (
+                    "Gdk/WindowScalingFactor".to_owned(),
+                    Value::Integer(dpi.saturating_div(BASE_DPI)),
+                ),
+                (
+                    "Gdk/UnscaledDPI".to_owned(),
+                    Value::Integer(BASE_DPI.saturating_mul(1024)),
+                ),
+                ("Xft/Antialias".to_owned(), Value::Integer(1)),
+                ("Xft/Hinting".to_owned(), Value::Integer(1)),
+                (
+                    "Xft/HintStyle".to_owned(),
+                    Value::String("hintslight".to_owned()),
+                ),
+                ("Xft/RGBA".to_owned(), Value::String("rgb".to_owned())),
+            ];
+            if let Err(error) = wm.set_xsettings(settings.into_iter()) {
+                tracing::warn!(%error, "X clients were told no scale");
+            }
+        }
+        let dpi = dpi.to_string();
+        let cursor = cursor.to_string();
+        let values = [("Xft.dpi", dpi.as_str()), ("Xcursor.size", cursor.as_str())];
+        if let Err(error) = set_resources(&self.connection, &values) {
+            tracing::warn!(%error, "X clients were told no font size");
+        }
     }
 
     /// Read and keep what `window` says about its program.
@@ -171,7 +247,9 @@ fn icon(data: &[u32]) -> Option<Icon> {
     let mut best: Option<Icon> = None;
     let mut offset = 0_usize;
     while let Some(header) = data.get(offset..offset.checked_add(2)?) {
-        let (width, height) = (header[0], header[1]);
+        let &[width, height] = header else {
+            return best;
+        };
         let pixels = width.checked_mul(height)?;
         offset = offset.checked_add(2)?;
         let end = offset.checked_add(usize::try_from(pixels).ok()?)?;
@@ -202,7 +280,8 @@ fn premultiplied(pixels: &[u32]) -> Vec<u8> {
         let alpha = (pixel >> 24) as u8;
         let scale = |channel: u32| -> u8 {
             let channel = u32::from((channel & 0xFF) as u8);
-            u8::try_from((channel * u32::from(alpha) / 255) & 0xFF).unwrap_or(0)
+            let premultiplied = channel.saturating_mul(u32::from(alpha)).saturating_div(255);
+            u8::try_from(premultiplied & 0xFF).unwrap_or(0)
         };
         rgba.push(scale(pixel >> 16));
         rgba.push(scale(pixel >> 8));
@@ -230,11 +309,20 @@ pub(crate) fn with_resource(resources: &str, key: &str, value: &str) -> String {
     merged
 }
 
-/// Write `value` under `key` in the root window's `RESOURCE_MANAGER`.
-pub(crate) fn set_resource(
+/// The scale X clients are told to draw at: that of the densest output, as
+/// one X server serves every output the session has.
+fn display_scale(state: &State) -> f64 {
+    state
+        .space
+        .outputs()
+        .map(|output| output.current_scale().fractional_scale())
+        .fold(1.0, f64::max)
+}
+
+/// Write `values` under their keys in the root window's `RESOURCE_MANAGER`.
+pub(crate) fn set_resources(
     connection: &RustConnection,
-    key: &str,
-    value: &str,
+    values: &[(&str, &str)],
 ) -> Result<(), Error> {
     let root = connection
         .setup()
@@ -255,7 +343,10 @@ pub(crate) fn set_resource(
         .reply()
         .map_err(io)?
         .value;
-    let merged = with_resource(&String::from_utf8_lossy(&existing), key, value);
+    let mut merged = String::from_utf8_lossy(&existing).into_owned();
+    for &(key, value) in values {
+        merged = with_resource(&merged, key, value);
+    }
     connection
         .change_property8(
             PropMode::REPLACE,
