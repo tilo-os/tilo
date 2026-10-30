@@ -818,6 +818,36 @@ fn seconds_of(iso: &str) -> u64 {
     }
 }
 
+impl ImapOrigin {
+    /// The connector did not do `request`, for `reason`: a send ends as `outcome` says; a
+    /// write is put back, and its account shows why.
+    fn not_done(
+        &mut self,
+        cx: &OriginCx<'_>,
+        request: &Request,
+        reason: String,
+        outcome: fn(String) -> Sending,
+        polled: &mut Polled,
+    ) {
+        match self.pending.remove(request) {
+            Some(Pending::Send(payload)) => {
+                self.sends.insert(payload, outcome(reason));
+                polled.settle = true;
+            }
+            Some(Pending::Write {
+                account,
+                key,
+                before,
+            }) => {
+                self.trouble.insert(account.clone(), reason);
+                self.put_back(cx.host, &cx.now, &account, &key, &before);
+                polled.wrote = true;
+            }
+            None => {}
+        }
+    }
+}
+
 impl Origin for ImapOrigin {
     fn name(&self) -> &'static str {
         "imap"
@@ -887,38 +917,12 @@ impl Origin for ImapOrigin {
                     }
                     Some(Pending::Write { .. }) | None => {}
                 },
-                Event::Refused { request, reason } => match self.pending.remove(&request) {
-                    Some(Pending::Send(payload)) => {
-                        self.sends.insert(payload, Sending::Refused(reason));
-                        polled.settle = true;
-                    }
-                    Some(Pending::Write {
-                        account,
-                        key,
-                        before,
-                    }) => {
-                        self.trouble.insert(account.clone(), reason);
-                        self.put_back(cx.host, &cx.now, &account, &key, &before);
-                        polled.wrote = true;
-                    }
-                    None => {}
-                },
-                Event::Unsent { request, reason } => match self.pending.remove(&request) {
-                    Some(Pending::Send(payload)) => {
-                        self.sends.insert(payload, Sending::Unsent(reason));
-                        polled.settle = true;
-                    }
-                    Some(Pending::Write {
-                        account,
-                        key,
-                        before,
-                    }) => {
-                        self.trouble.insert(account.clone(), reason);
-                        self.put_back(cx.host, &cx.now, &account, &key, &before);
-                        polled.wrote = true;
-                    }
-                    None => {}
-                },
+                Event::Refused { request, reason } => {
+                    self.not_done(cx, &request, reason, Sending::Refused, &mut polled);
+                }
+                Event::Unsent { request, reason } => {
+                    self.not_done(cx, &request, reason, Sending::Unsent, &mut polled);
+                }
             }
         }
         // The accounts as the connector says them now (one in another process says them
