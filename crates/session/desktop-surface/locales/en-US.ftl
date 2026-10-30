@@ -1323,6 +1323,7 @@ desktop-action-param-shortcut = The shortcut, by its id (such as workspace_overv
 session-input = Input devices
 session-toggle-touchpad = Turn the touchpad on or off
 session-param-touchpad-on = Whether the touchpad is on; leave out to switch it
+session-next-input-source = Type in the next keyboard input source
 session-screen = Screen
 session-lock = Lock the screen
 session-log-out = Log out

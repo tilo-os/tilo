@@ -1338,6 +1338,7 @@ desktop-action-param-shortcut = Der Kurzbefehl, nach seiner Kennung (etwa worksp
 session-input = Eingabegeräte
 session-toggle-touchpad = Touchpad ein- oder ausschalten
 session-param-touchpad-on = Ob das Touchpad an ist; weglassen zum Umschalten
+session-next-input-source = In der nächsten Tastatureingabequelle tippen
 session-screen = Bildschirm
 session-lock = Bildschirm sperren
 session-log-out = Abmelden

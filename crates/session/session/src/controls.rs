@@ -52,6 +52,8 @@ pub enum SessionCommand {
     /// Paste the files copied to the clipboard into this folder, as a copy
     /// or (after a cut) a move.
     PasteFiles { destination: String },
+    /// Type in the next of the person's keyboard input sources.
+    NextInputSource,
 }
 
 /// A step of the magnifier.
@@ -106,18 +108,25 @@ fn action(
 /// The session's resources and their actions.
 fn resources() -> Vec<ResourceSpec> {
     vec![
-        ResourceSpec::new(INPUT_RESOURCE, "session", t("session-input")).with_action(action(
-            "toggle-touchpad",
-            t("session-toggle-touchpad"),
-            vec![ActionParam::optional_owned(
-                "on",
-                ParamType::Boolean,
-                t("session-param-touchpad-on"),
-            )],
-            |args| SessionCommand::SetTouchpad {
-                on: args.boolean("on"),
-            },
-        )),
+        ResourceSpec::new(INPUT_RESOURCE, "session", t("session-input"))
+            .with_action(action(
+                "toggle-touchpad",
+                t("session-toggle-touchpad"),
+                vec![ActionParam::optional_owned(
+                    "on",
+                    ParamType::Boolean,
+                    t("session-param-touchpad-on"),
+                )],
+                |args| SessionCommand::SetTouchpad {
+                    on: args.boolean("on"),
+                },
+            ))
+            .with_action(action(
+                "next-source",
+                t("session-next-input-source"),
+                Vec::new(),
+                |_| SessionCommand::NextInputSource,
+            )),
         ResourceSpec::new(SESSION_RESOURCE, "session", t("session-screen"))
             .with_action(action("lock", t("session-lock"), Vec::new(), |_| {
                 SessionCommand::Lock

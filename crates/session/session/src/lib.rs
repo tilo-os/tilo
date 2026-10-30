@@ -32,6 +32,7 @@ mod config;
 mod controls;
 mod desk_layout;
 pub mod desktop_services;
+mod display_settings;
 pub mod displays;
 mod env;
 mod keys;
@@ -857,6 +858,10 @@ impl Shared {
                 .commands
                 .borrow_mut()
                 .push(SessionCommand::Magnifier(Magnify::ZoomOut)),
+            ShortcutAction::NextInputSource => self
+                .commands
+                .borrow_mut()
+                .push(SessionCommand::NextInputSource),
             other => tracing::debug!(?other, "shortcut the session has no part in yet"),
         }
     }
@@ -1033,6 +1038,11 @@ pub struct Session {
     _settings_watch: Option<settings_store::watch::SettingsWatch>,
     /// The surface apps the session started, and those still running.
     surfaces: surfaces::Surfaces,
+    /// The displays as the person arranged them, kept in step with the ones
+    /// attached.
+    displays: display_settings::Displays,
+    /// The keyboard input sources, and the one that types.
+    sources: config::Sources,
 }
 
 /// The lock screen's passwords being checked, off the loop.
@@ -1061,6 +1071,7 @@ impl Session {
         mut options: Options,
         start: impl FnOnce(Box<dyn WindowPolicy>) -> Result<Compositor, Error>,
     ) -> Result<Self, Error> {
+        let sources = config::Sources::from_config(&options.config);
         let mut doors = Doors::default();
         // What the desk and the chrome ask of the session, from their own
         // widget trees.
@@ -1128,6 +1139,10 @@ impl Session {
         // its next pass.
         options.wake.bind(compositor.waker());
         compositor.set_input_config(options.config.input.clone());
+        compositor.set_keyboard_layout(&options.config.keyboard);
+        compositor.set_idle_config(options.config.idle);
+        compositor.set_cursor_size(options.config.cursor_size);
+        compositor.set_backlight(Box::new(display_settings::PanelBacklight::find()));
         compositor.add_host(Box::new(desktop.clone()));
         doors.add(Rc::new(RefCell::new(desktop.clone())));
 
@@ -1273,6 +1288,8 @@ impl Session {
             pids: std::collections::BTreeMap::new(),
             _settings_watch: settings_watch,
             surfaces: surfaces::Surfaces::default(),
+            displays: display_settings::Displays::default(),
+            sources,
             ended: false,
             magnifier: (
                 settings_store::magnifier::OFF,
@@ -1309,7 +1326,27 @@ impl Session {
         if self.night_light.0 {
             self.compositor.set_night_light(Some(NIGHT_LIGHT_WARMTH))?;
         }
+        self.follow_displays()?;
         Ok(())
+    }
+
+    /// Bring the displays in line with the person's arrangement and advance
+    /// a change waiting for their answer.
+    fn follow_displays(&mut self) -> Result<(), Error> {
+        let night_light = self.night_light.0.then_some(NIGHT_LIGHT_WARMTH);
+        self.displays.follow(&mut self.compositor, night_light)
+    }
+
+    /// The keyboard input sources, in the person's order.
+    #[must_use]
+    pub fn input_sources(&self) -> &[String] {
+        &self.sources.ids
+    }
+
+    /// The input source the keyboard types in now.
+    #[must_use]
+    pub fn active_input_source(&self) -> &str {
+        &self.sources.active
     }
 
     /// The compositor, to connect clients, route input and read frames.
@@ -1736,6 +1773,25 @@ impl Session {
                     .paste_files(std::path::Path::new(&destination));
                 Ok(())
             }
+            SessionCommand::NextInputSource => {
+                let Some(id) = self.sources.next() else {
+                    return Ok(());
+                };
+                self.compositor
+                    .set_keyboard_layout(&self.sources.compiled());
+                if self.night_light.1
+                    && let Err(error) = settings_store::update_section(
+                        settings_store::hardware::INPUT_SECTION,
+                        serde_json::Map::from_iter([(
+                            "keyboard_layout".to_owned(),
+                            serde_json::Value::String(id),
+                        )]),
+                    )
+                {
+                    tracing::warn!(%error, "the input source choice was not kept");
+                }
+                Ok(())
+            }
             SessionCommand::SetTouchpad { on } => {
                 let enabled = on.unwrap_or(!self.input.touchpad_enabled);
                 self.input.touchpad_enabled = enabled;
@@ -1759,6 +1815,7 @@ impl Session {
         self.compositor.dispatch(timeout)?;
         self.surfaces.poll();
         self.surfaces.serve(&mut self.shared.doors);
+        self.follow_displays()?;
         self.shared.services.borrow_mut().poll();
         let compositor = &mut self.compositor;
         self.shared
