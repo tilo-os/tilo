@@ -85,41 +85,36 @@ impl Doors {
         self.surfaces.push(surface);
     }
 
-    /// The surfaces offering their actions now, by their place: only the
-    /// exclusive ones while one is up.
-    fn offered_places(&self) -> Vec<usize> {
-        let offered: Vec<usize> = (0..self.surfaces.len())
-            .filter(|&place| self.surfaces[place].borrow().offered())
+    /// The surfaces offering their actions now, with their place: only
+    /// the exclusive ones while one is up.
+    fn offered(&self) -> Vec<(usize, &Shared)> {
+        let offered: Vec<(usize, &Shared)> = self
+            .surfaces
+            .iter()
+            .enumerate()
+            .filter(|(_, surface)| surface.borrow().offered())
             .collect();
         if offered
             .iter()
-            .any(|&place| self.surfaces[place].borrow().exclusive())
+            .any(|(_, surface)| surface.borrow().exclusive())
         {
             offered
                 .into_iter()
-                .filter(|&place| self.surfaces[place].borrow().exclusive())
+                .filter(|(_, surface)| surface.borrow().exclusive())
                 .collect()
         } else {
             offered
         }
     }
 
-    /// The surfaces offering their actions now.
-    fn offered(&self) -> Vec<&Shared> {
-        self.offered_places()
-            .into_iter()
-            .map(|place| &self.surfaces[place])
-            .collect()
-    }
-
     /// Where everything offered now stands: equal revisions offer the
     /// same. `None` when a surface cannot tell.
     #[must_use]
     pub fn revision(&self) -> Option<Vec<(usize, u64)>> {
-        self.offered_places()
+        self.offered()
             .into_iter()
-            .map(|place| {
-                self.surfaces[place]
+            .map(|(place, surface)| {
+                surface
                     .borrow()
                     .revision()
                     .map(|revision| (place, revision))
@@ -133,7 +128,7 @@ impl Doors {
     pub fn resources(&self) -> Vec<ResourceSpec> {
         self.offered()
             .into_iter()
-            .flat_map(|surface| surface.borrow_mut().resources())
+            .flat_map(|(_, surface)| surface.borrow_mut().resources())
             .collect()
     }
 
@@ -147,7 +142,7 @@ impl Doors {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        for surface in self.offered() {
+        for (_, surface) in self.offered() {
             let mut surface = surface.borrow_mut();
             if ui::tilo_actions::door::resolve(&surface.resources(), address).is_some() {
                 return surface.invoke(address, arguments);
@@ -161,7 +156,7 @@ impl Doors {
     pub fn accessible_labels(&self) -> Vec<String> {
         self.offered()
             .into_iter()
-            .flat_map(|surface| surface.borrow_mut().accessible_labels())
+            .flat_map(|(_, surface)| surface.borrow_mut().accessible_labels())
             .collect()
     }
 }

@@ -39,6 +39,7 @@ mod search;
 mod setup;
 mod sheets;
 pub mod unlock;
+mod window_motion;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -67,7 +68,7 @@ pub use controls::{
     SessionCommand,
 };
 pub use env::SessionEnvironment;
-pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA_PLAYER, MICROPHONE, QUICK_SETTINGS};
+pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
 pub use lists::{AppLists, Lists};
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
@@ -299,6 +300,14 @@ impl Shared {
         }
         // What the session's own actions asked of it.
         self.follow_asks();
+    }
+
+    /// Give search its kept history and what the session publishes.
+    fn start_search(&self) {
+        if let Some(kept) = self.services.borrow().read(search::HISTORY) {
+            self.search.restore(&kept);
+        }
+        self.observe();
     }
 
     /// Hand search what the session publishes when it changed: read after
@@ -643,6 +652,8 @@ pub struct Session {
     unlocking: Unlocking,
     /// The screenshots asked for.
     captures: Option<capture::Captures>,
+    /// The windows opening and closing.
+    windows: window_motion::WindowMotions,
 }
 
 /// The lock screen's passwords being checked, off the loop.
@@ -760,10 +771,7 @@ impl Session {
             observed: RefCell::new(None),
             places_seen: RefCell::default(),
         };
-        if let Some(kept) = shared.services.borrow().read(search::HISTORY) {
-            shared.search.restore(&kept);
-        }
-        shared.observe();
+        shared.start_search();
         let loop_wake = compositor.waker();
         Ok(Self {
             compositor,
@@ -778,6 +786,7 @@ impl Session {
                 wake: loop_wake,
             },
             captures: options.captures,
+            windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             ended: false,
             magnifier: (
                 settings_store::magnifier::OFF,
@@ -1131,6 +1140,7 @@ impl Session {
         self.compositor.dispatch(timeout)?;
         self.shared.services.borrow_mut().poll();
         self.settle()?;
+        self.windows.step(&mut self.compositor, Instant::now());
         self.compositor.render()?;
         self.settle()?;
         self.shared.observe();

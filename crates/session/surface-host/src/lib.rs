@@ -22,7 +22,7 @@ use std::cell::Cell;
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::utils::{Buffer, Rectangle, Transform};
+use smithay::utils::Transform;
 use tilo_compositor::{
     BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostKey, HostLayer, KeyModifiers,
     SurfaceHost,
