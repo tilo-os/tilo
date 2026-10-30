@@ -39,6 +39,15 @@
 /// This is the only place the gate is derived from build configuration.
 pub const DEV_ENV_OVERRIDES: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
 
+// The packages, runtimes and trust the shell reads come through package-store,
+// which gates the same overrides on its own feature: a shell that honours them
+// and a store that does not refuses every app the session installed ("needs a
+// newer system"). The shell's feature turns the store's on; this keeps it so.
+const _: () = assert!(
+    !DEV_ENV_OVERRIDES || package_store::dev_env::DEV_ENV_OVERRIDES,
+    "the shell's dev-overrides feature must enable package-store's"
+);
+
 /// Whether this binary is a release build that nonetheless honours the
 /// developer overrides — the configuration dev VM images ship and production
 /// images must never contain. Used to make such a binary identify itself.

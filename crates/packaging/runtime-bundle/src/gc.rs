@@ -517,8 +517,15 @@ impl BundleRoot {
     fn state_file(&self, dir: &str, version: &str) -> io::Result<PathBuf> {
         check_version(version)?;
         let dir = self.root.join(dir);
-        if !fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir()) {
-            remove_file_if_present(&dir)?;
+        let is_dir = |dir: &Path| fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir());
+        if !is_dir(&dir) {
+            // Launches start side by side: another one may have made the
+            // directory since this one looked, which is what it wanted too.
+            if let Err(error) = remove_file_if_present(&dir)
+                && !is_dir(&dir)
+            {
+                return Err(error);
+            }
             fs::create_dir_all(&dir)?;
         }
         Ok(dir.join(version))
@@ -632,6 +639,33 @@ mod tests {
         root.bundle(version)
             .join(crate::BUNDLE_MANIFEST_FILENAME)
             .exists()
+    }
+
+    /// Apps opened at once each hold the runtime they start on: the first
+    /// holds of a fresh root race to make its lease directory, and every one
+    /// of them holds it.
+    #[test]
+    fn launches_started_side_by_side_all_hold_their_runtime() {
+        for _ in 0..50 {
+            let dir = tempfile::tempdir().unwrap();
+            let root = std::sync::Arc::new(BundleRoot::new(dir.path()));
+            bundle(&root, "0.1.0+tilolang", 10);
+            let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let holds: Vec<_> = (0..8)
+                .map(|_| {
+                    let (root, start) = (root.clone(), start.clone());
+                    std::thread::spawn(move || {
+                        start.wait();
+                        root.hold_launch("0.1.0+tilolang")
+                    })
+                })
+                .collect();
+            for hold in holds {
+                hold.join()
+                    .unwrap()
+                    .expect("every launch holds its runtime");
+            }
+        }
     }
 
     #[test]

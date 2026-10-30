@@ -615,7 +615,7 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
     let build = BuildOptions {
         dir: options.dir.clone(),
         search: options.search.clone(),
-        out: peer.state.join("dev-build"),
+        out: dev_build_dir(&peer.state, &options.dir)?,
         tilo_runtime,
         tilolang_runtime,
         version: "0.1.0".to_owned(),
@@ -645,6 +645,22 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
     dev.follow(&wakes, &sender)
 }
 
+/// Where `tilolang dev` of the package in `dir` builds into the session whose state is
+/// `state`: a directory of its own per package, so several developed at once (each with the
+/// packages it uses, which they may share) never write over each other's builds.
+fn dev_build_dir(state: &Path, dir: &Path) -> Result<PathBuf, String> {
+    use sha2::Digest as _;
+    let package =
+        std::fs::canonicalize(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    let digest = sha2::Sha256::digest(package.as_os_str().as_encoded_bytes());
+    let short = hex::encode(digest.get(..6).unwrap_or_default());
+    let name = package
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(state.join("dev-build").join(format!("{name}-{short}")))
+}
+
 /// Mark `path` executable: a build server's outputs arrive as plain files.
 fn set_executable(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt as _;
@@ -657,6 +673,25 @@ fn set_executable(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two packages developed in one session at once build apart; the same package always
+    /// builds where it did before.
+    #[test]
+    fn each_developed_package_builds_in_its_own_directory() {
+        let checkout = tempfile::tempdir().unwrap();
+        let (notes, tasks) = (checkout.path().join("notes"), checkout.path().join("tasks"));
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::create_dir_all(&tasks).unwrap();
+        let state = Path::new("/session/state");
+        let one = dev_build_dir(state, &notes).unwrap();
+        assert_ne!(one, dev_build_dir(state, &tasks).unwrap());
+        assert_eq!(one, dev_build_dir(state, &notes.join(".")).unwrap());
+        assert!(
+            one.starts_with(state.join("dev-build")),
+            "{}",
+            one.display()
+        );
+    }
 
     #[test]
     fn a_build_of_another_architecture_is_refused() {

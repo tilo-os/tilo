@@ -196,6 +196,101 @@ impl CapnpBrokerState {
             .map_err(|error| format!("app authorship answer unheard: {error}"))
     }
 
+    /// The room owner's commit that lets `app` author in `room`, as
+    /// `certificate`'s person, this device, asks it on opening the app there:
+    /// checked as that person's membership invocation is (an ordinary person
+    /// device, admitted to the room, its certificate current), and handed to
+    /// the room's owner, which decides it against the room's governance.
+    ///
+    /// Not journaled, unlike an invocation another actor asks: the grant is
+    /// idempotent and the room's commit is its one durable record, so
+    /// nothing is lost when a crash comes between the commit and an answer.
+    /// The opening waits for the owner's commit alone, never for the
+    /// journal's writes of other invocations queued before it, nor for the
+    /// room's membership actions to be published.
+    ///
+    /// # Errors
+    /// The room's membership is not held here, the device is not admitted
+    /// to it, or the owner refused or could not commit the grant.
+    /// What an opening in `room` waits for before its grant can be
+    /// committed: nothing (`None`) when the room's membership is held here
+    /// already, else to be told whether it comes
+    /// ([`Self::await_membership_surface`]).
+    pub(crate) fn membership_projection(
+        &self,
+        room: &str,
+    ) -> Option<std::sync::mpsc::Receiver<bool>> {
+        let service = self.services.workspace_memberships.as_ref()?;
+        if service.requires_room(room) || service.grants_authorship_at_host(room) {
+            return None;
+        }
+        Some(self.await_membership_surface(room))
+    }
+
+    pub(crate) fn app_authorship_commit(
+        &self,
+        room: &str,
+        app: &str,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<
+        (
+            Arc<dyn crate::services::WorkspaceMemberships>,
+            OwnerCommitRequest,
+        ),
+        String,
+    > {
+        let command = WorkspaceMembershipCommand::GrantAppAuthorship {
+            app: app.to_owned(),
+        };
+        command.validate()?;
+        let service = self
+            .services
+            .workspace_memberships
+            .clone()
+            .ok_or("workspace membership owner unavailable")?;
+        if !(service.requires_room(room) || service.grants_authorship_at_host(room)) {
+            return Err("the workspace's membership is not held on this device".into());
+        }
+        if certificate.capabilities.can_act_as_host {
+            return Err("membership changes require an ordinary person device".into());
+        }
+        let authority = self
+            .certificate_authority
+            .get()
+            .ok_or("current certificate authority unavailable")?;
+        let room_id = uuid::Uuid::parse_str(room).map_err(|_| "invalid exact room")?;
+        authority.authorize_join(room_id, certificate)?;
+        let time = self.registered_policy_time()?;
+        let now = self.checked_policy_time(time.as_ref())?.1;
+        tilo_user_identity::verify_device_cert_at(certificate, now)
+            .map_err(|_| "membership device certificate rejected")?;
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?;
+        let verified = super::VerifiedJoinIdentity::of(
+            certificate,
+            super::cert_capped_in(Some(authority.as_ref()), room, certificate),
+        );
+        let route = CrdtRoute::record(APP, room, RECORD);
+        membership.decide_in_room(room, |workspace| {
+            super::admit_verified_join_at(workspace, &route, verified, now / 1_000_000_000)
+        })??;
+        // The owner's commit waits for an owner still opening (a session's
+        // first moments) inside its own future, as every commit does.
+        Ok((
+            service,
+            OwnerCommitRequest {
+                room: room.into(),
+                operation: CommitOperation::WorkspaceMembershipCommand {
+                    invocation: uuid::Uuid::new_v4(),
+                    caller: certificate.clone(),
+                    command,
+                },
+            },
+        ))
+    }
+
     fn invoke_workspace_person_action(
         &self,
         room: &str,
