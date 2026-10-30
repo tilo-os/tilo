@@ -19,7 +19,9 @@ use std::time::{Duration, Instant};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::Transform;
-use tilo_compositor::{Compositor, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost};
+use tilo_compositor::{
+    Compositor, HostFrame, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost,
+};
 use x11rb::connection::Connection as _;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
@@ -464,7 +466,7 @@ impl SurfaceHost for DropZone {
         vec![HostLayer {
             location: (500, 20),
             size: (100, 100),
-            buffer: self.buffer.clone(),
+            frame: HostFrame::from_buffer(self.buffer.clone(), (100, 100)),
         }]
     }
 

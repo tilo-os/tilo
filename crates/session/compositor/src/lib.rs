@@ -273,9 +273,11 @@ impl Compositor {
     /// A compositor in a window of the desktop it runs inside (see
     /// [`backend::nested`]).
     pub fn nested(policy: Box<dyn WindowPolicy>, config: &NestedConfig) -> Result<Self, Error> {
-        Self::new(policy, |handle, state| {
+        let mut compositor = Self::new(policy, |handle, state| {
             Ok(Box::new(NestedBackend::start(handle, state, config)?))
-        })
+        })?;
+        compositor.set_hosted(true);
+        Ok(compositor)
     }
 
     /// Run until `stop` holds or the backend is done: wait for clients, devices and due frames,
@@ -413,9 +415,6 @@ impl Compositor {
         if self.keys.take_alert() {
             self.flash();
         }
-        if a11y::flashing(&self.data.state, Instant::now()) {
-            self.data.state.mark_redraw_all();
-        }
         self.display.dispatch_clients(&mut self.data.state)?;
         self.sync_text_input();
         self.data.state.refresh();
@@ -451,7 +450,6 @@ impl Compositor {
         {
             self.a11y.magnifier.zoom = zoom.min(f64::from(u8::MAX)) as u8;
         }
-        self.data.state.mark_redraw_all();
     }
 
     /// The magnifier's zoom; 1 is off.
@@ -466,7 +464,9 @@ impl Compositor {
     pub fn set_a11y(&mut self, a11y: A11y) -> Result<(), Error> {
         let now = Instant::now();
         let released = self.keys.configure(&a11y.assists, now);
-        let LoopData { state, backend } = &mut self.data;
+        let LoopData {
+            state, backend, ..
+        } = &mut self.data;
         backend.set_assists(state, &a11y.assists);
         state.zoom = a11y.magnifier.factor();
         state.cursor.set_size(a11y.cursor.size);
@@ -475,7 +475,6 @@ impl Compositor {
         }
         self.a11y = a11y;
         self.seed_visuals();
-        self.data.state.mark_redraw_all();
         self.display.flush_clients()?;
         Ok(())
     }
@@ -505,7 +504,6 @@ impl Compositor {
     /// the alert sound would otherwise miss.
     pub fn flash(&mut self) {
         a11y::flash_all(&self.data.state, Instant::now());
-        self.data.state.mark_redraw_all();
     }
 
     /// How held keys repeat, for clients (the seat's repeat info) and
@@ -600,12 +598,39 @@ impl Compositor {
 
     /// When the displays dim, blank, and the session locks or suspends
     /// with no input. Applied to the current idle episode: a shorter
-    /// timeout can fire at the next dispatch.
+    /// timeout can fire at the next dispatch. A hosted session runs no idle
+    /// timers whatever it is given: the desktop it runs in owns idle.
     pub fn set_idle_config(&mut self, config: IdleConfig) {
+        let config = if self.hosted {
+            IdleConfig::never()
+        } else {
+            config
+        };
         let session = &mut self.data.state.idle.session;
         session.set_blank_timeout(config.blank_timeout);
         session.set_lock_timeout(config.lock_timeout);
         session.set_suspend_timeout(config.suspend_timeout);
+    }
+
+    /// Whether this session runs in a window of a desktop it did not start;
+    /// setting it drops every idle timer the session was given.
+    pub fn set_hosted(&mut self, hosted: bool) {
+        self.hosted = hosted;
+        if hosted {
+            self.set_idle_config(IdleConfig::never());
+        }
+    }
+
+    /// Whether this session runs in a window of a desktop it did not start.
+    #[must_use]
+    pub const fn hosted(&self) -> bool {
+        self.hosted
+    }
+
+    /// The idle timeouts the session runs on now.
+    #[must_use]
+    pub fn idle_config(&self) -> IdleConfig {
+        self.data.state.idle.session.config()
     }
 
     /// The panel's backlight, which the idle dim lowers; without one the
@@ -1125,14 +1150,8 @@ impl Compositor {
     pub fn render(&mut self) -> Result<(), Error> {
         self.sync_text_input();
         self.seed_visuals();
-        // The visual alert fades frame by frame, so each frame it covers is
-        // a new one to draw.
-        if a11y::flashing(&self.data.state, Instant::now()) {
-            self.data.state.mark_redraw_all();
-        }
-        let mut drew = false;
         for host in &mut self.data.state.hosts {
-            let _ = host.prepare_frame();
+            host.prepare_frame();
         }
         // A frame can move windows (a strip panning, a group resizing): the
         // policy places them where the surfaces just laid them out.
