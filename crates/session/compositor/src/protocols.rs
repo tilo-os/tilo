@@ -32,6 +32,7 @@ use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::primary_selection::{PrimarySelectionHandler, PrimarySelectionState};
 use smithay::wayland::shell::xdg::ToplevelSurface;
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
+use smithay::wayland::shell::xdg::dialog::{XdgDialogHandler, XdgDialogState};
 use smithay::wayland::tablet_manager::{TabletManagerState, TabletSeatHandler};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xdg_activation::{
@@ -64,6 +65,7 @@ pub(crate) struct Protocols {
     _tablet: TabletManagerState,
     _idle_inhibit: IdleInhibitManagerState,
     _content_type: ContentTypeState,
+    _dialog: XdgDialogState,
 }
 
 impl Protocols {
@@ -87,6 +89,7 @@ impl Protocols {
             _tablet: TabletManagerState::new::<State>(display),
             _idle_inhibit: IdleInhibitManagerState::new::<State>(display),
             _content_type: ContentTypeState::new::<State>(display),
+            _dialog: XdgDialogState::new::<State>(display),
         }
     }
 }
@@ -265,6 +268,33 @@ smithay::delegate_viewporter!(State);
 smithay::delegate_fractional_scale!(State);
 smithay::delegate_presentation!(State);
 smithay::delegate_xdg_decoration!(State);
+
+/// A dialog a client marks modal keeps the keyboard from the window it
+/// belongs to: focusing that window focuses the dialog instead.
+impl XdgDialogHandler for State {
+    fn modal_changed(&mut self, toplevel: ToplevelSurface, is_modal: bool) {
+        let Some(parent) = toplevel.parent() else {
+            return;
+        };
+        let focused = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        if !is_modal || focused.as_ref() != Some(&parent) {
+            return;
+        }
+        let window = self
+            .space
+            .elements()
+            .find(|window| window.toplevel().is_some_and(|own| own == &toplevel))
+            .cloned();
+        if let Some(window) = window {
+            self.focus_window(&window, smithay::utils::SERIAL_COUNTER.next_serial());
+        }
+    }
+}
+
+smithay::delegate_xdg_dialog!(State);
 smithay::delegate_xdg_activation!(State);
 smithay::delegate_primary_selection!(State);
 smithay::delegate_cursor_shape!(State);

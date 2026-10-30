@@ -50,6 +50,9 @@ use wayland_protocols::wp::tablet::zv2::client::{
     zwp_tablet_tool_v2::ZwpTabletToolV2,
     zwp_tablet_v2::ZwpTabletV2,
 };
+use wayland_protocols::xdg::dialog::v1::client::{
+    xdg_dialog_v1::XdgDialogV1, xdg_wm_dialog_v1::XdgWmDialogV1,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
     xdg_wm_base::XdgWmBase,
@@ -85,6 +88,7 @@ struct Seen {
     frames_done: u32,
     closed: bool,
     tablet_manager: Option<ZwpTabletManagerV2>,
+    wm_dialog: Option<XdgWmDialogV1>,
     /// Tablet pad events as `added`, `group`, `buttons 4`, `done`,
     /// `enter`, `mode 1`, `button 2 pressed`, `ring 90`, `ring stop`,
     /// `removed`.
@@ -1197,6 +1201,7 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 "zwp_tablet_manager_v2" => {
                     seen.tablet_manager = Some(registry.bind(name, 1, qh, ()));
                 }
+                "xdg_wm_dialog_v1" => seen.wm_dialog = Some(registry.bind(name, 1, qh, ())),
                 _ => {}
             }
         }
@@ -1473,6 +1478,8 @@ delegate_noop!(Seen: ignore ZwpTabletToolV2);
 delegate_noop!(Seen: ignore ZwpTabletPadStripV2);
 delegate_noop!(Seen: ignore ExtSessionLockManagerV1);
 delegate_noop!(Seen: ignore WlCompositor);
+delegate_noop!(Seen: ignore XdgWmDialogV1);
+delegate_noop!(Seen: ignore XdgDialogV1);
 delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlShmPool);
 delegate_noop!(Seen: ignore WlBuffer);
@@ -2182,4 +2189,112 @@ fn a_hosted_apps_copy_is_offered_under_every_text_name_and_read_back() {
             .is_err(),
         "nothing owns the primary selection"
     );
+}
+
+/// Each output and the monitor on it.
+type Told = Vec<(Rectangle<i32, Logical>, String)>;
+
+/// A policy that keeps the monitors it is told of.
+struct Monitors(Rc<RefCell<Told>>);
+
+impl WindowPolicy for Monitors {
+    fn initial_size(
+        &mut self,
+        _window: &WindowInfo,
+        _outputs: &[Rectangle<i32, Logical>],
+    ) -> Option<(i32, i32)> {
+        None
+    }
+
+    fn place(
+        &mut self,
+        _window: &WindowInfo,
+        _size: (i32, i32),
+        _outputs: &[Rectangle<i32, Logical>],
+    ) -> Point<i32, Logical> {
+        Point::from((0, 0))
+    }
+
+    fn monitors(&mut self, monitors: &[(Rectangle<i32, Logical>, String)]) {
+        *self.0.borrow_mut() = monitors.to_vec();
+    }
+}
+
+#[test]
+fn the_policy_knows_each_output_by_the_monitor_on_it() {
+    let told = Rc::new(RefCell::new(Vec::new()));
+    let mut compositor = Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).unwrap();
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .unwrap();
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-2", 320, 240).at(640, 0))
+        .unwrap();
+    compositor.render().unwrap();
+    // Without an EDID a monitor is known by its connector.
+    let names: Vec<String> = told.borrow().iter().map(|(_, name)| name.clone()).collect();
+    assert_eq!(names, ["HEADLESS-1", "HEADLESS-2"]);
+    assert_eq!(
+        told.borrow()[1].0,
+        Rectangle::new((640, 0).into(), (320, 240).into())
+    );
+    let outputs = compositor.outputs();
+    assert_eq!(outputs[1].monitor, "HEADLESS-2");
+    assert_eq!(outputs[1].label, "HEADLESS-2");
+}
+
+/// Click the left button at `(x, y)`.
+fn click(compositor: &mut Compositor, x: f64, y: f64) {
+    compositor
+        .input(InputEvent::PointerMotion { x, y })
+        .unwrap();
+    for pressed in [true, false] {
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed,
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_modal_dialog_keeps_the_keyboard_from_the_window_it_belongs_to() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "editor", (400, 300), [255, 0, 0, 255]);
+    let parent = client.toplevel.take().unwrap();
+    let parent_surface = client.surface.take().unwrap();
+    client.seen.configured = false;
+    client.open_window("save");
+    let dialog = client.toplevel.clone().unwrap();
+    dialog.set_parent(Some(&parent));
+    let qh = client.queue.handle();
+    let hint = client
+        .seen
+        .wm_dialog
+        .as_ref()
+        .expect("xdg_wm_dialog_v1")
+        .get_xdg_dialog(&dialog, &qh, ());
+    hint.set_modal();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.configured
+    });
+    client.show(100, 60, [0, 0, 255, 255]);
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.windows().len() == 2
+    });
+    let focused =
+        |compositor: &Compositor| compositor.focused_window().and_then(|info| info.app_id);
+    assert_eq!(focused(&compositor).as_deref(), Some("save"));
+
+    // A click on the window it belongs to leaves the keyboard with it.
+    click(&mut compositor, 130.0, 100.0);
+    assert_eq!(focused(&compositor).as_deref(), Some("save"));
+
+    // Not modal any more, the window takes the keyboard back.
+    hint.unset_modal();
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    click(&mut compositor, 130.0, 100.0);
+    assert_eq!(focused(&compositor).as_deref(), Some("editor"));
+    drop(parent_surface);
 }

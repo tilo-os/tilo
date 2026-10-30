@@ -156,6 +156,8 @@ mod tests {
     fn on(name: &str, x: i32) -> OutputInfo {
         OutputInfo {
             name: name.into(),
+            monitor: name.into(),
+            label: name.into(),
             enabled: true,
             rect: Some((x, 0, 1280, 800)),
         }

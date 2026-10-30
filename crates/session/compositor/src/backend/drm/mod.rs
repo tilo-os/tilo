@@ -1503,6 +1503,49 @@ fn logical_width(output: &Output) -> i32 {
 /// right of the others.
 /// A connector to light: its name, the CRTC and mode to drive it with and
 /// the scale it starts at.
+/// The EDID identity of the monitor on the connector `connector` of the
+/// card `card`, read from its sysfs node, which the kernel refreshes on
+/// every probe.
+fn monitor_identity(
+    card: &DrmNode,
+    connector: &str,
+) -> Option<settings_store::hardware::MonitorIdentity> {
+    let card = card.dev_path()?;
+    let card = card.file_name()?.to_str()?;
+    let edid = std::fs::read(format!("/sys/class/drm/{card}-{connector}/edid")).ok()?;
+    tilo_wayland_ext::edid::parse_monitor_identity(&edid)
+}
+
+/// The output of the connector `name` (`info`) on the card `card`, named
+/// after the monitor on it.
+fn new_output(card: &DrmNode, info: &connector::Info, name: &str) -> Output {
+    let (mm_w, mm_h) = info.size().unwrap_or((0, 0));
+    let identity = monitor_identity(card, name);
+    let output = Output::new(
+        name.to_owned(),
+        PhysicalProperties {
+            size: (
+                i32::try_from(mm_w).unwrap_or(0),
+                i32::try_from(mm_h).unwrap_or(0),
+            )
+                .into(),
+            subpixel: Subpixel::Unknown,
+            make: identity
+                .as_ref()
+                .map_or_else(|| "Unknown".into(), |identity| identity.make.clone()),
+            model: identity
+                .as_ref()
+                .map_or_else(|| name.to_owned(), |identity| identity.model.clone()),
+        },
+    );
+    if let Some(identity) = identity {
+        output
+            .user_data()
+            .insert_if_missing(|| crate::output::Monitor(identity));
+    }
+    output
+}
+
 struct Lighting<'a> {
     /// The render node of the GPU that renders every output.
     primary: DrmNode,
@@ -1527,20 +1570,7 @@ fn light(
         mode,
         scale,
     } = lighting;
-    let (mm_w, mm_h) = info.size().unwrap_or((0, 0));
-    let output = Output::new(
-        name.to_owned(),
-        PhysicalProperties {
-            size: (
-                i32::try_from(mm_w).unwrap_or(0),
-                i32::try_from(mm_h).unwrap_or(0),
-            )
-                .into(),
-            subpixel: Subpixel::Unknown,
-            make: "Unknown".into(),
-            model: name.to_owned(),
-        },
-    );
+    let output = new_output(&gpu.node, info, name);
     let output_mode = OutputMode::from(mode);
     // Right of the others until the arrangement places it.
     let location = Point::from((next_x(state), 0));

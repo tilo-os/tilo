@@ -116,6 +116,8 @@ pub struct State {
     pub(crate) hosts: Vec<Box<dyn SurfaceHost>>,
     /// The outputs the hosted surfaces were last told of.
     told_outputs: Vec<(i32, i32, i32, i32)>,
+    /// The monitors the policy was last told of.
+    told_monitors: Vec<(Rectangle<i32, Logical>, String)>,
     pub(crate) pointer: Point<f64, Logical>,
     pointer_target: PointerTarget,
     pub(crate) protocols: crate::protocols::Protocols,
@@ -193,6 +195,7 @@ impl State {
             policy,
             hosts: Vec::new(),
             told_outputs: Vec::new(),
+            told_monitors: Vec::new(),
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
             protocols,
@@ -274,6 +277,18 @@ impl State {
     /// since they were last told (an output came or went, changed mode,
     /// scale or place).
     fn outputs_changed(&mut self) {
+        let monitors: Vec<(Rectangle<i32, Logical>, String)> = self
+            .space
+            .outputs()
+            .filter_map(|output| {
+                let rect = self.space.output_geometry(output)?;
+                Some((rect, crate::output::monitor_of(output).0))
+            })
+            .collect();
+        if monitors != self.told_monitors {
+            self.policy.monitors(&monitors);
+            self.told_monitors = monitors;
+        }
         let outputs = self.hosted_outputs();
         if outputs == self.told_outputs {
             return;
@@ -702,6 +717,11 @@ impl State {
     }
 
     pub(crate) fn focus_window(&mut self, window: &Window, serial: Serial) {
+        // A modal dialog of the window takes the focus in its place, with
+        // the window raised under it.
+        self.space.raise_element(window, true);
+        let modal = self.modal_dialog_of(window);
+        let window = modal.as_ref().unwrap_or(window);
         self.space.raise_element(window, true);
         for other in self.space.elements() {
             if other != window {
@@ -721,6 +741,31 @@ impl State {
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, surface, serial);
         }
+    }
+
+    /// The modal dialog in front of `window`: its own modal dialog, or
+    /// that dialog's, and so on.
+    fn modal_dialog_of(&self, window: &Window) -> Option<Window> {
+        let mut owner = window.toplevel()?.wl_surface().clone();
+        let mut front = None;
+        // A chain of dialogs is never longer than the windows there are.
+        for _ in 0..self.space.elements().count() {
+            let Some(dialog) = self
+                .space
+                .elements()
+                .find(|candidate| {
+                    candidate.toplevel().is_some_and(|toplevel| {
+                        toplevel.parent().as_ref() == Some(&owner) && is_modal(toplevel)
+                    })
+                })
+                .cloned()
+            else {
+                break;
+            };
+            owner = dialog.toplevel()?.wl_surface().clone();
+            front = Some(dialog);
+        }
+        front
     }
 
     /// Map a toplevel whose first buffer arrived (or an X11 window that
@@ -895,6 +940,17 @@ pub(crate) fn describe(window: &Window) -> Option<WindowInfo> {
             .map(|parent| X11_IDS | u64::from(parent)),
         min_size: size(x11.min_size()),
         max_size: size(x11.max_size()),
+    })
+}
+
+/// Whether the client marked `toplevel` a modal dialog (xdg-dialog).
+fn is_modal(toplevel: &ToplevelSurface) -> bool {
+    smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+            .and_then(|data| data.lock().ok().map(|data| data.modal))
+            .unwrap_or(false)
     })
 }
 

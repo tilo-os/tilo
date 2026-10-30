@@ -39,6 +39,12 @@ pub struct ModeRequest {
 pub struct OutputInfo {
     /// The connector name (`eDP-1`).
     pub name: String,
+    /// The monitor on it, as a layout follows it between ports: make,
+    /// model and serial from its EDID, else the connector name.
+    pub monitor: String,
+    /// The monitor as a person knows it (`Dell U2720Q`), else the
+    /// connector name.
+    pub label: String,
     /// Whether it is on.
     pub enabled: bool,
     /// Its logical rectangle `(x, y, w, h)` while it is on.
@@ -269,6 +275,26 @@ pub(crate) fn withdraw(output: &Output, display: &DisplayHandle) {
     {
         display.remove_global::<State>(id);
     }
+}
+
+/// The EDID identity of the monitor on an output, kept in its user data
+/// by the backend that read it.
+pub(crate) struct Monitor(pub(crate) settings_store::hardware::MonitorIdentity);
+
+/// The monitor on `output`: the key a layout follows it by and the name a
+/// person knows it by; the connector name for both without an EDID.
+pub(crate) fn monitor_of(output: &Output) -> (String, String) {
+    output.user_data().get::<Monitor>().map_or_else(
+        || (output.name(), output.name()),
+        |Monitor(identity)| {
+            (
+                format!("{} {} {}", identity.make, identity.model, identity.serial)
+                    .trim()
+                    .to_owned(),
+                identity.display_name(),
+            )
+        },
+    )
 }
 
 #[cfg(test)]

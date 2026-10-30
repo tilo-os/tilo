@@ -97,6 +97,12 @@ pub trait WindowPolicy {
         None
     }
 
+    /// The outputs, each with the monitor on it: its identity from the
+    /// display's EDID (make, model and serial), else its connector, which
+    /// a layout follows between ports. Told when they change, before the
+    /// next arrangement.
+    fn monitors(&mut self, _monitors: &[(Rectangle<i32, Logical>, String)]) {}
+
     /// A window asked its size of ([`Self::initial_size`]) went away before
     /// it showed a buffer, so it never maps: whatever place it was given
     /// goes.
