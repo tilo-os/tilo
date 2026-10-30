@@ -71,25 +71,26 @@ pub(crate) struct KeepClear {
     pub window: Option<Rect>,
 }
 
-/// How far a card sits in from its display's edges.
-const CARD_INSET: f64 = 24.0;
-/// The widest a card's name runs before it is elided.
-const NAME_MAX_WIDTH: f32 = 200.0;
-
-/// Where a card of `size` sits on `output`: inset from one of its corners,
+/// Where a card of `size` sits on `output`: `inset` in from one of its corners,
 /// the corner whose card `avoid` (the focused window) covers least, the
 /// bottom-left first among equals. Top corners sit below the `top_band`
 /// the top bar takes, so a card never covers it.
 #[must_use]
-pub fn card_rect(output: Rect, size: (f64, f64), top_band: f64, avoid: Option<Rect>) -> Rect {
+pub fn card_rect(
+    output: Rect,
+    size: (f64, f64),
+    inset: f64,
+    top_band: f64,
+    avoid: Option<Rect>,
+) -> Rect {
     let (width, height) = (
-        size.0.min(output.width() / 2.0 - CARD_INSET).max(0.0),
-        size.1.min(output.height() / 2.0 - CARD_INSET).max(0.0),
+        size.0.min(output.width() / 2.0 - inset).max(0.0),
+        size.1.min(output.height() / 2.0 - inset).max(0.0),
     );
-    let left = output.x0 + CARD_INSET;
-    let right = output.x1 - CARD_INSET - width;
-    let top = output.y0 + top_band.max(0.0) + CARD_INSET;
-    let bottom = output.y1 - CARD_INSET - height;
+    let left = output.x0 + inset;
+    let right = output.x1 - inset - width;
+    let top = output.y0 + top_band.max(0.0) + inset;
+    let bottom = output.y1 - inset - height;
     let corners = [(left, bottom), (right, bottom), (right, top), (left, top)]
         .map(|(x, y)| Rect::new(x, y, x + width, y + height));
     let covered = |card: &Rect| avoid.map_or(0.0, |avoid| card.intersect(avoid).area());
@@ -313,13 +314,25 @@ impl DisplayIdentify {
         for label in labels {
             let number = label.number.to_string();
             let (nw, nh) = text_renderer.measure_style(&number, None, &number_style);
-            let name = text_renderer.elide_to_width_style(&label.name, NAME_MAX_WIDTH, &name_style);
+            // A name runs no wider than the narrowest panel before it is
+            // elided.
+            let name = text_renderer.elide_to_width_style(
+                &label.name,
+                theme.tokens.metrics.panel_min_width,
+                &name_style,
+            );
             let (lw, lh) = text_renderer.measure_style(&name, None, &name_style);
             let size = (
                 pad_x + f64::from(nw) + gap + f64::from(lw) + pad_x,
                 pad_y + f64::from(nh.max(lh)) + pad_y,
             );
-            let card = card_rect(label.output, size, clear.top_band, clear.window);
+            let card = card_rect(
+                label.output,
+                size,
+                f64::from(spacing.s6),
+                clear.top_band,
+                clear.window,
+            );
             cards.push(card);
             let faded = opacity < 0.999;
             if faded {
@@ -367,6 +380,9 @@ impl DisplayIdentify {
 mod tests {
     use super::*;
     use vello::kurbo::Point;
+
+    /// The inset the identify cards sit at on the base theme.
+    const CARD_INSET: f64 = ui::tokens::Spacing::BASE.s6 as f64;
 
     #[test]
     fn every_output_gets_a_card_even_without_a_snapshot() {
@@ -651,7 +667,7 @@ mod tests {
             Rect::new(1920.0, -360.0, 4480.0, 1080.0),
             Rect::new(0.0, 0.0, 1280.0, 800.0),
         ] {
-            let card = card_rect(output, size, 0.0, None);
+            let card = card_rect(output, size, CARD_INSET, 0.0, None);
             assert_out_of_the_way(card, output);
             assert_eq!(
                 (card.x0, card.y1),
@@ -667,24 +683,24 @@ mod tests {
         let size = (180.0, 44.0);
         // Settings on the left half, its arrangement canvas inside it.
         let settings = Rect::new(8.0, 40.0, 1100.0, 1072.0);
-        let card = card_rect(output, size, 0.0, Some(settings));
+        let card = card_rect(output, size, CARD_INSET, 0.0, Some(settings));
         assert_out_of_the_way(card, output);
         assert!(!card.overlaps(settings), "{card:?} covers Settings");
         assert!(card.x0 > settings.x1, "the right-hand corner: {card:?}");
         // Settings across the bottom: a top corner, right first (the top
         // bar's start is on the left).
         let settings = Rect::new(0.0, 300.0, 1920.0, 1080.0);
-        let card = card_rect(output, size, 0.0, Some(settings));
+        let card = card_rect(output, size, CARD_INSET, 0.0, Some(settings));
         assert_out_of_the_way(card, output);
         assert!(!card.overlaps(settings));
         assert!(card.x1 > output.center().x, "{card:?}");
         // A window over the whole display: the card still stays small and
         // in a corner, never over the middle of the window's content.
-        let card = card_rect(output, size, 0.0, Some(output));
+        let card = card_rect(output, size, CARD_INSET, 0.0, Some(output));
         assert_out_of_the_way(card, output);
         // A top corner sits below the top bar.
         let settings = Rect::new(0.0, 300.0, 1920.0, 1080.0);
-        let card = card_rect(output, size, 56.0, Some(settings));
+        let card = card_rect(output, size, CARD_INSET, 56.0, Some(settings));
         assert!(card.y0 >= 56.0 + CARD_INSET, "{card:?} covers the top bar");
     }
 
