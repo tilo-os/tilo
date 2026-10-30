@@ -462,7 +462,7 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
             groups.push(card);
         }
         let colour = cx.settings::<crate::prefs::IdentityPrefs>();
-        if let Some(card) = cx.record(&colour, colour_card) {
+        if let Some(card) = cx.record(&colour, |cx| colour_card(cx)) {
             groups.push(card);
         }
         page_of(groups)
@@ -899,7 +899,7 @@ mod tests {
     #[test]
     fn the_colour_the_person_wears_is_stored_where_the_theme_reads_it() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        let chosen = || {
+        let chosen = |app: &TestApp<SettingsShell>| {
             let section = app
                 .settings::<IdentityPrefs>()
                 .document()
@@ -908,17 +908,17 @@ mod tests {
                 settings_store::identity::SECTION: section,
             }))
         };
-        assert_eq!(chosen(), None, "no choice follows the identity");
+        assert_eq!(chosen(&app), None, "no choice follows the identity");
 
         edit_field(&mut app, IDENTITY, "colour", "violet").unwrap();
         assert_eq!(
             app.settings::<IdentityPrefs>().get().colour.as_deref(),
             Some("violet")
         );
-        assert_eq!(chosen(), Some(ui::tokens::PresenceHue::Violet));
+        assert_eq!(chosen(&app), Some(ui::tokens::PresenceHue::Violet));
 
         edit_field(&mut app, IDENTITY, "colour", serde_json::Value::Null).unwrap();
-        assert_eq!(chosen(), None);
+        assert_eq!(chosen(&app), None);
 
         assert!(edit_field(&mut app, IDENTITY, "colour", "chartreuse").is_err());
         assert_eq!(app.settings::<IdentityPrefs>().get().colour, None);
