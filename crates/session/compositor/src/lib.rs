@@ -57,6 +57,7 @@ mod tablet;
 mod text_input;
 mod touch;
 mod window_frame;
+mod x11_windows;
 mod xdnd;
 mod xdnd_bridge;
 mod xwayland;
@@ -99,6 +100,7 @@ pub use selection::Selection;
 pub use smithay::utils::Transform;
 pub use state::State;
 pub use window_frame::{Edge, Shadow, WindowFrame};
+pub use x11_windows::{Icon, Identity as X11Identity};
 
 /// Why the compositor could not start or keep running.
 #[derive(Debug)]
@@ -153,6 +155,9 @@ pub struct LoopData {
     pub state: State,
     /// The backend that created the sources.
     pub backend: Box<dyn Backend>,
+    /// The session's own X11 connection and what it learned about each X11
+    /// window, once Xwayland runs.
+    pub(crate) x11_windows: Option<x11_windows::X11Windows>,
 }
 
 /// What the loop tells of each turn of its wait.
@@ -211,7 +216,11 @@ impl Compositor {
         let mut compositor = Self {
             event_loop,
             display,
-            data: LoopData { state, backend },
+            data: LoopData {
+                state,
+                backend,
+                x11_windows: None,
+            },
             hosted: false,
             displays: settings_bridge::Published::default(),
             turns: None,
@@ -371,6 +380,10 @@ impl Compositor {
         self.data.state.repeat_keys();
         self.display.dispatch_clients(&mut self.data.state)?;
         self.data.state.refresh();
+        if let Some(x11) = self.data.x11_windows.as_mut() {
+            // The X server's own focus follows the session's.
+            x11.follow_keyboard(&self.data.state);
+        }
         self.configure_from_clients();
         if let Some(undo) = self.data.state.display_changes.due(Instant::now()) {
             self.put_back(&undo);
@@ -406,7 +419,7 @@ impl Compositor {
     /// Switch the panels whose wanted power changed and write the gamma
     /// ramps that changed.
     fn sync_power(&mut self) {
-        let LoopData { state, backend } = &mut self.data;
+        let LoopData { state, backend, .. } = &mut self.data;
         backend.sync_power(state);
         backend.sync_gamma(state);
     }
@@ -724,7 +737,7 @@ impl Compositor {
 
     /// Put outputs back after a reverted change.
     fn put_back(&mut self, undo: &[OutputChange]) {
-        let LoopData { state, backend } = &mut self.data;
+        let LoopData { state, backend, .. } = &mut self.data;
         if let Err(error) = backend.configure_checked(state, undo, false) {
             tracing::warn!(%error, "reverting a display change failed");
         }
@@ -915,7 +928,7 @@ impl Compositor {
     pub fn set_input_config(&mut self, config: InputConfig) {
         let (delay, rate) = config.key_repeat_params();
         self.set_key_repeat(KeyRepeat { delay, rate });
-        let LoopData { state, backend } = &mut self.data;
+        let LoopData { state, backend, .. } = &mut self.data;
         backend.set_input_config(state, config);
     }
 
@@ -1016,6 +1029,25 @@ impl Compositor {
             .into_iter()
             .map(|(info, rect)| (info, (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)))
             .collect()
+    }
+
+    /// What the X11 window `id` says about its program: its process, class,
+    /// desktop start-up and icon. `None` for a Wayland window.
+    pub fn x11_identity(&self, id: u64) -> Option<&X11Identity> {
+        let x11 = self.data.x11_windows.as_ref()?;
+        let window = self
+            .data
+            .state
+            .space
+            .elements()
+            .find(|window| state::describe(window).is_some_and(|info| info.id == id))?;
+        x11.identity(window.x11_surface()?.window_id())
+    }
+
+    /// Ask the window with `id` to close, as its own close button would: the
+    /// client decides what closing means, and does it.
+    pub fn close_window(&mut self, id: u64) {
+        self.data.state.close_window(id);
     }
 
     /// Whether a client keeps the session from idling (idle-inhibit).
