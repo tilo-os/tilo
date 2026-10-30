@@ -5,11 +5,15 @@
 /// Follow `update`, the refused answer to invocation `id`, with the
 /// invocation's failure carrying `refusal`. Anything but a success is left
 /// as it was: there is nothing it would leave unanswered.
+#[allow(
+    clippy::future_not_send,
+    reason = "runs on the worker's local set, as the channel it answers on does"
+)]
 pub(super) async fn fail(
     channel: &runtime_collab::ChannelHandle,
     id: u64,
     update: &tilo_actions::InvocationUpdate,
-    refusal: &impl std::fmt::Display,
+    refusal: String,
 ) {
     let tilo_actions::InvocationUpdate::Succeeded { invocation, .. } = update else {
         return;

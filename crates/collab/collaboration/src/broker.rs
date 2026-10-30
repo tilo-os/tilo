@@ -6868,7 +6868,7 @@ async fn dispatch_sdk_request(
                             id,
                             "collab: the broker refused this invocation update; the bridge stays open"
                         );
-                        refused_answer::fail(&route.channel, id, &update, &error).await;
+                        refused_answer::fail(&route.channel, id, &update, error.to_string()).await;
                     } else {
                         tracing::warn!(%error, id, "collab: updating action invocation failed");
                         if update.is_terminal() {

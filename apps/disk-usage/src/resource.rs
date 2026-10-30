@@ -51,7 +51,7 @@ pub enum DiskUsageEffect {
     /// Analyze a folder.
     ///
     /// Scans it and shows what takes up its space.
-    #[effect(job)]
+    #[effect(job, returns)]
     Analyze {
         #[param("Absolute path of the folder to analyze")]
         path: AbsolutePath,
@@ -59,7 +59,7 @@ pub enum DiskUsageEffect {
     /// Choose folder.
     ///
     /// Asks for a folder, then analyzes it.
-    #[effect(attended, job)]
+    #[effect(attended, job, returns)]
     Choose,
     /// Go back.
     ///
