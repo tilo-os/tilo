@@ -6942,9 +6942,7 @@ impl CapnpBrokerState {
             self.withdraw_route_hold(hold);
         }
         self.launch_disconnected(peer_id);
-        if let Ok(mut windows) = self.window_instances.lock() {
-            windows.remove(&peer_id);
-        }
+        self.forget_windows_of(peer_id);
         self.disconnect_device_media(peer_id);
         if let Some(realtime) = self.services.realtime.as_ref() {
             realtime.disconnect(peer_id);
@@ -14975,6 +14973,7 @@ async fn drive_connection(
                 {
                     windows.insert(peer_id, instance);
                 }
+                state.note_windowless(peer_id, local_media.as_deref());
                 local_media
             }
             Err(refusal) => {
@@ -15519,6 +15518,7 @@ pub mod tests {
                     creation: None,
                     continuation_instance: None,
                     launch_ticket: Some(31),
+                    windowless: false,
                 },
             ))
         }

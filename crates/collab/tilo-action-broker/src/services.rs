@@ -622,6 +622,10 @@ pub struct AuthenticatedApplicationLaunch {
     /// launch that started this process ([`Launched::Started`]), read from
     /// the host's own launch record. Correlation only, never authority.
     pub launch_ticket: Option<u64>,
+    /// The host made this connection for an instance of the app with no
+    /// window ([`LauncherServices::windowless`]): it takes the app's actions
+    /// on its records, and never an `open`, which shows something.
+    pub windowless: bool,
 }
 
 /// What [`LauncherServices::launch_content`] started.
@@ -755,6 +759,19 @@ pub trait LauncherServices: Send + Sync {
         }
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
+    /// Have an instance of `app` with no window run in `room`, started now
+    /// unless one runs there already, to take an invocation of the app's
+    /// actions on its records: what a closed app gets in place of a window
+    /// for an action that shows nothing. `Ok(true)` when this host runs one
+    /// there, `Ok(false)` when it runs none of `app` (its actions then launch
+    /// it as before). It ends with the session.
+    ///
+    /// # Errors
+    /// Why the instance this host runs of `app` there failed.
+    fn windowless(&self, app: &str, room: &str) -> Result<bool, String> {
+        let _ = (app, room);
+        Ok(false)
+    }
     /// Snapshot the original launch facts while admitting this connection.
     /// Unsupported launchers retain no private window-instance authority.
     /// `window_instance` is the window the connection says it was made for:
@@ -778,6 +795,7 @@ pub trait LauncherServices: Send + Sync {
             creation: self.application_creation_evidence(pid, app, room)?,
             continuation_instance: None,
             launch_ticket: None,
+            windowless: false,
         }))
     }
 
