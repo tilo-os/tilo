@@ -209,6 +209,19 @@ impl Ask {
         }
     }
 
+    /// [`Self::wait`] without sleeping: a thread answering under a call
+    /// somebody holds answers within microseconds, and every microsecond this
+    /// waits is one the desktop does not turn.
+    pub(super) fn wait_yielding(&self, tids: &[i32], deadline: Instant) {
+        loop {
+            if tids.iter().all(|&tid| self.answered(tid)) || Instant::now() >= deadline {
+                return;
+            }
+            // SAFETY: `sched_yield` takes no arguments and cannot fail.
+            unsafe { libc::sched_yield() };
+        }
+    }
+
     /// `tid`'s return addresses where the signal interrupted it, innermost
     /// frame first; `None` when it has not answered.
     pub(super) fn ips(&self, tid: i32) -> Option<Vec<usize>> {
