@@ -20,14 +20,19 @@ use winit::keyboard::{Key, NamedKey};
 fn edits(doc: &mut automerge::AutoCommit) -> ui::widget::Edits<'_> {
     ui::widget::Edits::lend(doc)
 }
-fn seed_text(wp: &mut WordProcessorWidget, state: &mut ui::State, text: &str) {
+fn seed_text(wp: &mut Editor, state: &mut ui::State, text: &str) {
     wp.model_mut().insert_str(&mut edits(&mut state.doc), text);
 }
 use std::fmt::Write as _;
 use ui::headless::Framed;
 use ui::testing::Dispatch;
 
+mod harness;
 mod images;
+
+pub(super) use harness::{
+    Lent, editor, mount, mount_themed, on_editor, pipeline_draw, pipeline_draw_themed, split,
+};
 
 /// Minimal, valid 2×3 RGB PNG shared by image layout, accessibility, portal,
 /// and inspector tests.
@@ -118,7 +123,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
     // Phase: native_input_snapshot_reads_real_caret_text_without_mutation.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "fixture é");
@@ -127,7 +132,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
         let heads = state.doc.get_heads();
         let caret = wp.model().caret().clone();
         let dirty = wp.lifecycle.dirty;
-        let snapshot = wp.native_input_snapshot(&state.doc, &state.root).unwrap();
+        let snapshot = wp.native_input_snapshot(&state.doc, &state.root);
         assert_eq!(snapshot["offset_y"], 144.0);
         assert_eq!(snapshot["max_scroll"], 2000.0);
         assert_eq!(snapshot["caret_text"], "fixture é");
@@ -140,7 +145,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
         assert_eq!(wp.lifecycle.dirty, dirty);
         assert_eq!(wp.scroll_y, 144.0);
         wp.inner.region = Region::Header;
-        let header = wp.native_input_snapshot(&state.doc, &state.root).unwrap();
+        let header = wp.native_input_snapshot(&state.doc, &state.root);
         assert_eq!(header["caret_region"], "header");
         assert!(
             header["caret_text"].is_null(),
@@ -151,7 +156,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
     // Phase: plain_body_edits_retain_untouched_views_and_fall_back_for_other_changes.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.inner
             .insert_str(&mut edits(&mut state.doc), "Untouched paragraph");
@@ -257,7 +262,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
     // Phase: plain_body_edit_refreshes_a_shifted_virtual_window.
     {
         let mut state = large_body();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         let old_start = wp.body_window_start;
         // The caret is still cached, but the requested scroll window has moved.
@@ -294,7 +299,7 @@ fn resources_navigate_by_stable_ranges_and_files_are_records() {
     // Phase: resource_navigation_uses_stable_ranges_and_refuses_stale_ones.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "findable text");
@@ -315,60 +320,11 @@ fn resources_navigate_by_stable_ranges_and_files_are_records() {
     }
 }
 
-/// Mount `wp` over `state` in a [`FrameHarness`](ui::headless::FrameHarness)
-/// and run its first frame at `w`×`h` under the dark theme.
-pub(super) fn mount(
-    state: ui::State,
-    wp: WordProcessorWidget,
-    w: u32,
-    h: u32,
-) -> Framed<WordProcessorWidget> {
-    mount_themed(state, wp, w, h, &Theme::dark())
-}
-
-/// Like [`mount`] but runs the first frame under `theme`.
-pub(super) fn mount_themed(
-    state: ui::State,
-    wp: WordProcessorWidget,
-    w: u32,
-    h: u32,
-    theme: &Theme,
-) -> Framed<WordProcessorWidget> {
-    Framed::new(state, wp, (w, h), theme.clone())
-}
-
-/// Run one frame at `w`×`h` under the dark theme that recomposes the whole
-/// layout tree, and hand back the widget and its document for what follows.
-pub(super) fn pipeline_draw(
-    framed: &mut Framed<WordProcessorWidget>,
-    w: u32,
-    h: u32,
-) -> (&mut WordProcessorWidget, &mut ui::State) {
-    pipeline_draw_themed(framed, w, h, &Theme::dark());
-    Framed::split(framed)
-}
-
-/// Like [`pipeline_draw`] but renders under an explicit [`Theme`] so tests
-/// can exercise the real five-pass draw path under light/dark/high-contrast
-/// palettes. Returns the widget's resolved chrome palette for inspection.
-pub(super) fn pipeline_draw_themed(
-    framed: &mut Framed<WordProcessorWidget>,
-    w: u32,
-    h: u32,
-    theme: &Theme,
-) -> ChromeColors {
-    Framed::harness_mut(framed)
-        .relayout_themed((w, h), theme.clone())
-        .expect("the frame settles");
-    // `draw` resolves the chrome palette from `theme` into `wp.chrome`.
-    framed.chrome
-}
-
 /// Build a small populated doc (heading + paragraph) so a draw exercises the
 /// toolbar, panels, page, body ink, selection, and bars in one pass.
-fn populated() -> (ui::State, WordProcessorWidget) {
+fn populated() -> (ui::State, Editor) {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     wp.model_mut()
         .insert_str(&mut edits(&mut state.doc), "Title");
@@ -452,7 +408,7 @@ fn paper_stays_readable_and_the_draw_follows_the_theme() {
     );
     for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
         let (state, wp) = populated();
-        let cc = mount_themed(state, wp, 1100, 760, &theme).chrome;
+        let cc = editor(&mut mount_themed(state, wp, 1100, 760, &theme)).chrome;
         assert_eq!(cc.paper, ChromeColors::for_theme(&theme).paper);
         assert_eq!(
             cc.paper_accent,
@@ -468,7 +424,7 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
     // Phase: draw_lays_out_all_blocks.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "Hello");
@@ -476,16 +432,16 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "World");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         assert_eq!(wp.laid.len(), 2, "draw laid out both paragraphs");
     }
 
     // Phase: large_body_uses_a_bounded_viewport_cache_while_find_remains_complete.
     {
         let state = large_body();
-        let wp = WordProcessorWidget::detached();
+        let wp = Editor::detached();
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         assert_eq!(wp.body_order.len(), VIEWPORT_BLOCK_WINDOW * 4);
         assert!(
@@ -515,7 +471,7 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
     // Phase: scrolling_retains_overlap_but_discards_transient_block_previews.
     {
         let state = large_body();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         let retained_id = wp.blocks[100].id.clone();
         let retained_text = wp.blocks[100].text.as_ptr();
@@ -572,14 +528,15 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
 #[test]
 fn deep_scrolling_keeps_visible_text_loaded() {
     let state = large_body();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.view.auto_fit_page = false;
     let mut framed = mount(state, wp, 1000, 700);
     for zoom in [0.5, 1.0, 2.0] {
-        framed.zoom.set(zoom);
+        editor(&mut framed).zoom.set(zoom);
         pipeline_draw(&mut framed, 1000, 700);
         for fraction in [0.75, 0.5, 0.25, 0.0] {
-            framed.scroll_y = framed.max_scroll * fraction;
+            let wp = editor(&mut framed);
+            wp.scroll_y = wp.max_scroll * fraction;
             let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
             assert!(
                 wp.laid.iter().any(|l| {
@@ -599,9 +556,9 @@ fn deep_scrolling_keeps_visible_text_loaded() {
 #[test]
 fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
     let state = large_body();
-    let wp = WordProcessorWidget::detached();
+    let wp = Editor::detached();
     let mut framed = mount(state, wp, 1000, 700);
-    let (wp, _) = Framed::split(&mut framed);
+    let (wp, _) = split(&mut framed);
     let first = wp.body_order.id_at(0).unwrap().to_owned();
     let cold_shapes = wp.dbg_layout_misses;
     assert!(cold_shapes >= VIEWPORT_BLOCK_WINDOW);
@@ -636,19 +593,19 @@ fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
     );
     // A third distinct viewport must not evict the immediately previous one.
     for position in [distant_scroll / 2.0, distant_scroll, distant_scroll / 2.0] {
-        framed.scroll_y = position;
+        editor(&mut framed).scroll_y = position;
         let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
         assert!(wp.layout_cache.len() + wp.recent_layout_cache.len() <= 2 * VIEWPORT_BLOCK_WINDOW);
     }
-    assert_eq!(framed.dbg_layout_misses, 0);
+    assert_eq!(editor(&mut framed).dbg_layout_misses, 0);
 }
 
 #[test]
 fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
     let state = large_body();
-    let wp = WordProcessorWidget::detached();
+    let wp = Editor::detached();
     let mut framed = mount(state, wp, 1000, 700);
-    let (wp, _) = Framed::split(&mut framed);
+    let (wp, _) = split(&mut framed);
     let first = wp.body_order.id_at(0).unwrap().to_owned();
     let deep = wp
         .body_order
@@ -691,7 +648,7 @@ fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
 }
 
 /// Select `[start, end)` chars of the (single) caret block.
-fn select_range(wp: &mut WordProcessorWidget, start: usize, end: usize) {
+fn select_range(wp: &mut Editor, start: usize, end: usize) {
     let block = wp.model().caret.block.clone();
     wp.model_mut().set_caret(Caret {
         block: block.clone(),
@@ -703,9 +660,7 @@ fn select_range(wp: &mut WordProcessorWidget, start: usize, end: usize) {
 
 /// The window bar's slots, menu buttons' items with them, each with the
 /// command it runs (none for a menu button).
-fn bar_slots(
-    wp: &WordProcessorWidget,
-) -> Vec<(ui::window_toolbar::ToolbarAction, Option<BarCommand>)> {
+fn bar_slots(wp: &Editor) -> Vec<(ui::window_toolbar::ToolbarAction, Option<BarCommand>)> {
     wp.window_bar()
         .actions
         .into_iter()
@@ -724,10 +679,7 @@ fn bar_slots(
 }
 
 /// The window bar's slot that runs the toolbar command `action`.
-fn bar_slot(
-    wp: &WordProcessorWidget,
-    action: ToolAction,
-) -> Option<ui::window_toolbar::ToolbarAction> {
+fn bar_slot(wp: &Editor, action: ToolAction) -> Option<ui::window_toolbar::ToolbarAction> {
     bar_slots(wp)
         .into_iter()
         .find(|(_, command)| *command == Some(BarCommand::Tool(action)))
@@ -735,7 +687,7 @@ fn bar_slot(
 }
 
 /// The commands of the items the window bar's menu button `menu` lists.
-fn bar_items(wp: &WordProcessorWidget, menu: &str) -> Vec<BarCommand> {
+fn bar_items(wp: &Editor, menu: &str) -> Vec<BarCommand> {
     let bar = wp.window_bar();
     let items = bar
         .actions
@@ -754,7 +706,7 @@ fn bar_items(wp: &WordProcessorWidget, menu: &str) -> Vec<BarCommand> {
 
 /// Press the window bar's slot named `name` as the person does: the bar
 /// sends its id, which the editor runs with the document in hand.
-fn press_bar(wp: &mut WordProcessorWidget, state: &mut ui::State, name: &str) {
+fn press_bar(wp: &mut Editor, state: &mut ui::State, name: &str) {
     let slot = bar_slots(wp)
         .into_iter()
         .find(|(slot, command)| slot.name == name && command.is_some())
@@ -768,7 +720,7 @@ fn press_bar(wp: &mut WordProcessorWidget, state: &mut ui::State, name: &str) {
 
 /// Open the editor's one menu of its own the File commands reach: the
 /// question whether a template should replace the document's words.
-fn ask_to_replace(wp: &mut WordProcessorWidget) {
+fn ask_to_replace(wp: &mut Editor) {
     let viewport = wp.floating_viewport();
     let top = Rect::new(wp.rect.x1, wp.rect.y0, wp.rect.x1, wp.rect.y0);
     wp.file_menu
@@ -778,7 +730,7 @@ fn ask_to_replace(wp: &mut WordProcessorWidget) {
 
 /// The commands the window bar offers this frame, in order: the Format and
 /// Insert menus' items, then the trailing toggles.
-fn tool_actions(wp: &WordProcessorWidget) -> Vec<ToolAction> {
+fn tool_actions(wp: &Editor) -> Vec<ToolAction> {
     bar_slots(wp)
         .into_iter()
         .filter_map(|(_, command)| match command {
@@ -791,7 +743,7 @@ fn tool_actions(wp: &WordProcessorWidget) -> Vec<ToolAction> {
 /// The edit `effect` makes at the window's own view, as the palette or an
 /// agent invoking it there submits it.
 fn effect_edit(
-    wp: &WordProcessorWidget,
+    wp: &Editor,
     doc: &AutoCommit,
     effect: &crate::effects::WordProcessorEffect,
 ) -> crate::actions::RichTextAction {
@@ -817,7 +769,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
     // `insert-table` spec builds for the same document.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "Intro");
@@ -858,7 +810,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
     // exactly one undo boundary for the host, and matches the palette spec.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "Body text");
@@ -901,7 +853,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
     // Phase: find_and_replace_all_works.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "hello world hello there");
@@ -930,7 +882,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
     // Phase: styles_panel_toggles_off.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         assert!(
             !wp.view.styles_panel_visible,
             "the first-launch writing surface is uncluttered"
@@ -950,7 +902,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
     // Phase: selected_text_link_button_requests_the_canonical_argument_flow.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "Read this");
@@ -968,11 +920,11 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
 
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::Hyperlink);
         assert_eq!(
-            Widget::take_action_palette_request(&mut wp),
+            wp.take_action_palette_request(),
             Some(crate::effects::WordProcessorEffect::SET_HYPERLINK.on("word-processor.caret"))
         );
         assert!(
-            Widget::take_action_palette_request(&mut wp).is_none(),
+            wp.take_action_palette_request().is_none(),
             "the host request is edge-triggered"
         );
     }
@@ -983,7 +935,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
     {
         let (state, wp) = populated();
         let mut narrow = mount(state, wp, 760, 700);
-        let (wp, _) = Framed::split(&mut narrow);
+        let (wp, _) = split(&mut narrow);
         let expected = tool_actions(wp);
         assert!(!expected.is_empty());
         for action in expected {
@@ -1002,7 +954,7 @@ fn character_marks_shape_their_spans() {
     // Phase: highlight_mark_yields_background_span.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "hello world");
@@ -1035,7 +987,7 @@ fn character_marks_shape_their_spans() {
     // Phase: super_mark_yields_super_baseline.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut().insert_str(&mut edits(&mut state.doc), "x2");
         select_range(&mut wp, 1, 2); // the "2"
@@ -1067,13 +1019,13 @@ fn character_marks_shape_their_spans() {
         // production path (`block_line_spacing` → `RichTextLayout::shape`'s
         // line_height_mult). Double spacing must produce a strictly taller layout.
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         let long = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua";
         wp.model_mut().insert_str(&mut edits(&mut state.doc), long);
 
         let mut framed = mount(state, wp, 700, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         let single_h = wp
             .laid
             .iter()
@@ -1116,7 +1068,7 @@ fn character_marks_shape_their_spans() {
 #[test]
 fn super_and_sub_are_mutually_exclusive() {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     wp.model_mut().insert_str(&mut edits(&mut state.doc), "x2");
     let c = wp.model().containers.clone().unwrap();
@@ -1148,7 +1100,7 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
     // Phase: layout_cache_reuses_unchanged_blocks_and_reshapes_after_edit.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "First paragraph here");
@@ -1158,7 +1110,7 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
 
         // Cold frame: the cache is empty, so every block is shaped (a miss).
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         assert_eq!(wp.dbg_layout_hits, 0, "cold draw cannot reuse anything");
         assert_eq!(
             wp.dbg_layout_misses, 2,
@@ -1223,9 +1175,9 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
                 )
                 .unwrap();
         }
-        let wp = WordProcessorWidget::detached();
+        let wp = Editor::detached();
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         assert!(wp.laid.len() >= 2);
         assert!(wp.blocks.iter().any(|b| b.kind == "heading"));
         assert!(
@@ -1243,13 +1195,13 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
     // Phase: styles_panel_renders_hits_and_picks_a_style.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "A paragraph");
         wp.view.styles_panel_visible = true;
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         assert!(wp.view.styles_panel_visible);
         assert!(
@@ -1271,7 +1223,7 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
     // Phase: editing_a_style_updates_every_instance.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "first");
@@ -1279,7 +1231,7 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "second");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         let before = wp.model().stylesheet(&state.doc).get("body").size;
         let slot = wp
@@ -1314,11 +1266,11 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
     // Phase: every_numeric_property_has_its_field_in_the_panel.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut().insert_str(&mut edits(&mut state.doc), "x");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         wp.focus_hosted(Some(NumField::Size), false);
         let slot = wp
@@ -1352,13 +1304,13 @@ fn custom_styles_are_created_deleted_and_sized_in_one_place() {
     // Phase: new_style_from_this_duplicates_and_applies.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "para");
         wp.set_styles_panel_open(true);
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         let n_before = wp.sheet.order().len();
         wp.apply_panel_hit(&mut edits(&mut state.doc), PanelHit::NewStyle);
@@ -1381,7 +1333,7 @@ fn custom_styles_are_created_deleted_and_sized_in_one_place() {
     // the block that used it (so no dangling style ref remains).
     {
         let (mut framed, custom_id) = doc_with_custom_style();
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         assert!(
             wp.sheet.styles.contains_key(&custom_id),
             "custom style present before delete"
@@ -1421,7 +1373,7 @@ fn custom_styles_are_created_deleted_and_sized_in_one_place() {
             .insert_str(&mut edits(&mut state.doc), "Body text");
         wp.view.styles_panel_visible = true;
         let mut framed = mount(state, wp, 1800, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         let panel_size_fields = wp
             .num_inputs
@@ -1465,7 +1417,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
     // regression re-adding them fails to compile against the allowed-set below.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "para");
@@ -1473,7 +1425,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
         // visible. At medium widths the compact toolbar intentionally moves
         // lower-frequency commands into More (covered below).
         let mut framed = mount(state, wp, 1800, 760);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         let actions = tool_actions(wp);
         for kept in [
@@ -1554,12 +1506,12 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
     // selections still use canonical actions.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "colour me");
         let mut framed = mount(state, wp, 520, 760);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         assert!(tool_actions(wp).contains(&ToolAction::TextColorPalette));
         assert!(tool_actions(wp).contains(&ToolAction::HighlightPalette));
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::HighlightPalette);
@@ -1591,12 +1543,12 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
     // with the same typed action route for pointer, keyboard, and AT input.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "colour me");
         let mut framed = mount(state, wp, 760, 800);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         wp.apply_tool(
             &mut edits(&mut state.doc),
@@ -1625,8 +1577,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::TextColor(Some(STYLE_PALETTE[4])),
         );
         wp.open_compact_swatch_palette(PaletteKind::Text);
-        assert!(Widget::perform_action(
-            wp,
+        assert!(wp.perform_access_action(
             &ui::a11y::Action::Focus,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
             &mut edits(&mut state.doc),
@@ -1638,8 +1589,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             wp.compact_swatch_palette.clear_rect(),
             true,
         );
-        assert!(Widget::perform_action(
-            wp,
+        assert!(wp.perform_access_action(
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
             &mut edits(&mut state.doc),
@@ -1672,8 +1622,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::Highlight(Some(HIGHLIGHT_PALETTE[4])),
         );
         wp.open_compact_swatch_palette(PaletteKind::Highlight);
-        assert!(Widget::perform_action(
-            wp,
+        assert!(wp.perform_access_action(
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
             &mut edits(&mut state.doc),
@@ -1683,12 +1632,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
     }
 }
 
-fn assert_compact_clear_footer(
-    wp: &WordProcessorWidget,
-    title: &str,
-    expected_bounds: Rect,
-    focused: bool,
-) {
+fn assert_compact_clear_footer(wp: &Editor, title: &str, expected_bounds: Rect, focused: bool) {
     let tree = wp.accessibility_tree();
     let palette = tree
         .children
@@ -1717,7 +1661,7 @@ fn painted_paragraph_alignment_swipes_edit_the_real_document_and_undo() {
     app.settle();
     let before = app.peer_document().get_heads();
     let start = app
-        .with_surface::<WordProcessorWidget, _>(|widget| {
+        .with_surface::<WordProcessorWidget, _>(on_editor(|widget| {
             assert_eq!(widget.current_align(), "left");
             widget
                 .panel_hits
@@ -1726,13 +1670,13 @@ fn painted_paragraph_alignment_swipes_edit_the_real_document_and_undo() {
                     matches!(hit, PanelHit::ParaAlign("center")).then_some(rect.center())
                 })
                 .expect("the actual inspector paints Center")
-        })
+        }))
         .unwrap();
     app.harness().touch(1, Started, start.x, start.y);
     app.harness().touch(1, Ended, start.x - 90.0, start.y);
     app.settle();
     assert_eq!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_align())
+        app.with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget.current_align()))
             .unwrap(),
         "center"
     );
@@ -1741,7 +1685,7 @@ fn painted_paragraph_alignment_swipes_edit_the_real_document_and_undo() {
     app.harness().touch(2, Cancelled, start.x - 90.0, start.y);
     app.settle();
     assert_eq!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_align())
+        app.with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget.current_align()))
             .unwrap(),
         "center"
     );
@@ -1751,14 +1695,16 @@ fn painted_paragraph_alignment_swipes_edit_the_real_document_and_undo() {
     );
     app.settle();
     assert_eq!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_align())
+        app.with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget.current_align()))
             .unwrap(),
         "left"
     );
     app.set_role(ui::permissions::Role::Viewer);
     assert!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.claims_raw_touch(start))
-            .unwrap(),
+        app.with_surface::<WordProcessorWidget, _>(on_editor(
+            |widget| widget.claims_raw_touch(start)
+        ))
+        .unwrap(),
         "the viewer gesture reaches the actual painted strip"
     );
     let protected = app.peer_document().get_heads();
@@ -1771,7 +1717,7 @@ fn painted_paragraph_alignment_swipes_edit_the_real_document_and_undo() {
         "touch grants no edit authority to a viewer"
     );
     assert_eq!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_align())
+        app.with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget.current_align()))
             .unwrap(),
         "left"
     );
@@ -1786,7 +1732,7 @@ fn compact_styles_is_a_full_window_page_with_real_controls_and_no_typing_leak() 
         app.effect(&WordProcessorEffect::Styles).unwrap();
         app.settle();
         let (heading, close) = app
-            .with_surface::<WordProcessorWidget, _>(|widget| {
+            .with_surface::<WordProcessorWidget, _>(on_editor(|widget| {
                 assert!(widget.styles_panel_full_window());
                 assert_eq!(
                     widget.panel_rect, widget.rect,
@@ -1807,7 +1753,7 @@ fn compact_styles_is_a_full_window_page_with_real_controls_and_no_typing_leak() 
                     Point::new(widget.panel_rect.x0 + 16.0, close.center().y),
                     close.center(),
                 )
-            })
+            }))
             .unwrap();
         let heads = app.peer_document().get_heads();
         app.harness().click_at(heading.x, heading.y);
@@ -1819,22 +1765,28 @@ fn compact_styles_is_a_full_window_page_with_real_controls_and_no_typing_leak() 
             assert_styles_page_scrolls_to_its_last_real_action(&mut app);
         }
         assert!(
-            app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_full_window())
-                .unwrap()
+            app.with_surface::<WordProcessorWidget, _>(on_editor(
+                |widget| widget.styles_panel_full_window()
+            ))
+            .unwrap()
         );
         app.harness().click_at(close.x, close.y);
         app.settle();
         assert!(
-            !app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_visible())
-                .unwrap()
+            !app.with_surface::<WordProcessorWidget, _>(on_editor(
+                |widget| widget.styles_panel_visible()
+            ))
+            .unwrap()
         );
         app.effect(&WordProcessorEffect::Styles).unwrap();
         app.settle();
         app.harness().key("Escape");
         app.settle();
         assert!(
-            !app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_visible())
-                .unwrap()
+            !app.with_surface::<WordProcessorWidget, _>(on_editor(
+                |widget| widget.styles_panel_visible()
+            ))
+            .unwrap()
         );
         assert_eq!(
             app.peer_document().get_heads(),
@@ -1851,13 +1803,13 @@ fn compact_styles_blocks_document_shortcuts_after_real_document_typing() {
     app.harness().resize((390, 844)).unwrap();
     app.settle();
     let body = app
-        .with_surface::<WordProcessorWidget, _>(|widget| widget.zoom_viewport.center())
+        .with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget.zoom_viewport.center()))
         .unwrap();
     app.harness().click_at(body.x, body.y);
     app.harness().type_text("protected document words");
     app.settle();
     let text = app
-        .with_surface::<WordProcessorWidget, _>(|widget| widget.blocks[0].text.clone())
+        .with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget.blocks[0].text.clone()))
         .unwrap();
     assert_eq!(text, "protected document words");
     app.effect(&WordProcessorEffect::Styles).unwrap();
@@ -1877,7 +1829,9 @@ fn compact_styles_blocks_document_shortcuts_after_real_document_typing() {
         app.harness().set_modifiers(&[]);
     }
     assert_eq!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.blocks[0].text.clone())
+        app.with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget.blocks[0]
+            .text
+            .clone()))
             .unwrap(),
         text
     );
@@ -1930,8 +1884,10 @@ fn compact_styles_publishes_only_foreground_ui_and_retains_document_actions() {
         .unwrap();
     app.settle();
     assert!(
-        !app.with_surface::<WordProcessorWidget, _>(|widget| widget.styles_panel_visible())
-            .unwrap()
+        !app.with_surface::<WordProcessorWidget, _>(on_editor(
+            |widget| widget.styles_panel_visible()
+        ))
+        .unwrap()
     );
     assert_eq!(app.peer_document().get_heads(), heads);
 }
@@ -1954,7 +1910,10 @@ fn compact_styles_accessibility_edits_real_style_and_refuses_viewers() {
         .unwrap();
     app.settle();
     assert_eq!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").size)
+        app.with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget
+            .sheet
+            .get("body")
+            .size))
             .unwrap(),
         26.0
     );
@@ -1963,7 +1922,10 @@ fn compact_styles_accessibility_edits_real_style_and_refuses_viewers() {
     assert!(app.undo());
     app.settle();
     assert_ne!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").size)
+        app.with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget
+            .sheet
+            .get("body")
+            .size))
             .unwrap(),
         26.0
     );
@@ -1999,7 +1961,7 @@ fn compact_styles_accessibility_tracks_scrolled_foreground_controls() {
     );
     let before = app.peer_document().get_heads();
     let document_scroll = app
-        .with_surface::<WordProcessorWidget, _>(|widget| widget.scroll_y)
+        .with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget.scroll_y))
         .unwrap();
     let region = app
         .harness()
@@ -2009,9 +1971,9 @@ fn compact_styles_accessibility_tracks_scrolled_foreground_controls() {
     assert_eq!(region.key, "styles");
     assert!(region.metrics.max_scroll() > 0.0);
     let result = app
-        .with_surface::<WordProcessorWidget, _>(|widget| {
+        .with_surface::<WordProcessorWidget, _>(on_editor(|widget| {
             widget.apply_primary_vertical_scroll(ui::widget::PrimaryScrollAction::End)
-        })
+        }))
         .unwrap();
     assert!(matches!(
         result,
@@ -2020,7 +1982,7 @@ fn compact_styles_accessibility_tracks_scrolled_foreground_controls() {
     app.settle();
     assert_eq!(app.peer_document().get_heads(), before);
     assert_eq!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.scroll_y)
+        app.with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget.scroll_y))
             .unwrap(),
         document_scroll
     );
@@ -2068,13 +2030,17 @@ fn compact_styles_accessibility_focus_routes_the_real_spacing_dropdown() {
     app.harness().key("ArrowDown");
     app.settle();
     assert!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.line_spacing.is_open())
+        app.with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget
+            .line_spacing
+            .is_open()))
             .unwrap()
     );
     app.harness().key("Escape");
     app.settle();
     assert!(
-        !app.with_surface::<WordProcessorWidget, _>(|widget| widget.line_spacing.is_open())
+        !app.with_surface::<WordProcessorWidget, _>(on_editor(|widget| widget
+            .line_spacing
+            .is_open()))
             .unwrap()
     );
     assert_eq!(app.peer_document().get_heads(), before);
@@ -2090,8 +2056,10 @@ fn compact_styles_accessibility_focus_routes_the_real_spacing_dropdown() {
         .unwrap();
     app.settle();
     assert_eq!(
-        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_line_spacing())
-            .unwrap(),
+        app.with_surface::<WordProcessorWidget, _>(on_editor(
+            |widget| widget.current_line_spacing()
+        ))
+        .unwrap(),
         2.0
     );
     assert_ne!(app.peer_document().get_heads(), before);
@@ -2101,13 +2069,13 @@ fn assert_styles_page_scrolls_to_its_last_real_action(
     app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>,
 ) {
     let body = app
-        .with_surface::<WordProcessorWidget, _>(|widget| {
+        .with_surface::<WordProcessorWidget, _>(on_editor(|widget| {
             assert!(
                 widget.panel_max_scroll > 0.0,
                 "landscape genuinely needs scrolling"
             );
             widget.panel_body
-        })
+        }))
         .unwrap();
     app.harness().send(&ui::synthetic_input::cursor_moved(
         body.center().x,
@@ -2115,7 +2083,7 @@ fn assert_styles_page_scrolls_to_its_last_real_action(
     ));
     app.harness().scroll(0.0, -20.0);
     app.settle();
-    app.with_surface::<WordProcessorWidget, _>(|widget| {
+    app.with_surface::<WordProcessorWidget, _>(on_editor(|widget| {
         let action = widget
             .panel_hits
             .iter()
@@ -2126,7 +2094,7 @@ fn assert_styles_page_scrolls_to_its_last_real_action(
             action.y0 >= widget.panel_body.y0 && action.y1 <= widget.panel_body.y1,
             "the full-window inspector scrolls its last action into view: {action:?}"
         );
-    })
+    }))
     .unwrap();
 }
 
@@ -2138,12 +2106,12 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
     // read back on the production layout path — and does NOT edit the style.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "centre me");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         assert_eq!(
             wp.current_align(),
             "left",
@@ -2169,13 +2137,13 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
     // 1.15), read off the block view the layout pass reads.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "spaced");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
-        let spacing = |wp: &WordProcessorWidget| {
+        let (wp, state) = split(&mut framed);
+        let spacing = |wp: &Editor| {
             block_line_spacing(wp.blocks.iter().find(|b| b.text == "spaced").unwrap())
         };
         assert!(
@@ -2198,13 +2166,13 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
     // is not duplicated between the toolbar and the panel.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "para");
         wp.set_styles_panel_open(true);
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         let has = |want: &PanelHit| wp.panel_hits.iter().any(|(_, h)| h == want);
         for a in ["left", "center", "right", "justify"] {
@@ -2244,14 +2212,14 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
     // asserting on the materialized block kind, not a helper.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "make me a heading");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
-        let block_kind = |wp: &WordProcessorWidget, st: &ui::State| -> (String, Option<i64>) {
+        let block_kind = |wp: &Editor, st: &ui::State| -> (String, Option<i64>) {
             let c = wp.model().containers.clone().unwrap();
             let b = tilo_doc::model::materialize(&st.doc, &c)
                 .blocks
@@ -2310,12 +2278,12 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
     // style's default size in the panel.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "Hello");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         let style_size = wp.model().stylesheet(&state.doc).get("body").size;
         let base = wp.current_font_size();
@@ -2340,13 +2308,13 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
     // (Bold over a select-all range), unchanged by the reorganization.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "bold me");
         wp.model_mut().select_all(&state.doc);
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         assert!(!wp.mark_active_in_selection("strong"), "not bold yet");
 
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::Bold);
@@ -2362,17 +2330,17 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
 fn the_window_bar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphasis() {
     use ui::richtext::FontFamily;
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     wp.model_mut()
         .insert_str(&mut edits(&mut state.doc), "pick my font");
     wp.model_mut().select_all(&state.doc);
     wp.set_styles_panel_open(true);
     let mut framed = mount(state, wp, 1800, 760);
-    let (wp, state) = Framed::split(&mut framed);
+    let (wp, state) = split(&mut framed);
 
     // The Format menu offers every family, the selection's one checked.
-    let fonts = |wp: &WordProcessorWidget| -> Vec<(ToolAction, bool)> {
+    let fonts = |wp: &Editor| -> Vec<(ToolAction, bool)> {
         [FontFamily::Sans, FontFamily::Serif, FontFamily::Mono]
             .into_iter()
             .map(|family| {
@@ -2443,7 +2411,7 @@ fn the_window_bar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphas
     let actions = tool_actions(wp);
     assert!(actions.contains(&ToolAction::BulletList), "{actions:?}");
     assert!(actions.contains(&ToolAction::NumberedList), "{actions:?}");
-    let kind = |wp: &WordProcessorWidget| {
+    let kind = |wp: &Editor| {
         let block = wp.blocks.iter().find(|b| b.text == "pick my font").unwrap();
         (block.kind.clone(), block.flag("ordered"))
     };
@@ -2462,14 +2430,14 @@ fn the_window_bar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphas
 #[test]
 fn the_window_bar_names_the_document() {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     wp.model_mut().insert_str(
         &mut edits(&mut state.doc),
         "Quarterly report for the garden cooperative and its many volunteers",
     );
     let mut framed = mount(state, wp, 1280, 800);
-    let (wp, _) = Framed::split(&mut framed);
+    let (wp, _) = split(&mut framed);
     let label = wp.window_bar().location.map(|location| location.label);
     assert_eq!(
         label.as_deref(),
@@ -2562,7 +2530,7 @@ fn large_body_fixture_holds_the_paragraphs_its_tests_expect() {
         return;
     }
     let state = large_body();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     let blocks = wp.search_blocks(&state.doc);
     assert_eq!(blocks.len(), VIEWPORT_BLOCK_WINDOW * 4);
@@ -2589,9 +2557,9 @@ fn list_markers_indent_number_and_grow_by_level() {
             dm.splice_text(&cc, 0, 0, "c");
             dm.set_attr(&cc, "level", 2_i64);
         });
-        let wp = WordProcessorWidget::detached();
+        let wp = Editor::detached();
         let mut framed = mount(state, wp, 1000, 900);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         let la = wp.laid.iter().find(|l| l.text == "a").unwrap();
         let lb = wp.laid.iter().find(|l| l.text == "b").unwrap();
@@ -2626,9 +2594,9 @@ fn list_markers_indent_number_and_grow_by_level() {
                 prev = Some(id);
             }
         });
-        let wp = WordProcessorWidget::detached();
+        let wp = Editor::detached();
         let mut framed = mount(state, wp, 1000, 900);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         let num = |t: &str| {
             wp.laid
                 .iter()
@@ -2658,7 +2626,7 @@ fn list_markers_indent_number_and_grow_by_level() {
 #[test]
 fn the_page_keys_move_the_caret_one_sheet_and_the_band_says_which() {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     for i in 0..120 {
         wp.model_mut().insert_str(
@@ -2668,7 +2636,7 @@ fn the_page_keys_move_the_caret_one_sheet_and_the_band_says_which() {
         wp.model_mut().enter(&mut edits(&mut state.doc));
     }
     let mut framed = mount(state, wp, 1000, 700);
-    let (wp, state) = Framed::split(&mut framed);
+    let (wp, state) = split(&mut framed);
 
     assert!(wp.pages > 1, "the document has {} page(s)", wp.pages);
     // The caret is at the end of what was typed: the last sheet.
@@ -2737,7 +2705,7 @@ fn long_documents_paginate_across_discrete_pages() {
         let page_pitch = letter_h + PAGE_GAP;
 
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         // Enough paragraphs to overflow a single US-Letter page.
         for i in 0..120 {
@@ -2748,7 +2716,7 @@ fn long_documents_paginate_across_discrete_pages() {
             wp.model_mut().enter(&mut edits(&mut state.doc));
         }
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         // The canvas top sits below the (wrapped) toolbar AND the ruler band
         // (on by default) — the real offset the pagination cursor starts from.
@@ -2808,7 +2776,7 @@ fn long_documents_paginate_across_discrete_pages() {
         let page_pitch = letter_h + PAGE_GAP;
 
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         let mut para = String::new();
         // 400 words can fit within the page with the host font metrics.
@@ -2818,7 +2786,7 @@ fn long_documents_paginate_across_discrete_pages() {
         let para = para.trim_end().to_string();
         wp.model_mut().insert_str(&mut edits(&mut state.doc), &para);
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         let page_top = wp.zoom_viewport.y0 + PAGE_TOP;
         let pct = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + mar; // page content top
@@ -2890,7 +2858,7 @@ fn long_documents_paginate_across_discrete_pages() {
         let page_pitch = letter_h + PAGE_GAP;
 
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         // Two short paragraphs that both fit on page 1, then force a break so the
         // third starts on a fresh page even though it would otherwise fit.
@@ -2908,7 +2876,7 @@ fn long_documents_paginate_across_discrete_pages() {
             "This paragraph is forced onto page two.",
         );
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         let page_top = wp.zoom_viewport.y0 + PAGE_TOP;
         let pct = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + mar; // page content top
@@ -2961,7 +2929,7 @@ fn long_documents_paginate_across_discrete_pages() {
 #[test]
 fn caret_hit_on_a_carried_line_returns_the_right_offset() {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     let mut para = String::new();
     // 400 words can fit within the page with the host font metrics.
@@ -2971,7 +2939,7 @@ fn caret_hit_on_a_carried_line_returns_the_right_offset() {
     let para = para.trim_end().to_string();
     wp.model_mut().insert_str(&mut edits(&mut state.doc), &para);
     let mut framed = mount(state, wp, 1000, 700);
-    let (wp, _) = Framed::split(&mut framed);
+    let (wp, _) = split(&mut framed);
 
     let bid = wp.blocks[0].id.clone();
     // The carried-over slice (the first one on page 2 for this block).
@@ -3040,7 +3008,7 @@ fn page_fields_and_margins_resolve_per_page_and_persist() {
         // A footer "Page <field>" must render "Page 1" on page 1 and "Page 2" on
         // page 2 — the field placeholder substitutes the rendered page number.
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         let c = wp.model().containers.clone().unwrap();
         let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
@@ -3062,7 +3030,7 @@ fn page_fields_and_margins_resolve_per_page_and_persist() {
             wp.model_mut().enter(&mut edits(&mut state.doc));
         }
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         // The footer is loaded from the snapshot and spans >1 page.
         assert_eq!(
@@ -3105,7 +3073,7 @@ fn page_fields_and_margins_resolve_per_page_and_persist() {
     // Phase: page_margins_persist_across_reload.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         // A document with no recorded page setup uses the default margins.
         assert!(
@@ -3125,7 +3093,7 @@ fn page_fields_and_margins_resolve_per_page_and_persist() {
 
         // A fresh widget bound to the *same document* reloads the persisted page
         // setup on sync — proving margins now live in the document, not the widget.
-        let mut wp2 = WordProcessorWidget::detached();
+        let mut wp2 = Editor::detached();
         wp2.sync(&state.doc, &state.root);
         assert!(
             (wp2.margins.top - 33.0).abs() < 1e-6,
@@ -3147,14 +3115,14 @@ fn page_fields_and_margins_resolve_per_page_and_persist() {
 }
 
 /// Header / footer materialized text via the production snapshot path.
-fn header_text(wp: &WordProcessorWidget, state: &ui::State) -> Vec<String> {
+fn header_text(wp: &Editor, state: &ui::State) -> Vec<String> {
     let c = wp.model().containers.clone().unwrap();
     tilo_doc::model::materialize_region(&state.doc, &c, tilo_doc::model::Region::Header)
         .into_iter()
         .map(|b| b.text)
         .collect()
 }
-fn body_text(wp: &WordProcessorWidget, state: &ui::State) -> Vec<String> {
+fn body_text(wp: &Editor, state: &ui::State) -> Vec<String> {
     let c = wp.model().containers.clone().unwrap();
     tilo_doc::model::materialize(&state.doc, &c)
         .blocks
@@ -3164,12 +3132,12 @@ fn body_text(wp: &WordProcessorWidget, state: &ui::State) -> Vec<String> {
 }
 
 /// Drive a real named-key press (e.g. Escape) through `handle_event`.
-fn press_named(wp: &mut WordProcessorWidget, state: &mut ui::State, key: NamedKey) {
+fn press_named(wp: &mut Editor, state: &mut ui::State, key: NamedKey) {
     press_named_with_modifiers(wp, state, key, Modifiers::default());
 }
 
 fn press_named_with_modifiers(
-    wp: &mut WordProcessorWidget,
+    wp: &mut Editor,
     state: &mut ui::State,
     key: NamedKey,
     mods: Modifiers,
@@ -3179,14 +3147,14 @@ fn press_named_with_modifiers(
         .modifiers(mods)
         .doc(&mut state.doc)
         .path(&state.root)
-        .send(wp, &ui::synthetic_input::keyboard_input(ev));
+        .send(&mut Lent(wp), &ui::synthetic_input::keyboard_input(ev));
 }
 
 /// A space typed right after a Markdown line prefix restyles the paragraph and
 /// consumes the prefix; a dash inside text stays text.
 #[test]
 fn markdown_prefixes_autoformat_on_space() {
-    let kind = |wp: &WordProcessorWidget, state: &ui::State| {
+    let kind = |wp: &Editor, state: &ui::State| {
         let c = wp.model().containers.clone().unwrap();
         let block = tilo_doc::model::materialize(&state.doc, &c)
             .blocks
@@ -3209,7 +3177,7 @@ fn markdown_prefixes_autoformat_on_space() {
         let (mut state, mut wp) = bound();
         seed_text(&mut wp, &mut state, typed);
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         wp.lifecycle.focused = true;
         press_named(wp, state, NamedKey::Space);
         let (kind, level, ordered, text) = kind(wp, state);
@@ -3222,7 +3190,7 @@ fn markdown_prefixes_autoformat_on_space() {
 }
 
 fn pinch(
-    wp: &mut WordProcessorWidget,
+    wp: &mut Editor,
     state: &mut ui::State,
     delta: f64,
     phase: winit::event::TouchPhase,
@@ -3231,7 +3199,7 @@ fn pinch(
         .doc(&mut state.doc)
         .path(&state.root)
         .send(
-            wp,
+            &mut Lent(wp),
             &WindowEvent::PinchGesture {
                 device_id: winit::event::DeviceId::dummy(),
                 delta,
@@ -3253,7 +3221,7 @@ fn mouse_selection_follows_the_pointer_across_lines_and_paragraphs() {
             &"A paragraph with several words across visual lines. ".repeat(12),
         );
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         let laid = wp.laid[0].clone();
         let bands = wp.layout_cache[&laid.id].1.logical_line_bands(0);
         assert!(bands.len() > 2);
@@ -3286,7 +3254,7 @@ fn mouse_selection_follows_the_pointer_across_lines_and_paragraphs() {
         }
         let mut framed = mount(state, wp, 1000, 700);
         for zoom in [0.5, 1.0, 2.0] {
-            framed.set_zoom(zoom);
+            editor(&mut framed).set_zoom(zoom);
             let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
             let first = wp.laid[0].clone();
             let second = wp.laid[1].clone();
@@ -3334,7 +3302,7 @@ fn trackpad_pinch_zooms_smoothly_within_its_bounds() {
         wp.set_zoom(1.0);
         wp.scroll_y = 100.0;
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         wp.pointer = Point::new(500.0, 300.0);
         let before = wp.scroll_y + (wp.pointer.y - wp.zoom.anchor().y) / wp.zoom.factor();
         let heads = state.doc.get_heads();
@@ -3355,7 +3323,7 @@ fn trackpad_pinch_zooms_smoothly_within_its_bounds() {
         let (state, mut wp) = populated();
         wp.set_zoom(1.0);
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         wp.pointer = Point::new(500.0, 300.0);
         for delta in [f64::NAN, f64::INFINITY] {
             pinch(wp, state, delta, TouchPhase::Moved);
@@ -3394,7 +3362,7 @@ fn native_text_shortcuts_move_by_words_and_lines() {
             wp.inner
                 .insert_str(&mut edits(&mut state.doc), "Hello café");
             let mut framed = mount(state, wp, 1000, 700);
-            let (wp, state) = Framed::split(&mut framed);
+            let (wp, state) = split(&mut framed);
             wp.lifecycle.focused = true;
             ask_to_replace(wp);
             let heads = state.doc.get_heads();
@@ -3417,7 +3385,7 @@ fn native_text_shortcuts_move_by_words_and_lines() {
             let (mut state, mut wp) = bound();
             wp.inner.insert_str(&mut edits(&mut state.doc), text);
             let mut framed = mount(state, wp, 1000, 700);
-            let (wp, state) = Framed::split(&mut framed);
+            let (wp, state) = split(&mut framed);
             wp.inner.caret.offset = 6;
             wp.lifecycle.focused = true;
             press_named_with_modifiers(
@@ -3438,7 +3406,7 @@ fn native_text_shortcuts_move_by_words_and_lines() {
         wp.inner
             .insert_str(&mut edits(&mut state.doc), "東京京都大阪");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         wp.inner.caret.offset = 2;
         wp.lifecycle.focused = true;
         press_named_with_modifiers(
@@ -3463,7 +3431,11 @@ fn native_text_shortcuts_delete_and_stop_at_visual_lines() {
                 .insert_str(&mut edits(&mut state.doc), "Hello café");
             let containers = wp.inner.containers.clone().unwrap();
             wp.lifecycle.focused = true;
-            let mut driver = ui::headless::FrameHarness::new(state, Box::new(wp), (1000, 700));
+            let mut driver = ui::headless::FrameHarness::new(
+                state,
+                Box::new(WordProcessorWidget::over(wp)),
+                (1000, 700),
+            );
             driver.set_modifiers(&[modifier.into(), "shift".into()]);
             driver.key("ArrowLeft");
             driver.set_modifiers(&[]);
@@ -3486,7 +3458,7 @@ fn native_text_shortcuts_delete_and_stop_at_visual_lines() {
             wp.inner.caret.offset = 2;
             wp.lifecycle.focused = true;
             let mut framed = mount(state, wp, 1000, 700);
-            let (wp, state) = Framed::split(&mut framed);
+            let (wp, state) = split(&mut framed);
             press_named_with_modifiers(
                 wp,
                 state,
@@ -3514,7 +3486,7 @@ fn clicking_header_band_routes_typing_into_the_header() {
     wp.model_mut()
         .insert_str(&mut edits(&mut state.doc), "body text");
     let mut framed = mount(state, wp, 1000, 700);
-    let (wp, state) = Framed::split(&mut framed);
+    let (wp, state) = split(&mut framed);
     assert_eq!(
         wp.model().region(),
         Region::Body,
@@ -3606,7 +3578,8 @@ fn header_edit_mode_renders_a_frame() {
             .insert_str(&mut edits(&mut state.doc), &ch.to_string());
     }
     let (w, h) = (1000u32, 700u32);
-    let wp = mount(state, wp, w, h);
+    let mut framed = mount(state, wp, w, h);
+    let wp = editor(&mut framed);
     // The header band laid out for the active context (so its caret + chrome
     // are part of this frame).
     assert!(
@@ -3622,7 +3595,7 @@ fn header_edit_mode_renders_a_frame() {
         )
     });
     ui::offscreen::OffscreenRenderer::new(w, h).render_png(
-        Framed::harness(&wp).scene(),
+        Framed::harness(&framed).scene(),
         Color::from_rgb8(0x20, 0x22, 0x28),
         std::path::Path::new(&out),
     );
@@ -3639,11 +3612,11 @@ fn zoom_scales_about_the_anchor_and_keeps_clicks_on_the_same_caret() {
     // Phase: zoom_scales_the_content_transform_about_the_anchor.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         seed_text(&mut wp, &mut state, "zoom me");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         // At 100% the content transform is the identity scale (no magnification).
         let base = Affine::IDENTITY;
@@ -3679,13 +3652,13 @@ fn zoom_scales_about_the_anchor_and_keeps_clicks_on_the_same_caret() {
     // Phase: click_maps_to_the_same_caret_under_zoom.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         seed_text(&mut wp, &mut state, "first paragraph");
         wp.model_mut().enter(&mut edits(&mut state.doc));
         seed_text(&mut wp, &mut state, "second paragraph");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         // A content-space point inside the second block (its `Laid` rect lives in
         // unscaled content coordinates regardless of zoom).
@@ -3730,7 +3703,7 @@ fn zoom_scales_about_the_anchor_and_keeps_clicks_on_the_same_caret() {
 
     // Phase: zoom_clamps_and_resets.
     {
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         assert!(
             (wp.zoom.factor() - 1.0).abs() < 1e-9,
             "default zoom is 100%"
@@ -3764,10 +3737,10 @@ fn the_zoom_field_drives_zoom_and_the_scroll_range() {
     // Phase: the_zoom_field_steps_the_page_scale.
     {
         let state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         let field = wp.zoom_rect;
         assert!(field.width() > 0.0, "the zoom field is drawn");
@@ -3797,7 +3770,7 @@ fn the_zoom_field_drives_zoom_and_the_scroll_range() {
         crate::i18n::set_locale("en-US");
         let (state, wp) = populated();
         let mut framed = mount(state, wp, 1100, 760);
-        framed.set_zoom(1.0);
+        editor(&mut framed).set_zoom(1.0);
         let (wp, state) = pipeline_draw(&mut framed, 1100, 760);
 
         let tree = wp.accessibility_tree();
@@ -3841,7 +3814,7 @@ fn the_zoom_field_drives_zoom_and_the_scroll_range() {
     // Phase: zoom_in_grows_the_scrollable_range.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         for i in 0..40 {
             wp.model_mut().insert_str(
@@ -3851,7 +3824,7 @@ fn the_zoom_field_drives_zoom_and_the_scroll_range() {
             wp.model_mut().enter(&mut edits(&mut state.doc));
         }
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         let scroll_1x = wp.max_scroll;
         assert!(scroll_1x > 0.0, "the document already overflows at 100%");
         wp.set_zoom(2.0);
@@ -3871,11 +3844,12 @@ fn the_page_starts_at_the_top_with_no_toolbar_row() {
     for width in [760, 1800] {
         let (state, mut wp) = populated();
         wp.stage_find_for_shot(&state.doc, "text");
-        let framed = mount(state, wp, width, 700);
+        let mut framed = mount(state, wp, width, 700);
+        let wp = editor(&mut framed);
         assert!(
-            framed.zoom_viewport.y0 <= framed.rect.y0 + framed.ruler.rect().height() + 0.5,
+            wp.zoom_viewport.y0 <= wp.rect.y0 + wp.ruler.rect().height() + 0.5,
             "{width}px: the writing page starts under the ruler, {:?}",
-            framed.zoom_viewport
+            wp.zoom_viewport
         );
     }
 }
@@ -3887,7 +3861,8 @@ fn enlarged_and_phone_layouts_keep_controls_fitting() {
     {
         let (state, wp) = populated();
         let theme = Theme::dark().with_text_scale(2.0);
-        let wp = mount_themed(state, wp, 480, 600, &theme);
+        let mut wp = mount_themed(state, wp, 480, 600, &theme);
+        let wp = editor(&mut wp);
         for (_, rect) in &wp.layout_chips {
             assert_eq!(rect.intersect(wp.rect), *rect, "layout modes are whole");
         }
@@ -3901,12 +3876,13 @@ fn enlarged_and_phone_layouts_keep_controls_fitting() {
     // Phase: a_phone_at_two_x_keeps_the_document_readable.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "A readable large-text document");
         let theme = Theme::dark().with_text_scale(2.0);
-        let wp = mount_themed(state, wp, 390, 844, &theme);
+        let mut wp = mount_themed(state, wp, 390, 844, &theme);
+        let wp = editor(&mut wp);
         assert_eq!(
             wp.zoom.factor(),
             2.0,
@@ -3932,8 +3908,8 @@ fn narrow_and_zoomed_windows_keep_status_and_page_fitting() {
         let (state, wp) = populated();
         let mut framed = mount(state, wp, 700, 900);
         for (width, zoom) in [(700_u32, 0.81), (1100, 1.0)] {
-            framed.view.auto_fit_page = false;
-            framed.zoom.set(zoom);
+            editor(&mut framed).view.auto_fit_page = false;
+            editor(&mut framed).zoom.set(zoom);
             let (wp, _) = pipeline_draw(&mut framed, width, 900);
             let band_top = wp.rect.y1 - wp.layout_bar_height;
             for rect in wp
@@ -3953,12 +3929,12 @@ fn narrow_and_zoomed_windows_keep_status_and_page_fitting() {
     // Phase: narrow_first_open_fits_the_page_until_the_user_zooms.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "Readable narrow document");
         let mut framed = mount(state, wp, 640, 800);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         assert!(
             wp.zoom.factor() < 1.0,
             "narrow canvas automatically fits paper"
@@ -4010,7 +3986,7 @@ fn chrome_never_crowds_the_document_canvas() {
             let (state, mut wp) = bound();
             wp.view.styles_panel_visible = true;
             let mut framed = mount(state, wp, w, h);
-            let (wp, _) = Framed::split(&mut framed);
+            let (wp, _) = split(&mut framed);
             assert!(
                 wp.view.styles_panel_visible,
                 "precondition: the explicitly-open panel is the one under test",
@@ -4053,13 +4029,13 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
     // Phase: misspelled_word_yields_a_squiggle_span_at_its_x_range.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         // "teh" is a classic misspelling flagged by the builtin dictionary; the
         // surrounding words are valid, so exactly one span is expected.
         seed_text(&mut wp, &mut state, "teh quick brown fox");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         let l = wp
             .laid
@@ -4104,7 +4080,7 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
     // Phase: spellcheck_toggle_off_suppresses_the_squiggle_pass.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         seed_text(&mut wp, &mut state, "teh");
         assert!(wp.spellcheck_enabled(), "spell-check defaults ON");
@@ -4113,7 +4089,7 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
         // With the toggle off, a draw must not even build the dictionary (the lazy
         // OnceLock stays untouched for this widget — the per-widget handle is None).
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         assert!(
             wp.dict.is_none(),
             "spell-check off skips dictionary construction"
@@ -4123,7 +4099,7 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
     // Phase: document_autocorrect_is_reversible_at_a_space_boundary.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         seed_text(&mut wp, &mut state, "teh");
 
@@ -4146,7 +4122,7 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
         // The embedded list is English; a German session asks the system Hunspell
         // `de_DE` dictionary instead, and flags nothing when that dictionary is
         // absent. Either way a correct German word must never carry a squiggle.
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         let english = wp.block_spell_spans("b", "schön grün");
         assert!(
             !english.is_empty(),
@@ -4163,7 +4139,7 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
     // Phase: spell_cache_reuses_unchanged_blocks_and_rechecks_after_edit.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         seed_text(&mut wp, &mut state, "wrold");
         let id = wp.blocks[0].id.clone();
@@ -4230,7 +4206,7 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
     // Phase: multi_block_typing_dispatches_one_replace_selection_action.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "alpha");
@@ -4272,7 +4248,7 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
             .with_clipboard(std::sync::Arc::new(TestClipboard::default()));
         let _host = ui::host::enter(&services);
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
 
         // Copy without a selection remains a no-op.
@@ -4409,7 +4385,7 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
 
 /// A content-space point at the very start of the first laid block's text
 /// (so a right-click lands on its first word).
-fn first_block_start_point(wp: &WordProcessorWidget) -> Point {
+fn first_block_start_point(wp: &Editor) -> Point {
     let l = wp.laid.first().expect("at least one laid block");
     Point::new(l.text_x + 1.0, l.y_top + l.height / 2.0)
 }
@@ -4424,7 +4400,7 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "Hello world");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         wp.inner.select_all(&state.doc);
         let selected = wp.inner.selection_text(&state.doc);
         let caret = wp.inner.caret.clone();
@@ -4445,7 +4421,7 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
             wp.model_mut()
                 .insert_str(&mut edits(&mut state.doc), "Keep my draft");
             let mut framed = mount(state, wp, 520, 700);
-            let (wp, state) = Framed::split(&mut framed);
+            let (wp, state) = split(&mut framed);
             wp.lifecycle.focused = true;
             wp.inner.select_all(&state.doc);
             let style_count = wp.sheet.order().len();
@@ -4453,9 +4429,9 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
                 wp.style_menu.open("body", Point::new(300.0, 300.0));
             }
             if !style_menu {
-                ask_to_replace(&mut framed);
+                ask_to_replace(editor(&mut framed));
             }
-            let (wp, state) = Framed::split(&mut framed);
+            let (wp, state) = split(&mut framed);
             assert_eq!(
                 wp.inner.selection_text(&state.doc),
                 "Keep my draft",
@@ -4508,7 +4484,7 @@ fn context_actions_stay_in_the_viewport() {
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "Hello world");
         let mut framed = mount(state, wp, 600, 400);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         let point = first_block_start_point(wp);
         wp.open_context_menu(&state.doc, point, [598.0, 398.0]);
         let mut scene = Scene::new();
@@ -4545,21 +4521,24 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
                 .insert_str(&mut edits(&mut state.doc), "Keep this edit");
             let mut framed = mount(state, wp, 520, 700);
             match menu_kind {
-                0 => ask_to_replace(&mut framed),
-                _ => framed.style_menu.open("body", Point::new(300.0, 300.0)),
+                0 => ask_to_replace(editor(&mut framed)),
+                _ => editor(&mut framed)
+                    .style_menu
+                    .open("body", Point::new(300.0, 300.0)),
             }
             let driver = Framed::harness_mut(&mut framed);
             driver.relayout();
-            let (wp, _) = Framed::split(&mut framed);
+            let (window, _) = Framed::split(&mut framed);
             assert!(
-                ui::undo::handle_local_undo_request(wp, ui::undo::UndoRequest::Undo),
+                ui::undo::handle_local_undo_request(window, ui::undo::UndoRequest::Undo),
                 "host undo must be captured while a menu is open"
             );
+            let wp = window.editor_mut();
             wp.file_menu.close();
             wp.context_menu.close();
             wp.style_menu.close();
             assert!(
-                !ui::undo::handle_local_undo_request(wp, ui::undo::UndoRequest::Undo),
+                !ui::undo::handle_local_undo_request(window, ui::undo::UndoRequest::Undo),
                 "ordinary undo resumes after dismissal"
             );
         }
@@ -4571,7 +4550,7 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
         wp.inner
             .insert_str(&mut edits(&mut state.doc), "Hello world");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         wp.inner.select_all(&state.doc);
         let mut point = first_block_start_point(wp);
         point.x += 400.0; // hit testing clamps the text's right edge to its end offset
@@ -4595,13 +4574,13 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
         // in its own process, so this can't leak into a sibling test).
         crate::i18n::set_locale("en-US");
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         // "qwordz" is not a real word → flagged. Followed by a valid word.
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "qwordz quick");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         let id = wp.blocks[0].id.clone();
         assert_eq!(
             wp.block_spell_spans(&id, "qwordz quick"),
@@ -4655,13 +4634,13 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
     // Phase: right_click_suggestion_replaces_the_word.
     {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         // "teh" suggests "the".
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "teh end");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         let pt = first_block_start_point(wp);
         wp.open_context_menu(
@@ -4704,12 +4683,12 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
         // in its own process, so this can't leak into a sibling test).
         crate::i18n::set_locale("en-US");
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "hello world");
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         assert!(
             !wp.model().has_selection(),
             "precondition: nothing selected"
@@ -4776,9 +4755,9 @@ fn footnotes_render_in_the_page_area_numbered_in_document_order() {
     {
         // Body "Hello world" with a footnote reference after "Hello" (idx 5).
         let state = author_doc_with_footnote("Hello world", 5, "A clarifying footnote.");
-        let wp = WordProcessorWidget::detached();
+        let wp = Editor::detached();
         let mut framed = mount(state, wp, 1000, 900);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         assert_eq!(wp.notes.len(), 1, "one note materialized");
         assert_eq!(
@@ -4850,9 +4829,9 @@ fn footnotes_render_in_the_page_area_numbered_in_document_order() {
         }
         state.doc.commit();
 
-        let wp = WordProcessorWidget::detached();
+        let wp = Editor::detached();
         let mut framed = mount(state, wp, 1000, 900);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         let nums = note_numbering(&wp.blocks);
         assert_eq!(
@@ -4874,7 +4853,7 @@ fn footnotes_render_in_the_page_area_numbered_in_document_order() {
 fn doc_with_paragraph(
     text: &str,
 ) -> (
-    WordProcessorWidget,
+    Editor,
     ui::State,
     tilo_doc::Containers,
     tilo_doc::IdGen,
@@ -4894,7 +4873,7 @@ fn doc_with_paragraph(
         dm.splice_text(&bid, 0, 0, text);
     }
     state.doc.commit();
-    let wp = WordProcessorWidget::detached();
+    let wp = Editor::detached();
     (wp, state, c, ids, bid)
 }
 
@@ -4913,7 +4892,7 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
         crate::model::comment_by(&mut state.doc, "Ada", &bid, (6, 11), "Reword this");
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 900);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         assert_eq!(
             wp.review.comments().len(),
@@ -4972,7 +4951,7 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
         );
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         assert_eq!(wp.review.comments()[0].replies.len(), 1);
 
         wp.dispatch_review_action(
@@ -5048,7 +5027,7 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
         let cid = crate::model::comment_by(&mut state.doc, "Ada", &bid, (6, 11), "Reword this");
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 900);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         // Before: the comment is in the snapshot and its highlight range is present.
         let before = snapshot(state, &c);
@@ -5116,7 +5095,7 @@ fn tracked_changes_render_and_accept_individually() {
         }
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 900);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         assert_eq!(
             wp.review.changes().len(),
@@ -5208,7 +5187,7 @@ fn tracked_changes_render_and_accept_individually() {
         };
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 900);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         // Before: the change is reported in the materialized snapshot, and the
         // block carries a decoration range over "keep".
@@ -5270,7 +5249,7 @@ fn tracked_changes_render_and_accept_individually() {
         };
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 900);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         // Before: the struck text is still present + reported as a change.
         let before = snapshot(state, &c);
@@ -5341,7 +5320,7 @@ fn tracked_changes_reject_and_accept_all() {
         };
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 900);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         wp.dispatch_review_action(
             ReviewAction::RejectChange(del_id.clone()),
@@ -5377,7 +5356,7 @@ fn tracked_changes_reject_and_accept_all() {
         }
         state.doc.commit();
         let mut framed = mount(state, wp, 1000, 900);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         assert_eq!(
             snapshot(state, &c).changes.len(),
             2,
@@ -5435,7 +5414,7 @@ fn review_markup_registers_card_hits_and_toggles_off() {
         cid = crate::model::comment_by(&mut state.doc, "Ada", &bid, (0, 4), "look");
         state.doc.commit();
         let mut framed = mount(state, wp, 1200, 900);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         let has = |pred: &dyn Fn(&ReviewAction) -> bool| {
             wp.review
@@ -5483,8 +5462,7 @@ fn review_markup_registers_card_hits_and_toggles_off() {
 
         let resolve_target = review_action_target(&ReviewAction::ResolveComment(cid.clone()));
         let root = state.root.clone();
-        assert!(Widget::perform_action(
-            wp,
+        assert!(wp.perform_access_action(
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&resolve_target)],
             &mut edits(&mut state.doc),
@@ -5517,7 +5495,7 @@ fn review_markup_registers_card_hits_and_toggles_off() {
         // Default ON: a comment marker is collected for the right-margin card.
         assert!(wp.markup_enabled(), "markup defaults ON");
         let mut framed = mount(state, wp, 1000, 900);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         let b = wp.blocks.iter().find(|b| b.id == bid).unwrap().clone();
         assert_eq!(
             block_comment_ranges(&b).len(),
@@ -5543,9 +5521,9 @@ fn review_markup_registers_card_hits_and_toggles_off() {
 /// with body paragraphs, returning `(wp, state)` already drawn at `w×h`.
 fn doc_with_headings(w: u32, h: u32) -> Framed<WordProcessorWidget> {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
-    let add_heading = |wp: &mut WordProcessorWidget, st: &mut ui::State, text: &str, level: i64| {
+    let add_heading = |wp: &mut Editor, st: &mut ui::State, text: &str, level: i64| {
         wp.model_mut().insert_str(&mut edits(&mut st.doc), text);
         wp.dispatch_paragraph_style(&mut edits(&mut st.doc), "heading", Some(level), None);
         wp.model_mut().enter(&mut edits(&mut st.doc));
@@ -5579,7 +5557,8 @@ fn doc_with_headings(w: u32, h: u32) -> Framed<WordProcessorWidget> {
 fn the_outline_and_toc_follow_the_headings() {
     // Phase: outline_has_one_entry_per_heading_with_levels_in_order.
     {
-        let wp = doc_with_headings(1000, 700);
+        let mut wp = doc_with_headings(1000, 700);
+        let wp = editor(&mut wp);
         let entries = wp.outline_entries();
         assert_eq!(
             entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
@@ -5596,7 +5575,7 @@ fn the_outline_and_toc_follow_the_headings() {
     // Phase: generate_toc_inserts_one_marked_block_per_heading.
     {
         let mut framed = doc_with_headings(1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         let heading_count = wp.outline_entries().len();
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertToc);
 
@@ -5626,9 +5605,9 @@ fn the_outline_and_toc_follow_the_headings() {
 }
 
 /// Drive a real left-click at `pt` through the production `handle_event`.
-pub(super) fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
+pub(super) fn left_click(wp: &mut Editor, state: &mut ui::State, pt: Point) {
     let moved = Dispatch::new().doc(&mut state.doc).path(&state.root).send(
-        wp,
+        &mut Lent(wp),
         &WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: (pt.x, pt.y).into(),
@@ -5639,13 +5618,13 @@ pub(super) fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt
         .path(&state.root)
         .handled(moved.handled)
         .focus_target(moved.focus_target)
-        .send(wp, &ui::synthetic_input::mouse_press());
+        .send(&mut Lent(wp), &ui::synthetic_input::mouse_press());
 }
 
 #[test]
 fn clicking_an_outline_entry_scrolls_the_heading_into_view() {
     let mut framed = doc_with_headings(1000, 700);
-    let (wp, state) = Framed::split(&mut framed);
+    let (wp, state) = split(&mut framed);
     // Open the outline pane and redraw so its clickable entries are built.
     wp.apply_tool(&mut edits(&mut state.doc), ToolAction::ToggleOutline);
     assert!(wp.outline.is_open(), "outline toggled on");
@@ -5703,7 +5682,7 @@ fn regenerating_the_toc_replaces_it_and_shows_it() {
     // Phase: regenerating_toc_replaces_rather_than_duplicating.
     {
         let mut framed = doc_with_headings(1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         let heading_count = wp.outline_entries().len();
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertToc);
         let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
@@ -5745,7 +5724,7 @@ fn regenerating_the_toc_replaces_it_and_shows_it() {
     // where it lands, with no toast repeating what is on screen.
     {
         let mut framed = doc_with_headings(1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         wp.scroll_y = 144.0;
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertToc);
         assert_eq!(wp.scroll_y, 0.0, "the new table of contents is in view");
@@ -5761,7 +5740,7 @@ fn regenerating_the_toc_replaces_it_and_shows_it() {
 }
 
 /// The materialized first block of the document in `state`.
-fn first_block(wp: &WordProcessorWidget, state: &ui::State) -> Option<BlockView> {
+fn first_block(wp: &Editor, state: &ui::State) -> Option<BlockView> {
     let c = wp.model().containers.clone()?;
     tilo_doc::model::materialize(&state.doc, &c)
         .blocks
@@ -5770,18 +5749,18 @@ fn first_block(wp: &WordProcessorWidget, state: &ui::State) -> Option<BlockView>
 }
 
 /// A blank, bound widget over a fresh `ui::State`.
-fn bound() -> (ui::State, WordProcessorWidget) {
+fn bound() -> (ui::State, Editor) {
     let state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     (state, wp)
 }
 
-fn send_ime(wp: &mut WordProcessorWidget, state: &mut ui::State, ime: winit::event::Ime) {
+fn send_ime(wp: &mut Editor, state: &mut ui::State, ime: winit::event::Ime) {
     Dispatch::new()
         .doc(&mut state.doc)
         .path(&state.root)
-        .send(wp, &WindowEvent::Ime(ime));
+        .send(&mut Lent(wp), &WindowEvent::Ime(ime));
 }
 
 /// The input method's composition shows at the caret and reaches the
@@ -5848,10 +5827,10 @@ fn a_composition_lays_out_inside_its_paragraph_and_commits_in_place() {
         .insert_str(&mut edits(&mut state.doc), "hello world");
     wp.lifecycle.focused = true;
     let mut framed = mount(state, wp, 1000, 700);
-    let (wp, state) = Framed::split(&mut framed);
+    let (wp, state) = split(&mut framed);
     let bid = wp.blocks[0].id.clone();
     // Where committed char `offset` of the paragraph draws, and the shaped height.
-    let at = |wp: &WordProcessorWidget, offset: usize| {
+    let at = |wp: &Editor, offset: usize| {
         let l = wp.laid.iter().find(|l| l.id == bid).expect("laid out");
         let (_, layout) = wp.layout_cache.get(&bid).expect("shaped");
         let (x, y, _) = layout.caret_geometry(l.layout_byte(offset));
@@ -5921,12 +5900,13 @@ fn a_composition_lays_out_inside_its_paragraph_and_commits_in_place() {
 #[test]
 fn hosted_lookup_offers_caret_edits_not_a_second_document() {
     let (state, wp) = bound();
+    let wp = WordProcessorWidget::over(wp);
     assert!(
         ui::resources::resources(&wp, &state.doc).is_empty(),
         "the window publishes nothing beside the framework's document"
     );
     assert!(
-        wp.search_rows().is_empty(),
+        wp.state().search_rows().is_empty(),
         "nothing found, no search results"
     );
     let effects: Vec<String> =
@@ -5991,7 +5971,11 @@ fn the_window_zoom_gestures_scale_the_page() {
         shared::provided(wp),
         "the editor's page is content that zooms by itself"
     );
-    assert_eq!(wp.zoom.factor(), 1.0, "a page starts at its own size");
+    assert_eq!(
+        wp.state().zoom.factor(),
+        1.0,
+        "a page starts at its own size"
+    );
     assert_eq!(
         shared::offer(wp, ZoomStep::In),
         Some(1.1),
@@ -6012,7 +5996,7 @@ fn the_window_zoom_gestures_scale_the_page() {
 #[test]
 fn the_bar_marks_work_the_file_does_not_have() {
     let (mut state, mut wp) = bound();
-    let edited = |wp: &WordProcessorWidget| {
+    let edited = |wp: &Editor| {
         wp.window_bar()
             .location
             .is_some_and(|location| location.edited)
@@ -6046,7 +6030,7 @@ fn the_bar_marks_work_the_file_does_not_have() {
 fn the_file_commands_are_the_window_bars_file_menu() {
     let (state, wp) = bound();
     let mut framed = mount(state, wp, 1200, 700);
-    let (wp, state) = Framed::split(&mut framed);
+    let (wp, state) = split(&mut framed);
     let items = bar_items(wp, &t("toolbar-file"));
     for choice in [FileChoice::Open, FileChoice::Save, FileChoice::SaveAs]
         .into_iter()
@@ -6085,7 +6069,7 @@ fn a_template_asks_before_replacing_and_answers_by_keyboard() {
             .insert_str(&mut edits(&mut state.doc), "Draft");
         wp.refresh_blocks(&state.doc);
         let mut framed = mount_themed(state, wp, 1200, 700, &theme);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         press_bar(wp, state, &crate::Template::Report.display_title());
         assert!(wp.file_menu.is_asking(), "a template asks before replacing");
         let mut tr = TextRenderer::new();
@@ -6109,7 +6093,7 @@ fn a_template_asks_before_replacing_and_answers_by_keyboard() {
             .doc(&mut state.doc)
             .path(&state.root)
             .send(
-                wp,
+                &mut Lent(wp),
                 &WindowEvent::CursorMoved {
                     device_id: winit::event::DeviceId::dummy(),
                     position: (point.x * 2.0, point.y * 2.0).into(),
@@ -6138,7 +6122,7 @@ fn a_template_asks_before_replacing_and_answers_by_keyboard() {
             .insert_str(&mut edits(&mut state.doc), "Draft");
         wp.refresh_blocks(&state.doc);
         let mut framed = mount(state, wp, 1200, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         wp.lifecycle.focused = true;
         press_bar(wp, state, &crate::Template::Report.display_title());
         assert!(wp.file_menu.is_asking());
@@ -6176,7 +6160,7 @@ fn templates_replace_the_document_only_when_chosen() {
             .insert_str(&mut edits(&mut state.doc), "Draft");
         wp.refresh_blocks(&state.doc);
         let mut framed = mount(state, wp, 1200, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         press_bar(wp, state, &crate::Template::Report.display_title());
         let keep = wp
             .file_menu
@@ -6241,7 +6225,7 @@ fn a_confirmed_template_replaces_the_draft() {
         .insert_str(&mut edits(&mut state.doc), "Pre-existing rough draft");
     wp.refresh_blocks(&state.doc);
     let mut framed = mount(state, wp, 1200, 700);
-    let (wp, state) = Framed::split(&mut framed);
+    let (wp, state) = split(&mut framed);
     press_bar(wp, state, &crate::Template::Report.display_title());
     assert!(
         wp.file_menu.is_asking(),
@@ -6282,7 +6266,7 @@ fn a_confirmed_template_replaces_the_draft() {
     );
 }
 
-fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
+fn type_char(wp: &mut Editor, state: &mut ui::State, ch: char) {
     use winit::keyboard::SmolStr;
     let ev = ui::synthetic_input::key_event(
         Key::Character(SmolStr::new(ch.to_string())),
@@ -6292,17 +6276,17 @@ fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
     Dispatch::new()
         .doc(&mut state.doc)
         .path(&state.root)
-        .send(wp, &ui::synthetic_input::keyboard_input(ev));
+        .send(&mut Lent(wp), &ui::synthetic_input::keyboard_input(ev));
 }
 
 /// Drive a real Tab keypress through the production `handle_event` keyboard
 /// path (no `text`, just the named key).
-fn press_tab(wp: &mut WordProcessorWidget, state: &mut ui::State) {
+fn press_tab(wp: &mut Editor, state: &mut ui::State) {
     let ev = ui::synthetic_input::key_event(Key::Named(NamedKey::Tab), None, ElementState::Pressed);
     Dispatch::new()
         .doc(&mut state.doc)
         .path(&state.root)
-        .send(wp, &ui::synthetic_input::keyboard_input(ev));
+        .send(&mut Lent(wp), &ui::synthetic_input::keyboard_input(ev));
 }
 
 /// The ruler defaults on and toggles, its markers track margins, indent and zoom, and dragging the left
@@ -6343,7 +6327,7 @@ fn the_ruler_tracks_margins_indent_and_zoom() {
             crate::actions::AttrVal::Float(18.0),
         );
         let mut framed = mount(state, wp, 1200, 760);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
 
         let page_x = wp.page_rect.x0;
         let page_w = wp.page_rect.width();
@@ -6409,7 +6393,7 @@ fn the_ruler_tracks_margins_indent_and_zoom() {
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "para");
         let mut framed = mount(state, wp, 1200, 760);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         let page_x = wp.page_rect.x0;
         let page_w = wp.page_rect.width();
@@ -6447,7 +6431,7 @@ fn the_ruler_tracks_margins_indent_and_zoom() {
         // Release persists into the document (a fresh widget reloads the value).
         wp.ruler_drag_release(&mut edits(&mut state.doc));
         assert!(!wp.ruler.is_dragging(), "drag ended on release");
-        let mut wp2 = WordProcessorWidget::detached();
+        let mut wp2 = Editor::detached();
         wp2.sync(&state.doc, &state.root);
         assert!(
             (wp2.margins.left - wp.margins.left).abs() < 1e-6,
@@ -6466,7 +6450,7 @@ fn ruler_drags_and_clicks_set_indents_and_tab_stops() {
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "indent me");
         let mut framed = mount(state, wp, 1200, 760);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         let block = wp.model().caret().block.clone();
         let x_before = wp.laid.iter().find(|l| l.id == block).unwrap().text_x;
 
@@ -6519,7 +6503,7 @@ fn ruler_drags_and_clicks_set_indents_and_tab_stops() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut edits(&mut state.doc), "ab");
         let mut framed = mount(state, wp, 1200, 760);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         let block = wp.model().caret().block.clone();
         assert!(
             wp.model().block_tab_stops(&state.doc, &block).is_empty(),
@@ -6573,7 +6557,7 @@ fn tab_stops_insert_spaces_without_stops_and_drag_off_to_remove() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut edits(&mut state.doc), "x");
         let mut framed = mount(state, wp, 1200, 760);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         press_tab(wp, state);
         assert!(
             wp.model().current_text(&state.doc).contains("    "),
@@ -6594,7 +6578,7 @@ fn tab_stops_insert_spaces_without_stops_and_drag_off_to_remove() {
             crate::actions::AttrVal::Str("150.0".into()),
         );
         let mut framed = mount(state, wp, 1200, 760);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         let page_x = wp.page_rect.x0;
         let page_w = wp.page_rect.width();
@@ -6639,7 +6623,7 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
     {
         use ui::a11y::Role;
         let state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
 
         let tree = wp.accessibility_tree();
@@ -6649,12 +6633,12 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
 
         // The document's `focused` flag is derived from the widget's focus state,
         // not stored separately, so it tracks `set_focus`.
-        Widget::set_focus(&mut wp, false);
+        wp.set_focus(false);
         assert!(
             !wp.accessibility_tree().node.state.focused,
             "blurred editor → not focused"
         );
-        Widget::set_focus(&mut wp, true);
+        wp.set_focus(true);
         assert!(
             wp.accessibility_tree().node.state.focused,
             "focused editor → focused"
@@ -6662,7 +6646,7 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
 
         // The trait method returns the root *and* its synthetic subtree; this is
         // the exact host path consumed by AccessKit/AT-SPI.
-        let trait_root = Widget::accessibility(&wp).expect("editor exposes a document node");
+        let trait_root = wp.accessibility();
         assert_eq!(trait_root.role, Role::Document);
         assert_eq!(trait_root.name.as_deref(), Some("Document editor"));
         assert_eq!(
@@ -6678,7 +6662,7 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
     {
         use ui::a11y::Role;
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
 
         // First block: a level-1 heading "Title".
@@ -6745,7 +6729,7 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
             children: Vec::new(),
         };
 
-        let node = WordProcessorWidget::block_access_node(&img).expect("image yields a node");
+        let node = Editor::block_access_node(&img).expect("image yields a node");
         assert_eq!(node.role, Role::Image);
         assert_eq!(
             node.name.as_deref(),
@@ -6757,7 +6741,7 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
         let mut captioned = img;
         captioned.attrs.remove("alt");
         captioned.text = "Figure 1".into();
-        let cap_node = WordProcessorWidget::block_access_node(&captioned).unwrap();
+        let cap_node = Editor::block_access_node(&captioned).unwrap();
         assert_eq!(
             cap_node.name.as_deref(),
             Some("Figure 1"),
@@ -6765,7 +6749,7 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
         );
 
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "before");
@@ -6785,7 +6769,7 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
     {
         use ui::a11y::Role;
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.insert_table_via_action(&mut edits(&mut state.doc), 2, 2);
         wp.sync(&state.doc, &state.root);
@@ -6816,7 +6800,7 @@ fn the_window_bar_names_its_commands_for_assistive_technology() {
     crate::i18n::set_locale("en-US");
     let (state, wp) = populated();
     let mut framed = mount(state, wp, 1100, 760);
-    let (wp, state) = Framed::split(&mut framed);
+    let (wp, state) = split(&mut framed);
     let bold = bar_slot(wp, ToolAction::Bold).expect("Format offers Bold");
     assert_eq!(bold.name, "Bold");
     assert!(!bold.on);
@@ -6838,7 +6822,7 @@ use ui::presence::SelectionRange;
 
 /// The id of the first laid-out block (after a draw) — the block a remote
 /// peer's caret/selection will be keyed to.
-fn first_block_id(wp: &WordProcessorWidget) -> String {
+fn first_block_id(wp: &Editor) -> String {
     wp.laid
         .first()
         .expect("at least one block was laid out")
@@ -6857,8 +6841,9 @@ fn drawn_focused() -> Framed<WordProcessorWidget> {
 
 #[test]
 fn semantic_text_caret_is_painted_without_a_selection_or_input() {
-    let framed = drawn_focused();
-    let block = first_block_id(&framed);
+    let mut framed = drawn_focused();
+    let framed = editor(&mut framed);
+    let block = first_block_id(framed);
     let mut presence = PresenceCtx::empty();
     presence
         .apply_interaction(tilo_actions::SemanticInteraction {
@@ -6939,7 +6924,7 @@ fn semantic_text_anchor(block: &str, start: u64, end: u64) -> tilo_actions::Inte
 
 fn semantic_text_fixture(text: &str) -> Framed<WordProcessorWidget> {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     wp.model_mut().insert_str(&mut edits(&mut state.doc), text);
     mount(state, wp, 1100, 760)
@@ -6948,7 +6933,7 @@ fn semantic_text_fixture(text: &str) -> Framed<WordProcessorWidget> {
 #[test]
 fn semantic_text_geometry_uses_unicode_character_endpoints_and_real_carets() {
     let mut framed = semantic_text_fixture("a😀éZ");
-    let (wp, state) = Framed::split(&mut framed);
+    let (wp, state) = split(&mut framed);
     let block = first_block_id(wp);
     let laid = &wp.laid[0];
     let layout = &wp.layout_cache[&block].1;
@@ -7007,10 +6992,11 @@ fn semantic_text_geometry_uses_unicode_character_endpoints_and_real_carets() {
         ),
         before
     );
-    let empty = semantic_text_fixture("");
+    let mut empty = semantic_text_fixture("");
+    let empty = editor(&mut empty);
     let rects = empty
         .semantic_text_rects(
-            &semantic_text_anchor(&first_block_id(&empty), 0, 0),
+            &semantic_text_anchor(&first_block_id(empty), 0, 0),
             empty.content_transform(Affine::IDENTITY),
             empty.zoom_viewport,
         )
@@ -7022,7 +7008,8 @@ fn semantic_text_geometry_uses_unicode_character_endpoints_and_real_carets() {
 #[test]
 fn semantic_text_geometry_refuses_invalid_or_unretained_targets() {
     let mut framed = semantic_text_fixture("abc");
-    let block = first_block_id(&framed);
+    let framed = editor(&mut framed);
+    let block = first_block_id(framed);
     let transform = framed.content_transform(Affine::IDENTITY);
     let clip = framed.zoom_viewport;
     for anchor in [
@@ -7060,7 +7047,7 @@ fn semantic_text_geometry_refuses_invalid_or_unretained_targets() {
                 .is_none()
         );
     }
-    Framed::split(&mut framed).0.layout_cache.remove(&block);
+    framed.layout_cache.remove(&block);
     assert!(
         framed
             .semantic_text_rects(&semantic_text_anchor(&block, 0, 1), transform, clip)
@@ -7071,11 +7058,12 @@ fn semantic_text_geometry_refuses_invalid_or_unretained_targets() {
 #[test]
 fn semantic_text_geometry_never_turns_an_image_hit_test_layout_into_a_caret() {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     wp.model_mut()
         .insert_image_bytes(&mut edits(&mut state.doc), TEST_PNG);
-    let framed = mount(state, wp, 1100, 760);
+    let mut framed = mount(state, wp, 1100, 760);
+    let framed = editor(&mut framed);
     let image = framed
         .laid
         .iter()
@@ -7098,8 +7086,9 @@ fn semantic_text_geometry_never_turns_an_image_hit_test_layout_into_a_caret() {
 
 #[test]
 fn semantic_text_geometry_clips_after_pan_and_zoom_without_edge_clamping() {
-    let framed = semantic_text_fixture("abcdefgh");
-    let anchor = semantic_text_anchor(&first_block_id(&framed), 0, 8);
+    let mut framed = semantic_text_fixture("abcdefgh");
+    let framed = editor(&mut framed);
+    let anchor = semantic_text_anchor(&first_block_id(framed), 0, 8);
     let transform = Affine::translate((31.0, 47.0)) * Affine::scale(1.75);
     let all = framed
         .semantic_text_rects(
@@ -7131,7 +7120,8 @@ fn semantic_text_geometry_uses_each_visible_page_slices_layout_origin() {
     let text = "A paragraph spanning real page slices with wrapped words. ".repeat(300);
     let mut framed = semantic_text_fixture(&text);
     pipeline_draw(&mut framed, 1100, 3000);
-    let block = first_block_id(&framed);
+    let framed = editor(&mut framed);
+    let block = first_block_id(framed);
     let transform = framed.content_transform(Affine::IDENTITY);
     let anchor = semantic_text_anchor(&block, 0, text.chars().count() as u64);
     let rects = framed
@@ -7213,7 +7203,8 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
     // caret/selection overlays — proving the collab render path is a strict
     // no-op when there are no peers, so single-user editing is unchanged.
     {
-        let wp = drawn_focused();
+        let mut wp = drawn_focused();
+        let wp = editor(&mut wp);
         let presence = PresenceCtx::empty();
         let (carets, selections) = wp.remote_presence_overlays(&presence);
         assert!(carets.is_empty(), "no remote carets without peers");
@@ -7225,8 +7216,9 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
     // the room's assigned name for the peer's transport id, never the raw id
     // itself (which reads as noise like `peer@5537458103208628978`).
     {
-        let wp = drawn_focused();
-        let block_id = first_block_id(&wp);
+        let mut wp = drawn_focused();
+        let wp = editor(&mut wp);
+        let block_id = first_block_id(wp);
         let peer = "peer@5537458103208628978";
 
         let mut presence = PresenceCtx::empty();
@@ -7247,8 +7239,9 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
     // not a person who does not exist. An unlabelled caret is honest;
     // an invented name is a claim about who is in the room.
     {
-        let wp = drawn_focused();
-        let block_id = first_block_id(&wp);
+        let mut wp = drawn_focused();
+        let wp = editor(&mut wp);
+        let block_id = first_block_id(wp);
         let peer = "peer@5537458103208628978";
 
         let mut presence = PresenceCtx::empty();
@@ -7270,8 +7263,9 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
     // `draw` consumes presence and maps a remote byte offset onto on-screen
     // caret geometry via the production `caret_geometry` path.
     {
-        let wp = drawn_focused();
-        let block_id = first_block_id(&wp);
+        let mut wp = drawn_focused();
+        let wp = editor(&mut wp);
+        let block_id = first_block_id(wp);
 
         let mut presence = PresenceCtx::empty();
         // Place "alice"'s caret 3 bytes into the first block.
@@ -7314,8 +7308,9 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
     // rectangles (a single-line selection is one rect), mapped through the same
     // `selection_rects` geometry the local selection uses.
     {
-        let wp = drawn_focused();
-        let block_id = first_block_id(&wp);
+        let mut wp = drawn_focused();
+        let wp = editor(&mut wp);
+        let block_id = first_block_id(wp);
 
         let mut presence = PresenceCtx::empty();
         // "bob" selects bytes [0, 4) of the first block.
@@ -7342,8 +7337,9 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
     // A degenerate (empty) remote selection range produces no highlight rects —
     // the render guards against a zero-width selection painting a stray band.
     {
-        let wp = drawn_focused();
-        let block_id = first_block_id(&wp);
+        let mut wp = drawn_focused();
+        let wp = editor(&mut wp);
+        let block_id = first_block_id(wp);
 
         let mut presence = PresenceCtx::empty();
         presence.selections.insert(
@@ -7365,7 +7361,8 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
     // Two peers on DIFFERENT blocks each get their own caret overlay, attributed
     // to the right user — the per-block key keeps them from colliding.
     {
-        let wp = drawn_focused();
+        let mut wp = drawn_focused();
+        let wp = editor(&mut wp);
         assert!(
             wp.laid.len() >= 2,
             "the populated doc lays out at least two blocks"
@@ -7399,7 +7396,7 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
     // the asserted helper are the same path, not a parallel re-implementation.
     {
         let mut framed = drawn_focused();
-        let block_id = first_block_id(&framed);
+        let block_id = first_block_id(editor(&mut framed));
 
         let mut presence = PresenceCtx::empty();
         presence.set_remote_caret("charlie".into(), block_presence_key(&block_id), 2);
@@ -7439,9 +7436,8 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
         });
         // A draw populates the block cache (needed for char→byte conversion).
         let mut framed = mount(state, wp, 1100, 760);
-        let (wp, _) = Framed::split(&mut framed);
 
-        match ui::presence::capability::presence_payload(wp) {
+        match ui::presence::capability::presence_payload(Framed::split(&mut framed).0) {
             Some((key, ui::PresencePayload::Caret { pos })) => {
                 assert_eq!(
                     key,
@@ -7462,14 +7458,14 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
         let (state, mut wp) = populated();
         wp.set_focus(true);
         let mut framed = mount(state, wp, 1100, 760);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         // Select chars [1, 4) of the caret block.
         select_range(wp, 1, 4);
         // Re-draw so the selection is reflected in the cached block views.
         let (wp, _) = pipeline_draw(&mut framed, 1100, 760);
 
         let block = wp.model().caret().block.clone();
-        match ui::presence::capability::presence_payload(wp) {
+        match ui::presence::capability::presence_payload(Framed::split(&mut framed).0) {
             Some((key, ui::PresencePayload::Selection { start, end })) => {
                 assert_eq!(key, block_presence_key(&block));
                 assert_eq!((start, end), (1, 4), "selection reported as a byte range");
@@ -7484,10 +7480,10 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
     {
         let (state, wp) = populated();
         let mut framed = mount(state, wp, 1100, 760);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         wp.set_focus(false);
         assert!(
-            ui::presence::capability::presence_payload(wp).is_none(),
+            ui::presence::capability::presence_payload(Framed::split(&mut framed).0).is_none(),
             "no presence while unfocused"
         );
     }
@@ -7498,7 +7494,7 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
 /// the resize / flip tests.
 fn doc_with_selected_image() -> (Framed<WordProcessorWidget>, String) {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     wp.model_mut()
         .insert_str(&mut edits(&mut state.doc), "caption");
@@ -7525,13 +7521,13 @@ fn doc_with_selected_image() -> (Framed<WordProcessorWidget>, String) {
 /// A doc with one custom paragraph style applied to its (only) paragraph.
 fn doc_with_custom_style() -> (Framed<WordProcessorWidget>, String) {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     wp.model_mut()
         .insert_str(&mut edits(&mut state.doc), "styled paragraph");
     let mut framed = mount(state, wp, 1000, 700);
     // Duplicate Body into a fresh custom style and apply it to the caret block.
-    let (wp, state) = Framed::split(&mut framed);
+    let (wp, state) = split(&mut framed);
     wp.apply_panel_hit(&mut edits(&mut state.doc), PanelHit::NewStyle);
     wp.refresh_blocks(&state.doc);
     let new_id = wp
@@ -7553,7 +7549,7 @@ fn the_colour_picker_applies_and_cancels_previews() {
             .insert_str(&mut edits(&mut state.doc), "colour me");
         wp.view.styles_panel_visible = true;
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
 
         let (open_rect, _) = wp
             .panel_hits
@@ -7585,7 +7581,7 @@ fn the_colour_picker_applies_and_cancels_previews() {
         let style_before = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         // CursorMoved (to set the picker's internal cursor) then press.
         let moved = Dispatch::new().doc(&mut state.doc).path(&state.root).send(
-            wp,
+            &mut Lent(wp),
             &WindowEvent::CursorMoved {
                 device_id: winit::event::DeviceId::dummy(),
                 position: (sv_pt.x, sv_pt.y).into(),
@@ -7596,7 +7592,7 @@ fn the_colour_picker_applies_and_cancels_previews() {
             .path(&state.root)
             .handled(moved.handled)
             .focus_target(moved.focus_target)
-            .send(wp, &ui::synthetic_input::mouse_press());
+            .send(&mut Lent(wp), &ui::synthetic_input::mouse_press());
         let style_after = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         assert_ne!(
             style_before, style_after,
@@ -7609,7 +7605,7 @@ fn the_colour_picker_applies_and_cancels_previews() {
     {
         let (state, wp) = bound();
         let (mut framed, before) = preview_custom_colour(state, wp);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         press_named(wp, state, NamedKey::Escape);
         assert!(!wp.color_picker.is_open(), "Escape closes the picker");
         assert_eq!(
@@ -7624,13 +7620,13 @@ fn the_colour_picker_applies_and_cancels_previews() {
 /// square; returns the mounted widget and the style colour before the preview.
 fn preview_custom_colour(
     mut state: ui::State,
-    mut wp: WordProcessorWidget,
+    mut wp: Editor,
 ) -> (Framed<WordProcessorWidget>, Option<[u8; 3]>) {
     wp.model_mut()
         .insert_str(&mut edits(&mut state.doc), "preview me");
     wp.view.styles_panel_visible = true;
     let mut framed = mount(state, wp, 1000, 700);
-    let (wp, state) = Framed::split(&mut framed);
+    let (wp, state) = split(&mut framed);
     wp.open_color_picker();
     assert!(wp.color_picker.is_open(), "Custom… opens the picker");
     wp.color_picker.layout(wp.rect, wp.panel_rect);
@@ -7644,7 +7640,7 @@ fn preview_custom_colour(
     Dispatch::new()
         .doc(&mut state.doc)
         .path(&state.root)
-        .send(wp, &ui::synthetic_input::mouse_release());
+        .send(&mut Lent(wp), &ui::synthetic_input::mouse_release());
     assert_ne!(
         wp.focused_style_key().map(|k| wp.sheet.get(&k).color),
         before,
@@ -7660,7 +7656,7 @@ fn the_colour_picker_keeps_or_dismisses_its_preview() {
     {
         let (state, wp) = bound();
         let (mut framed, before) = preview_custom_colour(state, wp);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         let previewed = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         let done = wp
             .color_picker
@@ -7681,7 +7677,7 @@ fn the_colour_picker_keeps_or_dismisses_its_preview() {
         wp.model_mut().insert_str(&mut edits(&mut state.doc), "x");
         wp.view.styles_panel_visible = true;
         let mut framed = mount(state, wp, 1000, 700);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         wp.open_color_picker();
         assert!(wp.color_picker.is_open());
         let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
@@ -7744,7 +7740,7 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
     );
     let (w, h) = (900, 1100);
     let mut framed = mount(state, wp, w, h);
-    let (wp, _) = Framed::split(&mut framed);
+    let (wp, _) = split(&mut framed);
     wp.view.auto_fit_page = false;
     let mut tr = TextRenderer::new();
     let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
@@ -7859,9 +7855,9 @@ fn render_review_png<'a>(
     h: u32,
     dir: &std::path::Path,
     name: &str,
-) -> (&'a mut WordProcessorWidget, &'a mut ui::State) {
+) -> (&'a mut Editor, &'a mut ui::State) {
     render_review_png_themed(framed, w, h, dir, name, &Theme::dark());
-    Framed::split(framed)
+    split(framed)
 }
 
 fn render_review_png_themed(
@@ -7896,7 +7892,7 @@ fn menu_ux_review_shots() {
         wp.inner
             .insert_str(&mut edits(&mut state.doc), "Keep my draft");
         let mut framed = mount_themed(state, wp, width, 600, &theme);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         let point = first_block_start_point(wp);
         wp.open_context_menu(&state.doc, point, [num::f32_of_u32(width) - 2.0, 598.0]);
         wp.context_menu.focus_first_action();
@@ -7934,7 +7930,7 @@ fn render_review_shots() {
     // 2a. Style context menu on a CUSTOM style: Delete + Duplicate.
     {
         let (mut framed, custom_id) = doc_with_custom_style();
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         let anchor = wp
             .panel_hits
             .iter()
@@ -7949,7 +7945,7 @@ fn render_review_shots() {
     // 2b. Style context menu on a BUILT-IN style: Duplicate only.
     {
         let (mut framed, _id) = doc_with_custom_style();
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         let anchor = wp
             .panel_hits
             .iter()
@@ -7966,7 +7962,7 @@ fn render_review_shots() {
     //    handles read in the shot.
     {
         let (mut framed, id) = doc_with_selected_image();
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         wp.perform_action(
             &mut edits(&mut state.doc),
             &crate::actions::set_image_size_action(&id, 300, 200),
@@ -7986,7 +7982,7 @@ fn render_review_shots() {
     // 4. Generated table of contents (+ its confirmation toast).
     {
         let mut framed = doc_with_headings(w, h);
-        let (wp, state) = Framed::split(&mut framed);
+        let (wp, state) = split(&mut framed);
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertToc);
         render_review_png(&mut framed, w, h, &dir, "toc");
     }
@@ -7998,7 +7994,7 @@ fn render_review_shots() {
             .insert_str(&mut edits(&mut state.doc), "colour this paragraph");
         wp.view.styles_panel_visible = true;
         let mut framed = mount(state, wp, w, h);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         wp.open_color_picker();
         render_review_png(&mut framed, w, h, &dir, "color-picker");
     }
@@ -8033,7 +8029,7 @@ fn render_review_shots() {
 fn render_responsive_review_shots() {
     let dir = review_shot_dir();
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     wp.model_mut().insert_str(
         &mut edits(&mut state.doc),
@@ -8088,13 +8084,13 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
         let (state, mut writer) = populated();
         writer.set_zoom(1.0);
         let mut framed = mount(state, writer, 1000, 700);
-        framed.pointer = Point::new(500.0, 300.0);
+        editor(&mut framed).pointer = Point::new(500.0, 300.0);
         framed
     };
     let mut first_framed = drawn_at_rest();
     let mut second_framed = drawn_at_rest();
-    let (first, first_state) = Framed::split(&mut first_framed);
-    let (second, second_state) = Framed::split(&mut second_framed);
+    let (first, first_state) = split(&mut first_framed);
+    let (second, second_state) = split(&mut second_framed);
 
     // The first visible Writer is stale/unfocused; the selected second Writer
     // must receive the same native pinch after the first declines it.
@@ -8121,7 +8117,7 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
         .modifiers(ctrl)
         .doc(&mut first_state.doc)
         .path(&first_state.root)
-        .send(first, &ctrl_wheel)
+        .send(&mut Lent(first), &ctrl_wheel)
         .handled;
     assert!(
         !first_handled,
@@ -8132,7 +8128,7 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
         .modifiers(ctrl)
         .doc(&mut second_state.doc)
         .path(&second_state.root)
-        .send(second, &ctrl_wheel)
+        .send(&mut Lent(second), &ctrl_wheel)
         .handled;
     assert!(second_handled, "the focused Writer owns Ctrl+wheel zoom");
     assert_eq!(
@@ -8166,7 +8162,7 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
     let plain_handled = Dispatch::new()
         .doc(&mut first_state.doc)
         .path(&first_state.root)
-        .send(first, &plain_wheel)
+        .send(&mut Lent(first), &plain_wheel)
         .handled;
     assert!(plain_handled, "plain wheel remains pointer-routed");
     assert!(
@@ -8184,8 +8180,9 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
 /// agent-written (130-byte id) paragraphs still show carets and selections.
 #[test]
 fn a_digest_addressed_remote_caret_resolves_to_its_block() {
-    let wp = drawn_focused();
-    let block_id = first_block_id(&wp);
+    let mut wp = drawn_focused();
+    let wp = editor(&mut wp);
+    let block_id = first_block_id(wp);
     let digest = block_presence_key(&block_id).digest_form().unwrap();
     assert!(is_scope_digest_key(&digest));
     let peer = "agent-publisher";
@@ -8211,7 +8208,7 @@ fn a_digest_addressed_remote_caret_resolves_to_its_block() {
 
 /// Apply what `wp` asked the person to confirm, as the door does once they
 /// agree.
-fn confirm_asked(wp: &WordProcessorWidget, doc: &mut automerge::AutoCommit) {
+fn confirm_asked(wp: &Editor, doc: &mut automerge::AutoCommit) {
     let dispatch = wp.dispatch.as_ref().expect("the editor is hosted");
     let mut document =
         ui::tilo_resource::Replica::<crate::framework::Document>::from_doc(doc.clone());
@@ -8231,11 +8228,12 @@ fn the_shared_selection_is_the_place_its_actions_read() {
     let (state, mut wp) = populated();
     wp.set_focus(true);
     let mut framed = mount(state, wp, 1100, 760);
-    let (wp, _) = Framed::split(&mut framed);
+    let (wp, _) = split(&mut framed);
     select_range(wp, 1, 4);
     let (wp, _) = pipeline_draw(&mut framed, 1100, 760);
     let block = wp.model().caret().block.clone();
-    let selection = ui::shared_selection::selection_of(wp).expect("a selection");
+    let selection =
+        ui::shared_selection::selection_of(Framed::split(&mut framed).0).expect("a selection");
     assert_eq!(
         selection.anchor.place,
         Some(tilo_actions::SelectionPlace::range(block.clone(), 1, 4))
@@ -8258,15 +8256,16 @@ fn the_shared_selection_is_the_place_its_actions_read() {
             end: 4
         }
     );
-    wp.set_focus(false);
-    assert!(ui::shared_selection::selection_of(wp).is_none());
+    editor(&mut framed).set_focus(false);
+    assert!(ui::shared_selection::selection_of(Framed::split(&mut framed).0).is_none());
 }
 
 /// A collaborator's caret, name and selection scrolled across the canvas
 /// edge stay inside the canvas: none of it paints over the toolbar.
 #[test]
 fn collaborator_presence_cannot_escape_the_canvas() {
-    let framed = drawn_focused();
+    let mut framed = drawn_focused();
+    let framed = editor(&mut framed);
     let block = framed.laid.last().expect("a laid block").clone();
     let mut presence = PresenceCtx::empty();
     let user = UserId("ada".into());
@@ -8317,7 +8316,7 @@ fn ui_scaling_grows_the_writing_beside_the_review_cards() {
     for scale in [1.0, 1.5, 2.0] {
         let theme = Theme::dark().with_ui_scale(scale);
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         seed_text(
             &mut wp,
@@ -8328,7 +8327,8 @@ fn ui_scaling_grows_the_writing_beside_the_review_cards() {
         let block = wp.blocks[0].id.clone();
         crate::model::comment_by(&mut state.doc, "Ada", &block, (0, 11), "Keep this.");
         wp.sync(&state.doc, &state.root);
-        let framed = mount_themed(state, wp, 1440, 810, &theme);
+        let mut framed = mount_themed(state, wp, 1440, 810, &theme);
+        let framed = editor(&mut framed);
         let body = framed.laid.first().expect("the paragraph is laid");
         assert!(
             f64::from(body.size) * framed.zoom.factor() >= 16.0 * f64::from(scale) - 0.01,
@@ -8363,11 +8363,11 @@ fn ui_scaling_grows_the_writing_beside_the_review_cards() {
 #[test]
 fn a_double_click_selects_the_whole_word_and_its_drag_grows_by_words() {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     seed_text(&mut wp, &mut state, "Meeting notes today");
     let mut framed = mount(state, wp, 1000, 700);
-    let (wp, state) = Framed::split(&mut framed);
+    let (wp, state) = split(&mut framed);
     let line = wp
         .laid
         .iter()
@@ -8375,7 +8375,7 @@ fn a_double_click_selects_the_whole_word_and_its_drag_grows_by_words() {
         .expect("the paragraph is laid out")
         .clone();
     let y = line.y_top + line.height / 2.0;
-    let x_at = |wp: &mut WordProcessorWidget, offset: usize| {
+    let x_at = |wp: &mut Editor, offset: usize| {
         (0..600)
             .map(|dx| line.text_x + f64::from(dx))
             .find(|&x| {
@@ -8387,20 +8387,18 @@ fn a_double_click_selects_the_whole_word_and_its_drag_grows_by_words() {
     // Between "Meet" and "ing", and inside "today".
     let inside_meeting = x_at(wp, 4);
     let inside_today = x_at(wp, 16);
-    let screen = |wp: &WordProcessorWidget, x: f64| {
-        wp.content_transform(Affine::IDENTITY) * Point::new(x, y)
-    };
-    let send = |wp: &mut WordProcessorWidget, state: &mut ui::State, event: &WindowEvent| {
+    let screen = |wp: &Editor, x: f64| wp.content_transform(Affine::IDENTITY) * Point::new(x, y);
+    let send = |wp: &mut Editor, state: &mut ui::State, event: &WindowEvent| {
         Dispatch::new()
             .doc(&mut state.doc)
             .path(&state.root)
-            .send(wp, event);
+            .send(&mut Lent(wp), event);
     };
     let moved = |pt: Point| WindowEvent::CursorMoved {
         device_id: winit::event::DeviceId::dummy(),
         position: (pt.x, pt.y).into(),
     };
-    let span = |wp: &WordProcessorWidget| {
+    let span = |wp: &Editor| {
         let anchor = wp.inner.selection_anchor.as_ref().map(|a| a.offset);
         (anchor, wp.inner.caret.offset)
     };
@@ -8438,7 +8436,7 @@ fn a_narrow_sheets_ruler_marks_the_text_where_it_stands() {
         crate::actions::AttrVal::Float(24.0),
     );
     let mut framed = mount(state, wp, 420, 760);
-    let (wp, _) = Framed::split(&mut framed);
+    let (wp, _) = split(&mut framed);
     let (page_x, page_w) = (wp.page_rect.x0, wp.page_rect.width());
     assert!(
         page_w < MAX_PAGE_W,

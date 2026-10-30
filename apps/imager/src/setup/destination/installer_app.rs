@@ -981,6 +981,8 @@ pub struct InstallerApp {
     /// Queued `tilo-control` requests from the console endpoints, answered
     /// on the UI thread (see [`console`]).
     console: Option<imager_backend::destination::console::ConsoleServer>,
+    /// What the window shares with the view it stands in.
+    published: Rc<std::cell::RefCell<crate::window_view::Published>>,
 }
 
 impl Default for InstallerApp {
@@ -1169,6 +1171,7 @@ impl InstallerApp {
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
             backend: Arc::new(SystemBackend),
             console: None,
+            published: Rc::default(),
         }
     }
 
@@ -4115,6 +4118,10 @@ impl Widget for InstallerApp {
     /// assistive activation queued since the last event run here, then the
     /// view state is noticed and the composed controls sync.
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        let staged = self.published.borrow_mut().take_staged();
+        if let Some(crate::window_view::Staged(scenario)) = staged {
+            self.stage(scenario.as_deref());
+        }
         if self.recovery_key_copy.failed() {
             self.recovery_key_copied = false;
             self.dirty_structure = true;
@@ -4129,6 +4136,23 @@ impl Widget for InstallerApp {
             self.dirty_structure = true;
         }
         self.composed.sync(state, root);
+        crate::window_view::PublishingWindow::publish(self);
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let mut changed = self.published.borrow().staging();
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn build_layout(
@@ -4299,16 +4323,10 @@ impl Widget for InstallerApp {
     }
 }
 
-impl ui::framework::ResourceSurface<crate::resource::Imager, DestinationEffect> for InstallerApp {
-    fn present(&mut self, _state: &Rc<crate::resource::Imager>) {}
-
+impl InstallerApp {
     /// Live, work finished off the UI thread wakes the window, and the
     /// console answers on the medium's private socket and virtio port.
-    fn attach(&mut self, cx: ui::framework::SurfaceCx<crate::resource::Imager>) {
-        if !cx.mode().is_live() {
-            return;
-        }
-        let waker = cx.waker();
+    pub(crate) fn attach_live(&mut self, waker: ui::WakeHandle) {
         let mailbox = Mailbox::new(move || waker.wake());
         let console = imager_backend::destination::console::ConsoleServer::new();
         let wake = mailbox.clone();
@@ -4320,18 +4338,19 @@ impl ui::framework::ResourceSurface<crate::resource::Imager, DestinationEffect> 
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
-        if let Some(app) = scenario
+        if let Some(mut app) = scenario
             .and_then(|name| name.strip_prefix("destination-"))
             .and_then(Self::for_scenario)
         {
+            app.published = Rc::clone(&self.published);
             *self = app;
         }
     }
 
-    fn effect(
+    pub(crate) fn effect(
         &mut self,
         effect: DestinationEffect,
-        _cx: &mut ui::framework::EffectCx<crate::resource::Imager, Self>,
+        _cx: &mut ui::framework::EffectCx<crate::resource::Imager>,
     ) -> ui::framework::EffectAnswer {
         let output = self.apply(effect)?;
         Ok(output.value.map_or_else(
@@ -4339,13 +4358,19 @@ impl ui::framework::ResourceSurface<crate::resource::Imager, DestinationEffect> 
             ui::framework::Effected::value,
         ))
     }
+}
 
-    fn effects(&self) -> Vec<ui::framework::EffectStatus> {
-        self.effect_statuses()
+impl crate::window_view::PublishingWindow for InstallerApp {
+    fn published(&self) -> &Rc<std::cell::RefCell<crate::window_view::Published>> {
+        &self.published
     }
 
-    fn live_rows(&self) -> Vec<ui::framework::LiveRow> {
+    fn rows(&self) -> Vec<ui::framework::LiveRow> {
         self.published_rows()
+    }
+
+    fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        self.effect_statuses()
     }
 }
 

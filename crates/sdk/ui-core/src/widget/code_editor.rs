@@ -33,8 +33,10 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, TextInputKind, Widget};
 
 pub mod syntax;
+pub mod tilolang;
 
 pub use syntax::{SyntaxHighlighter, SyntaxState};
+pub use tilolang::TilolangHighlighter;
 
 /// The syntactic category of a run of source, and a coloured run within one
 /// line: shared with the grammar set (`tilo-highlight`), which the shared
@@ -82,6 +84,8 @@ pub enum Language {
     Typst,
     Sql,
     Json,
+    /// tilolang, the app language, coloured by its own lexer.
+    Tilolang,
 }
 
 impl Language {
@@ -94,6 +98,7 @@ impl Language {
             Language::Typst => Some(Box::new(TypstHighlighter)),
             Language::Sql => Some(Box::new(SyntaxHighlighter::for_token_or_plain("sql"))),
             Language::Json => Some(Box::new(SyntaxHighlighter::for_token_or_plain("json"))),
+            Language::Tilolang => Some(Box::new(TilolangHighlighter)),
         }
     }
 }
@@ -1092,6 +1097,7 @@ mod tests {
             assert!(Language::Rust.highlighter().is_some());
             assert!(Language::Sql.highlighter().is_some());
             assert!(Language::Typst.highlighter().is_some());
+            assert!(Language::Tilolang.highlighter().is_some());
             assert!(Language::PlainText.highlighter().is_none());
         }
 

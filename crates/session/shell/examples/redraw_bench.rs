@@ -2903,8 +2903,7 @@ mod tests {
     }
 
     #[test]
-    fn acceptance_gates_aggregate_every_sample_at_exact_boundaries() {
-        // Phase `aggregation_uses_all_samples_and_nearest_rank_p99`.
+    fn aggregation_uses_all_samples_and_nearest_rank_p99() {
         {
             let mut samples = vec![Some(1_000); 989];
             samples.push(Some(50_000));
@@ -2929,7 +2928,10 @@ mod tests {
                 Err(SampleError::Missing { index: 1 })
             );
         }
-        // Phase `gates_check_exact_mean_and_p99_boundaries`.
+    }
+
+    #[test]
+    fn gates_check_exact_mean_and_p99_boundaries() {
         {
             let mut passing = vec![Some(24_721); 989];
             passing.extend(std::iter::repeat_n(Some(P99_LIMIT_US), 11));

@@ -1,15 +1,12 @@
 //! The slides app on the framework: the [`Deck`] record, its editor, and
 //! what opening a presentation file does.
 
-use std::rc::Rc;
-
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{EffectAnswer, EffectCx, LaunchInput, ResourceApp, ResourceSurface, ViewCx};
+use ui::framework::{LaunchInput, ResourceApp, ViewCx};
 
-use crate::effects::SlidesEffect;
 use ui::record::RecordId;
-use ui::tilo_resource::{ActionDecl, Invoke};
+use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
 use crate::app::SlidesApp;
@@ -27,7 +24,7 @@ pub const PPTX_MEDIA_TYPE: &str =
 /// rail and the inspector are flaps over the canvas.
 const NARROW_VIEWPORT: (u32, u32) = (820, 800);
 
-/// Framework app: the slides editor is the surface over the [`Deck`].
+/// Framework app: the slides editor is the view of the [`Deck`].
 pub struct SlidesShell;
 
 impl ResourceApp for SlidesShell {
@@ -43,9 +40,8 @@ impl ResourceApp for SlidesShell {
     fn view(cx: &mut ViewCx<Deck>) -> Element {
         // In a container, the editor is a widget of the view's tree that
         // tests and staging reach by its type.
-        let editor = SlidesApp::new(cx);
-        cx.on_open_item(editor.opener());
-        Box::new(ui::widget::Stack::new().push(cx.surface(editor)))
+        let editor = crate::app::window(cx, SlidesApp::new(cx));
+        Box::new(ui::widget::Stack::new().push(editor))
     }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -180,24 +176,6 @@ fn replace_deck(deck: &crate::model::Deck) -> Invoke<Deck> {
         look: Some(deck.look),
         slides: deck.slides.iter().map(crate::deck::SlideData::of).collect(),
     })
-}
-
-impl ResourceSurface<Deck, SlidesEffect> for SlidesApp {
-    fn present(&mut self, state: &Rc<Deck>) {
-        self.adopt_resource_state(state);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(&mut self, effect: SlidesEffect, cx: &mut EffectCx<Deck, Self>) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn bound_declarations(&self) -> Vec<ActionDecl<Deck>> {
-        self.selection_declarations()
-    }
 }
 
 #[cfg(test)]

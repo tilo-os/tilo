@@ -1,6 +1,8 @@
-//! The palette's interaction on the production router: Escape, the steps
-//! that collect an action's arguments, "Show all", where a row opens, and
-//! rows that keep showing the state they act on.
+//! Search's steps as the launcher drives them: Escape (the shell's own
+//! ladder), the steps that collect an action's arguments, "Show all", where
+//! a row opens, and rows that keep showing the state they act on. What the
+//! launcher's card does with a key (moving its selection, Tab between
+//! groups, masking a secret) is the launcher app's own and tested there.
 use super::*;
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
@@ -168,7 +170,6 @@ fn steps_harness(query: &str) -> (AbsorbHarness, Runs) {
         .search_registry
         .register(Rc::new(StepsFixture { runs: runs.clone() }));
     h.host.set_palette_visible(true);
-    h.host.set_palette_focus(true);
     h.host.force_palette_settled();
     h.host.set_palette_query(query);
     h.host
@@ -180,33 +181,36 @@ fn steps_harness(query: &str) -> (AbsorbHarness, Runs) {
 fn select(h: &mut AbsorbHarness, title: &str) {
     let index = h
         .host
-        .palette
+        .search
         .visible_entries()
         .iter()
         .position(|entry| entry.label == title)
         .unwrap_or_else(|| panic!("{title} is listed"));
-    h.host.palette.set_cursor(index);
+    h.host.search.set_cursor(index);
 }
 
+/// A key as the launcher takes it: Enter chooses the selected row and the
+/// arrows move the selection, as its card does; Escape reaches the shell's
+/// own ladder.
 fn press(h: &mut AbsorbHarness, key: NamedKey) -> bool {
-    pump(h, &key_pressed(Key::Named(key)))
-}
-
-fn typed(h: &mut AbsorbHarness, text: &str) {
-    for c in text.chars() {
-        let s = c.to_string();
-        let event = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            Key::Character(s.as_str().into()),
-            Some(s.as_str().into()),
-            ElementState::Pressed,
-        ));
-        pump(h, &event);
+    match key {
+        NamedKey::Enter => h.host.choose_selected_as_launcher(None),
+        NamedKey::ArrowDown => {
+            let at = h.host.search.cursor();
+            h.host.search.set_cursor(at.saturating_add(1));
+        }
+        NamedKey::ArrowUp => {
+            let at = h.host.search.cursor();
+            h.host.search.set_cursor(at.saturating_sub(1));
+        }
+        _ => return pump(h, &key_pressed(Key::Named(key))),
     }
+    true
 }
 
 fn labels(h: &AbsorbHarness) -> Vec<String> {
     h.host
-        .palette
+        .search
         .visible_entries()
         .iter()
         .map(|entry| entry.label.clone())
@@ -234,7 +238,7 @@ fn a_parameter_with_values_is_a_list_to_pick_from_never_json() {
     assert!(h.host.palette_visible());
     assert_eq!(labels(&h), vec!["100", "125", "150"], "the values are rows");
     assert!(
-        !h.host.palette.query().contains('{'),
+        !h.host.search.query().contains('{'),
         "nothing asks for JSON"
     );
     assert!(press(&mut h, NamedKey::ArrowDown));
@@ -306,18 +310,15 @@ fn a_secret_is_typed_into_a_masked_field_and_never_into_the_query() {
     let (mut h, runs) = steps_harness(QUERY);
     select(&mut h, "Zqfixture unlock");
     assert!(press(&mut h, NamedKey::Enter));
-    assert!(h.host.palette.in_argument_mode(), "a field step");
-    typed(&mut h, "hunter2");
+    let kind = h.host.search.argument_step().map(|(_, spec)| spec.kind);
+    assert_eq!(
+        kind,
+        Some(ui::widget::command_palette::ArgumentKind::Secret),
+        "a masked field step"
+    );
+    h.host
+        .ask_as_launcher(launcher_app::source::Ask::Argument("hunter2".into()));
     assert_eq!(h.host.palette_query(), QUERY, "the secret is not the query");
-    let node = h
-        .host
-        .palette
-        .accessibility()
-        .expect("the palette publishes");
-    let field = node.children.first().expect("its field");
-    assert!(field.state.protected, "the field says it holds a secret");
-    assert!(field.value.is_none(), "and never what: {:?}", field.value);
-    assert!(press(&mut h, NamedKey::Enter));
     assert_eq!(runs.borrow().as_slice(), ["unlock=hunter2"]);
 }
 
@@ -332,27 +333,23 @@ fn a_capped_group_shows_the_rest_in_place_from_its_show_all_row() {
     assert!(files < 40, "the files share the list: {files}");
     let more = h
         .host
-        .palette
+        .search
         .visible_entries()
         .iter()
         .position(|entry| entry.id.starts_with(palette_flow::MORE_PREFIX))
         .expect("a capped group offers the rest");
     assert!(
-        h.host.palette.visible_entries()[more].label.contains("40"),
+        h.host.search.visible_entries()[more].label.contains("40"),
         "it says how many there are"
     );
-    h.host.palette.set_cursor(more);
+    h.host.search.set_cursor(more);
     assert!(press(&mut h, NamedKey::Enter));
     let files = labels(&h)
         .iter()
         .filter(|label| label.starts_with("zqfixture-"))
         .count();
     assert_eq!(files, 40, "every file is listed now");
-    assert_eq!(
-        h.host.palette.cursor(),
-        more,
-        "the selection stays in place"
-    );
+    assert_eq!(h.host.search.cursor(), more, "the selection stays in place");
     assert!(h.host.palette_visible());
 }
 
@@ -365,17 +362,14 @@ fn shift_and_ctrl_enter_open_a_window_here_or_beside_the_focused_one() {
         .focused_group()
         .expect("the demo desktop has a focused group");
     select(&mut h, "Zqfixture notes");
-    let entry = h.host.palette.visible_entries()[h.host.palette.cursor()].clone();
+    let entry = h.host.search.visible_entries()[h.host.search.cursor()].clone();
     assert_eq!(
         entry.alternates.len(),
         2,
         "an app row offers both placements"
     );
-    assert!(pump_with_modifiers(
-        &mut h,
-        &key_pressed(Key::Named(NamedKey::Enter)),
-        winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT),
-    ));
+    h.host
+        .choose_selected_as_launcher(Some(launcher_app::source::ActivationModifier::Shift));
     assert_eq!(
         runs.borrow().last().map(String::as_str),
         Some(format!("notes@{:?}", OpenTarget::Here(group)).as_str())
@@ -389,11 +383,8 @@ fn shift_and_ctrl_enter_open_a_window_here_or_beside_the_focused_one() {
     let (mut h, runs) = steps_harness(QUERY);
     let group = h.host.focused_group().expect("a focused group");
     select(&mut h, "Zqfixture notes");
-    assert!(pump_with_modifiers(
-        &mut h,
-        &key_pressed(Key::Named(NamedKey::Enter)),
-        winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
-    ));
+    h.host
+        .choose_selected_as_launcher(Some(launcher_app::source::ActivationModifier::Ctrl));
     assert_eq!(
         runs.borrow().last().map(String::as_str),
         Some(format!("notes@{:?}", OpenTarget::RightOf(group)).as_str())
@@ -401,20 +392,15 @@ fn shift_and_ctrl_enter_open_a_window_here_or_beside_the_focused_one() {
 }
 
 #[test]
-fn tab_reaches_the_next_group_and_the_band_lists_only_kinds_with_hits() {
+fn the_band_lists_only_kinds_with_hits() {
     let (mut h, _) = steps_harness(QUERY);
-    let first_group = h.host.palette.visible_entries()[0].group.clone();
-    assert!(press(&mut h, NamedKey::Tab), "Tab belongs to the results");
-    let now = h.host.palette.visible_entries()[h.host.palette.cursor()]
-        .group
-        .clone();
-    assert_ne!(now, first_group, "Tab moved to the next group");
-
-    assert!(
-        h.host.palette.filter_band_shown(),
-        "several kinds: the band"
-    );
-    let chips: Vec<ResourceKind> = h.host.search_filters.kinds().cloned().collect();
+    assert!(h.host.search.filter_band_shown(), "several kinds: the band");
+    let chips: Vec<ResourceKind> = h
+        .host
+        .search_kinds()
+        .into_iter()
+        .map(|(kind, _)| kind)
+        .collect();
     assert_eq!(
         chips.first(),
         Some(&ResourceKind::File),
@@ -430,10 +416,7 @@ fn tab_reaches_the_next_group_and_the_band_lists_only_kinds_with_hits() {
     h.host.set_palette_query("");
     h.host
         .refresh_open_palette(&AutoCommit::new(), &automerge::ROOT);
-    assert!(
-        !h.host.palette.filter_band_shown(),
-        "nothing typed: no band"
-    );
+    assert!(!h.host.search.filter_band_shown(), "nothing typed: no band");
 }
 
 #[test]
@@ -453,7 +436,6 @@ fn a_switch_shows_its_new_state_on_its_row_right_after_it_flips() {
         ));
     }
     h.host.set_palette_visible(true);
-    h.host.set_palette_focus(true);
     h.host.force_palette_settled();
     h.host.set_palette_query("do not disturb");
     h.host
@@ -468,18 +450,18 @@ fn a_switch_shows_its_new_state_on_its_row_right_after_it_flips() {
     let id = format!("result:{row}");
     let index = h
         .host
-        .palette
+        .search
         .visible_entries()
         .iter()
         .position(|entry| entry.id == id)
         .expect("listed");
-    let before = h.host.palette.visible_entries()[index].badge.clone();
-    h.host.palette.set_cursor(index);
+    let before = h.host.search.visible_entries()[index].badge.clone();
+    h.host.search.set_cursor(index);
     assert!(press(&mut h, NamedKey::Enter));
     assert!(
         h.chrome.borrow().dnd(),
         "the switch flipped: row {:?}, notices {:?}",
-        h.host.palette.visible_entries().get(index).map(|e| (
+        h.host.search.visible_entries().get(index).map(|e| (
             e.label.clone(),
             e.badge.clone(),
             e.description.clone()
@@ -492,10 +474,10 @@ fn a_switch_shows_its_new_state_on_its_row_right_after_it_flips() {
             .collect::<Vec<_>>()
     );
     assert!(h.host.palette_visible(), "a switch keeps search open");
-    let selected = h.host.palette.selected_id().expect("still selected");
+    let selected = h.host.search.selected_id().expect("still selected");
     let entry = h
         .host
-        .palette
+        .search
         .visible_entries()
         .into_iter()
         .find(|entry| entry.id == selected)
@@ -517,7 +499,7 @@ fn rows_wear_their_own_pictures() {
     let (h, _) = steps_harness(QUERY);
     let notes = h
         .host
-        .palette
+        .search
         .visible_entries()
         .into_iter()
         .find(|entry| entry.label == "Zqfixture notes")
@@ -587,7 +569,6 @@ fn a_failed_run_with_nothing_to_ask_is_told_on_its_row() {
     let mut h = build_harness_sized(1280.0, 800.0);
     h.host.search_registry.register(Rc::new(FailingOpen));
     h.host.set_palette_visible(true);
-    h.host.set_palette_focus(true);
     h.host.force_palette_settled();
     h.host.set_palette_query("zqopen");
     h.host
@@ -601,7 +582,7 @@ fn a_failed_run_with_nothing_to_ask_is_told_on_its_row() {
     );
     let row = h
         .host
-        .palette
+        .search
         .visible_entries()
         .iter()
         .find(|entry| entry.label == "Zqopen folder")

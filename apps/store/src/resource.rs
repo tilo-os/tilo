@@ -1,16 +1,11 @@
 //! App Store as a resource: report drafts, their notes and moderation
 //! cases are the document ([`Reports`]); the catalogue, what is on this
 //! device, the Flatpak remotes and running package jobs are live rows the
-//! surface publishes; and everything the Store does to them — install,
+//! view publishes; and everything the Store does to them — install,
 //! open, refresh, submit a report, move around the app — is one of its
 //! effects.
 
-use std::rc::Rc;
-
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
-    ResourceSurface, RunMode, SurfaceCx, ViewCx,
-};
+use ui::framework::{Fixture, LaunchInput, ResourceApp, ViewCx};
 use ui::tilo_actions::ResourceSpec as PublishedResource;
 use ui::tilo_resource::{self, AbsolutePath, Effect, Invoke, Resource};
 use ui::widget::Element;
@@ -481,7 +476,7 @@ impl ResourceApp for StoreShell {
                 Ok(())
             },
         );
-        cx.surface(StoreApp::new())
+        crate::app::window(cx, StoreApp::new())
     }
 
     /// A `.flatpakref` (handed over, or its path) shows its app ready to
@@ -621,59 +616,6 @@ impl ResourceApp for StoreShell {
             ));
         }
         actions
-    }
-}
-
-impl ResourceSurface<Reports, StoreEffect> for StoreApp {
-    fn present(&mut self, state: &Rc<Reports>) {
-        self.present_reports(&ReportProjection::of(state));
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Reports>) {
-        self.package_content = cx.content();
-        match cx.mode() {
-            RunMode::Live => self.start_worker(cx.waker()),
-            RunMode::Capture => {
-                if let Some(catalogue) = cx.fixture::<CaptureCatalogue>() {
-                    self.show_capture_catalogue(catalogue.items.clone());
-                }
-            }
-            RunMode::Past => {}
-        }
-        self.attach_dispatcher(cx.dispatcher());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scene(scenario);
-    }
-
-    fn effect(&mut self, effect: StoreEffect, cx: &mut EffectCx<Reports, Self>) -> EffectAnswer {
-        self.answer(effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.effect_statuses()
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.live_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.live_row(id)
-    }
-
-    /// Every app of the complete catalogue, not only the rows the current
-    /// filter shows, each opening its details.
-    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        self.catalogue_search_entries()
-    }
-
-    /// Desktop search finds the catalogue's apps from the shared catalogue
-    /// whether or not the Store runs; keeping thousands of them in the
-    /// system's search index as well would find every app twice.
-    fn kept_in_search_index(&self) -> bool {
-        false
     }
 }
 
@@ -1063,8 +1005,8 @@ mod tests {
             .id
             .clone();
         app.with_surface::<StoreApp, _>(|surface| {
-            surface.set_flatpak_available(true);
-            surface.set_items(items);
+            surface.state().set_flatpak_available(true);
+            surface.state().set_items(items);
         })
         .unwrap();
         app.settle();
@@ -1110,8 +1052,8 @@ mod tests {
             .unwrap();
         let id = selected.id.clone();
         app.with_surface::<StoreApp, _>(|surface| {
-            surface.set_flatpak_available(true);
-            surface.set_items(vec![selected]);
+            surface.state().set_flatpak_available(true);
+            surface.state().set_items(vec![selected]);
         })
         .unwrap();
         app.settle();
@@ -1133,7 +1075,7 @@ mod tests {
             app.settle();
             request = app
                 .with_surface::<StoreApp, _>(|surface| {
-                    surface.take_collab_requests().into_iter().next()
+                    surface.state().take_collab_requests().into_iter().next()
                 })
                 .flatten();
             request.is_some()
@@ -1166,13 +1108,16 @@ mod tests {
             output: ui::tilo_actions::ActionOutput::default(),
         };
         app.with_surface::<StoreApp, _>(|surface| {
-            surface.handle_collab_event(&CollabEvent::PublishedInvocationResult {
-                request_id,
-                result: Ok((7, update.clone())),
-            });
-            surface.set_worker_busy(false);
+            surface
+                .state()
+                .handle_collab_event(&CollabEvent::PublishedInvocationResult {
+                    request_id,
+                    result: Ok((7, update.clone())),
+                });
+            surface.state().set_worker_busy(false);
             assert!(
                 surface
+                    .state()
                     .package_operation(&id, ActionKind::FlatpakOpen)
                     .is_err()
             );
@@ -1185,10 +1130,12 @@ mod tests {
                 .any(ui::tilo_actions::InvocationUpdate::is_terminal)
         );
         app.with_surface::<StoreApp, _>(|surface| {
-            surface.handle_collab_event(&CollabEvent::InstalledApplicationLaunchResult {
-                request_id,
-                result: Ok((7, update)),
-            });
+            surface
+                .state()
+                .handle_collab_event(&CollabEvent::InstalledApplicationLaunchResult {
+                    request_id,
+                    result: Ok((7, update)),
+                });
         })
         .unwrap();
         assert_valid_launch_job_completion(&mut app, invocation, &contract);
@@ -1233,7 +1180,7 @@ mod tests {
             .expect("the worker completion honors its actual published job contract");
         assert!(output.value.is_none() && output.resources.is_empty());
         assert_eq!(
-            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned()),
+            app.with_surface::<StoreApp, _>(|surface| surface.state().status_line().to_owned()),
             Some("Store refreshed.".to_owned())
         );
         assert_eq!(app.versions().len(), versions, "refresh writes no document");
@@ -1243,7 +1190,7 @@ mod tests {
         tilo_test_env::wait_until("the ordinary catalogue worker settles", || {
             app.settle();
             app.with_surface::<StoreApp, _>(|surface| {
-                surface.inspect_catalogue(None).unwrap()["worker_busy"] == false
+                surface.state().inspect_catalogue(None).unwrap()["worker_busy"] == false
             })
             .unwrap()
         });
@@ -1534,7 +1481,7 @@ mod tests {
             disabled: std::sync::atomic::AtomicBool::new(false),
         })
         .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
         assert!(
@@ -1600,11 +1547,12 @@ mod tests {
         );
         assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(
-            app.with_surface::<StoreApp, _>(|surface| surface.query().to_owned()),
+            app.with_surface::<StoreApp, _>(|surface| surface.state().query().to_owned()),
             Some("Editor".to_owned())
         );
         assert!(
             app.with_surface::<StoreApp, _>(|surface| surface
+                .state()
                 .items()
                 .iter()
                 .any(|item| item.id == "org.example.Editor"))
@@ -1678,7 +1626,7 @@ mod tests {
             disabled: std::sync::atomic::AtomicBool::new(false),
         })
         .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
         let remote = "remote:flathub";
@@ -1709,6 +1657,7 @@ mod tests {
         assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
         assert!(
             app.with_surface::<StoreApp, _>(|surface| surface
+                .state()
                 .admit(StoreEffect::BrowseRemote {
                     remote: remote.into()
                 })
@@ -1724,6 +1673,7 @@ mod tests {
         assert!(gate.calls.load(std::sync::atomic::Ordering::SeqCst) >= 2);
         assert!(
             app.with_surface::<StoreApp, _>(|surface| surface
+                .state()
                 .admit(StoreEffect::BrowseRemote {
                     remote: remote.into()
                 })
@@ -1749,7 +1699,7 @@ mod tests {
             disabled: std::sync::atomic::AtomicBool::new(false),
         })
         .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
         assert!(app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
@@ -1763,7 +1713,7 @@ mod tests {
         assert!(gate.canceled.load(std::sync::atomic::Ordering::SeqCst));
         assert!(
             app.with_surface::<StoreApp, _>(|surface| {
-                surface.inspect_catalogue(None).unwrap()["error"]
+                surface.state().inspect_catalogue(None).unwrap()["error"]
                     .as_str()
                     .is_some_and(|error| error.contains("slow"))
             })
@@ -1787,16 +1737,16 @@ mod tests {
             disabled: std::sync::atomic::AtomicBool::new(false),
         })
         .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
         settle_catalogue_worker(&mut app);
         app.with_surface::<StoreApp, _>(|surface| {
-            let inspected = surface.inspect_catalogue(None).unwrap();
+            let inspected = surface.state().inspect_catalogue(None).unwrap();
             assert!(inspected["error"].is_null(), "an independent failed repository must not fail healthy catalogue operations: {inspected}");
             let failed = inspected["remotes"].as_array().unwrap().iter().find(|remote| remote["name"] == "fedora").unwrap();
             assert!(failed["catalogue_error"].as_str().unwrap().contains("Unable to load summary"));
-            assert!(surface.items().iter().any(|item| item.id == "org.example.Editor"));
+            assert!(surface.state().items().iter().any(|item| item.id == "org.example.Editor"));
         }).unwrap();
         assert_metadata_refresh_keeps_repository_failure(&mut app);
         let remote = "remote:system:flathub";
@@ -1818,7 +1768,7 @@ mod tests {
             .unwrap();
         assert_valid_unit_job_completion(&mut app, invocation, &contract);
         app.with_surface::<StoreApp, _>(|surface| {
-            assert!(surface.inspect_catalogue(None).unwrap()["error"].is_null());
+            assert!(surface.state().inspect_catalogue(None).unwrap()["error"].is_null());
         })
         .unwrap();
         let item_id = "app:org.example.Editor";
@@ -1842,6 +1792,7 @@ mod tests {
         settle_catalogue_worker(&mut app);
         app.with_surface::<StoreApp, _>(|surface| {
             let inspected = surface
+                .state()
                 .inspect_catalogue(Some("org.example.Editor"))
                 .unwrap();
             assert_eq!(inspected["detail"]["installed"], true);
@@ -1877,7 +1828,7 @@ mod tests {
         assert_valid_unit_job_completion(app, invocation, &refresh_contract);
         app.with_surface::<StoreApp, _>(|surface| {
             assert!(
-                surface.inspect_catalogue(None).unwrap()["remotes"]
+                surface.state().inspect_catalogue(None).unwrap()["remotes"]
                     .as_array()
                     .unwrap()
                     .iter()
@@ -1906,7 +1857,7 @@ mod tests {
             disabled: std::sync::atomic::AtomicBool::new(false),
         })
         .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
         settle_catalogue_worker(&mut app);
@@ -1947,7 +1898,7 @@ mod tests {
             disabled: std::sync::atomic::AtomicBool::new(false),
         })
         .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
         settle_catalogue_worker(&mut app);
@@ -1978,7 +1929,7 @@ mod tests {
         );
         app.with_surface::<StoreApp, _>(|surface| {
             assert!(
-                surface.items().iter().any(|item| {
+                surface.state().items().iter().any(|item| {
                     item.id == "org.example.Editor"
                         && item.name == "Editor"
                         && item.description == "Edit local documents"
@@ -1986,9 +1937,9 @@ mod tests {
                 "the real RPC catalogue reached the live snapshot"
             );
             assert!(
-                surface.status_line().contains("Example tools"),
+                surface.state().status_line().contains("Example tools"),
                 "the worker status is a human catalogue message: {:?}",
-                surface.status_line()
+                surface.state().status_line()
             );
         })
         .unwrap();
@@ -2023,7 +1974,7 @@ mod tests {
             disabled: std::sync::atomic::AtomicBool::new(false),
         })
         .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
             .unwrap()
             .unwrap();
         settle_catalogue_worker(&mut app);
@@ -2070,13 +2021,10 @@ mod tests {
         assert_valid_unit_job_completion(&mut app, invocation, &contract);
         assert_eq!(installs.load(std::sync::atomic::Ordering::SeqCst), 1);
         settle_catalogue_worker(&mut app);
-        assert_eq!(
-            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned())
-                .unwrap(),
-            ui::i18n!("store-app-installed")
-        );
+        assert_eq!(status_line(&mut app), ui::i18n!("store-app-installed"));
         app.with_surface::<StoreApp, _>(|surface| {
-            let item = surface
+            let state = surface.state();
+            let item = state
                 .items()
                 .iter()
                 .find(|item| item.id == "org.example.Editor")
@@ -2102,12 +2050,16 @@ mod tests {
         let invocation = app.start_effect(&StoreEffect::Refresh).unwrap();
         assert_valid_unit_job_completion(&mut app, invocation, &contract);
         assert_eq!(
-            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned())
-                .unwrap(),
+            status_line(&mut app),
             ui::i18n!("store-catalogue-refreshed")
         );
         drop(app);
         service.shutdown().unwrap();
+    }
+
+    fn status_line(app: &mut TestApp<StoreShell>) -> String {
+        app.with_surface::<StoreApp, _>(|surface| surface.state().status_line().to_owned())
+            .unwrap()
     }
 
     fn assert_valid_launch_job_completion(
@@ -2117,7 +2069,7 @@ mod tests {
     ) {
         assert_valid_unit_job_completion(app, invocation, contract);
         assert_eq!(
-            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned()),
+            app.with_surface::<StoreApp, _>(|surface| surface.state().status_line().to_owned()),
             Some(ui::i18n!("store-launch-opened").as_str().to_owned())
         );
     }
@@ -2158,9 +2110,7 @@ mod tests {
     ) {
         let selected = ui::i18n::I18nManager::current_locale();
         let pseudo = ui::i18n::I18nManager::pseudo_locale();
-        let previous = app
-            .with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned())
-            .unwrap();
+        let previous = status_line(app);
         ui::i18n::I18nManager::set_locale("fr");
         ui::i18n::I18nManager::set_pseudo_locale(ui::i18n::PseudoLocale::Expanded);
         let expected = STORE_CATALOG.t_args(
@@ -2181,7 +2131,7 @@ mod tests {
             .unwrap();
         assert_valid_unit_job_completion(app, invocation, contract);
         assert_eq!(
-            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned()),
+            app.with_surface::<StoreApp, _>(|surface| surface.state().status_line().to_owned()),
             Some(expected)
         );
         ui::i18n::I18nManager::set_locale(&selected);
@@ -2207,7 +2157,7 @@ mod tests {
         );
         settle_catalogue_worker(&mut app);
         app.with_surface::<StoreApp, _>(|surface| {
-            let snapshot = surface.inspect_catalogue(None).unwrap();
+            let snapshot = surface.state().inspect_catalogue(None).unwrap();
             assert!(snapshot["imported_package"].is_null());
             assert_eq!(snapshot["error"], ui::i18n!("store-package-offer-required"));
         })
@@ -2241,7 +2191,7 @@ mod tests {
         );
         settle_catalogue_worker(&mut app);
         app.with_surface::<StoreApp, _>(|surface| {
-            let snapshot = surface.inspect_catalogue(None).unwrap();
+            let snapshot = surface.state().inspect_catalogue(None).unwrap();
             assert!(snapshot["imported_package"].is_null());
             assert_eq!(snapshot["error"], ui::i18n!("store-package-size-refused"));
         })
@@ -2388,6 +2338,7 @@ mod tests {
         let mut wide = TestApp::<StoreShell>::capture(Some("wide")).unwrap();
         let apps: Vec<String> = wide
             .surface_mut::<StoreApp>()
+            .state()
             .catalogue_search_entries()
             .into_iter()
             .filter_map(|entry| entry.anchor)
@@ -2409,13 +2360,15 @@ mod tests {
         tilo_test_env::wait_until("the metadata journey's catalogue worker settles", || {
             app.settle();
             app.with_surface::<StoreApp, _>(|surface| {
-                surface.inspect_catalogue(None).unwrap()["worker_busy"] == false
+                surface.state().inspect_catalogue(None).unwrap()["worker_busy"] == false
             })
             .unwrap()
         });
         app.with_surface(|store: &mut StoreApp| {
-            store.show_capture_catalogue(crate::fixture::fixture_catalog());
-            store.stage_scene(Some("detail"));
+            store
+                .state()
+                .show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.state().stage_scene(Some("detail"));
         })
         .unwrap();
         let shown = frame(&mut app);

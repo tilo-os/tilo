@@ -39,11 +39,9 @@ mod device_rejoin_tests;
 #[cfg(test)]
 mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
-mod listing;
-mod member_records;
-pub use member_records::PreparedRecord;
 mod hosts;
 mod layout_scope;
+mod listing;
 mod pages;
 mod peer_parts;
 mod private;
@@ -69,6 +67,7 @@ mod unbuildable_windows;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
+mod workspace_layout;
 pub(crate) use voice::carried_call_room;
 mod wait_list;
 
@@ -107,12 +106,9 @@ pub struct WaitListMail {
 // daemon's historic paths.
 pub use tilo_relay_session::rooms::{
     ATTACH_HOST, ActionInvitation, CREATE_ROOM, CancelInvitationRequest, CreatedRoom, DETACH_HOST,
-    ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest,
-    HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom, IssueInvitationRequest,
-    IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND,
-    PREPARE_APPLICATION_RECORD, PendingInvitation, RECORD_EFFECT_RECEIPT, RemoveMemberRequest,
-    RoomListing, RoomSummary, SAVE_SHORTCUT, SetMemberRoleRequest, UNHOST_ROOM, ask_host,
-    member_resource,
+    ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom,
+    IssueInvitationRequest, IssuedInvitation, LIST_ROOMS, PendingInvitation, RemoveMemberRequest,
+    RoomListing, RoomSummary, SetMemberRoleRequest, UNHOST_ROOM, ask_host,
 };
 
 use crate::peer::WorkspaceRegistry;
@@ -171,19 +167,22 @@ enum Change {
 /// The devices governance lets read a room's channels: the room's governed
 /// member devices (`access`, as `peer` derived it at `now`), each record's
 /// channel less the devices a Read Deny on that record, its app or a pattern
-/// over it withholds. The record of a channel is named by a grant or by one
-/// of the routes `participant` keeps; a channel whose record is neither is
-/// withheld from whoever a Deny over a pattern could keep out of it.
+/// over it withholds. The record of a channel is named by a grant, by one
+/// of the routes `participant` keeps or by `named`; a channel whose record
+/// is none of these may be anyone's own record and is withheld from every
+/// member until it is named.
 fn readers(
     peer: &StatePeer,
     access: &GovernedAccess,
     participant: Option<&participation::Participant>,
+    named: Option<&collab_types::ChannelRoute>,
     now: SystemTime,
 ) -> Result<participation::Readers, String> {
     let key = |device: [u8; 32]| collab_types::Ed25519PublicKey::from_bytes(device);
-    let routes = participant
+    let mut routes = participant
         .map(participation::Participant::routes)
         .unwrap_or_default();
+    routes.extend(named.cloned());
     let record_readers = peer.governance().withheld_record_readers(now, &routes)?;
     let withheld = record_readers
         .withheld
@@ -889,6 +888,9 @@ struct RoomsInner {
     host: RoomServices,
     dir: PathBuf,
     rooms: AsyncMutex<BTreeMap<String, Arc<AsyncMutex<GovernedRoom>>>>,
+    /// Held while a room is created: two devices placing the same room at
+    /// once create it once.
+    creating: AsyncMutex<()>,
     calls: Arc<voice::Calls>,
     page_joins: std::sync::Mutex<pages::PageJoins>,
     /// The room UUID after each settled governance decision.
@@ -1052,6 +1054,7 @@ impl Rooms {
                 dir,
                 rooms: AsyncMutex::new(rooms),
                 calls: Arc::default(),
+                creating: AsyncMutex::new(()),
                 page_joins: std::sync::Mutex::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
                 record_writes: tokio::sync::broadcast::channel(256).0,
@@ -1112,6 +1115,7 @@ impl Rooms {
     /// The name is not 1–80 characters, `room` is no UUID or held here
     /// already, or the room could not be written.
     pub async fn create_room(&self, name: &str, room: Option<&str>) -> Result<RoomSummary, String> {
+        let _creating = self.inner.creating.lock().await;
         if let Some(room) = room
             && self.inner.rooms.lock().await.contains_key(room)
         {
@@ -1121,6 +1125,25 @@ impl Rooms {
             && self.inner.dir.join(room).with_extension(RELEASED).exists()
         {
             return Err("this host released that room; its files stay here".into());
+        }
+        // A room this host serves for its governor elsewhere is that
+        // governor's: governing it here as well would fork it.
+        if let Some(workspace_id) =
+            room.and_then(|room| tilo_relay_protocol::room_workspace_id(room).ok())
+        {
+            let bound = self
+                .inner
+                .host
+                .workspaces
+                .lock()
+                .await
+                .get(&workspace_id)
+                .cloned();
+            if let Some(bound) = bound
+                && bound.lock().await.admission == crate::room_access::AdmissionMode::Governed
+            {
+                return Err("this host has that room already".into());
+            }
         }
         let room = match room {
             Some(room) => GovernedRoom::create_in(
@@ -1491,6 +1514,23 @@ impl Rooms {
             })
             .filter(|app| policy.app_authors(app, &cx))
             .collect())
+    }
+
+    /// The workspace-join contract's membership answer for `device`, a
+    /// device the room just admitted to subscribe ([`member_bootstrap`]).
+    pub(crate) async fn subscriber_bootstrap(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+    ) -> Option<Vec<u8>> {
+        let room = self.room(room).await.ok()?;
+        let room = room.lock().await;
+        member_bootstrap(
+            room.peer(),
+            room.workspace_id(),
+            room.record.generation,
+            device,
+        )
     }
 
     async fn room(&self, room: &str) -> Result<Arc<AsyncMutex<GovernedRoom>>, CollaborationError> {
@@ -1920,7 +1960,7 @@ impl Rooms {
             let now = SystemTime::now();
             let access = governed.peer().governance().governed_access(now)?;
             self.learn_queued_routes(room, &participant, &access)?;
-            let room_readers = readers(governed.peer(), &access, Some(&*participant), now)?;
+            let room_readers = readers(governed.peer(), &access, Some(&*participant), None, now)?;
             let taken = (
                 governed.workspace_id(),
                 governed.record.generation,
@@ -2186,7 +2226,13 @@ impl Rooms {
         let host = &self.inner.host;
         let now = SystemTime::now();
         let access: GovernedAccess = room.peer().governance().governed_access(now)?;
-        let readers = readers(room.peer(), &access, room.participation.as_deref(), now)?;
+        let readers = readers(
+            room.peer(),
+            &access,
+            room.participation.as_deref(),
+            None,
+            now,
+        )?;
         host.access
             .replace(room.workspace_id(), true, access)
             .await
@@ -2389,4 +2435,61 @@ fn system_time(now_ns: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_nanos(now_ns))
         .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+/// The workspace-join contract's membership answer for `device`, a device
+/// the room `peer` replicates just admitted to subscribe, postcard encoded:
+/// what it builds its replica of the room from before the room's replay
+/// ([`tilo_relay_protocol::Envelope::RoomBootstrap`]). A device of the
+/// room's owner gets the owner's answer, a member's device its role's, and
+/// a device that only watches a reader's. The governance messages and
+/// records stay out: the replay that follows carries them.
+pub(crate) fn member_bootstrap(
+    peer: &StatePeer,
+    workspace_id: u64,
+    generation: u64,
+    device: &DeviceCert,
+) -> Option<Vec<u8>> {
+    use tilo_peer_state::join::{
+        JoinBootstrap, JoinTransportResponse, MemberRole, OwnerBootstrapV1,
+    };
+    let role = peer
+        .permissions(device.device_public_key, SystemTime::now())
+        .map_or(collab_types::Role::Viewer, |authority| authority.role);
+    let answer = match role {
+        collab_types::Role::Owner => {
+            JoinTransportResponse::OwnerMembershipComplete(OwnerBootstrapV1 {
+                version: 1,
+                device_cert: device.clone(),
+                room: peer.room().to_owned(),
+                workspace_id,
+                authority: peer.authority().clone(),
+                certified_roster: peer.certificates(),
+                revocations: peer.revocations(),
+                records: Vec::new(),
+                governance_messages: Vec::new(),
+                generation,
+            })
+        }
+        role => JoinTransportResponse::MembershipComplete(JoinBootstrap {
+            version: 1,
+            invite_id: [0; 32],
+            device_cert: device.clone(),
+            role: match role {
+                collab_types::Role::Commenter => MemberRole::Commenter,
+                collab_types::Role::Editor => MemberRole::Editor,
+                collab_types::Role::Moderator => MemberRole::Moderator,
+                _ => MemberRole::Viewer,
+            },
+            room: peer.room().to_owned(),
+            workspace_id,
+            authority: peer.authority().clone(),
+            certified_roster: peer.certificates(),
+            revocations: peer.revocations(),
+            records: Vec::new(),
+            governance_messages: Vec::new(),
+            generation,
+        }),
+    };
+    postcard::to_stdvec(&answer).ok()
 }

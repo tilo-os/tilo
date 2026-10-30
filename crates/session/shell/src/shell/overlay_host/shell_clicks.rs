@@ -1,4 +1,4 @@
-//! Shell pointer clicks outside the overlays: workspace navigation and the palette.
+//! Shell pointer clicks outside the overlays: workspace navigation and search.
 
 #[allow(
     clippy::wildcard_imports,
@@ -9,7 +9,7 @@ use super::*;
 impl ShellOverlayHost {
     /// Outside-click close for a popover/modal, swallowing the click so
     /// content beneath doesn't react: strip ribbon/rail focus, the
-    /// palette's scope pills or outside-dismiss, the power menu, then
+    /// search's outside-dismiss, the power menu, then
     /// (each absorbing every click once open) room activity,
     /// collaborators, quick settings and workspace settings. Overview
     /// has its own dismissal path, so it is skipped here. Was over 700
@@ -64,7 +64,8 @@ impl ShellOverlayHost {
             return true;
         }
         if flags.quick_settings {
-            self.handle_shell_quick_settings_click(p, handled);
+            // The panel took what was over it; anything else closed it.
+            *handled = true;
             return true;
         }
         if flags.ws_settings {
@@ -126,53 +127,16 @@ impl ShellOverlayHost {
             && self.press_strip_ribbon_or_rail(p)
     }
 
+    /// A press while search is open: inside the launcher's place it is the
+    /// launcher's (which closes search for a press beside its card);
+    /// anywhere else it closes search.
     pub(super) fn handle_palette_pointer_click(&mut self, p: Point) -> bool {
-        // The field alone (the Super surface before anything is typed) has
-        // no filter band to hit.
-        if self.palette.shows_field_only() {
-            if self.palette.get_rect().contains(p) {
-                return false;
-            }
-            self.palette_visible = false;
-            self.palette.close();
-            return true;
-        }
-        // Scope can be swapped without dismissing the palette. The target
-        // is the segment's full-height slice of the track — the same rect
-        // its semantic node publishes.
-        for (idx, scope) in self.search_scope_list().iter().enumerate() {
-            if self
-                .search_filters
-                .search_scope_segment_hit_rect(idx)
-                .contains(p)
-            {
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut state = chrome.borrow_mut();
-                    state.search_scope = *scope;
-                    let left_resource = state.search_resource_scope.take().is_some();
-                    state.bump();
-                    drop(state);
-                    if left_resource {
-                        self.palette.set_query("");
-                        self.palette
-                            .set_query_placeholder(t("host-search-placeholder"));
-                        self.last_search_query = "\0resource-scope-pill-back\0".into();
-                    }
-                }
-                return true;
-            }
-        }
-        // Overflow kinds sit in the More menu below the band. That
-        // menu is still a filter action, not a click-away.
-        if self.search_filters.hit(p).is_some() {
+        if self.search_place().contains(p) {
             return false;
         }
-        if !self.palette.get_rect().contains(p) {
-            self.palette_visible = false;
-            self.palette.close();
-            return true;
-        }
-        false
+        self.palette_visible = false;
+        self.search.close();
+        true
     }
 
     /// The one executor for session lifecycle actions, whichever door they

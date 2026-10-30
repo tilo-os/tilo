@@ -1,4 +1,5 @@
-//! Quick settings device, Bluetooth and clipboard rows: clicks and row models.
+//! Quick settings device and clipboard rows: what a press on one does, and
+//! the rows the panel lists.
 
 #[allow(
     clippy::wildcard_imports,
@@ -11,9 +12,11 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "one click dispatcher maps every fabric pane row to its action"
     )]
-    pub(super) fn handle_qs_device_fabric_click(&mut self, point: Point) {
-        // The rows hit-tested are the ones the fabric has now.
-        self.refresh_qs_hosted_rows();
+    pub(super) fn handle_qs_device_fabric_press(
+        &mut self,
+        row_index: usize,
+        part: tilo_quick_settings::RowPart,
+    ) {
         let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
             return;
         };
@@ -22,31 +25,24 @@ impl ShellOverlayHost {
             .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
             .unwrap_or_default();
         let rows = device_fabric_pane_rows(&view, &realtime);
-        let Some((row_index, item)) = rows
-            .iter()
-            .enumerate()
-            .find(|(index, _)| self.qs_devices_row_rect(*index).contains(point))
-            .map(|(index, item)| (index, item.clone()))
-        else {
+        let Some(item) = rows.get(row_index).cloned() else {
             return;
         };
-        let secondary = self.qs_device_secondary_action(point, row_index, &item);
+        let secondary = Self::qs_device_secondary_action(part, &item);
         if let Some((action, success)) = secondary {
             self.finish_qs_device_action(action, success);
             return;
         }
         let action = match item {
             DeviceFabricPaneRow::CalibrationProposal(proposal) => {
-                let (apply, dismiss) =
-                    Self::qs_realtime_consent_actions(self.qs_devices_row_rect(row_index));
-                if apply.contains(point) {
+                if part == tilo_quick_settings::RowPart::Allow {
                     Some((
                         DeviceFabricUiAction::ApplyCalibration {
                             device: proposal.peer,
                         },
                         String::new(),
                     ))
-                } else if dismiss.contains(point) {
+                } else if part == tilo_quick_settings::RowPart::Decline {
                     Some((
                         DeviceFabricUiAction::DismissCalibration {
                             device: proposal.peer,
@@ -62,7 +58,7 @@ impl ShellOverlayHost {
                 String::new(),
             )),
             DeviceFabricPaneRow::RemoteAudioConsent(consent) => {
-                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
+                let Some(approved) = Self::qs_device_row_choice(part) else {
                     return;
                 };
                 Some((
@@ -79,7 +75,7 @@ impl ShellOverlayHost {
                 return;
             }
             DeviceFabricPaneRow::SpeakerConsent(consent) => {
-                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
+                let Some(approved) = Self::qs_device_row_choice(part) else {
                     return;
                 };
                 Some((
@@ -167,7 +163,7 @@ impl ShellOverlayHost {
                 }
             }
             DeviceFabricPaneRow::RealtimeConsent(consent) => {
-                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
+                let Some(approved) = Self::qs_device_row_choice(part) else {
                     return;
                 };
                 let result =
@@ -192,7 +188,7 @@ impl ShellOverlayHost {
                 return;
             }
             DeviceFabricPaneRow::BluetoothAuthorization(authorization) => {
-                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
+                let Some(approved) = Self::qs_device_row_choice(part) else {
                     return;
                 };
                 Some((
@@ -229,7 +225,7 @@ impl ShellOverlayHost {
                 }
             }
             DeviceFabricPaneRow::GamepadAuthorization(authorization) => {
-                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
+                let Some(approved) = Self::qs_device_row_choice(part) else {
                     return;
                 };
                 Some((
@@ -285,7 +281,7 @@ impl ShellOverlayHost {
                 if status.phase
                     == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
                 {
-                    let Some(approved) = self.qs_device_row_choice(row_index, point) else {
+                    let Some(approved) = Self::qs_device_row_choice(part) else {
                         return;
                     };
                     Some((
@@ -441,98 +437,14 @@ impl ShellOverlayHost {
         self.finish_qs_device_action(action, success);
     }
 
-    pub(super) fn handle_qs_bluetooth_details_click(&mut self, point: Point, address: &str) {
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        let accessory = chrome
-            .borrow()
-            .quick_settings
-            .bt_devices
-            .iter()
-            .find(|device| device.address.eq_ignore_ascii_case(address))
-            .cloned();
-        let Some(accessory) = accessory else {
-            return;
-        };
-        let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
-            return;
-        };
-        let rows = std::iter::once(None)
-            .chain(view.devices.into_iter().map(Some))
-            .collect::<Vec<_>>();
-        let _ = self.clamp_qs_device_fabric_start(rows.len());
-        let selected = rows
-            .into_iter()
-            .skip(self.qs_device_fabric_start)
-            .take(self.qs_device_fabric_visible_rows())
-            .enumerate()
-            .find(|(index, _)| self.qs_device_row_rect(*index).contains(point))
-            .map(|(_, row)| row);
-        match selected {
-            Some(None) => {
-                let result = self.qs_actions.disconnect_bluetooth(&accessory.address);
-                match result {
-                    Ok(()) => {
-                        tilo_quick_settings::actions::log_qs_result("disconnect_bluetooth", Ok(()));
-                        let mut state = chrome.borrow_mut();
-                        if let Some(device) =
-                            state.quick_settings.bt_devices.iter_mut().find(|device| {
-                                device.address.eq_ignore_ascii_case(&accessory.address)
-                            })
-                        {
-                            device.connected = false;
-                        }
-                        state.quick_settings.pop_level();
-                        state.bump();
-                    }
-                    Err(error) => {
-                        tilo_quick_settings::actions::log_qs_result(
-                            "disconnect_bluetooth",
-                            Err(error.clone()),
-                        );
-                        chrome.borrow_mut().push_notification(
-                            t_args(
-                                "qs-bluetooth-disconnect-failed",
-                                &[("device", accessory.name.into())],
-                            ),
-                            t_args("qs-action-failed-refreshing", &[("error", error.into())]),
-                        );
-                    }
-                }
-                self.qs_refresh.kick_bt_devices();
-            }
-            Some(Some(device)) if !device.is_local && device.online => {
-                self.finish_qs_device_action(
-                    DeviceFabricUiAction::HandoffBluetooth {
-                        address: accessory.address,
-                        name: accessory.name.clone(),
-                        target: device.id,
-                    },
-                    t_args(
-                        "host-fabric-bluetooth-moving",
-                        &[
-                            ("accessory", accessory.name.into()),
-                            ("device", device.label.into()),
-                        ],
-                    ),
-                );
-            }
-            _ => {}
-        }
-    }
-
     pub(super) fn qs_device_secondary_action(
-        &self,
-        point: Point,
-        row_index: usize,
+        part: tilo_quick_settings::RowPart,
         item: &DeviceFabricPaneRow,
     ) -> Option<(DeviceFabricUiAction, String)> {
         let DeviceFabricPaneRow::Device(device) = item else {
             return None;
         };
-        let control = Self::qs_device_control_rect(self.qs_devices_row_rect(row_index));
-        if !control.contains(point) || device.is_local || !device.online {
+        if part != tilo_quick_settings::RowPart::Control || device.is_local || !device.online {
             return None;
         }
         if device.controls_local {
@@ -575,100 +487,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// A press on copy `index` of the Clipboard section: its pin, its
-    /// remove, or the copy itself (`point` is `None` from the keyboard).
-    pub(super) fn press_qs_clipboard_row(&mut self, index: usize, point: Option<Point>) {
-        let history = self.filtered_clipboard_history();
-        let start = self.qs_clipboard_history_start;
-        let Some(item) = history.get(start.saturating_add(index)) else {
-            return;
-        };
-        let row = self.qs_clipboard_row_rect(index);
-        let (pin, remove) = tilo_quick_settings::hosted::pair_rects(row);
-        if point.is_some_and(|point| pin.contains(point)) {
-            self.qs_selected_clipboard = Some(item.id);
-            let _ = self.clipboard_manager_call(ClipboardManagerAction::SetPinned {
-                id: item.id,
-                pinned: !item.pinned,
-            });
-        } else if point.is_some_and(|point| remove.contains(point)) {
-            let _ = self.clipboard_manager_call(ClipboardManagerAction::Remove(item.id));
-            let remaining = self.filtered_clipboard_history();
-            let _ = self.clamp_qs_clipboard_history_start(remaining.len());
-            self.qs_selected_clipboard = remaining
-                .get(
-                    start
-                        .saturating_add(index)
-                        .min(remaining.len().saturating_sub(1)),
-                )
-                .map(|item| item.id);
-        } else {
-            self.choose_clipboard_item(item.id);
-            return;
-        }
-        self.refresh_qs_hosted_rows();
-        self.bump_chrome();
-    }
-
-    /// Clear the clipboard history's unpinned copies.
-    pub(super) fn clear_qs_clipboard(&mut self) {
-        let _ = self.clipboard_manager_call(ClipboardManagerAction::ClearUnpinned);
-        let history = self.filtered_clipboard_history();
-        let _ = self.clamp_qs_clipboard_history_start(history.len());
-        if !history
-            .iter()
-            .any(|item| Some(item.id) == self.qs_selected_clipboard)
-        {
-            self.qs_selected_clipboard = history.first().map(|item| item.id);
-        }
-        self.refresh_qs_hosted_rows();
-        self.bump_chrome();
-    }
-
-    /// A press on row `index` of the Devices section. From the keyboard a
-    /// request is allowed and any other row does what its press does.
-    pub(super) fn press_qs_device_row(&mut self, index: usize, point: Option<Point>) {
-        let Some(point) = point.or_else(|| self.qs_device_row_key_point(index)) else {
-            return;
-        };
-        self.handle_qs_device_fabric_click(point);
-        self.refresh_qs_hosted_rows();
-    }
-
-    /// Where a key press on row `index` of the Devices section lands: on
-    /// Allow when the row asks, else on the row.
-    fn qs_device_row_key_point(&self, index: usize) -> Option<Point> {
-        let view = self
-            .device_fabric_call(DeviceFabricUiAction::Snapshot)
-            .ok()?;
-        let realtime = self
-            .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
-            .unwrap_or_default();
-        let rows = device_fabric_pane_rows(&view, &realtime);
-        let row = self.qs_devices_row_rect(index);
-        Some(match rows.get(index) {
-            Some(item) if Self::qs_device_row_asks(item) => {
-                Self::qs_realtime_consent_actions(row).0.center()
-            }
-            _ => row.center(),
-        })
-    }
-
-    /// Whether a Devices row is a request to allow or decline.
-    pub(super) fn qs_device_row_asks(item: &DeviceFabricPaneRow) -> bool {
-        matches!(
-            item,
-            DeviceFabricPaneRow::RemoteAudioConsent(_)
-                | DeviceFabricPaneRow::SpeakerConsent(_)
-                | DeviceFabricPaneRow::RealtimeConsent(_)
-                | DeviceFabricPaneRow::GamepadAuthorization(_)
-        ) || matches!(
-            item,
-            DeviceFabricPaneRow::Tethering(status)
-                if status.phase == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
-        )
-    }
-
     /// Read what the open Devices or Clipboard section lists into chrome
     /// state, for the root page to lay out and paint.
     pub(super) fn refresh_qs_hosted_rows(&mut self) {
@@ -682,13 +500,6 @@ impl ShellOverlayHost {
                 .then_some(st.quick_settings.section)
                 .flatten()
         };
-        if std::mem::replace(&mut self.qs_hosted_section, section) != section
-            && section == Some(QsSection::Clipboard)
-        {
-            self.qs_clipboard_query.clear();
-            self.qs_clipboard_history_start = 0;
-            self.qs_selected_clipboard = None;
-        }
         // Without a device fabric or a clipboard manager (a capture, a
         // test) the rows stay as they are.
         match section {
@@ -769,58 +580,17 @@ impl ShellOverlayHost {
         Some(rows)
     }
 
-    /// The line over the Clipboard section's copies: what was searched for
-    /// and how many match, or which of the copies are shown.
-    fn qs_clipboard_caption(&self, matches: usize, start: usize, shown: usize) -> String {
-        let visible = QS_CLIPBOARD_ROWS;
-        if matches == 0 && !self.qs_clipboard_query.is_empty() {
-            t_args(
-                "qs-clipboard-no-matches",
-                &[("query", self.qs_clipboard_query.as_str().into())],
-            )
-        } else if !self.qs_clipboard_query.is_empty() {
-            t_args(
-                "qs-clipboard-search-matches",
-                &[
-                    ("query", self.qs_clipboard_query.as_str().into()),
-                    ("count", matches.into()),
-                ],
-            )
-        } else if matches > visible {
-            t_args(
-                "qs-clipboard-search-range",
-                &[
-                    ("first", start.saturating_add(1).into()),
-                    ("last", start.saturating_add(shown).into()),
-                    ("total", matches.into()),
-                ],
-            )
-        } else if matches == 0 {
-            String::new()
-        } else {
-            t_args("qs-clipboard-search-count", &[("count", matches.into())])
-        }
-    }
-
     /// The clipboard history as Quick Settings shows it, from one snapshot:
     /// the row's count is that snapshot's length and the section's copies
     /// are its latest entries (or its matches while searching).
-    pub(super) fn qs_clipboard_view(&mut self) -> tilo_quick_settings::ClipboardView {
+    pub(super) fn qs_clipboard_view(&self) -> tilo_quick_settings::ClipboardView {
         use tilo_quick_settings::hosted::{HostedActions, HostedRow};
-        let snapshot = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
-        let total = snapshot.len();
-        let history = self.filter_clipboard_history(snapshot);
-        let _ = self.clamp_qs_clipboard_history_start(history.len());
-        let visible = QS_CLIPBOARD_ROWS;
-        let start = self.qs_clipboard_history_start;
-        let shown = visible.min(history.len().saturating_sub(start));
-        let caption = self.qs_clipboard_caption(history.len(), start, shown);
+        let history = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+        let total = history.len();
         let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot).ok();
         let now_unix_ms = unix_now_ms();
         let rows = history
             .iter()
-            .skip(start)
-            .take(visible)
             .map(|item| {
                 let title = item.text_preview.as_deref().map_or_else(
                     || {
@@ -860,7 +630,7 @@ impl ShellOverlayHost {
                     } else {
                         ui::icons::Icon::File
                     },
-                    selected: self.qs_selected_clipboard == Some(item.id),
+                    selected: false,
                     enabled: true,
                     actions: HostedActions::Clipboard {
                         pinned: item.pinned,
@@ -878,7 +648,7 @@ impl ShellOverlayHost {
             .collect();
         tilo_quick_settings::ClipboardView {
             total,
-            caption,
+            caption: String::new(),
             rows,
         }
     }

@@ -56,14 +56,11 @@ pub struct UndoStatus {
     pub can_undo: bool,
     /// There is an action this user can redo.
     pub can_redo: bool,
-    /// Short description of the action undo would revert, derived from the
-    /// change itself (`"+12 -3 chars"`, `"+1 item"`, `"2 fields"`) by the same
-    /// producer the history pane uses — see
-    /// [`history_source::change_summary`](crate::history_source::change_summary).
+    /// What undo would revert, as the step's action record says it (the
+    /// sentence its history row reads) — see [`step_summary`].
     ///
-    /// `None` when there is nothing to undo. It is deliberately never a guess:
-    /// a change whose effect cannot be described reports
-    /// [`NO_VISIBLE_CHANGE`](crate::history_source::NO_VISIBLE_CHANGE).
+    /// `None` when there is nothing to undo, or when the step names no action
+    /// to say: the control then reads as the bare verb.
     pub undo_summary: Option<String>,
     /// The mirror of [`undo_summary`](Self::undo_summary) for redo: what
     /// re-applying would put back.
@@ -102,10 +99,8 @@ impl UndoStatus {
             return format!("Nothing to {}", which.verb());
         }
         match self.summary(which) {
-            Some(s) if s != crate::history_source::NO_VISIBLE_CHANGE => {
-                format!("{}: {s}", which.title())
-            }
-            _ => which.title().to_string(),
+            Some(s) => format!("{}: {s}", which.title()),
+            None => which.title().to_string(),
         }
     }
 }
@@ -837,7 +832,7 @@ mod tests {
             assert!(button.is_enabled());
             assert_eq!(
                 button.accessibility().unwrap().description.as_deref(),
-                Some("Undo: +5 -0 chars")
+                Some("Undo: Renamed the card")
             );
         }
 
@@ -876,8 +871,8 @@ mod tests {
         UndoStatus {
             can_undo,
             can_redo,
-            undo_summary: can_undo.then(|| "+5 -0 chars".to_string()),
-            redo_summary: can_redo.then(|| "+2 -0 chars".to_string()),
+            undo_summary: can_undo.then(|| "Renamed the card".to_string()),
+            redo_summary: can_redo.then(|| "Added a card".to_string()),
         }
     }
 
@@ -909,17 +904,17 @@ mod tests {
             assert_eq!(empty.description(UndoRequest::Redo), "Nothing to redo");
 
             let live = status(true, true);
-            assert_eq!(live.description(UndoRequest::Undo), "Undo: +5 -0 chars");
-            assert_eq!(live.description(UndoRequest::Redo), "Redo: +2 -0 chars");
+            assert_eq!(
+                live.description(UndoRequest::Undo),
+                "Undo: Renamed the card"
+            );
+            assert_eq!(live.description(UndoRequest::Redo), "Redo: Added a card");
         }
 
-        // Case `an_indescribable_change_falls_back_to_the_bare_verb`:
-        // A change the producer could not describe must not be read out as if it
-        // were a summary — the control falls back to the bare verb.
+        // A step that names no action reads as the bare verb.
         {
             let s = UndoStatus {
                 can_undo: true,
-                undo_summary: Some(crate::history_source::NO_VISIBLE_CHANGE.to_string()),
                 ..Default::default()
             };
             assert_eq!(s.description(UndoRequest::Undo), "Undo");
@@ -927,8 +922,19 @@ mod tests {
     }
 }
 
-/// Label derivation for a displayed owner must not finalize its live edit.
-/// Summary decoding may advance `AutoCommit`'s read cursor, so use a snapshot.
+/// What `entry`'s step did, as its action record says it: the step an
+/// undo or redo moved is named by itself, not by the change that moved it
+/// ([`UndoEntry::step`](crate::state::UndoEntry::step)). `None` for a step
+/// that names no action.
+pub(crate) fn step_summary(entry: &crate::state::UndoEntry) -> Option<String> {
+    entry
+        .step
+        .as_ref()
+        .and_then(crate::history_source::sentence::step_summary)
+}
+
+/// The undo status of `history` for `author`, read without finalizing a
+/// displayed owner's live edit.
 pub(crate) fn status_snapshot(
     doc: &automerge::AutoCommit,
     history: &crate::state::UndoLog,
@@ -936,24 +942,10 @@ pub(crate) fn status_snapshot(
 ) -> UndoStatus {
     let undo = history.next_undo_as(doc, author);
     let redo = history.next_redo_as(doc, author);
-    // Copied only for an entry that names no step of its own.
-    let mut snapshot = None;
-    // An entry an undo or redo already moved names the step it carries, not
-    // the undo change that moved it last.
-    let mut summary = |entry: &crate::state::UndoEntry, from: &[_], to: &[_]| {
-        entry
-            .step
-            .as_ref()
-            .and_then(crate::history_source::sentence::step_summary)
-            .unwrap_or_else(|| {
-                let snapshot = snapshot.get_or_insert_with(|| doc.clone());
-                crate::history_source::change_summary(snapshot, from, to)
-            })
-    };
     UndoStatus {
         can_undo: undo.is_some(),
         can_redo: redo.is_some(),
-        undo_summary: undo.map(|entry| summary(&entry, &entry.before, &entry.after)),
-        redo_summary: redo.map(|entry| summary(&entry, &entry.after, &entry.before)),
+        undo_summary: undo.as_ref().and_then(step_summary),
+        redo_summary: redo.as_ref().and_then(step_summary),
     }
 }

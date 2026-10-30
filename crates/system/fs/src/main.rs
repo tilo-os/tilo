@@ -432,7 +432,7 @@ struct DataPlaneArgs {
     /// Root of the dedicated Btrfs store volume holding the native room trees.
     #[arg(long, value_name = "DIR", default_value = "/var/lib/tilo/store")]
     store: PathBuf,
-    /// Owner (`UID:GID`) of files the native data plane materialises; defaults to the room directory's owner.
+    /// Owner (`UID:GID`) of the workspace's files, the local person: the native data plane materialises them as theirs (default: the room directory's owner), and FUSE presents them as theirs (default: the caller).
     #[arg(long, value_name = "UID:GID")]
     native_owner: Option<String>,
     /// Remote files up to this many bytes are fetched before they appear; larger ones start as placeholders.
@@ -1407,14 +1407,6 @@ fn persisted_remote_workspace_ticket(cache_dir: Option<&Path>) -> Result<Option<
     Ok(selected)
 }
 
-fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
-    let hash = blake3::derive_key("tilo-personal-continuity-v1\0", user_public_key);
-    let mut first8 = [0_u8; 8];
-    first8.copy_from_slice(&hash[..8]);
-    let id = u64::from_le_bytes(first8);
-    if id == 0 { 1 } else { id }
-}
-
 fn managed_system_service() -> bool {
     std::env::var_os("INVOCATION_ID").is_some()
 }
@@ -1447,9 +1439,6 @@ fn export_home_peer(
     let paths = identity_paths();
     let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;
-    relay_workspace_ids.push(personal_continuity_workspace_id(
-        &governor.verifying_key().to_bytes(),
-    ));
     relay_workspace_ids.sort_unstable();
     relay_workspace_ids.dedup();
     let authority = WorkspaceAuthorityEnvelope::sign(
@@ -4025,6 +4014,14 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         Some(root) => fs.with_passthrough(root.join("passthrough")),
         None => fs,
     };
+    // The local person owns the files on either plane; without one named,
+    // FUSE presents each caller as their owner.
+    let owner = data_plane
+        .as_ref()
+        .and_then(|(args, _)| args.native_owner.as_deref())
+        .map(parse_owner)
+        .transpose()?;
+    let fs = fs.with_owner(owner);
     // Watchers on the mount hear of the changes the kernel did not make
     // (a peer's edit) instead of polling for them. A read-only mount cannot
     // take the signal, so its watchers keep polling.

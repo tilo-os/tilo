@@ -189,6 +189,8 @@ impl ResourceApp for WeatherShell {
             "search_empty",
             "offline",
             "error",
+            "fetched",
+            "stale",
         ]
     }
 

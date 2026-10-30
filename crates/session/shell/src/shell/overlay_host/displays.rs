@@ -22,7 +22,6 @@ use ui::widget::{GroupRow, StripLane, Widget as _};
 use vello::kurbo::{Point, Rect};
 
 use super::{OutputGeometry, STRIP_EDGE_GUTTER_PX, STRIP_TRAILING_GUTTER_PX, ShellOverlayHost};
-use crate::shell::display_bars::DisplayBars;
 use crate::shell::state::{Display, GroupId, StripId};
 use crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX;
 
@@ -443,17 +442,6 @@ impl ShellOverlayHost {
                 row.set_focus_output(focused);
             }
         }
-        let primary = self.primary_output().filter(|_| !lanes.is_empty());
-        let others: Vec<(u32, Rect)> = if primary.is_some() {
-            let primary_id = primary.as_ref().map(|p| p.id);
-            distinct_outputs(&self.outputs)
-                .into_iter()
-                .filter(|o| Some(o.id) != primary_id)
-                .map(|o| (o.id, o.rect()))
-                .collect()
-        } else {
-            Vec::new()
-        };
         let screens: Vec<Rect> = distinct_outputs(&self.outputs)
             .into_iter()
             .map(OutputGeometry::rect)
@@ -464,17 +452,7 @@ impl ShellOverlayHost {
             if let Some(backdrop) = surface.backdrop_mut() {
                 backdrop.set_displays(&screens);
             }
-            if let Some(bar) = surface.topbar_mut() {
-                bar.set_placement(primary.map(|p| p.rect()));
-            }
             present_launchpad(surface, presenting.map(|o| o.rect()), scope);
-            if let Some(bars) = surface
-                .display_chrome_mut()
-                .and_then(ui::widget::Widget::as_any_mut)
-                .and_then(|layer| layer.downcast_mut::<DisplayBars>())
-            {
-                bars.set_displays(&others);
-            }
         }
     }
 
@@ -487,32 +465,6 @@ impl ShellOverlayHost {
             .and_then(tilo_desktop::composition::DesktopSurface::backdrop)
             .map(tilo_desktop::backdrop::DesktopBackdrop::display_rects)
             .unwrap_or_default()
-    }
-
-    /// Where each top bar is drawn: the full bar (flagged `true`) and every
-    /// compact one, by display.
-    pub fn top_bar_rects(&self) -> Vec<(u32, Rect, bool)> {
-        let Some(surface) = self.content.as_any().and_then(|content| {
-            content.downcast_ref::<tilo_desktop::composition::DesktopSurface>()
-        }) else {
-            return Vec::new();
-        };
-        let Some(full) = surface
-            .topbar()
-            .map(tilo_desktop::topbar::TopBarChrome::bar_rect)
-        else {
-            return Vec::new();
-        };
-        let primary = self.primary_output().map_or(0, |p| p.id);
-        let compact = surface
-            .display_chrome()
-            .and_then(ui::widget::Widget::as_any)
-            .and_then(|layer| layer.downcast_ref::<DisplayBars>())
-            .map(DisplayBars::bar_rects)
-            .unwrap_or_default();
-        let mut rects = vec![(primary, full, true)];
-        rects.extend(compact.into_iter().map(|(id, rect)| (id, rect, false)));
-        rects
     }
 
     /// Keep the partition's idea of the focused display in step with

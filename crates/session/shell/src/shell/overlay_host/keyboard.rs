@@ -47,13 +47,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // A strip's name being typed in the overview takes every key, for the
-        // same reason.
-        if !self.palette_visible && self.overview_naming.is_some() {
-            self.overview_naming_key(logical_key, mstate);
-            *handled = true;
-            return true;
-        }
         // The usual host event path handles this ahead of modal routing.
         // Keep the same arbitration here for direct widget dispatch and any
         // future backend that enters through this keyboard-only helper.
@@ -71,14 +64,6 @@ impl ShellOverlayHost {
             return true;
         }
         if self.handle_collaborators_keyboard(logical_key, shift_down, handled) {
-            return true;
-        }
-        if self.handle_quick_settings_keyboard(
-            logical_key,
-            shift_down,
-            mstate.control_key(),
-            handled,
-        ) {
             return true;
         }
         let configured_action = self.configured_shortcut_action(logical_key, modifiers);
@@ -152,7 +137,7 @@ impl ShellOverlayHost {
                 st.overlays.overview = !st.overlays.overview;
                 st.bump();
                 drop(st);
-                self.latch_keyboard_overview();
+                self.latch_overview_transition_from(ui::tokens::MotionSource::Keyboard);
             }
             *handled = true;
             return true;
@@ -378,12 +363,6 @@ impl ShellOverlayHost {
                 ui::tokens::MotionSource::Keyboard,
             );
             *handled = true;
-            return true;
-        }
-        if self.handle_overview_strip_keys(logical_key, mstate, handled) {
-            return true;
-        }
-        if self.handle_overview_keyboard_nav(logical_key, shift_down, handled) {
             return true;
         }
         if super_down
@@ -617,24 +596,34 @@ impl ShellOverlayHost {
         let queued = std::mem::take(&mut chrome.borrow_mut().device_local_invocations);
         let ran = !queued.is_empty();
         for invocation in queued {
-            let started = match self.desktop_surface_mut() {
-                Some(surface) => surface.invoke_device_local_action(
-                    invocation.tab,
-                    &invocation.address,
-                    &invocation.arguments,
-                ),
-                None => Err(tilo_actions::DoorError::Unknown(invocation.address.clone())),
+            let started = if invocation.tab == QUICK_SETTINGS_WINDOW {
+                self.invoke_quick_settings_action(&invocation.address, &invocation.arguments)
+            } else {
+                match self.desktop_surface_mut() {
+                    Some(surface) => surface.invoke_device_local_action(
+                        invocation.tab,
+                        &invocation.address,
+                        &invocation.arguments,
+                    ),
+                    None => Err(tilo_actions::DoorError::Unknown(invocation.address.clone())),
+                }
             };
             *invocation.answer.borrow_mut() = Some(receipt(started));
         }
         if ran {
             crate::shell::search::invocation_wake::waker().wake_by_ref();
         }
+        // Quick Settings is this device's own, whether or not it is open:
+        // its actions are always there for a script or an agent here.
+        let panel = self
+            .quick_settings_device_local_resources()
+            .map(|resources| (QUICK_SETTINGS_WINDOW, resources));
         let windows: Vec<DeviceLocalWindow> = self
             .desktop_surface_mut()
             .map(tilo_desktop::composition::DesktopSurface::device_local_windows)
             .unwrap_or_default()
             .into_iter()
+            .chain(panel)
             .map(|(tab, resources)| DeviceLocalWindow {
                 tab,
                 actions: tilo_actions::door::survey(&resources),
@@ -792,72 +781,6 @@ impl ShellOverlayHost {
     pub(super) fn begin_motion(&mut self, source: ui::tokens::MotionSource) {
         if let Some(surface) = self.desktop_surface_mut() {
             surface.begin_transition(source);
-        }
-    }
-
-    /// The conventional desktop chords (Super+1…9 for strips, Ctrl+Super+1…9
-    /// for windows, Super+E, Ctrl+Alt+T,
-    /// Super+V, Super+A, Super+F, Super+Alt+8, Ctrl+Alt+Delete by
-    /// default). Returns `false` for any other action. A held chord acts
-    /// once: every action here is an edge, not a step.
-    /// Keyboard focus in the banner stack. The Notifications chord moves
-    /// focus into the newest banner when one is on screen (pressed again,
-    /// it opens the centre as before); the stack then takes the arrows,
-    /// Tab, Return, Space and Escape, and any other key gives focus back to
-    /// the window. Returns whether the key was taken.
-    pub(super) fn handle_banner_keyboard(
-        &mut self,
-        key: &Key,
-        action: Option<settings_store::hardware::ShortcutAction>,
-        shift: bool,
-        repeat: bool,
-        handled: &mut bool,
-    ) -> bool {
-        use settings_store::hardware::ShortcutAction;
-        let Some(chrome) = self.chrome.clone() else {
-            return false;
-        };
-        let host = ChromeNotifications::new(&chrome);
-        let chord = action == Some(ShortcutAction::Notifications);
-        if !self.notification_stack.has_keyboard_focus() {
-            if chord && !repeat && self.notification_stack.focus_newest(&host) {
-                chrome.borrow_mut().bump();
-                *handled = true;
-                return true;
-            }
-            return false;
-        }
-        if !chord && self.notification_stack.handle_key(&host, key, shift) {
-            chrome.borrow_mut().bump();
-            *handled = true;
-            return true;
-        }
-        if self.notification_stack.release_keyboard(&host) {
-            chrome.borrow_mut().bump();
-        }
-        false
-    }
-
-    /// Whether the banner stack holds keyboard focus and acts on `key`, so
-    /// the window behind it must not get it.
-    pub fn banner_owns_key(&self, key: &Key) -> bool {
-        self.notification_stack.owns_key(key)
-    }
-
-    /// Whether keyboard focus is in the banner stack.
-    pub fn banner_has_keyboard(&self) -> bool {
-        self.notification_stack.has_keyboard_focus()
-    }
-
-    /// Give keyboard focus back from the banner stack to the window: a key
-    /// the stack does not act on went there, or a press landed elsewhere.
-    pub fn release_banner_keyboard(&mut self) {
-        if let Some(chrome) = self.chrome.clone()
-            && self
-                .notification_stack
-                .release_keyboard(&ChromeNotifications::new(&chrome))
-        {
-            chrome.borrow_mut().bump();
         }
     }
 }

@@ -30,7 +30,7 @@ use zeroize::{Zeroize, Zeroizing};
 use tilo_seal::{Context, Label, SymmetricKey};
 
 #[cfg(target_os = "linux")]
-use super::{PortalContext, auth::authenticate_call};
+use super::{PortalContext, auth::authenticate_request};
 
 const SECRET_BYTES: usize = 32;
 #[cfg(target_os = "linux")]
@@ -238,7 +238,7 @@ async fn deliver(secrets: &PortalSecrets, app: &str, fd: std::os::fd::OwnedFd) -
     let mut secret = match secrets.secret_for(app).await {
         Ok(value) => value,
         Err(error) => {
-            tracing::warn!("secret portal request rejected: {error}");
+            eprintln!("secret-portal-refused: app={app} the secret store refused: {error}");
             return 2;
         }
     };
@@ -257,17 +257,28 @@ impl SecretBackend {
     async fn retrieve_secret(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
-        _handle: ObjectPath<'_>,
+        handle: ObjectPath<'_>,
         app_id: String,
         fd: OwnedFd,
         options: std::collections::HashMap<String, OwnedValue>,
     ) -> (u32, std::collections::HashMap<String, OwnedValue>) {
-        let Ok(auth) = authenticate_call(&self.ctx, &hdr, &app_id, None).await else {
-            return (2, Default::default());
+        let auth = match authenticate_request(&self.ctx, &hdr, handle.as_str(), &app_id, None).await
+        {
+            Ok(auth) => auth,
+            Err(error) => {
+                eprintln!(
+                    "secret-portal-refused: frontend_app_id={app_id:?} request={handle} {error}"
+                );
+                return (2, Default::default());
+            }
         };
         if crate::portal::option::<String>(&options, "token")
             .is_some_and(|token| valid_identifier(&token, MAX_TOKEN, "token").is_err())
         {
+            eprintln!(
+                "secret-portal-refused: app={} an invalid token",
+                auth.caller.app_id
+            );
             return (2, Default::default());
         }
         let std_fd: std::os::fd::OwnedFd = fd.into();

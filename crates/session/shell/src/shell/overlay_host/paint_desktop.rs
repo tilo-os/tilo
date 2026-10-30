@@ -48,7 +48,6 @@ impl ShellOverlayHost {
         });
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
-        let area = self.overlay_area();
         let desktop = transform.transform_rect_bbox(self.rect);
         overlay_part(scene, "shell.permission-prompt", desktop, |scene| {
             if self.permission_prompt.is_some() {
@@ -71,51 +70,8 @@ impl ShellOverlayHost {
         });
 
         // Above desktop content, below modal overlays and the permission
-        // prompt, so a prompt always wins focus. Top inset keeps toasts
-        // off the clock/tray.
-        let window_bars = self.chrome_bar_rects(theme);
-        if let Some(chrome) = self.chrome.as_ref() {
-            let viewport = Rect::new(
-                area.x0,
-                area.y0 + f64::from(self.chrome_top_y),
-                area.x1,
-                area.y1,
-            );
-            self.notification_stack.set_viewport(viewport);
-            // Banners share the transients' zone with the follow bar: below
-            // it while it is up, and below any window bar they would cover.
-            let follow = self.follow_banner.chip_rect();
-            self.notification_stack
-                .set_clear_top(if follow.is_zero_area() {
-                    0.0
-                } else {
-                    follow.y1
-                });
-            self.notification_stack.set_window_bars(window_bars);
-            let stack = &mut self.notification_stack;
-            part_drawn(scene, PartKey::new("shell.notifications", ()), |scene| {
-                stack.draw(
-                    &ChromeNotifications::new(chrome),
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                );
-                // `rect` is what the cards cover at rest. A card slides in
-                // from up to its own width to the right and casts the
-                // floating shadow.
-                let rest = stack.rect();
-                if rest.is_zero_area() {
-                    return Vec::new();
-                }
-                let shadow = &theme.tokens.elevation.floating;
-                let reach = f64::from(shadow.blur) * 2.0 + f64::from(shadow.offset_y).abs();
-                let travel = Rect::new(rest.x0, rest.y0, rest.x1 + rest.width(), rest.y1);
-                vec![transform.transform_rect_bbox(travel.inflate(reach, reach))]
-            });
-        }
-
-        self.draw_machine_notices(scene, transform, text_renderer, theme, desktop);
+        // prompt, so a prompt always wins focus.
+        self.draw_banners(scene, transform, text_renderer, theme, presence);
 
         // A visual alert is deliberately an edge treatment rather than a
         // full-screen luminance flash: it stays obvious without obscuring
@@ -143,70 +99,6 @@ impl ShellOverlayHost {
             }
             None
         });
-    }
-
-    /// The machine's banners and a ringing call's edge on the displays
-    /// other than the one in use.
-    fn draw_machine_notices(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        desktop: Rect,
-    ) {
-        // The state of the whole machine is on every display. Banners about
-        // the machine (critical battery) repeat, at rest, on the displays
-        // other than the one in use, where the stack takes clicks and keys;
-        // a ringing call, whose card is on the display in use, gives the
-        // others a quiet edge. Steady, so a ringing call keeps the loop idle.
-        let area = self.overlay_area();
-        let others: Vec<Rect> = if self.is_partitioned() {
-            self.layer_outputs()
-                .into_iter()
-                .filter(|display| *display != area)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        self.machine_banners.clear();
-        self.call_edges.clear();
-        if let Some(chrome) = self.chrome.as_ref()
-            && !others.is_empty()
-        {
-            let ringing = NotificationStack::call_ringing(&ChromeNotifications::new(chrome));
-            let top = f64::from(self.chrome_top_y);
-            let window_bars = self.chrome_bar_rects(theme);
-            let banners = &mut self.machine_banners;
-            let edges = &mut self.call_edges;
-            overlay_part(scene, "shell.machine-notices", desktop, |scene| {
-                for display in &others {
-                    let viewport = Rect::new(display.x0, display.y0 + top, display.x1, display.y1);
-                    let banner = NotificationStack::draw_machine_wide(
-                        &ChromeNotifications::new(chrome),
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        (viewport, &window_bars),
-                    );
-                    if !banner.is_zero_area() {
-                        banners.push(banner);
-                    }
-                    if ringing {
-                        edges.push(*display);
-                        ui::chrome::shell::paint_display_edge(
-                            scene,
-                            transform,
-                            *display,
-                            ui::chrome::shell::DisplayEdge::Ringing,
-                            theme,
-                        );
-                    }
-                }
-                None
-            });
-        }
     }
 
     /// The production root has no painting container of its own, so its three typed children
@@ -276,16 +168,8 @@ impl ShellOverlayHost {
                 presence,
             )?
         };
-        // The compact bars of the other displays share the top bar's scene.
-        let bars = surface
-            .display_chrome()
-            .and_then(Widget::as_any)
-            .and_then(|layer| layer.downcast_ref::<crate::shell::display_bars::DisplayBars>())
-            .map(crate::shell::display_bars::DisplayBars::bar_rects)
-            .unwrap_or_default();
-        Some(bars.into_iter().fold(bounds, |all, (_, bar)| {
-            all.union(Rect::new(bar.x0, bar.y0, bar.x1, bar.y1 + 28.0))
-        }))
+        // The bars themselves are the top bar app's, drawn over this.
+        Some(bounds)
     }
 
     /// Ribbon, the strip switcher's card and the rail sit below Quick
@@ -356,7 +240,7 @@ impl ShellOverlayHost {
         let panel = self.collaborators_painted_panel;
         // From the faces that opened it; from the bar above it when they
         // are not shown.
-        let faces = self.main_bar_rect(tilo_desktop::topbar::TopBarChrome::collaborators_rect);
+        let faces = self.topbar_shown().people;
         let anchor = if faces.is_zero_area() {
             Point::new(panel.center().x, panel.y0)
         } else {

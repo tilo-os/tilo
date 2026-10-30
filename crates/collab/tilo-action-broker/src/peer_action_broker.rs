@@ -263,25 +263,6 @@ impl CapnpBrokerState {
             return Ok(observation);
         }
         match &evidence.action().message {
-            ActionMessage::RecordEffectReceipt {
-                invocation,
-                redacted,
-            } => {
-                let request = tilo_owner_commit::OwnerCommitRequest {
-                    room: caller.room.clone(),
-                    operation: tilo_owner_commit::CommitOperation::EffectReceipt {
-                        invocation: invocation.0,
-                        redacted: redacted.as_bytes().to_vec(),
-                    },
-                };
-                let _order = self.owner_commit_order.lock().await;
-                self.publisher
-                    .commit_member_effect_receipt(request, evidence.certificate().clone())
-                    .await?;
-                Ok(ActionMessage::EffectReceiptCommitted {
-                    invocation: *invocation,
-                })
-            }
             ActionMessage::CatalogueRefresh { scope } => {
                 let catalogue = serde_json::from_str(&self.action_catalogue_json_for(
                     &caller.room,

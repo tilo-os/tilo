@@ -121,7 +121,8 @@ pub mod state;
 // the toolkit names them by (`ui::time`, `ui::background`, `ui::wake`,
 // `ui::host`), without the toolkit's host services.
 pub(crate) mod time {
-    #[cfg(test)]
+    // The broker's tests stamp records with it.
+    #[cfg(all(test, feature = "broker-transport"))]
     pub use tilo_clock::SystemTime;
     pub use tilo_clock::{Duration, Instant, now, wall};
 }

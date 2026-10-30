@@ -849,3 +849,51 @@ fn a_page_columns_filter_field_lines_up_with_the_page_under_it() {
         assert!(row.y0 >= field.y1, "the page starts under the field");
     }
 }
+
+/// A shell that searches its sidebar hands the window's search the
+/// sidebar's list, also while a narrow window shows the content screen and
+/// the list is off screen; another shell leaves its sidebar alone.
+#[test]
+fn a_shell_that_searches_its_sidebar_hands_the_search_its_list() {
+    let filtered = |query: &SharedRc<RefCell<String>>| Filtered {
+        query: SharedRc::clone(query),
+        inner: Probe {
+            id: "sidebar",
+            deadline: None,
+            animating: false,
+            rect: Rect::ZERO,
+            events: SharedRc::new(Cell::new(0)),
+        },
+    };
+    let query = SharedRc::new(RefCell::new(String::new()));
+    let shell = NavShell::new()
+        .mode(NavMode::Push)
+        .sidebar(Box::new(filtered(&query)))
+        .content(Probe::boxed("content").0)
+        .content_header("Found", Vec::new())
+        .search_sidebar();
+    let mut h = harness(shell, 400, 800, Theme::dark());
+    settle(&mut h, 400, 800);
+    h.root_mut::<NavShell>().show(NavPane::Content);
+    settle(&mut h, 400, 800);
+    assert!(
+        !h.root::<NavShell>().is_sidebar_open(),
+        "the narrow window shows its content"
+    );
+    let found = crate::widget::search_field::apply_filter(&mut *h.root_mut::<NavShell>(), "kai");
+    assert_eq!(
+        query.borrow().as_str(),
+        "kai",
+        "the search narrows the list"
+    );
+    assert_eq!(found, Some(FilterCount::new(2, 9)));
+
+    let other = SharedRc::new(RefCell::new(String::new()));
+    let mut plain = NavShell::new()
+        .sidebar(Box::new(filtered(&other)))
+        .content(Probe::boxed("content").0);
+    assert!(
+        crate::widget::capability::capability_mut::<dyn Filterable>(&mut plain).is_none(),
+        "a shell answers for its sidebar's list only when it searches it"
+    );
+}

@@ -104,7 +104,9 @@ fn run(dir: &Path, store: &Store, script: &str, env: &[(&str, String)]) -> Outpu
         fixture_images(&images);
     }
     let mut cmd = Command::new(tilo_test_env::package_binary!("tilo-ush"));
-    cmd.args(["run", "-c", script])
+    // bash in a guest of its own, as a command session runs it: `-c` would
+    // run ush's shell on the Tilo side, which starts no guest for `echo`.
+    cmd.args(["run", "--", "/usr/bin/bash", "-c", script])
         .env(ush::store::STORE_ENV, store.root())
         .env("TILO_USH_IMAGES", &images)
         .env("SHELL", "/usr/bin/bash")

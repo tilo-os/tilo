@@ -31,18 +31,23 @@ durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 chrono = { workspace = true, features = ["std"] }
 serde_json.workspace = true
+# A record the door hands over travels as base64 on the program connection.
+base64.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libc.workspace = true
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 uuid.workspace = true
+# The mail origin, reaching the connector process the system runs for the app.
+tilolang-mail = { path = "../tilolang-mail", default-features = false }
 
 [dev-dependencies]
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 tilolang = { path = "../../lang/tilolang" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 tempfile.workspace = true
 # The replies the test's broker awaits from the instance's action directory.
 tokio = { workspace = true, features = ["sync"] }

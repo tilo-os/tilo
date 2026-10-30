@@ -1819,13 +1819,7 @@ impl FrameBuilder {
             return None;
         }
         // The launcher app takes search's keys in the node it is shown in.
-        if let Some(node) = self.host.launcher_node() {
-            return Some(node);
-        }
-        self.node_map.iter().find_map(|(&node, &widget)| {
-            // SAFETY: the map belongs to this frame's current live tree.
-            (unsafe { (*widget).test_id() } == Some("command_palette_input")).then_some(node)
-        })
+        self.host.launcher_node()
     }
 
     fn settle_palette_focus(&mut self, palette: NodeId) {
@@ -5939,6 +5933,47 @@ impl FrameBuilder {
         ui::accesskit_bridge::build_tree_update(self.host.as_ref(), &self.node_map, focus, scale)
     }
 
+    /// Perform `action` on the control the shell's semantic tree names
+    /// `target`: a control of the chrome's own or one inside a surface the
+    /// shell hosts as an app (the top bar, the launcher, Quick Settings, the
+    /// banners, a sheet, the overview), as an assistive technology performs
+    /// it, wherever it is drawn. Returns `true` only when a widget on screen
+    /// publishes `target` and took the action.
+    pub fn perform_semantic_named(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        root_obj: &ObjId,
+        focus: &mut Option<NodeId>,
+    ) -> bool {
+        let Some(owner) = semantic_target_owner(self.host.as_ref(), target) else {
+            return false;
+        };
+        let Some((&taffy_id, &widget)) = self
+            .node_map
+            .iter()
+            .find(|(_, widget)| widget.cast::<()>().cast_const() == owner)
+        else {
+            return false;
+        };
+        // SAFETY: the live map's pointer is owned by the host, which this
+        // borrow keeps alive and unaliased for the call, as in
+        // `dispatch_a11y_action`.
+        let handled = unsafe { (*widget).perform_semantic_action(target, action, state, root_obj) };
+        if handled {
+            self.host.flush_active_tab_writeback();
+            if matches!(action, ui::a11y::Action::Focus) {
+                self.set_native_focus(focus, Some(taffy_id));
+            }
+            if self.host.take_focus_reset() {
+                self.relayout();
+                self.focus_first(focus);
+            }
+        }
+        handled
+    }
+
     /// Route an assistive-technology action back through the live compositor
     /// widget tree. Returns `true` only when the request addressed a current
     /// semantic node and was handled (directly or through the standard pointer
@@ -6324,6 +6359,7 @@ impl FrameBuilder {
         let mut sibling_counts: HashMap<String, usize> = HashMap::new();
         walk_widget(self.host.as_ref(), "", &mut sibling_counts, &mut out);
         self.register_chrome_rects(&mut out);
+        register_semantic_targets(self.host.as_ref(), &mut out);
         out
     }
 
@@ -6506,6 +6542,75 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     let mut child_counts: HashMap<String, usize> = HashMap::new();
     for child in w.children() {
         walk_widget(child, &path, &mut child_counts, out);
+    }
+}
+
+/// Whether `node` or a node under it publishes `target` as its action
+/// target.
+fn publishes_target(node: &ui::a11y::AccessNode, target: &str) -> bool {
+    node.action_target.as_deref() == Some(target)
+        || node
+            .children
+            .iter()
+            .any(|child| publishes_target(child, target))
+}
+
+/// The widget under `root` whose semantics publish `target`; of a widget
+/// and one inside it that both do (a container showing its child's node as
+/// its own), the inner one, which is the one that performs it.
+fn semantic_target_owner(root: &dyn ui::widget::Widget, target: &str) -> Option<*const ()> {
+    fn visit(
+        widget: &dyn ui::widget::Widget,
+        target: &str,
+        depth: usize,
+        found: &mut Option<(usize, *const ())>,
+    ) {
+        if widget
+            .accessibility()
+            .is_some_and(|node| publishes_target(&node, target))
+            && found.is_none_or(|(deepest, _)| depth > deepest)
+        {
+            *found = Some((depth, std::ptr::from_ref(widget).cast::<()>()));
+        }
+        for child in widget.children() {
+            visit(child, target, depth.saturating_add(1), found);
+        }
+    }
+    let mut found = None;
+    visit(root, target, 0, &mut found);
+    found.map(|(_, widget)| widget)
+}
+
+/// Add every control the shell's semantic tree names and places on screen
+/// (the controls of the surfaces it hosts as apps among them) under its
+/// name, unless a widget already answers to it. Route targets
+/// (`tilo.child:`, `tilo.key-action:`) name nothing a person would.
+fn register_semantic_targets<S: std::hash::BuildHasher>(
+    root: &dyn ui::widget::Widget,
+    out: &mut HashMap<String, vello::kurbo::Rect, S>,
+) {
+    fn nodes<S: std::hash::BuildHasher>(
+        node: &ui::a11y::AccessNode,
+        out: &mut HashMap<String, vello::kurbo::Rect, S>,
+    ) {
+        if let (Some(target), Some(bounds)) = (&node.action_target, node.bounds) {
+            let rect = bounds.to_rect();
+            if rect.area() > 0.0
+                && !target.starts_with("tilo.")
+                && crate::shell::trusted_ui::widget_may_publish(target)
+            {
+                out.entry(target.clone()).or_insert(rect);
+            }
+        }
+        for child in &node.children {
+            nodes(child, out);
+        }
+    }
+    if let Some(node) = root.accessibility() {
+        nodes(&node, out);
+    }
+    for child in root.children() {
+        register_semantic_targets(child, out);
     }
 }
 
@@ -7217,6 +7322,51 @@ mod tests {
         external_scene_append_is_an_unversioned_retained_boundary();
     }
 
+    /// The compositor's test control and the capture driver reach a control
+    /// of a surface the shell hosts as an app by the name the app gives it:
+    /// the registry lists it where it is drawn, and activating the name
+    /// presses it.
+    #[test]
+    fn a_hosted_surface_control_is_listed_and_activated_by_name() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        fb.pump_apps(&mut doc, &root);
+        fb.relayout();
+        let _ = fb.paint();
+        let control = *fb
+            .widget_registry()
+            .get("topbar:workspace-settings")
+            .expect("the bar's workspace control is listed by its name");
+        assert!(control.area() > 0.0, "{control:?} is on screen");
+        let mut focus = None;
+        assert!(!fb.perform_semantic_named(
+            "no-such-control",
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+            &mut focus,
+        ));
+        assert!(fb.perform_semantic_named(
+            "topbar:workspace-settings",
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+            &mut focus,
+        ));
+        // The bar runs the press on its next frames and hands the host what
+        // it asked for, as in the live compositor.
+        for _ in 0..3 {
+            fb.pump_apps(&mut doc, &root);
+            fb.relayout();
+            let _ = fb.paint();
+        }
+        assert!(
+            fb.host().workspace_menu_labels().is_some(),
+            "activating the bar's control by name opens the workspace menu"
+        );
+    }
+
     fn native_click_named_control(
         frame: &mut FrameBuilder,
         doc: &mut AutoCommit,
@@ -7306,21 +7456,18 @@ mod tests {
                 &automerge::ROOT,
                 &mut focus
             ));
-            native_type_literal(&mut frame, &mut doc, &mut focus, "h");
-            assert_eq!(frame.host.palette_query(), "h");
-            // Rebuild through the actual viewport path while search owns focus.
+            assert!(frame.host.palette_visible());
+            // Rebuild through the actual viewport path while search is open.
             frame.set_viewport(viewport);
             frame.relayout();
-            // The first Escape clears what was typed; the second closes.
-            for _ in 0..2 {
-                assert!(frame.dispatch_event(
-                    &key_press(Key::Named(NamedKey::Escape)),
-                    &Modifiers::default(),
-                    &mut ui::widget::Edits::lend(&mut doc),
-                    &automerge::ROOT,
-                    &mut focus
-                ));
-            }
+            // Escape on an empty field closes search.
+            assert!(frame.dispatch_event(
+                &key_press(Key::Named(NamedKey::Escape)),
+                &Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &mut focus
+            ));
             assert!(!frame.host.palette_visible());
             let _ = frame.paint_settled();
             frame.reconcile_native_focus(&mut focus);
@@ -8151,20 +8298,23 @@ mod tests {
         assert!(fb.focused_ime_field(None).is_none());
     }
 
-    fn query_bounds(node: &ui::a11y::AccessNode) -> Option<ui::a11y::AccessBounds> {
-        if node.action_target.as_deref() == Some("command-palette:query") {
-            return node.bounds;
+    /// The launcher takes what the shell asks of it, and answers, as
+    /// frames run.
+    fn run_frames(fb: &mut FrameBuilder, doc: &mut AutoCommit) {
+        for _ in 0..3 {
+            fb.pump_apps(doc, &automerge::ROOT);
+            fb.relayout();
         }
-        node.children.iter().find_map(query_bounds)
+        let _ = fb.paint_settled();
     }
 
     #[test]
-    fn search_query_target_is_the_editable_row_and_disappears_on_close() {
+    fn search_field_target_is_the_launchers_editable_row_and_disappears_on_close() {
         let mut fb = FrameBuilder::new((1920, 1080));
         let mut doc = AutoCommit::new();
         let mut focus = None;
         let _ = fb.paint_settled();
-        assert!(!fb.widget_registry().contains_key("command-palette:query"));
+        assert!(!fb.widget_registry().contains_key("launcher-field"));
         assert!(fb.dispatch_event(
             &key_press(Key::Named(NamedKey::Space)),
             &Modifiers::from(ModifiersState::SUPER),
@@ -8172,23 +8322,15 @@ mod tests {
             &automerge::ROOT,
             &mut focus,
         ));
-        let _ = fb.paint_settled();
+        run_frames(&mut fb, &mut doc);
         let targets = fb.widget_registry();
-        let mut names: Vec<_> = targets.keys().collect();
-        names.sort();
-        println!("open Search targets ({}): {names:?}", targets.len());
-        let query = *targets
-            .get("command-palette:query")
-            .expect("open Search must publish its editable query row, not just its card");
-        let tree = fb
-            .host()
-            .accessibility()
-            .expect("Search accessibility tree");
-        assert_eq!(query_bounds(&tree), Some(query.into()));
-        assert!(query.area() > 0.0, "the target is a visible editable row");
+        let field = *targets
+            .get("launcher-field")
+            .expect("open Search publishes its editable field row, not just its card");
+        assert!(field.area() > 0.0, "the target is a visible editable row");
         let card = fb.host().palette_rect_for_tests();
-        assert!(card.contains(query.center()));
-        assert!(query.height() < card.height());
+        assert!(card.contains(field.center()));
+        assert!(field.height() < card.height());
         assert!(fb.dispatch_event(
             &key_press(Key::Named(NamedKey::Escape)),
             &Modifiers::default(),
@@ -8196,8 +8338,8 @@ mod tests {
             &automerge::ROOT,
             &mut focus,
         ));
-        let _ = fb.paint_settled();
-        assert!(!fb.widget_registry().contains_key("command-palette:query"));
+        run_frames(&mut fb, &mut doc);
+        assert!(!fb.widget_registry().contains_key("launcher-field"));
     }
 
     fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {
@@ -8571,7 +8713,7 @@ mod tests {
     fn compact_bar_shown(fb: &FrameBuilder) -> bool {
         fb.widget_registry()
             .keys()
-            .any(|key| key.ends_with("topbar_compact[1]"))
+            .any(|key| key.ends_with("display:1:topbar"))
     }
 
     /// On a desktop spread across two displays a fullscreen covers its own
@@ -8648,7 +8790,7 @@ mod tests {
             );
             let registry = fb.widget_registry();
             assert_eq!(
-                rect_named(&registry, "TopBarChrome").height() > 10.0,
+                rect_named(&registry, "TopBarSpace").height() > 10.0,
                 !on_primary,
                 "{label}: the full top bar steps aside only for a fullscreen on the primary"
             );
@@ -8724,14 +8866,14 @@ mod tests {
 
     #[test]
     fn an_open_palette_reaches_assistive_technology_once() {
-        // The host publishes the palette (with its filter band) itself; the
-        // palette widget must not be exported a second time, or a screen
-        // reader sees two palettes and may type into the hidden one.
+        // The launcher publishes its card as the host's child; nothing of
+        // search is exported a second time, or a screen reader sees two
+        // palettes and may type into the hidden one.
         let mut fb = FrameBuilder::new((1280, 800));
+        let mut doc = AutoCommit::new();
         fb.host_mut().set_palette_visible(true);
-        fb.host_mut().set_palette_focus(true);
         fb.host_mut().force_palette_settled();
-        fb.relayout();
+        run_frames(&mut fb, &mut doc);
         let update = fb.build_a11y_tree_update(None, 1.0);
         let named = |name: &str| {
             update
@@ -8741,7 +8883,6 @@ mod tests {
                 .count()
         };
         assert_eq!(named("Command palette"), 1, "one palette");
-        assert_eq!(named("Search filters"), 1, "its filter band, once");
         let queries = update
             .nodes
             .iter()
@@ -8755,13 +8896,14 @@ mod tests {
 
     #[test]
     fn assistive_technology_sets_the_open_palettes_query() {
-        // The palette is published inside the host's tree, so setting its
-        // query from outside reaches the host first; it must still be typed.
+        // The launcher is published inside the host's tree, so setting its
+        // query from outside reaches the host first; it must still be typed,
+        // and search runs it.
         let mut fb = FrameBuilder::new((1280, 800));
+        let mut doc = AutoCommit::new();
         fb.host_mut().set_palette_visible(true);
-        fb.host_mut().set_palette_focus(true);
         fb.host_mut().force_palette_settled();
-        fb.relayout();
+        run_frames(&mut fb, &mut doc);
         let update = fb.build_a11y_tree_update(None, 1.0);
         let (query_id, _) = update
             .nodes
@@ -8772,7 +8914,6 @@ mod tests {
             })
             .cloned()
             .expect("the open palette publishes its query");
-        let mut doc = AutoCommit::new();
         let mut focus = None;
         assert!(fb.dispatch_a11y_action(
             query_id,
@@ -8781,6 +8922,7 @@ mod tests {
             &automerge::ROOT,
             &mut focus,
         ));
+        run_frames(&mut fb, &mut doc);
         assert_eq!(fb.host().palette_query(), "photos");
     }
 
@@ -9780,14 +9922,14 @@ mod tests {
         let mut focus = None;
         fb.reconcile_native_focus(&mut focus);
         let chrome_id = fb.node_map.iter().find_map(|(id, widget)| {
-            let name = unsafe { (**widget).name() };
-            (name == "TopBarChrome").then_some(*id)
+            let app = unsafe { (**widget).test_id() };
+            (app == Some(tilo_topbar::APP_ID)).then_some(*id)
         });
         let chrome_id = chrome_id.expect("production chrome must mount the top bar");
         fb.set_native_focus(&mut focus, Some(chrome_id));
         assert_eq!(
             fb.widget_name(focus.expect("top bar must take keyboard focus")),
-            Some("TopBarChrome"),
+            Some("EmbeddedApp"),
             "this case is the VM path: chrome, not the Terminal, holds focus"
         );
         let mut doc = AutoCommit::new();
@@ -9862,14 +10004,14 @@ mod tests {
         let mut focus = None;
         fb.reconcile_native_focus(&mut focus);
         let chrome_id = fb.node_map.iter().find_map(|(id, widget)| {
-            let name = unsafe { (**widget).name() };
-            (name == "TopBarChrome").then_some(*id)
+            let app = unsafe { (**widget).test_id() };
+            (app == Some(tilo_topbar::APP_ID)).then_some(*id)
         });
         let chrome_id = chrome_id.expect("production chrome must mount the top bar");
         fb.set_native_focus(&mut focus, Some(chrome_id));
         assert_eq!(
             fb.widget_name(focus.expect("top bar must take keyboard focus")),
-            Some("TopBarChrome"),
+            Some("EmbeddedApp"),
             "chrome holds focus, as on the VM path"
         );
         let probe = fb.node_map.values().find_map(|widget| {
@@ -10100,9 +10242,9 @@ mod tests {
             st.bump();
         });
         fb.host_mut().latch_overview_transition();
-        // No settled paint: the acceptance check lists targets as soon as the
-        // overlay flag is up, which is this moment. The open's first sample
-        // is still alpha 0.
+        // The open's first frame: its sample is still alpha 0, and the
+        // overview's app is up and names its targets already.
+        let _ = fb.paint_with_damage();
         let rect = fb
             .widget_registry()
             .get("add_workspace")
@@ -10110,19 +10252,12 @@ mod tests {
             .unwrap_or(Rect::ZERO);
         assert!(
             rect.area() > 0.0,
-            "overview must publish add_workspace as soon as it is open"
+            "the alpha-zero open sample must publish add_workspace"
         );
         assert!(
             rect.x1 <= 1920.0,
             "the new-workspace control stays on the first display (right edge {})",
             rect.x1
-        );
-        let _ = fb.paint_with_damage();
-        assert!(
-            fb.widget_registry()
-                .get("add_workspace")
-                .is_some_and(|hit| hit.area() > 0.0),
-            "the alpha-zero open sample must keep add_workspace addressable"
         );
         let center = rect.center();
         let mut doc = AutoCommit::new();
@@ -10216,7 +10351,7 @@ mod tests {
             }
             let mut frame = FrameBuilder::with_tree(tree, (1472, 920));
             let _ = frame.paint_settled();
-            let bar = rect_named(&frame.widget_registry(), "TopBarChrome");
+            let bar = rect_named(&frame.widget_registry(), "TopBarSpace");
             let rect = frame
                 .host_mut()
                 .group_at_for_tests(strip, 0)

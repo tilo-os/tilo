@@ -41,7 +41,7 @@ const ON_HER_DOOR: [&str; 2] = ["Agreed on the twelfth", "The new lease is attac
 fn compiled(dir: &str, source: &str, ids: &str) -> Bundle {
     let lock = tilolang::IdsLock::parse(ids).unwrap();
     let compiled =
-        tilolang::compile_package(source, &lock, &[]).unwrap_or_else(|_| panic!("{dir} compiles"));
+        tilolang::compile_package(source, &lock, &[]).unwrap_or_else(|d| panic!("{dir}: {d:#?}"));
     Bundle::new(&compiled, [])
 }
 

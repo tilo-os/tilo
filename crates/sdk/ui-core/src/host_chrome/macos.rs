@@ -409,13 +409,11 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use automerge::ROOT;
-    use automerge::transaction::Transactable;
     use objc2::{MainThreadMarker, msg_send};
-    use objc2_app_kit::{NSEventModifierFlags, NSMenu, NSMenuItem};
+    use objc2_app_kit::NSMenu;
 
     use super::{ChromeRequest, MacChrome};
-    use crate::app::{App, framework_history_tests};
+    use crate::app::framework_history_tests;
 
     fn titles(menu: &NSMenu) -> Vec<String> {
         (0..menu.numberOfItems())
@@ -428,79 +426,6 @@ mod tests {
         bar.itemWithTitle(&objc2_foundation::NSString::from_str(title))
             .and_then(|item| item.submenu())
             .unwrap_or_else(|| panic!("{title} menu"))
-    }
-
-    #[test]
-    fn history_menu_lists_the_command_model_and_dispatches_the_chosen_item() {
-        // SAFETY: the test harness runs tests off the process main thread.
-        // These menus are built, read and dropped on this one thread and are
-        // never installed into a running NSApplication.
-        let mtm = unsafe { MainThreadMarker::new_unchecked() };
-        let mut state = crate::State::new();
-        for title in ["first", "second"] {
-            state.doc.put(ROOT, "title", title).unwrap();
-            state.commit_action(None, None);
-        }
-        let mut app =
-            App::new_with_controlled_inputs(state, Box::new(crate::widget::Text::new("Document")));
-        app.enable_document_history_chrome();
-        app.init_layout();
-
-        let chosen: Rc<RefCell<Vec<ChromeRequest>>> = Rc::default();
-        let sink = Rc::clone(&chosen);
-        let chrome = MacChrome::new(mtm, move |request| sink.borrow_mut().push(request));
-        chrome.update(app.host_commands(true));
-
-        let bar = &chrome.menu_bar;
-        assert_eq!(
-            titles(bar)[1..],
-            ["File", "Edit", "View", "History", "Window", "Help"],
-            "History sits between View and Window"
-        );
-        let history = submenu(bar, "History");
-        let items = titles(&history);
-        assert_eq!(items[0], "Show History");
-        assert!(items[1].is_empty(), "recent changes follow a separator");
-        assert_eq!(items.len(), 4, "two recent changes: {items:?}");
-        assert!(items[2..].iter().all(|title| title.contains(" · ")));
-        let show: objc2::rc::Retained<NSMenuItem> = history.itemAtIndex(0).unwrap();
-        assert_eq!(show.keyEquivalent().to_string(), "y");
-        assert_eq!(
-            show.keyEquivalentModifierMask(),
-            NSEventModifierFlags::Command
-        );
-
-        let edit = titles(&submenu(bar, "Edit"));
-        assert_eq!(
-            edit[..2],
-            ["Undo Edited title", "Redo"],
-            "Undo names its change"
-        );
-        assert!(edit.contains(&"Search…".to_owned()));
-
-        // AppKit asks the target whether an item is enabled, then sends its
-        // action there: exactly what a click or ⌘Y does.
-        let target = &*chrome.target;
-        let enabled: bool = unsafe { msg_send![target, validateMenuItem: &*show] };
-        assert!(enabled);
-        let redo = submenu(bar, "Edit").itemAtIndex(1).unwrap();
-        let enabled: bool = unsafe { msg_send![target, validateMenuItem: &*redo] };
-        assert!(!enabled, "nothing to redo");
-        let _: () = unsafe { msg_send![target, performHostCommand: &*show] };
-        let Some(ChromeRequest::Command(invocation)) = chosen.borrow_mut().pop() else {
-            panic!("choosing Show History dispatches its command");
-        };
-        assert!(app.invoke_host_command(&invocation));
-        assert!(
-            app.document_history_snapshot().unwrap().is_some(),
-            "History opened"
-        );
-
-        chrome.update(app.host_commands(true));
-        assert_eq!(
-            titles(&submenu(bar, "History"))[..2],
-            ["Hide History", "Compare Selection"]
-        );
     }
 
     #[test]

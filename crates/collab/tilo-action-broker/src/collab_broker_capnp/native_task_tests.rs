@@ -127,7 +127,6 @@ impl OwnerCommitService for Native {
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
         let owner = self.owner.clone();
         let key = self.key.clone();
-        let cert = self.certificate.clone();
         let receipts_refused = self
             .receipts_refused
             .load(std::sync::atomic::Ordering::SeqCst);
@@ -140,7 +139,7 @@ impl OwnerCommitService for Native {
                     Err("the room's governor records no receipt".into())
                 }
                 CommitOperation::EffectReceipt { .. } => {
-                    owner.commit_effect_receipt(&request, &cert, &key, std::time::SystemTime::now())
+                    owner.commit_effect_receipt(&request, &key, std::time::SystemTime::now())
                 }
                 _ => Err("unsupported fixture owner operation".into()),
             }?;

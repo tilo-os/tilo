@@ -30,10 +30,9 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             context.revalidate()?;
             return Ok(None);
         }
-        // A missing record is made by the host that governs the room
-        // ([`Self::prepare_application_elsewhere`]). This device never signs
-        // a record's genesis into a room document itself: a room hosted on
-        // a device, this one included, keeps its records in sealed
+        // A missing record of a room another device governs is made empty
+        // by this device ([`Self::prepare_application_elsewhere`]): a room
+        // hosted on a device, this one included, keeps its records in sealed
         // channels each app opens itself.
         Err("this room's records are sealed channels its apps open themselves".into())
     }
@@ -42,10 +41,10 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         context: &NativeDocumentReadContext,
     ) -> Option<tilo_action_broker::services::PreparingElsewhere> {
         let room = super::super::state::RoomId::parse(&context.route().cluster_id)?;
-        if !self.host_governs(room) {
+        if !self.network.as_ref()?.governed_elsewhere(room) {
             return None;
         }
-        Some(preparing_at_host(
+        Some(preparing_here(
             Arc::clone(self.network.as_ref()?),
             self.opened_owner("").ok()?,
             (context.clone(), self.tree.clone()),
@@ -154,13 +153,8 @@ impl NativeDocumentReads for NativeOwnerCommitService {
                 return RecordRead::Own;
             }
         }
-        if self.owner_holds(room, app, record)
-            || self.holds_sealed_writes(&tilo_action_broker::route::CrdtRoute::record(
-                app,
-                room.to_string(),
-                record,
-            ))
-        {
+        let route = tilo_action_broker::route::CrdtRoute::record(app, room.to_string(), record);
+        if self.owner_holds(room, app, record) || self.reads_sealed_writes(room, &route) {
             RecordRead::Sealed
         } else {
             RecordRead::Own
@@ -373,27 +367,50 @@ impl NativeOwnerCommitService {
     /// this device holds: a sealed room's record its owner does not hold.
     /// The owner keeps no replica of a sealed room's records; the room's
     /// host keeps each write once, and this device what it was given.
+    ///
+    /// Writes that build on changes this device does not hold make no record
+    /// it can read back: an app that kept a record's first changes to itself
+    /// (made before it wrote on its channel) left only its later writes on
+    /// the channel. A read of those would wait for the missing changes
+    /// forever, so the record is the app's own to open, from the copy it
+    /// keeps, as a new one is; it then hands its channel what it holds.
     fn reads_sealed_writes(
         &self,
         room: super::super::state::RoomId,
         route: &tilo_action_broker::route::CrdtRoute,
     ) -> bool {
-        self.tree.read().seals_records(room)
-            && !self.owner_holds(room, &route.app_id, &route.record_id)
-            && self.holds_sealed_writes(route)
+        if !self.tree.read().seals_records(room)
+            || self.owner_holds(room, &route.app_id, &route.record_id)
+            || !self.holds_sealed_writes(route)
+        {
+            return false;
+        }
+        match self.held_sealed_record(room, route, usize::MAX) {
+            Ok(HeldSealed::Incomplete { missing }) => {
+                tracing::warn!(
+                    app = %route.app_id,
+                    record = %route.record_id,
+                    %room,
+                    missing,
+                    "the sealed writes this device holds of a record build on changes it does \
+                     not hold; the app opens the record from its own copy"
+                );
+                false
+            }
+            // Waiting for the channel's keys, readable, or failing: the read
+            // answers each, and says a failure to the app.
+            Ok(HeldSealed::Waiting | HeldSealed::Readable(_)) | Err(_) => true,
+        }
     }
-    /// `route`'s record in sealed `room`, as the sealed writes this device
-    /// holds of it make it, opened with the keys of the record's channel.
-    /// Asking for them asks the channel's participants, as the app's own channel
-    /// does; until they are here, or while a write it builds on has not
-    /// arrived yet, the read is pending and the reader asks again.
-    fn capture_sealed_writes(
+    /// What the sealed writes this device holds of `route`'s record in
+    /// `room` make, opened with the keys of the record's channel, within
+    /// `maximum` bytes.
+    fn held_sealed_record(
         &self,
         room: super::super::state::RoomId,
         route: &tilo_action_broker::route::CrdtRoute,
-        known_revision: Option<[u8; 32]>,
         maximum: usize,
-    ) -> Result<NativeDocumentRead, String> {
+    ) -> Result<HeldSealed, String> {
         use tilo_action_broker::channel_encryption::{ChannelAccess, ChannelKeyProvider};
         let artifact =
             collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
@@ -405,7 +422,7 @@ impl NativeOwnerCommitService {
             .map_err(|_| "sealed writes unavailable")?
             .sealed_writes(artifact);
         if writes.is_empty() {
-            return Ok(NativeDocumentRead::Pending);
+            return Ok(HeldSealed::Waiting);
         }
         let channels = self
             .history_keys
@@ -419,7 +436,7 @@ impl NativeOwnerCommitService {
             ChannelAccess::Ready(keys) => keys,
             ChannelAccess::Waiting => {
                 self.recheck_when_keys_change(channel, seen);
-                return Ok(NativeDocumentRead::Pending);
+                return Ok(HeldSealed::Waiting);
             }
             refused => {
                 return Err(format!(
@@ -427,9 +444,29 @@ impl NativeOwnerCommitService {
                 ));
             }
         };
-        let document = sealed_document(&writes, &keys, maximum)?;
-        let Some(mut document) = document else {
-            return Ok(NativeDocumentRead::Pending);
+        sealed_document(&writes, &keys, maximum)
+    }
+    /// `route`'s record in sealed `room`, as the sealed writes this device
+    /// holds of it make it, opened with the keys of the record's channel.
+    /// Asking for them asks the channel's participants, as the app's own channel
+    /// does; until they are here, or while a write it builds on has not
+    /// arrived yet, the read is pending and the reader asks again.
+    fn capture_sealed_writes(
+        &self,
+        room: super::super::state::RoomId,
+        route: &tilo_action_broker::route::CrdtRoute,
+        known_revision: Option<[u8; 32]>,
+        maximum: usize,
+    ) -> Result<NativeDocumentRead, String> {
+        let mut document = match self.held_sealed_record(room, route, maximum)? {
+            HeldSealed::Readable(document) => document,
+            HeldSealed::Waiting => return Ok(NativeDocumentRead::Pending),
+            HeldSealed::Incomplete { missing } => {
+                return Err(format!(
+                    "the sealed writes this device holds of the record build on {missing} \
+                     change(s) it does not hold"
+                ));
+            }
         };
         let revision = tilo_peer_state::committed_document_revision(&document.get_heads());
         if known_revision == Some(revision) {
@@ -471,14 +508,6 @@ impl NativeOwnerCommitService {
             }
             tilo_identity_host::policy_change::announce();
         });
-    }
-    /// Whether another device governs `room` and it is a host (a home
-    /// relay), which creates the room's records on a member's request.
-    fn host_governs(&self, room: super::super::state::RoomId) -> bool {
-        self.network.as_ref().is_some_and(|network| {
-            self.opened_owner("")
-                .is_ok_and(|owner| network.host_creates_records(&owner, room))
-        })
     }
     /// Say why an app's first read of a record its room does not hold
     /// failed: whether its launch carried the signed original's creation
@@ -525,10 +554,9 @@ impl NativeOwnerCommitService {
     }
 }
 
-/// How long the record a host created may take to reach this device's
-/// admitted room. With the host's own answer (at most the room-admin
-/// timeout) it stays inside what a launching app waits for its first read.
-const HOST_RECORD_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long an on-demand record the room's hosts may keep may take to
+/// reach this device once asked for, before this device creates it.
+const ON_DEMAND_RECORD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The workspace a record created in `room` names to the app initializing
 /// it: the room's id and its workspace's name.
@@ -551,9 +579,9 @@ fn creation_workspace(
     }
 }
 
-/// [`prepare_at_host`] as the broker awaits it: logged, and answered as the
+/// [`prepare_here`] as the broker awaits it: logged, and answered as the
 /// workspace a created record names.
-fn preparing_at_host(
+fn preparing_here(
     network: Arc<super::super::network::ShellNetwork>,
     owner: super::super::native_workspace_owner::NativeWorkspaceOwner,
     (context, tree): (
@@ -563,31 +591,32 @@ fn preparing_at_host(
     room: super::super::state::RoomId,
 ) -> tilo_action_broker::services::PreparingElsewhere {
     Box::pin(async move {
-        let prepared = prepare_at_host(&network, &owner, &context, room).await;
+        let prepared = prepare_here(&network, &owner, &context, room).await;
         let route = context.route();
         match &prepared {
             Ok(created) => tracing::info!(
                 app = %route.app_id, record = %route.record_id, %room, created,
-                "the room's host holds the app's record"
+                "the room holds the app's record"
             ),
             Err(error) => tracing::error!(
                 app = %route.app_id, record = %route.record_id, %room, %error,
-                "the room's host did not prepare the app's record"
+                "this device did not create the app's record"
             ),
         }
         prepared.map(|created| created.then(|| creation_workspace(&tree, room)))
     })
 }
 
-/// In a room a host governs (a home relay), have the host create the
-/// channel's missing record, empty and signed by the host, then wait until
-/// it is in this device's admitted room. The same original launch evidence
-/// and declared kind a local creation requires are checked first; the host
-/// checks the caller's membership and the app's authorship again. Answers
-/// whether the host created the record for this caller, which then
-/// initializes it as its own change.
-async fn prepare_at_host(
-    network: &super::super::network::ShellNetwork,
+/// In a room another device governs, create the channel's missing
+/// record empty, signed by this device, as every receiver admits a member's
+/// record: the room lets its app author records and this person change the
+/// record. The same original launch evidence and declared kind a local
+/// creation requires are checked first. An on-demand record the room's
+/// hosts may keep already is asked for first, and taken when it comes.
+/// Answers whether this device created the record, which it then
+/// initializes as its own change.
+async fn prepare_here(
+    network: &Arc<super::super::network::ShellNetwork>,
     owner: &super::super::native_workspace_owner::NativeWorkspaceOwner,
     context: &NativeDocumentReadContext,
     room: super::super::state::RoomId,
@@ -609,7 +638,7 @@ async fn prepare_at_host(
         .application_creation()
         .filter(|evidence| evidence.valid())
         .ok_or("application creation requires original signed launch declarations")?;
-    tilo_joined_room::ApplicationRecord::declared(
+    let record = tilo_joined_room::ApplicationRecord::declared(
         &route.app_id,
         &route.record_id,
         context
@@ -618,38 +647,45 @@ async fn prepare_at_host(
         &evidence.declared_kinds,
     )?;
     network.check_native_custody(owner, room)?;
-    let created = network
-        .prepare_application_record_at_host(
-            room,
-            context.certificate(),
-            &route.app_id,
-            &route.record_id,
-        )
-        .await
-        .ok_or("no host governs the room")??;
-    // A record the host sends a device only once it asks (an earlier part
-    // of a chain) is asked for: the host found it, and replays it no one.
-    if on_demand(&route.record_id) {
-        let _ = network.read_on_demand(room, &route.app_id, &route.record_id);
-    }
-    // The host's answer is not this device's barrier: wait until the record
-    // it published is in this device's admitted room, which the room's
-    // owner announces when it publishes.
-    let arrived = Arc::new(tokio::sync::Notify::new());
-    let wake = Arc::clone(&arrived);
-    let watch = tilo_identity_host::policy_change::Watch::new(move || wake.notify_one());
-    tokio::time::timeout(HOST_RECORD_ADMISSION_TIMEOUT, async {
-        loop {
-            watch.arm();
-            network.check_native_custody(owner, room)?;
-            if holds()? {
-                return Ok::<(), String>(());
+    if on_demand(&route.record_id)
+        && network.read_on_demand(room, &route.app_id, &route.record_id)
+            == crate::shell::network::OnDemand::Arriving
+    {
+        let arrived = Arc::new(tokio::sync::Notify::new());
+        let wake = Arc::clone(&arrived);
+        let watch = tilo_identity_host::policy_change::Watch::new(move || wake.notify_one());
+        let came = tokio::time::timeout(ON_DEMAND_RECORD_TIMEOUT, async {
+            loop {
+                watch.arm();
+                if holds()? {
+                    return Ok::<(), String>(());
+                }
+                arrived.notified().await;
             }
-            arrived.notified().await;
+        })
+        .await;
+        if let Ok(came) = came {
+            came?;
+            context.revalidate()?;
+            return Ok(false);
         }
+    }
+    let creator = context.certificate().clone();
+    let (network, owner) = (Arc::clone(network), owner.clone());
+    let created = tokio::task::spawn_blocking(move || {
+        let key = network.native_signing_key_of(&owner, room)?;
+        let created = owner.prepare_application_record(
+            room,
+            &creator,
+            &key,
+            &record,
+            std::time::SystemTime::now(),
+        )?;
+        network.schedule_native_owner_publication(room);
+        Ok::<_, String>(created)
     })
     .await
-    .map_err(|_| "the host created the app's record but it did not reach this device in time")??;
+    .map_err(|_| "creating the app's record stopped")??;
     context.revalidate()?;
     Ok(created)
 }
@@ -657,11 +693,22 @@ async fn prepare_at_host(
 /// The document `writes` make, each opened with `keys`: a whole frame, or
 /// a mutation reassembled from its segments. `None` while a write builds on
 /// one that has not arrived. At most `maximum` bytes are opened.
+/// What the sealed writes of one record this device holds make.
+enum HeldSealed {
+    /// Nothing to read yet: no write, or the channel's keys are on their way.
+    Waiting,
+    /// The record, whole.
+    Readable(Box<automerge::AutoCommit>),
+    /// The writes build on `missing` changes, or segments of one, this
+    /// device does not hold.
+    Incomplete { missing: usize },
+}
+
 fn sealed_document(
     writes: &[collab_types::SignedOp],
     keys: &channel_crypto::ChannelContentKeys,
     maximum: usize,
-) -> Result<Option<automerge::AutoCommit>, String> {
+) -> Result<HeldSealed, String> {
     use collab_types::{DocumentFrame, DocumentMutation};
     let mut remaining = maximum;
     let mut reassembler = collab_types::DocumentReassembler::default();
@@ -695,12 +742,13 @@ fn sealed_document(
         tilo_automerge::ApplyIncoming::load_incoming(&mut document, bytes)
             .map_err(|error| error.to_string())?;
     }
-    if reassembler.pending_transfers() > 0
-        || !automerge::ReadDoc::get_missing_deps(&document, &[]).is_empty()
-    {
-        return Ok(None);
+    let missing = reassembler
+        .pending_transfers()
+        .saturating_add(automerge::ReadDoc::get_missing_deps(&document, &[]).len());
+    if missing > 0 {
+        return Ok(HeldSealed::Incomplete { missing });
     }
-    Ok(Some(document))
+    Ok(HeldSealed::Readable(Box::new(document)))
 }
 
 /// Whether `record` reaches a device only once it asks for it
@@ -716,5 +764,79 @@ struct Captured(Vec<u8>);
 impl tilo_action_broker::services::DocumentBytes for Captured {
     fn bytes(&self) -> &[u8] {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod sealed_tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::panic,
+        reason = "a test: a failure is a panic"
+    )]
+    use super::{HeldSealed, sealed_document};
+    use automerge::transaction::Transactable as _;
+    use collab_types::{
+        ArtifactId, AttestationId, ContentRetention, DocumentMutation, OpKind, SignedOp,
+        generate_keypair,
+    };
+
+    /// A sealed write of `changes`, as a record's channel keeps one.
+    fn sealed(
+        keys: &channel_crypto::ChannelContentKeys,
+        artifact: ArtifactId,
+        seq: u64,
+        changes: Vec<u8>,
+    ) -> SignedOp {
+        let plaintext = DocumentMutation::Incremental(changes)
+            .encode_frames()
+            .unwrap()
+            .remove(0);
+        let (metadata, ciphertext) = keys
+            .seal_content(artifact, ContentRetention::Delta, &plaintext)
+            .unwrap();
+        let (_, author) = generate_keypair();
+        SignedOp::new_unsigned_with_encryption(
+            ciphertext,
+            artifact,
+            author,
+            AttestationId::new(),
+            OpKind::Change,
+            std::time::SystemTime::UNIX_EPOCH,
+            seq,
+            metadata,
+        )
+    }
+
+    #[test]
+    fn writes_that_build_on_a_change_the_device_lacks_are_incomplete_not_pending() {
+        let group = channel_crypto::ChannelGroup::create(
+            collab_types::ChannelId::new(),
+            channel_crypto::MemberKey::generate("ada").unwrap(),
+        )
+        .unwrap();
+        let keys = group.content_keys().unwrap();
+        let artifact = ArtifactId::new();
+        // The record's making, kept to its app, then a change on its channel.
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "schema", 1_u64).unwrap();
+        let made = doc.save_incremental();
+        doc.put(automerge::ROOT, "value", 1_u64).unwrap();
+        let changed = doc.save_incremental();
+
+        let only_later = [sealed(&keys, artifact, 1, changed.clone())];
+        assert!(matches!(
+            sealed_document(&only_later, &keys, usize::MAX).unwrap(),
+            HeldSealed::Incomplete { missing: 1 }
+        ));
+        let both = [
+            sealed(&keys, artifact, 1, made),
+            sealed(&keys, artifact, 2, changed),
+        ];
+        let HeldSealed::Readable(mut read) = sealed_document(&both, &keys, usize::MAX).unwrap()
+        else {
+            panic!("the whole history reads back");
+        };
+        assert_eq!(read.get_heads(), doc.get_heads());
     }
 }

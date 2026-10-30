@@ -277,10 +277,11 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
     {
         fn window_group_fresh_render_is_deterministic() {
             let (w, h) = (400u32, 120u32);
-            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
-                eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
-                return;
-            };
+            let mut renderer = tilo_test_env::require_capability!(
+                Gpu,
+                OffscreenRenderer::try_new(w, h),
+                "determinism check"
+            );
             let mut g1 = make_window_group();
             let mut g2 = make_window_group();
             let a = render_group(&mut renderer, &mut g1);

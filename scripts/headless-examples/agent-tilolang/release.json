@@ -1,0 +1,143 @@
+{
+  "request": "what's left for the release? write it down and push the open ones to Monday",
+  "title": "What's left for the release",
+  "turns": [
+    {
+      "blocks": [
+        {
+          "type": "text",
+          "text": "I'll read the release tasks, the release note and the team's channel."
+        },
+        {
+          "type": "tool_use",
+          "name": "tilo",
+          "input": {
+            "program": "tasks.tasks.items.filter(t -> not t.done)"
+          }
+        }
+      ]
+    },
+    {
+      "expect": [
+        "Record the demo video"
+      ],
+      "blocks": [
+        {
+          "type": "tool_use",
+          "name": "tilo",
+          "input": {
+            "program": "notes.notes"
+          }
+        }
+      ]
+    },
+    {
+      "expect": [
+        "Untitled"
+      ],
+      "blocks": [
+        {
+          "type": "tool_use",
+          "name": "tilo",
+          "input": {
+            "program": "chat.channels"
+          }
+        }
+      ]
+    },
+    {
+      "blocks": [
+        {
+          "type": "tool_use",
+          "name": "tilo",
+          "input": {
+            "program": "let left = notes.new_note(notes.notes)\nleft.title = \"Left for 2.4\"\nleft.body = \"Record the demo video, update the changelog, check the upgrade from 2.3, write the release notes.\""
+          }
+        }
+      ],
+      "expect": [
+        "release"
+      ]
+    },
+    {
+      "expect": [
+        "undo"
+      ],
+      "blocks": [
+        {
+          "type": "tool_use",
+          "name": "tilo",
+          "input": {
+            "program": "notes.pin(left)"
+          }
+        }
+      ]
+    },
+    {
+      "expect": [
+        "undo"
+      ],
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Pinning it was not asked for; I'll take that back."
+        },
+        {
+          "type": "tool_use",
+          "name": "tilo",
+          "input": {
+            "program": "undo"
+          }
+        }
+      ]
+    },
+    {
+      "expect": [
+        "undone"
+      ],
+      "blocks": [
+        {
+          "type": "tool_use",
+          "name": "tilo",
+          "input": {
+            "program": "for t in tasks.tasks.items.filter(t -> not t.done) {\n    tasks.schedule(t, 2026-11-02)\n}"
+          }
+        }
+      ]
+    },
+    {
+      "expect": [
+        "preview"
+      ],
+      "blocks": [
+        {
+          "type": "tool_use",
+          "name": "tilo",
+          "input": {
+            "program": "for t in tasks.tasks.items.filter(t -> not t.done) {\n    tasks.schedule(t, 2026-11-02)\n}",
+            "confirm": true
+          }
+        }
+      ]
+    },
+    {
+      "expect": [
+        "undo"
+      ],
+      "blocks": [
+        {
+          "type": "tool_use",
+          "name": "plan",
+          "input": {
+            "reply": "Four tasks are left for 2.4; I wrote them in the note \"Left for 2.4\" and moved them to Monday.",
+            "done": true,
+            "view": {
+              "title": "Left for the release",
+              "source": "card(tasks.tasks, count: tasks.tasks.items.count(t -> not t.done)) {\n    list(tasks.tasks.items.filter(t -> not t.done)) { t ->\n        row(t)\n    }\n}"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

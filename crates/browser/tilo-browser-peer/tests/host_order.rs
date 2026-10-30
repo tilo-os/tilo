@@ -17,11 +17,14 @@
 mod participant;
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use collab_types::DocumentMutation;
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, ready, route, start_host, start_peer, wait_for, workspace};
+use support::{enrol, ready, route, start_host, start_peer, wait_for};
 
 const EACH: usize = 12;
 
@@ -67,6 +70,8 @@ async fn https_and_iroh_commits_share_one_host_order() {
         host_device.cert.clone(),
         browser.key.clone(),
     );
+    support::place(&host.relay, &laptop.cert).await;
+    support::place(&host.relay, &observer.cert).await;
     let laptop_peer = start_peer(
         host.iroh(),
         laptop.cert.clone(),
@@ -81,7 +86,7 @@ async fn https_and_iroh_commits_share_one_host_order() {
     );
     let observer_events = observer_peer.events();
     for peer in [&browser_peer, &laptop_peer, &observer_peer] {
-        peer.join(workspace()).unwrap();
+        peer.join_placed(support::ROOM, "Workspace").unwrap();
     }
     ready(&[&browser_peer, &laptop_peer, &observer_peer]).await;
 
@@ -128,6 +133,9 @@ async fn https_and_iroh_commits_share_one_host_order() {
     let mut seen = Vec::new();
     wait_for("the observer to see every change", || {
         for event in observer_events.drain() {
+            if !support::members_document(&event) {
+                continue;
+            }
             if let PeerEvent::Document(document) = event
                 && let Some(mutation) = document.mutation()
             {

@@ -3,8 +3,7 @@
 //! record, so an effect answers from, and acts on, the window it is about.
 //!
 //! The window lays out, draws and handles input as the chat does; it adds
-//! the scenario a capture stages, done on the next sync, and the
-//! description of the empty states the chat paints itself.
+//! the scenario a capture stages, done on the next sync.
 
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
@@ -16,7 +15,6 @@ use ui::Widget;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::empty_state::PaintedEmptyStates;
 use ui::widget::{AppModel, Collaborative, Continuable, FloatingSurfaceProvider, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -33,8 +31,6 @@ pub struct ChatWindow {
     /// A capture's scenario, staged on the next sync.
     #[cfg(feature = "samples")]
     staged: Rc<RefCell<Option<Staged>>>,
-    /// The empty states the chat painted itself, described for it.
-    painted: PaintedEmptyStates,
 }
 
 /// The scenario a capture stages (`None` for a plain capture).
@@ -47,7 +43,6 @@ impl ChatWindow {
             chat,
             #[cfg(feature = "samples")]
             staged: Rc::default(),
-            painted: PaintedEmptyStates::default(),
         }
     }
 
@@ -184,10 +179,7 @@ impl Widget for ChatWindow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let mut chat = self.chat.borrow_mut();
-        self.painted.draw(tf, || {
-            chat.draw(scene, tf, tr, theme, presence);
-        });
+        self.state().draw(scene, tf, tr, theme, presence);
     }
 
     fn draw_overlay(
@@ -213,23 +205,12 @@ impl Widget for ChatWindow {
         self.chat.borrow().cursor_shape(point)
     }
 
-    // An empty state drawn as pixels is described as well, its action a
-    // button that clicks where it is drawn.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let chat = self.chat.borrow();
-        self.painted.describe(chat.accessibility(), &*chat)
+        self.chat.borrow().accessibility()
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        // With no empty state painted there is nothing of the window's own
-        // to place, and describing the whole chat per node would make the
-        // tree's build quadratic in its nodes.
-        if self.painted.is_empty() {
-            return self.chat.borrow().synthetic_accessibility_rect(path);
-        }
-        self.accessibility()
-            .and_then(|described| self.painted.action_rect(&described, path))
-            .or_else(|| self.chat.borrow().synthetic_accessibility_rect(path))
+        self.chat.borrow().synthetic_accessibility_rect(path)
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
@@ -314,12 +295,6 @@ impl Widget for ChatWindow {
 
     fn mark_drawn(&mut self) {
         self.state().mark_drawn();
-    }
-}
-
-impl ui::widget::controls::ActionControls for ChatWindow {
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.state().take_control_invocation()
     }
 }
 

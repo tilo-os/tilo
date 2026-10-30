@@ -25,130 +25,25 @@ impl ShellOverlayHost {
             }
             match overlay {
                 // Stacked and published above, or an app that publishes its
-                // own tree as a child of the host.
+                // own tree as a child of the host; the launcher publishes its
+                // own card, as its own child.
                 LayerId::ShortcutHelp
+                | LayerId::Directory
+                | LayerId::DisplayLayouts
                 | LayerId::DisplayConfirmation
                 | LayerId::WindowSwitcher
                 | LayerId::EmojiPicker
                 | LayerId::TabContextMenu
                 | LayerId::PowerMenu
-                | LayerId::Dictation => {}
-                LayerId::CommandPalette => {
-                    // The launcher publishes its own card, as its own child.
-                    if !self.launcher_shown()
-                        && let Some(mut palette) = self.palette.accessibility()
-                    {
-                        // The query owns focus, not its synthetic parent dialog.
-                        palette.state.focused = false;
-                        // The filter band is the host's, painted over the
-                        // palette's reserved strip; it joins the palette's
-                        // tree after the palette's own children (query,
-                        // result list) so the dialog reads as one surface.
-                        // A palette that is visible but not open publishes
-                        // no children, and then neither does the band —
-                        // `search_filters_child_index` is the one answer
-                        // both this and `synthetic_accessibility_rect` use.
-                        if self.search_filters_child_index() == Some(palette.children.len()) {
-                            palette.children.push(self.search_filters_accessibility());
-                        }
-                        root.children.push(palette);
-                    }
-                }
+                | LayerId::Overview
+                | LayerId::Dictation
+                | LayerId::CommandPalette => {}
                 LayerId::MemberSheet => root.children.push(
                     AccessNode::new(Role::Dialog)
                         .with_name(t("a11y-member-sheet"))
                         .with_description(t("a11y-member-sheet-description"))
                         .with_state(AccessState::new().modal(true)),
                 ),
-                LayerId::Overview => {
-                    let cards = self.overview_cards();
-                    let mut overview = AccessNode::new(Role::Dialog)
-                        .with_name(t("a11y-overview"))
-                        .with_bounds(self.overview_bounds())
-                        .with_state(AccessState::new().modal(true));
-                    overview
-                        .children
-                        .extend(cards.iter().enumerate().map(|(index, card)| {
-                            AccessNode::new(Role::Button)
-                                .with_name(card.name.clone())
-                                .with_bounds(self.overview_row_rect(index))
-                                .with_state(AccessState::new().focusable(true).focused(
-                                    self.overview_selection == Some(index)
-                                        && self.overview_window_selection.is_none(),
-                                ))
-                        }));
-                    let windows = self.overview_row_windows();
-                    if !windows.is_empty() {
-                        let total = windows.len();
-                        let items = windows
-                            .iter()
-                            .enumerate()
-                            .map(|(index, window)| {
-                                let selected =
-                                    self.overview_window_selection == Some(window.address.tab);
-                                AccessNode::new(Role::ListItem)
-                                    .with_semantic_key(format!(
-                                        "overview-window:{}",
-                                        window.address.tab
-                                    ))
-                                    .with_name(window.title.clone())
-                                    .with_position(index.saturating_add(1), total)
-                                    .with_bounds(self.overview_window_tile_rect(index))
-                                    .with_state(
-                                        AccessState::new()
-                                            .focusable(true)
-                                            .focused(selected)
-                                            .selected(selected),
-                                    )
-                            })
-                            .collect();
-                        overview.children.push(
-                            AccessNode::new(Role::List)
-                                .with_bounds(self.overview_window_list_rect().unwrap_or(Rect::ZERO))
-                                .with_name(crate::shell::i18n::t("overview-windows-title"))
-                                .with_description(crate::shell::i18n::t(
-                                    "overview-windows-description",
-                                ))
-                                .with_children(items),
-                        );
-                    }
-                    overview.children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name(t("a11y-new-workspace"))
-                            .with_bounds(self.overview_add_workspace_rect_for(cards.len()))
-                            .with_state(AccessState::new().focusable(true).focused(
-                                self.overview_selection == Some(cards.len())
-                                    && self.overview_window_selection.is_none(),
-                            )),
-                    );
-                    overview.children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name(t("overview-join-workspace"))
-                            .with_bounds(self.overview_join_workspace_rect_for(cards.len()))
-                            .with_state(AccessState::new().focusable(true).focused(
-                                self.overview_selection == Some(cards.len().saturating_add(1))
-                                    && self.overview_window_selection.is_none(),
-                            )),
-                    );
-                    let site_rooms = self.site_rooms();
-                    for (idx, card) in cards.iter().enumerate() {
-                        let leave = self.overview_leave_rect(idx, &site_rooms);
-                        if leave.area() > 0.0 {
-                            overview.children.push(
-                                AccessNode::new(Role::Button)
-                                    .with_name(t_args(
-                                        "a11y-leave-workspace",
-                                        &[("name", card.name.clone().into())],
-                                    ))
-                                    .with_bounds(leave),
-                            );
-                        }
-                    }
-                    if let Some(strips) = self.overview_strips_accessibility() {
-                        overview.children.push(strips);
-                    }
-                    root.children.push(overview);
-                }
                 LayerId::WorkspaceSettings => {
                     let mut settings = AccessNode::new(Role::Dialog)
                         .with_name(t("a11y-workspace-settings"))
@@ -225,102 +120,10 @@ impl ShellOverlayHost {
                     }
                 }
                 LayerId::QuickSettings => {
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        let state = chrome.borrow();
-                        if matches!(
-                            state.quick_settings.current_level(),
-                            tilo_quick_settings::QsLevel::Notifications
-                        ) {
-                            // One semantic snapshot has one clock edge, so
-                            // adjacent rows cannot label their ages across a
-                            // relative-time boundary on a loaded compositor.
-                            root.children.push(self.notification_center.accessibility(
-                                &ChromeNotifications::new(chrome).with_agents(&self.room_activity),
-                                &self.qs_notification_layout(),
-                                Instant::now(),
-                            ));
-                        } else if let tilo_quick_settings::QsLevel::BluetoothDetails(address) =
-                            state.quick_settings.current_level()
-                        {
-                            let accessory = state
-                                .quick_settings
-                                .bt_devices
-                                .iter()
-                                .find(|device| device.address.eq_ignore_ascii_case(address));
-                            let accessory_fallback = t("a11y-bluetooth-accessory");
-                            let accessory_name = accessory
-                                .map_or(accessory_fallback.as_str(), |device| device.name.as_str());
-                            let view = self
-                                .device_fabric_call(DeviceFabricUiAction::Snapshot)
-                                .unwrap_or_default();
-                            let rows = std::iter::once(None)
-                                .chain(view.devices.into_iter().map(Some))
-                                .collect::<Vec<_>>();
-                            let visible = self.qs_device_fabric_visible_rows();
-                            let start = self
-                                .qs_device_fabric_start
-                                .min(rows.len().saturating_sub(visible));
-                            let shown = visible.min(rows.len().saturating_sub(start));
-                            let items = rows
-                                .into_iter()
-                                .skip(start)
-                                .take(shown)
-                                .enumerate()
-                                .map(|(index, device)| match device {
-                                    None => AccessNode::new(Role::Button)
-                                        .with_name(t_args(
-                                            "a11y-bluetooth-disconnect",
-                                            &[("accessory", accessory_name.into())],
-                                        ))
-                                        .with_position(index.saturating_add(1), shown),
-                                    Some(device) => AccessNode::new(Role::Button)
-                                        .with_name(t_args(
-                                            "a11y-bluetooth-move-to",
-                                            &[("device", device.label.as_str().into())],
-                                        ))
-                                        .with_description(if device.is_local {
-                                            t("a11y-bluetooth-destination-local")
-                                        } else if device.online {
-                                            t("a11y-bluetooth-destination-online")
-                                        } else {
-                                            t("a11y-bluetooth-destination-offline")
-                                        })
-                                        .with_state(
-                                            AccessState::new()
-                                                .disabled(device.is_local || !device.online),
-                                        )
-                                        .with_position(index.saturating_add(1), shown),
-                                })
-                                .collect();
-                            root.children.push(
-                                AccessNode::new(Role::Dialog)
-                                    .with_name(t_args(
-                                        "a11y-bluetooth-move",
-                                        &[("accessory", accessory_name.into())],
-                                    ))
-                                    .with_description(t("a11y-bluetooth-move-description"))
-                                    .with_state(AccessState::new().modal(true))
-                                    .with_children(vec![
-                                        AccessNode::new(Role::List)
-                                            .with_name(t("a11y-bluetooth-destinations"))
-                                            .with_children(items),
-                                    ]),
-                            );
-                        } else {
-                            root.children
-                                .push(self.qs_root.accessibility_snapshot(&state.quick_settings));
-                            // The inline password, while it is asked for,
-                            // holds the keyboard like a sheet.
-                            if self.wifi_password_prompt_up()
-                                && let Some(prompt) = state.quick_settings.wifi_password.as_ref()
-                            {
-                                root.children.push(self.wifi_password_accessibility(prompt));
-                            }
-                        }
+                    if let Some(mut panel) = self.quick_settings_accessibility() {
+                        super::sheet_accessibility::route_quick_settings(&mut panel);
+                        root.children.push(panel);
                     }
-                }
-                LayerId::DisplayLayouts => {
-                    root.children.push(self.projection_overlay.accessibility());
                 }
             }
         }
@@ -351,40 +154,10 @@ impl ShellOverlayHost {
             return layer.accessibility_rect(self.layer_geometry(&outputs), child_path);
         }
         match overlay {
-            LayerId::CommandPalette => match child_path {
-                // The trailing child is the host's filter band (see
-                // `accessibility`); everything before it is the palette's.
-                [first, rest @ ..] if Some(*first) == self.search_filters_child_index() => {
-                    self.search_filters.rect_for_path(rest)
-                }
-                _ => self.palette.synthetic_accessibility_rect(child_path),
-            },
             LayerId::Collaborators => self
                 .collaborators_overlay
                 .accessibility_rect_for_path(child_path),
-            LayerId::QuickSettings => {
-                let drill_in_action = (self.chrome.is_some() && matches!(child_path, [0]))
-                    .then(|| self.quick_settings_rect());
-                let notification_action = self.chrome.as_ref().and_then(|chrome| {
-                    if !matches!(
-                        chrome.borrow().quick_settings.current_level(),
-                        tilo_quick_settings::QsLevel::Notifications
-                    ) {
-                        return None;
-                    }
-                    let [0, dialog_path @ ..] = child_path else {
-                        return None;
-                    };
-                    self.notification_center.accessibility_rect_for_path(
-                        &ChromeNotifications::new(chrome).with_agents(&self.room_activity),
-                        &self.qs_notification_layout(),
-                        dialog_path,
-                    )
-                });
-                drill_in_action
-                    .or(notification_action)
-                    .or_else(|| self.qs_root.accessibility_rect_for_path(child_path))
-            }
+            LayerId::QuickSettings => self.quick_settings_accessibility_rect(child_path),
             LayerId::WorkspaceSettings => {
                 let ownership = self.workspace_settings_overlay.ownership_action_rect();
                 let ownership_present = ownership.area() > 0.0;
@@ -410,17 +183,20 @@ impl ShellOverlayHost {
                     _ => None,
                 }
             }
-            LayerId::Overview => self.overview_accessibility_rect(child_path),
             LayerId::NowPlaying => self.now_playing_accessibility_rect(child_path),
             LayerId::MemberSheet
             | LayerId::ShortcutHelp
+            | LayerId::Directory
             | LayerId::DisplayLayouts
             // Stacked; answered above.
             | LayerId::DisplayConfirmation
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu | LayerId::Dictation => None,
+            | LayerId::Overview
+            | LayerId::PowerMenu | LayerId::Dictation
+            // The launcher answers for its own card.
+            | LayerId::CommandPalette => None,
         }
     }
 
@@ -439,29 +215,27 @@ impl ShellOverlayHost {
             return focused;
         }
         match overlay {
-            LayerId::CommandPalette => {
-                self.palette.focus_synthetic_accessibility(child_path)
-            }
             LayerId::Collaborators => self
                 .collaborators_overlay
                 .focus_accessibility_path(child_path),
-            LayerId::QuickSettings => {
-                focus_quick_settings_accessibility(self, child_path)
-            }
+            LayerId::QuickSettings => self.quick_settings_accessibility_rect(child_path).is_some(),
             LayerId::NowPlaying => self.focus_now_playing_accessibility(child_path),
             LayerId::WorkspaceSettings => {
                 !child_path.is_empty() && self.synthetic_accessibility_rect(path).is_some()
             }
-            LayerId::Overview => self.focus_overview_accessibility(child_path),
             LayerId::MemberSheet
             | LayerId::ShortcutHelp
+            | LayerId::Directory
             | LayerId::DisplayLayouts
             // Stacked; answered above.
             | LayerId::DisplayConfirmation
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu | LayerId::Dictation => false,
+            | LayerId::Overview
+            | LayerId::PowerMenu | LayerId::Dictation
+            // The launcher answers for its own card.
+            | LayerId::CommandPalette => false,
         }
     }
 }

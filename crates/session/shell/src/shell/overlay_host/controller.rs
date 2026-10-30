@@ -114,7 +114,7 @@ impl ShellOverlayHost {
     fn toggle_focused_app_actions(&mut self) {
         if self.palette_visible {
             self.palette_visible = false;
-            self.palette.close();
+            self.search.close();
             return;
         }
         // Resolve the scope against the tab that has focus now, not a

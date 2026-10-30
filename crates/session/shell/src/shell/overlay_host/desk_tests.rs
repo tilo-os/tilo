@@ -80,7 +80,7 @@ fn super_tap_opens_the_surface_and_it_stays_until_closed() {
     assert_eq!(host.super_surface(), Some(SuperSurface::Pinned));
     assert!(host.palette_visible, "search is the surface's field");
     assert!(
-        !host.palette.shows_field_only(),
+        !host.search.shows_field_only(),
         "global search with the launcher under the field"
     );
     assert_eq!(
@@ -102,8 +102,8 @@ fn super_tap_opens_the_surface_and_it_stays_until_closed() {
     );
 
     // Typing searches as it always has.
-    host.palette.set_query("spo");
-    assert!(!host.palette.shows_field_only());
+    host.search.set_query("spo");
+    assert!(!host.search.shows_field_only());
 
     // Another tap closes it.
     host.super_gesture(SuperGesture::Tap, &doc, &automerge::ROOT);
@@ -118,7 +118,7 @@ fn super_tap_opens_the_surface_and_it_stays_until_closed() {
     host.update_desk(ms(now, 60_200));
     assert_eq!(host.super_surface(), None);
     assert!(
-        !host.palette.shows_field_only(),
+        !host.search.shows_field_only(),
         "plain search opens with its list again"
     );
 }
@@ -145,7 +145,7 @@ fn holding_super_peeks_and_release_closes_unless_it_was_used() {
     assert!(!host.palette_visible);
 
     grown_peek(&mut host, &doc);
-    host.palette.set_query("not");
+    host.search.set_query("not");
     host.super_gesture(SuperGesture::PeekReleased, &doc, &automerge::ROOT);
     assert_eq!(
         host.super_surface(),
@@ -791,8 +791,7 @@ fn a_card_resizes_continuously_and_keeps_its_width() {
         let mut stages = std::collections::BTreeSet::new();
         // From the narrowest to the widest, a pixel at a time.
         let span = sizing.max - sizing.min;
-        let steps = span.ceil() as u32;
-        for step in 0..=steps {
+        for step in (0_u32..).take_while(|step| f64::from(*step) < span + 1.0) {
             let width = sizing.min + f64::from(step).min(span);
             let p = grip + Vec2::new(toward * (width - slot.open.width()), 0.0);
             host.desk_pointer(p, start + Duration::from_millis(u64::from(step) + 1));

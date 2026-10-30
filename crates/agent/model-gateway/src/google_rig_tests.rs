@@ -96,7 +96,6 @@ async fn google_billing_and_gemini_signatures_survive_unary_and_streamed_tool_hi
                 target: crate::openai::Target::Standard,
                 retry_refusals: false,
                 stream_end: Arc::default(),
-                authenticated: true,
                 profile_headers: Vec::new(),
                 budget: tilo_test_env::hang_bound(),
                 body: None,

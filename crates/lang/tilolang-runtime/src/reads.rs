@@ -412,7 +412,8 @@ impl Core {
         who.all(|w| w == first).then(|| first.to_owned())
     }
 
-    /// The matches of `re` in the text of `target`, leaving out the kinds of block `not`.
+    /// The lines of the text of `target` that `re` matches, each at its first match, leaving out
+    /// the kinds of block `not`.
     fn matches_in(
         &self,
         target: &ResourceRef,
@@ -425,7 +426,9 @@ impl Core {
         let mut doc: Option<Shown> = None;
         let mut writer: Option<Option<String>> = None;
         for part in text.parts.iter().filter(|p| !not.contains(&p.kind)) {
-            for caps in re.captures_iter(&part.text) {
+            // A line is listed once, at its first match, as grep lists it: its other matches
+            // would list the same line again.
+            if let Some(caps) = re.captures(&part.text) {
                 let Some(whole) = caps.get(0) else {
                     continue;
                 };

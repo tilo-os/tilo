@@ -89,6 +89,21 @@ pub(super) fn is_local_host_caller(
             })
 }
 
+/// What a host step reads of who takes it.
+impl super::BrokerActor {
+    /// The person this actor acts for, when one delegated it.
+    #[must_use]
+    pub fn acting_for(&self) -> Option<&str> {
+        self.for_person.as_deref()
+    }
+
+    /// The issue whose run this agent works in, by its address.
+    #[must_use]
+    pub fn issue(&self) -> Option<&str> {
+        self.issue.as_deref()
+    }
+}
+
 impl CapnpBrokerState {
     /// Admit one host step (pairing a nearby device, administering the
     /// person's identity) for `caller` and start it on the host.
@@ -320,7 +335,6 @@ pub(crate) mod signed_test_support {
     struct NativeOwnerReceipts {
         owner: Arc<tilo_joined_room::NativeWorkspaceOwner>,
         key: ed25519_dalek::SigningKey,
-        certificate: tilo_user_identity::DeviceCert,
     }
 
     impl tilo_owner_commit::OwnerCommitService for NativeOwnerReceipts {
@@ -335,14 +349,8 @@ pub(crate) mod signed_test_support {
         ) -> tilo_owner_commit::CommitFuture {
             let owner = self.owner.clone();
             let key = self.key.clone();
-            let certificate = self.certificate.clone();
             Box::pin(async move {
-                owner.commit_effect_receipt(
-                    &request,
-                    &certificate,
-                    &key,
-                    std::time::SystemTime::now(),
-                )
+                owner.commit_effect_receipt(&request, &key, std::time::SystemTime::now())
             })
         }
     }
@@ -441,7 +449,6 @@ pub(crate) mod signed_test_support {
                 Arc::new(NativeOwnerReceipts {
                     owner,
                     key: key.clone(),
-                    certificate: certificate.clone(),
                 }),
             );
             let person = principal_id_for_root(certificate.user_public_key);

@@ -38,6 +38,7 @@ pub mod sink;
 pub mod store;
 pub mod surface;
 pub mod task;
+pub mod task_records;
 pub mod upgrade;
 
 pub use action::{Authorship, DynAction, DynEdit, register_actions};

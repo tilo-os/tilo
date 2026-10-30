@@ -382,26 +382,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The Escape dismissal ladder. Priority matches z-order: palette >
-    /// overview > ws settings > quick settings.
-    pub(super) fn finish_notification_reading(
-        &mut self,
-        st: &mut crate::shell::chrome_state::ChromeState,
-    ) -> bool {
-        if st.overlays.quick_settings
-            && matches!(
-                st.quick_settings.current_level(),
-                tilo_quick_settings::QsLevel::Notifications
-            )
-            && self.notification_center.close_reader()
-        {
-            st.bump();
-            true
-        } else {
-            false
-        }
-    }
-
     /// Escape in the open search: step back out of an action's steps,
     /// then leave a resource scope, then clear what was typed, and only on
     /// an empty field close, so a slip of the finger never costs the search.
@@ -415,15 +395,15 @@ impl ShellOverlayHost {
             if state.search_resource_scope.take().is_some() {
                 state.bump();
                 drop(state);
-                self.palette.set_query("");
-                self.palette
+                self.search.set_query("");
+                self.search
                     .set_query_placeholder(t("host-search-placeholder"));
                 self.last_search_query = "\0resource-scope-back\0".into();
                 return;
             }
         }
-        if !self.palette.query().is_empty() {
-            self.palette.set_query("");
+        if !self.search.query().is_empty() {
+            self.search.set_query("");
             self.palette_layout_dirty = true;
             return;
         }
@@ -444,7 +424,7 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if self.layers.dismiss_topmost() {
+        if self.dismiss_topmost_popover() {
             *handled = true;
             return true;
         }
@@ -452,13 +432,6 @@ impl ShellOverlayHost {
         if self.strip_navigator.is_open() {
             self.strip_navigator.close();
             self.publish_strip_switcher_open();
-            *handled = true;
-            return true;
-        }
-        // A strip's name being typed in the overview: Escape keeps the old
-        // name and leaves the overview open.
-        if self.overview_naming.take().is_some() {
-            self.bump_chrome();
             *handled = true;
             return true;
         }
@@ -476,7 +449,7 @@ impl ShellOverlayHost {
             st.overlays.overview = false;
             st.bump();
             drop(st);
-            self.latch_keyboard_overview();
+            self.latch_overview_transition_from(ui::tokens::MotionSource::Keyboard);
             *handled = true;
             return true;
         }
@@ -498,10 +471,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if self.finish_notification_reading(&mut st) {
-            *handled = true;
-            return true;
-        }
         if st.overlays.quick_settings {
             // A drill-in is a nested page, so Escape follows its visible Back
             // affordance before it dismisses the whole popover. This keeps
@@ -510,19 +479,9 @@ impl ShellOverlayHost {
             // Quick Settings.
             // An open section closes before the panel does, as its
             // chevron would.
-            if st.quick_settings.wifi_password.take().is_some() {
-                st.bump();
-            } else if !matches!(
-                st.quick_settings.current_level(),
-                tilo_quick_settings::QsLevel::Root
-            ) || st.quick_settings.pasting()
-            {
-                // Clipboard history opened to paste has no page behind it.
-                st.quick_settings_back();
-            } else if self.qs_root.close_section(&mut st.quick_settings) {
-                st.bump();
-            } else {
+            if !self.quick_settings.back() {
                 st.overlays.quick_settings = false;
+                st.quick_settings.paste_origin = None;
                 st.bump();
             }
             *handled = true;
@@ -635,9 +594,6 @@ impl ShellOverlayHost {
     /// `false` when no such field is open.
     pub(super) fn commit_into_chrome_field(&mut self, text: &str) -> bool {
         use tilo_desktop::text_entry::{Edit, commit};
-        if self.directory_sheet.commit_text(text) {
-            return true;
-        }
         if !self.palette_visible
             && let Some(chrome) = self.chrome.clone()
         {
@@ -652,10 +608,6 @@ impl ShellOverlayHost {
             }
         }
         if !self.palette_visible && self.strip_navigator.commit_text(text) {
-            self.bump_chrome();
-            return true;
-        }
-        if !self.palette_visible && self.overview_naming_commit_text(text) {
             self.bump_chrome();
             return true;
         }

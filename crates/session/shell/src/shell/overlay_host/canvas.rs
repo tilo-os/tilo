@@ -36,6 +36,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::ShellOverlayHost;
+use super::agent_actions::{AskOutcome, AskTicket};
 use crate::shell::selection_agent::SelectionSeed;
 use crate::shell::state::{GroupId, WorkspaceId};
 
@@ -122,6 +123,39 @@ impl CanvasAnswers {
     }
 }
 
+/// Why what was typed on the canvas did not reach an agent. Every ask
+/// either opens its answer's window or comes back as one of these, which
+/// the caret says where the person typed ([`Caret::refused`]): nothing
+/// typed on the canvas goes unanswered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CanvasRefusal {
+    /// Enter with nothing typed.
+    NothingTyped,
+    /// The workspace has no agent to ask.
+    NoAgent,
+    /// The workspace's agent, or the door to it, is not reachable yet: no
+    /// action broker, no identity for the room, no workspace on screen.
+    AgentUnreachable,
+    /// The composer's path did not take the question.
+    NotHanded,
+}
+
+impl CanvasRefusal {
+    fn message_key(self) -> &'static str {
+        match self {
+            Self::NothingTyped => "canvas-ask-nothing-typed",
+            Self::NoAgent => "canvas-ask-no-agent",
+            Self::AgentUnreachable => "canvas-ask-agent-unreachable",
+            Self::NotHanded => "canvas-ask-not-handed",
+        }
+    }
+
+    /// What the caret says.
+    fn message(self) -> String {
+        crate::shell::i18n::t(self.message_key())
+    }
+}
+
 /// The caret on the canvas and what is typed at it.
 struct Caret {
     /// Where it stands, in canvas pixels.
@@ -129,6 +163,21 @@ struct Caret {
     text: String,
     selection: Selection,
     composition: QueryComposition,
+    /// Why the last Enter did not reach an agent, said under the text until
+    /// the person types again.
+    refused: Option<CanvasRefusal>,
+    /// The ask Enter handed to the agent, until it is known how it ended:
+    /// the caret says it is asking, and takes no typing meanwhile.
+    asking: Option<AskTicket>,
+}
+
+/// A question handed to the agent from the canvas, until it is known how
+/// that ended ([`ShellOverlayHost::pump_canvas_asks`]): asked, its answer's
+/// window takes its place at the anchor; refused, the caret there says so.
+struct CanvasAsk {
+    ticket: AskTicket,
+    anchor: CanvasAnchor,
+    text: String,
 }
 
 impl Caret {
@@ -138,6 +187,19 @@ impl Caret {
             text: String::new(),
             selection: Selection::collapsed(0),
             composition: QueryComposition::new(),
+            refused: None,
+            asking: None,
+        }
+    }
+
+    /// A caret at `at` holding `text`, which did not reach an agent for
+    /// `why`.
+    fn refused_at(at: Point, text: &str, why: CanvasRefusal) -> Self {
+        Self {
+            text: text.to_owned(),
+            selection: Selection::collapsed(text.len()),
+            refused: Some(why),
+            ..Self::at(at)
         }
     }
 }
@@ -169,6 +231,8 @@ pub(crate) struct CanvasLayer {
     /// The windows a band selected, the subject of what is typed next.
     selection: Vec<GroupId>,
     pub(crate) answers: CanvasAnswers,
+    /// Questions handed to the agent whose outcome is not known yet.
+    asks: Vec<CanvasAsk>,
     /// The view the rows were given last.
     given: Option<CanvasView>,
     /// A pinch's scale at its last update, to zoom by what changed.
@@ -183,6 +247,15 @@ fn tile_app_id(tile: &TileContent) -> Option<&str> {
         | TileContent::PeerWindow { app_id, .. }
         | TileContent::HostedWindow { app_id, .. } => Some(app_id),
         TileContent::AppPlaceholder { .. } | TileContent::Stub { .. } => None,
+    }
+}
+
+/// Where a caret for an ask at `anchor` stands: at the point, or under the
+/// thing it is beside.
+fn anchor_point(anchor: CanvasAnchor) -> Point {
+    match anchor {
+        CanvasAnchor::Point(at) => at,
+        CanvasAnchor::Beside(rect) => Point::new(rect.x0, rect.y1 + f64::from(CANVAS_GAP)),
     }
 }
 
@@ -371,6 +444,9 @@ impl ShellOverlayHost {
             self.canvas.caret = None;
             self.canvas.press = None;
             self.canvas.selection.clear();
+            // What hung from the windows where they stood (a bar's menu, a
+            // flyout) would hang over nothing now.
+            self.dismiss_popovers();
         }
         self.canvas.shown = Some(workspace);
         let mut arrangement = arrangement;
@@ -411,6 +487,7 @@ impl ShellOverlayHost {
         self.canvas.press = None;
         self.canvas.selection.clear();
         self.canvas.given = None;
+        self.dismiss_popovers();
         if let Some(deck) = self
             .desktop_surface_mut()
             .and_then(tilo_desktop::composition::DesktopSurface::strip_deck_mut)
@@ -948,7 +1025,14 @@ impl ShellOverlayHost {
                     return true;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    self.ask_at_caret();
+                    if self
+                        .canvas
+                        .caret
+                        .as_ref()
+                        .is_none_or(|caret| caret.asking.is_none())
+                    {
+                        self.ask_at_caret();
+                    }
                     return true;
                 }
                 _ => {}
@@ -959,6 +1043,11 @@ impl ShellOverlayHost {
         let Some(caret) = self.canvas.caret.as_mut() else {
             return false;
         };
+        if caret.asking.is_some() {
+            // The question is on its way: what it says stays as it was
+            // asked until the agent has it or the caret says why not.
+            return matches!(event, WindowEvent::KeyboardInput { .. });
+        }
         let change = caret.composition.handle_event(
             event,
             &mut caret.text,
@@ -971,21 +1060,49 @@ impl ShellOverlayHost {
             // window's that lost the keyboard to the caret.
             return matches!(event, WindowEvent::KeyboardInput { .. });
         }
+        // What the caret said about the last Enter was about other words.
+        caret.refused = None;
         self.bump_chrome();
         true
     }
 
     /// Ask what is typed at the caret: about the selection when there is
-    /// one, else about the place it was typed at.
+    /// one, else about the place it was typed at. The caret goes once the
+    /// question is with the agent (its answer opens where it was); else it
+    /// stays, and says why.
     fn ask_at_caret(&mut self) {
         let Some(caret) = self.canvas.caret.as_ref() else {
             return;
         };
         let text = caret.text.trim().to_owned();
-        if text.is_empty() {
-            return;
-        }
         let at = caret.at;
+        let outcome = if text.is_empty() {
+            Err(CanvasRefusal::NothingTyped)
+        } else {
+            self.ask_typed_at_caret(at, &text)
+        };
+        match outcome {
+            Ok(ticket) => {
+                if let Some(caret) = self.canvas.caret.as_mut() {
+                    caret.refused = None;
+                    caret.asking = Some(ticket);
+                }
+            }
+            Err(why) => {
+                tracing::info!(
+                    ?why,
+                    "a question typed on the canvas did not reach an agent"
+                );
+                if let Some(caret) = self.canvas.caret.as_mut() {
+                    caret.refused = Some(why);
+                }
+            }
+        }
+        self.bump_chrome();
+    }
+
+    /// Hand `text`, typed at the caret at `at`, to the agent.
+    fn ask_typed_at_caret(&mut self, at: Point, text: &str) -> Result<AskTicket, CanvasRefusal> {
         let selection = std::mem::take(&mut self.canvas.selection);
         let label = self.app_label(tilo_desktop_model::commands::APP_ID);
         let mut seed = SelectionSeed::new(tilo_desktop_model::commands::APP_ID, label, None);
@@ -1014,10 +1131,12 @@ impl ShellOverlayHost {
             }
         };
         let context = self.canvas_context(anchor, &selection);
-        if self.ask_on_canvas(&seed.asking(&text), anchor, &context) {
-            self.canvas.caret = None;
+        let asked = self.ask_on_canvas(&seed.asking(text), anchor, &context);
+        if asked.is_err() {
+            // The selection stays the subject of the next try.
+            self.canvas.selection = selection;
         }
-        self.bump_chrome();
+        asked
     }
 
     /// What the agent is told of where it was asked: the windows near the
@@ -1134,7 +1253,34 @@ impl ShellOverlayHost {
             },
         };
         let context = self.canvas_context(anchor, &[]);
-        self.ask_on_canvas(seed, anchor, &context)
+        match self.ask_on_canvas(seed, anchor, &context) {
+            Ok(ticket) => {
+                // Asked where the person pointed: a caret there holds the
+                // question until the agent has it.
+                let text = seed.ask.clone().unwrap_or_default();
+                let mut caret =
+                    Caret::refused_at(anchor_point(anchor), &text, CanvasRefusal::NotHanded);
+                caret.refused = None;
+                caret.asking = Some(ticket);
+                self.canvas.selection.clear();
+                self.canvas.caret = Some(caret);
+                self.bump_chrome();
+                true
+            }
+            Err(why) => {
+                // Said where the person pointed: a caret there holds what
+                // they typed, and why it did not reach an agent.
+                tracing::info!(
+                    ?why,
+                    "a question asked from a menu on the canvas did not reach an agent"
+                );
+                let text = seed.ask.clone().unwrap_or_default();
+                self.canvas.selection.clear();
+                self.canvas.caret = Some(Caret::refused_at(anchor_point(anchor), &text, why));
+                self.bump_chrome();
+                true
+            }
+        }
     }
 
     /// Beside the window drawn at screen point `p`, when there is one.
@@ -1146,20 +1292,27 @@ impl ShellOverlayHost {
     }
 
     /// Hand `seed`'s question to the workspace's agent as a Tasks issue
-    /// whose page opens as a window at `anchor`. An agent not running is
-    /// started; the issue waits for it. Whether it was asked.
+    /// whose page opens as a window at `anchor`, through the composer's
+    /// path. An agent not running is started; the issue waits for it.
+    /// When it could not be asked, why; else the ask, whose outcome
+    /// [`Self::pump_canvas_asks`] hears.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the session source and the composer's actions are handed on at their last use; \
                   the lint reads the move into `open_and_ask` as a held guard"
     )]
-    fn ask_on_canvas(&mut self, seed: &SelectionSeed, anchor: CanvasAnchor, context: &str) -> bool {
+    fn ask_on_canvas(
+        &mut self,
+        seed: &SelectionSeed,
+        anchor: CanvasAnchor,
+        context: &str,
+    ) -> Result<AskTicket, CanvasRefusal> {
         use crate::shell::state::WorkspaceAuthority as _;
-        let Some(text) = seed.ask.clone() else {
-            return false;
+        let Some(text) = seed.ask.clone().filter(|text| !text.trim().is_empty()) else {
+            return Err(CanvasRefusal::NothingTyped);
         };
         let Some(chrome) = self.chrome.clone() else {
-            return false;
+            return Err(CanvasRefusal::AgentUnreachable);
         };
         let Some((room_id, person, members)) = ({
             let state = chrome.borrow();
@@ -1176,22 +1329,19 @@ impl ShellOverlayHost {
                 )
             })
         }) else {
-            return false;
+            return Err(CanvasRefusal::AgentUnreachable);
         };
         let room = room_id.to_string();
         let Some(agent) = self.selection_requests.choose_agent(&room, &members) else {
-            chrome
-                .borrow_mut()
-                .show_osd(crate::shell::osd::Osd::no_agent());
-            return false;
+            return Err(CanvasRefusal::NoAgent);
         };
         let Some(broker) = self.shortcut_triggers.broker() else {
-            return false;
+            return Err(CanvasRefusal::AgentUnreachable);
         };
         let live = super::ask_agent::askable(&broker, &room, &agent);
         let source = crate::shell::certified_action_session::ActionSessionSource::new(broker);
         let Some(identity_revision) = source.identity_revision(&room) else {
-            return false;
+            return Err(CanvasRefusal::AgentUnreachable);
         };
         let owner = crate::shell::agent_quick_composer::ComposerOwner {
             room: room.clone(),
@@ -1212,19 +1362,82 @@ impl ShellOverlayHost {
                 actions.open_and_ask(source, &owner, (&text, &body), Some(seed), true, true);
             (start, asked)
         };
-        if !asked {
+        let Some(ticket) = asked else {
             tracing::warn!(%agent, "the canvas's question could not be handed to the agent");
-            return false;
-        }
+            return Err(CanvasRefusal::NotHanded);
+        };
         self.selection_requests.asked(&room, &agent);
-        self.canvas
-            .answers
-            .expect(tilo_action_broker::services::TRACKER_APP, anchor);
+        self.canvas.asks.push(CanvasAsk {
+            ticket,
+            anchor,
+            text: text.clone(),
+        });
         if start {
             self.start_agent_for(&room_id, &agent);
         }
         tracing::info!(%agent, ?anchor, "asked from the canvas");
-        true
+        Ok(ticket)
+    }
+
+    /// How the questions handed to agents ended, from every composer's
+    /// path: one asked from the canvas has its answer's window placed at its
+    /// anchor, or the caret there says why it was not asked. An ask from
+    /// elsewhere that did not end asked is said in the log. Whether what
+    /// the canvas shows changed.
+    pub(super) fn pump_canvas_asks(&mut self) -> bool {
+        let outcomes: Vec<(AskTicket, AskOutcome)> = self
+            .agent_actions
+            .values_mut()
+            .flat_map(super::agent_actions::AgentActions::take_ask_outcomes)
+            .collect();
+        let mut changed = false;
+        for (ticket, outcome) in outcomes {
+            let Some(index) = self.canvas.asks.iter().position(|ask| ask.ticket == ticket) else {
+                if !matches!(outcome, AskOutcome::Asked { .. }) {
+                    tracing::warn!(?outcome, "work handed to an agent did not reach it");
+                }
+                continue;
+            };
+            let ask = self.canvas.asks.remove(index);
+            let caret_waits = self
+                .canvas
+                .caret
+                .as_ref()
+                .is_some_and(|caret| caret.asking == Some(ticket));
+            match outcome {
+                AskOutcome::Asked { issue } => {
+                    tracing::info!(%issue, "a question asked on the canvas is with the agent");
+                    self.canvas
+                        .answers
+                        .expect(tilo_action_broker::services::TRACKER_APP, ask.anchor);
+                    if caret_waits {
+                        self.canvas.caret = None;
+                    }
+                }
+                AskOutcome::Refused | AskOutcome::Unknown => {
+                    tracing::warn!(
+                        ?outcome,
+                        "a question asked on the canvas did not reach the agent"
+                    );
+                    let why = CanvasRefusal::NotHanded;
+                    match self.canvas.caret.as_mut().filter(|_| caret_waits) {
+                        Some(caret) => {
+                            caret.asking = None;
+                            caret.refused = Some(why);
+                        }
+                        None => {
+                            self.canvas.caret =
+                                Some(Caret::refused_at(anchor_point(ask.anchor), &ask.text, why));
+                        }
+                    }
+                }
+            }
+            changed = true;
+        }
+        if changed {
+            self.bump_chrome();
+        }
+        changed
     }
 
     /// The canvas's marks over its windows: the band being drawn, the
@@ -1271,8 +1484,11 @@ impl ShellOverlayHost {
         let frame = self.canvas_frame().unwrap_or(self.rect);
         let row = f64::from(theme.tokens.metrics.menu_row_height);
         let inset = ui::widget::primitives::FloatingPanelFace::slot_inset(theme);
+        let gap = f64::from(CANVAS_GAP);
+        // As wide as a sheet, but never past the canvas's trailing edge: the
+        // text starts where the person pointed and the panel fits on screen.
         let width = f64::from(theme.tokens.metrics.panel_width_sheet)
-            .min(frame.width() - 2.0 * f64::from(CANVAS_GAP))
+            .min(frame.x1 - gap - inset - at.x)
             .max(row);
         // The text starts where the person pointed: the field is centred on
         // the line pointed at, and the panel grows around it.
@@ -1280,16 +1496,41 @@ impl ShellOverlayHost {
         let Some(caret) = self.canvas.caret.as_mut() else {
             return;
         };
-        let theme = if caret.text.is_empty() && !caret.composition.is_composing() {
-            theme.clone()
-        } else {
-            let face = ui::widget::primitives::FloatingPanelFace::new()
-                .header(row)
-                .body_empty(true);
-            let panel = field.inflate(inset, inset);
-            let (_, on_panel) = face.paint(scene, transform, panel, 1.0, theme);
-            on_panel
+        let refused = match (caret.asking, caret.refused) {
+            (Some(_), _) => Some(crate::shell::i18n::t("canvas-ask-asking")),
+            (None, why) => why.map(CanvasRefusal::message),
         };
+        let theme =
+            if caret.text.is_empty() && !caret.composition.is_composing() && refused.is_none() {
+                theme.clone()
+            } else {
+                let mut face = ui::widget::primitives::FloatingPanelFace::new()
+                    .header(row)
+                    .body_empty(true);
+                if refused.is_some() {
+                    face = face.footer(row);
+                }
+                let panel = Rect::new(
+                    field.x0 - inset,
+                    field.y0 - inset,
+                    field.x1 + inset,
+                    field.y0 - inset + face.height_for(0.0, theme),
+                );
+                let (layout, on_panel) = face.paint(scene, transform, panel, 1.0, theme);
+                if let Some(message) = refused.as_deref() {
+                    // Why the last Enter did not reach an agent, under the text.
+                    let style = on_panel.text(ui::tokens::TextRole::Label);
+                    text_renderer.draw_style(
+                        scene,
+                        message,
+                        on_panel.tokens.colors.text_dim,
+                        transform.pre_translate((layout.footer.x0, layout.footer.y0).into()),
+                        Some(ui::num::f32_of_f64(layout.footer.width())),
+                        &style,
+                    );
+                }
+                on_panel
+            };
         caret.composition.draw(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, &theme),
             QueryView {
@@ -1305,11 +1546,14 @@ impl ShellOverlayHost {
     }
 
     /// What the canvas shows now, for the test control: whether it shows,
-    /// the lens, the caret and what is typed at it, the selection, every
+    /// the lens, the caret, what is typed at it and why it did not reach an
+    /// agent, the selection, every
     /// window's place on the canvas and its rect on screen, and how many
     /// answers wait for their window.
     pub(crate) fn canvas_state(&self) -> serde_json::Value {
         let lens = self.canvas_lens();
+        let strip_frame = self.strip_frame();
+        let strip_indicators = strip_frame.ribbon_offered || strip_frame.rail_offered;
         let windows: Vec<serde_json::Value> = self
             .group_row_ptrs
             .values()
@@ -1338,10 +1582,15 @@ impl ShellOverlayHost {
             "caret": self.canvas.caret.as_ref().map(|caret| serde_json::json!({
                 "at": [caret.at.x, caret.at.y],
                 "text": caret.text,
+                "refused": caret.refused.map(CanvasRefusal::message_key),
+                "asking": caret.asking.is_some(),
             })),
             "selection": self.canvas.selection,
             "windows": windows,
             "answers_waiting": self.canvas.answers.waiting(),
+            // Whether the strips' ribbon and rail may show: never over a
+            // canvas, which has no strip to be on.
+            "strip_indicators": strip_indicators,
             "frame": self.canvas_frame().map(|f| [f.x0, f.y0, f.width(), f.height()]),
         })
     }

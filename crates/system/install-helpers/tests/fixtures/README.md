@@ -1,13 +1,12 @@
 # Staging handoff compatibility fixtures
 
-`staging_handoff_oracle.py` preserves the Python implementation solely as a
-fixture oracle. It is not installed in the OS image. Regenerate golden JSON
-with `generate_staging_handoff_parity.py` and the real native prepared-setup
-extractor. Rust integration tests consume the JSON and execute the compiled
-handoff and extractor; they do not launch Python.
+`staging_handoff_parity.json` and `staging_handoff_authenticated_parity.json`
+are golden cases first recorded from the Python helper the native handoff
+replaced. Rust integration tests consume the JSON and execute the compiled
+handoff and extractor. Edit a case only together with the behaviour it pins.
 
 The native model deliberately rejects a Btrfs identity whose encoded filesystem
-UUID differs from its volume. The historical Python oracle accepted that
+UUID differs from its volume. The historical Python helper accepted that
 malformed identity. Tests explicitly assert native refusal and also exercise a
 correct UUID-bound Btrfs identity; they do not weaken the native check.
 

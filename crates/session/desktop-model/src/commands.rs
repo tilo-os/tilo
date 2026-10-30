@@ -199,15 +199,6 @@ pub enum DesktopCommand {
         subject: String,
         expires_unix: u64,
     },
-    /// Record the effect receipt of an invocation that a member's app served
-    /// in this room, as the redacted
-    /// [`WorkspaceEffectReceipt`](crate::WorkspaceEffectReceipt) JSON the
-    /// member's broker produced. Only a native owner applies it; a receipt,
-    /// once recorded, never changes. Appended last: existing encodings are
-    /// unchanged.
-    RecordEffectReceipt {
-        receipt_json: String,
-    },
     /// Let application `app` use `action` on `target_app`'s `resource` here, for
     /// `lifetime` `always` (a hosted workspace has no session to end a
     /// `session` grant with). Only a native owner applies it, with the
@@ -254,8 +245,8 @@ pub enum DesktopCommand {
 impl DesktopCommand {
     /// Whether the owner applies this against its own current desktop, so it
     /// needs no source revision: an [`Self::OpenApp`] it places itself, a
-    /// namespace claim that changes only the registry, or a governance or
-    /// receipt command that touches no topology.
+    /// namespace claim that changes only the registry, or a governance
+    /// command that touches no topology.
     pub fn is_placement_independent(&self) -> bool {
         matches!(
             self,
@@ -263,7 +254,6 @@ impl DesktopCommand {
                 | Self::ClaimNamespace { .. }
                 | Self::SavePreset { .. }
                 | Self::AssignPreset { .. }
-                | Self::RecordEffectReceipt { .. }
                 | Self::GrantAppAction { .. }
                 | Self::RevokeAppAction { .. }
         )
@@ -834,7 +824,6 @@ pub fn apply_command(
         }
         DesktopCommand::SavePreset { .. }
         | DesktopCommand::AssignPreset { .. }
-        | DesktopCommand::RecordEffectReceipt { .. }
         | DesktopCommand::GrantAppAction { .. }
         | DesktopCommand::RevokeAppAction { .. } => {
             return Err("only the workspace's native owner applies this command".into());

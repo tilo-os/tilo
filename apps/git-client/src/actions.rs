@@ -31,11 +31,11 @@
 //! never in it.
 //!
 //! Git work against the on-disk repository is the [`GitClientEffect`]
-//! vocabulary, answered by the surface. What the window shows of the
+//! vocabulary, answered by the view. What the window shows of the
 //! repository — its history, branches, tags, stashes and remotes, and the
-//! working tree — is published as the surface's live rows, each carrying the
+//! working tree — is published as the view's live rows, each carrying the
 //! effects that act on it. The diff preferences are the person's settings
-//! ([`crate::settings`]), switched by the surface's effects.
+//! ([`crate::settings`]), switched by the view's effects.
 
 use crate::i18n::t;
 

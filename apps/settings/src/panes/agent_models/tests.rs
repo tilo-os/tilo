@@ -1,5 +1,7 @@
 use std::sync::Mutex;
 
+use ui::widget::Widget;
+
 use super::*;
 
 fn package() -> LocalModelPackage {
@@ -50,11 +52,36 @@ fn with_subject(phase: Option<LocalModelPhase>) -> LocalModelSnapshot {
     }
 }
 
-pub(super) fn rendered_names(model: &AgentModelsModel) -> Vec<String> {
-    let composition = model.build_composition();
-    let mut nodes = Vec::new();
-    collect_accessibility(composition.as_ref(), &mut nodes);
-    nodes.into_iter().filter_map(|node| node.name).collect()
+/// What `read` finds on the Agent Models page of a Settings window showing
+/// `model`: the page the window builds over it, its controls bound to the
+/// actions the window publishes. The model is lent to the window's area
+/// meanwhile and handed back as the window left it.
+pub(super) fn rendered<T>(model: &mut AgentModelsModel, read: impl FnOnce(&dyn Widget) -> T) -> T {
+    let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    let held = app
+        .with_widget::<crate::window::Inspected, _>(|settings| {
+            Rc::clone(area(settings).unwrap().model())
+        })
+        .unwrap();
+    std::mem::swap(&mut *held.borrow_mut(), model);
+    crate::effects::show_pane(&mut app, crate::categories::Category::AgentModels);
+    app.settle();
+    let found = read(crate::effects::page_of(app.harness().root_widget()));
+    std::mem::swap(&mut *held.borrow_mut(), model);
+    found
+}
+
+/// Every line the Agent Models page showing `model` announces.
+pub(super) fn announced(model: &mut AgentModelsModel) -> Vec<String> {
+    rendered(model, provider_settings_ui::widgets::announced_text)
+}
+
+pub(super) fn rendered_names(model: &mut AgentModelsModel) -> Vec<String> {
+    rendered(model, |page| {
+        let mut nodes = Vec::new();
+        collect_accessibility(page, &mut nodes);
+        nodes.into_iter().filter_map(|node| node.name).collect()
+    })
 }
 
 /// An in-process model has its own card with the recommendation's
@@ -66,9 +93,9 @@ fn in_process_models_are_set_up_with_the_same_confirmation() {
     // Case `setup_confirms_before_install`.
     {
         let control = mock(with_subject(None));
-        let model = model_over(control.clone());
+        let mut model = model_over(control.clone());
         assert_eq!(
-            rendered_names(&model)
+            rendered_names(&mut model)
                 .iter()
                 .filter(|name| *name == "Set up on this device")
                 .count(),
@@ -76,7 +103,7 @@ fn in_process_models_are_set_up_with_the_same_confirmation() {
         );
         model.reviewing_local.set(Some("u2net-subject".into()));
         assert!(
-            rendered_names(&model)
+            rendered_names(&mut model)
                 .iter()
                 .any(|name| name == "Accept license & download")
         );
@@ -121,11 +148,11 @@ fn in_process_models_are_set_up_with_the_same_confirmation() {
     // Case `each_model_is_a_row_with_its_install`.
     {
         let model = model_over(mock(with_subject(None)));
-        let area = AgentModelsArea {
-            cx: model.cx.clone(),
-            model: std::cell::OnceCell::from(Rc::new(std::cell::RefCell::new(model))),
-            read: crate::device_read::DeviceRead::default(),
-        };
+        let profile = tempfile::tempdir().unwrap();
+        let area = AgentModelsArea::new(&crate::area::AreaContext::in_profile(
+            profile.path().to_path_buf(),
+        ));
+        let _ = area.model.set(Rc::new(std::cell::RefCell::new(model)));
         let published = area
             .rows()
             .into_iter()
@@ -156,8 +183,8 @@ fn ready_in_process_models_offer_only_a_confirmed_remove() {
         endpoint: None,
     };
     let control = mock(with_subject(Some(ready.clone())));
-    let model = model_over(control.clone());
-    let names = rendered_names(&model);
+    let mut model = model_over(control.clone());
+    let names = rendered_names(&mut model);
     assert!(!names.iter().any(|name| name == "Start"));
     assert_eq!(
         names
@@ -294,7 +321,7 @@ fn collect_accessibility(widget: &dyn Widget, nodes: &mut Vec<ui::a11y::AccessNo
 /// offers to take one; once the vault holds it, it says it is stored.
 #[test]
 fn a_hosted_provider_without_a_key_here_asks_for_one() {
-    let mut pane = model_over(mock(snapshot(None)));
+    let (_app, mut pane) = hosted_model(mock(snapshot(None)));
     pane.change_providers(AgentModelsEffect::AddProvider {
         preset: "anthropic".into(),
     })
@@ -303,7 +330,7 @@ fn a_hosted_provider_without_a_key_here_asks_for_one() {
     pane.keys
         .insert(profile.id.clone(), Ok(CredentialStatus::Missing));
     assert!(pane.needs_key(&profile));
-    let text = crate::widgets::announced_text(pane.compose().as_ref());
+    let text = announced(&mut pane);
     assert!(
         text.iter().any(|line| line == "Needs a key on this device"),
         "{text:#?}"
@@ -322,7 +349,7 @@ fn a_hosted_provider_without_a_key_here_asks_for_one() {
 
 #[test]
 fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
-    let mut pane = model_over(mock(snapshot(None)));
+    let (_app, mut pane) = hosted_model(mock(snapshot(None)));
     pane.change_providers(AgentModelsEffect::AddProvider {
         preset: "anthropic".into(),
     })
@@ -331,7 +358,7 @@ fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
     pane.keys
         .insert(profile.id.clone(), Ok(CredentialStatus::MigrationRequired));
     assert!(pane.needs_key(&profile));
-    let text = crate::widgets::announced_text(pane.compose().as_ref());
+    let text = announced(&mut pane);
     assert!(
         text.iter()
             .any(|line| line.contains("unbound legacy API key")),
@@ -362,7 +389,7 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
     use account_custody::TokenSet;
     use account_custody::cloud_projects::CloudProject;
     let vault = tempfile::tempdir().unwrap();
-    let mut pane = model_over(mock(snapshot(None)));
+    let (_app, mut pane) = hosted_model(mock(snapshot(None)));
     pane.custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
     let grant = |refresh: &str| TokenSet {
         access_token: "access".into(),
@@ -399,7 +426,7 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
             id: "tilo-509618".into(),
             name: "Tilo".into(),
         }]);
-    let text = crate::widgets::announced_text(pane.compose().as_ref());
+    let text = announced(&mut pane);
     assert!(
         text.iter().any(|line| line == "Tilo (tilo-509618)"),
         "{text:#?}"
@@ -442,11 +469,11 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
     use account_custody::GrantState;
     let id = id.to_string();
     pane.vertex_keys.insert(id.clone(), Ok(false));
-    let text = crate::widgets::announced_text(pane.compose().as_ref());
+    let text = announced(pane);
     assert!(text.iter().any(|line| line == "Sign in again"), "{text:#?}");
     assert!(!text.iter().any(|line| line == "Save key"), "{text:#?}");
     pane.vertex_keys.insert(id.clone(), Ok(true));
-    let text = crate::widgets::announced_text(pane.compose().as_ref());
+    let text = announced(pane);
     assert!(
         text.iter()
             .any(|line| line == "Signed in with Google on this device."),
@@ -542,10 +569,28 @@ pub(super) fn forgotten(pane: &mut AgentModelsModel) {
     });
 }
 
+/// A model over `control` storing the providers through the sections a
+/// Settings window keeps: what it stores lands in them once the window
+/// settles.
+pub(super) fn hosted_model(
+    control: Arc<MockControl>,
+) -> (
+    ui::framework::testing::TestApp<crate::resource::SettingsShell>,
+    AgentModelsModel,
+) {
+    let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    let cx = app
+        .with_widget::<crate::window::Inspected, _>(|settings| settings.area_context())
+        .unwrap();
+    let mut model = AgentModelsModel::new(&cx.storage, cx.sections, cx.provider_admin, control);
+    model.follow_local_profile = false;
+    (app, model)
+}
+
 pub(super) fn model_over(control: Arc<MockControl>) -> AgentModelsModel {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
-    let mut model = AgentModelsModel::new(cx, control);
+    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
+    let mut model = AgentModelsModel::new(&cx.storage, cx.sections, cx.provider_admin, control);
     model.follow_local_profile = false;
     model
 }
@@ -563,10 +608,12 @@ pub(super) fn mock(snapshot: LocalModelSnapshot) -> Arc<MockControl> {
 fn the_catalog_is_honest_and_installs_what_it_reported() {
     let fallback = fallback_snapshot();
     assert!(fallback.recommendation.is_none());
-    let pane = model_over(mock(fallback));
-    let composition = pane.build_composition();
-    let mut nodes = Vec::new();
-    collect_accessibility(composition.as_ref(), &mut nodes);
+    let mut pane = model_over(mock(fallback));
+    let nodes = rendered(&mut pane, |page| {
+        let mut nodes = Vec::new();
+        collect_accessibility(page, &mut nodes);
+        nodes
+    });
     let setup = nodes
         .iter()
         .find(|node| node.name.as_deref() == Some("Set up unavailable"))
@@ -713,9 +760,6 @@ fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
 #[test]
 fn model_request_limits_use_the_published_settings_effects() {
     use ui::framework::testing::TestApp;
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().to_path_buf();
-    let settings = settings_store::profile(&path);
     let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
     profile.models = vec![
         ModelDescriptor::new("test-model"),
@@ -723,23 +767,25 @@ fn model_request_limits_use_the_published_settings_effects() {
     ];
     profile.models[0].context_window = Some(262_144);
     let profile_id = profile.id.clone();
-    ProviderConfig {
-        profiles: vec![profile],
-        default_profile: None,
-        ..Default::default()
-    }
-    .save_in(&settings)
-    .unwrap();
+    crate::area::replace_in_next_window(move |context| {
+        let area = crate::panes::agent_models::AgentModelsArea::new(context);
+        area.model().borrow_mut().follow_local_profile = false;
+        area
+    });
     let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
-    app.surface_mut::<SettingsApp>()
-        .attach_host(PaneCx::in_profile(path), None);
-    app.surface_mut::<SettingsApp>()
-        .areas()
-        .find::<crate::panes::agent_models::AgentModelsArea>()
-        .unwrap()
-        .model()
-        .borrow_mut()
-        .follow_local_profile = false;
+    crate::testing::invoke_section(
+        &mut app,
+        "settings.hosted-agent-providers",
+        "set-providers",
+        serde_json::json!({ "hosted": { "profiles": [profile] } }),
+    )
+    .unwrap();
+    let stored = |app: &TestApp<crate::resource::SettingsShell>| {
+        settings_sections::providers::merged(
+            &app.settings::<AgentProviders>().get(),
+            &app.settings::<HostedAgentProviders>().get(),
+        )
+    };
     let open = crate::categories::Category::AgentModels;
     app.effect_on(
         &crate::effects::pane_row_id(open),
@@ -789,7 +835,7 @@ fn model_request_limits_use_the_published_settings_effects() {
         .unwrap();
     assert!(other_value["request_limits"].is_null());
     assert_eq!(other_value["plan_timeout_ceiling_ms"], 60_000);
-    let saved = settings_store::SettingsSource::load(&settings);
+    let saved = stored(&app);
     for invalid in [
         serde_json::json!({"max_output_tokens":4096,"runtime_context_tokens":4096}),
         serde_json::json!({"max_output_tokens":512,"plan_timeout_ms":0}),
@@ -801,15 +847,13 @@ fn model_request_limits_use_the_published_settings_effects() {
             app.call_on(&resource, "set-model-request-limits", invalid)
                 .is_err()
         );
-        assert_eq!(settings_store::SettingsSource::load(&settings), saved);
+        app.settle();
+        assert_eq!(stored(&app), saved);
     }
     app.call_on(&resource, "set-model-request-limits", serde_json::json!({}))
         .unwrap();
-    assert!(
-        ProviderConfig::load_in(&settings).profiles[0].models[0]
-            .request_limits
-            .is_none()
-    );
+    app.settle();
+    assert!(stored(&app).profiles[0].models[0].request_limits.is_none());
     assert!(app.harness().component_contract_violations().is_empty());
 }
 
@@ -817,7 +861,7 @@ fn model_request_limits_use_the_published_settings_effects() {
 /// and removed through effects, which refuse a provider that is gone.
 #[test]
 fn providers_are_the_persons_settings() {
-    let mut pane = model_over(mock(snapshot(None)));
+    let (mut app, mut pane) = hosted_model(mock(snapshot(None)));
     pane.change_providers(AgentModelsEffect::AddProvider {
         preset: "anthropic".into(),
     })
@@ -837,6 +881,25 @@ fn providers_are_the_persons_settings() {
     let stored = pane.providers.config();
     assert_eq!(stored.default_profile.as_deref(), Some(id.as_str()));
     assert_eq!(stored.profiles[0].label, "Work");
+    // What the page stored is the sections': the default this device's,
+    // the hosted provider the person's.
+    app.settle();
+    assert_eq!(
+        app.settings::<AgentProviders>()
+            .get()
+            .config
+            .default_profile,
+        Some(id)
+    );
+    assert_eq!(
+        app.settings::<HostedAgentProviders>().get().hosted.profiles,
+        stored.profiles
+    );
+    assert!(
+        pane.providers.refresh(),
+        "the sections show what was stored"
+    );
+    assert_eq!(pane.providers.config(), stored);
     assert!(
         pane.change_providers(AgentModelsEffect::SetProviderEnabled {
             provider: "gone".into(),
@@ -914,7 +977,7 @@ fn a_stalled_model_manager_never_holds_the_window() {
     crate::effects::show_pane(&mut app, crate::categories::Category::AgentModels);
     let gate = crate::stall::Stall::new();
     let stalled = Arc::clone(&gate);
-    app.with_widget::<SettingsApp, _>(move |settings| {
+    app.with_widget::<crate::window::Inspected, _>(move |settings| {
         let model = crate::panes::agent_models::area(settings).unwrap().model();
         let mut model = model.borrow_mut();
         model.follow_local_profile = false;
@@ -941,7 +1004,7 @@ fn a_stalled_model_manager_never_holds_the_window() {
         .expect("the window draws its next frame");
     gate.assert_held("the click");
     let shown = |app: &mut TestApp<crate::resource::SettingsShell>| {
-        app.with_widget::<SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             let model = crate::panes::agent_models::area(settings)
                 .unwrap()
                 .model()
@@ -987,7 +1050,7 @@ fn until_finished(finished: impl Fn() -> bool) {
 #[test]
 fn the_area_builds_its_model_from_the_read_it_started() {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
+    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
     let area = AgentModelsArea::new(&cx);
     assert!(area.start_read(), "the first read starts");
     assert!(!area.start_read(), "one read at a time");
@@ -1012,10 +1075,16 @@ fn the_area_builds_its_model_from_the_read_it_started() {
 #[test]
 fn a_model_shows_what_its_read_asked() {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
+    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
     let control = mock(snapshot(None));
     let read = AgentModelsRead::of(control.as_ref(), Vec::new());
-    let model = AgentModelsModel::from_read(cx.clone(), control.clone(), read);
+    let model = AgentModelsModel::from_read(
+        &cx.storage,
+        cx.sections.clone(),
+        cx.provider_admin.clone(),
+        control.clone(),
+        read,
+    );
     assert!(model.manager_available);
     assert_eq!(
         model
@@ -1030,7 +1099,8 @@ fn a_model_shows_what_its_read_asked() {
         keys: HashMap::new(),
         hub_token: Ok(HubTokenState::None),
     };
-    let model = AgentModelsModel::from_read(cx, control, down);
+    let model =
+        AgentModelsModel::from_read(&cx.storage, cx.sections, cx.provider_admin, control, down);
     assert!(!model.manager_available);
     assert_eq!(
         model.notice,

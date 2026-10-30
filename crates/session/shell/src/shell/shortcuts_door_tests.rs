@@ -215,12 +215,17 @@ impl HostedRoom {
         });
     }
 
-    /// Grant `grant` in the room, as its owner gives it at the room's host.
+    /// Grant `grant` in the room, as its owner gives it from this device.
     fn grant(&self, grant: &tilo_action_policy::Grant) {
         let id = grant.id.clone();
-        self.device
-            .grant_at_host(self.room, vec![grant.clone()])
-            .unwrap_or_else(|error| panic!("the room's host takes the grant: {error}"));
+        self.network()
+            .write_governance_change(
+                self.room,
+                crate::shell::state::GovernanceRequest::Policy(tilo_action_policy::Change::Grant(
+                    grant.clone(),
+                )),
+            )
+            .unwrap_or_else(|error| panic!("this device gives the grant: {}", String::from(error)));
         until(&[&self.device], "the grant to reach the room", || {
             room_workspace(&self.device.tree.read(), self.room)
                 .policy

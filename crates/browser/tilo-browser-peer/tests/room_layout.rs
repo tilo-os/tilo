@@ -86,3 +86,47 @@ async fn a_page_keeps_to_its_rooms_layout_scope() {
         .unwrap();
     heard(&page, &room.room, false).await;
 }
+
+/// A page joining a workspace of its person that the host does not govern
+/// yet has the host place it there first, under the workspace's name, and
+/// is let in as its owner: the room has governance like every other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_places_its_persons_workspace_before_joining_it() {
+    let (alice, _) = UserIdentity::generate("Alice", 1);
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_room_host(&alice, &host_device, state.path(), false).await;
+    let room = "0b7c6f0e-2d55-4f3a-9c1e-5a8d2b4e6f10";
+    let workspace_id = tilo_relay_protocol::room_workspace_id(room).unwrap();
+    let page = start_peer(
+        Host::Https(host.https()),
+        laptop.cert.clone(),
+        host_device.cert.clone(),
+        laptop.key.clone(),
+    );
+    page.join_placed(room, "Garden").unwrap();
+    support::in_room(&page, workspace_id).await;
+    let summary = host.relay.rooms().unwrap().summary(room).await.unwrap();
+    assert_eq!(summary.name, "Garden");
+    assert_eq!(summary.workspace_id, workspace_id);
+    // Placed once: a page joining again keeps the room as it is.
+    let again = start_peer(
+        Host::Https(host.https()),
+        laptop.cert.clone(),
+        host_device.cert.clone(),
+        laptop.key.clone(),
+    );
+    again.join_placed(room, "Another name").unwrap();
+    support::in_room(&again, workspace_id).await;
+    assert_eq!(
+        host.relay
+            .rooms()
+            .unwrap()
+            .summary(room)
+            .await
+            .unwrap()
+            .name,
+        "Garden"
+    );
+}

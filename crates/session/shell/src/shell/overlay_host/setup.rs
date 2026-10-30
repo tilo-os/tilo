@@ -109,12 +109,10 @@ impl ShellOverlayHost {
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.
     pub(super) fn build_search_registry(
-        qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions>,
         session_action_policy: crate::shell::search::providers::SessionActionPolicy,
     ) -> (
         crate::shell::search::SearchRegistry,
         std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
-        crate::shell::search::providers::actions::SharedQsActions,
         std::rc::Rc<crate::shell::search::providers::FilesProvider>,
     ) {
         // Start the remote-app refresh with the shell, not with the user's
@@ -130,17 +128,10 @@ impl ShellOverlayHost {
             std::rc::Rc::clone(&search_preferences),
         );
         let provider_catalog = search_registry.provider_catalog_handle();
-        let qs_action_slot = std::rc::Rc::new(
-            crate::shell::search::providers::actions::SharedQsDispatcher::new(
-                qs_actions,
-                tilo_quick_settings::actions::QsActionAvailability::detect(),
-            ),
-        );
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ActionsProvider::with_all_sources(
                 search_preferences,
                 provider_catalog,
-                qs_action_slot.clone(),
             ),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -174,7 +165,7 @@ impl ShellOverlayHost {
             crate::shell::search::providers::NativeApplicationsProvider::default(),
         ));
         search_registry.register(std::rc::Rc::new(
-            crate::shell::device_local_actions::DeviceLocalActionsProvider,
+            crate::shell::device_local_actions::DeviceLocalActionsProvider::default(),
         ));
         // Apps to get: the catalogue search shares with the App Store. Its
         // rows rank just below installed apps of equal match.
@@ -228,7 +219,7 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::WebProvider::new(),
         ));
-        (search_registry, room_records, qs_action_slot, files)
+        (search_registry, room_records, files)
     }
 
     pub fn new(content: Box<dyn Widget>) -> Self {
@@ -237,8 +228,14 @@ impl ShellOverlayHost {
         let qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions> =
             std::rc::Rc::new(tilo_quick_settings::actions::RealQsActions);
         let session_action_policy = crate::shell::search::providers::SessionActionPolicy::default();
-        let (search_registry, room_records, qs_action_slot, files) =
-            Self::build_search_registry(qs_actions.clone(), session_action_policy.clone());
+        let qs_action_slot = std::rc::Rc::new(
+            crate::shell::quick_settings_dispatch::SharedQsDispatcher::new(
+                qs_actions.clone(),
+                tilo_quick_settings::actions::QsActionAvailability::detect(),
+            ),
+        );
+        let (search_registry, room_records, files) =
+            Self::build_search_registry(session_action_policy.clone());
         let mut host = Self::from_inputs(
             content,
             OverlayInputs {
@@ -257,14 +254,14 @@ impl ShellOverlayHost {
                 desktop_controls: DesktopControlsSource::Persisted(
                     settings_store::desktop_controls::DesktopControlsConfig::load(),
                 ),
-                qs_root: QuickSettingsRoot::load_persisted(),
+                quick_settings: quick_settings::QuickSettingsPanel::persisted(),
                 qs_refresh: crate::shell::quick_settings_refresh::QsRefresh::new(),
                 qs_actions,
                 qs_action_slot,
                 room_activity: Box::new(
                     crate::shell::room_activity::RoomActivityPane::new_persistent(),
                 ),
-                projection_overlay: Box::default(),
+                display_sheet: Box::default(),
                 portal_dialogs: Box::default(),
                 history_narrator: Some(
                     crate::shell::history_narrative::LocalHistoryNarrator::default(),
@@ -293,16 +290,14 @@ impl ShellOverlayHost {
         let qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions> =
             std::rc::Rc::new(tilo_quick_settings::actions::UnavailableQsActions);
         let qs_action_slot = std::rc::Rc::new(
-            crate::shell::search::providers::actions::SharedQsDispatcher::new(
+            crate::shell::quick_settings_dispatch::SharedQsDispatcher::new(
                 qs_actions.clone(),
                 tilo_quick_settings::actions::QsActionAvailability::default(),
             ),
         );
         let mut search_registry = crate::shell::search::SearchRegistry::new();
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ActionsProvider::with_shared_qs_actions(
-                qs_action_slot.clone(),
-            ),
+            crate::shell::search::providers::ActionsProvider::new(),
         ));
         let records = crate::shell::search::providers::RecordsProvider::new();
         let room_records = records.index();
@@ -324,7 +319,7 @@ impl ShellOverlayHost {
                 desktop_controls: DesktopControlsSource::Explicit(
                     settings_store::desktop_controls::DesktopControlsConfig::default(),
                 ),
-                qs_root: QuickSettingsRoot::with_config(
+                quick_settings: quick_settings::QuickSettingsPanel::with_arrangement(
                     settings_store::hardware::QuickSettingsConfig::default(),
                 ),
                 qs_refresh: crate::shell::quick_settings_refresh::QsRefresh::without_os_reads(),
@@ -341,9 +336,11 @@ impl ShellOverlayHost {
                 portal_dialogs: Box::new(PortalDialogController::new(
                     crate::shell::portal_dialog::PortalDialogQueue::default(),
                 )),
-                projection_overlay: Box::new(ProjectionOverlay::from_controller(
-                    crate::shell::projection::ProjectionController::unavailable(),
-                )),
+                display_sheet: Box::new(
+                    crate::shell::display_layouts::DisplaySheetModel::from_controller(
+                        crate::shell::projection::ProjectionController::unavailable(),
+                    ),
+                ),
                 session_action_policy:
                     crate::shell::search::providers::SessionActionPolicy::default(),
                 now_playing: std::rc::Rc::new(crate::shell::now_playing::NoPlayers),
@@ -372,14 +369,6 @@ impl ShellOverlayHost {
                 file_picker_overlay.actions(),
             ),
         ));
-        // Palette entries come from the search registry on every
-        // keystroke. New providers slot in via `SearchRegistry::register`;
-        // the palette picks up their resource-kind chips automatically.
-        let mut palette = CommandPalette::new();
-        palette.set_bypass_fuzzy(true);
-        // The shell paints scope + kind controls into the palette's own
-        // reserved filter band, inside the card.
-        palette.set_host_filter_strip(true);
         let collaboration_preferences = inputs.collaboration_preferences;
         Self {
             rect: Rect::ZERO,
@@ -407,7 +396,7 @@ impl ShellOverlayHost {
             control_hints_frame: tilo_desktop::control_hints::HintFrame::default(),
             strip_switcher_revision: None,
             outputs: Vec::new(),
-            palette,
+            search: search_state::SearchState::default(),
             app_actions: None,
             focused_window,
             palette_visible: false,
@@ -434,8 +423,6 @@ impl ShellOverlayHost {
             auto_selected_row: None,
             active_kind_filter: Vec::new(),
             app_chooser: None,
-            search_filters: SearchFilters::default(),
-            search_filter_inputs: None,
             room_records: inputs.room_records,
             palette_layout_dirty: false,
             palette_layout_host: None,
@@ -444,33 +431,17 @@ impl ShellOverlayHost {
             chrome: None,
             last_cursor: None,
             overview_zoom: ui::motion::Presence::closed(),
-            overview_naming: None,
+            overview_closing: false,
+            overview_desk_revision: None,
             overview_thumbnails: None,
-            overview_scroll_y: 0.0,
-            overview_selection: None,
-            overview_window_selection: None,
-            overview_window_interrupted: false,
-            overview_press: None,
-            overview_panel_cache: None,
-            overview_panel_cache_fills: 0,
-            overview_metrics: OverviewMetrics::default(),
-            overview_layout_theme: Theme::default(),
-            overview_layout_viewport: Rect::ZERO,
+            layout_theme: Theme::default(),
             qs_motion: qs_motion::QsMotion::closed(),
             input_source: ui::tokens::MotionSource::default(),
             workspace_switch_owed: false,
             workspace_switch_source: ui::tokens::MotionSource::default(),
             workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency::default(),
             qs_was_open: false,
-            notification_center: NotificationCenter::new(),
-            qs_type_lines: CenterLayout::metrics(&Theme::dark(), &mut TextRenderer::new()),
             qs_panel: QsPanelMetrics::for_theme(&Theme::dark()),
-            qs_clipboard_history_start: 0,
-            qs_clipboard_wheel_remainder: 0.0,
-            qs_selected_clipboard: None,
-            qs_clipboard_query: String::new(),
-            qs_device_fabric_start: 0,
-            qs_device_fabric_wheel_remainder: 0.0,
             qs_selected_source: None,
             layers: Box::default(),
             session_action_channel: std::sync::mpsc::channel(),
@@ -498,7 +469,6 @@ impl ShellOverlayHost {
             workspace_content_layout_dirty: false,
             last_noted_focus: None,
             axis_gather_pending: None,
-            add_workspace_rect: Rect::ZERO,
             chrome_top_y: CHROME_TOP_OFFSET_PX,
             permission_prompt: None,
             permission_prompt_id: None,
@@ -530,12 +500,10 @@ impl ShellOverlayHost {
             peer_sync_overlay: Box::default(),
             directory_sheet: Box::default(),
             arrival_pulses: Vec::new(),
-            notification_stack: NotificationStack::new(),
+            banners: banners::BannerHost::default(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
-            osd_painted: std::cell::Cell::new(None),
+            osd_painted: std::cell::RefCell::new(Vec::new()),
             osd_pin: std::cell::Cell::new(None),
-            machine_banners: Vec::new(),
-            call_edges: Vec::new(),
             motion: std::cell::Cell::new(ui::tokens::EffectiveMotion::new(
                 ui::tokens::Motion::default(),
                 false,
@@ -548,9 +516,7 @@ impl ShellOverlayHost {
             // User intent is durable, while the root filters it against the
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
-            qs_root: inputs.qs_root,
-            qs_navigation_release_pending: false,
-            qs_slider_touch: ui::widget::SliderTouch::default(),
+            quick_settings: inputs.quick_settings,
             now_playing_source: inputs.now_playing,
             now_playing_card: crate::shell::now_playing_panel::NowPlayingCard::new(),
             now_playing_preferred: None,
@@ -558,9 +524,7 @@ impl ShellOverlayHost {
             desk: desk::DeskState::default(),
             qs_actions: inputs.qs_actions,
             qs_action_slot: inputs.qs_action_slot,
-            qs_aux_drill_in: DrillInList::default(),
             qs_wifi_scanned_at: None,
-            qs_hosted_section: None,
             status_bridge: None,
             status_copied: std::cell::RefCell::default(),
             audio_service: None,
@@ -580,9 +544,7 @@ impl ShellOverlayHost {
             collaborators_appearing: ui::motion::Appearing::closed(),
             collaborators_painted: Scene::new(),
             collaborators_painted_panel: Rect::ZERO,
-            projection_overlay: inputs.projection_overlay,
-            wifi_prompt: Box::new(Self::new_wifi_prompt()),
-            wifi_password_prompt: None,
+            display_sheet: inputs.display_sheet,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
             overview_row_drawn: Vec::new(),
@@ -624,7 +586,7 @@ impl ShellOverlayHost {
             tracker: None,
             agent_quick_composer: Box::default(),
             agent_quick_composer_node: None,
-            bar_popovers: Box::default(),
+            topbar: Box::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
             test_activations: Vec::new(),
             canvas: canvas::CanvasLayer::default(),
@@ -829,15 +791,5 @@ impl ShellOverlayHost {
     /// Whether first-login chrome is still withholding the desktop.
     pub fn onboarding_active(&self) -> bool {
         self.onboarding.is_some()
-    }
-
-    pub fn projection(&self) -> &crate::shell::projection::ProjectionController {
-        self.projection_overlay.controller()
-    }
-
-    /// Whether a receiver session is being established or is live. The
-    /// compositor uses this to turn the frame encoder on only while needed.
-    pub fn projection_capture_requested(&self) -> bool {
-        self.projection_overlay.capture_requested()
     }
 }

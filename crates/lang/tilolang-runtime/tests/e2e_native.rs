@@ -161,14 +161,14 @@ view detail(n: Note) {
         assert_eq!(view.bound_value(&row.key), Some(Value::Bool(true)));
 
         // A notebook with nothing in it says so. Its primary action takes a title the empty
-        // state has none of, so it offers none.
+        // state has none of: it offers it as its form, which asks for the title.
         let empty = rt.create("Notebook").unwrap();
         let view = rt
             .open_view(&me(), &app.view("notebook"), vec![Value::resource(&empty)])
             .unwrap();
         let state = of_kind(view.tree(), "ui.EmptyState")[0];
         assert_eq!(text_prop(state, "title"), "No notes yet");
-        assert!(!state.props.contains_key("action"), "{}", dump(state));
+        assert_eq!(text_prop(state, "action"), "Add…", "{}", dump(state));
     }
 
     #[test]

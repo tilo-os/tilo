@@ -19,22 +19,22 @@ use os_actions::network_settings::{
     MAX_VPN_CONFIG_BYTES, VpnPlugin, VpnProfilePatch, VpnProfileSettings, WireGuardTunnel,
 };
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, LiveRow};
+use ui::framework::{Actions, EffectAnswer, EffectCx, LiveRow};
 use ui::icons::Icon;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, ButtonRole, ListRow, NumberInput, TextInput, Toggle};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{
-    Begun, Landed, NetworkChange, NetworkModel, VpnInfo, VpnSetup, list_of, non_blank, take_secret,
+    Begun, Landed, NetworkChange, NetworkModel, Page, VpnInfo, VpnSetup, list_of, non_blank,
+    take_secret,
 };
 use crate::categories::Category;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     El, Item, SettingsSection, block, card, error_caption, field_row, note, row, rows, setting_row,
     setting_row_described, value_row,
 };
@@ -318,14 +318,14 @@ pub enum VpnEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: VpnEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let begun = super::area(app)
         .ok_or_else(crate::area::missing)?
         .model()
         .borrow_mut()
         .begin_vpn(effect)?;
-    Ok(super::answer_begun(begun, cx))
+    Ok(super::answer_begun(app, begun, cx))
 }
 
 /// A way out the VPN list offers beside the profiles, from another source
@@ -344,8 +344,8 @@ pub(crate) struct VpnEntry {
 /// each entry's switch to its own effect.
 pub(crate) trait VpnEntries {
     fn entries(&self) -> Vec<VpnEntry>;
-    /// `toggle`, bound to switching `entry`.
-    fn bind(&self, cx: &PaneCx, entry: &VpnEntry, toggle: Toggle) -> Toggle;
+    /// `toggle`, bound through the app's `actions` to switching `entry`.
+    fn bind(&self, actions: &Actions<Settings>, entry: &VpnEntry, toggle: Toggle) -> Toggle;
 }
 
 /// The form of a new `WireGuard` tunnel.
@@ -864,7 +864,7 @@ impl NetworkModel {
         };
         match effect {
             VpnEffect::ShowVpns => {
-                self.cx.pages().clear();
+                self.reach.pages.clear();
                 open(self, PAGE_VPN, t("net-vpn"))
             }
             VpnEffect::ShowVpnProfile { connection } => {
@@ -874,13 +874,13 @@ impl NetworkModel {
                     // read.
                     Err(_) if !self.loaded => {
                         self.vpn.wanted = Some(connection);
-                        self.cx.pages().clear();
+                        self.reach.pages.clear();
                         return open(self, PAGE_VPN, t("net-vpn"));
                     }
                     Err(error) => return Err(error),
                 };
                 if self.page_key().as_deref() != Some(PAGE_VPN) {
-                    self.cx.pages().clear();
+                    self.reach.pages.clear();
                     self.open_page(PAGE_VPN, t("net-vpn"));
                 }
                 self.vpn.errors.remove(&vpn.uuid);
@@ -1240,8 +1240,8 @@ impl NetworkModel {
                 self.forget_kill_switch(uuid);
                 self.vpns.retain(|vpn| &vpn.uuid != uuid);
                 self.vpn.settings.remove(uuid);
-                self.cx
-                    .pages()
+                self.reach
+                    .pages
                     .close(Category::Network, &profile_page_key(uuid));
                 Ok(t_args("net-vpn-deleted", &[("name", name.as_str().into())]))
             }
@@ -1261,7 +1261,7 @@ impl NetworkModel {
                 self.vpn.plugin = PluginForm::default();
                 self.start_snapshot();
                 self.read_vpn(&uuid);
-                let pages = self.cx.pages();
+                let pages = &self.reach.pages;
                 pages.clear();
                 pages.open(Category::Network, PAGE_VPN, t("net-vpn"));
                 pages.open(Category::Network, profile_page_key(&uuid), t("net-vpn"));
@@ -1421,7 +1421,9 @@ impl NetworkModel {
         rows.extend(self.device_vpn_rows());
         rows
     }
+}
 
+impl Page<'_> {
     /// The VPN pages, by key; `None` for a key that is not one.
     pub(super) fn vpn_pages(&self, key: &str) -> Option<Vec<SettingsSection>> {
         Some(match key {
@@ -1446,7 +1448,7 @@ impl NetworkModel {
         let toggle = Toggle::from_state(&LocalState::new(self.set_to_connect(vpn)))
             .with_id(&format!("settings.network.vpn.switch.{}", vpn.uuid))
             .with_accessible_name(&vpn.name);
-        let toggle = self.cx.bind_on_row(
+        let toggle = self.bind_on_row(
             live,
             toggle,
             effect(VpnEffect::SET_VPN_CONNECTED).map(move |on: bool| (connection.clone(), on)),
@@ -1519,7 +1521,7 @@ impl NetworkModel {
                 let open = VpnEffect::ShowVpnProfile {
                     connection: vpn.uuid.clone(),
                 };
-                Box::new(match self.cx.row_invocation(&resource, open) {
+                Box::new(match self.row_invocation(&resource, open) {
                     Some(binding) => line.on_action(binding),
                     None => line.with_enabled(false),
                 }) as El
@@ -1529,7 +1531,7 @@ impl NetworkModel {
         if let Some(source) = &self.vpn.entries {
             lines.extend(source.entries().into_iter().map(|entry| {
                 let toggle = source.bind(
-                    &self.cx,
+                    &self.actions,
                     &entry,
                     Toggle::from_state(&LocalState::new(entry.active))
                         .with_id(&format!("settings.network.vpn.entry.{}", entry.id))
@@ -1799,7 +1801,7 @@ impl NetworkModel {
                     &t("net-vpn-export"),
                     &t("net-vpn-export-caption"),
                     Box::new(
-                        self.cx.bind_row(
+                        self.bind_row(
                             Button::new("settings.network.vpn.export", &t("net-vpn-export"))
                                 .with_icon(Icon::Download),
                             &live,
@@ -1812,7 +1814,7 @@ impl NetworkModel {
                 setting_row(
                     &t("net-vpn-delete"),
                     Box::new(
-                        self.cx.bind_row(
+                        self.bind_row(
                             Button::new("settings.network.vpn.delete", &t("net-vpn-delete"))
                                 .role(ButtonRole::Destructive),
                             &live,
@@ -1841,7 +1843,7 @@ impl NetworkModel {
         let mut out = vec![
             field_row(
                 &t("net-vpn-name"),
-                Box::new(self.cx.bind_on_row(
+                Box::new(self.bind_on_row(
                     &live,
                     text("name", settings.name.clone(), t("net-vpn-name")),
                     effect(VpnEffect::SET_VPN_NAME).map({
@@ -1853,7 +1855,7 @@ impl NetworkModel {
             setting_row(
                 &t("net-autoconnect"),
                 Box::new(
-                    self.cx.bind_on_row(
+                    self.bind_on_row(
                         &live,
                         Toggle::from_state(&LocalState::new(settings.autoconnect))
                             .with_id(&format!("network.vpn.autoconnect.{uuid}")),
@@ -1868,7 +1870,7 @@ impl NetworkModel {
                 &t("net-vpn-all-traffic"),
                 &t("net-vpn-all-traffic-caption"),
                 Box::new(
-                    self.cx.bind_on_row(
+                    self.bind_on_row(
                         &live,
                         Toggle::from_state(&LocalState::new(settings.all_traffic))
                             .with_id(&format!("network.vpn.all-traffic.{uuid}")),
@@ -1923,7 +1925,7 @@ impl NetworkModel {
         if let Some(mtu) = settings.mtu {
             let uuid = uuid.clone();
             controls = controls.push(Box::new(
-                self.cx.bind_on_row(
+                self.bind_on_row(
                     &live,
                     NumberInput::new(f64::from(mtu))
                         .with_range(f64::from(*MTU_RANGE.start()), f64::from(*MTU_RANGE.end()))
@@ -1937,7 +1939,7 @@ impl NetworkModel {
             ));
         }
         controls = controls.push(Box::new(
-            self.cx.bind_on_row(
+            self.bind_on_row(
                 &live,
                 choice,
                 effect(VpnEffect::SET_VPN_MTU)
@@ -1960,7 +1962,7 @@ impl NetworkModel {
             .dns
             .iter()
             .map(|server| {
-                let remove = self.cx.bind_row(
+                let remove = self.bind_row(
                     Button::new(
                         &format!("settings.network.vpn.dns.remove.{server}"),
                         &t("net-vpn-dns-remove"),
@@ -1983,7 +1985,7 @@ impl NetworkModel {
         out.push(field_row(
             &t("net-vpn-dns-add"),
             Box::new(
-                self.cx.bind_on_row(
+                self.bind_on_row(
                     &live,
                     TextInput::from_state(&LocalState::new(String::new()))
                         .with_id(&format!("network.vpn.dns.add.{uuid}"))
@@ -2008,7 +2010,7 @@ impl NetworkModel {
             .allowed_ips
             .iter()
             .map(|address| {
-                let remove = self.cx.bind_row(
+                let remove = self.bind_row(
                     Button::new(
                         &format!("settings.network.vpn.allowed.remove.{address}"),
                         &t("net-vpn-dns-remove"),
@@ -2031,7 +2033,7 @@ impl NetworkModel {
         out.push(field_row(
             &t("net-vpn-allowed-add"),
             Box::new(
-                self.cx.bind_on_row(
+                self.bind_on_row(
                     &live,
                     TextInput::from_state(&LocalState::new(String::new()))
                         .with_id(&format!("network.vpn.allowed.add.{uuid}"))
@@ -2066,7 +2068,7 @@ impl NetworkModel {
         out.extend([
             field_row(
                 &t("net-vpn-server"),
-                Box::new(self.cx.bind_on_row(
+                Box::new(self.bind_on_row(
                     &live,
                     text(
                         "endpoint",
@@ -2083,7 +2085,7 @@ impl NetworkModel {
                 &t("net-vpn-keepalive"),
                 &t("net-vpn-keepalive-caption"),
                 Box::new(
-                    self.cx.bind_on_row(
+                    self.bind_on_row(
                         &live,
                         NumberInput::new(f64::from(settings.keepalive.unwrap_or(0)))
                             .with_range(0.0, 3600.0)

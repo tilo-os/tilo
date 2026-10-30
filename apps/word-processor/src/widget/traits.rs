@@ -1,19 +1,16 @@
-//! The toolkit traits: how the editor syncs from its document, draws, answers
-//! actions and presents itself as an app, a presence publisher and a
-//! participant.
+//! The editor's part of the toolkit contract, which its window answers
+//! with: how it syncs from its document, draws, answers actions and
+//! publishes presence, and the capabilities it has as a participant.
 
 use super::toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE};
 use crate::WpFormat;
 use crate::i18n::t;
 use crate::text_offsets::char_to_byte;
 use automerge::{AutoCommit, ObjId};
-use std::collections::HashMap;
-use taffy::{NodeId, TaffyTree};
 use tilo_doc::model::Region;
 use ui::paint::clipped;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::TaffyTreeExt;
 use ui::widget::Widget;
 use ui::widget::paint_damage::PaintParts;
 use ui::widget::{AppModel, ModelPath};
@@ -24,37 +21,17 @@ use winit::event::WindowEvent;
 
 use super::accessibility::review_action_target;
 use super::{
-    ChromeColors, Edges, LayoutMode, PageContentInput, PaginationResult, PanelHit,
-    WordProcessorWidget, block_presence_key,
+    ChromeColors, Edges, Editor, LayoutMode, PageContentInput, PaginationResult, PanelHit,
+    block_presence_key,
 };
 
-/// The page is this window's content, so the window's zoom gestures are the
-/// page's: Ctrl+Plus, Ctrl+Minus and Ctrl+0, Ctrl+scroll and a pinch scale
-/// the sheet — the words — and the window bar says the level. Without it the
-/// window would grow its own chrome while the page a person is trying to
-/// read stayed the size it was.
-impl ui::content_zoom::ContentZoom for WordProcessorWidget {
-    fn zoom_content(&mut self, step: ui::content_zoom::ZoomStep) -> Option<f32> {
-        Some(self.zoom_page(step))
-    }
-}
-
-impl Widget for WordProcessorWidget {
-    ui::provides!(
-        dyn ui::collaboration::participants::Participants,
-        dyn ui::undo::LocalUndo,
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources,
-        dyn ui::presence::capability::PublishesPresence,
-        dyn ui::semantic_document_read::SemanticReaders,
-        dyn ui::widget::Findable,
-        dyn ui::content_zoom::ContentZoom
-    );
-
-    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+/// The editor's part of the widget contract, which the window
+/// ([`WordProcessorWidget`](super::WordProcessorWidget)) answers with.
+impl Editor {
+    pub(crate) fn primary_vertical_scroll(&self) -> ui::widget::PrimaryScrollRegion {
         if self.styles_panel_full_window() {
             let viewport = self.panel_body.height();
-            return Some(ui::widget::PrimaryScrollRegion {
+            return ui::widget::PrimaryScrollRegion {
                 key: "styles",
                 owner_generation: None,
                 metrics: ui::widget::ScrollMetrics::new(
@@ -62,41 +39,45 @@ impl Widget for WordProcessorWidget {
                     viewport,
                     self.panel_scroll,
                 ),
-            });
+            };
         }
-        Some(ui::widget::PrimaryScrollRegion {
+        ui::widget::PrimaryScrollRegion {
             key: "primary",
             owner_generation: None,
             metrics: self.canvas_scroll_metrics(),
-        })
+        }
     }
 
-    fn apply_primary_vertical_scroll(
+    pub(crate) fn apply_primary_vertical_scroll(
         &mut self,
         action: ui::widget::PrimaryScrollAction,
     ) -> ui::widget::PrimaryScrollResult {
-        action.apply_to(self, Self::primary_vertical_scroll, |doc, _, next| {
-            if doc.styles_panel_full_window() {
-                doc.panel_scroll = next;
-            } else {
-                doc.scroll_y = next - doc.find_inset;
-            }
-            doc.lifecycle.dirty = true;
-        })
+        action.apply_to(
+            self,
+            |editor| Some(editor.primary_vertical_scroll()),
+            |doc, _, next| {
+                if doc.styles_panel_full_window() {
+                    doc.panel_scroll = next;
+                } else {
+                    doc.scroll_y = next - doc.find_inset;
+                }
+                doc.lifecycle.dirty = true;
+            },
+        )
     }
 
-    fn native_input_snapshot(
+    pub(crate) fn native_input_snapshot(
         &self,
         state: &AppModel,
         path: &ModelPath,
-    ) -> Option<serde_json::Value> {
+    ) -> serde_json::Value {
         let (state, _) = ui::doc::document_ref(state, path);
         let caret = self.inner.caret();
         let region = self.inner.region();
         // Body text reads only the caret block. Running-region text would
         // materialize an entire region, so omit it from this diagnostic path.
         let caret_text = matches!(region, Region::Body).then(|| self.inner.current_text(state));
-        Some(serde_json::json!({
+        serde_json::json!({
             "offset_y": self.scroll_y,
             "max_scroll": self.max_scroll,
             "body_window_start": self.body_window_start,
@@ -112,10 +93,10 @@ impl Widget for WordProcessorWidget {
             },
             "has_selection": self.inner.has_selection(),
             "caret_text": caret_text,
-        }))
+        })
     }
 
-    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+    pub(crate) fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document_ref(state, root);
         // A transient cue says so in the window's bar while it lasts.
         self.toast.expire();
@@ -170,7 +151,7 @@ impl Widget for WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+    pub(crate) fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
         self.drain_image_choice(edits);
         if let Some(scenario) = self.staged_scenario.take() {
             self.run_staged_scenario(edits, &scenario);
@@ -183,24 +164,22 @@ impl Widget for WordProcessorWidget {
         self.apply_window_toolbar(edits);
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        taffy.fill_leaf(node_map, self)
+    /// Where the window's layout placed the editor.
+    pub(crate) fn place(&mut self, rect: Rect) {
+        self.rect = rect;
     }
 
-    ui::rect_geometry!();
+    pub(crate) fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
-    fn needs_animation_frame(&self) -> bool {
+    pub(crate) fn needs_animation_frame(&self) -> bool {
         // Only the outline and inspector drawers move, while they open or
         // close.
         self.outline_drawer.is_animating() || self.inspector_drawer.is_animating()
     }
 
-    fn modal_capture(&self) -> Option<Rect> {
+    pub(crate) fn modal_capture(&self) -> Option<Rect> {
         if self.context_menu.is_open()
             || self.style_menu.is_open()
             || self.file_menu.is_open()
@@ -213,11 +192,11 @@ impl Widget for WordProcessorWidget {
         }
     }
 
-    fn traps_focus(&self) -> bool {
+    pub(crate) fn traps_focus(&self) -> bool {
         self.modal_capture().is_some()
     }
 
-    fn draw(
+    pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -343,14 +322,14 @@ impl Widget for WordProcessorWidget {
 
     // Where the caret and selection end up is what the edits bound to them
     // are built from.
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    pub(crate) fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.route_event(event, ctx);
         self.resolve_bound_edits(ctx.state.doc());
     }
 
     /// Top-layer pass: paint the right-click context menu (when open) so it
     /// floats above the page + chrome. Delegates to the shared [`ContextMenu`](ui::widget::context_menu::ContextMenu).
-    fn draw_overlay(
+    pub(crate) fn draw_overlay(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -420,29 +399,20 @@ impl Widget for WordProcessorWidget {
         );
     }
 
-    fn name(&self) -> &'static str {
-        "WordProcessor"
-    }
-
-    // A test reaches the editor its framework app hosts.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-
     /// The word processor's local accessibility semantics: the editable
     /// `Role::Document` root. Blocks render directly, not as child widgets, so
-    /// the full subtree comes from [`WordProcessorWidget::accessibility_tree`]
+    /// the full subtree comes from [`Editor::accessibility_tree`]
     /// rather than `children()`; convert the carrier into real synthetic
     /// children so AccessKit, AT-SPI and the built-in reader all receive it.
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    pub(crate) fn accessibility(&self) -> ui::a11y::AccessNode {
         let mut tree = self.accessibility_tree();
         if !self.styles_panel_full_window() {
             tree.node = tree.node.with_name(t("a11y-document-editor"));
         }
-        Some(tree.into_access_node())
+        tree.into_access_node()
     }
 
-    fn perform_semantic_action(
+    pub(crate) fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
@@ -453,16 +423,13 @@ impl Widget for WordProcessorWidget {
             node.action_target.as_deref() == Some(target)
                 || node.children.iter().any(|child| published(child, target))
         }
-        if !self
-            .accessibility()
-            .is_some_and(|node| published(&node, target))
-        {
+        if !published(&self.accessibility(), target) {
             return false;
         }
-        ui::Widget::perform_action(self, action, &[ui::a11y::hash_key(&target)], state, path)
+        self.perform_access_action(action, &[ui::a11y::hash_key(&target)], state, path)
     }
 
-    fn perform_action(
+    pub(crate) fn perform_access_action(
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
@@ -540,24 +507,18 @@ impl Widget for WordProcessorWidget {
         false
     }
 
-    fn test_id(&self) -> Option<&str> {
-        Some("word_processor")
-    }
-    fn claims_raw_touch(&self, point: Point) -> bool {
+    pub(crate) fn claims_raw_touch(&self, point: Point) -> bool {
         self.segmented_rects()
             .iter()
             .flatten()
             .any(|rect| rect.contains(point))
     }
 
-    fn wants_pointer_capture(&self) -> bool {
+    pub(crate) fn wants_pointer_capture(&self) -> bool {
         self.segmented_touch.is_active()
     }
 
-    fn is_focusable(&self) -> bool {
-        true
-    }
-    fn set_focus(&mut self, focused: bool) {
+    pub(crate) fn set_focus(&mut self, focused: bool) {
         self.lifecycle.focused = focused;
         if !focused {
             // Blur any in-progress numeric edit; the next sync reloads the
@@ -566,10 +527,10 @@ impl Widget for WordProcessorWidget {
         }
         self.lifecycle.dirty = true;
     }
-    fn is_focused(&self) -> bool {
+    pub(crate) fn is_focused(&self) -> bool {
         self.lifecycle.focused
     }
-    fn ime_cursor_rect(&self) -> Option<Rect> {
+    pub(crate) fn ime_cursor_rect(&self) -> Option<Rect> {
         if self.styles_panel_full_window() {
             self.num_inputs
                 .iter()
@@ -582,7 +543,7 @@ impl Widget for WordProcessorWidget {
             self.ime_rect
         }
     }
-    fn ime_content(&self) -> Option<ui::ime::InputContent> {
+    pub(crate) fn ime_content(&self) -> Option<ui::ime::InputContent> {
         if self.styles_panel_full_window() {
             self.num_inputs
                 .iter()
@@ -595,49 +556,46 @@ impl Widget for WordProcessorWidget {
             Some(ui::ime::InputContent::TEXT)
         }
     }
-    fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
+    pub(crate) fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.action_palette_request.take()
     }
-    fn needs_redraw(&self) -> bool {
+    pub(crate) fn needs_redraw(&self) -> bool {
         self.lifecycle.dirty
     }
     /// A toast wakes the document to leave.
-    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+    pub(crate) fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.toast.deadline()
     }
-    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+    pub(crate) fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.needs_redraw() || self.paint_damage.is_recorded() {
             self.paint_damage.collect(self.rect, regions);
         }
     }
-    fn damage_covers_own_box(&self) -> bool {
+    pub(crate) fn damage_covers_own_box(&self) -> bool {
         self.paint_damage.covers_own_bounds()
     }
-    fn release_scene_cache(&mut self) {
+    pub(crate) fn release_scene_cache(&mut self) {
         self.paint_damage.release_scene_cache();
-        for child in self.children_mut() {
-            child.release_scene_cache();
-        }
     }
-    fn mark_drawn(&mut self) {
+    pub(crate) fn mark_drawn(&mut self) {
         self.lifecycle.dirty = false;
         self.paint_damage.mark_drawn();
     }
     /// One self-drawn taffy leaf filling its tile: its size follows the
     /// parent alone, so only the first layout is a size change. Pages,
     /// toolbars and panels are positioned inside `self.rect` by hand.
-    fn is_layout_dirty(&self) -> bool {
+    pub(crate) fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
 }
 
-impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
+impl Editor {
     /// Outbound collaboration presence: while focused, broadcast the local caret
     /// (or selection range) keyed to its block. Polled by the App after each event
     /// and fanned out as `CollabEvent::RemotePresenceUpdate`. Offsets are bytes, so
     /// the receiver feeds them straight into `RichTextLayout::caret_geometry`/
     /// `selection_rects`.
-    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
+    pub(crate) fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
         if !self.lifecycle.focused {
             return None;
         }
@@ -680,7 +638,7 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
     /// block, the same part peers see, with every block's part noted beside
     /// it; the excerpt is exactly the caret block's text, so what the agent
     /// reads at the place is what it will act on there.
-    fn shared_selection(&self) -> Option<ui::shared_selection::SharedSelection> {
+    pub(crate) fn shared_selection(&self) -> Option<ui::shared_selection::SharedSelection> {
         use ui::shared_selection::SharedSelection;
         if !self.lifecycle.focused {
             return None;
@@ -727,58 +685,13 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
     }
 }
 
-impl ui::resources::PublishesResources for WordProcessorWidget {
-    // The document is the framework's publication; the editor adds only
-    // what an edit answers its caller with.
-    fn document_action_result(
-        &self,
-        doc: &AutoCommit,
-        _address: &tilo_actions::ActionAddress,
-        changes: &[automerge::Patch],
-    ) -> Option<serde_json::Value> {
-        Some(crate::semantic_read::changes::summary(doc, changes).into())
-    }
-}
-
-impl ui::widget::controls::ActionControls for WordProcessorWidget {
-    fn install_control_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        for child in self.children_mut() {
-            ui::widget::controls::install_control_custody(child, domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.children_mut()
-            .into_iter()
-            .find_map(ui::widget::controls::take_control_invocation)
-    }
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        self.for_each_child(&mut |child| {
-            bindings.extend(ui::widget::controls::control_action_bindings(child));
-        });
-        bindings
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        for child in self.children_mut() {
-            ui::widget::controls::refresh_control_action_availability(child, allowed);
-        }
-    }
-}
-
-impl ui::semantic_document_read::SemanticReaders for WordProcessorWidget {
+impl ui::semantic_document_read::SemanticReaders for Editor {
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
         &crate::semantic_read::action::READERS
     }
 }
 
-impl ui::undo::LocalUndo for WordProcessorWidget {
+impl ui::undo::LocalUndo for Editor {
     fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
         // The host resolves Undo before dispatching keyboard events to us.
         // An open menu must capture that path as well as ordinary editing keys.
@@ -786,7 +699,7 @@ impl ui::undo::LocalUndo for WordProcessorWidget {
     }
 }
 
-impl ui::collaboration::participants::Participants for WordProcessorWidget {
+impl ui::collaboration::participants::Participants for Editor {
     /// An agent task joined: its view is placed at the document end on the
     /// next sync (no document here) and published as presence from then on.
     fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
@@ -799,40 +712,14 @@ impl ui::collaboration::participants::Participants for WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
     fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        WordProcessorWidget::set_participant_label(self, participant, label);
+        Editor::set_participant_label(self, participant, label);
     }
     fn participant_presence(&self, doc: &AutoCommit) -> Vec<ui::ParticipantPresence> {
-        WordProcessorWidget::participant_presence(self, doc)
+        Editor::participant_presence(self, doc)
     }
 }
 
-/// Lets the shell host the word processor in a tab directly, the same way
-/// it hosts the terminal and the file explorer, instead of standing a
-/// placeholder card in its place.
-impl ui::widget::AppWidget for WordProcessorWidget {
-    fn app_kind(&self) -> ui::widget::AppKind {
-        // The toolkit's app-kind vocabulary has no separate "documents"
-        // variant; a word processor is an editor of text, which is what
-        // `Editor` names and what its tab glyph depicts.
-        ui::widget::AppKind::Editor
-    }
-
-    fn app_title(&self) -> &'static str {
-        "Document"
-    }
-
-    fn app_icon(&self) -> ui::widget::IconDescriptor {
-        // Nerd Font document glyph, matching the convention the other
-        // hosted apps use for their tab pill.
-        ui::widget::IconDescriptor::Glyph("󰈬")
-    }
-
-    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-        Some(ui::widget::AppKind::Editor)
-    }
-}
-
-impl WordProcessorWidget {
+impl Editor {
     /// The passes outside the page clip, each its own part: the scroll bar,
     /// collaborators' marks (clipped to the canvas themselves), the layout bar
     /// and the drawers.

@@ -294,26 +294,86 @@ is_store_mounted() {
 }
 
 # The person whose files the store holds (one store per local person,
-# storage.md Q3): the account the installer recorded, else the account greetd
-# starts the session for, else the only regular account. Prints "name uid:gid".
+# storage.md Q3), from the device's own identity rather than from how many
+# accounts there are or how the greeter is configured:
+#
+#   1. the account named by owner= in store-volume.conf (the installer writes
+#      it; it is also what a person sets by hand);
+#   2. the account this device is bound to: the one whose Tilo identity
+#      registry (~/.config/tilo/identity/registry.json) holds the identity the
+#      device's certificate was issued by (/var/lib/tilo/user-identity);
+#   3. the person signed in at the login screen (seat0's active session).
+#
+# Prints "name uid:gid". Without one, prints why on stderr and fails.
+IDENTITY_ROOT="${TILO_STORE_IDENTITY:-/var/lib/tilo}"
+LOGINCTL="${TILO_STORE_LOGINCTL:-loginctl}"
+
+# passwd entries, from TILO_STORE_PASSWD in tests.
+passwd_entries() {
+  if [ -n "${TILO_STORE_PASSWD:-}" ]; then
+    cat -- "$TILO_STORE_PASSWD"
+  else
+    getent passwd
+  fi
+}
+
+# "name uid:gid" of a regular account, or nothing.
+person_entry() {
+  valid_user "$1" || return 1
+  passwd_entries | awk -F: -v n="$1" '$1 == n && $3 >= 1000 {print $1 " " $3 ":" $4; found=1} END {exit !found}'
+}
+
+# The device's identity, as the hex id identity registries key it by.
+device_identity() {
+  local key="$IDENTITY_ROOT/user-identity/pubkey.bin" hex
+  [ -f "$key" ] || return 1
+  hex="$(od -An -v -tx1 -N32 -- "$key" | tr -d ' \n')"
+  [[ "$hex" =~ ^[0-9a-f]{64}$ ]] && printf '%s\n' "$hex"
+}
+
+# The regular accounts whose identity registry holds identity $1.
+accounts_holding() {
+  local id="$1" name uid home registry
+  while IFS=: read -r name _ uid _ _ home _; do
+    is_uint "$uid" && [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] || continue
+    registry="$home/.config/tilo/identity/registry.json"
+    [ -f "$registry" ] || continue
+    grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"$id\"" -- "$registry" && printf '%s\n' "$name"
+  done < <(passwd_entries)
+}
+
+signed_in_person() {
+  local session
+  session="$("$LOGINCTL" show-seat seat0 -p ActiveSession --value 2>/dev/null)" || return 1
+  [ -n "$session" ] || return 1
+  "$LOGINCTL" show-session "$session" -p Name --value 2>/dev/null
+}
+
 local_person() {
-  local name uid_min uid_max candidates
+  local name id holders
   name="$(conf_get owner)"
-  if [ -z "$name" ] && [ -f "$ETC/greetd/config.toml" ]; then
-    name="$(sed -n '/^\[initial_session\]/,/^\[/ s/^[[:space:]]*user[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
-      "$ETC/greetd/config.toml" | head -1)"
+  if [ -n "$name" ]; then
+    person_entry "$name" && return 0
+    log "store-volume.conf names owner=$name, which is not a regular account here." >&2
+    return 1
   fi
-  if [ -z "$name" ]; then
-    uid_min="$(awk '$1=="UID_MIN"{print $2}' "$ETC/login.defs" 2>/dev/null)"
-    uid_max="$(awk '$1=="UID_MAX"{print $2}' "$ETC/login.defs" 2>/dev/null)"
-    is_uint "$uid_min" || uid_min=1000
-    is_uint "$uid_max" || uid_max=60000
-    candidates="$(getent passwd | awk -F: -v lo="$uid_min" -v hi="$uid_max" \
-      '$3>=lo && $3<=hi && $7 !~ /(nologin|false)$/ {print $1}')"
-    [ "$(printf '%s' "$candidates" | grep -c .)" -eq 1 ] && name="$candidates"
+  if id="$(device_identity)"; then
+    holders="$(accounts_holding "$id")"
+    case "$(printf '%s' "$holders" | grep -c .)" in
+      1) person_entry "$holders" && return 0 ;;
+      0) ;;
+      *)
+        log "Several accounts hold this device's identity ($(printf '%s' "$holders" | paste -sd, -)); name the one whose files these are with owner=<account> in $ETC/tilo/store-volume.conf." >&2
+        return 1
+        ;;
+    esac
   fi
-  [ -n "$name" ] && valid_user "$name" || return 1
-  getent passwd "$name" | awk -F: '$3 >= 1000 {print $1 " " $3 ":" $4; found=1} END {exit !found}'
+  if name="$(signed_in_person)" && [ -n "$name" ]; then
+    person_entry "$name" && return 0
+  fi
+  log "No account here holds this device's identity${id:+ ($id)} and nobody is signed in." >&2
+  log "Name the account whose files the workspace holds with owner=<account> in $ETC/tilo/store-volume.conf, or sign in to that account and bind this device to its Tilo identity." >&2
+  return 1
 }
 
 # What fs.service appends to its command line. Written fresh on every boot
@@ -324,10 +384,14 @@ publish_data_plane() {
   printf 'TILO_FS_DATA_PLANE_ARGS="%s"\n' "$1" | write_atomic "$RUNTIME/fs.env" 0644
 }
 
+# The local person's "uid:gid", once known: FUSE presents the files as
+# theirs too.
+OWNER=""
+
 serve_fuse() {
   log "$1"
   log "Files keep being served by the FUSE data plane."
-  publish_data_plane "--data-plane=fuse"
+  publish_data_plane "--data-plane=fuse${OWNER:+ --native-owner=$OWNER}"
 }
 
 # Mode, label and ownership of a mounted store. The root is root-only: people
@@ -410,16 +474,19 @@ cmd_ensure() {
   local kind person name owner
   install -d -m 0755 "$ETC/tilo"
   kind="$(conf_get kind)"
+  if ! person="$(local_person)"; then
+    # Loud: the unit fails, and the files keep being served, as root's,
+    # until the person is named.
+    serve_fuse "There is no local person to own the workspace's files." >&2
+    return 1
+  fi
+  name="${person% *}"
+  owner="${person#* }"
+  OWNER="$owner"
   if [ "$kind" = none ]; then
     serve_fuse "The store volume is turned off in $ETC/tilo/store-volume.conf (kind=none)."
     return 0
   fi
-  if ! person="$(local_person)"; then
-    serve_fuse "There is no local person to own the store's rooms yet."
-    return 0
-  fi
-  name="${person% *}"
-  owner="${person#* }"
 
   if ! is_store_mounted; then
     case "$kind" in

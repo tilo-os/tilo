@@ -89,6 +89,7 @@ fn register(mail: &mut Replica<Mail>, id: &str, folder: Folder) {
     ingest(
         mail,
         vec![IngestBaseline {
+            label: None,
             folder: Some(folder.as_key().into()),
             ..IngestBaseline::register_only(id)
         }],
@@ -116,6 +117,7 @@ fn fetched(id: &str, read: bool, folder: Folder) -> IngestBaseline {
         folder: Some(folder.as_key().into()),
         account: Some("you@example.test".into()),
         locator: Some(format!("{id}@example.test")),
+        label: None,
     }
 }
 
@@ -275,7 +277,7 @@ fn drafts_labels_and_folders_round_trip_and_stay_bounded() {
         assert_eq!(loaded.to, "x@y.example");
         assert_eq!(loaded.subject, "Hi");
         assert_eq!(loaded.attachments, vec![attachment]);
-        mail.apply_confirmed(Mail::DISCARD_DRAFT.with(mailbox::DiscardDraft {}))
+        mail.apply_confirmed(Mail::DISCARD_DRAFT.with(mailbox::DiscardDraft { draft: None }))
             .unwrap();
         assert!(mail.state().unwrap().draft.is_empty(), "discard clears it");
     }
@@ -401,6 +403,7 @@ fn save(mail: &mut Replica<Mail>, draft: &Draft) {
     apply(
         mail,
         Mail::SAVE_DRAFT.with(mailbox::SaveDraft {
+            draft: None,
             message: DraftData::from_draft(draft),
         }),
     )
@@ -624,11 +627,13 @@ fn batch_verbs_fail_closed_and_converge() {
 #[test]
 fn a_blank_line_in_the_draft_text_only_separates_paragraphs() {
     let mut mail = Replica::<Mail>::new();
-    let root =
-        |mail: &Replica<Mail>| crate::resource::draft_body_object(mail.doc()).expect("a body");
+    let root = |mail: &Replica<Mail>| {
+        crate::resource::draft_body_object(mail.doc(), None).expect("a body")
+    };
     apply(
         &mut mail,
         Mail::START_DRAFT_BODY.with(mailbox::StartDraftBody {
+            draft: None,
             text: "Hi Ada,\n\nThanks for the notes.\n\n> the notes".into(),
             html: None,
         }),
@@ -656,17 +661,17 @@ fn the_draft_body_is_rich_text_started_and_edited_at_its_path() {
     use tilo_document::action::RegionKind;
 
     let mut mail = Replica::<Mail>::new();
-    let body = crate::resource::draft_body().some();
+    let body = crate::resource::draft_body(None).some();
     let text = |mail: &Replica<Mail>| {
         let doc = mail.doc();
-        let root = crate::resource::draft_body_object(doc).expect("a body");
+        let root = crate::resource::draft_body_object(doc, None).expect("a body");
         tilo_rich_text::blocks_under(doc, &root)
             .unwrap()
             .into_iter()
             .map(|block| (block.kind, block.text, block.id))
             .collect::<Vec<_>>()
     };
-    assert!(crate::resource::draft_body_object(mail.doc()).is_none());
+    assert!(crate::resource::draft_body_object(mail.doc(), None).is_none());
     assert!(
         edit(
             &mut mail,
@@ -682,6 +687,7 @@ fn the_draft_body_is_rich_text_started_and_edited_at_its_path() {
     apply(
         &mut mail,
         Mail::START_DRAFT_BODY.with(mailbox::StartDraftBody {
+            draft: None,
             text: "Thanks!\n> original *as is*".into(),
             html: None,
         }),
@@ -717,6 +723,7 @@ fn the_draft_body_is_rich_text_started_and_edited_at_its_path() {
     apply(
         &mut mail,
         Mail::START_DRAFT_BODY.with(mailbox::StartDraftBody {
+            draft: None,
             text: "Plan".into(),
             html: Some("<h2>Plan</h2><p><b>ship</b> it</p>".into()),
         }),
@@ -732,10 +739,10 @@ fn the_draft_body_is_rich_text_started_and_edited_at_its_path() {
             (ui::widget::BlockKind::Paragraph, "ship it".to_owned()),
         ]
     );
-    mail.apply_confirmed(Mail::DISCARD_DRAFT.with(mailbox::DiscardDraft {}))
+    mail.apply_confirmed(Mail::DISCARD_DRAFT.with(mailbox::DiscardDraft { draft: None }))
         .unwrap();
     assert!(
-        crate::resource::draft_body_object(mail.doc()).is_none(),
+        crate::resource::draft_body_object(mail.doc(), None).is_none(),
         "discard clears the body"
     );
 }
@@ -1183,7 +1190,7 @@ fn the_archive_affordance_and_the_palette_edit_alike() {
     let mut palette = Replica::<Mail>::new();
     register(&mut palette, &id, Folder::Inbox);
     let state = palette.state().unwrap();
-    let place = Mail::message_place(&id, state.message(&id).unwrap()).publish();
+    let place = Mail::message_place(&id, &id, state.message(&id).unwrap()).publish();
     let archive = place
         .actions
         .iter()
@@ -1226,6 +1233,7 @@ fn a_message_is_sent_through_the_outbox_and_undo_takes_it_back_unsent() {
         "sending asks for confirmation"
     );
     app.invoke_confirmed(Mail::SEND_MESSAGE.with(mailbox::SendMessage {
+        draft: None,
         account: "nobody-here@example.test".into(),
         message: message.clone(),
         in_reply_to: None,
@@ -1246,6 +1254,7 @@ fn a_message_is_sent_through_the_outbox_and_undo_takes_it_back_unsent() {
     );
     assert!(
         app.invoke_confirmed(Mail::SEND_MESSAGE.with(mailbox::SendMessage {
+            draft: None,
             account: "nobody-here@example.test".into(),
             message: DraftData::default(),
             in_reply_to: None,
@@ -1255,6 +1264,7 @@ fn a_message_is_sent_through_the_outbox_and_undo_takes_it_back_unsent() {
     );
 
     app.invoke_confirmed(Mail::SEND_MESSAGE.with(mailbox::SendMessage {
+        draft: None,
         account: "nobody-here@example.test".into(),
         message,
         in_reply_to: None,

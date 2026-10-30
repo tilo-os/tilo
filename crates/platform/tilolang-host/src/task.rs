@@ -8,10 +8,13 @@
 //! goes out on it to the door, which reads and invokes as the task: the door's connection is the
 //! task's custody, so nothing here is trusted to say who it is.
 //!
-//! The connection carries one JSON object per line. The door sends `{"run": {source, confirm}}`;
-//! while the program runs, the host asks `{"read": {app, item}}` (answered `{"ok": fields}` or
-//! `{"err": why}`), `{"query": {app, request}}` (a `grep`, `find`, `read` or `describe` of an
-//! app, answered the same way) and `{"invoke": {app, resource, action, arguments}}` (answered `{"ok":
+//! The connection carries one JSON object per line. The door sends `{"run": {source, confirm}}`
+//! or `{"catalogue": {}}` (answered `{"catalogue": …}`: every installed app's declarations,
+//! [`TaskSession::catalogue`]);
+//! while the program runs, the host asks `{"record": {app, record}}` for a record it reads
+//! (answered `{"ok": {"document": base64}}`, `{"absent": true}` or `{"err": why}`: the record's
+//! committed content, read-only, which the host reads itself with the app's package,
+//! [`RecordReads`]) and `{"invoke": {app, resource, action, arguments}}` (answered `{"ok":
 //! output}`, `{"failed": why}`, `{"refused": why}` or `{"asks": why}`), and it ends with
 //! `{"answer": …}` ([`tilolang_tilo::task::TaskSession::run`]).
 
@@ -21,10 +24,12 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 
+use base64::Engine as _;
 use runtime_portal::tilolang_host::{TaskFds, TaskRequest, decode_modules};
 use serde_json::{Value as Json, json};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::task::{Answered, TaskDoor, TaskSession};
+use tilolang_tilo::task_records::{RecordReads, RecordSource};
 
 /// The program connection, one line at a time.
 struct Line {
@@ -66,31 +71,57 @@ impl Line {
     }
 }
 
-impl TaskDoor for Line {
-    fn read(&self, app: &str, item: &str) -> Result<Json, String> {
-        let reply = self.ask(&json!({"read": {"app": app, "item": item}}))?;
-        match reply.get("ok") {
-            Some(fields) => Ok(fields.clone()),
-            None => Err(reply
-                .get("err")
-                .and_then(Json::as_str)
-                .unwrap_or("the door did not read it")
-                .to_owned()),
+impl RecordSource for Line {
+    fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
+        let reply = self.ask(&json!({"record": {"app": app, "record": record}}))?;
+        if reply.get("absent").and_then(Json::as_bool) == Some(true) {
+            return Ok(None);
         }
+        if let Some(document) = reply.pointer("/ok/document").and_then(Json::as_str) {
+            return base64::engine::general_purpose::STANDARD
+                .decode(document)
+                .map(Some)
+                .map_err(|error| format!("the door sent a record that is not base64: {error}"));
+        }
+        Err(reply.get("err").and_then(Json::as_str).map_or_else(
+            || format!("the door answered a record read with neither ok, absent nor err: {reply}"),
+            str::to_owned,
+        ))
+    }
+}
+
+/// What the task's programs reach the workspace through: the records, read here from what the
+/// door hands over ([`RecordReads`]), and invocations, which go to the door.
+struct Door {
+    line: Rc<Line>,
+    reads: RecordReads,
+}
+
+impl TaskDoor for Door {
+    fn read(&self, app: &str, item: &str) -> Result<Json, String> {
+        self.reads.read(app, item)
     }
 
     fn query(&self, app: &str, request: &Json) -> Result<Json, String> {
-        let reply = self.ask(&json!({"query": {"app": app, "request": request}}))?;
-        match reply.get("ok") {
-            Some(answer) => Ok(answer.clone()),
-            None => Err(reply
-                .get("err")
-                .and_then(Json::as_str)
-                .unwrap_or("the app did not answer")
-                .to_owned()),
-        }
+        self.reads.query(app, request)
     }
 
+    fn begin_program(&self) {
+        // Each program reads the records anew, as the door decides them now.
+        self.reads.forget();
+    }
+
+    fn invoke(&self, call: &Json) -> Answered {
+        let answered = self.line.invoke(call);
+        // What the program reads of the app next is what its change made.
+        if let Some(app) = call.get("app").and_then(Json::as_str) {
+            self.reads.forget_app(app);
+        }
+        answered
+    }
+}
+
+impl Line {
     fn invoke(&self, call: &Json) -> Answered {
         let reply = match self.ask(&json!({"invoke": call})) {
             Ok(reply) => reply,
@@ -142,10 +173,20 @@ impl Task {
             reader: RefCell::new(BufReader::new(stream)),
             writer: RefCell::new(writer),
         });
+        let reads = RecordReads::new(
+            &bundles,
+            request.records_under.clone(),
+            request.person.as_deref(),
+            Rc::clone(&line) as Rc<dyn RecordSource>,
+        );
+        let door = Rc::new(Door {
+            line: Rc::clone(&line),
+            reads,
+        });
         let session = TaskSession::new(
             &request.task,
             request.person.as_deref(),
-            &(Rc::clone(&line) as Rc<dyn TaskDoor>),
+            &(Rc::clone(&door) as Rc<dyn TaskDoor>),
             &bundles,
         )?;
         tracing::info!(
@@ -187,6 +228,20 @@ impl Task {
         let Some(message) = self.line.next() else {
             return false;
         };
+        if let Ok(message) = &message
+            && message.get("catalogue").is_some()
+        {
+            return match self
+                .line
+                .send(&json!({ "catalogue": self.session.catalogue() }))
+            {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::warn!(%error, "the catalogue did not reach the door");
+                    false
+                }
+            };
+        }
         let answer = match message.and_then(|message| program(&message)) {
             Ok((source, confirm)) => self.session.run(&source, confirm),
             Err(why) => {
@@ -248,8 +303,22 @@ mod tests {
             reader: RefCell::new(BufReader::new(ours.try_clone().expect("a clone"))),
             writer: RefCell::new(ours.try_clone().expect("a clone")),
         });
-        let session = TaskSession::new("task", None, &(Rc::clone(&line) as Rc<dyn TaskDoor>), &[])
-            .expect("a session");
+        let reached = Rc::new(Door {
+            line: Rc::clone(&line),
+            reads: RecordReads::new(
+                &[],
+                std::collections::BTreeMap::new(),
+                None,
+                Rc::clone(&line) as Rc<dyn RecordSource>,
+            ),
+        });
+        let session = TaskSession::new(
+            "task",
+            None,
+            &(Rc::clone(&reached) as Rc<dyn TaskDoor>),
+            &[],
+        )
+        .expect("a session");
         let task = Task {
             line,
             watched: OwnedFd::from(ours),
@@ -307,7 +376,7 @@ mod tests {
             door.write_all(b"garbage\n").expect("sent");
             (reader, door)
         });
-        let read = task.line.read("app", "item");
+        let read = task.line.record("app", "");
         let _ends = asking.join().expect("the door");
         let why = read.expect_err("an unreadable reply fails the read");
         assert!(why.contains("not JSON"), "{why}");

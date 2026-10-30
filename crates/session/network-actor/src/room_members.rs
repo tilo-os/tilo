@@ -66,8 +66,8 @@ pub(super) struct Removed {
 }
 
 impl RoomMembers {
-    /// Whether `ws` is a room with a roster here, rather than a topic whose
-    /// members gossip names.
+    /// Whether `ws` is a room with a roster here, rather than a personal
+    /// topic whose members are the person's devices it has sessions with.
     pub(super) fn has_roster(&self, ws: WorkspaceId) -> bool {
         self.rosters.contains_key(&ws)
     }

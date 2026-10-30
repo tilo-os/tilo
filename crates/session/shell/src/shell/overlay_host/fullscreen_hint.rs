@@ -92,7 +92,7 @@ impl ShellOverlayHost {
 
     /// When the hint next needs a frame without input.
     pub(super) fn fullscreen_hint_deadline(&self, now: Instant) -> Option<Instant> {
-        let theme = &self.overview_layout_theme;
+        let theme = &self.layout_theme;
         let entered = self.fullscreen_hint_shown(now)?;
         let gone = hint_gone_at(entered);
         let fade_from = Transient::exit_starts(Transient::CONFIRMATION, gone, theme.motion());
@@ -107,7 +107,7 @@ impl ShellOverlayHost {
 
     /// Whether the hint is fading now, so the frame clock owes frames.
     pub(super) fn fullscreen_hint_fading(&self, now: Instant) -> bool {
-        let theme = &self.overview_layout_theme;
+        let theme = &self.layout_theme;
         self.fullscreen_hint_shown(now).is_some_and(|entered| {
             Transient::is_moving(
                 Transient::CONFIRMATION,

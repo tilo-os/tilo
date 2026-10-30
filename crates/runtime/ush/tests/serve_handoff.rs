@@ -78,6 +78,7 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
             requested_by: ush::host::RequestedBy::Person,
             relay_session: None,
             runs: None,
+            editor_protocol: None,
             end_report: false,
         })
         .expect_err("the host target was served");
@@ -173,6 +174,7 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
         runs: None,
+        editor_protocol: None,
         end_report: false,
     };
 
@@ -211,7 +213,8 @@ pub fn fixture_images(root: &Path) {
     let runtime = root.join(PackageId::from_bytes(RUNTIME).to_hex());
     std::fs::create_dir_all(runtime.join("etc")).unwrap();
     // base64 and tr: the run marks encode a command line and its directory.
-    for program in ["bash", "id", "touch", "cat", "base64", "tr"] {
+    // stat: what a guest's own directories are.
+    for program in ["bash", "id", "touch", "cat", "base64", "tr", "stat"] {
         let source = PathBuf::from("/usr/bin").join(program);
         fixture_file(&runtime, &source);
         if let Some(closure) = ush::helper_runtime::HelperRuntime::resolve(&source).unwrap() {
@@ -615,6 +618,7 @@ fn open_session(socket: &Path, runs: Option<&str>, command: Vec<String>) -> (Uni
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
         runs: runs.map(str::to_owned),
+        editor_protocol: None,
         end_report: false,
     })
     .unwrap();
@@ -800,6 +804,7 @@ fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_termina
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
         runs: None,
+        editor_protocol: None,
         end_report: true,
     })
     .unwrap();

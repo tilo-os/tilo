@@ -1,5 +1,6 @@
 //! The word processor as a framework app: the document resource is rich text,
-//! and the editor — its own page layout, input and chrome — is the surface.
+//! and its view is the editor's window — its own page layout, input and
+//! chrome.
 //! Images, tables and headings are children of that resource, so the framework
 //! publishes them on the same door as the document.
 //!
@@ -13,11 +14,12 @@
 //! maintained [`RichTextState`](tilo_document::RichTextState): a keystroke refreshes its paragraph, and
 //! only the paragraphs around the viewport are ever read.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, LaunchInput, LiveRow, ResourceApp,
-    ResourceSurface, RunMode, SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, Effected, LaunchInput, Publishes, ResourceApp, RunMode,
+    ViewCx,
 };
 use ui::record::RecordId;
 use ui::tilo_resource::Invoke;
@@ -26,6 +28,7 @@ use ui::widget::Element;
 use crate::WordProcessorWidget;
 use crate::effects::WordProcessorEffect;
 pub use crate::model::Document;
+use crate::widget::Editor;
 
 /// The import of the file `input` names, as one action.
 fn import(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
@@ -91,7 +94,26 @@ impl ResourceApp for WordProcessorApp {
     }
 
     fn view(cx: &mut ViewCx<Document>) -> Element {
-        cx.surface(WordProcessorWidget::new())
+        let window = WordProcessorWidget::new();
+        let editor = window.editor();
+        attach(&mut editor.borrow_mut(), cx);
+        // Shown at once, so the editor has a caret before its first frame.
+        let window = window.following(cx.live().clone());
+        {
+            let editor = Rc::clone(&editor);
+            let status = Rc::clone(&editor);
+            cx.effects(move |effect: WordProcessorEffect, cx| answer(&editor, effect, cx))
+                .status(move || share_image_status(&status.borrow()));
+        }
+        {
+            let editor = Rc::clone(&editor);
+            cx.on_stage(move |scenario| editor.borrow_mut().stage_scenario(scenario));
+        }
+        // The Find results of whoever invokes them, beneath the document.
+        cx.publishing(
+            Publishes::new().live_rows(move || editor.borrow().search_rows()),
+            Box::new(window),
+        )
     }
 
     /// The document's first heading, as the palette and history name it.
@@ -179,97 +201,74 @@ impl ResourceApp for WordProcessorApp {
     }
 }
 
-impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
-    /// The editor reads the live state where it needs it; a new state only
-    /// asks for a redraw.
-    fn present(&mut self, state: &Rc<Document>) {
-        // An editor that has not drawn yet still has a caret, at the start
-        // of the body, so edits bound to it (a table at the caret) can be
-        // invoked before the first frame.
-        if self.model().caret().block.is_empty()
-            && let Some(first) = state.text().and_then(|text| text.body().id_at(0))
-        {
-            self.model_mut().set_caret(crate::word_processor::Caret {
-                block: first.to_owned(),
-                offset: 0,
-            });
-        }
-        self.mark_document_changed();
+/// Take the editor into the framework: where its pictures are kept, the
+/// file the window shows the record of, the person's words and preferences,
+/// and the document's door.
+fn attach(editor: &mut Editor, cx: &ViewCx<Document>) {
+    // The images are in the store the host lends the window, which carries
+    // them on the document's route; without one they are kept in memory.
+    let content = cx
+        .content()
+        .unwrap_or_else(tilo_content::ContentStore::memory);
+    editor.model_mut().set_content_store(content);
+    if let Some(path) = cx.launch_arguments().first() {
+        editor.show_record_of(std::path::PathBuf::from(path));
     }
+    editor.follow_personal_dictionary();
+    // A past version and a capture show the layout they are given.
+    if cx.mode() == RunMode::Live {
+        editor.follow_preferences(cx.settings(), cx.settings());
+    }
+    editor.attach_framework(cx.live().clone(), cx.dispatcher());
+}
 
-    fn attach(&mut self, cx: SurfaceCx<Document>) {
-        // The images are in the store the host lends the window, which
-        // carries them on the document's route; without one they are kept
-        // in memory.
-        let content = cx
-            .content()
-            .unwrap_or_else(tilo_content::ContentStore::memory);
-        self.model_mut().set_content_store(content);
-        if let Some(path) = cx.launch_arguments().first() {
-            self.show_record_of(std::path::PathBuf::from(path));
-        }
-        self.follow_personal_dictionary();
-        // A past version and a capture show the layout they are given.
-        if cx.mode() == RunMode::Live {
-            self.follow_preferences(cx.settings(), cx.settings());
-        }
-        self.attach_framework(cx.live(), cx.dispatcher());
+/// Answer `effect` with the editor the window shows.
+fn answer(
+    editor: &Rc<RefCell<Editor>>,
+    effect: WordProcessorEffect,
+    cx: &mut EffectCx<Document>,
+) -> EffectAnswer {
+    if effect == WordProcessorEffect::ShareImage {
+        let hash = editor
+            .borrow()
+            .shared_image()
+            .ok_or("there is no one picture to share: place the caret on one")?;
+        return Effected::content(&hash);
     }
+    // Files on disk, not the document open here.
+    match effect {
+        WordProcessorEffect::ReadFile { file, from } => Ok(Effected::value(
+            crate::file_convert::read_file(&file, from)?,
+        )),
+        WordProcessorEffect::ReadContent {
+            content,
+            name,
+            from,
+        } => Ok(Effected::value(crate::file_convert::read_content(
+            editor.borrow().model().content_store(),
+            (&content, &name),
+            from,
+        )?)),
+        WordProcessorEffect::ConvertFile { file, to } => {
+            let written = crate::file_convert::convert_file(&file, &to)?;
+            Ok(Effected::value(
+                serde_json::json!({ "file": written.display().to_string() }),
+            ))
+        }
+        effect => editor.borrow_mut().answer_effect(editor, effect, cx),
+    }
+}
 
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
+/// Sharing a picture needs the caret on one.
+fn share_image_status(editor: &Editor) -> Vec<EffectStatus> {
+    if editor.shared_image().is_some() {
+        return Vec::new();
     }
-
-    /// The Find results of whoever invokes them, beneath the document.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.search_rows()
-    }
-
-    fn effect(
-        &mut self,
-        effect: WordProcessorEffect,
-        cx: &mut EffectCx<Document, Self>,
-    ) -> EffectAnswer {
-        if effect == WordProcessorEffect::ShareImage {
-            let hash = self
-                .shared_image()
-                .ok_or("there is no one picture to share: place the caret on one")?;
-            return Effected::content(&hash);
-        }
-        // Files on disk, not the document open here.
-        match effect {
-            WordProcessorEffect::ReadFile { file, from } => Ok(Effected::value(
-                crate::file_convert::read_file(&file, from)?,
-            )),
-            WordProcessorEffect::ReadContent {
-                content,
-                name,
-                from,
-            } => Ok(Effected::value(crate::file_convert::read_content(
-                self.model().content_store(),
-                (&content, &name),
-                from,
-            )?)),
-            WordProcessorEffect::ConvertFile { file, to } => {
-                let written = crate::file_convert::convert_file(&file, &to)?;
-                Ok(Effected::value(
-                    serde_json::json!({ "file": written.display().to_string() }),
-                ))
-            }
-            effect => self.answer_effect(effect, cx),
-        }
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        if self.shared_image().is_some() {
-            return Vec::new();
-        }
-        vec![EffectStatus::unavailable(
-            WordProcessorEffect::SHARE_IMAGE,
-            "no_image",
-            "there is no one picture to share: place the caret on one",
-        )]
-    }
+    vec![EffectStatus::unavailable(
+        WordProcessorEffect::SHARE_IMAGE,
+        "no_image",
+        "there is no one picture to share: place the caret on one",
+    )]
 }
 
 #[cfg(test)]

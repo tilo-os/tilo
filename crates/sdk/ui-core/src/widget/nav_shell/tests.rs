@@ -962,7 +962,7 @@ fn the_toggle_names_what_it_does_for_the_palette_and_agents() {
     settle(&mut h, 1280, 800);
     assert_eq!(name(&h).as_deref(), Some("Show sidebar"));
     let doc = automerge::AutoCommit::new();
-    let resources = crate::resources::resources(&h.root::<NavShell>().toggle, &doc);
+    let resources = crate::resources::resources(&*h.root::<NavShell>().toggle, &doc);
     assert!(
         resources
             .iter()

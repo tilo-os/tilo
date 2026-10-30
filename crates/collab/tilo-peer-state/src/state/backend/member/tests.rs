@@ -491,7 +491,8 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
     assert!(devices.contains(&source));
     let open = peer.governance().withheld_record_readers(now, &[]).unwrap();
     assert!(open.withheld.is_empty());
-    assert!(open.unrouted.is_empty());
+    // A channel nobody named may be anyone's own record: no one reads it.
+    assert_eq!(open.unrouted, devices);
     let read_grant = |id: &str, node: TreePath, answer: Answer| {
         Grant::new(
             id,
@@ -537,8 +538,6 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
             peer.check_document_read(source, "app", "payroll", now)
                 .is_err()
         );
-        // The finance Deny names no record: whoever it keeps out reads no
-        // channel whose record is unknown.
         assert_eq!(readers.unrouted, devices);
         let q3 = collab_types::document_channel_id("finance", &room_id, "q3");
         assert!(
@@ -647,4 +646,38 @@ fn another_member_neither_reads_nor_writes_a_members_own_record() {
     assert_eq!(viewer.role, Role::Viewer);
     let own_node = collab_types::document_node(&room_id, "so.tilo.chat", &own);
     assert!(viewer.allows(&own_node, ActionKind::Undoable, now));
+}
+
+/// A channel's id does not say whose own record it is, so until a device
+/// names the record no member is admitted to it: another member asking
+/// without the route is refused, and once named it is the person's alone.
+#[test]
+fn a_members_own_channel_admits_no_one_until_its_record_is_named() {
+    let (mut peer, source, now) = fixture();
+    let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
+    put_member(&mut peer, &person, Role::Viewer);
+    let room_id = peer.room().to_owned();
+    let theirs = collab_types::member_record_id(&"ad".repeat(32), "chat.drafts");
+    let channel = collab_types::document_channel_id("so.tilo.chat", &room_id, &theirs);
+    let readers = |route: Option<&collab_types::ChannelRoute>| {
+        peer.governance()
+            .channel_readers(now, channel, route)
+            .unwrap()
+    };
+    assert!(
+        readers(None).is_none(),
+        "another member asking without naming the record is refused"
+    );
+    let named = collab_types::ChannelRoute::new("so.tilo.chat", theirs.as_str());
+    assert!(!readers(Some(&named)).unwrap().contains(&source));
+    // An ordinary record is everyone's once named.
+    let notes = collab_types::ChannelRoute::new("so.tilo.chat", "tab:0000000000000001");
+    let notes_channel = notes.channel(&room_id);
+    assert!(
+        peer.governance()
+            .channel_readers(now, notes_channel, Some(&notes))
+            .unwrap()
+            .unwrap()
+            .contains(&source)
+    );
 }

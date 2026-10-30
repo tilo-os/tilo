@@ -37,6 +37,7 @@ mod route_access;
 use route_access::{RouteAccess, attested_route_access, identity_reads_record};
 mod committed_document;
 mod content_put;
+mod record_read;
 pub use content_put::CONTENT_PUT_REFUSED;
 #[cfg(test)]
 mod directory_disclosure_tests;
@@ -399,19 +400,6 @@ impl BrokerActor {
     #[must_use]
     pub fn is_agent(&self) -> bool {
         self.is_agent
-    }
-
-    /// The issue whose run this agent works in, by its address: what a host
-    /// groups the run's changes under, so they are undone as one.
-    #[must_use]
-    pub fn issue(&self) -> Option<&str> {
-        self.issue.as_deref()
-    }
-
-    /// The person this agent acts for, when one delegated it.
-    #[must_use]
-    pub fn acting_for_person(&self) -> Option<&str> {
-        self.for_person.as_deref()
     }
 
     /// The grant subject this actor is when it is not a person.

@@ -386,8 +386,10 @@ impl crate::widget::ResourceOperations for Probe {
         };
         if type_id == "bound.view" {
             if COMPOUND_MODE.get() == 1 {
-                self.actions
-                    .dispatch(doc.document_mut(), "bound.apply", &FollowUp);
+                // A refusal is the probe's to observe, not this view's.
+                let _ = self
+                    .actions
+                    .try_dispatch(doc.document_mut(), "bound.apply", &FollowUp);
             }
             Self::capture("bound-view");
             return Ok(Some(crate::widget::ResourceOperationStart::Completed(
@@ -406,12 +408,14 @@ impl crate::widget::ResourceOperations for Probe {
         }
         match mode {
             2 | 3 => {}
-            7 => self.actions.dispatch_with_context(
-                doc.document_mut(),
-                "bound.apply",
-                &FollowUp,
-                tilo_actions::ActionContext::for_resource("bound:probe", "probe", "Probe"),
-            ),
+            7 => {
+                let _ = self.actions.try_dispatch_with_context(
+                    doc.document_mut(),
+                    "bound.apply",
+                    &FollowUp,
+                    tilo_actions::ActionContext::for_resource("bound:probe", "probe", "Probe"),
+                );
+            }
             9 | 10 => {
                 assert_eq!(
                     self.actions
@@ -428,9 +432,11 @@ impl crate::widget::ResourceOperations for Probe {
                 doc.document_mut().put(ROOT, "raw-unwind", true).unwrap();
                 panic!("controlled compound unwind");
             }
-            _ => self
-                .actions
-                .dispatch(doc.document_mut(), "bound.apply", &FollowUp),
+            _ => {
+                let _ = self
+                    .actions
+                    .try_dispatch(doc.document_mut(), "bound.apply", &FollowUp);
+            }
         }
         if matches!(mode, 5 | 6) {
             doc.document_mut().put(ROOT, "raw-after", true).unwrap();
@@ -663,7 +669,7 @@ fn build_probe(
     reason = "one actual App lifetime verifies descendant delivery, mutable admission and closed cancellation"
 )]
 #[test]
-fn bound_components_keep_child_binding_and_focused_document_history() {
+fn bound_components_keep_child_binding() {
     // Case `real_app_descendant_focus_ime_semantics_and_measure_keep_child_binding`.
     {
         let temp = tempfile::tempdir().unwrap();
@@ -830,100 +836,6 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
         assert_eq!(app.component_close_reports().len(), 1);
         assert_eq!(app.take_component_close_reports().len(), 1);
         assert!(app.take_component_close_reports().is_empty());
-    }
-
-    // Case `document_history_keeps_focused_record_after_focus_moves_and_revokes_live`.
-    {
-        let mut fixture = ActionFixture::new();
-        let mut entry_ids = Vec::new();
-        for (index, binding) in fixture.bindings.iter().enumerate() {
-            let hash = fixture
-                .records
-                .with(&binding.checkout.id, |doc| {
-                    doc.put(ROOT, "history_marker", format!("record-{index}"))
-                        .unwrap();
-                    doc.commit().unwrap()
-                })
-                .unwrap();
-            entry_ids.push(crate::history_source::entry_id_from_hash(&hash.to_string()));
-        }
-        fixture
-            .app
-            .state
-            .doc
-            .put(ROOT, "history_marker", "outer")
-            .unwrap();
-        let pending = fixture.app.state.doc.pending_ops();
-        let focus_for = |app: &App, instance| {
-            app.layout
-                .node_map
-                .keys()
-                .copied()
-                .find(|node| {
-                    app.bindings
-                        .binding_for(*node)
-                        .is_some_and(|binding| binding.instance_id == instance)
-                })
-                .unwrap()
-        };
-        fixture.app.focused_node = Some(focus_for(&fixture.app, fixture.bindings[0].instance_id));
-        fixture.app.open_document_history().unwrap();
-        fixture.app.focused_node = Some(focus_for(&fixture.app, fixture.bindings[1].instance_id));
-        fixture
-            .app
-            .select_document_history(&[entry_ids[0]])
-            .unwrap();
-        let snapshot = fixture.app.document_history_snapshot().unwrap().unwrap();
-        let after =
-            automerge::AutoCommit::load(&snapshot.comparison.unwrap().after_document).unwrap();
-        assert_eq!(
-            after
-                .get(ROOT, "history_marker")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("record-0")
-        );
-        assert!(
-            fixture
-                .app
-                .select_document_history(&[entry_ids[1]])
-                .is_err()
-        );
-        assert_eq!(fixture.app.state.doc.pending_ops(), pending);
-        fixture
-            .permissions
-            .set(crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100));
-        assert!(fixture.app.document_history_snapshot().is_err());
-        assert!(!fixture.app.document_history.is_open());
-    }
-
-    // Case `document_history_does_not_fall_back_when_component_closes`.
-    {
-        let mut fixture = ActionFixture::new();
-        let binding = &fixture.bindings[0];
-        fixture.app.focused_node = fixture.app.layout.node_map.keys().copied().find(|node| {
-            fixture
-                .app
-                .bindings
-                .binding_for(*node)
-                .is_some_and(|candidate| candidate.instance_id == binding.instance_id)
-        });
-        assert!(fixture.app.focused_node.is_some());
-        fixture.app.open_document_history().unwrap();
-        binding.closing.set(true);
-        fixture.app.focused_node = None;
-        assert!(fixture.app.document_history_snapshot().is_err());
-        assert!(!fixture.app.document_history.is_open());
-    }
-
-    // Case `document_history_requires_a_choice_when_multiple_components_have_no_focus`.
-    {
-        let mut fixture = ActionFixture::new();
-        fixture.app.focused_node = None;
-        assert!(fixture.app.open_document_history().is_err());
-        assert!(fixture.app.document_history_snapshot().unwrap().is_none());
     }
 }
 struct ActionFixture {
@@ -1092,7 +1004,6 @@ include!("action_directory_snapshot_bound_tests.rs");
 include!("local_input_capture_tests.rs");
 include!("local_action_persistence_tests.rs");
 include!("bound_record_sync_tests.rs");
-include!("standalone_history_record_restore_tests.rs");
 include!("shared_forest_tests.rs");
 
 #[test]
@@ -2918,7 +2829,7 @@ fn input_surfaces_keep_their_controls_without_native_document_chrome() {
     ] {
         let mut app = hosted_behaviour_app(create);
         app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
-        assert_eq!(app.history_chrome_enabled, ordinary);
+        assert_eq!(app.search_presented, ordinary);
         assert_eq!(app.native_document_chrome, ordinary);
         assert_eq!(
             app.document_sync_status(),
@@ -2948,7 +2859,10 @@ fn input_surfaces_keep_their_controls_without_native_document_chrome() {
                 .is_some(),
                 "the app's declared control remains available"
             );
-            assert_eq!(names.contains(&"History"), ordinary);
+            assert!(
+                !names.contains(&"History"),
+                "a root that registers no History shows no History control"
+            );
         }
         app.action_publication_failure = Some("explicit publication refusal".into());
         assert_eq!(

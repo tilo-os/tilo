@@ -82,9 +82,6 @@ pub struct Core {
     /// The workspace's members, as the host last gave them (`workspace.members`).
     pub members: RefCell<crate::members::Members>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
-    /// The outbox entries this runtime marked as being handed over, by document and entry:
-    /// the ones it carries on with. Another one marked sending was another process's.
-    pub in_flight: RefCell<std::collections::HashSet<(String, String)>>,
     /// The network came back: entries waiting to go online are tried again on the next settle.
     pub retry_waiting: std::cell::Cell<bool>,
     /// The platform's phrases in the person's language (`phrase(...)`); the id itself until
@@ -210,7 +207,6 @@ impl Core {
             names: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
             sink: RefCell::new(None),
-            in_flight: RefCell::default(),
             retry_waiting: std::cell::Cell::new(false),
             phrases: RefCell::new(None),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
