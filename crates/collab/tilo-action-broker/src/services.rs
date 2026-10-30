@@ -29,6 +29,22 @@ pub trait LocalPersonServices: Send + Sync {
     ) -> Result<tilo_user_identity::DeviceCert, String>;
 }
 
+/// The origin of a room's records on this device: it applies an agent task's change the broker
+/// admitted, running the action against the record as it is then.
+pub trait RecordChangeServices: Send + Sync {
+    /// Apply `change` in `room` as `invoker`'s step: the origin's answer.
+    ///
+    /// # Errors
+    ///
+    /// The origin cannot be reached or did not answer.
+    fn apply(
+        &self,
+        room: &str,
+        change: &tilo_actions::remote::RecordChange,
+        invoker: &tilo_actions::ActionInvoker,
+    ) -> Result<serde_json::Value, String>;
+}
+
 /// The normal desktop opening deadline, shared with placement retirement.
 pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -1749,6 +1765,7 @@ pub struct HostServices {
     pub person_chat: Option<person_chat::PersonChatService>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
+    pub record_changes: Option<Arc<dyn RecordChangeServices>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
     pub launcher: Option<Arc<dyn LauncherServices>>,
     pub workspace_governance: Option<Arc<dyn WorkspaceGovernanceServices>>,

@@ -2037,6 +2037,7 @@ pub fn native_services(
         settings: settings_store::installed_source(),
         display_control,
         live_activities: Some(super::live_activities::board()),
+        record_changes: Some(Arc::new(TaskChanges)),
         ..Default::default()
     }
 }
@@ -2812,3 +2813,28 @@ mod native_owner_tests;
 #[cfg(test)]
 #[path = "broker_services/host_admission_tests.rs"]
 mod host_admission_tests;
+
+/// Where an agent task's changes of a tilolang app's record are applied: at the record's
+/// origin, by the host of the app's workspace and author, with no instance
+/// ([`super::launcher::apply_task_change`]).
+struct TaskChanges;
+
+impl tilo_action_broker::services::RecordChangeServices for TaskChanges {
+    fn apply(
+        &self,
+        room: &str,
+        change: &tilo_actions::remote::RecordChange,
+        invoker: &tilo_actions::ActionInvoker,
+    ) -> Result<serde_json::Value, String> {
+        let applied = runtime_portal::tilolang_host::Change {
+            resource: change.resource.clone(),
+            action: change.action.clone(),
+            arguments: change.arguments.clone(),
+            invoker: serde_json::to_value(invoker).map_err(|error| error.to_string())?,
+            context: None,
+            preview: change.preview.clone(),
+        };
+        super::launcher::apply_task_change(room, &change.app, &applied)
+            .map_err(|error| error.to_string())
+    }
+}

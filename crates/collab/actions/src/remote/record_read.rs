@@ -49,3 +49,36 @@ pub trait RecordReads: Send + Sync {
     fn read(&self, caller: &Caller, address: &RecordAddress)
     -> Result<RecordCopy, ActionHostError>;
 }
+
+/// An action to run on one record at the record's origin, as an agent task invokes it: the
+/// record (by its app and its id there), the action's subject resource and the action, its
+/// arguments, and what the task's preview planned, when it planned.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordChange {
+    pub app: String,
+    pub record: String,
+    pub resource: String,
+    pub action: String,
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+    pub preview: Option<serde_json::Value>,
+}
+
+/// A host's door for an agent task's changes to records outside their apps. A change goes to
+/// the record's origin, which runs the action against the record as it is then, applies what it
+/// wrote as the task's step and answers with its JSON: `{"ok": {value, resources}, "differs":
+/// bool}`, or `{"failed": why}` when the action did not run.
+pub trait RecordChanges: Send + Sync {
+    /// Apply `change` for `caller`, as `caller` may change the record now.
+    ///
+    /// # Errors
+    ///
+    /// [`ActionHostError::Refused`] for a caller that is not an agent task acting for its
+    /// person or a change the room does not allow it, [`ActionHostError::ConfirmationRequired`]
+    /// for one that asks its person first, [`ActionHostError::Unavailable`] when the origin
+    /// cannot be reached.
+    fn apply(
+        &self,
+        caller: &Caller,
+        change: &RecordChange,
+    ) -> Result<serde_json::Value, ActionHostError>;
+}

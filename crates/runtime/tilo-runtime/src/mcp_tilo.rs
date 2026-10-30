@@ -143,6 +143,9 @@ pub(crate) struct Programs {
     steps: Vec<Step>,
     /// What the person pointed at when they asked, as a resource literal: what `this` names.
     this: Option<String>,
+    /// The record each tilolang app's changes went to, by the app's id: where its steps are
+    /// taken back.
+    records: BTreeMap<String, String>,
 }
 
 impl Programs {
@@ -543,15 +546,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             answer.get("state").and_then(Value::as_str),
             Some("done" | "preview" | "suspended")
         );
-        let apps: Vec<String> = answer
+        let changed_apps = answer
             .get("apps")
             .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect();
-        if failed && !apps.is_empty() {
+            .is_some_and(|apps| !apps.is_empty());
+        if failed && changed_apps {
             // One step is all or nothing: what it changed before it failed is taken back.
             if let Err(why) = self.undo_in(&history_of(&answer)).await {
                 let mut reply = self.answered(program, &answer);
@@ -568,6 +567,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// Every installed app the task's programs may name, with its declarations, as JSON
     /// (`{alias: {app, signatures: [{name, signature}]}}`): read from the packages in the task's
     /// host, so an app that runs nowhere is listed like any other.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the task's link is held while its host answers, as a program's run holds it"
+    )]
     async fn catalogue(&self) -> Result<Reply, String> {
         let mut link = self.task.lock().await;
         if link.is_none() {
@@ -719,6 +722,26 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         ) else {
             return json!({"failed": "an invocation names its app, resource and action"});
         };
+        // A change of a tilolang app's record goes to the record's origin, which runs the
+        // action against the record as it is then; no app's instance is asked.
+        if let Some(record) = call.get("record").and_then(Value::as_str) {
+            self.programs
+                .lock_recover()
+                .records
+                .insert(app.to_owned(), record.to_owned());
+            let change = tilo_actions::remote::RecordChange {
+                app: app.to_owned(),
+                record: record.to_owned(),
+                resource: resource.to_owned(),
+                action: action.to_owned(),
+                arguments: call["arguments"].as_object().cloned().unwrap_or_default(),
+                preview: call
+                    .get("preview")
+                    .cloned()
+                    .filter(|preview| !preview.is_null()),
+            };
+            return self.task_change(change).await;
+        }
         let provider = match self.provider_of(app, providers).await {
             Ok(provider) => provider,
             Err(why) => return json!({"failed": why}),
@@ -746,6 +769,39 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             },
             Err(why) if refusal(&why) => json!({"refused": format!("{action}: {why}")}),
             Err(why) => json!({"failed": why}),
+        }
+    }
+
+    /// Send `change` to its record's origin as the task, decided there by the broker: the
+    /// invocation's answer as the task's host reads it.
+    async fn task_change(&self, change: tilo_actions::remote::RecordChange) -> Value {
+        let Some(changes) = self.host().record_changes() else {
+            return json!({"failed": "this desktop applies no task's changes at a record's origin"});
+        };
+        let caller = self.execution_caller();
+        let action = change.action.clone();
+        let applied = tokio::task::spawn_blocking(move || changes.apply(&caller, &change)).await;
+        match applied {
+            Ok(Ok(answer)) => {
+                if let Some(output) = answer.get("ok") {
+                    let differs = answer.get("differs").and_then(Value::as_bool) == Some(true);
+                    json!({"ok": output, "differs": differs})
+                } else {
+                    json!({"failed": answer.get("failed").and_then(Value::as_str).map_or_else(|| answer.to_string(), str::to_owned)})
+                }
+            }
+            Ok(Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)) => {
+                json!({"asks": format!("{action}: asks the person first")})
+            }
+            Ok(Err(
+                error @ (tilo_actions::remote::ActionHostError::Refused { .. }
+                | tilo_actions::remote::ActionHostError::NotPermitted
+                | tilo_actions::remote::ActionHostError::UnknownAction),
+            )) => {
+                json!({"refused": format!("{action}: {error}")})
+            }
+            Ok(Err(error)) => json!({"failed": format!("{action}: {error}")}),
+            Err(error) => json!({"failed": format!("the change ended: {error}")}),
         }
     }
 
@@ -906,6 +962,29 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let mut providers: Providers = BTreeMap::new();
         for at in history.iter().rev() {
             let name = app_names(std::slice::from_ref(&at.app)).join("");
+            let record = self.programs.lock_recover().records.get(&at.app).cloned();
+            if let Some(record) = record {
+                let mut arguments = Map::new();
+                arguments.insert("steps".to_owned(), json!(1));
+                let answer = self
+                    .task_change(tilo_actions::remote::RecordChange {
+                        app: at.app.clone(),
+                        record,
+                        resource: at.resource.clone(),
+                        action: "undo".to_owned(),
+                        arguments,
+                        preview: None,
+                    })
+                    .await;
+                if answer.get("ok").is_none() {
+                    let why = ["failed", "refused", "asks"]
+                        .iter()
+                        .find_map(|key| answer.get(*key).and_then(Value::as_str))
+                        .unwrap_or("the undo did not run");
+                    return Err(format!("in {name}: {why}"));
+                }
+                continue;
+            }
             let provider = self.provider_of(&at.app, &mut providers).await?;
             let mut arguments = Map::new();
             arguments.insert("steps".to_owned(), json!(1));

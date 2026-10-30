@@ -43,6 +43,25 @@ pub(crate) fn start_task_host(room: &str, task: &str) -> std::io::Result<std::os
     })?;
     tilolang_hosts::start_task(room, task)
 }
+
+/// Apply an agent task's change to the record of the tilolang app `app` in `room` at its
+/// origin, as the broker admitted it (`tilolang_hosts::apply_change`): the origin's answer.
+///
+/// # Errors
+/// `room` is no room, the app is no installed tilolang app, or its host did not answer.
+pub(crate) fn apply_task_change(
+    room: &str,
+    app: &str,
+    change: &runtime_portal::tilolang_host::Change,
+) -> std::io::Result<serde_json::Value> {
+    let room = RoomId::parse(room).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("`{room}` is no room"),
+        )
+    })?;
+    tilolang_hosts::apply_change(app, room, change)
+}
 #[cfg(target_os = "linux")]
 pub(crate) mod window_doors;
 #[cfg(test)]
@@ -54,8 +73,8 @@ pub use launch_records::{
     consume_trusted_service_launch_identity, register_in_process_launch,
 };
 pub(crate) use launch_records::{
-    authenticated_window_launch, register_in_process_window, register_tilolang_instance,
-    withdraw_in_process_launch,
+    authenticated_window_launch, register_in_process_window, register_tilolang_change,
+    register_tilolang_instance, withdraw_in_process_launch,
 };
 
 use crate::shell::action_authority;

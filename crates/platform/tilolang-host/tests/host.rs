@@ -1450,3 +1450,166 @@ fn the_instance_answers_every_handoff_step_the_shell_asks() {
         "a retirement is refused with why: {reports:?}"
     );
 }
+
+/// The origin of a counter's record for `person`, on a broker the test plays, taking its
+/// change on the far end of the returned connection.
+fn applier(
+    person: &str,
+    doc: automerge::AutoCommit,
+) -> (
+    tilolang_host::hosted::Applier,
+    std::os::unix::net::UnixStream,
+    Sent,
+) {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let sent: Sent = Rc::default();
+    let mut manager = CollaborationManager::with_peer_transport(Broker {
+        route: route.clone(),
+        sent: Rc::clone(&sent),
+        inbox: Rc::default(),
+        joined: None,
+        directory: Rc::default(),
+    });
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id,
+        record: None,
+        record_kind: None,
+        handle: Some(person.to_owned()),
+    }));
+    let _ = manager.poll();
+    let record = RoomRecord::new(doc, manager, route.clone(), person);
+    let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    let applier = tilolang_host::hosted::Applier::open(
+        Spec {
+            app: APP.to_owned(),
+            room: route.cluster_id.to_string(),
+            instance: 1 << 62,
+            person: person.to_owned(),
+        },
+        record,
+        &counter(),
+        &Phrases::new("en-US"),
+        wake(),
+        theirs.into(),
+    )
+    .unwrap();
+    (applier, ours, sent)
+}
+
+/// Where the counter's Increment is published on a record of the room, and that record: the
+/// one a task read, whose resources its change names.
+fn increment() -> (tilo_actions::ActionAddress, automerge::AutoCommit) {
+    let (mut host, mut window, _sent, _inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let hosted = host.instances().next().unwrap();
+    let address = hosted
+        .published()
+        .iter()
+        .find(|action| {
+            action.address.resource.starts_with("tl:") && action.action_label == "Increment"
+        })
+        .unwrap()
+        .address
+        .clone();
+    (address, hosted.record().doc().clone())
+}
+
+/// Hand `applier` `change` and run it until it answers: the answer.
+fn apply(
+    applier: &mut tilolang_host::hosted::Applier,
+    connection: &std::os::unix::net::UnixStream,
+    change: &runtime_portal::tilolang_host::Change,
+) -> serde_json::Value {
+    use std::io::{BufRead as _, Write as _};
+    let mut line = serde_json::to_vec(change).unwrap();
+    line.push(b'\n');
+    (&*connection).write_all(&line).unwrap();
+    for _ in 0..200 {
+        applier.turn();
+        if applier.answered() {
+            let mut answer = String::new();
+            std::io::BufReader::new(connection)
+                .read_line(&mut answer)
+                .unwrap();
+            return serde_json::from_str(&answer).unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the change was never answered");
+}
+
+/// An agent task acting for ada, as the broker admitted it.
+fn task_invoker() -> serde_json::Value {
+    serde_json::to_value(
+        tilo_actions::ActionInvoker::actor("agent:scribe")
+            .with_kind(tilo_actions::ActorKind::Agent)
+            .acting_for("ada"),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_tasks_change_runs_at_the_records_origin_as_its_step_with_no_instance() {
+    let (address, doc) = increment();
+    let (mut applier, connection, sent) = applier("ada", doc);
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: address.resource,
+            action: address.action,
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: None,
+        },
+    );
+    assert!(answer.get("ok").is_some(), "{answer}");
+    assert_eq!(answer["differs"], false, "{answer}");
+    assert!(
+        documents_sent(&sent) > 0,
+        "what it wrote was handed to the room"
+    );
+    // A preview made from an earlier read that no longer holds is applied as the record is
+    // now, and the answer says it differed.
+    let (address, doc) = increment();
+    let (mut applier, connection, _sent) = self::applier("ada", doc);
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: address.resource,
+            action: address.action,
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: Some(serde_json::json!({"planned": "from an earlier read"})),
+        },
+    );
+    assert!(answer.get("ok").is_some(), "{answer}");
+    assert_eq!(answer["differs"], true, "{answer}");
+}
+
+#[test]
+fn a_change_the_record_cannot_take_is_refused_with_why() {
+    let (mut applier, connection, sent) = applier("ada", automerge::AutoCommit::new());
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: "tl:so.tilo.lang.counter".to_owned(),
+            action: "no-such-action".to_owned(),
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: None,
+        },
+    );
+    let why = answer["failed"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{answer}"));
+    assert!(!why.is_empty());
+    assert_eq!(documents_sent(&sent), 0, "nothing was written");
+}
