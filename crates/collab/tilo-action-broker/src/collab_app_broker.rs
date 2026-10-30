@@ -10020,10 +10020,6 @@ fn log_bound(socket_path: &Path, wired: bool) {
     );
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the state handles are clones moved into the broker thread"
-)]
 pub(super) fn spawn_configured(
     socket_path: &Path,
     fanout: &Arc<FanoutState>,
@@ -10223,10 +10219,6 @@ async fn sleep_until(deadline: Option<std::time::Instant>) {
 #[expect(
     clippy::future_not_send,
     reason = "the broker state and its Rc-backed action-directory registry run only on the broker LocalSet"
-)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the state handles are clones moved into the connection tasks"
 )]
 async fn serve_broker_thread(
     state: Arc<AppBrokerState>,

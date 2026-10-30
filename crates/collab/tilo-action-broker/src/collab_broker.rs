@@ -242,15 +242,17 @@ impl FanoutState {
             .collect::<Vec<_>>();
         self.request_shutdown();
         state.stop();
-        let mut guard = match self.app_broker.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if guard
-            .as_ref()
-            .is_some_and(|attached| Arc::ptr_eq(attached, state))
         {
-            *guard = None;
+            let mut guard = match self.app_broker.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if guard
+                .as_ref()
+                .is_some_and(|attached| Arc::ptr_eq(attached, state))
+            {
+                *guard = None;
+            }
         }
         match self.local_subs.lock() {
             Ok(mut subscribers) => subscribers.clear(),

@@ -1147,10 +1147,6 @@ impl JoinedChannel {
         clippy::too_many_lines,
         reason = "one admission: caller, door, grants and the person's questions, in order"
     )]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the action host moves into whichever answer serves the request"
-    )]
     fn remote_action_answer(
         &self,
         frame: &[u8],
