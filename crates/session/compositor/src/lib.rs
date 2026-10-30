@@ -155,6 +155,18 @@ pub struct LoopData {
     pub backend: Box<dyn Backend>,
 }
 
+/// What the loop tells of each turn of its wait.
+///
+/// Something watching the process for a main loop that has stopped uses it to
+/// tell an idle loop, which waits for events however long, from one that is
+/// stuck between its waits.
+pub trait LoopTurns: Send + Sync {
+    /// The loop is about to wait for events.
+    fn parking(&self);
+    /// The wait returned; the turn's work begins.
+    fn unparked(&self);
+}
+
 /// A running compositor: the Wayland display, its state and a backend.
 pub struct Compositor {
     event_loop: EventLoop<'static, LoopData>,
@@ -166,6 +178,9 @@ pub struct Compositor {
     /// The outputs as Settings and the session last read them
     /// ([`Compositor::display_snapshot`]).
     displays: settings_bridge::Published,
+    /// Told of every turn of the loop's wait, when someone watches for a loop
+    /// that has stopped.
+    turns: Option<Arc<dyn LoopTurns>>,
 }
 
 impl Compositor {
@@ -199,9 +214,15 @@ impl Compositor {
             data: LoopData { state, backend },
             hosted: false,
             displays: settings_bridge::Published::default(),
+            turns: None,
         };
         compositor.publish_displays();
         Ok(compositor)
+    }
+
+    /// Tell `turns` of every turn of the loop's wait, or no one.
+    pub fn watch_turns(&mut self, turns: Option<Arc<dyn LoopTurns>>) {
+        self.turns = turns;
     }
 
     /// A compositor whose outputs have no display (see [`backend::headless`]).
@@ -336,9 +357,17 @@ impl Compositor {
         let timeout = self.data.state.host_keys.next_due().map_or(timeout, |due| {
             timeout.min(due.saturating_duration_since(std::time::Instant::now()))
         });
-        self.event_loop
+        if let Some(turns) = &self.turns {
+            turns.parking();
+        }
+        let dispatched = self
+            .event_loop
             .dispatch(Some(timeout), &mut self.data)
-            .map_err(io)?;
+            .map_err(io);
+        if let Some(turns) = &self.turns {
+            turns.unparked();
+        }
+        dispatched?;
         self.data.state.repeat_keys();
         self.display.dispatch_clients(&mut self.data.state)?;
         self.data.state.refresh();

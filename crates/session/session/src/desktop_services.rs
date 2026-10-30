@@ -123,6 +123,13 @@ impl DesktopServices {
         &self.questions
     }
 
+    /// The notifications the session shows: what this desktop tells the
+    /// person itself goes through the same service as an app's.
+    #[must_use]
+    pub const fn notifications(&self) -> &tilo_notifications_service::Notifications {
+        &self.notifications
+    }
+
     /// What they publish, for the session to host beside its system
     /// services: the questions, the portal's access decisions and holds,
     /// and the live notifications.

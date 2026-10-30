@@ -11,6 +11,8 @@ name = "tilo-session"
 path = "src/main.rs"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The surface apps' sockets are handed to their children as descriptors.
+libc.workspace = true
 tilo-compositor = { path = "../compositor" }
 image = { workspace = true, features = ["png"] }
 # An application's themed icon is an SVG as often as a PNG.
