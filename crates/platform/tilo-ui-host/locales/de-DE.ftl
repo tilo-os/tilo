@@ -4,6 +4,7 @@ tilolang-title = Apps
 tilolang-home-heading = Apps
 tilolang-home-empty = Es sind keine Apps installiert.
 tilolang-open-failed = Diese App konnte nicht geöffnet werden.
+tilolang-seen-failed = Was dieses Fenster gezeigt hat, konnte nicht als gesehen markiert werden.
 tilolang-back = Alle Apps
 tilolang-detail = Details
 tilolang-ask-title = Diese Änderung erlauben?

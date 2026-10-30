@@ -534,6 +534,9 @@ pub enum ToUi {
     Form(Option<Box<Form>>),
     /// Someone asked to see the window ("Show this window"): it comes forward.
     Activate,
+    /// A change mark was activated: show what the task run `run` (its group,
+    /// `runtime_collab::task_run_group`) did, where the system keeps its log.
+    ShowRun { run: String },
     /// The app ran the first `fired` presses the window sent (`ToApp::Fire`), and sent what
     /// they opened before this. What the person typed after a press goes to the app once it
     /// ran it, into the field focused then.

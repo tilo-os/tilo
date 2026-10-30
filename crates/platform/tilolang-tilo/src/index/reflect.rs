@@ -110,7 +110,13 @@ impl Stamp {
         // An index written before versions named their run holds none.
         let task = match json.get("task") {
             None => None,
-            Some(task) => Some(serde_json::from_value(task.clone()).ok()?),
+            Some(task) => match serde_json::from_value(task.clone()) {
+                Ok(task) => Some(task),
+                Err(error) => {
+                    tracing::warn!(%error, "the index holds a version whose run does not decode");
+                    return None;
+                }
+            },
         };
         let change = text("change").unwrap_or_default();
         Some(Self {
@@ -128,8 +134,12 @@ impl Stamp {
     }
 }
 
+/// The action a step on the record that is no package's action is a version by (an undo, a
+/// revert from History).
+pub const STEP_ACTION: &str = "$history";
+
 /// The task run a change's context names: its group, when it is a task's.
-fn task_of(context: &tilo_actions::ActionContext) -> Option<TaskRun> {
+pub fn task_of(context: &tilo_actions::ActionContext) -> Option<TaskRun> {
     let group = context.group.as_ref()?;
     (group.kind == tilo_actions::context::TASK_RUN_GROUP).then(|| TaskRun {
         id: group.id.clone(),

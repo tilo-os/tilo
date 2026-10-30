@@ -24,3 +24,4 @@ mod search;
 mod semantics;
 mod unions;
 mod wasm;
+mod written;

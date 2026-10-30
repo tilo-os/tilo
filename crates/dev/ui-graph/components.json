@@ -275,6 +275,20 @@
           "name": "enabled",
           "doc": "Whether it can be typed into now.",
           "type": "bool"
+        },
+        {
+          "name": "changed_by",
+          "doc": "Someone else changed the text and the person has not seen it yet: the field takes their colour. The host sets it, from what the field is bound to (task-legibility §3).",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "previous",
+          "doc": "What the text was before that change, said when the field is hovered.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [
@@ -1094,6 +1108,61 @@
       }
     },
     {
+      "name": "ChangeMark",
+      "doc": "What someone else changed of a resource that the person looking has not seen yet: who, in which task run, and whether they made, changed or removed it. The host fills all but `of` from the resource's versions; activating it shows what they did.",
+      "props": [
+        {
+          "name": "of",
+          "doc": "The resource whose changes it marks.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "by",
+          "doc": "Who made the newest change the person has not seen.",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "run",
+          "doc": "The task run it was part of, as its task is titled.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "kind",
+          "doc": "What they did: `created`, `changed` or `removed`.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "count",
+          "doc": "How many changes of it the person has not seen.",
+          "type": "int"
+        },
+        {
+          "name": "window",
+          "doc": "It marks a window, in its header: it says how many changes and by whom.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "Activated: show what they did, at the run that did it."
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "run"
+      }
+    },
+    {
       "name": "RichText",
       "doc": "Rich text, shown: its paragraphs with their formatting, and each reference in it as the reader's own inline view of what it refers to (a person with their name, a channel, a task with its number), resolved under their permissions. Activating a reference opens it.",
       "props": [
@@ -1400,6 +1469,13 @@
             ]
           },
           "many": true
+        },
+        {
+          "name": "change",
+          "doc": "What someone else changed of the item that the person has not seen yet: the row shows it, in their colour, on its trailing edge. The UI host places it (task-legibility §3).",
+          "accepts": {
+            "component": "ChangeMark"
+          }
         },
         {
           "name": "row",

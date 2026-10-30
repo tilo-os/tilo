@@ -312,6 +312,15 @@ impl ui::undo::LocalUndo for HostedWindow {
     }
 }
 
+/// A change mark in the window asks the shell to show the task run that made the change.
+impl ui::component_lifecycle::HostIntents for HostedWindow {
+    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+        let connected = self.connected.as_mut()?;
+        let run = connected.view.take_shown_run()?;
+        Some(ui::widget::AppHostIntent::ShowTaskRun { group: run })
+    }
+}
+
 /// The window stands for what it shows (the UI host's window, or the loading state before it)
 /// in the layout and in every walk of the widgets: it adds no node of its own.
 impl ui::widget::Decorator for HostedWindow {
@@ -319,6 +328,7 @@ impl ui::widget::Decorator for HostedWindow {
 
     ui::provides!(
         dyn ui::component_lifecycle::WindowActivation,
+        dyn ui::component_lifecycle::HostIntents,
         dyn ui::undo::LocalUndo
     );
 

@@ -302,8 +302,8 @@ pub fn refusal(
         Ok(claims) => claims,
         Err(error) => return Some(error.to_string()),
     };
-    // optional-decode: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
     let file = bytes_of(record.app)
+        // optional-decode: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
         .and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())?;
     let surface_for = |kind: Option<&str>| {
         file.resource(kind).map(|resource| {

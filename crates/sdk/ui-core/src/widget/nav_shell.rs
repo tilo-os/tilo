@@ -4124,6 +4124,7 @@ impl Widget for NavShell {
         // planned from it. Building is what a change asked for, so it asks for no other.
         self.finish_slot_edit();
         self.apply_pending();
+        self.tell_parts_input();
         self.refresh_slot_inputs();
         *self.layout_theme = theme.clone();
         let size = if self.rect.width() > 0.0 {
@@ -4187,9 +4188,7 @@ impl Widget for NavShell {
             .geometry
             .translated(Vec2::new(-self.rect.x0, -self.rect.y0));
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-        self.refresh_geometry();
-        self.reconcile_size_class(&before);
-        self.refresh_geometry();
+        let stale = self.replan(&before);
         // The side of each threshold this layout stands on: the next one
         // switches back only past the hysteresis band.
         self.inputs.borrow_mut().held = Held::of(&self.geometry);
@@ -4204,7 +4203,7 @@ impl Widget for NavShell {
         }
         self.apply_fit();
         self.invalidation.acknowledge_applied();
-        self.layout_dirty = false;
+        self.layout_dirty = stale.then(|| self.invalidation.invalidate()).is_some();
         self.apply_open_states();
         self.publish_open_states();
         let visible = self.geometry.visible_parts(&self.inputs.borrow());

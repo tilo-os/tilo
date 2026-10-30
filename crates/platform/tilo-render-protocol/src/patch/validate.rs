@@ -225,6 +225,7 @@ impl<'a> Validator<'a> {
                 })
             }
             ToUi::Notice { words, .. } => self.words(words),
+            ToUi::ShowRun { run } => self.key(run),
             ToUi::Ask(Some(ask)) => {
                 self.string(&ask.action)?;
                 self.string(&ask.invoker)
