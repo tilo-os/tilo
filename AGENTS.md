@@ -59,11 +59,7 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
 - Do not regenerate `Cargo.lock`; `cargo update -p NAME --precise VERSION`.
   Lock-only changes and generated files: `docs/policies.md`.
 - Run the tests of the packages you touched (`cargo test --locked -p NAME`) and
-  `bash tools/policy/run.sh`. `tools/ci/test-changed.sh` lints and tests what
-  your change affects, edits included; `-- NAME` or `-E FILTERSET` narrows it.
-- Landing on the local `integration` branch (`git push . HEAD:integration`,
-  from a clean worktree) runs it first from `.githooks/pre-push` and refuses
-  the landing on any failure.
+  `bash tools/policy/run.sh`.
 - Extensive checks (images, macOS, VMs) only when you change what they test.
 - Shell: `cargo test --locked -p shell --test it MODULE::` and
   `cargo check --locked -p shell --tests`.
