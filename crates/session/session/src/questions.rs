@@ -236,7 +236,7 @@ impl Asker {
                         return;
                     };
                     for effect in portal.take_asked() {
-                        match shown.apply(effect, portal) {
+                        match shown.apply(&effect, portal) {
                             Step::Nothing => {}
                             Step::Redraw => redraw = true,
                             Step::Refused(why) => {
@@ -490,14 +490,14 @@ impl Shown {
     }
 
     /// Take `effect` into the sheet, and what came of it.
-    fn apply(&mut self, effect: PortalEffect, seat: &PortalSeat) -> Step {
+    fn apply(&mut self, effect: &PortalEffect, seat: &PortalSeat) -> Step {
         match effect {
             PortalEffect::Select { index } | PortalEffect::Icon { index } => {
-                self.highlight(index);
+                self.highlight(*index);
                 Step::Redraw
             }
             PortalEffect::Toggle { index } => {
-                self.toggle(index);
+                self.toggle(*index);
                 Step::Redraw
             }
             PortalEffect::Remember => {
@@ -511,8 +511,10 @@ impl Shown {
                 }
                 Step::Redraw
             }
-            PortalEffect::Bind { keys } => self.rebind(Some(&keys)),
+            PortalEffect::Bind { keys } => self.rebind(Some(keys)),
             PortalEffect::Unbind => self.rebind(None),
+            // Keys and typing are the sheet's own: what is typed stays in
+            // its buffers until the person confirms.
             PortalEffect::Next
             | PortalEffect::Back
             | PortalEffect::Type { .. }
@@ -520,7 +522,7 @@ impl Shown {
             // Confirming answers with the highlight as it stands; an
             // answer names its own.
             PortalEffect::Confirm => self.decide(seat, None),
-            PortalEffect::Answer { index } => self.decide(seat, Some(index)),
+            PortalEffect::Answer { index } => self.decide(seat, Some(*index)),
             PortalEffect::Submit => match self.plan {
                 Plan::Password { identity } => {
                     let Some(answer) = seat.take_answer() else {
@@ -621,7 +623,11 @@ impl Shown {
                 choice: choices.get(dialog.selected).copied(),
                 ..Answer::default()
             }),
-            Plan::Confirm | Plan::Password { .. } | Plan::Secrets { .. } => Ok(Answer::default()),
+            Plan::Confirm
+            | Plan::Password { .. }
+            | Plan::Secrets { .. }
+            | Plan::Revoke { .. }
+            | Plan::Nothing => Ok(Answer::default()),
             Plan::Agree => Ok(Answer {
                 choice: Some(0),
                 ..Answer::default()
@@ -669,7 +675,6 @@ impl Shown {
                     ..Answer::default()
                 })
             }
-            Plan::Revoke { .. } | Plan::Nothing => Ok(Answer::default()),
             Plan::Color => {
                 let values: Vec<_> = (0..3).map(|at| seat.text(Field::Draft(at))).collect();
                 if !values.iter().all(|value| channel(value)) {
@@ -1299,92 +1304,19 @@ fn say(text: &Words) -> String {
 fn network_secrets(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: SecretsDetails = serde_json::from_value(details).ok()?;
     let retry = word("portal-network-retry");
-    let mut retried = false;
-    let resource = asked
-        .detail
-        .iter()
-        .map(say)
-        .filter(|line| {
-            let is_retry = *line == retry;
-            retried |= is_retry;
-            !is_retry
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let (resource, retried) = what_the_network_is(&asked, &retry);
+    let (kind, fields, primary_label, error) = what_it_asks(&asked, &retry, retried);
     let wifi = asked.fields.iter().any(|field| {
         field.rule == FieldRule::WpaPassphrase
             || field.key == "psk"
             || field.key.starts_with("wep-key")
     });
-    let (kind, fields, primary, error) = match &asked.sim {
-        Some(sim) => {
-            let (kind, fields) = match sim.step {
-                SimUnlockStep::Pin => (
-                    PromptKind::SimPin {
-                        attempts_left: sim.attempts_left,
-                    },
-                    vec![PromptField {
-                        label: asked
-                            .fields
-                            .first()
-                            .map(|field| say(&field.label))
-                            .unwrap_or_default(),
-                        masked: true,
-                        required: true,
-                        initial: String::new(),
-                    }],
-                ),
-                SimUnlockStep::Puk => (
-                    PromptKind::SimPuk {
-                        attempts_left: sim.attempts_left,
-                    },
-                    vec![PromptField::default(); 2],
-                ),
-            };
-            let error = asked
-                .refusal
-                .as_ref()
-                .map(|refusal| (refusal.field, word(&refusal.key)))
-                .or_else(|| {
-                    (retried && sim.step == SimUnlockStep::Pin)
-                        .then(|| (0, word("portal-sim-pin-wrong")))
-                });
-            (kind, fields, word("portal-sim-unlock"), error)
-        }
-        None => {
-            let fields = asked
-                .fields
-                .iter()
-                .map(|field| PromptField {
-                    label: say(&field.label),
-                    masked: field.masked,
-                    required: field.required,
-                    initial: field.initial.clone(),
-                })
-                .collect();
-            let error = asked
-                .refusal
-                .as_ref()
-                .map(|refusal| (refusal.field, word(&refusal.key)))
-                .or_else(|| {
-                    retried.then(|| {
-                        let at = asked
-                            .fields
-                            .iter()
-                            .position(|field| field.masked)
-                            .unwrap_or(0);
-                        (at, retry.clone())
-                    })
-                });
-            (PromptKind::Fields, fields, word("portal-connect"), error)
-        }
-    };
     let prompt = Prompt {
         kind,
-        icon: Some(if asked.sim.is_some() || !wifi {
-            ui::icons::Icon::Lock
-        } else {
+        icon: Some(if wifi && asked.sim.is_none() {
             ui::icons::Icon::Wifi
+        } else {
+            ui::icons::Icon::Lock
         }),
         resource,
         fields,
@@ -1396,7 +1328,7 @@ fn network_secrets(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
                 .remember
                 .map(|remember| (word("portal-remember-device"), remember))
         },
-        primary_label: primary,
+        primary_label,
         error,
         busy: None,
     };
@@ -1412,6 +1344,94 @@ fn network_secrets(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
         remember: asked.remember,
     };
     Some((dialog, plan))
+}
+
+/// What the network is, in its own words, and whether it said the last
+/// secret was refused: that reads as the reason the field is wrong, not as
+/// what the network is, so it is left out here.
+fn what_the_network_is(asked: &SecretsDetails, retry: &str) -> (String, bool) {
+    let mut retried = false;
+    let said = asked
+        .detail
+        .iter()
+        .map(say)
+        .filter(|line| {
+            retried |= line == retry;
+            line != retry
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (said, retried)
+}
+
+/// The fields the network wants typed, what confirming it says, and why it
+/// refused the last answer.
+fn what_it_asks(
+    asked: &SecretsDetails,
+    retry: &str,
+    retried: bool,
+) -> (
+    PromptKind,
+    Vec<PromptField>,
+    String,
+    Option<(usize, String)>,
+) {
+    let refused = asked
+        .refusal
+        .as_ref()
+        .map(|refusal| (refusal.field, word(&refusal.key)));
+    let Some(sim) = &asked.sim else {
+        let fields = asked
+            .fields
+            .iter()
+            .map(|field| PromptField {
+                label: say(&field.label),
+                masked: field.masked,
+                required: field.required,
+                initial: field.initial.clone(),
+            })
+            .collect();
+        let error = refused.or_else(|| {
+            retried.then(|| {
+                let at = asked
+                    .fields
+                    .iter()
+                    .position(|field| field.masked)
+                    .unwrap_or(0);
+                (at, retry.to_owned())
+            })
+        });
+        return (PromptKind::Fields, fields, word("portal-connect"), error);
+    };
+    let (kind, fields) = match sim.step {
+        SimUnlockStep::Pin => (
+            PromptKind::SimPin {
+                attempts_left: sim.attempts_left,
+            },
+            vec![PromptField {
+                label: asked
+                    .fields
+                    .first()
+                    .map(|field| say(&field.label))
+                    .unwrap_or_default(),
+                masked: true,
+                required: true,
+                initial: String::new(),
+            }],
+        ),
+        // The question reads back the PUK and the new PIN; the sheet asks
+        // the PIN twice so a typo does not lock the SIM again.
+        SimUnlockStep::Puk => (
+            PromptKind::SimPuk {
+                attempts_left: sim.attempts_left,
+            },
+            vec![PromptField::default(); 2],
+        ),
+    };
+    let error = refused.or_else(|| {
+        (retried && sim.step == SimUnlockStep::Pin).then(|| (0, word("portal-sim-pin-wrong")))
+    });
+    (kind, fields, word("portal-sim-unlock"), error)
 }
 
 /// A network the person may join, which asks for its password next.
@@ -1438,7 +1458,7 @@ fn pairing(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     let service = asked
         .service_key
         .as_deref()
-        .map(|key| word(key))
+        .map(word)
         .or_else(|| asked.service.clone());
     let explain = |key: &str| words(key, &[("device", &device)]);
     let mut dialog = Dialog {
@@ -1454,7 +1474,7 @@ fn pairing(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
                 &[("device", &device)],
             );
             dialog.detail = explain("bluetooth-prompt-explain-confirm-passkey");
-            dialog.code = asked.code.clone();
+            dialog.code.clone_from(&asked.code);
             dialog.confirm_label = word("bluetooth-prompt-accept-match");
             Plan::Agree
         }

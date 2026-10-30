@@ -241,6 +241,37 @@ fn locked_sim() -> Value {
     .expect("details")
 }
 
+/// A SIM asking for its PIN, and the same after the SIM refused one.
+fn sim_pin(retry: bool) -> Value {
+    let mut detail = vec![words(
+        "portal-network-sim-pin-lead",
+        &[("network", Text::Verbatim("Home".to_owned()))],
+    )];
+    if retry {
+        detail.push(words("portal-network-retry", &[]));
+    }
+    serde_json::to_value(SecretsDetails {
+        network: Some("Home".to_owned()),
+        title: words("portal-network-sim-pin-title", &[]),
+        detail,
+        fields: vec![FieldDetails {
+            key: "pin".to_owned(),
+            label: words("portal-network-sim-pin", &[]),
+            masked: true,
+            required: true,
+            initial: String::new(),
+            rule: FieldRule::Any,
+        }],
+        remember: None,
+        sim: Some(SimDetails {
+            step: SimUnlockStep::Pin,
+            attempts_left: Some(3),
+        }),
+        refusal: None,
+    })
+    .expect("details")
+}
+
 fn pairing(method: PairingMethod, code: Option<&str>) -> Value {
     serde_json::to_value(PairingDetails {
         device: "Keyboard".to_owned(),
@@ -527,6 +558,60 @@ fn the_sim_locked_by_wrong_pins_asks_for_its_puk_and_a_new_pin() {
 }
 
 #[test]
+fn a_sim_that_refused_the_pin_asks_for_it_again_with_why() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, questions) = asking(Vec::new());
+    let asked = ask(&questions, None, "Home", "network.secrets", sim_pin(false));
+    pump(&mut session, |_| questions.pending().len() == 1);
+    assert_eq!(dialog(&session).title, "SIM PIN required");
+    let shown = prompt(&session);
+    assert_eq!(
+        shown.kind,
+        PromptKind::SimPin {
+            attempts_left: Some(3)
+        }
+    );
+    assert_eq!(
+        shown.fields.len(),
+        1,
+        "one field to type the PIN into, not one per digit"
+    );
+    assert!(shown.fields[0].masked, "the PIN is not shown as typed");
+    assert_eq!(shown.fields[0].label, "SIM PIN");
+    assert!(shown.option.is_none(), "the SIM's PIN is not remembered");
+    assert_eq!(shown.primary_label, "Unlock");
+    assert_eq!(shown.error, None);
+    press(
+        &mut session,
+        PortalEffect::TYPE_SECRET.id,
+        json!({"field": 0, "value": "1234"}),
+    );
+    press(&mut session, PortalEffect::SUBMIT.id, json!({}));
+    let answer = answered(&mut session, &questions, asked);
+    let values: Vec<&str> = answer.values.iter().map(|value| value.as_str()).collect();
+    assert_eq!(values, ["1234"]);
+
+    // The SIM refuses it and asks again, saying why.
+    let _again = ask(&questions, None, "Home", "network.secrets", sim_pin(true));
+    pump(&mut session, |session| {
+        session
+            .portal()
+            .expect("portal sheet")
+            .dialog()
+            .is_some_and(|dialog| match &dialog.body {
+                Body::Secret(shown) => shown.error.is_some(),
+                _ => false,
+            })
+    });
+    let refused = prompt(&session);
+    assert_eq!(refused.error, Some((0, "That PIN is wrong.".to_owned())));
+    assert_eq!(
+        refused.resource, "Enter the PIN to unlock the SIM for “Home”.",
+        "the retry line is not shown as what the SIM is"
+    );
+}
+
+#[test]
 fn the_network_that_could_not_be_joined_offers_to_join_it() {
     let _settled = ui::motion::testing::settled();
     let (mut session, questions) = asking(Vec::new());
@@ -730,21 +815,22 @@ struct Allowances {
 
 impl Service for Allowances {
     fn resources(&self) -> Vec<ResourceSpec> {
-        let kept = self.kept.lock().expect("kept");
-        let consents: Vec<ResourceSpec> = kept
-            .iter()
-            .map(|(app, capability)| {
-                offer::<Consent>(ResourceSpec::new(
-                    consent(app, capability),
-                    "portal.consent",
-                    app.clone(),
-                ))
-                .with_presentation(ResourcePresentation {
-                    detail: Some(capability.clone()),
-                    ..ResourcePresentation::default()
+        let consents: Vec<ResourceSpec> = {
+            let kept = self.kept.lock().expect("kept");
+            kept.iter()
+                .map(|(app, capability)| {
+                    offer::<Consent>(ResourceSpec::new(
+                        consent(app, capability),
+                        "portal.consent",
+                        app.clone(),
+                    ))
+                    .with_presentation(ResourcePresentation {
+                        detail: Some(capability.clone()),
+                        ..ResourcePresentation::default()
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        };
         vec![ResourceSpec::new("portal", "portal", "Portal").with_children(consents)]
     }
 
