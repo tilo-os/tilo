@@ -229,6 +229,90 @@ fn finish(guild: &Guild, workspace: &WorkspaceChat, dropped: &[String]) -> Finis
     }
 }
 
+/// The channels Discord lists that the workspace has not joined yet, each
+/// adopted into the channel it already is there or added: what `pending` says
+/// when one waits for the category it is listed under.
+fn plan_new_channels(
+    guild: &Guild,
+    workspace: &WorkspaceChat,
+    plan: &mut ImportPlan,
+    pending: &mut bool,
+    tilo_own: &dyn Fn(&String) -> bool,
+) {
+    let mut claimed: HashSet<&str> = HashSet::new();
+    // Text channels before voice, as Discord lists them.
+    for channel in ordered(guild, &[ChannelKind::Text])
+        .into_iter()
+        .chain(ordered(guild, &[ChannelKind::Voice]))
+    {
+        if guild.by_discord(MappedKind::Channel, &channel.id).is_some() {
+            continue;
+        }
+        let category = match channel
+            .parent
+            .as_ref()
+            .filter(|_| guild.only_channel.is_none())
+        {
+            Some(parent) => match guild.by_discord(MappedKind::Category, parent) {
+                Some(mapping) => Some(mapping.tilo.clone()),
+                // A category kept in Discord only takes its channels along.
+                None if guild.discord_only.contains(parent) => continue,
+                // Its category is created this round; the channel follows next.
+                None => {
+                    *pending = true;
+                    continue;
+                }
+            },
+            None => None,
+        };
+        *pending = true;
+        let voice = channel.kind == ChannelKind::Voice;
+        let free = |c: &&Channel| {
+            guild.mapping(MappedKind::Channel, &c.id).is_none()
+                && !claimed.contains(c.id.as_str())
+                && c.voice == voice
+                && slug::channel_slug(&c.name) == slug::channel_slug(&channel.name)
+        };
+        // The same name in the same category first; else one in a category
+        // the server has no counterpart for (such as the channels a workspace
+        // opened with), which no other Discord channel will claim.
+        let existing = workspace
+            .channels
+            .iter()
+            .filter(free)
+            .find(|c| c.category == category)
+            .or_else(|| {
+                workspace
+                    .channels
+                    .iter()
+                    .filter(free)
+                    .find(|c| c.category.as_ref().is_none_or(tilo_own))
+            });
+        match existing {
+            Some(existing) => {
+                claimed.insert(&existing.id);
+                if existing.category != category {
+                    plan.file.push(FileItem {
+                        channel: existing.id.clone(),
+                        category: category.clone(),
+                    });
+                }
+                plan.adopt.push(AdoptItem {
+                    kind: MappedKind::Channel,
+                    tilo: existing.id.clone(),
+                    discord: channel.id.clone(),
+                });
+            }
+            None => plan.channels.push(ChannelItem {
+                name: channel.name.clone(),
+                category,
+                kind: if voice { "voice" } else { "text" }.into(),
+                discord: channel.id.clone(),
+            }),
+        }
+    }
+}
+
 /// The next import round for `guild` into the workspace's chat, `workspace`.
 #[must_use]
 pub fn plan(guild: &Guild, workspace: &WorkspaceChat) -> ImportPlan {
@@ -254,7 +338,6 @@ pub fn plan(guild: &Guild, workspace: &WorkspaceChat) -> ImportPlan {
                     })
                 })
     };
-    let mut claimed: HashSet<&str> = HashSet::new();
     plan_categories(
         guild,
         workspace,
@@ -262,77 +345,7 @@ pub fn plan(guild: &Guild, workspace: &WorkspaceChat) -> ImportPlan {
         &mut plan,
         &mut pending,
     );
-    // Text channels before voice, as Discord lists them.
-    for channel in ordered(guild, &[ChannelKind::Text])
-        .into_iter()
-        .chain(ordered(guild, &[ChannelKind::Voice]))
-    {
-        if guild.by_discord(MappedKind::Channel, &channel.id).is_some() {
-            continue;
-        }
-        let category = match channel
-            .parent
-            .as_ref()
-            .filter(|_| guild.only_channel.is_none())
-        {
-            Some(parent) => match guild.by_discord(MappedKind::Category, parent) {
-                Some(mapping) => Some(mapping.tilo.clone()),
-                // A category kept in Discord only takes its channels along.
-                None if guild.discord_only.contains(parent) => continue,
-                // Its category is created this round; the channel follows next.
-                None => {
-                    pending = true;
-                    continue;
-                }
-            },
-            None => None,
-        };
-        pending = true;
-        let voice = channel.kind == ChannelKind::Voice;
-        let free = |c: &&Channel| {
-            guild.mapping(MappedKind::Channel, &c.id).is_none()
-                && !claimed.contains(c.id.as_str())
-                && c.voice == voice
-                && slug::channel_slug(&c.name) == slug::channel_slug(&channel.name)
-        };
-        // The same name in the same category first; else one in a category
-        // the server has no counterpart for (such as the channels a workspace
-        // opened with), which no other Discord channel will claim.
-        let existing = workspace
-            .channels
-            .iter()
-            .filter(free)
-            .find(|c| c.category == category)
-            .or_else(|| {
-                workspace
-                    .channels
-                    .iter()
-                    .filter(free)
-                    .find(|c| c.category.as_ref().is_none_or(&tilo_own))
-            });
-        match existing {
-            Some(existing) => {
-                claimed.insert(&existing.id);
-                if existing.category != category {
-                    plan.file.push(FileItem {
-                        channel: existing.id.clone(),
-                        category: category.clone(),
-                    });
-                }
-                plan.adopt.push(AdoptItem {
-                    kind: MappedKind::Channel,
-                    tilo: existing.id.clone(),
-                    discord: channel.id.clone(),
-                });
-            }
-            None => plan.channels.push(ChannelItem {
-                name: channel.name.clone(),
-                category,
-                kind: if voice { "voice" } else { "text" }.into(),
-                discord: channel.id.clone(),
-            }),
-        }
-    }
+    plan_new_channels(guild, workspace, &mut plan, &mut pending, &tilo_own);
     plan.drop_categories = emptied(workspace, &plan.file, tilo_own);
     if !pending && guild.ownership == Ownership::Importing {
         let (channels, categories) = unused(guild, workspace);
