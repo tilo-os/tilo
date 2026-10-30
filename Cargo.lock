@@ -18290,6 +18290,7 @@ dependencies = [
  "smithay",
  "tempfile",
  "tilo-frame-metrics",
+ "tilo-test-env",
  "tilo-wayland-ext",
  "tilo-winit",
  "tracing",
