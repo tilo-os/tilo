@@ -10,6 +10,14 @@ license.workspace = true
 name = "tilo-session"
 path = "src/main.rs"
 
+# The session's loop walks no path after startup. The audit watches the
+# process's main thread, and `libtest` runs every test on a thread of its own,
+# so this target is the process's `main` driving the session itself.
+[[test]]
+name = "main_thread_reads"
+path = "tests/main_thread_reads.rs"
+harness = false
+
 [features]
 # Stamps the developer-entry build marker into the binary so the package's
 # developer session entry can tell a session someone deliberately built from
