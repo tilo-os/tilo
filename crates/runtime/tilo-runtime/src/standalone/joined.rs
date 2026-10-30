@@ -484,12 +484,27 @@ impl Joined {
     }
 
     fn publish(&self, scope: &Scope, session: &RelayCoeditSession) {
-        let result = match self.keys.get() {
-            Some(keys) => scope.publish_renewing(session, &self.custody, &mut |sealed| {
-                keys.renew_sealed(scope.room(), sealed)
-            }),
-            None => scope.publish(session, &self.custody),
+        let Some(keys) = self.keys.get() else {
+            if let Err(error) = scope.publish(session, &self.custody) {
+                tracing::debug!(%error, "joined room publication remains in durable custody");
+            }
+            return;
         };
+        // A sealed record's history this device can read is this device's to
+        // fold: it writes its own checkpoint where the room's host used to.
+        let compacted = scope.compact(
+            &self.custody,
+            &mut |write| keys.open_history_write(scope.room(), write),
+            &mut |app, record, snapshot| keys.seal_checkpoint(scope.room(), app, record, snapshot),
+        );
+        match compacted {
+            Ok(0) => {}
+            Ok(count) => tracing::debug!(count, "joined room sealed histories compacted"),
+            Err(error) => tracing::debug!(%error, "joined room sealed history stays uncompacted"),
+        }
+        let result = scope.publish_renewing(session, &self.custody, &mut |sealed| {
+            keys.renew_sealed(scope.room(), sealed)
+        });
         if let Err(error) = result {
             tracing::debug!(%error, "joined room publication remains in durable custody");
         }
