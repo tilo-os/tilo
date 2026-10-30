@@ -86,6 +86,8 @@ from replay_model import TASK_MARK, OpenAiReplay, text_of  # noqa: E402
 TL_APPS = ["notes", "tasks", "mail", "chat"]
 NATIVE = "agent tasks"
 TRACKER_ISSUES = "tasks.tracker/issues/"
+# tilo_actions::BOUND_RESOURCE_PREFIX: an app instance's alias of its own resource ids.
+BOUND_RESOURCE_PREFIX = "tilo-ui-bound:v1:"
 # How long any one wait may take before it counts as a hang: a first frame takes well under a
 # second here, so this bounds only a path that never answers.
 HANG_BOUND = float(os.environ.get("TILO_TEST_HANG_BOUND_SECS", "30"))
@@ -521,6 +523,18 @@ def check_repl(session: Session, out: Path) -> dict:
         (out / "repl-transcript.txt").write_text(repl.transcript)
 
 
+def logical_resource(resource: str) -> str:
+    """The app's own id of `resource`: an instance with no window (the windowless Tasks)
+    publishes its resources under its instance's alias, `BOUND_RESOURCE_PREFIX` and the id in
+    hex last, as `tilo_actions::selection::logical_resource_id` reads it."""
+    if not resource.startswith(BOUND_RESOURCE_PREFIX):
+        return resource
+    try:
+        return bytes.fromhex(resource.rsplit(":", 1)[-1]).decode()
+    except ValueError:
+        return resource
+
+
 def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
     """Asking an agent makes the tracker issue, opens no window and starts a task agent."""
     session.provision(model)
@@ -534,8 +548,9 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
     def issue() -> str | None:
         """The issue's address: listed among the workspace's records under the request, or
         named in what its task agent was told."""
-        listed = next((a.get("resource") for a in session.actions(REQUEST)
-                       if (a.get("resource") or "").startswith(TRACKER_ISSUES)), None)
+        listed = next((logical for a in session.actions(REQUEST)
+                       if (logical := logical_resource(a.get("resource") or ""))
+                       .startswith(TRACKER_ISSUES)), None)
         if listed:
             return listed
         told = re.search(re.escape(TRACKER_ISSUES) + r"[\w-]+", json.dumps(model.task_turns))

@@ -223,33 +223,18 @@ mod files_clipboard_tests {
             )
         }
 
-        fn start_session(profile: &Path, restarting: bool) -> crate::runtime_host::Session {
-            let deadline = std::time::Instant::now()
-                .checked_add(tilo_test_env::hang_bound())
-                .expect("bounded restart deadline");
-            loop {
-                let mut stage = String::new();
-                match crate::runtime_host::Session::start_reporting(profile, &mut |step| {
-                    stage = step.into();
-                }) {
-                    Ok(session) => return session,
-                    // Dropping a same-process session asks asynchronous hosts
-                    // to stop. Wait for that actual retirement before reopening;
-                    // a real process-kill journey releases its locks at exit.
-                    Err(error)
-                        if restarting
-                            && matches!(
-                                error.to_string().as_str(),
-                                "Busy" | "file lease is busy"
-                            )
-                            && std::time::Instant::now() < deadline =>
-                    {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                    Err(error) => {
-                        restart_lease_diagnostics(profile);
-                        panic!("actual session start failed at {stage}: {error}");
-                    }
+        fn start_session(profile: &Path) -> crate::runtime_host::Session {
+            // A session that ended let go of the profile's writer lease with
+            // it, however long its work lingers in this process: the next one
+            // starts at once.
+            let mut stage = String::new();
+            match crate::runtime_host::Session::start_reporting(profile, &mut |step| {
+                stage = step.into();
+            }) {
+                Ok(session) => session,
+                Err(error) => {
+                    restart_lease_diagnostics(profile);
+                    panic!("actual session start failed at {stage}: {error}");
                 }
             }
         }
@@ -265,7 +250,7 @@ mod files_clipboard_tests {
             } else {
                 assert!(folders.iter().all(|folder| folder.is_dir()));
             }
-            let session = Self::start_session(profile, !prepare);
+            let session = Self::start_session(profile);
             let source_grants = {
                 let tree = session.workspace_tree();
                 let source_grants = grant_files_folder(&tree, &folders[0]);

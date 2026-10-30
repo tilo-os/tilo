@@ -19,9 +19,11 @@ variable = "TILO_REQUIRE_USERNS"
 mapped = true
 
 [[capabilities.UserNamespace.tests]]
-# Runs itself as uid 1000 under bubblewrap with a /proc of its own.
+# Runs itself, or a child, under bubblewrap with a /proc of its own.
 probe = "bubblewrap-with-proc"
-filter = "package(shell) and test(=runtime_host::admission_tests::readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampered_identity)"
+filter = """\
+package(shell) and (test(=runtime_host::admission_tests::readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampered_identity) \
+or test(=shell::broker_services::file_clipboard::bridge_tests::child_tests::clipboard_bridge_runs_in_a_real_sandboxed_child))"""
 
 [[capabilities.UserNamespace.tests]]
 # The seed test mounts in a private mount namespace.

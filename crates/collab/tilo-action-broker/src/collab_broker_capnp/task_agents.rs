@@ -45,7 +45,7 @@ pub(super) fn task_still_goes(
         run.active
             && run.agent == task.agent_id
             && run.issue == task.work_group
-            && run.delegation.as_deref() == Some(encoded.as_slice())
+            && run.delegation() == Ok(Some(encoded.as_slice()))
     }) {
         Ok(())
     } else {

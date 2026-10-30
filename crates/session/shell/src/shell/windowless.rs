@@ -20,8 +20,10 @@
 //! [`ShellOverlayHost::run_windowless`]: crate::shell::overlay_host::ShellOverlayHost
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Mutex;
 
+use tilo_action_broker::services::WindowlessStart;
 use tilo_lock::MutexRecover as _;
 
 /// The instance every windowless app is mounted as: no tab of any workspace.
@@ -34,49 +36,56 @@ pub(crate) fn definition(app: &str) -> Option<&'static ui::application::Applicat
     (app == tasks::APP_ID).then(tilo_app::framework::definition::<tasks::App>)
 }
 
-/// Where one app's windowless instance in one room stands.
+/// How the overlay host's mount of one app's windowless instance in one room ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Instance {
-    /// Asked for; the overlay host mounts it on its next turn.
-    Asked,
     /// Mounted and connected.
     Running,
-    /// It could not be mounted: why. Said to the action that asked for it, then forgotten, so
-    /// the next action tries again.
+    /// It could not be mounted: why. Said to every action waiting on its start, then
+    /// forgotten, so the next action tries again.
     Failed(String),
+}
+
+/// Where one app's windowless instance in one room stands.
+enum Slot {
+    /// Asked for; the overlay host mounts it on its next turn. The starts of the actions
+    /// waiting on it, each told how the mount ends.
+    Asked(Vec<tokio::sync::oneshot::Sender<Result<(), String>>>),
+    /// Mounted and connected.
+    Running,
 }
 
 type Key = (String, String);
 
-static INSTANCES: Mutex<Option<HashMap<Key, Instance>>> = Mutex::new(None);
+static INSTANCES: Mutex<Option<HashMap<Key, Slot>>> = Mutex::new(None);
 
-/// Have `app` run with no window in `room` (the broker's ask): `Ok(true)` when it runs or will,
-/// `Ok(false)` for an app this session runs no such instance of.
-///
-/// # Errors
-/// Why its instance there could not be mounted, said once.
-pub(crate) fn request(app: &str, room: &str) -> Result<bool, String> {
-    if definition(app).is_none() {
-        return Ok(false);
-    }
+/// Have `app` run with no window in `room` (the broker's ask): how its start ends, or `None`
+/// for an app this session runs no such instance of.
+pub(crate) fn request(app: &str, room: &str) -> Option<WindowlessStart> {
+    definition(app)?;
+    let (tell, start) = tokio::sync::oneshot::channel();
     let key = (app.to_owned(), room.to_owned());
     let mut instances = INSTANCES.lock_recover();
-    let instances = instances.get_or_insert_with(HashMap::new);
-    match instances.get(&key) {
-        Some(Instance::Failed(_)) => {
-            let Some(Instance::Failed(why)) = instances.remove(&key) else {
-                return Ok(true);
-            };
-            return Err(why);
-        }
-        Some(Instance::Running | Instance::Asked) => return Ok(true),
-        None => {
-            instances.insert(key, Instance::Asked);
+    match instances.get_or_insert_with(HashMap::new).entry(key) {
+        Entry::Occupied(mut slot) => match slot.get_mut() {
+            Slot::Running => tell_start(tell, Ok(())),
+            Slot::Asked(waiting) => waiting.push(tell),
+        },
+        Entry::Vacant(slot) => {
+            slot.insert(Slot::Asked(vec![tell]));
+            drop(instances);
+            // The overlay host mounts it on its loop, which this wakes.
+            crate::shell::wake_compositor();
         }
     }
-    // The overlay host mounts it on its loop, which this wakes.
-    crate::shell::wake_compositor();
-    Ok(true)
+    Some(start)
+}
+
+/// Tell one waiting action how the start ended. An action that stopped waiting is told nothing.
+fn tell_start(tell: tokio::sync::oneshot::Sender<Result<(), String>>, ended: Result<(), String>) {
+    if tell.send(ended).is_err() {
+        tracing::debug!("an action stopped waiting for an app's start without a window");
+    }
 }
 
 /// The instances asked for and not mounted yet.
@@ -87,29 +96,49 @@ pub(crate) fn asked() -> Vec<(String, String)> {
         .map(|instances| {
             instances
                 .iter()
-                .filter(|(_, instance)| **instance == Instance::Asked)
+                .filter(|(_, slot)| matches!(slot, Slot::Asked(_)))
                 .map(|(key, _)| key.clone())
                 .collect()
         })
         .unwrap_or_default()
 }
 
-/// Where `app`'s instance in `room` stands now.
+/// How the mount of `app`'s instance in `room` ended: every action waiting on its start is
+/// told; a failed one is forgotten, so the next action asks again.
 pub(crate) fn settle(app: &str, room: &str, instance: Instance) {
-    INSTANCES
-        .lock_recover()
-        .get_or_insert_with(HashMap::new)
-        .insert((app.to_owned(), room.to_owned()), instance);
+    let key = (app.to_owned(), room.to_owned());
+    let previous = match &instance {
+        Instance::Running => INSTANCES
+            .lock_recover()
+            .get_or_insert_with(HashMap::new)
+            .insert(key, Slot::Running),
+        Instance::Failed(_) => INSTANCES
+            .lock_recover()
+            .get_or_insert_with(HashMap::new)
+            .remove(&key),
+    };
+    let waiting = match previous {
+        Some(Slot::Asked(waiting)) => waiting,
+        Some(Slot::Running) | None => Vec::new(),
+    };
+    let ended = match instance {
+        Instance::Running => Ok(()),
+        Instance::Failed(why) => Err(why),
+    };
+    for tell in waiting {
+        tell_start(tell, ended.clone());
+    }
 }
 
-/// Where `app`'s instance in `room` stands, if it was asked for.
+/// Whether `app`'s instance in `room` was asked for and not mounted yet (`Some(false)`), runs
+/// (`Some(true)`), or stands nowhere.
 #[cfg(test)]
-pub(crate) fn state(app: &str, room: &str) -> Option<Instance> {
+pub(crate) fn state(app: &str, room: &str) -> Option<bool> {
     INSTANCES
         .lock_recover()
         .as_ref()?
         .get(&(app.to_owned(), room.to_owned()))
-        .cloned()
+        .map(|slot| matches!(slot, Slot::Running))
 }
 
 #[cfg(test)]
@@ -117,18 +146,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_tasks_runs_without_a_window_and_a_failure_is_said_once() {
+    fn only_tasks_runs_without_a_window_and_every_waiting_action_hears_how_it_started() {
         let room = uuid::Uuid::new_v4().to_string();
-        assert_eq!(request("so.tilo.notes", &room), Ok(false));
-        assert_eq!(request(tasks::APP_ID, &room), Ok(true));
-        assert_eq!(state(tasks::APP_ID, &room), Some(Instance::Asked));
+        assert!(request("so.tilo.notes", &room).is_none());
+        let mut first = request(tasks::APP_ID, &room).expect("Tasks runs without a window");
+        assert_eq!(state(tasks::APP_ID, &room), Some(false));
         assert!(asked().contains(&(tasks::APP_ID.to_owned(), room.clone())));
-        // Asked again while it is mounted, nothing more is asked.
-        assert_eq!(request(tasks::APP_ID, &room), Ok(true));
+        // Asked again while it is being mounted, it waits on the same mount.
+        let mut second = request(tasks::APP_ID, &room).expect("Tasks runs without a window");
+        assert!(
+            first.try_recv().is_err(),
+            "nothing said before the mount ends"
+        );
         settle(tasks::APP_ID, &room, Instance::Failed("no broker".into()));
-        assert_eq!(request(tasks::APP_ID, &room), Err("no broker".into()));
-        // Said once: the next action tries again.
-        assert_eq!(request(tasks::APP_ID, &room), Ok(true));
-        assert_eq!(state(tasks::APP_ID, &room), Some(Instance::Asked));
+        assert_eq!(first.try_recv(), Ok(Err("no broker".into())));
+        assert_eq!(second.try_recv(), Ok(Err("no broker".into())));
+        // Forgotten: the next action asks again, and hears it runs.
+        let mut third = request(tasks::APP_ID, &room).expect("Tasks runs without a window");
+        assert_eq!(state(tasks::APP_ID, &room), Some(false));
+        settle(tasks::APP_ID, &room, Instance::Running);
+        assert_eq!(third.try_recv(), Ok(Ok(())));
+        let mut running = request(tasks::APP_ID, &room).expect("Tasks runs without a window");
+        assert_eq!(
+            running.try_recv(),
+            Ok(Ok(())),
+            "a running instance is said at once"
+        );
     }
 }

@@ -981,8 +981,12 @@ impl LauncherServices for NativeLauncher {
         };
         launched.map(|_| ()).map_err(|e| e.to_string())
     }
-    fn windowless(&self, app: &str, room: &str) -> Result<bool, String> {
-        super::windowless::request(app, room)
+    fn windowless(
+        &self,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<tilo_action_broker::services::WindowlessStart>, String> {
+        Ok(super::windowless::request(app, room))
     }
     fn begin_launch(
         &self,
@@ -1893,15 +1897,18 @@ fn native_workspace_memberships(
 }
 
 /// The room's tracker, read for the broker's runs and for whoever follows
-/// one in the shell.
+/// one in the shell: from the owner where it commits the room, from the
+/// sealed writes this device holds where the room seals its records.
 pub(crate) fn native_tracker(
     tree: &WorkspaceTreeHandle,
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
+    sealed_writes: Option<SealedWrites>,
 ) -> Arc<NativeTrackerRuns> {
     Arc::new(tracker_runs::NativeTrackerRuns::new(
         NativeOwnerCommitService {
             history_keys,
+            sealed_writes,
             ..NativeOwnerCommitService::new(tree.clone(), network)
         },
     ))
@@ -1940,8 +1947,12 @@ pub fn native_services(
     sealed_writes: Option<SealedWrites>,
 ) -> HostServices {
     let tracker_runs = membership.as_ref().map(|tree| {
-        native_tracker(tree, network.clone(), history_keys.clone())
-            as Arc<dyn tilo_action_broker::services::TrackerRuns>
+        native_tracker(
+            tree,
+            network.clone(),
+            history_keys.clone(),
+            sealed_writes.clone(),
+        ) as Arc<dyn tilo_action_broker::services::TrackerRuns>
     });
     let committed_documents = membership
         .as_ref()
