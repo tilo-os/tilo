@@ -1045,6 +1045,8 @@ pub struct Session {
     magnifier: (u8, u8),
     /// Setup, while it runs: it withholds the desktop's actions.
     setup: Option<Rc<RefCell<Setup>>>,
+    /// The login screens' comforts, kept equal to the person's own.
+    comforts: Option<mount::comforts::Mirror>,
     /// Checking the passwords the lock screen was given.
     unlocking: Unlocking,
     /// The screenshots asked for.
@@ -1306,12 +1308,21 @@ impl Session {
             compositor.set_input_observer(Some(portal.input_observer()));
         }
         let loop_wake = compositor.waker();
+        // Signing in does not change the login screens; what the person
+        // changes here afterwards does, where they let it follow.
+        let comforts = (!options.hosted).then(|| {
+            let wake = loop_wake.clone();
+            mount::comforts::Mirror::mount(std::path::PathBuf::from(tilo_auth::SOCKET), move || {
+                wake.wake_by_ref()
+            })
+        });
         Ok(Self {
             compositor,
             shared,
             banners,
             input: options.config.input,
             setup,
+            comforts,
             unlocking: Unlocking {
                 user: options.user,
                 verifier: options.verifier,
@@ -1612,6 +1623,9 @@ impl Session {
     fn settle(&mut self) -> Result<(), Error> {
         self.follow_collaboration();
         self.follow_power()?;
+        if let Some(comforts) = &mut self.comforts {
+            comforts.observe();
+        }
         self.follow_lock()?;
         if let Some(captures) = &self.captures {
             captures.serve(&mut self.compositor);
@@ -1872,9 +1886,9 @@ impl Session {
             LockEffect::Suspend => self.session_action(SessionAction::Suspend),
             LockEffect::Restart => self.session_action(SessionAction::Restart),
             LockEffect::ShutDown => self.session_action(SessionAction::ShutDown),
-            LockEffect::TypePassword { .. } | LockEffect::Unlock => {}
-            // The screen draws its own keyboard; showing it is the screen's.
-            LockEffect::ShowKeyboard => {}
+            // What was typed is the field's until the screen asks to unlock,
+            // and the keyboard it draws is the screen's to show or put away.
+            LockEffect::TypePassword { .. } | LockEffect::Unlock | LockEffect::ShowKeyboard => {}
         }
     }
 

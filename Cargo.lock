@@ -21508,6 +21508,7 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-audio-service",
+ "tilo-auth",
  "tilo-bluetooth-agent",
  "tilo-bluez",
  "tilo-compositor",

@@ -82,6 +82,8 @@ tilo-tray-host = { path = "../tray-host" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 # The desktop's event sounds (a notification's ring, a screenshot's click).
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
+# The login screens' comforts go to tilo-authd over its socket protocol.
+tilo-auth = { path = "../../system/tilo-auth", default-features = false }
 # Checks a password for the lock screen, through the unlock helper.
 bounded-command = { path = "../../system/bounded-command" }
 zeroize.workspace = true
