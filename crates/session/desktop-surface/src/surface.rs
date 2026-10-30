@@ -2878,11 +2878,10 @@ impl ui::widget::controls::ActionControls for DesktopSurface {
                 .any(ui::widget::controls::has_pending_control_invocation)
     }
 
-    /// An action row the palette queued outlives the palette closing on it.
+    /// An action row chosen in search outlives search closing on it.
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.unrouted_control
             .take()
-            .or_else(|| ui::widget::controls::take_control_invocation(self.search.palette_mut()?))
             .or_else(|| ui::widget::controls::take_control_invocation(self.shown_row()?))
     }
 }

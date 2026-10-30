@@ -323,7 +323,7 @@ Every widget in the tree exposes a name through either:
 
 `list_targets` returns every widget with a non-zero rect. The bare name (`Parent/Child`) is registered when there's exactly one sibling of that name; an indexed form (`Parent/Child[N]`) always works.
 
-To make a widget more addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")`. See `command_palette_input` in `crates/sdk/ui-core/src/widget/command_palette.rs` for the pattern.
+To make a widget more addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")`. See `command_palette_input` in `crates/sdk/ui-core/src/action_palette.rs` for the pattern.
 
 ## Layer 3: `--backend headless` — display-free live binary
 

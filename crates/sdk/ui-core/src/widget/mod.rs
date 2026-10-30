@@ -3304,7 +3304,6 @@ pub use app_widget::{
     AppCommand, AppHostIntent, AppWidget, DeviceDisplayMoveReply, DocumentOpenCapability,
     DocumentOpenOutcome, DocumentOpenReply, HostShellAllow, IconDescriptor, WindowPublication,
 };
-pub mod command_palette;
 pub mod input_hint;
 pub mod shortcut_recorder;
 pub use input_hint::{InputDeviceGlyph, InputHint, LegendConventions};

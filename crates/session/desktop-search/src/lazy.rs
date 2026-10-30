@@ -16,7 +16,6 @@ pub trait DesktopSearchApi {
     fn waiting(&self) -> bool;
     fn open(&mut self, data: SearchData);
     fn close(&mut self);
-    fn dismissing(&mut self);
     fn set_query(&mut self, query: &str);
     fn refresh(&mut self) -> bool;
     fn observe(&mut self) -> bool;
@@ -44,9 +43,6 @@ impl DesktopSearchApi for DesktopSearch {
     }
     fn close(&mut self) {
         Self::close(self);
-    }
-    fn dismissing(&mut self) {
-        Self::dismissing(self);
     }
     fn set_query(&mut self, query: &str) {
         Self::set_query(self, query);
@@ -178,12 +174,6 @@ impl LazyDesktopSearch {
         self.opening = None;
         if let Some(search) = &mut self.search {
             search.close();
-        }
-    }
-
-    pub fn dismissing(&mut self) {
-        if let Some(search) = &mut self.search {
-            search.dismissing();
         }
     }
 

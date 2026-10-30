@@ -1,11 +1,11 @@
-//! The desktop search palette: the toolkit's [`CommandPalette`] over the
-//! portable sources. The host owns placement and input routing; choosing an
-//! action row queues the palette's own control invocation (the host's action
-//! door resolves it against the live resource tree), every other row is
-//! handed back through [`DesktopSearch::take_choice`].
+//! The desktop search palette: the toolkit's [`ActionPalette`] over the
+//! portable sources. The host owns placement and input routing; a chosen row
+//! is handed back through [`DesktopSearch::take_choice`], an action row as
+//! the address the host's action door resolves against the live resource
+//! tree.
 
 use tilo_actions::{FlatAction, ResourceSpec};
-use ui::widget::command_palette::{CommandEntry, CommandPalette};
+use ui::{ActionPalette, CommandEntry};
 
 use crate::model::{Hit, Source, Target, search, search_with};
 use crate::providers::{
@@ -151,7 +151,7 @@ impl Sources {
 }
 
 pub struct DesktopSearch {
-    palette: CommandPalette,
+    palette: ActionPalette,
     sources: Option<Sources>,
     recents: Recents,
     /// What the person chose before, which orders equal matches.
@@ -170,9 +170,6 @@ pub struct DesktopSearch {
     /// [`ui::search::engine_generation`] when the rows were built: the
     /// content rows come again once the index's code arrived.
     shown_generation: u64,
-    /// The palette is closing because it was dismissed, not because a row
-    /// was chosen.
-    dismissed: bool,
     choice: Option<Target>,
 }
 
@@ -186,7 +183,7 @@ const PLACEHOLDER: &str = "Search apps, windows, documents and actions\u{2026}";
 
 impl DesktopSearch {
     pub fn new() -> Self {
-        let mut palette = CommandPalette::commands();
+        let mut palette = ActionPalette::rows(Vec::new());
         // Rows arrive already matched and ranked by the shared ranking.
         palette.set_bypass_fuzzy(true);
         palette.set_query_placeholder(PLACEHOLDER);
@@ -201,7 +198,6 @@ impl DesktopSearch {
             auto_selected: None,
             shown_query: None,
             shown_generation: 0,
-            dismissed: false,
             choice: None,
         }
     }
@@ -222,7 +218,6 @@ impl DesktopSearch {
         self.palette
             .set_query_placeholder(placeholder.as_deref().unwrap_or(PLACEHOLDER));
         self.sources = Some(Sources::new(data));
-        self.dismissed = false;
         self.choice = None;
         self.shown_query = None;
         self.expanded.clear();
@@ -232,14 +227,8 @@ impl DesktopSearch {
 
     /// Close without choosing anything.
     pub fn close(&mut self) {
-        self.dismissed = true;
         self.palette.close();
         self.finish();
-    }
-
-    /// The palette is about to be dismissed by the key it is handed next.
-    pub fn dismissing(&mut self) {
-        self.dismissed = true;
     }
 
     pub fn set_query(&mut self, query: &str) {
@@ -256,11 +245,11 @@ impl DesktopSearch {
         &self.rows
     }
 
-    pub fn palette(&self) -> &CommandPalette {
+    pub fn palette(&self) -> &ActionPalette {
         &self.palette
     }
 
-    pub fn palette_mut(&mut self) -> &mut CommandPalette {
+    pub fn palette_mut(&mut self) -> &mut ActionPalette {
         &mut self.palette
     }
 
@@ -438,13 +427,6 @@ impl DesktopSearch {
         if self.sources.is_none() || self.palette.is_open() {
             return false;
         }
-        if !self.dismissed
-            && self.choice.is_none()
-            && let Some(hit) = self.palette.selected_id().and_then(|id| self.hit(id))
-        {
-            // An action row closed the palette after queueing its invocation.
-            self.remember(&hit);
-        }
         self.finish();
         true
     }
@@ -456,15 +438,28 @@ impl DesktopSearch {
         self.remember(&hit);
         let mut target = hit.target;
         let mut toggles = false;
-        if let Target::Invoke(invoke) = &mut target
-            && let Some(descriptor) = &invoke.descriptor
-        {
-            toggles = descriptor.state.toggles;
-            if let (Some(param), Some(value)) = (descriptor.prompt_param(), argument) {
-                invoke
-                    .arguments
-                    .insert(param.to_owned(), serde_json::Value::String(value));
+        match &mut target {
+            Target::Invoke(invoke) => {
+                if let Some(descriptor) = &invoke.descriptor {
+                    toggles = descriptor.state.toggles;
+                    if let (Some(param), Some(value)) = (descriptor.prompt_param(), argument) {
+                        invoke
+                            .arguments
+                            .insert(param.to_owned(), serde_json::Value::String(value));
+                    }
+                }
             }
+            // An app's own action row runs with the value the person typed,
+            // where the row asks for one.
+            Target::Action(action) => {
+                toggles = action.spec.state.toggles;
+                if let (Some(param), Some(value)) = (action.spec.prompt_param(), argument) {
+                    action
+                        .preset
+                        .get_or_insert_with(|| (param.to_owned(), value));
+                }
+            }
+            _ => {}
         }
         self.choice = Some(target);
         if !toggles {
@@ -483,7 +478,7 @@ impl DesktopSearch {
     /// choosing it does, with `argument` the line its action asks for:
     /// what a caller of the desktop's published search runs. An app's own
     /// action row ([`Target::Action`]) runs only from its window, through
-    /// the palette's control. Returns whether there was such a row.
+    /// the host's action door. Returns whether there was such a row.
     pub fn choose(&mut self, index: usize, argument: Option<String>) -> bool {
         let Some(hit) = self.rows.get(index).cloned() else {
             return false;
@@ -504,7 +499,7 @@ impl DesktopSearch {
         self.usage = usage;
     }
 
-    /// The chosen non-action row, for the host to perform.
+    /// The chosen row, for the host to perform.
     pub fn take_choice(&mut self) -> Option<Target> {
         self.choice.take()
     }
@@ -531,7 +526,6 @@ impl DesktopSearch {
         self.expanded.clear();
         self.auto_selected = None;
         self.shown_query = None;
-        self.dismissed = false;
     }
 }
 
@@ -550,11 +544,12 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
                 depth: 0,
             };
             let mut entry = CommandEntry::from_flat_action(&flat);
-            if let Some((param, value)) = &action.preset {
-                entry = entry.with_action_preset(param.clone(), value.clone());
+            if action.preset.is_some() {
                 // The row is the hit (a video, a search of the service), not
                 // the generic `open` it runs through: only the hit's own
-                // subtitle describes it.
+                // subtitle describes it, and it runs at the hit the row
+                // already carries instead of asking for it.
+                entry = entry.with_preset();
                 entry.description = None;
             }
             entry.id = id;
@@ -594,7 +589,6 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::automerge::{AutoCommit, ROOT};
 
     fn data() -> SearchData {
         SearchData {
@@ -629,10 +623,7 @@ mod tests {
         search.open(data());
         search.set_query("sheets");
         assert_eq!(search.results()[0].title, "Sheets");
-        let mut doc = AutoCommit::new();
-        search
-            .palette_mut()
-            .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
+        search.palette_mut().activate_selected();
         assert!(search.observe(), "choosing a row closes search");
         assert_eq!(
             search.take_choice(),
@@ -692,10 +683,7 @@ mod tests {
         assert_eq!(entries[0].badge.as_deref(), Some("Off"));
         assert_eq!(entries[0].keybinding.as_deref(), Some("Super+D"));
         drop(entries);
-        let mut doc = AutoCommit::new();
-        search
-            .palette_mut()
-            .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
+        search.palette_mut().activate_selected();
         assert!(
             !search.observe(),
             "a switch keeps search open on its new state"
@@ -758,10 +746,7 @@ mod tests {
         let mut search = DesktopSearch::new();
         search.open(data());
         search.set_query("sheets");
-        let mut doc = AutoCommit::new();
-        search
-            .palette_mut()
-            .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
+        search.palette_mut().activate_selected();
         search.observe();
         search.open(data());
         assert_eq!(search.results()[0].provider, "recent");
@@ -769,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn an_action_row_queues_its_invocation_for_the_host_and_closes() {
+    fn an_action_row_hands_its_address_to_the_host_and_closes() {
         let mut resource = ResourceSpec::new("page-1", "notes.page", "Groceries");
         resource
             .actions
@@ -789,16 +774,13 @@ mod tests {
         });
         search.set_query("duplicate");
         assert_eq!(search.results()[0].title, "Duplicate note");
-        let mut doc = AutoCommit::new();
-        search
-            .palette_mut()
-            .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
+        search.palette_mut().activate_selected();
         assert!(search.observe());
-        assert_eq!(search.take_choice(), None, "the host's action door runs it");
-        let invocation = ui::widget::controls::take_control_invocation(search.palette_mut())
-            .expect("queued for the host");
+        let Some(Target::Action(action)) = search.take_choice() else {
+            panic!("the host's action door runs it");
+        };
         assert_eq!(
-            invocation.address,
+            action.address(),
             tilo_actions::ActionAddress::new("page-1", "duplicate")
         );
     }
@@ -1124,15 +1106,12 @@ mod tests {
         assert_eq!(header, Some(total), "the header counts every app");
 
         let mut reached = std::collections::BTreeSet::new();
-        let mut doc = AutoCommit::new();
         for _ in 0..(total * 4) {
             let id = search.palette().selected_id().map(str::to_owned);
             if let Some(id) = id {
                 if id.starts_with(MORE_PREFIX) {
                     let cursor = search.palette().cursor();
-                    search
-                        .palette_mut()
-                        .activate_selected(&mut ui::widget::Edits::lend(&mut doc), &ROOT);
+                    search.palette_mut().activate_selected();
                     assert!(!search.observe(), "showing all keeps search open");
                     assert!(search.is_open() && search.palette().is_open());
                     assert_eq!(search.palette().cursor(), cursor, "the row stays put");

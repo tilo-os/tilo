@@ -487,10 +487,8 @@ pub use tilo_actions;
 pub mod autocorrect {
     pub use spellcheck::contraction;
 }
+pub use action_palette::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
 pub use widget::ModelView;
-pub use widget::command_palette::{
-    ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, RowFace, SearchScope,
-};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};
 pub use widget::{ContentKind, NavItem, NavList, NavMode, NavPane, NavSection, NavShell};

@@ -587,7 +587,7 @@ pub trait SearchProvider {
 
     /// The people a row of this provider is about, worn as faces at the
     /// row's end (who is in a workspace, in a call). Empty for most rows.
-    fn row_faces(&self, _result: &SearchResult) -> Vec<ui::widget::command_palette::RowFace> {
+    fn row_faces(&self, _result: &SearchResult) -> Vec<ui::RowFace> {
         Vec::new()
     }
 
@@ -1432,7 +1432,7 @@ impl SearchRegistry {
 
     /// The faces the provider that returned `result` gives it
     /// ([`SearchProvider::row_faces`]).
-    pub fn row_faces(&self, result: &SearchResult) -> Vec<ui::widget::command_palette::RowFace> {
+    pub fn row_faces(&self, result: &SearchResult) -> Vec<ui::RowFace> {
         self.providers
             .iter()
             .find(|provider| provider.id() == result.provider_id)

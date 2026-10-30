@@ -306,7 +306,7 @@ fn continue_is_where_the_windows_were_as_their_bars_said() {
 #[test]
 fn all_apps_follows_the_listed_apps_and_lists_every_app() {
     use crate::shell::search::launcher::LauncherSection;
-    use ui::widget::command_palette::CommandEntry;
+    use ui::CommandEntry;
     let in_section = |id: &str, label: &str, section: LauncherSection| {
         let mut entry = CommandEntry::new(id, label).group(section.label());
         entry.section = Some(section.label());

@@ -324,7 +324,7 @@ tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 # search layer.
 tilo-search = { version = "0.1.0", path = "../search" }
 # The Tilo ACTION model: serializable, replayable CRDT-mutation actions + the
-# nested Resource tree apps publish. `command_palette` + `action_palette` +
+# nested Resource tree apps publish. `action_palette` +
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
 # focused app instance's open resources and dispatch their exported actions.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }

@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use tilo_desktop::collaborators::{RosterRow, VoiceChannel};
 use tilo_desktop_model::{DesktopTree, GroupId, StripId, Workspace, WorkspaceId};
-use ui::widget::command_palette::RowFace;
+use ui::RowFace;
 
 use crate::shell::chrome_state::{Chrome, ChromeState, PresenceRequest, SearchScope};
 use crate::shell::i18n::t_args;

@@ -1453,7 +1453,7 @@ fn the_search_shortcut_then_an_app_name_and_enter_opens_the_app() {
         handle.search_open(),
         "Ctrl+K opens search where Ctrl is the command key"
     );
-    assert!(find(&driver.inspection().root, "CommandPalette").is_some());
+    assert!(find(&driver.inspection().root, "ActionPalette").is_some());
     driver.type_text("sheets");
     driver.key("Enter");
     driver.relayout();
@@ -1475,7 +1475,7 @@ fn the_search_shortcut_then_an_app_name_and_enter_opens_the_app() {
         "sheets",
         "the launched app is focused"
     );
-    assert!(find(&driver.inspection().root, "CommandPalette").is_none());
+    assert!(find(&driver.inspection().root, "ActionPalette").is_none());
 }
 
 #[test]
@@ -1524,7 +1524,7 @@ fn search_from_navigation_focuses_an_open_window_and_escape_dismisses() {
 
 /// The open palette's result rows.
 fn result_rows(driver: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode> {
-    let palette = find(&driver.inspection().root, "CommandPalette")
+    let palette = find(&driver.inspection().root, "ActionPalette")
         .unwrap()
         .semantics
         .clone()
@@ -1625,7 +1625,7 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
     let (mut driver, handle, _) = mount();
     handle.toggle_search();
     driver.relayout();
-    let palette = find(&driver.inspection().root, "CommandPalette")
+    let palette = find(&driver.inspection().root, "ActionPalette")
         .expect("the open palette is in the semantic tree")
         .semantics
         .clone()
@@ -1644,7 +1644,7 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
         )
         .unwrap();
     driver.relayout();
-    let palette = find(&driver.inspection().root, "CommandPalette")
+    let palette = find(&driver.inspection().root, "ActionPalette")
         .unwrap()
         .semantics
         .clone()
@@ -1748,7 +1748,7 @@ fn search_opens_an_app_the_node_runs_for_this_desktop() {
         )
         .unwrap();
     driver.relayout();
-    let palette = find(&driver.inspection().root, "CommandPalette")
+    let palette = find(&driver.inspection().root, "ActionPalette")
         .unwrap()
         .semantics
         .clone()
@@ -2267,7 +2267,7 @@ fn search_fits_a_phone_screen() {
     handle.toggle_search();
     driver.relayout();
     driver.relayout();
-    let [x, _, width, _] = find(&driver.inspection().root, "CommandPalette")
+    let [x, _, width, _] = find(&driver.inspection().root, "ActionPalette")
         .expect("search is open")
         .rect;
     assert!(

@@ -341,15 +341,6 @@ fn is_search_chord(
     }
 }
 
-fn is_escape(event: &WindowEvent) -> bool {
-    matches!(
-        event,
-        WindowEvent::KeyboardInput { event: key, .. }
-            if key.state == ElementState::Pressed
-                && key.logical_key == Key::Named(NamedKey::Escape)
-    )
-}
-
 /// Every open window as search lists it: the app it shows (for its glyph),
 /// and where it is. Windows titled alike say what tells them apart: who
 /// holds the window, or else which of them it is, counted left to right.
@@ -709,30 +700,6 @@ impl DesktopSurface {
             let refreshed = self.search.refresh();
             self.structure_dirty |= closed || refreshed;
         }
-        if (self.search_window.is_some() || !self.search_owners.is_empty())
-            && let Some(invocation) = self
-                .search
-                .palette_mut()
-                .and_then(ui::widget::controls::take_control_invocation)
-        {
-            match self.search_window {
-                Some((strip, group)) => self.run_in_window(strip, group, invocation),
-                None => match self
-                    .search_owners
-                    .get(invocation.address.resource.as_str())
-                    .copied()
-                {
-                    // Chosen in search over everything: the app's window
-                    // comes forward and runs it.
-                    Some((strip, group)) => {
-                        self.bring_forward(strip, group);
-                        self.run_in_window(strip, group, invocation);
-                    }
-                    // Not an app's: the desktop's own door runs it.
-                    None => self.unrouted_control = Some(invocation),
-                },
-            }
-        }
         let choice = self.search.take_choice();
         if choice.is_some()
             && let Some(host) = self.shared.borrow().search_host.clone()
@@ -752,6 +719,7 @@ impl DesktopSurface {
             (Some(Target::Launch { app }), Some((strip, group))) => {
                 self.open_tab_in_group(strip, group, &app);
             }
+            (Some(Target::Action(action)), _) => self.run_action(&action),
             (Some(target), _) => self.perform(target),
             (None, into) => self.new_tab_into = into,
         }
@@ -779,6 +747,39 @@ impl DesktopSurface {
             .map(ui::widget::WindowGroup::active_tab_id);
         if let Some(tab) = tab {
             self.perform(Target::Window { tab, app: None });
+        }
+    }
+
+    /// Run a chosen action row: by its address, in the window the search
+    /// was opened in or the window of the app publishing it, as that app's
+    /// own control would; the desktop's own door runs a row of its own.
+    fn run_action(&mut self, action: &tilo_desktop_search::ActionTarget) {
+        let mut arguments = serde_json::Map::new();
+        if let Some((param, value)) = action.preset.clone() {
+            arguments.insert(param, serde_json::Value::String(value));
+        }
+        let invocation = ui::tilo_actions::ControlInvocation {
+            address: action.address(),
+            arguments,
+        };
+        match self.search_window {
+            Some((strip, group)) => self.run_in_window(strip, group, invocation),
+            None => {
+                match self
+                    .search_owners
+                    .get(invocation.address.resource.as_str())
+                    .copied()
+                {
+                    // Chosen in search over everything: the app's window
+                    // comes forward and runs it.
+                    Some((strip, group)) => {
+                        self.bring_forward(strip, group);
+                        self.run_in_window(strip, group, invocation);
+                    }
+                    // Not an app's: the desktop's own door runs it.
+                    None => self.unrouted_control = Some(invocation),
+                }
+            }
         }
     }
 
@@ -895,9 +896,11 @@ impl DesktopSurface {
                 }
                 None
             }
-            // An app's action runs through the palette's control
-            // invocation instead. Without a host running them, a desktop
-            // lists no host-published actions or jobs.
+            // An app's action row is run by its own window
+            // ([`Self::run_action`]), and one published through the host is
+            // handed to it ([`SearchHost::performs`]). Without a host
+            // running them, a desktop lists no host-published actions or
+            // jobs.
             Target::Action(_) | Target::Invoke(_) | Target::Cancel { .. } => None,
         };
         if let Some(admitted) = admitted {
@@ -939,9 +942,6 @@ impl DesktopSurface {
         if outside_press || is_search_chord(event, modifiers, self.platform) {
             self.close_search();
         } else {
-            if is_escape(event) {
-                self.search.dismissing();
-            }
             let path = ctx.path.clone();
             let node_id = ctx.node_id;
             if let Some(palette) = self.search.palette_mut() {

@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_desktop::collaborators::{RosterRow, collaborator_roster_rows};
+use ui::RowFace;
 use ui::search::{FieldWeight, ListIndex};
-use ui::widget::command_palette::RowFace;
 
 use super::happening_now;
 use crate::shell::chrome_state::{Chrome, ChromeState, PresenceRequest, SearchScope};
