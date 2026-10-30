@@ -563,11 +563,12 @@ impl StatePeer {
         now: u64,
     ) -> Result<Self, String> {
         let room = uuid::Uuid::parse_str(room).map_err(err)?.to_string();
+        let (owner, origin) = (owner_device.user_public_key, owner_device.device_public_key);
         let mut certificates = BTreeMap::new();
         for certificate in roster
             .into_iter()
             .map(Ok)
-            .chain([VerifiedCertificate::new(owner_device.clone(), now)])
+            .chain([VerifiedCertificate::new(owner_device, now)])
         {
             let certificate = certificate?;
             if revocations.is_revoked(&certificate.device_public_key) {
@@ -578,8 +579,8 @@ impl StatePeer {
         Ok(Self {
             core: PeerCore {
                 room,
-                owner: owner_device.user_public_key,
-                origin: owner_device.device_public_key,
+                owner,
+                origin,
                 certificates: certificates.into(),
                 revocations,
                 receipts: Shared::default(),

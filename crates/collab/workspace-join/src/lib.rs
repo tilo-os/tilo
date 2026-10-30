@@ -438,10 +438,6 @@ pub struct OwnerBootstrapV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "public wire enum: boxing a variant would change every constructor and match"
-)]
 pub enum JoinTransportResponse {
     Inspection(JoinInspection),
     Challenge(JoinChallengeResponse),

@@ -216,9 +216,9 @@ impl IrohWorkspaceHostHintV1 {
         &self,
         bootstrap: &JoinBootstrap,
     ) -> Result<WorkspaceHostTrust, WorkspaceJoinError> {
-        if bootstrap.room != self.room
-            || bootstrap.workspace_id != self.workspace_id
-            || bootstrap.host != self.host_device_certificate
+        // The host that answered is the one the hint signs for.
+        if (&bootstrap.room, bootstrap.workspace_id, &bootstrap.host)
+            != (&self.room, self.workspace_id, &self.host_device_certificate)
         {
             return Err(WorkspaceJoinError::Protocol(
                 "workspace bootstrap does not match its signed host hint".into(),
