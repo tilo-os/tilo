@@ -34,8 +34,12 @@ impl ResourceApp for OnboardingApp {
     const TITLE: &'static str = "Setup";
     const ICON: Option<&'static str> = Some("user");
     // The tour shows the desktop under it; the identity steps paint their own
-    // ground.
+    // ground. A step composes its page again when what it shows changes (an
+    // acknowledgement ticked enables what follows): the keyboard stays on
+    // the control the person was on, and a new step puts it on that step's
+    // first control.
     const BEHAVIOUR: ui::application::ComponentBehaviour = ui::application::ComponentBehaviour {
+        autofocus_on_structure_change: true,
         window: ui::application::WindowRole::Sheet,
         ..ui::application::ComponentBehaviour::DEFAULT
     };
