@@ -995,6 +995,9 @@ pub struct ShellOverlayHost {
     /// The rooms' trackers, where the composer follows the runs it asked for.
     tracker: Option<std::sync::Arc<crate::shell::broker_services::NativeTrackerRuns>>,
     agent_quick_composer: Box<crate::shell::agent_quick_composer::AgentQuickComposer>,
+    /// Why agents made for tasks stopped, heard where launches are drained
+    /// and said in the composer on the next turn.
+    task_agent_ends: std::cell::RefCell<Vec<String>>,
     agent_quick_composer_node: Option<NodeId>,
     /// The top bar, an app hosted over the desktop: its bars on every
     /// display and the menus they open.

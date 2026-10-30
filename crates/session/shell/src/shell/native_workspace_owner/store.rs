@@ -340,6 +340,7 @@ impl NativeStateRuntime {
         let replaced = replace();
         replaced.map_err(tilo_files::native::atomic::PublicationError::into_io_error)?;
         writer.published = sequence.0;
+        drop(writer);
         Ok(Publication::Written)
     }
 

@@ -97,7 +97,7 @@ fn the_feed_reports_what_chrome_holds() {
 
 #[test]
 fn asks_take_the_compositors_own_mutation_paths() {
-    let (mut host, chrome) = demo();
+    let (host, chrome) = demo();
     assert!(host.topbar_intent(&chrome, ChromeIntent::ToggleOverview));
     assert!(chrome.borrow().overlays.overview);
     assert!(host.topbar_intent(&chrome, ChromeIntent::ShowQuickSettings));
@@ -115,7 +115,7 @@ fn asks_take_the_compositors_own_mutation_paths() {
 /// switcher, not the overview.
 #[test]
 fn the_strip_name_asks_for_the_strip_switcher() {
-    let (mut host, chrome) = demo();
+    let (host, chrome) = demo();
     assert!(host.topbar_intent(&chrome, ChromeIntent::ShowStrips));
     assert!(!chrome.borrow().overlays.overview, "not the overview");
     assert!(chrome.borrow_mut().take_strip_switcher_request());
@@ -283,12 +283,15 @@ mod continuity {
         let workspace = tree.desktop.active_workspace().unwrap();
         let strip = tree.desktop.active_strip[&workspace.id];
         let group = tree.desktop.active_group[&strip];
-        workspace.strips[0]
+        let tab = workspace.strips[0]
             .window_groups
             .iter()
             .find(|candidate| candidate.id == group)
             .unwrap()
-            .active_tab
+            .active_tab;
+        drop(tree);
+        drop(state);
+        tab
     }
 
     #[test]
@@ -325,6 +328,7 @@ mod continuity {
             tree.desktop.set_active_group(strip, 1);
         }
         assert_eq!(feed(&mut host, &chrome).continuity, None);
+        drop(host);
     }
 
     #[test]
@@ -335,6 +339,7 @@ mod continuity {
         assert!(feed(&mut host, &chrome).continuity.is_some());
         assert!(host.topbar_intent(&chrome, ChromeIntent::DismissContinuity));
         assert_eq!(feed(&mut host, &chrome).continuity, None);
+        drop(host);
         assert_eq!(focused_tab(&chrome), TERMINAL);
     }
 }

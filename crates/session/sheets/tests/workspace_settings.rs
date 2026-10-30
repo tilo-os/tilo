@@ -349,6 +349,26 @@ fn an_agent_review_shows_its_answers_model_and_exceptions() {
 }
 
 #[test]
+fn a_closed_app_lists_each_answer_as_its_own_fact() {
+    // Notes is open in this scenario; Calendar is the closed one.
+    let mut app = staged("agent-review");
+    for text in [
+        "Reading: Allow",
+        "Changes: Allow",
+        "Outside effects: Ask first",
+    ] {
+        assert!(
+            app.harness()
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label() == Some(text)),
+            "{text:?} is a fact of its own"
+        );
+    }
+    assert!(!says(&mut app, " · "), "no answers are joined with a glyph");
+}
+
+#[test]
 fn in_a_review_escape_goes_back_to_the_agents() {
     let (mut app, seat) = seated("agent-review");
     app.harness().key("Escape");

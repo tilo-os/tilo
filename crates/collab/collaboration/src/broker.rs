@@ -5760,9 +5760,7 @@ fn origin_claims(
     app_id: &str,
     mutation: &collab_types::DocumentMutation,
 ) -> Vec<collab_types::ChangeClaim> {
-    let claims = collab_types::mutation_claims(mutation, collab_types::record_unit)
-        .map(|claims| crate::app_surface::with_footprints(app_id, claims));
-    claims.unwrap_or_else(|error| {
+    crate::app_surface::claims_of(app_id, mutation).unwrap_or_else(|error| {
         #[cfg(debug_assertions)]
         if let collab_types::DocumentMutation::Incremental(bytes) = mutation
             && collab_types::parse_changes(bytes).is_ok()

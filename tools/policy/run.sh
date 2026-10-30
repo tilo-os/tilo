@@ -6,7 +6,17 @@
 # POLICY_JOBS at a time (8 by default), first the checks of the tree, then the tests, whose
 # fixtures write beside the sources; each step's output is printed whole, in the order below,
 # and every failing step is named.
+#
+#   run.sh [--node | --no-node]
+#
+# --no-node runs it without the test files that run Node.js scripts, --node just those
+# (tools/policy/steps.toml, `node_tests`): the two halves for where Node.js and the Git
+# checkout are on different machines (tools/ci/local_affected.py).
 set -euo pipefail
+case "${1:-}" in
+  ''|--node|--no-node) ;;
+  *) echo "usage: run.sh [--node | --no-node]" >&2; exit 2 ;;
+esac
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo"
@@ -60,6 +70,9 @@ settle() {
 # The steps (tools/policy/steps.toml), which t runs one check each: first the checks of the
 # tree, then the tests, once nothing reads the tree any more: their fixtures create
 # repositories and scratch files beside the sources.
+# Listed into a file first: a manifest steps.py refuses fails the suite, where a process
+# substitution's failure would go unheard and leave a suite of no steps that passes.
+python3 tools/policy/steps.py list "$@" >"$work/steps"
 tests=()
 while IFS= read -r -d '' kind && IFS= read -r -d '' label && IFS= read -r -d '' command; do
   if [[ $kind == tests ]]; then
@@ -67,7 +80,7 @@ while IFS= read -r -d '' kind && IFS= read -r -d '' label && IFS= read -r -d '' 
   else
     run "$label" bash -c "$command"
   fi
-done < <(python3 tools/policy/steps.py list)
+done <"$work/steps"
 settle
 
 for (( index = 0; index < ${#tests[@]}; index += 2 )); do

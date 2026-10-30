@@ -24860,8 +24860,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-app",
- "tilo-content",
- "tilo-content-device",
  "tilo-files",
  "tilo-net",
  "tilo-paths",

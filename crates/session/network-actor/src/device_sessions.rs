@@ -209,8 +209,8 @@ impl ActorState {
                 .iter()
                 .chain(&own.revocations)
                 .any(|entry| {
-                    entry.user_public_key == cert.user_public_key
-                        && entry.revoked_device_public_key == cert.device_public_key
+                    (entry.user_public_key, entry.revoked_device_public_key)
+                        == (cert.user_public_key, cert.device_public_key)
                         && entry.revoked_at_ns <= now
                 })
         };
