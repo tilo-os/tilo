@@ -19,6 +19,8 @@ use std::{
 mod busy_room;
 #[path = "changes_read_tests.rs"]
 mod changes_read;
+#[path = "create_tests.rs"]
+mod create;
 #[path = "member_initialization_tests.rs"]
 mod member_initialization;
 #[path = "vouched_tests.rs"]

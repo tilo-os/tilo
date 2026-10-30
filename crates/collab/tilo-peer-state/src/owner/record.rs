@@ -84,9 +84,8 @@ pub(crate) struct StoredRoom {
     #[serde(alias = "governor")]
     pub room_host: DeviceCert,
     pub device: DeviceCert,
-    /// How this device joined the room its host governs. A record without
-    /// one (a room an earlier build governed on the device itself) is
-    /// refused when restored.
+    /// How this device joined the room its host governs. A room it founded
+    /// itself, its own host keeping it, holds neither this nor a vouch.
     #[serde(flatten)]
     pub enrollment: Option<StoredEnrollment>,
     /// The membership answer this device's host gave it for a room it

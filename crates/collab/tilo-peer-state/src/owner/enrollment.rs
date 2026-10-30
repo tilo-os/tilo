@@ -36,7 +36,17 @@ pub(crate) fn restore(
     match (&record.enrollment, &record.vouched) {
         (Some(enrollment), None) => validate_enrollment(room, record, enrollment)?,
         (None, Some(vouched)) => crate::owner::vouched::validate(room, record, &vouched.bootstrap)?,
-        _ => return Err("a native room record holds no single enrollment".into()),
+        // A room this device's own host keeps was founded here
+        // ([`NativeWorkspaceOwner::create_workspace`]): no other device
+        // admitted this one into it, so there is neither an enrollment nor
+        // a vouch to hold.
+        (None, None) if record.device == record.room_host => {}
+        (None, None) => {
+            return Err("a native room record holds no single enrollment".into());
+        }
+        (Some(_), Some(_)) => {
+            return Err("a native room record holds both an enrollment and a vouch".into());
+        }
     }
     let peer = StatePeer::restore(
         &record.peer,
