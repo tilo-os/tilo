@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# dev-installer-medium-<arch> on a machine whose kernel can't build it, such as a shared build machine:
-# its kernel has no EROFS for composefs and no btrfs, and its rootless podman no loop devices.
-# The check's own script, tools/ci/publish/dev-installer-medium.sh, runs unchanged in the
-# project's builder image, as t's micro-VM ran it, inside a worker VM booted from main's
-# newest published development disk (the generic package tilo-vm-disk-candidate), which has all
-# three.
+# dev-installer-medium-<arch> on a machine whose kernel can't build it: its kernel has no EROFS
+# for composefs and no btrfs, and its rootless podman no loop devices. The medium's own script,
+# tools/ci/publish/dev-installer-medium.sh, runs unchanged in the project's builder image inside
+# a worker VM booted from the newest published development disk (the generic package
+# tilo-vm-disk-candidate), which has all three.
 #
 #   medium-in-worker-vm.sh ARCH IMAGE_DIR OUT
 #
-# IMAGE_DIR is os-image-ARCH's output (oci/ and digest), OUT receives what the check writes:
-# disk.qcow2, its .sha256 and .hardware.json, and source.json. Run it from a committed checkout;
-# the medium names its commit. It needs podman, /dev/kvm and the tilo-vm binary
-# (tilo-vm-binary-<arch>'s output) in $TILO_VM_BIN. The worker's disk is fetched once into
-# $TILO_WORKER_DISK_CACHE (default /var/tmp/tilo-worker-disk) and checked against its SHA-256.
+# IMAGE_DIR is the OCI layout and digest that os/image/build-layer.sh compose writes (oci/ and
+# digest); OUT receives disk.qcow2, its .sha256 and .hardware.json, and source.json. Run it from
+# a committed checkout; the medium names its commit. It needs podman, /dev/kvm and the tilo-vm
+# binary in $TILO_VM_BIN, which tools/ci/signin-e2e-builder.sh builds. The worker's disk is
+# fetched once into $TILO_WORKER_DISK_CACHE (default /var/tmp/tilo-worker-disk) and checked
+# against its SHA-256.
 #
 # The worker runs in a container of Fedora with libvirt (tools/ci/packages/vm-acceptance.txt),
 # as an unprivileged user under libvirt's session daemon; the tree and the image go in over its
@@ -67,7 +67,7 @@ if [[ ${1:-} == guest ]]; then
   to_worker /git/ worker:/var/w/src/.git/
   echo "medium-in-worker-vm: building the medium in $builder_image"
   # The builder image privileged, with the worker's devices and root's podman store of its own,
-  # as the check's micro-VM gave it.
+  # so that the medium's layers build as they do on a machine with those devices.
   status=0
   on_worker "set -e -o pipefail
     export CONTAINERS_STORAGE_CONF=/var/w/storage.conf TMPDIR=/var/w/tmp
@@ -101,9 +101,9 @@ case $arch in
   *) echo "unknown architecture: $arch" >&2; exit 2 ;;
 esac
 [[ $(uname -m) == "$arch" ]] || { echo "the $arch medium builds natively, not on $(uname -m)" >&2; exit 2; }
-[[ -f $layout/oci/index.json && -f $layout/digest ]] || { echo "$layout is not os-image-$arch's output" >&2; exit 2; }
+[[ -f $layout/oci/index.json && -f $layout/digest ]] || { echo "$layout is not an OCI layout with a digest" >&2; exit 2; }
 [[ -c /dev/kvm ]] || { echo "no /dev/kvm: the worker is a KVM guest" >&2; exit 2; }
-vm_bin=${TILO_VM_BIN:?TILO_VM_BIN names the tilo-vm binary (tilo-vm-binary-<arch>)}
+vm_bin=${TILO_VM_BIN:?TILO_VM_BIN names the tilo-vm binary}
 [[ -x $vm_bin ]] || { echo "$vm_bin is not executable" >&2; exit 2; }
 [[ -z $(git status --porcelain --untracked-files=no) ]] \
   || { echo "the checkout has uncommitted changes; the medium is of a commit" >&2; exit 2; }
