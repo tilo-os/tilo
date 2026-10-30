@@ -7,6 +7,7 @@
 use vello::kurbo::Rect;
 
 use super::{Inputs, Metrics, NavMode, NavShell, Resize};
+use crate::interaction::InteractionEnvironment;
 use crate::num::f32_of_f64;
 use crate::theme::Theme;
 use crate::widget::flap::SplitLayout;
@@ -25,7 +26,31 @@ pub(super) struct Edge {
     memory: Option<crate::storage::Settings<super::memory::NavShellMemory>>,
 }
 
+impl Metrics {
+    /// The header row for a person using `input`: the shell's own buttons
+    /// are the minimum target it needs, as an app's buttons are
+    /// ([`crate::chrome::HeaderRowMetrics::resolve_for`]).
+    fn for_input(mut self, theme: &Theme, input: InteractionEnvironment) -> Self {
+        let row = crate::chrome::HeaderRowMetrics::resolve_for(theme, input);
+        self.row = row;
+        self.header = row.height;
+        self.chip = row.chip;
+        self.inset = row.inset;
+        self.gap = row.gap;
+        self
+    }
+}
+
 impl NavShell {
+    /// How the person reaches the window: its own buttons are sized for it,
+    /// so the row lays out again when it changes.
+    pub(super) fn hear_input(&mut self, input: InteractionEnvironment) {
+        if self.interaction != input {
+            self.interaction = input;
+            self.layout_dirty = true;
+        }
+    }
+
     pub(super) fn sidebar_resize_target(&self) -> String {
         format!(
             "{}.sidebar-resize",
@@ -188,7 +213,7 @@ impl NavShell {
     /// rail, and a sidebar that is always a rail).
     pub(super) fn sidebar_metrics(&mut self, theme: &Theme) -> (Metrics, Option<AdaptiveSidebar>) {
         self.recall_sidebar_width();
-        let mut metrics = Metrics::resolve(theme);
+        let mut metrics = Metrics::resolve(theme).for_input(theme, self.interaction);
         let (docked_rail, header_actions) = {
             let inputs = self.inputs.borrow();
             let actions = inputs.actions.get(super::Column::Sidebar.index());

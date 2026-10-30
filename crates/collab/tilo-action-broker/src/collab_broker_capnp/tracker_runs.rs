@@ -315,7 +315,7 @@ impl CapnpBrokerState {
             .with_group(
                 runtime_collab::task_run_group(&run.issue, run_id),
                 run.title.clone(),
-                "task",
+                tilo_actions::context::TASK_RUN_GROUP,
             );
         self.offer_native_run(
             room,

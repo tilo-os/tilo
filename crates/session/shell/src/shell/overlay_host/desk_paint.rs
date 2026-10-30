@@ -50,15 +50,15 @@ pub(super) const MONITOR_GLANCE: Size = Size::new(176.0, 40.0);
 const MONITOR_HEADER: f64 = ui::tokens::Layout::BASE.row_header as f64;
 const MONITOR_ROW: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
 /// Inset of a card's content from its edge.
-const PAD: f64 = 14.0;
+const PAD: f64 = ui::tokens::Spacing::BASE.s4 as f64;
 /// The compact music card's artwork.
-const COMPACT_ART: f64 = 48.0;
-/// The resize handle in a card's free corner, and the edge band along its
-/// free side that resizes too.
-pub(super) const GRIP: f64 = 18.0;
-const GRIP_EDGE: f64 = 6.0;
-/// The remove badge on a hovered glance.
-pub(super) const BADGE: f64 = 20.0;
+const COMPACT_ART: f64 = ui::tokens::Spacing::BASE.s12 as f64;
+/// The resize handle in a card's free corner, an icon's size, and the edge
+/// band along its free side that resizes too.
+pub(super) const GRIP: f64 = ui::tokens::Metrics::BASE.icon_md as f64;
+const GRIP_EDGE: f64 = ui::tokens::Layout::BASE.resize_grip as f64;
+/// The remove badge on a hovered glance, an icon's size.
+pub(super) const BADGE: f64 = ui::tokens::Metrics::BASE.icon_md as f64;
 
 /// Run `paint` at `alpha`, in a layer only while it is fading.
 pub(super) fn with_alpha(
@@ -1107,34 +1107,7 @@ pub(super) fn paint_grip(
     } else {
         ui::paint::with_alpha_scaled(theme.tokens.colors.text_dim, 0.7)
     };
-    // The corner the strokes hug: the grip's outer corner.
-    let corner = Point::new(
-        if anchor.0 {
-            grip.x0 + 4.0
-        } else {
-            grip.x1 - 4.0
-        },
-        if anchor.1 {
-            grip.y0 + 4.0
-        } else {
-            grip.y1 - 4.0
-        },
-    );
-    let sx = if anchor.0 { 1.0 } else { -1.0 };
-    let sy = if anchor.1 { 1.0 } else { -1.0 };
-    for k in [4.0, 8.0, 12.0] {
-        let line = vello::kurbo::Line::new(
-            Point::new(corner.x + sx * k, corner.y),
-            Point::new(corner.x, corner.y + sy * k),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.4).with_caps(vello::kurbo::Cap::Round),
-            transform,
-            color,
-            None,
-            &line,
-        );
-    }
+    ui::surface::corner_resize_grip(scene, transform, grip, anchor, color);
 }
 
 /// The remove badge on a hovered glance: a small round X on the overlay

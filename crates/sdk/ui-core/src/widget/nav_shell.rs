@@ -1748,6 +1748,8 @@ pub struct NavShell {
     /// The window's search narrows the sidebar's list wherever it stands
     /// ([`Self::search_sidebar`]).
     sidebar_search: bool,
+    /// How the person reaches the window ([`Self::hear_input`]).
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl Default for NavShell {
@@ -1849,6 +1851,7 @@ impl NavShell {
             can_back: None,
             slot_edit: None,
             sidebar_search: false,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -4065,6 +4068,7 @@ impl Widget for NavShell {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
+        self.hear_input(environment);
         self.for_each_owned_mut(|child| child.set_interaction_environment(environment));
     }
 

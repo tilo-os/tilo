@@ -288,16 +288,86 @@ pub struct ChangeNote {
     /// reads a resource's versions from. The store fills it in when it commits.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub touched: Vec<String>,
+    /// The task run it was made in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<TaskRun>,
 }
 
-/// One version of a resource, as history keeps it: who made it, when, by which action.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The action id of the change that made a resource, when the host made it.
+pub const CREATE_ACTION: &str = "$create";
+
+/// One version of a resource, as history keeps it: who made it, when, by which action, in
+/// which task run, and what it did to the resource.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Version {
     pub who: String,
     /// ISO-8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`.
     pub at: String,
     /// The action's id (`$create` for a resource the host made).
     pub action: String,
+    /// The task run that made it; `None` for a change made outside a run.
+    pub task: Option<TaskRun>,
+    /// What it did to the resource.
+    pub kind: VersionKind,
+    /// The fields it changed, by id; empty for a version that made or removed the resource.
+    pub fields: Vec<FieldId>,
+    /// The resource it is a version of, as [`ResourceRef::id_string`] writes it.
+    pub resource: String,
+    /// The change that made it, as its store names changes; empty while provisional. What a
+    /// seen mark names ([`crate::seen`]).
+    pub change: String,
+}
+
+/// One run of a task, as the changes it made are stamped.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TaskRun {
+    /// The run's group (`runtime_collab::task_run_group`): `<task>@<run>`.
+    pub id: String,
+    /// What the run was asked, as its task was titled when it ran.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+}
+
+impl TaskRun {
+    /// The task it is a run of: its group up to the `@`.
+    #[must_use]
+    pub fn task(&self) -> &str {
+        self.id
+            .split_once('@')
+            .map_or(self.id.as_str(), |(task, _)| task)
+    }
+}
+
+/// What a version did to its resource.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum VersionKind {
+    Created,
+    #[default]
+    Changed,
+    Removed,
+}
+
+impl VersionKind {
+    /// The word code reads it as: `created`, `changed` or `removed`.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Changed => "changed",
+            Self::Removed => "removed",
+        }
+    }
+
+    /// The kind `word` names.
+    #[must_use]
+    pub fn of_word(word: &str) -> Option<Self> {
+        match word {
+            "created" => Some(Self::Created),
+            "changed" => Some(Self::Changed),
+            "removed" => Some(Self::Removed),
+            _ => None,
+        }
+    }
 }
 
 /// The version of a resource an order or a key reads, beside its fields: its first
@@ -340,20 +410,31 @@ impl Reflected {
 #[must_use]
 pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
     let id = at.id_string();
+    // A change is named by its place in the document's log.
     notes
         .iter()
-        .filter(|note| {
+        .enumerate()
+        .filter(|(_, note)| {
             note.touched
                 .iter()
                 .any(|touched| *touched == id || crate::value::flat_id(touched) == id)
         })
-        .map(|note| Version {
+        .map(|(n, note)| Version {
             who: note.invoker.clone(),
             at: note
                 .at
                 .clone()
                 .unwrap_or_else(|| crate::core::EPOCH.to_owned()),
             action: note.action.clone(),
+            task: note.group.clone(),
+            kind: if note.action == CREATE_ACTION {
+                VersionKind::Created
+            } else {
+                VersionKind::Changed
+            },
+            fields: Vec::new(),
+            resource: id.clone(),
+            change: n.to_string(),
         })
         .collect()
 }
@@ -965,6 +1046,36 @@ pub trait Store {
         } else {
             versions.into_iter().next()
         })
+    }
+
+    /// Every version the task run `run` (its group) made, of every resource, oldest first:
+    /// what `changes(of: run)` reads.
+    ///
+    /// # Errors
+    ///
+    /// A store that keeps no log says so.
+    fn run_changes(&self, run: &str) -> Result<Vec<Version>, StoreError> {
+        Err(StoreError::Invalid(format!(
+            "this store keeps no log to find the changes of the run {run} in"
+        )))
+    }
+
+    /// The field `field` of `at` as it was before the change `change` (a [`Version::change`]):
+    /// what a bound field changed by someone else shows as its previous value.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for a change the store does not hold; a store that keeps no log says so.
+    fn read_before(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        change: &str,
+    ) -> Result<FieldValue, StoreError> {
+        let _ = (at, field);
+        Err(StoreError::Invalid(format!(
+            "this store keeps no log to read before the change {change} in"
+        )))
     }
 
     /// Who made the latest versions of `at`, newest first and each once: at most `limit` of

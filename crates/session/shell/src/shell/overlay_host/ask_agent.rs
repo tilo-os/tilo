@@ -51,9 +51,16 @@ impl ShellOverlayHost {
     /// app let its moment pass, the composer opens with what the desktop
     /// knows itself.
     pub(crate) fn route_ask_agent_chord(&mut self, now: Instant) -> Vec<u64> {
-        // Work held for a room's identity to settle is handed over by the
-        // next pump once that moment came.
-        if self.held_agent_asks.due().is_some_and(|at| at <= now) {
+        // Work held for a room's identity to settle (the chrome's asks, an
+        // agent door's run) is handed over by the next pump once that moment
+        // came.
+        let due = self
+            .held_agent_asks
+            .due()
+            .into_iter()
+            .chain(self.door_runs_unsettled.iter().map(|(at, _)| *at))
+            .min();
+        if due.is_some_and(|at| at <= now) {
             self.bump_chrome();
         }
         let focused = self.focused_app_id();
@@ -105,12 +112,13 @@ impl ShellOverlayHost {
         Some(ActionSessionSource::new(broker).identity_gate(&room, now))
     }
 
-    /// When the ask-agent chord, or work held for a room's identity to
-    /// settle, next needs a tick.
+    /// When the ask-agent chord, work held for a room's identity to settle,
+    /// or an agent door connection's run waiting for it next needs a tick.
     pub(crate) fn ask_agent_deadline(&self, now: Instant) -> Option<Instant> {
-        self.selection_requests
-            .deadline(now)
-            .into_iter()
+        self.door_runs_unsettled
+            .iter()
+            .map(|(at, _)| *at)
+            .chain(self.selection_requests.deadline(now))
             .chain(self.held_agent_asks.due())
             .min()
     }
@@ -480,6 +488,70 @@ impl ShellOverlayHost {
         }
         for (room, agent) in starts {
             self.start_agent_for(&room, &agent);
+        }
+        asked | self.ask_door_runs(&chrome)
+    }
+
+    /// Ask Tasks for the run of each agent door connection the person
+    /// admitted: an issue assigned to a task agent minted for it, started
+    /// by the person, as asking a new agent makes one. The connection joins
+    /// the run once it goes; it is never launched. Whether one was asked.
+    fn ask_door_runs(&mut self, chrome: &crate::shell::chrome_state::Chrome) -> bool {
+        let now = Instant::now();
+        let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.door_runs_unsettled)
+            .into_iter()
+            .partition(|(at, _)| *at <= now);
+        self.door_runs_unsettled = later;
+        let asks = due
+            .into_iter()
+            .map(|(_, ask)| ask)
+            .chain(chrome.borrow_mut().take_door_runs())
+            .collect::<Vec<_>>();
+        let mut asked = false;
+        for ask in asks {
+            if ask.reply.is_closed() {
+                continue;
+            }
+            let Some(broker) = self.shortcut_triggers.broker() else {
+                let _ = ask
+                    .reply
+                    .send(Err(crate::shell::i18n::t("agent-door-workspace-gone")));
+                continue;
+            };
+            let room = ask.room.to_string();
+            // The same gate as the chord's and the chrome's asks: just changed,
+            // as at a session's start, it is asked once it settles.
+            let identity_revision =
+                match ActionSessionSource::new(broker.clone()).identity_gate(&room, now) {
+                    IdentityGate::Settled(revision) => revision,
+                    IdentityGate::SettlesAt(at) => {
+                        self.door_runs_unsettled.push((at, ask));
+                        continue;
+                    }
+                    IdentityGate::Unknown => {
+                        let _ = ask.reply.send(Err(crate::shell::i18n::t(
+                            "agent-door-identity-unavailable",
+                        )));
+                        continue;
+                    }
+                };
+            let owner = ComposerOwner {
+                person: ask.person,
+                room,
+                agent: crate::shell::task_agents::NEW_TASK_AGENT.into(),
+                identity_revision,
+            };
+            let reply = super::agent_actions::DoorReply::new(ask.reply);
+            self.agent_actions
+                .entry(owner.clone())
+                .or_default()
+                .open_and_ask_for_door(
+                    ActionSessionSource::new(broker),
+                    &owner,
+                    (&ask.title, &ask.body),
+                    reply,
+                );
+            asked = true;
         }
         asked
     }

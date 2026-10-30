@@ -3827,6 +3827,11 @@ impl Widget for DataTableCore {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
+        // Every structural rebuild repeats the window's input; what mounts
+        // since hears it as it mounts.
+        if self.interaction == environment {
+            return;
+        }
         self.interaction = environment;
         self.viewport
             .set_minimum_height(f64::from(environment.minimum_collection_row()));

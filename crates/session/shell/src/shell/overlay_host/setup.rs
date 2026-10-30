@@ -591,6 +591,7 @@ impl ShellOverlayHost {
             topbar: Box::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
             held_agent_asks: super::ask_agent::HeldAgentAsks::default(),
+            door_runs_unsettled: Vec::new(),
             test_activations: Vec::new(),
             canvas: canvas::CanvasLayer::default(),
             feedback_point: crate::shell::feedback_entry::FeedbackPoint::default(),

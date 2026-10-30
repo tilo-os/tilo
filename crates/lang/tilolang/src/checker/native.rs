@@ -877,10 +877,17 @@ impl Checker<'_> {
         matches!(found.kind, CKind::Action | CKind::Flow).then(|| found.clone())
     }
 
-    /// An action's `label: "Move to {col.title}"`, read with the arguments of the application
-    /// `applied` (`move_to(b, card, other)`), when its label is written so.
-    fn applied_label(&mut self, callee: &Callable, applied: &ast::Expr) -> Option<Ex> {
-        let text = callee.present.label_text.clone()?;
+    /// What a button for the application `applied` (`pin(m)`, `move_to(b, card, other)`) shows
+    /// of the action's presentation that follows its arguments: its `label:` written with
+    /// them or as an `if`, its `icon:` as an `if`, and `on:`, each read with those arguments
+    /// as the view draws, so the button changes with them (Pin turns into Unpin). What is not
+    /// written so stays the declaration's, which the caller set before.
+    fn applied_presentation(&mut self, callee: &Callable, applied: &ast::Expr, n: LocalId) {
+        let p = &callee.present;
+        let (label, icon, on) = (p.label_text.clone(), p.icon_when.clone(), p.on.clone());
+        if label.is_none() && icon.is_none() && on.is_none() {
+            return;
+        }
         let mut call = applied;
         while let ExprKind::Call { callee: c, .. } = &call.kind
             && let ExprKind::Field { base, name } = &c.kind
@@ -889,25 +896,65 @@ impl Checker<'_> {
             call = base;
         }
         let ExprKind::Call { args, .. } = &call.kind else {
-            return None;
+            return;
         };
+        // An application that leaves a parameter for its form to ask (`button(check())`) has
+        // nothing to read it with: the button shows what the declaration says.
+        let positional = args.iter().filter(|a| a.name.is_none()).count();
+        let complete = callee.params.iter().enumerate().all(|(at, p)| {
+            at < positional
+                || p.default.is_some()
+                || args
+                    .iter()
+                    .any(|a| a.name.as_ref().is_some_and(|name| name.name == p.name))
+        });
+        if !complete {
+            return;
+        }
         let sig = callee.signature(&self.env.app);
-        // The label is read as the view draws.
         let bound =
             self.bind_args_or_default(&callee.name, &callee.params, args, call.span, &sig, false);
+        let node = Ex::local(n, Ty::View);
         self.push_sink();
+        // Each parameter as the application gives it, or as its default computes it from those
+        // before it (`pinned = not m.pinned`), as an invocation would.
+        let mut given: Vec<Ex> = Vec::new();
+        let mut unbound: Vec<&str> = Vec::new();
         for (p, v) in callee.params.iter().zip(bound) {
-            if let Some(v) = v {
-                let id = self.declare(&p.name, p.ty.clone());
-                self.emit(Stmt::Set(id, v));
+            let value = match (v, p.default.as_ref().and_then(|d| d.func)) {
+                (Some(v), _) => Some(v),
+                (None, Some(f)) if unbound.is_empty() => {
+                    Some(Ex::new(crate::ir::Ek::Call(f, given.clone()), p.ty.clone()))
+                }
+                (None, _) => None,
+            };
+            match value {
+                Some(v) if unbound.is_empty() => {
+                    let id = self.declare(&p.name, p.ty.clone());
+                    self.emit(Stmt::Set(id, v));
+                    given.push(Ex::local(id, p.ty.clone()));
+                }
+                _ => unbound.push(p.name.as_str()),
             }
         }
-        let label = self.expr_as(&text, &Ty::Text);
-        let stmts = self.pop_sink();
-        Some(Ex::new(
-            crate::ir::Ek::Seq(stmts, Box::new(label)),
-            Ty::Text,
-        ))
+        // What reads an argument the application leaves for a form to ask stays as declared.
+        let readable =
+            |e: &Option<ast::Expr>| e.clone().filter(|e| mentions(e, &unbound).is_none());
+        let (label, icon, on) = (readable(&label), readable(&icon), readable(&on));
+        if let Some(text) = &label {
+            let v = self.expr_as(text, &Ty::Text);
+            self.prop(node.clone(), "label", v, text.span);
+        }
+        if let Some(when) = &icon {
+            self.icon_value(n, "icon", when);
+        }
+        if let Some(on) = &on {
+            let v = self.expr_as(on, &Ty::Bool);
+            self.prop(node, "toggled", v, on.span);
+        }
+        for stmt in self.pop_sink() {
+            self.emit(stmt);
+        }
     }
 
     /// `button(act(x))`: a button whose label, icon and role are the action's, and whose
@@ -926,17 +973,16 @@ impl Checker<'_> {
                     applied = true;
                     let act = self.expr(value, None);
                     let p = &callee.present;
-                    match self.applied_label(callee, value) {
-                        Some(label) => self.prop(node.clone(), "label", label, span),
-                        None => self.prop(node.clone(), "label", Ex::str(&p.label), span),
-                    }
+                    self.prop(node.clone(), "label", Ex::str(&p.label), span);
                     if let Some(icon) = &p.icon {
                         self.prop(node.clone(), "icon", Ex::str(icon), span);
                     }
                     // A button in content stands on its own: `secondary` unless the action says
                     // (an icon-only toolkit button is `plain`, as a header's are).
-                    let role = p.role.as_deref().unwrap_or("secondary");
+                    let role = p.role.clone();
+                    let role = role.as_deref().unwrap_or("secondary");
                     self.prop(node.clone(), "role", Ex::str(role), span);
+                    self.applied_presentation(callee, value, n);
                     if !act.ty.is_error() {
                         self.emit(host(Imp::UiOn, vec![node.clone(), Ex::str("press"), act]));
                     }

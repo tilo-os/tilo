@@ -611,6 +611,9 @@ pub struct BlockEditor {
     read_only: bool,
     /// Whether blocks show a drag handle beside them (off in a composer).
     block_handles: bool,
+    /// Text set flush with the editor's edge, without the document's inset: a message's body
+    /// lining up with its author's name.
+    flush: bool,
     /// When the drag handles show: while the pointer moves, gone once it
     /// rests or the person types.
     handle_reveal: handle_reveal::HandleReveal,
@@ -920,6 +923,7 @@ impl BlockEditor {
             stack_measures: 0,
             read_only: false,
             block_handles: true,
+            flush: false,
             handle_reveal: handle_reveal::HandleReveal::default(),
             mention_paint: None,
             text_align: crate::richtext::TextAlign::Left,
@@ -1542,6 +1546,14 @@ impl BlockEditor {
     #[must_use]
     pub fn with_block_handles(mut self, shown: bool) -> Self {
         self.block_handles = shown;
+        self
+    }
+
+    /// Set the text flush with the editor's edge, without the document's inset: a read-only
+    /// body under a name, a quote or chips, all starting at one edge.
+    #[must_use]
+    pub fn with_flush_text(mut self) -> Self {
+        self.flush = true;
         self
     }
 
@@ -8830,6 +8842,11 @@ impl Widget for BlockEditor {
         };
         self.text_scale = f64::from(theme.text_scale);
         self.handle = HandleMetrics::from_tokens(&theme.tokens.spacing, &theme.tokens.metrics);
+        if self.flush {
+            for block in &mut self.blocks {
+                block.line.set_flush();
+            }
+        }
         self.prepare_blocks(theme);
         // One measured leaf stands for the whole block stack. The editor
         // places its blocks itself from per-line cached heights, so an edit

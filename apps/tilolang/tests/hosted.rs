@@ -238,6 +238,40 @@ impl Window {
         }
     }
 
+    /// The character key `key` pressed and released with `modifiers` held (`ctrl`, `shift`),
+    /// as a keyboard sends it: the modifiers first, then the key, then the modifiers let go.
+    fn chord(&mut self, modifiers: &[&str], key: &str) {
+        use ui::winit::event::ElementState;
+        use ui::winit::keyboard::{Key, ModifiersState};
+        match self {
+            Self::Harness(window) => {
+                let names: Vec<String> = modifiers.iter().map(|name| (*name).to_owned()).collect();
+                window.set_modifiers(&names);
+                window.key(key);
+                window.set_modifiers(&[]);
+            }
+            Self::Live(app) => {
+                let mut held = ModifiersState::empty();
+                for name in modifiers {
+                    held |= match *name {
+                        "ctrl" => ModifiersState::CONTROL,
+                        "shift" => ModifiersState::SHIFT,
+                        other => panic!("no modifier {other}"),
+                    };
+                }
+                // The surface reports the modifiers held beside the key events.
+                app.set_surface_modifiers(held.into());
+                let key = Key::Character(key.into());
+                Self::live_input(app, ui::synthetic_input::key_press(key.clone(), None));
+                Self::live_input(
+                    app,
+                    ui::synthetic_input::key_input(&key, ElementState::Released),
+                );
+                app.set_surface_modifiers(ModifiersState::empty().into());
+            }
+        }
+    }
+
     fn root(&mut self) -> &mut dyn Widget {
         match self {
             Self::Harness(window) => window.root_widget_mut(),
@@ -979,4 +1013,66 @@ fn what_the_instance_sends_wakes_the_component_that_took_the_window_over() {
             .is_ok(),
         "the next thing the instance sent did not wake the window"
     );
+}
+
+/// "+", a title typed, Ctrl+Z, Ctrl+Shift+Z: the window's undo takes back what was typed into the
+/// bound field, as one step of the person's, and redo brings it back. One undo, the record's: the
+/// field keeps no history of its own beside it.
+fn typing_in_a_title_is_undone_and_redone(mut session: Session) {
+    let plus = session.new_note_button();
+    session.window.click_at(plus.0, plus.1);
+    session.settle();
+    session.window.type_text("Groceries");
+    session.settle();
+    assert_eq!(session.titles(), ["Groceries"]);
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert_eq!(
+        session.titles(),
+        ["Untitled"],
+        "Ctrl+Z takes back the typing, and the note stays, untitled"
+    );
+    assert_eq!(
+        session.field_value("Untitled"),
+        Some(tilo_ui_host::Value::Text(String::new())),
+        "the field shows it"
+    );
+    session.window.chord(&["ctrl", "shift"], "Z");
+    session.settle();
+    assert_eq!(
+        session.titles(),
+        ["Groceries"],
+        "Ctrl+Shift+Z brings it back"
+    );
+    session.window.type_text("s");
+    session.settle();
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert_eq!(
+        session.titles(),
+        ["Groceries"],
+        "what was typed after the redo is a step of its own"
+    );
+    // Typed key by key, frames between them: each word is a step, as in every other app.
+    for key in " for sunday".chars() {
+        session.window.type_text(&key.to_string());
+        session.settle();
+    }
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert_eq!(
+        session.titles(),
+        ["Groceries for "],
+        "Ctrl+Z takes back the last word typed"
+    );
+}
+
+#[test]
+fn typing_in_a_title_is_undone_and_redone_in_the_frame_harness() {
+    typing_in_a_title_is_undone_and_redone(Session::notes());
+}
+
+#[test]
+fn typing_in_a_title_is_undone_and_redone_in_the_live_window() {
+    typing_in_a_title_is_undone_and_redone(Session::live_notes());
 }

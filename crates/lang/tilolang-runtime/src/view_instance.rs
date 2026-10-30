@@ -136,6 +136,9 @@ impl ViewInstance {
             self.live.absorb(&self.core, change);
         }
         self.live.check_states(&self.core);
+        if let Some(now) = self.time_passed() {
+            self.live.pass_time(now);
+        }
         if self.refresh_all.take() {
             self.live.mark_all();
         }
@@ -173,10 +176,29 @@ impl ViewInstance {
         self.refresh_all.set(true);
     }
 
-    /// Whether a field or view state some boundary read has changed since it last ran.
+    /// When the time some boundary read (`today` in a query or a filter) next reads
+    /// differently, in seconds since 1970 (UTC): the host wakes the view then, and the next
+    /// poll runs again exactly the boundaries that read it. `None` when no boundary read the
+    /// time: nothing about the time ever wakes the view.
+    #[must_use]
+    pub fn wakes_at(&self) -> Option<i64> {
+        self.live.wakes_at()
+    }
+
+    /// The host clock's time, when the time some boundary read reads differently by then. The
+    /// clock is read only while some boundary waits for it.
+    fn time_passed(&self) -> Option<i64> {
+        let at = self.live.wakes_at()?;
+        let now = tilolang::calendar::instant(&self.core.clock_now())?;
+        (now >= at).then_some(now)
+    }
+
+    /// Whether a field or view state some boundary read has changed since it last ran, or the
+    /// time one read has moved on.
     pub fn is_stale(&self) -> bool {
         self.refresh_all.get()
             || self.live.is_dirty()
+            || self.time_passed().is_some()
             || self
                 .changes
                 .borrow()
@@ -663,6 +685,7 @@ impl ViewInstance {
             approved_by: None,
             at: Some(self.core.clock_now()),
             touched: vec![target.id_string()],
+            group: None,
         };
         let mut store = self.core.store.borrow_mut();
         let txn = store.begin()?;

@@ -149,17 +149,7 @@ impl Staged {
             .map_err(|error| format!("layout failed: {error:?}"))?;
         self.exchange();
         // A motion that lands even when reduced (a cross-fade) runs out on the toolkit's clock.
-        if self.harness.frame_schedule().needs_animation_frame
-            && !self
-                .harness
-                .settle_for_capture(ui::time::Duration::from_secs(2))
-        {
-            return Err(format!(
-                "the window still moves at rest: {:?}",
-                self.harness.frame_requesters()
-            ));
-        }
-        Ok(())
+        self.settle()
     }
 
     pub fn harness(&self) -> &FrameHarness {
@@ -270,6 +260,62 @@ impl Staged {
         if let Some(window) = self.window() {
             window.tell(ToApp::Open { resource });
         }
+        self.exchange();
+        self.harness.relayout();
+    }
+
+    /// Lay the window out at `viewport` under `theme` for a person using `input`, with motion
+    /// as it is live: what a person's press then sets moving moves ([`Self::press`]).
+    pub fn lay_out_moving(
+        &mut self,
+        viewport: (u32, u32),
+        mut theme: ui::Theme,
+        input: InteractionEnvironment,
+    ) -> Result<(), String> {
+        theme.reduce_motion = false;
+        self.harness.set_interaction_environment(input);
+        self.harness
+            .relayout_themed(viewport, theme)
+            .map_err(|error| format!("layout failed: {error:?}"))?;
+        self.exchange();
+        self.settle()
+    }
+
+    /// Press the control `id` of the window as a person does, with a finger on a touchscreen
+    /// (`touch`) and the mouse otherwise (a click is a mouse's: the window then sizes itself
+    /// for one), let the window and its instance answer it, and let the motion it starts run
+    /// out: the frames a live window draws, and no layout afresh after them.
+    pub fn press(&mut self, id: &str, touch: bool) -> Result<(), String> {
+        let pressed = if touch {
+            self.harness.tap_named(id)
+        } else {
+            self.harness.click_named(id)
+        };
+        pressed.map_err(|error| format!("pressing {id:?}: {error}"))?;
+        self.exchange();
+        self.settle()
+    }
+
+    /// Run the toolkit's clock until nothing in the window moves.
+    fn settle(&mut self) -> Result<(), String> {
+        if self.harness.frame_schedule().needs_animation_frame
+            && !self
+                .harness
+                .settle_for_capture(ui::time::Duration::from_secs(2))
+        {
+            return Err(format!(
+                "the window still moves after two seconds: {:?}",
+                self.harness.frame_requesters()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Show `resource` with the view `view` (an id) in the window's detail lane: a view the
+    /// system shows on a surface of its own (a row view as a search result, a proposal view in
+    /// its card), laid out as a window is.
+    pub fn open_with(&mut self, resource: &ResourceRef, view: &str) {
+        self.instance.open_with(resource, view);
         self.exchange();
         self.harness.relayout();
     }

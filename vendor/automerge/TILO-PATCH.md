@@ -404,3 +404,31 @@ remove_with_dependents`, which `remove_actor_branch_from` now uses too).
 Applied changes are never touched. The marked spots are
 `TILO(history-of-a-change)` in `automerge.rs`, `autocommit.rs` and
 `change_queue.rs`. Pinned by `tilo-peer-state`'s `room::base` tests.
+
+# Tilo patch: a rolled back transaction leaves in blocks
+
+Rolling back took a transaction's ops out one at a time, last first, each
+with a splice of every op column (about twenty): a hundred or more
+allocations per op, more the larger the document. `tilolang-tilo`'s store
+rolls its writes back before taking in each change of the room, so a
+window that sends a message (a new object of some fifty ops) paid about
+6,000 allocations for the rollback at 1,000 messages and 8,400 at 10,000.
+
+`TransactionInner::rollback` now collects ops whose undoing touches no other
+op (no successor to restore, no register to reset, not a delete) into a
+run while each sits right before or right after the run's block, and
+takes the block out with one splice per column (`OpSet::undo_run`). Every
+op after the one collected next is undone already or in the run, so the
+document is the one that op was spliced into plus the block, and the
+op's position says where it sits beside it. Any other op flushes the run
+and is undone alone, as before. A new object's fields and letters leave in
+a few blocks: the send above now pays 2,800 at 1,000 and 4,000 at 10,000.
+The document after a rollback is unchanged, column for column. The marked
+spots are `TILO(batched-rollback)` in `transaction/inner.rs` and
+`op_set.rs`, with the unit test
+`rollback_random_transactions_restores_every_column` (random transactions
+of new objects, letters at any place, list items, overwrites, deletes and
+marks: every column as before, and the next writes give the same document
+as a copy that never saw them). Pinned by `tilolang-tilo`'s `budgets`
+test, which holds a send's allocations at 10,000 messages to those at
+1,000. Upstreamable.

@@ -193,9 +193,16 @@ pub struct Presentation {
     /// The id of the hidden view that presents the action's state for its subject, when its
     /// `label:` or `icon:` is an `if`, or it declares `on:`.
     pub view: Option<String>,
-    /// `label: "Move to {col.title}"`: the label as written, read where the action is applied
-    /// with its arguments (`button(move_to(b, card, col))`).
+    /// `label: "Move to {col.title}"` or `label: if pinned { "Pin" } else { "Unpin" }`: the
+    /// label as written, read where the action is applied with its arguments
+    /// (`button(move_to(b, card, col))`, `button(pin(n))`), so it follows them as they change.
     pub label_text: Option<Expr>,
+    /// `icon: if n.pinned { .pin_off } else { .pin }`: read where the action is applied, as
+    /// `label_text` is.
+    pub icon_when: Option<Expr>,
+    /// `on: n.pinned`: whether the state it toggles is on, read where the action is applied: a
+    /// button for it shows as toggled.
+    pub on: Option<Expr>,
 }
 
 /// `new_note` as "New note".
@@ -565,6 +572,8 @@ impl Env {
                 role: a.role.clone(),
                 view: a.present.clone(),
                 label_text: None,
+                icon_when: None,
+                on: None,
             };
             add(
                 CKind::Action,
@@ -1918,6 +1927,8 @@ impl Resolver<'_> {
             role: a.role.map(|(r, _)| r.word().to_string()),
             view: None,
             label_text: None,
+            icon_when: None,
+            on: None,
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -1935,6 +1946,7 @@ impl Resolver<'_> {
                     if let Some(icon) = fallback_icon(&opt.value, &at_rest) {
                         out.icon = prims::icon(&icon.name).map(str::to_string);
                     }
+                    out.icon_when = Some(opt.value.clone());
                 }
                 ("icon", _) => self.err(
                     "E090",
@@ -1947,17 +1959,20 @@ impl Resolver<'_> {
                 // `"Move to {col.title}"`: read with the arguments where it is applied; the
                 // action's name stands in elsewhere.
                 ("label", ExprKind::Str(_)) => out.label_text = Some(opt.value.clone()),
+                // `if n.pinned { "Unpin" } else { "Pin" }`: read where it is applied, as a
+                // button for it draws; the label at rest stands in elsewhere.
                 ("label", ExprKind::If { .. }) => {
                     if let Some(label) = fallback_label(&opt.value, &at_rest) {
                         out.label = label;
                     }
+                    out.label_text = Some(opt.value.clone());
                 }
                 ("label", _) => self.err(
                     "E090",
                     opt.value.span,
                     "`label:` takes text in quotes, without `{ }`, such as `label: \"New note\"`, or an `if` over the subject: `label: if n.pinned { \"Unpin\" } else { \"Pin\" }`",
                 ),
-                ("on", _) => {}
+                ("on", _) => out.on = Some(opt.value.clone()),
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
