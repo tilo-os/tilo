@@ -91,6 +91,7 @@ pub use controls::{
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
 pub use lists::{AppLists, Lists};
+pub use mount::vpn::KillSwitch;
 pub use run::{Backend, Reach};
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
@@ -215,6 +216,10 @@ pub struct Options {
     /// copied here is shared with their other devices through it, and what
     /// they copied there joins the clipboard here.
     pub fabric: Option<tilo_device_fabric::link::SharedLink>,
+    /// The person's VPN profile kill switches, when this session runs on a
+    /// machine with the helper: a profile set to connect and not connected
+    /// blocks traffic while its switch is on. Without one, nothing does.
+    pub kill_switch: Option<KillSwitch>,
 }
 
 /// Where quick settings reads the device from.
@@ -301,6 +306,7 @@ impl Default for Options {
             state: None,
             collab: true,
             fabric: None,
+            kill_switch: None,
         }
     }
 }
@@ -1190,6 +1196,12 @@ impl Session {
     ) -> Result<Self, Error> {
         let sources = config::Sources::from_config(&options.config);
         let mut doors = Doors::default();
+        // The VPN profiles' kill switch runs for the session's lifetime: a
+        // profile set to connect and down blocks traffic while its switch
+        // is on, and what blocks is published for Settings.
+        if let Some(kill_switch) = options.kill_switch.take() {
+            kill_switch.start();
+        }
         // What the desk and the chrome ask of the session, from their own
         // widget trees.
         let notices = tilo_desktop_surface::DesktopNotifications::default();
