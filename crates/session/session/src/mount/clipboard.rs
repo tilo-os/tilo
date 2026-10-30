@@ -13,13 +13,16 @@
 //! so every app pastes the way it expects (a terminal with Ctrl+Shift+V).
 
 use std::cell::{Cell, RefCell};
+use std::time::{Duration, Instant};
 
 use std::path::Path;
 
 use settings_store::clipboard_history::{HISTORY, PASTE, StoredCopy, StoredHistory, StoredPaste};
 use settings_store::paste_shortcut::{self, PasteShortcut};
-use tilo_compositor::clipboard_history::{Copy, History, Pull, Pulled, kept_mime};
+use tilo_compositor::clipboard_history::{Copy, History, Pull, Pulled, TEXT_MIME, kept_mime};
 use tilo_compositor::{Compositor, InputEvent, Selection};
+use tilo_device_fabric::link::FabricLink;
+use tilo_device_fabric::{ClipboardEntry, ClipboardPayload, DeviceId, FabricStamp};
 use tilo_quick_settings::hosted::ClipboardCopy;
 use ui::dnd::CopiedFiles;
 
@@ -44,6 +47,13 @@ pub(crate) struct Clipboard {
     files: RefCell<Option<CopiedFiles>>,
     /// The paste of files in flight, as far as its journal got.
     paste: RefCell<Option<StoredPaste>>,
+    /// Whether what was copied here since the last share still has to be
+    /// offered to the person's other devices.
+    unshared: Cell<bool>,
+    /// When the fabric was last read. The fabric is a whole snapshot of
+    /// every device, so it is read a few times a second rather than every
+    /// turn of the loop, and at once when something was copied here.
+    synced_at: Cell<Option<Instant>>,
 }
 
 /// One read of the selection.
@@ -76,6 +86,8 @@ impl Clipboard {
             files: RefCell::new(None),
             // A paste the last session was in the middle of is finished here.
             paste: RefCell::new(PASTE.get()),
+            unshared: Cell::new(true),
+            synced_at: Cell::new(None),
         }
     }
 
@@ -244,6 +256,97 @@ impl Clipboard {
         clipboard_files::save(paste.as_ref());
     }
 
+    /// Share what was copied here with the person's other devices, and take
+    /// what they copied there: `link` is the fabric, when this session runs
+    /// on one. Returns whether the history changed.
+    ///
+    /// What another device shared joins the history marked with the device
+    /// it came from, and is never offered back: a copy belongs to the device
+    /// it was made on.
+    pub(crate) fn sync_fabric(&self, link: &dyn FabricLink) -> bool {
+        let Some((local, _)) = link.local_device_fabric_identity() else {
+            return false;
+        };
+        let now = Instant::now();
+        let due = self
+            .synced_at
+            .get()
+            .is_none_or(|at| now.duration_since(at) >= SYNC_EVERY);
+        if !due && !self.unshared.get() {
+            return false;
+        }
+        self.synced_at.set(Some(now));
+        let shared: Vec<ClipboardEntry> = link
+            .device_fabric()
+            .merged_clipboard()
+            .entries()
+            .cloned()
+            .collect();
+        let mut changed = false;
+        {
+            let mut history = self.history.borrow_mut();
+            // Newest first, so the front of the history is what was copied
+            // last there too.
+            for entry in shared.iter().rev() {
+                if entry.origin == local {
+                    continue;
+                }
+                let (mime, bytes) = payload_of(&entry.payload);
+                let mut copy = Copy::new(&mime, bytes, entry.created_unix_ms);
+                copy.pinned = entry.pinned;
+                copy.from = Some(entry.origin.as_str().to_owned());
+                changed |= history.import(copy);
+            }
+        }
+        if changed {
+            self.save();
+        }
+        if self.unshared.replace(false) {
+            let entries = self.shareable(&local);
+            if !entries.is_empty() {
+                link.share_clipboard(entries);
+            }
+        }
+        changed
+    }
+
+    /// What was copied here, as entries the fabric carries: a copy that came
+    /// from another device is theirs, and a list of files names paths that
+    /// only mean something on this device.
+    fn shareable(&self, local: &DeviceId) -> Vec<ClipboardEntry> {
+        let mut entries = Vec::new();
+        for copy in self.history.borrow().copies() {
+            if copy.from.is_some() {
+                continue;
+            }
+            let payload = match copy.mime.as_str() {
+                TEXT_MIME => match copy.text() {
+                    Some(text) => ClipboardPayload::Text(text.to_owned()),
+                    None => continue,
+                },
+                mime if SHARED_MIMES.contains(&mime) => ClipboardPayload::Binary {
+                    mime: copy.mime.clone(),
+                    bytes: copy.bytes.clone(),
+                },
+                _ => continue,
+            };
+            let Ok(mut entry) = ClipboardEntry::shareable(
+                payload,
+                local.clone(),
+                copy.created_ms,
+                FabricStamp {
+                    counter: copy.created_ms,
+                    device: local.clone(),
+                },
+            ) else {
+                continue;
+            };
+            entry.pinned = copy.pinned;
+            entries.push(entry);
+        }
+        entries
+    }
+
     /// Queue what quick settings asked for, for the loop that has the
     /// compositor.
     pub(crate) fn ask(&self, ask: Ask) {
@@ -341,9 +444,26 @@ impl Clipboard {
                 })
                 .collect(),
         };
+        self.unshared.set(true);
         if let Err(error) = HISTORY.set(stored) {
             tracing::warn!(%error, "the clipboard history was not saved");
         }
+    }
+}
+
+/// How often the fabric is read when nothing was copied here.
+const SYNC_EVERY: Duration = Duration::from_millis(500);
+
+/// The formats that mean the same thing on every device: pictures and
+/// formatted text. A file list is a copy of paths, which a paste on another
+/// device could not open.
+const SHARED_MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "text/html"];
+
+/// What a shared item's format and bytes are here.
+fn payload_of(payload: &ClipboardPayload) -> (String, Vec<u8>) {
+    match payload {
+        ClipboardPayload::Text(text) => (TEXT_MIME.to_owned(), text.as_bytes().to_vec()),
+        ClipboardPayload::Binary { mime, bytes } => (mime.clone(), bytes.clone()),
     }
 }
 

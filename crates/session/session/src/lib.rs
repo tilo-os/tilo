@@ -185,6 +185,10 @@ pub struct Options {
     /// here in each workspace's room, over Iroh. Off, this desktop has no
     /// collaborators but its own person.
     pub collab: bool,
+    /// The person's device fabric, when this session runs on one: what was
+    /// copied here is shared with their other devices through it, and what
+    /// they copied there joins the clipboard here.
+    pub fabric: Option<tilo_device_fabric::link::SharedLink>,
 }
 
 /// Where quick settings reads the device from.
@@ -264,6 +268,7 @@ impl Default for Options {
             portal: None,
             state: None,
             collab: true,
+            fabric: None,
         }
     }
 }
@@ -1007,6 +1012,8 @@ pub struct Session {
     night_light: (bool, bool),
     /// The portal's link to the loop, while the portal serves.
     portal: Option<portal_link::SessionLink>,
+    /// The person's device fabric, while this session runs on one.
+    fabric: Option<tilo_device_fabric::link::SharedLink>,
     /// The desktop services the portal and the notifications daemon run
     /// in, fed what the session knows of itself.
     desktop: Option<Rc<desktop_services::DesktopServices>>,
@@ -1252,6 +1259,7 @@ impl Session {
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             night_light: (options.config.night_light, options.config.kept),
             portal: options.portal,
+            fabric: options.fabric,
             screen_locked: false,
             desktop: options.desktop,
             running: Vec::new(),
@@ -1514,6 +1522,13 @@ impl Session {
         // One file of a paste in flight per turn, so a folder of files does
         // not hold up a frame.
         self.shared.clipboard.step_files();
+        // What was copied here reaches the person's other devices, and what
+        // they copied there joins the clipboard here.
+        if let Some(fabric) = &self.fabric
+            && self.shared.clipboard.sync_fabric(fabric.as_ref())
+        {
+            self.shared.feed_clipboard();
+        }
         Ok(())
     }
 
