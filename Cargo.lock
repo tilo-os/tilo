@@ -327,6 +327,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shell",
+ "tasks",
  "tempfile",
  "tilo-action-policy",
  "tilo-actions",
