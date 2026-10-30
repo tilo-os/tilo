@@ -278,7 +278,15 @@ pub(crate) struct AdmittedJoinIdentity {
     /// MCP client): it carries the delegation a device gives its agents,
     /// not grants the room holds for it.
     session_delegated: bool,
+    /// The task delegation a task agent joined under, verified: the asking
+    /// device's chain to its person, for one task in this room. Every
+    /// revalidation verifies it again and asks whether its task still goes.
+    task: Option<Box<TaskDelegation>>,
 }
+
+use tilo_peer_state::join::task_delegation::TaskDelegation;
+mod task_agents;
+use task_agents::{admit_task_delegation, verify_task_agent_join, verify_task_delegation};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BrokerActor {
@@ -748,10 +756,15 @@ impl AdmittedJoinIdentity {
             Some(agent) => {
                 let actor = BrokerActor::agent(format!("agent:{agent}"))
                     .for_person(self.principal_id.clone());
-                if self.session_delegated {
+                let actor = if self.session_delegated {
                     actor.session_delegated()
                 } else {
                     actor
+                };
+                // A task agent works on its task alone.
+                match &self.task {
+                    Some(task) => actor.working_on(task.work_group.clone()),
+                    None => actor,
                 }
             }
             None => BrokerActor::person(self.principal_id.clone()),
@@ -927,6 +940,7 @@ fn admit_verified_join_at(
             display_handle: None,
             agent_id: None,
             session_delegated: false,
+            task: None,
         });
     }
     let workspace = workspace
@@ -947,6 +961,7 @@ fn admit_verified_join_at(
         display_handle: None,
         agent_id: None,
         session_delegated: false,
+        task: None,
     })
 }
 
@@ -1088,6 +1103,20 @@ fn verify_join_identity_with_host_scope(
     authority: Option<&dyn super::peer_actions::CertificateAuthority>,
     host_scope: Option<&LocalHostWorkerScope>,
 ) -> Result<AdmittedJoinIdentity, String> {
+    if let Some(presentation) = runtime_collab::TaskAgentJoinIdentity::decode(identity_bytes)
+        .map_err(|error| format!("task agent join presentation is malformed: {error}"))?
+    {
+        if host_scope.is_some() {
+            return Err("a host worker never joins as a task agent".into());
+        }
+        return verify_task_agent_join(
+            route,
+            &presentation,
+            membership,
+            trusted_devices,
+            authority,
+        );
+    }
     let Some(presentation) = runtime_collab::CertifiedJoinIdentity::decode(identity_bytes)
         .map_err(|error| format!("certified join presentation is malformed: {error}"))?
     else {
@@ -1096,30 +1125,8 @@ fn verify_join_identity_with_host_scope(
     let cert: tilo_user_identity::DeviceCert =
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
-    let (expected_root, revoked, enrolled) = if let Some(scope) = host_scope {
-        if !cert.capabilities.can_act_as_host || route != &scope.route || cert != scope.certificate
-        {
-            return Err("host worker descriptor route or certificate mismatch".into());
-        }
-        authority
-            .ok_or("current host worker authority unavailable")?
-            .authorize_host_worker(route, &cert)?;
-        (cert.user_public_key, false, true)
-    } else if cert.capabilities.can_act_as_host {
-        return Err("host certificate requires a private host worker descriptor".into());
-    } else if let Some(authority) = authority {
-        let room = uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid exact room")?;
-        authority.authorize_join(room, &cert)?;
-        (cert.user_public_key, false, true)
-    } else if let Some(devices) = trusted_devices {
-        (
-            cert.user_public_key,
-            false,
-            devices.contains(&cert.device_public_key),
-        )
-    } else {
-        return Err("no current certificate authority is attached".into());
-    };
+    let (expected_root, revoked, enrolled) =
+        authorize_join_certificate(route, &cert, trusted_devices, authority, host_scope)?;
     let registered = authority.map_or(
         Ok(None),
         super::peer_actions::CertificateAuthority::policy_time,
@@ -1144,6 +1151,44 @@ fn verify_join_identity_with_host_scope(
     admitted.certificate = Some(cert);
     admitted.host_scope = host_scope.cloned();
     Ok(admitted)
+}
+
+/// Whether `cert` may join `route` at all: the host worker scope for a host
+/// certificate, else the room's certificate authority (its device list and
+/// revocations), else the trusted device keys. Answers the root expected to
+/// have certified it and whether it is revoked or enrolled where only the
+/// trusted keys decide.
+fn authorize_join_certificate(
+    route: &CrdtRoute,
+    cert: &tilo_user_identity::DeviceCert,
+    trusted_devices: Option<&[[u8; 32]]>,
+    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+    host_scope: Option<&LocalHostWorkerScope>,
+) -> Result<([u8; 32], bool, bool), String> {
+    Ok(if let Some(scope) = host_scope {
+        if !cert.capabilities.can_act_as_host || route != &scope.route || *cert != scope.certificate
+        {
+            return Err("host worker descriptor route or certificate mismatch".into());
+        }
+        authority
+            .ok_or("current host worker authority unavailable")?
+            .authorize_host_worker(route, cert)?;
+        (cert.user_public_key, false, true)
+    } else if cert.capabilities.can_act_as_host {
+        return Err("host certificate requires a private host worker descriptor".into());
+    } else if let Some(authority) = authority {
+        let room = uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid exact room")?;
+        authority.authorize_join(room, cert)?;
+        (cert.user_public_key, false, true)
+    } else if let Some(devices) = trusted_devices {
+        (
+            cert.user_public_key,
+            false,
+            devices.contains(&cert.device_public_key),
+        )
+    } else {
+        return Err("no current certificate authority is attached".into());
+    })
 }
 
 /// Envelope pushed onto an [`OpStreamServer`]'s queue. `kind` is what
@@ -7116,7 +7161,17 @@ impl CapnpBrokerState {
                 current
                     .worker_registration
                     .clone_from(&admitted.worker_registration);
-                if let Some(agent_id) = &admitted.agent_id {
+                if let Some(task) = &admitted.task {
+                    // The chain again, now: the device still certified and in
+                    // the room's device list (checked above), the delegation
+                    // inside its window, its task still going.
+                    let cert = admitted
+                        .certificate
+                        .as_ref()
+                        .ok_or("task agent session lost its device certificate")?;
+                    verify_task_delegation(task, cert, &route.cluster_id, now)?;
+                    admit_task_delegation(&mut current, (**task).clone());
+                } else if let Some(agent_id) = &admitted.agent_id {
                     admit_agent_delegation_at(
                         workspace,
                         &mut current,
@@ -7132,6 +7187,12 @@ impl CapnpBrokerState {
                 Ok::<_, String>(current)
             })
             .and_then(std::convert::identity)
+            .and_then(|current| {
+                if let Some(task) = &current.task {
+                    self.task_goes(&route.cluster_id, task)?;
+                }
+                Ok(current)
+            })
             .map_err(capnp::Error::failed)
     }
 
@@ -7742,6 +7803,7 @@ impl CapnpBrokerState {
                 joined_at: None,
             });
         }
+        collaborators.extend(task_agents::self_row(admitted));
         if collaborators.iter().filter(|row| row.is_self).count() != 1 {
             return Err("native context has no exact authenticated self member".into());
         }
@@ -7764,6 +7826,18 @@ impl CapnpBrokerState {
             .any(|row| row.id == actor && row.is_agent)
         {
             return None;
+        }
+        // A task agent's row comes only from its own verified, revalidated
+        // task delegation ([`Self::native_membership_roster`]): that is its
+        // certification, beside a collaborator's membership.
+        if let Some(agent) = actor
+            .strip_prefix("agent:")
+            .filter(|agent| tilo_peer_state::join::task_delegation::is_task_agent(agent))
+        {
+            return Some(ui::collaboration::CertifiedAgentIdentity {
+                participant_id: actor.to_owned(),
+                agent_key: agent.to_owned(),
+            });
         }
         let now = self.policy_now_ns().ok()? / 1_000_000_000;
         self.membership
@@ -8401,7 +8475,14 @@ impl collab_service::Server for CapnpCollabService {
                     "host worker cannot delegate an agent identity".into(),
                 ));
             }
+            task_agents::joins_as(&verified_identity, participant_kind)
+                .map_err(capnp::Error::failed)?;
             match participant_kind {
+                "agent" if verified_identity.task.is_some() => {
+                    state
+                        .admit_task_join(&route.cluster_id, participant_handle, &verified_identity)
+                        .map_err(capnp::Error::failed)?;
+                }
                 "" | "person" => {
                     // A Person handle is presentation, not its certified identity.
                     let participant_handle = participant_handle
@@ -16304,6 +16385,7 @@ pub mod tests {
                         role: CapRole::Editor,
                         agent_id: None,
                         session_delegated: false,
+                        task: None,
                     }
                 }),
                 record_kind: None,
@@ -21356,6 +21438,7 @@ mod host_worker_capacity_tests {
             role: CapRole::Owner,
             agent_id: None,
             session_delegated: false,
+            task: None,
         }
     }
     fn retained(state: &CapnpBrokerState) -> usize {

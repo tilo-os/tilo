@@ -25,14 +25,6 @@ use super::i18n::t_args;
 /// opens the composer with what the desktop knows itself.
 pub(crate) const ANSWER_WAIT: Duration = Duration::from_millis(400);
 
-/// How long the chord waits for an agent it started to take tasks before it
-/// says no agent is available after all. A packaged agent connects to the
-/// broker in a second or two; its first start may also verify its package.
-pub(crate) const AGENT_START_WAIT: Duration = Duration::from_secs(20);
-
-/// How often the chord looks whether the agent it started takes tasks yet.
-const AGENT_START_POLL: Duration = Duration::from_millis(250);
-
 /// Characters of the selection the composer shows above its editor.
 const CONTEXT_CHARS: usize = 160;
 
@@ -338,24 +330,6 @@ struct Waiting {
     deadline: Instant,
 }
 
-/// A chord that found its agent admitted to the workspace but not running:
-/// the agent was started, and the composer opens about `seed` once it takes
-/// tasks.
-struct Starting {
-    room: String,
-    agent: String,
-    seed: SelectionSeed,
-    until: Instant,
-}
-
-/// Where an agent the chord started stands.
-pub(crate) enum AgentStart {
-    /// It takes tasks: open the composer about this seed.
-    Ready(Box<SelectionSeed>),
-    /// It did not come up in time.
-    GaveUp,
-}
-
 /// The chord's progress, and which apps can answer it.
 #[derive(Default)]
 pub(crate) struct SelectionRequests {
@@ -372,7 +346,6 @@ pub(crate) struct SelectionRequests {
     waiting: Option<Waiting>,
     /// The agent last asked in each room, asked again while it is live.
     last_agent: HashMap<String, String>,
-    starting: Option<Starting>,
 }
 
 impl SelectionRequests {
@@ -503,51 +476,7 @@ impl SelectionRequests {
         if self.pressed {
             return Some(now);
         }
-        let poll = self
-            .starting
-            .as_ref()
-            .map(|_| now.checked_add(AGENT_START_POLL).unwrap_or(now));
-        match (self.waiting.as_ref().map(|waiting| waiting.deadline), poll) {
-            (Some(answer), Some(poll)) => Some(answer.min(poll)),
-            (answer, poll) => answer.or(poll),
-        }
-    }
-
-    /// `agent` was started in `room` for a chord about `seed`; a newer
-    /// chord's start replaces an older one's.
-    pub(crate) fn starting(&mut self, room: &str, agent: &str, seed: SelectionSeed, now: Instant) {
-        self.starting = Some(Starting {
-            room: room.to_owned(),
-            agent: agent.to_owned(),
-            seed,
-            until: now.checked_add(AGENT_START_WAIT).unwrap_or(now),
-        });
-    }
-
-    /// Whether the chord is waiting for `agent` it started in `room`.
-    pub(crate) fn is_starting(&self, room: &str, agent: &str) -> bool {
-        self.starting
-            .as_ref()
-            .is_some_and(|starting| starting.room == room && starting.agent == agent)
-    }
-
-    /// Whether an agent the chord started is `live` now (or gave up), once.
-    pub(crate) fn started(
-        &mut self,
-        now: Instant,
-        live: impl FnOnce(&str, &str) -> bool,
-    ) -> Option<AgentStart> {
-        let starting = self.starting.as_ref()?;
-        if live(&starting.room, &starting.agent) {
-            let starting = self.starting.take()?;
-            self.last_agent.insert(starting.room, starting.agent);
-            return Some(AgentStart::Ready(Box::new(starting.seed)));
-        }
-        if now >= starting.until {
-            self.starting = None;
-            return Some(AgentStart::GaveUp);
-        }
-        None
+        self.waiting.as_ref().map(|waiting| waiting.deadline)
     }
 
     /// The agent to ask in `room`: the one asked last while it is still
@@ -738,97 +667,6 @@ mod tests {
             Some("claude")
         );
         assert_eq!(requests.choose_agent("room", &[]), None);
-    }
-
-    #[test]
-    fn a_started_agent_gets_the_composer_once_it_takes_tasks_or_the_chord_gives_up() {
-        let now = Instant::now();
-        let seed = SelectionSeed::new("so.tilo.notes", "Notes", Some(writer_selection()));
-        let mut requests = SelectionRequests::default();
-        assert!(requests.started(now, |_, _| true).is_none());
-        requests.starting("room", "scribe", seed.clone(), now);
-        assert!(requests.is_starting("room", "scribe"));
-        assert!(!requests.is_starting("room", "other"));
-        assert!(requests.deadline(now).is_some_and(|at| at > now));
-        assert!(requests.started(now, |_, _| false).is_none());
-        let Some(AgentStart::Ready(ready)) =
-            requests.started(now, |room, agent| room == "room" && agent == "scribe")
-        else {
-            panic!("a live agent gets the composer");
-        };
-        assert_eq!(*ready, seed);
-        assert_eq!(
-            requests
-                .choose_agent("room", &["other".into(), "scribe".into()])
-                .as_deref(),
-            Some("scribe")
-        );
-        assert_eq!(requests.deadline(now), None);
-
-        requests.starting("room", "scribe", seed, now);
-        assert!(matches!(
-            requests.started(now + AGENT_START_WAIT, |_, _| false),
-            Some(AgentStart::GaveUp)
-        ));
-        assert!(
-            requests
-                .started(now + AGENT_START_WAIT, |_, _| true)
-                .is_none()
-        );
-    }
-
-    /// On 2026-10-19 one chord press started the workspace agent 87 times in
-    /// a second: the start counted as done once the agent subscribed for
-    /// tasks, the composer then found no agent it may ask (no certified
-    /// identity yet) and started another, every frame. Frame by frame as
-    /// `ShellOverlayHost::follow_agent_start` and `open_ask_agent` run, with
-    /// the one test both use (`askable`): an agent that never becomes
-    /// askable is started once, waited for, and given up on once.
-    #[test]
-    fn a_started_agent_that_never_takes_asks_is_started_once_and_given_up_on() {
-        let start = Instant::now();
-        let seed = SelectionSeed::new("so.tilo.notes", "Notes", Some(writer_selection()));
-        let members = vec!["claude-code".to_owned()];
-        // Subscribed for tasks, but not certified: not askable.
-        let askable = |_room: &str, _agent: &str| false;
-        let mut requests = SelectionRequests::default();
-        let mut starts = 0;
-        let mut gave_up = 0;
-        // The chord: nobody askable, so the admitted agent starts.
-        let live: Vec<String> = members
-            .iter()
-            .filter(|agent| askable("room", agent))
-            .cloned()
-            .collect();
-        assert_eq!(requests.choose_agent("room", &live), None);
-        let agent = requests
-            .choose_agent("room", &members)
-            .expect("an admitted agent");
-        starts += 1;
-        requests.starting("room", &agent, seed.clone(), start);
-        // Every frame for longer than the wait, at 90 Hz.
-        for frame in 1..=(AGENT_START_WAIT.as_millis() / 11 + 10) {
-            let now = start + Duration::from_millis(u64::try_from(frame * 11).unwrap_or(u64::MAX));
-            match requests.started(now, askable) {
-                Some(AgentStart::Ready(_)) => {
-                    // `open_ask_agent` asks among the askable members: with
-                    // the same test there is always one here.
-                    let live: Vec<String> = members
-                        .iter()
-                        .filter(|agent| askable("room", agent))
-                        .cloned()
-                        .collect();
-                    if requests.choose_agent("room", &live).is_none() {
-                        starts += 1;
-                        requests.starting("room", &agent, seed.clone(), now);
-                    }
-                }
-                Some(AgentStart::GaveUp) => gave_up += 1,
-                None => {}
-            }
-        }
-        assert_eq!(starts, 1, "started once");
-        assert_eq!(gave_up, 1, "and given up on once, when the wait ran out");
     }
 
     /// The chord asks a Tilo app for its selection over the app's shell-ui

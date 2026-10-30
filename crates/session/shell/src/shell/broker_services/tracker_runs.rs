@@ -312,6 +312,14 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
         }),
         directions,
         question,
+        // A delegation that does not decode is carried as nothing to verify:
+        // the agent's check refuses it rather than reading the run as a
+        // collaborator's.
+        delegation: run.delegation.as_deref().map(|hex| {
+            tilo_peer_state::join::task_delegation::TaskDelegation::from_hex(hex)
+                .map(|delegation| delegation.encode())
+                .unwrap_or_default()
+        }),
     })
 }
 
@@ -357,13 +365,15 @@ impl TrackerRuns for NativeTrackerRuns {
             .unwrap_or_default())
     }
 
-    fn check_agent(&self, room: &str, agent: &str) -> Result<(), String> {
+    fn check_agent(&self, room: &str, run: &TrackerRun) -> Result<(), String> {
         let room_id = super::super::state::RoomId::parse(room).ok_or("invalid tracker room")?;
         let owner = &self.owner.opened_owner("tracker owner unavailable")?;
         owner.with_current(room_id, |view| {
-            view.peer()
-                .workspace()
-                .check_admitted_agent(agent, std::time::SystemTime::now())
+            view.peer().workspace().check_admitted_agent(
+                &run.agent,
+                run.delegation.as_deref(),
+                std::time::SystemTime::now(),
+            )
         })
     }
 
@@ -377,9 +387,11 @@ impl TrackerRuns for NativeTrackerRuns {
         let owner = &self.owner.opened_owner("tracker owner unavailable")?;
         owner.with_current(room_id, |view| {
             let now = std::time::SystemTime::now();
-            view.peer()
-                .workspace()
-                .check_admitted_agent(&run.agent, now)?;
+            view.peer().workspace().check_admitted_agent(
+                &run.agent,
+                run.delegation.as_deref(),
+                now,
+            )?;
             requirement.check_tracker(view.peer(), room, run, now)
         })
     }

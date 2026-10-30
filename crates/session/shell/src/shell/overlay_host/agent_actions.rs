@@ -86,6 +86,9 @@ enum Purpose {
         title: String,
         /// Open the issue's page once it is asked.
         show: bool,
+        /// The agent made for the task, launched once its run carries the
+        /// delegation; `None` when a collaborator is asked.
+        task_agent: Option<Arc<crate::shell::task_agents::MintedTaskAgent>>,
     },
     /// A message to, or Stop of, the followed run.
     Submit(ComposerRequest),
@@ -245,6 +248,10 @@ pub(super) struct AgentActions {
     fresh: Freshness,
     /// When the agent was last started for work asked of it.
     started: Option<Instant>,
+    /// Task agents whose task now exists, to launch in their room.
+    launches: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)>,
+    /// Requests that could not become a task, and why.
+    refused: Vec<(ComposerRequest, String)>,
 }
 
 impl AgentActions {
@@ -380,6 +387,15 @@ impl AgentActions {
         }
         let pending = std::mem::take(&mut self.calls);
         let mut changed = false;
+        for (request, error) in std::mem::take(&mut self.refused) {
+            composer.observe_receipt(ComposerReceipt {
+                owner: request.owner.clone(),
+                submission: request.submission,
+                outcome: ComposerOutcome::Refused,
+            });
+            composer.tell(error);
+            changed = true;
+        }
         for mut call in pending {
             if Instant::now() >= call.deadline {
                 self.refuse(&call.operation, composer, true);
@@ -417,7 +433,7 @@ impl AgentActions {
         }
         composer.project(&owner, run);
         if let Some(request) = composer.take_request() {
-            self.submit(request);
+            self.submit(&request);
             changed = true;
         }
         if let Some(issue) = composer.take_open_run() {
@@ -459,15 +475,23 @@ impl AgentActions {
         true
     }
 
-    fn submit(&mut self, request: ComposerRequest) {
+    fn submit(&mut self, request: &ComposerRequest) {
         if request.stop
             && let Some(task) = &request.task
         {
             self.retired.push(task.task_id.clone());
         }
-        if let Some(operation) = submission_operation(request) {
-            self.begin(operation);
+        match submission_operation(request.clone()) {
+            Some(Ok(operation)) => self.begin(operation),
+            Some(Err(error)) => self.refuse_queue(request, &error),
+            None => {}
         }
+    }
+
+    /// A request that could not become a task: the person is told why.
+    fn refuse_queue(&mut self, request: &ComposerRequest, error: &str) {
+        tracing::warn!(%error, "the request could not become a task");
+        self.refused.push((request.clone(), error.to_owned()));
     }
 
     /// Open for `owner` and ask its agent for `title`'s work, described by
@@ -487,7 +511,13 @@ impl AgentActions {
         if !self.open(source, owner.clone()) {
             return false;
         }
-        let mut operation = queue_operation(owner, None, (title, body), about, None, quick);
+        let mut operation = match queue_operation(owner, None, (title, body), about, None, quick) {
+            Ok(operation) => operation,
+            Err(error) => {
+                tracing::warn!(%error, "work could not become a task");
+                return false;
+            }
+        };
         if let Purpose::Queue { show: shown, .. } = &mut operation.purpose {
             *shown = show;
         }
@@ -531,14 +561,10 @@ impl AgentActions {
                 None,
             ),
         };
-        self.begin(queue_operation(
-            owner,
-            None,
-            (title, &instruction),
-            about,
-            None,
-            false,
-        ));
+        match queue_operation(owner, None, (title, &instruction), about, None, false) {
+            Ok(operation) => self.begin(operation),
+            Err(error) => tracing::warn!(%error, "the answer could not be handed on as a task"),
+        }
     }
 
     fn advance(&mut self, call: &mut Call, composer: &mut AgentQuickComposer) -> bool {
@@ -592,17 +618,30 @@ impl AgentActions {
                     submission: request.submission,
                     outcome: ComposerOutcome::Answered(answer),
                 }),
-                Some(Responded::Work(title)) => {
-                    self.begin(request_queue(request, Some(title)));
-                }
-                None => self.begin(request_queue(request, None)),
+                Some(Responded::Work(title)) => match request_queue(request, Some(title)) {
+                    Ok(operation) => self.begin(operation),
+                    Err(error) => self.refuse_queue(request, &error),
+                },
+                None => match request_queue(request, None) {
+                    Ok(operation) => self.begin(operation),
+                    Err(error) => self.refuse_queue(request, &error),
+                },
             },
             Purpose::Queue {
                 request,
                 title,
                 show,
+                task_agent,
             } => {
                 let asked = asked_issue(operation);
+                // The task exists and its run carries the delegation: its
+                // agent can join now, under its own key.
+                if let Some(task_agent) = task_agent
+                    && let Some(owner) = &self.owner
+                {
+                    self.launches
+                        .push((owner.room.clone(), Arc::clone(task_agent)));
+                }
                 if *show && let Some(issue) = &asked {
                     self.begin(show_operation(issue));
                 }
@@ -667,7 +706,10 @@ impl AgentActions {
                     "the agent could not be asked; its run decides instead"
                 );
                 if self.session.is_some() {
-                    self.begin(request_queue(request, None));
+                    match request_queue(request, None) {
+                        Ok(operation) => self.begin(operation),
+                        Err(error) => self.refuse_queue(request, &error),
+                    }
                 } else {
                     composer.observe_receipt(ComposerReceipt {
                         owner: request.owner.clone(),
@@ -701,6 +743,13 @@ impl AgentActions {
 
     pub(super) fn deadline(&self) -> Option<Instant> {
         self.calls.iter().map(|call| call.deadline).min()
+    }
+
+    /// The task agents to launch now that their tasks exist, by room.
+    pub(super) fn take_launches(
+        &mut self,
+    ) -> Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)> {
+        std::mem::take(&mut self.launches)
     }
 }
 
@@ -775,7 +824,7 @@ fn respond_operation(request: ComposerRequest) -> Operation {
 
 /// Queue `request` as work, under the title the agent gave it or its own
 /// first line.
-fn request_queue(request: &ComposerRequest, title: Option<String>) -> Operation {
+fn request_queue(request: &ComposerRequest, title: Option<String>) -> Result<Operation, String> {
     let title = title.unwrap_or_else(|| request.text.lines().next().unwrap_or_default().into());
     // A selection travels as the task's own record of it; the composer's
     // context line only shows it, so it is not repeated as text.
@@ -805,14 +854,32 @@ fn queue_operation(
     about: Option<&SelectionSeed>,
     model: Option<&runtime_collab::TaskRunModel>,
     quick: bool,
-) -> Operation {
+) -> Result<Operation, String> {
     let title: String = title.trim().chars().take(TITLE_CHARS).collect();
+    let id = uuid::Uuid::new_v4().to_string();
+    // A new agent made for the task: minted here, its delegation on the run,
+    // launched once the task exists. A collaborator is asked by name.
+    let task_agent = if owner.agent == crate::shell::task_agents::NEW_TASK_AGENT {
+        let work_group = format!("{}{id}", tilo_action_broker::services::TRACKER_ISSUE_PREFIX);
+        Some(Arc::new(crate::shell::task_agents::mint(
+            &owner.room,
+            &work_group,
+        )?))
+    } else {
+        None
+    };
+    let agent = task_agent
+        .as_ref()
+        .map_or(owner.agent.as_str(), |minted| minted.agent_id.as_str());
     let mut arguments = Map::from_iter([
-        ("id".into(), uuid::Uuid::new_v4().to_string().into()),
+        ("id".into(), id.into()),
         ("title".into(), title.clone().into()),
         ("body".into(), instruction.into()),
-        ("agent".into(), format!("agent:{}", owner.agent).into()),
+        ("agent".into(), format!("agent:{agent}").into()),
     ]);
+    if let Some(minted) = &task_agent {
+        arguments.insert("delegation".into(), minted.delegation_hex.clone().into());
+    }
     if let Some(model) = model {
         arguments.insert(
             "model".into(),
@@ -844,7 +911,7 @@ fn queue_operation(
             "asking an agent about a selection"
         );
     }
-    Operation {
+    Ok(Operation {
         resource: TRACKER.into(),
         action: "ask-agent".into(),
         arguments,
@@ -852,11 +919,12 @@ fn queue_operation(
             request,
             title,
             show: false,
+            task_agent,
         },
         app: TRACKER_APP.into(),
         target: None,
         confirmation: None,
-    }
+    })
 }
 
 /// Open `issue`'s page: the issue's `open` view in Tasks, the one action a
@@ -981,14 +1049,18 @@ fn instruction(text: &str, context: &str, conversation: &[ComposerTurn]) -> Stri
     instruction
 }
 
-fn submission_operation(request: ComposerRequest) -> Option<Operation> {
+fn submission_operation(request: ComposerRequest) -> Option<Result<Operation, String>> {
     if request.intent == ComposerIntent::Request && !request.stop {
         // The person ruling that this is work skips the question the agent
         // would have answered: the task starts with their words as its title.
-        if request.as_task == Some(true) {
+        // A new agent made for the task is the task's own: nothing runs to
+        // answer before it, so the request is its task and its run answers.
+        if request.as_task == Some(true)
+            || request.owner.agent == crate::shell::task_agents::NEW_TASK_AGENT
+        {
             return Some(request_queue(&request, None));
         }
-        return Some(respond_operation(request));
+        return Some(Ok(respond_operation(request)));
     }
     let issue = request
         .task
@@ -1003,7 +1075,7 @@ fn submission_operation(request: ComposerRequest) -> Option<Operation> {
         arguments.insert("text".into(), request.text.clone().into());
         "send-message"
     };
-    Some(Operation {
+    Some(Ok(Operation {
         resource: TRACKER.into(),
         action: action.into(),
         arguments,
@@ -1011,7 +1083,7 @@ fn submission_operation(request: ComposerRequest) -> Option<Operation> {
         app: TRACKER_APP.into(),
         target: None,
         confirmation: None,
-    })
+    }))
 }
 
 enum Step {
@@ -1341,7 +1413,7 @@ mod tests {
     fn a_request_asks_the_agent_and_a_running_task_is_steered_or_stopped() {
         let mut asked = request(ComposerIntent::Request);
         asked.task = None;
-        let operation = submission_operation(asked.clone()).unwrap();
+        let operation = submission_operation(asked.clone()).unwrap().unwrap();
         assert_eq!(operation.resource, "agent.transform:default");
         assert_eq!(operation.action, "respond");
         assert_eq!(operation.app, AGENT);
@@ -1355,7 +1427,7 @@ mod tests {
             Some(ui::shared_selection::SharedSelection::of_text(&excerpt)),
         ));
         assert_eq!(
-            submission_operation(long).unwrap().arguments["input"],
+            submission_operation(long).unwrap().unwrap().arguments["input"],
             excerpt.as_str(),
             "the agent answers from the whole selection, not the shown start"
         );
@@ -1368,7 +1440,7 @@ mod tests {
         );
 
         let steer = request(ComposerIntent::Steer);
-        let operation = submission_operation(steer.clone()).unwrap();
+        let operation = submission_operation(steer.clone()).unwrap().unwrap();
         assert_eq!(
             (operation.resource.as_str(), operation.action.as_str()),
             (TRACKER, "send-message")
@@ -1379,7 +1451,7 @@ mod tests {
 
         let mut stop = steer;
         stop.stop = true;
-        let operation = submission_operation(stop.clone()).unwrap();
+        let operation = submission_operation(stop.clone()).unwrap().unwrap();
         assert_eq!(operation.action, "stop-run");
         assert!(operation.arguments.get("text").is_none());
         stop.task = None;
@@ -1392,7 +1464,7 @@ mod tests {
         request.task = None;
         request.text = "Rename every file to its invoice number".into();
         request.as_task = Some(true);
-        let operation = submission_operation(request.clone()).unwrap();
+        let operation = submission_operation(request.clone()).unwrap().unwrap();
         assert_ne!(operation.action, "respond", "no question to the agent");
         assert_eq!(
             (
@@ -1409,7 +1481,30 @@ mod tests {
 
         // Ruling that it is an answer leaves the question to the agent.
         request.as_task = Some(false);
-        assert_eq!(submission_operation(request).unwrap().action, "respond");
+        assert_eq!(
+            submission_operation(request).unwrap().unwrap().action,
+            "respond"
+        );
+    }
+
+    /// Asking a new agent made for the task asks nobody first: nothing runs
+    /// to answer before the task exists, so the request becomes the task,
+    /// whose agent is minted on this device. Without a trusted device here
+    /// it cannot be, and says so, never handing the request to `respond`.
+    #[test]
+    fn asking_a_new_task_agent_makes_the_task_and_mints_its_agent() {
+        let mut request = request(ComposerIntent::Request);
+        request.task = None;
+        request.owner.agent = crate::shell::task_agents::NEW_TASK_AGENT.into();
+        request.owner.room = uuid::Uuid::from_u128(77).to_string();
+        let routed = submission_operation(request).unwrap();
+        let refused = routed
+            .map(|operation| operation.action)
+            .expect_err("no identity is selected in a unit test");
+        assert!(
+            refused.contains("cannot delegate a task agent"),
+            "{refused}"
+        );
     }
 
     #[test]
@@ -1437,7 +1532,7 @@ mod tests {
     #[test]
     fn work_is_queued_for_this_agent_with_its_context_and_conversation() {
         let asked = request(ComposerIntent::Request);
-        let operation = request_queue(&asked, Some("x".repeat(300)));
+        let operation = request_queue(&asked, Some("x".repeat(300))).unwrap();
         assert_eq!(
             (
                 operation.resource.as_str(),
@@ -1464,7 +1559,7 @@ mod tests {
         assert!(instruction.contains("About your selection in Notes"));
         assert!(instruction.contains("Person: Where does it point?"));
         assert!(instruction.contains("You: Nowhere yet."));
-        let untitled = request_queue(&asked, None);
+        let untitled = request_queue(&asked, None).unwrap();
         assert_eq!(untitled.arguments["title"], "Fix the link");
     }
 
@@ -1488,7 +1583,7 @@ mod tests {
                     }),
             ),
         ));
-        let operation = request_queue(&request, None);
+        let operation = request_queue(&request, None).unwrap();
         assert_eq!(operation.action, "ask-agent");
         assert_eq!(
             operation.arguments["body"], "Tighten this",
@@ -1511,7 +1606,7 @@ mod tests {
             "Terminal",
             Some(SharedSelection::of_text("ls -la /srv")),
         ));
-        let operation = request_queue(&request, None);
+        let operation = request_queue(&request, None).unwrap();
         assert!(operation.arguments.get("subject").is_none());
         let instruction = operation.arguments["body"].as_str().unwrap();
         assert!(instruction.starts_with("Tighten this\n\n"));
@@ -1544,7 +1639,7 @@ mod tests {
             profile: "work".into(),
             model: "fast".into(),
         });
-        let operation = request_queue(&request, None);
+        let operation = request_queue(&request, None).unwrap();
         // The one door every task goes through: an issue the asking starts,
         // an action the broker admits like any other.
         assert_eq!(
