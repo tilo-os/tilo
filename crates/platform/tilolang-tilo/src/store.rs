@@ -344,7 +344,7 @@ struct Inner {
     notes: BTreeMap<DocId, Vec<ChangeNote>>,
     /// The versions of each resource the record's changes made (reflection), built from the
     /// record the first time one is asked for and kept up as it moves.
-    versions: Option<HashMap<String, Vec<Version>>>,
+    versions: Option<versions::Versions>,
     instance: String,
     /// The device that carries out the outside effects this store queues: they stay queued in
     /// the record, and this device alone settles them.
@@ -1082,7 +1082,7 @@ impl TiloStore {
             let mut held = self.inner.borrow_mut();
             let inner = &mut *held;
             if inner.versions.is_none() {
-                let mut built = HashMap::new();
+                let mut built = versions::Versions::default();
                 if let Some(mirror) = inner.mirror.as_deref() {
                     note_versions(
                         &mut built,
@@ -1095,7 +1095,10 @@ impl TiloStore {
             }
         }
         std::cell::Ref::map(self.inner.borrow(), |inner| {
-            inner.versions.as_ref().unwrap_or(&*NO_VERSIONS)
+            inner
+                .versions
+                .as_ref()
+                .map_or(&*NO_VERSIONS, |held| &held.by_resource)
         })
     }
 

@@ -924,6 +924,7 @@ change-mark-created = Erstellt von { $who }
 change-mark-changed = Geändert von { $who }
 change-mark-removed = Entfernt von { $who }
 change-mark-open = Zeigen, was { $who } getan hat
+change-mark-in-run = { $what } in „{ $run }“
 change-window = { $count ->
     [one] Eine Änderung von { $who }
    *[other] { $count } Änderungen von { $who }

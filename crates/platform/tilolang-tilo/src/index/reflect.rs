@@ -110,7 +110,13 @@ impl Stamp {
         // An index written before versions named their run holds none.
         let task = match json.get("task") {
             None => None,
-            Some(task) => Some(serde_json::from_value(task.clone()).ok()?),
+            Some(task) => match serde_json::from_value(task.clone()) {
+                Ok(task) => Some(task),
+                Err(error) => {
+                    tracing::warn!(%error, "the index holds a version whose run does not decode");
+                    return None;
+                }
+            },
         };
         let change = text("change").unwrap_or_default();
         Some(Self {
@@ -159,6 +165,13 @@ pub fn versions_of(change: &automerge::Change) -> Vec<Version> {
             ..stamp.version.clone()
         })
         .collect()
+}
+
+/// Where `change` placed items, when it is a tilolang action's change
+/// ([`DynAction::placed`]).
+#[must_use]
+pub fn placed_of(change: &automerge::Change) -> Vec<(String, String, String, Option<String>)> {
+    read(change).map_or_else(Vec::new, |(_, action, _)| action.placed())
 }
 
 /// What a column of a version orders by: the time, as a column of times writes it.

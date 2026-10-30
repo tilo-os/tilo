@@ -192,11 +192,12 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
         )
         .unwrap();
     }
+    settle(&mut app);
     // It checks off Ada's task too.
     let task = published_with(&mut app, &tasks, "Complete");
     let complete = action_id(&mut app, &task, "Complete");
     app.invoke(
-        Some(agent),
+        Some(agent.clone()),
         Some(&ambient),
         &task,
         &complete,
@@ -204,16 +205,43 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
         false,
     )
     .unwrap();
+    // And removes one it added.
+    let remove = action_id(&mut app, &tasks, "Remove");
+    let mut which = serde_json::Map::new();
+    which.insert(
+        "t".to_owned(),
+        change_marks::reference("so.tilo.lang.tasks", &mut app, "Book the dentist"),
+    );
+    app.invoke(Some(agent), Some(&ambient), &tasks, &remove, &which, false)
+        .unwrap();
     settle(&mut app);
-    let shown = marks(&mut app);
-    assert!(shown.len() >= 2, "{shown:?}");
     let ground = chroma_in(&mut app, [0.0, 0.0, 8.0, 8.0]);
-    for (name, rect) in &shown {
+    // Every row the run touched is marked, the one it checked off too, and the one it removed
+    // stays as a struck row, all at the row's own height, with the agent's face on its
+    // trailing edge.
+    let listed = change_marks::rows(&mut app);
+    assert!(
+        listed.len() == 3 && listed.iter().all(|(_, _, marked)| *marked),
+        "{listed:?}"
+    );
+    assert_eq!(
+        change_marks::removed_rows(&mut app).len(),
+        1,
+        "the removed task stands as a struck row"
+    );
+    for (name, rect, _) in &listed {
         assert!(
-            chroma_in(&mut app, *rect) > ground.saturating_add(24),
-            "{name} is drawn in the agent's colour"
+            (rect[3] - listed[0].1[3]).abs() < 0.5,
+            "{name} keeps the row's height"
+        );
+        let face = [rect[0] + rect[2] - 24.0, rect[1], 24.0, rect[3]];
+        assert!(
+            chroma_in(&mut app, face) > ground.saturating_add(24),
+            "{name} shows the agent's face"
         );
     }
+    // The header counts them, once.
+    assert_eq!(marks(&mut app).len(), 1);
     if let Some(dir) = change_marks::shots_dir() {
         for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
             app.harness().set_theme(theme);
