@@ -3604,6 +3604,7 @@ pub(crate) use fixture::fixture_with_directory_page;
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests {
+    use crate::shell::collab_app_broker::AppBrokerState;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::time::{Duration, Instant};
@@ -3669,9 +3670,7 @@ mod tests {
         let chrome = chrome();
         let state = chrome.borrow();
         let doc = AutoCommit::new();
-        let broker =
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            );
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(
             broker.clone(),
         ));
@@ -3823,9 +3822,7 @@ mod tests {
     #[test]
     fn directory_completion_retains_actual_pending_and_refused_reply() {
         use crate::shell::search::QueryIncompleteReason;
-        let broker =
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            );
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         let chrome = chrome();
         let state = chrome.borrow();
         let doc = AutoCommit::new();
@@ -3856,8 +3853,7 @@ mod tests {
     #[test]
     fn search_revision_opens_no_session_when_nothing_changed() {
         let provider = LiveAppActionsProvider::new_with_fixture_identity(
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            ),
+            AppBrokerState::test_broker_with_idle_directory_queue(),
         );
         let chrome = chrome();
         let chrome = chrome.borrow();
@@ -3895,9 +3891,7 @@ mod tests {
         }
 
         let chrome = chrome();
-        let broker =
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            );
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         let doc = AutoCommit::new();
         let actor = chrome.borrow().active_local_user();
@@ -3949,9 +3943,7 @@ mod tests {
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
 
         let chrome = chrome();
-        let broker =
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            );
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         let actor = chrome.borrow().active_local_user();
         broker.record_completion_for_test(17, &actor, succeeded(17));
         broker.record_completion_for_test(18, "someone-else", succeeded(18));
@@ -4014,9 +4006,7 @@ mod tests {
 
     #[test]
     fn hierarchy_projects_only_exact_retained_semantic_identity() {
-        let broker =
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            );
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
             peer_id: 9,
             app_id: "so.tilo.store".into(),
@@ -4091,9 +4081,7 @@ mod tests {
     fn directory_identities_are_indexed_once_per_change_to_the_pages() {
         const PAGES: usize = 40;
         const PER_PAGE: usize = 100;
-        let broker =
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            );
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
             peer_id: 9,
             app_id: "so.tilo.store".into(),
@@ -4175,9 +4163,7 @@ mod tests {
 
     #[test]
     fn local_hierarchy_identity_requires_current_retained_descriptor() {
-        let broker =
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            );
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         let provider = LiveAppActionsProvider::new(broker.clone());
         let mut action = local_action("Display label is not identity", "open");
         action.resource_kind = "store.app".into();
@@ -4590,7 +4576,7 @@ mod tests {
     fn rejected_directory_ticket_releases_the_retained_empty_projection() {
         for outcome in ["refused", "stale", "abandoned"] {
             let provider = LiveAppActionsProvider::new(
-                crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(),
+                AppBrokerState::test_broker_with_idle_directory_queue(),
             );
             let key: DirectoryCacheKey = (7, "actor".into(), "read".into(), Vec::new());
             let retained: DirectoryCacheKey = (8, "actor".into(), "read".into(), Vec::new());
@@ -4647,10 +4633,8 @@ mod tests {
 
     #[test]
     fn completed_directory_page_survives_idle_poll() {
-        let provider = LiveAppActionsProvider::new(
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            ),
-        );
+        let provider =
+            LiveAppActionsProvider::new(AppBrokerState::test_broker_with_idle_directory_queue());
         let key: DirectoryCacheKey = (7, "actor".into(), "read".into(), Vec::new());
         let (sender, receiver) = pending();
         let deadline = Instant::now();
@@ -4686,10 +4670,8 @@ mod tests {
 
     #[test]
     fn expired_directory_page_retries_empty_projection() {
-        let provider = LiveAppActionsProvider::new(
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            ),
-        );
+        let provider =
+            LiveAppActionsProvider::new(AppBrokerState::test_broker_with_idle_directory_queue());
         let (sender, receiver) = pending();
         let deadline = Instant::now();
         provider.directory_pending.borrow_mut().insert(
@@ -4751,10 +4733,8 @@ mod tests {
 
     #[test]
     fn directory_cache_bounds_rapid_queries_and_expires_stalled_page_and_start_tickets() {
-        let provider = LiveAppActionsProvider::new(
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            ),
-        );
+        let provider =
+            LiveAppActionsProvider::new(AppBrokerState::test_broker_with_idle_directory_queue());
         let mut prior_sender: Option<
             tilo_actions::remote::Completer<Result<CataloguePage, ActionHostError>>,
         > = None;
@@ -4832,10 +4812,8 @@ mod tests {
 
     #[test]
     fn directory_cache_keeps_room_actors_separate_for_the_current_needle() {
-        let provider = LiveAppActionsProvider::new(
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            ),
-        );
+        let provider =
+            LiveAppActionsProvider::new(AppBrokerState::test_broker_with_idle_directory_queue());
         provider.set_directory_query("open");
         for actor in ["room-a-user", "room-b-user"] {
             provider.directory_pages_mut().insert(
@@ -4856,10 +4834,8 @@ mod tests {
     /// longer holds restarts its chain instead of being asked for again.
     #[test]
     fn a_directory_chain_is_kept_until_its_continuation_is_spent() {
-        let provider = LiveAppActionsProvider::new(
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            ),
-        );
+        let provider =
+            LiveAppActionsProvider::new(AppBrokerState::test_broker_with_idle_directory_queue());
         provider.set_directory_query("note");
         let key = |cursor: &[u8]| -> DirectoryCacheKey {
             (7, "actor-a".into(), "note".into(), cursor.to_vec())
@@ -4912,8 +4888,7 @@ mod tests {
     #[test]
     fn remote_actions_page_without_repeats_under_tiny_budgets() {
         let provider = LiveAppActionsProvider::new_with_fixture_identity(
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            ),
+            AppBrokerState::test_broker_with_idle_directory_queue(),
         );
         let chrome = chrome();
         let chrome = chrome.borrow();
@@ -5057,10 +5032,8 @@ mod tests {
 
     #[test]
     fn cold_public_action_page_does_not_start_a_surface_clone_or_index_build() {
-        let provider = LiveAppActionsProvider::new(
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            ),
-        );
+        let provider =
+            LiveAppActionsProvider::new(AppBrokerState::test_broker_with_idle_directory_queue());
         let chrome = chrome();
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
@@ -5915,8 +5888,7 @@ mod tests {
     #[test]
     fn a_100001_action_snapshot_reaches_a_unique_tail_without_scanning_the_corpus() {
         let provider = LiveAppActionsProvider::new_with_fixture_identity(
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            ),
+            AppBrokerState::test_broker_with_idle_directory_queue(),
         );
         let chrome = chrome();
         let chrome = chrome.borrow();
@@ -5982,9 +5954,7 @@ mod tests {
         let room = chrome.borrow().tree().desktop.workspaces[0]
             .room()
             .to_string();
-        let broker =
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            );
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         broker.replace_published_surfaces_for_test(vec![PublishedSurface {
             peer_id: 1,
             app_id: "so.tilo.fixture".into(),
@@ -6095,9 +6065,7 @@ mod tests {
 
     #[test]
     fn action_hierarchy_resolves_exact_live_peers_including_zero_and_deep_roots() {
-        let broker =
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            );
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         let provider = LiveAppActionsProvider::new(broker.clone());
         let mut roots = (0..=512)
             .map(|peer_id| ActionDirectoryRoot {
@@ -6150,9 +6118,7 @@ mod tests {
 
     #[test]
     fn action_hierarchy_keeps_local_actions_but_rejects_non_actions_and_malformed_directory_ids() {
-        let broker =
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            );
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
             peer_id: 0,
             app_id: "dev.tilo.calculator".into(),
@@ -6185,9 +6151,7 @@ mod tests {
 
     #[test]
     fn live_action_proximity_uses_the_authenticated_resource_room() {
-        let broker =
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            );
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         let provider = LiveAppActionsProvider::new(broker);
         let chrome = chrome();
         let chrome = chrome.borrow();

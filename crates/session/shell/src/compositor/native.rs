@@ -17590,12 +17590,11 @@ mod tests {
     }
 
     fn wait_ms_answer_with_loop_wake(unrelated_wake: bool, early_index_wake: bool) {
+        use crate::shell::collab_app_broker::AppBrokerState;
         use std::io::Write as _;
 
         let mut fixture = ControlFixture::new();
-        let broker =
-            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
-            );
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         attach_fixture_broker(&mut fixture.frame_builder, &broker);
         let actor = fixture.frame_builder.chrome().active_local_user();
         let job = 41;

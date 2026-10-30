@@ -401,7 +401,8 @@ impl JoinedChannel {
     /// one signed document change.
     pub(super) async fn publish_document(&self, envelope: SignedOp) -> Result<(), BrokerError> {
         self.writable()?;
-        let (state, route) = (&self.state, self.route());
+        // A change of the record the channel carries, under the id it is kept under.
+        let (state, route) = (&self.state, self.record_route());
         let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
         verify_session_author(&current_identity, envelope.author)
             .map_err(|error| BrokerError::failed(format!("send: {error}")))?;
@@ -465,7 +466,7 @@ impl JoinedChannel {
     ) -> Result<(CrdtRoute, Arc<crate::record_content::RouteContent>), BrokerError> {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
-        let route = self.route();
+        let route = self.record_route();
         if route.app_id.is_empty() || route.cluster_id.is_empty() {
             return Err(BrokerError::failed(
                 "record content belongs to a certified app route".into(),
@@ -750,6 +751,7 @@ impl JoinedChannel {
                 nearby_transfer_change(services, &context, after)
             }
             Changes::ChannelKeys => {
+                let route = self.record_route();
                 if route.app_id.is_empty() || route.cluster_id.is_empty() {
                     return Err(BrokerError::failed(
                         "channel keys belong to a certified app route".into(),
@@ -925,7 +927,7 @@ impl JoinedChannel {
         if exhausted {
             let peer_bound = ops
                 .iter()
-                .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok())
+                .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok()) // optional-decode: read_scrollback encoded these from typed ops just now
                 .map(|op| op.seq)
                 .min()
                 .unwrap_or(before_seq);
@@ -1840,6 +1842,10 @@ impl AppConnection {
                 return Err(BrokerError::failed(reason));
             }
         }
+        // A renamed app keeps using the record of an id it had before (`kept_record`).
+        let record_route = route.clone();
+        let (route, as_app) =
+            kept_record::working_route(self.lease.local_media.as_deref(), &record_route);
         // An attested launch joins its own route; another app's only to
         // read a record whose kinds it declared it reads.
         let route_access = match self.lease.local_media.as_ref() {
@@ -1861,7 +1867,7 @@ impl AppConnection {
             None => RouteAccess::Own,
         };
         if let Some(worker) = &self.worker {
-            if route != worker.route
+            if record_route != worker.route
                 || verified_identity.verified.user_public_key != worker.root
                 || verified_identity.verified.device_public_key != worker.device
             {
@@ -1885,7 +1891,7 @@ impl AppConnection {
             ));
         }
         let record_kind = route_record_kind(
-            &route,
+            &record_route,
             joined_record_kind(record_kind.as_deref().unwrap_or_default())?,
         )?;
         let person = matches!(participant, Participant::Person { .. });
@@ -2008,6 +2014,7 @@ impl AppConnection {
             state: state.clone(),
             directories: Rc::clone(&self.directories),
             channel_id,
+            as_app,
             peer_id: hold_id,
             connection_id: peer_id,
             verified_identity,

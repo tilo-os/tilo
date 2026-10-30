@@ -42,6 +42,7 @@ impl<R: Resource> Worker<R> {
             keywords: Vec::new(),
             icon: None,
             description: None,
+            state: tilo_actions::ActionState::default(),
             operation_kind: spec.kind,
             params: spec.params().to_vec(),
             contract: spec.contract.clone(),

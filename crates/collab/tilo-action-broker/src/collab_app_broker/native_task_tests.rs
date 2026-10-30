@@ -532,6 +532,7 @@ fn notes_append() -> runtime_collab::ExportedAction {
         keywords: Vec::new(),
         icon: None,
         description: None,
+        state: tilo_actions::ActionState::default(),
         operation_kind: tilo_actions::OperationKind::Effect,
         params: Vec::new(),
         contract: tilo_actions::ActionContract {

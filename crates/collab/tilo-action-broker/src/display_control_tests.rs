@@ -241,7 +241,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                     contract,
                     input: runtime_collab::ExportedInput::None,
                     view: None,
-                }]))
+                }])
                 .await
                 .unwrap();
             let person = tilo_actions::remote::Caller::local_person(principal_id_for_root(
@@ -396,6 +396,7 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
                     keywords: Vec::new(),
                     icon: None,
                     description: None,
+                    state: tilo_actions::ActionState::default(),
                     operation_kind: tilo_actions::OperationKind::View,
                     params: Vec::new(),
                     contract,

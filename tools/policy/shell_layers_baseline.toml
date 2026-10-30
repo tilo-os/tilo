@@ -62,8 +62,6 @@ grandfathered = [
     "blake3",
     "bounded-command",
     "bytes",
-    "capnp",
-    "capnp-rpc",
     "channel-crypto",
     "chat",
     "chrono",

@@ -436,7 +436,7 @@ pub(super) fn serve_answered(
                     reason: "the sheet closed without the person's answer".into(),
                 },
             );
-            return send_reply(results, refused);
+            return refused.ok_or_else(dropped);
         };
         state.record_answer(&request, grant, answer.consent).await;
         let message = match message {

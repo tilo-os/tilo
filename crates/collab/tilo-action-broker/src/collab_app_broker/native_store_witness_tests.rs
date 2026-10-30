@@ -70,6 +70,7 @@ async fn target(
         keywords: Vec::new(),
         icon: None,
         description: None,
+        state: tilo_actions::ActionState::default(),
         operation_kind: tilo_actions::OperationKind::Effect,
         params: vec![
             tilo_actions::ActionParam::required("app", tilo_actions::ParamType::Text, "Package"),

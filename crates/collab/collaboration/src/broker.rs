@@ -6878,7 +6878,13 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
     // An undecodable scope cannot truthfully identify a target. Drop
     // it instead of inventing a tab and making malformed presence
     // look like a collaborator left some unrelated surface.
-    let key: PresenceKey = postcard::from_bytes(&evt.key_bytes).ok()?;
+    let key: PresenceKey = match postcard::from_bytes(&evt.key_bytes) {
+        Ok(key) => key,
+        Err(error) => {
+            tracing::warn!(user = %evt.user_id, %error, "collab: refused presence whose key does not decode");
+            return None;
+        }
+    };
     let payload = match evt.payload {
         runtime_collab::PresencePayload::Caret { pos } => PresencePayload::Caret {
             // A wire-supplied offset that doesn't fit `usize` on this
@@ -6898,8 +6904,20 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
             PresencePayload::Following { target }
         }
         runtime_collab::PresencePayload::InteractionJson(json) => {
-            let update: tilo_actions::SemanticInteraction = serde_json::from_str(&json).ok()?;
-            update.validate().ok()?;
+            let update = match serde_json::from_str::<tilo_actions::SemanticInteraction>(&json)
+                .map_err(|error| error.to_string())
+                .and_then(|update| {
+                    update
+                        .validate()
+                        .map(|()| update)
+                        .map_err(|error| error.to_string())
+                }) {
+                Ok(update) => update,
+                Err(error) => {
+                    tracing::warn!(user = %evt.user_id, %error, "collab: refused a presence interaction");
+                    return None;
+                }
+            };
             PresencePayload::Interaction(Box::new(update))
         }
         runtime_collab::PresencePayload::Status { text, automatic } => {

@@ -6,7 +6,7 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Client for the Tilo collaboration wire."
+description = "The Tilo collaboration wire and the client that speaks it."
 
 # Tilo runtime collaboration client. Speaks the collaboration wire to the
 # session over the Unix socket passed in as TILO_SVC_COLLAB_FD.

@@ -598,25 +598,16 @@ async fn a_renamed_app_keeps_the_record_of_the_id_it_had_before() {
                     .is_some(),
                 "the connection works as the renamed app"
             );
-            let directory = || {
-                capnp_rpc::new_client(LocalDocumentDirectory {
-                    kind: tilo_actions::OperationKind::Document,
-                    read: false,
-                    pin_dropped: Rc::new(std::cell::Cell::new(false)),
-                    resolutions: Rc::new(std::cell::Cell::new(0)),
-                })
-            };
-            kept.publish_action_directory(RENAMED, directory())
-                .await
-                .expect("it publishes as itself");
-            let as_earlier = kept
-                .publish_action_directory(&env.route.app_id, directory())
-                .await
-                .expect_err("it never publishes as the app it was");
-            assert!(
-                as_earlier.to_string().contains("must match"),
-                "{as_earlier:?}"
-            );
+            // The host files it under the app the connection works as: the
+            // wire names no app, so it cannot publish as the app it was.
+            kept.publish_action_directory(wire_answerer(Rc::new(LocalDocumentDirectory {
+                kind: tilo_actions::OperationKind::Document,
+                read: false,
+                pin_dropped: Rc::new(std::cell::Cell::new(false)),
+                resolutions: Rc::new(std::cell::Cell::new(0)),
+            })))
+            .await
+            .expect("it publishes as itself");
             rig.state.remove_connection(APP_PEER);
             drop((kept, app));
             rig.stop().await;

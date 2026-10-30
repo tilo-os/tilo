@@ -34,7 +34,6 @@ use crate::shell::collab_app_broker::{
     PublishedAction, PublishedInput, PublishedSurface, launchable_provider,
 };
 use crate::shell::collab_broker::AppActionBroker;
-use crate::shell::i18n::t_args;
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,

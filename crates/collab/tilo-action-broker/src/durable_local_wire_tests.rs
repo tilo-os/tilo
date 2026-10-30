@@ -455,6 +455,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
                 keywords: Vec::new(),
                 icon: None,
                 description: None,
+                state: tilo_actions::ActionState::default(),
                 operation_kind: tilo_actions::OperationKind::Effect,
                 params: Vec::new(),
                 contract: tilo_actions::ActionContract::default(),
