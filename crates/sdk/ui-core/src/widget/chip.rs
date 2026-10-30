@@ -768,7 +768,28 @@ impl Chip {
     /// but no target is smaller than 32 px, so the 2 px above and below the
     /// pill belong to it as well.
     pub fn hit_rect(&self) -> Rect {
-        Self::grown_to_target(self.rect, self.pointer_target())
+        Self::grown_to_target(self.pill_rect(), self.pointer_target())
+    }
+
+    /// How tall the chip's box is laid out: the pill, or on a coarse
+    /// pointer the minimum target for a chip a person presses. The pill
+    /// keeps its height and stands centred in the box, so the band a finger
+    /// may land in is the chip's own room in its line, never its
+    /// neighbour's.
+    fn box_height(&self) -> f64 {
+        let pill = self.metrics.height.ceil();
+        if self.interaction.supports_hover() || !(self.pressable() || self.removable) {
+            pill
+        } else {
+            pill.max(self.pointer_target().ceil())
+        }
+    }
+
+    /// The painted pill: centred in the chip's box ([`Self::box_height`]).
+    fn pill_rect(&self) -> Rect {
+        let height = self.metrics.height.ceil().min(self.rect.height());
+        let y0 = self.rect.center().y - height / 2.0;
+        Rect::new(self.rect.x0, y0, self.rect.x1, y0 + height)
     }
 
     /// The "×" target, grown vertically like [`Chip::hit_rect`]. Only
@@ -928,7 +949,7 @@ impl Chip {
         );
         taffy::Size {
             width: width.ceil() as f32,
-            height: self.metrics.height.ceil() as f32,
+            height: self.box_height() as f32,
         }
     }
 }
@@ -944,7 +965,11 @@ impl Widget for Chip {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
-        self.interaction = environment;
+        if self.interaction != environment {
+            self.interaction = environment;
+            // The box grows to a coarse pointer's target: measure it again.
+            self.footprint = None;
+        }
     }
 
     #[allow(
@@ -987,7 +1012,7 @@ impl Widget for Chip {
             },
             size: taffy::Size {
                 width,
-                height: length(self.metrics.height as f32),
+                height: length(self.box_height() as f32),
             },
             ..Default::default()
         };
@@ -1061,7 +1086,8 @@ impl Widget for Chip {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let face = ChipFace::new(self.rect, &self.label);
+        let pill = self.pill_rect();
+        let face = ChipFace::new(pill, &self.label);
         self.x_rect = if self.removable {
             face.removable(false).remove_rect(theme)
         } else {
@@ -1073,7 +1099,7 @@ impl Widget for Chip {
         let remove_hovered = self.remove_hit_rect().contains(self.last_cursor);
         paint_pill(
             &PillPaint {
-                rect: self.rect,
+                rect: pill,
                 label: &self.label,
                 lead: self.lead,
                 style: self.style,
@@ -1092,8 +1118,8 @@ impl Widget for Chip {
             theme,
         );
         if self.focused {
-            let radius = f64::from(theme.tokens.radii.full).min(self.rect.height() / 2.0);
-            crate::widget::paint_focus_ring(scene, transform, self.rect, radius, theme);
+            let radius = f64::from(theme.tokens.radii.full).min(pill.height() / 2.0);
+            crate::widget::paint_focus_ring(scene, transform, pill, radius, theme);
         }
     }
 
@@ -1634,6 +1660,47 @@ mod activation_tests {
         assert_eq!(opened.get(), 2);
         // A plain label chip is not a control.
         assert!(!Chip::new("label").is_focusable());
+    }
+
+    /// On a touchscreen a chip a person presses takes a finger's target of room in its line,
+    /// with its pill the selector height centred in it, so a press above or below the pill
+    /// lands on the chip and never on what is next to it; a label chip, or a chip under a
+    /// mouse, keeps the pill's height.
+    #[test]
+    fn a_pressed_chip_takes_a_fingers_room_on_touch() {
+        use crate::interaction::InteractionEnvironment;
+        let pill = f64::from(crate::tokens::Metrics::BASE.selector_height);
+        let finger = f64::from(InteractionEnvironment::TOUCH.minimum_target());
+        let chips: [(&str, fn() -> Chip, bool); 3] = [
+            (
+                "navigating",
+                || Chip::new("3 replies").on_click(|| {}),
+                true,
+            ),
+            ("removable", || Chip::new("planning").removable(), true),
+            ("label", || Chip::new("draft"), false),
+        ];
+        for (name, chip, pressed) in chips {
+            for (input, room) in [
+                (InteractionEnvironment::POINTER, pill),
+                (
+                    InteractionEnvironment::TOUCH,
+                    if pressed { finger } else { pill },
+                ),
+            ] {
+                let mut harness = crate::headless::FrameHarness::new(
+                    crate::State::new(),
+                    Box::new(crate::widget::Row::new().push(Box::new(chip()))),
+                    (400, 100),
+                );
+                harness.set_interaction_environment(input);
+                let [_, _, _, h] = harness.inspection().root.children[0].rect;
+                assert!(
+                    (h - room).abs() < 0.5,
+                    "the {name} chip takes {room} for {input:?}, not {h}"
+                );
+            }
+        }
     }
 
     #[test]

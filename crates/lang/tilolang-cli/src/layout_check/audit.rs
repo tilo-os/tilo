@@ -143,6 +143,22 @@ fn layers(widget: &str) -> bool {
         || widget.contains("Layer")
 }
 
+/// Whether a node is one control a person presses: its own role says so, or it is a box (a
+/// header action's frame) around exactly one.
+fn is_control(node: &InspectionNode) -> bool {
+    if node
+        .semantics
+        .as_ref()
+        .is_some_and(|access| interactive(access.role) && !access.state.disabled)
+    {
+        return true;
+    }
+    match node.children.as_slice() {
+        [only] => is_control(only),
+        _ => false,
+    }
+}
+
 /// Roles a person presses, picks or types into.
 fn interactive(role: ui::a11y::Role) -> bool {
     use ui::a11y::Role;
@@ -405,12 +421,12 @@ impl Walk<'_> {
 
     /// Children of a box that lays them out side by side or in turn, covering each other. In a
     /// box that layers them on purpose (a badge over an image), only text over text: neither
-    /// can be read.
+    /// can be read. In a box that places its own parts over each other (a window shell: its
+    /// columns, and the buttons of its header row in the same plane), only one control over
+    /// another: a press lands on one of them, and their faces cover each other.
     fn overlaps(&mut self, node: &InspectionNode, keys: &[String], clip: Rect) {
         let layered = layers(&node.widget);
-        if layered && node.widget != "Layers" {
-            return;
-        }
+        let places = layered && node.widget != "Layers";
         let shown: Vec<(&InspectionNode, Rect)> = node
             .children
             .iter()
@@ -421,7 +437,12 @@ impl Walk<'_> {
         for (i, (a, ra)) in shown.iter().enumerate() {
             for (b, rb) in shown.iter().skip(i.saturating_add(1)) {
                 let both = ra.intersect(*rb);
-                if has_area(both) && (!layered || (has_text(a) && has_text(b))) {
+                let covers = if places {
+                    is_control(a) && is_control(b)
+                } else {
+                    !layered || (has_text(a) && has_text(b))
+                };
+                if has_area(both) && covers {
                     let mut keys = keys.to_vec();
                     keys.extend(b.test_id.clone());
                     self.push(
@@ -561,5 +582,106 @@ fn measure_one(
         .map_or(clip, |child| clip.intersect(child));
     for child in widget.children_mut() {
         measure_walk(child, keys, inner, text, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::a11y::{AccessNode, Role};
+
+    fn node(widget: &str, id: &str, rect: [f64; 4], role: Option<Role>) -> InspectionNode {
+        InspectionNode {
+            path: id.to_owned(),
+            widget: widget.to_owned(),
+            test_id: Some(id.to_owned()),
+            focusable: role.is_some(),
+            rect,
+            child_clip: None,
+            layout: None,
+            semantics: role.map(AccessNode::new),
+            children: Vec::new(),
+        }
+    }
+
+    fn overlaps(children: Vec<InspectionNode>) -> Vec<Problem> {
+        let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
+        shell.children = children;
+        inspect(&shell, (400, 300), None)
+            .into_iter()
+            .filter(|p| p.kind == Kind::Overlap)
+            .collect()
+    }
+
+    /// A window shell places its header row's buttons itself, over its columns: two of them
+    /// covering each other (an action over the search button) is caught, though the shell
+    /// layers its columns on purpose.
+    #[test]
+    fn controls_a_shell_places_over_each_other_are_caught() {
+        let found = overlaps(vec![
+            node(
+                "Button",
+                "search",
+                [300.0, 12.0, 32.0, 32.0],
+                Some(Role::Button),
+            ),
+            node(
+                "Button",
+                "new",
+                [316.0, 12.0, 32.0, 32.0],
+                Some(Role::Button),
+            ),
+        ]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].keys.first().map(String::as_str), Some("new"));
+    }
+
+    /// A header action the shell holds in a frame of its own is the control it frames.
+    #[test]
+    fn a_framed_action_over_a_button_is_caught() {
+        let mut frame = node("Row", "actions", [316.0, 12.0, 32.0, 32.0], None);
+        frame.children = vec![node(
+            "Button",
+            "new",
+            [316.0, 12.0, 32.0, 32.0],
+            Some(Role::Button),
+        )];
+        let found = overlaps(vec![
+            node(
+                "Button",
+                "search",
+                [300.0, 12.0, 32.0, 32.0],
+                Some(Role::Button),
+            ),
+            frame,
+        ]);
+        assert_eq!(found.len(), 1, "{found:?}");
+    }
+
+    /// What a shell layers on purpose is no finding: a column under its header's buttons, and
+    /// buttons side by side.
+    #[test]
+    fn a_shells_columns_and_buttons_side_by_side_are_not() {
+        let mut column = node("Column", "content", [0.0, 0.0, 400.0, 300.0], None);
+        column.children = vec![
+            node("Text", "a", [16.0, 60.0, 100.0, 20.0], None),
+            node("Text", "b", [16.0, 90.0, 100.0, 20.0], None),
+        ];
+        let found = overlaps(vec![
+            column,
+            node(
+                "Button",
+                "search",
+                [300.0, 12.0, 32.0, 32.0],
+                Some(Role::Button),
+            ),
+            node(
+                "Button",
+                "new",
+                [340.0, 12.0, 32.0, 32.0],
+                Some(Role::Button),
+            ),
+        ]);
+        assert!(found.is_empty(), "{found:?}");
     }
 }

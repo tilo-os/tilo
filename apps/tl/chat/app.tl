@@ -363,3 +363,19 @@ scenario "a team's channels" -> TextChannel {
     }
     design
 }
+
+/// A thread a question started: its window, the replies in it and one replying to another.
+scenario "a thread" -> Thread {
+    let mia = person("Mia")
+    let leo = person("Leo")
+    let design = new_channel(channels, "design")
+    let ask = send(design, RichText("Can we move the account step to the end?"))
+    let t = start_thread(design, ask, "Account step")
+    as mia {
+        let first = send(t, RichText("Sign-in first keeps sync simple, but people bounce there."))
+        as leo {
+            send(t, RichText("Then let them in first and ask once they save something."), first)
+        }
+    }
+    t
+}

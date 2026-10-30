@@ -85,6 +85,24 @@ impl std::fmt::Display for Layout {
     }
 }
 
+impl Layout {
+    /// The theme of the layout: as shipped, at its text scale.
+    #[must_use]
+    pub fn theme(&self) -> ui::Theme {
+        ui::Theme::light().with_text_scale(self.text_scale)
+    }
+
+    /// How a person reaches the window at its size.
+    #[must_use]
+    pub fn input(&self) -> InteractionEnvironment {
+        if self.size.touch {
+            InteractionEnvironment::TOUCH
+        } else {
+            InteractionEnvironment::POINTER
+        }
+    }
+}
+
 /// Every layout the check runs.
 #[must_use]
 pub fn layouts() -> Vec<Layout> {
@@ -297,6 +315,62 @@ fn check_app(
                 &format!("{}, then a {} opened", scenario.name, view.name),
             )?;
         }
+        // The views the system shows on surfaces of its own rather than in a window of the
+        // app: a type's row view (a search result, a row of an agent's answer) and an action's
+        // proposal view (the card asking to run it), on a resource of the type they take.
+        for view in surface_views(&meta) {
+            if check.shown.contains(&view.name) {
+                continue;
+            }
+            let [param] = view.params.as_slice() else {
+                continue;
+            };
+            // A parameter names its type as written; a resource carries the type's id.
+            let Some(ty) = meta.types.iter().find(|t| t.name == param.ty) else {
+                continue;
+            };
+            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
+                continue;
+            };
+            staged.open_with(&resource, &view.id);
+            check.run(
+                &mut staged,
+                &format!("{}, then {} shown", scenario.name, view.name),
+            )?;
+        }
+        // What the window shows once a person pressed one of its primary actions (a new note
+        // opened beside the list, its header row laid out again around it): at each size, from
+        // the scenario as staged, pressed with the pointer and with the motion it starts run
+        // out, read as it stands then, before anything lays the window out afresh. A layout
+        // that only a fresh pass puts right (a header row left where a frame of the motion put
+        // it) shows here.
+        for label in primary_labels(&meta) {
+            for size in SIZES {
+                let layout = Layout {
+                    size,
+                    display_scale: 1.0,
+                    text_scale: 1.0,
+                };
+                let viewport = (size.width, size.height);
+                let mut staged = stage::Staged::new(
+                    &meta.app,
+                    &packages,
+                    &scenario.name,
+                    viewport,
+                    layout.theme(),
+                )?;
+                staged.lay_out_moving(viewport, layout.theme(), layout.input())?;
+                let Some(id) = button_named(&staged.harness().inspection().root, label) else {
+                    continue;
+                };
+                staged.press(&id, size.touch)?;
+                check.audit(
+                    &mut staged,
+                    layout,
+                    &format!("{}, then {label} pressed", scenario.name),
+                )?;
+            }
+        }
     }
     let unreached = meta
         .views
@@ -306,6 +380,57 @@ fn check_app(
         .map(|v| format!("{} › {}", check.short, v.name))
         .collect();
     Ok((check.gathered.into_values().collect(), check.ran, unreached))
+}
+
+/// The views of `meta` the system shows on surfaces of its own: each type's row view and each
+/// action's proposal view, once each.
+fn surface_views(meta: &tilolang::PackageMeta) -> Vec<&tilolang::meta::ViewMeta> {
+    let ids: BTreeSet<&str> = meta
+        .row_views
+        .iter()
+        .map(|row| row.view.as_str())
+        .chain(
+            meta.actions
+                .iter()
+                .filter_map(|action| action.proposal.as_ref().map(|p| p.view.as_str())),
+        )
+        .collect();
+    meta.views
+        .iter()
+        .filter(|view| ids.contains(view.id.as_str()))
+        .collect()
+}
+
+/// What the window calls each of `meta`'s primary actions, once each.
+fn primary_labels(meta: &tilolang::PackageMeta) -> Vec<&str> {
+    let mut labels: Vec<&str> = meta
+        .actions
+        .iter()
+        .filter(|action| action.role.as_deref() == Some("primary") && !action.scenario)
+        .map(|action| action.label.as_str())
+        .collect();
+    labels.sort_unstable();
+    labels.dedup();
+    labels
+}
+
+/// The test id of the first button under `node` named `label` that a person can press.
+fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<String> {
+    let pressable = node.semantics.as_ref().is_some_and(|access| {
+        access.role == ui::a11y::Role::Button
+            && !access.state.disabled
+            && access.name.as_deref() == Some(label)
+    });
+    if pressable
+        && node.rect[2] > 0.0
+        && node.rect[3] > 0.0
+        && let Some(id) = &node.test_id
+    {
+        return Some(id.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| button_named(child, label))
 }
 
 /// One app's check under way.
@@ -327,56 +452,71 @@ impl AppCheck<'_> {
     /// Lay `staged` out at every layout and gather what is wrong, as staged by `label`.
     fn run(&mut self, staged: &mut stage::Staged, label: &str) -> Result<(), String> {
         for layout in layouts() {
-            let theme = ui::Theme::light().with_text_scale(layout.text_scale);
-            self.text.set_text_scale(theme.text_scale);
-            self.text.apply_typography(&theme.tokens.typography);
-            let input = if layout.size.touch {
-                InteractionEnvironment::TOUCH
-            } else {
-                InteractionEnvironment::POINTER
-            };
-            let viewport = (layout.size.width, layout.size.height);
-            staged.lay_out(viewport, theme, input, layout.display_scale)?;
-            if let Some(why) = staged.failed() {
-                return Err(format!(
-                    "{}: {label}: the window refused what the app sent: {why}",
-                    self.dir.display(),
-                ));
-            }
-            self.ran = self.ran.saturating_add(1);
-            let inspection = staged.harness().inspection();
-            if self.dump == Some(viewport) {
-                let json = serde_json::to_string_pretty(&inspection).map_err(|e| e.to_string())?;
-                eprintln!("== {} {label} at {layout}\n{json}", self.meta.app);
-            }
-            self.note_shown(&inspection.root);
-            let rows = staged.rows();
-            for row in rows.values() {
-                self.note_shown_row(row);
-            }
-            let mut problems = audit::inspect(
-                &inspection.root,
-                viewport,
-                layout.size.touch.then(|| f64::from(input.minimum_target())),
-            );
-            problems.extend(audit::clipped_text(
-                staged.harness_mut().root_widget_mut(),
-                &mut self.text,
-                viewport,
+            staged.lay_out(
+                (layout.size.width, layout.size.height),
+                layout.theme(),
+                layout.input(),
+                layout.display_scale,
+            )?;
+            self.audit(staged, layout, label)?;
+        }
+        Ok(())
+    }
+
+    /// Gather what is wrong with `staged` as it is laid out now, at `layout`, as staged by
+    /// `label`.
+    fn audit(
+        &mut self,
+        staged: &mut stage::Staged,
+        layout: Layout,
+        label: &str,
+    ) -> Result<(), String> {
+        let theme = layout.theme();
+        self.text.set_text_scale(theme.text_scale);
+        self.text.apply_typography(&theme.tokens.typography);
+        let viewport = (layout.size.width, layout.size.height);
+        if let Some(why) = staged.failed() {
+            return Err(format!(
+                "{}: {label}: the window refused what the app sent: {why}",
+                self.dir.display(),
             ));
-            for mut problem in problems {
-                // A list draws a row as one widget keyed by the row: what it is about is the
-                // row view's node, the deepest the row's tree holds.
-                if let Some(row) = problem.id.as_ref().and_then(|id| rows.get(id)) {
-                    let mut inner = Vec::new();
-                    row_keys(row, &mut inner);
-                    inner.reverse();
-                    inner.append(&mut problem.keys);
-                    problem.keys = inner;
-                    problem.id = None;
-                }
-                self.gather(&problem, layout, label);
+        }
+        self.ran = self.ran.saturating_add(1);
+        let inspection = staged.harness().inspection();
+        if self.dump == Some(viewport) {
+            let json = serde_json::to_string_pretty(&inspection).map_err(|e| e.to_string())?;
+            eprintln!("== {} {label} at {layout}\n{json}", self.meta.app);
+        }
+        self.note_shown(&inspection.root);
+        let rows = staged.rows();
+        for row in rows.values() {
+            self.note_shown_row(row);
+        }
+        let mut problems = audit::inspect(
+            &inspection.root,
+            viewport,
+            layout
+                .size
+                .touch
+                .then(|| f64::from(layout.input().minimum_target())),
+        );
+        problems.extend(audit::clipped_text(
+            staged.harness_mut().root_widget_mut(),
+            &mut self.text,
+            viewport,
+        ));
+        for mut problem in problems {
+            // A list draws a row as one widget keyed by the row: what it is about is the row
+            // view's node, the deepest the row's tree holds.
+            if let Some(row) = problem.id.as_ref().and_then(|id| rows.get(id)) {
+                let mut inner = Vec::new();
+                row_keys(row, &mut inner);
+                inner.reverse();
+                inner.append(&mut problem.keys);
+                problem.keys = inner;
+                problem.id = None;
             }
+            self.gather(&problem, layout, label);
         }
         Ok(())
     }
