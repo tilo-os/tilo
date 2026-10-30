@@ -53,13 +53,12 @@ pub struct DesktopServices {
     roaming: RoamingWifiSlot,
     /// The session bus connection the portal and the daemon serve on, and
     /// what keeps the daemon's tasks alive.
-    _session: Option<(zbus::Connection, tilo_notifications_service::Server)>,
+    session: Option<(zbus::Connection, tilo_notifications_service::Server)>,
     /// The applications' tray items, and what keeps their watcher served.
     tray: Option<(
         Arc<tilo_tray_host::Tray>,
         tilo_tray_host::watcher::WatcherHandle,
     )>,
-    session: Option<(zbus::Connection, tilo_notifications_service::Server)>,
 }
 
 impl DesktopServices {
@@ -86,7 +85,6 @@ impl DesktopServices {
         let questions = Questions::new();
         let woken = Arc::clone(wake);
         questions.on_change(move || woken());
-        let notifications = tilo_notifications_service::Notifications::new();
         let notifications = tilo_notifications_service::Notifications::for_session();
         let roaming = RoamingWifiSlot::default();
         let (portal, session) = runtime.block_on(on_session_bus(
@@ -111,9 +109,8 @@ impl DesktopServices {
             portal,
             notifications,
             roaming,
-            _session: session,
-            tray,
             session,
+            tray,
         })
     }
 
@@ -310,13 +307,9 @@ async fn on_session_bus(
     });
     let portal = Portal::new(
         questions.clone(),
-        PortalAuthenticator::session_bus(connection.clone(), resolver),
-    )
-    .with_capture(capture);
         // An app the frontend could not name is named by its process.
         PortalAuthenticator::session_bus(connection.clone(), resolver)
             .with_identify(Requesters::host().resolver()),
-    );
     )
     .with_capture(capture)
     // What shares the session's screens, drives its seat and passes its
