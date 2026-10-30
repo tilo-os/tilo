@@ -3,8 +3,9 @@
 //! It publishes three resources, each a reading of the machine and the
 //! actions that change it:
 //!
-//! * `power`: the power mode, and the session's power actions (sleep,
-//!   restart, power off, log out; the last three ask for confirmation);
+//! * `power`: the power mode, and the session's power actions (lock,
+//!   switch user, sleep, restart, power off, log out; the last three ask for
+//!   confirmation);
 //! * `system-update`: what the update service staged and what finishing it
 //!   needs, with updating now and restarting to finish it;
 //! * `time-zone`: the zone, whether it follows where the device is, and
@@ -248,6 +249,14 @@ pub fn power_resource(power: &Power) -> ResourceSpec {
             "This device offers no power modes",
         );
     }
+    if !power.user_switching {
+        unavailable(
+            &mut resource,
+            "switch-user",
+            "no_user_switching",
+            "Nobody else can sign in on this device while this session runs",
+        );
+    }
     resource
 }
 
@@ -337,6 +346,8 @@ impl Service for SystemService {
                             })?;
                         Change::PowerMode(mode)
                     }
+                    PowerAction::Lock => Change::Lock,
+                    PowerAction::SwitchUser => Change::SwitchUser,
                     PowerAction::Suspend => Change::Suspend,
                     PowerAction::Restart => Change::Restart,
                     PowerAction::PowerOff => Change::PowerOff,
