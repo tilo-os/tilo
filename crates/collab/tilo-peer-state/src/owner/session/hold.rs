@@ -57,6 +57,16 @@ pub struct Link {
 }
 
 impl Link {
+    /// Note that a dial is under way before the hold's first one: what the
+    /// hold dials for a session, so a link between starting a hold and its
+    /// first dial is not taken for one with no session to come.
+    pub fn dialling(&self) {
+        self.establishing.store(true, Ordering::Release);
+    }
+    /// No dial will follow: nothing here is establishing a session.
+    pub fn settled(&self) {
+        self.establishing.store(false, Ordering::Release);
+    }
     /// Dial again now rather than after the pause: something that may let
     /// the dial succeed changed.
     pub fn retry(&self) {
@@ -88,6 +98,8 @@ pub async fn hold(
     link: &Link,
 ) {
     let Some(identity) = identity else {
+        // Nothing will ever be dialled here.
+        link.settled();
         return;
     };
     let paced = holder.paces_itself();
@@ -95,7 +107,7 @@ pub async fn hold(
     let mut unanswered = 0;
     while Connect::new(connect.owner().clone(), connect.room()).is_ok() {
         let outcome = Box::pin(once(&connect, holder, link, &identity, &mut unanswered)).await;
-        link.establishing.store(false, Ordering::Release);
+        link.settled();
         match outcome {
             Outcome::Again => {
                 pause = FIRST_PAUSE;
@@ -108,6 +120,7 @@ pub async fn hold(
             Outcome::Wait => wait(link, None).await,
         }
     }
+    link.settled();
 }
 
 async fn wait(link: &Link, pause: Option<Duration>) {

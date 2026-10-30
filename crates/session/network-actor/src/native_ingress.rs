@@ -372,6 +372,9 @@ impl ActorState {
             }
         }
         let link = Arc::new(Link::default());
+        // The hold's first dial starts on its own task: until it reports
+        // back, the room has a session being established, not none.
+        link.dialling();
         let holder = NativeHolder {
             ws,
             endpoint: self.endpoint.clone(),
