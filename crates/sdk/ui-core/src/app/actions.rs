@@ -389,9 +389,15 @@ impl App {
         crate::collaboration::local_app_id()
     }
     fn require_bound_broker_route(
-        &self,
+        &mut self,
         binding: &crate::bound_dispatch::CallbackBinding,
     ) -> Result<(), tilo_actions::DoorError> {
+        // A surface's components are published to the desktop that placed
+        // it, and what that desktop asks comes back over the same socket:
+        // there is no document route for the binding to name.
+        if self.collaboration.manager.hosts_surface() {
+            return Ok(());
+        }
         if binding.matches_broker_route(self.bound_broker_route()) {
             return Ok(());
         }
@@ -672,7 +678,10 @@ impl App {
                 });
             return;
         }
-        if !self.published_action_history_ready() {
+        // A surface's actions belong to the desktop that placed it, not to a
+        // document: there is no history to custody them, and no route to
+        // witness.
+        if !self.collaboration.manager.hosts_surface() && !self.published_action_history_ready() {
             // An already accepted delivery lost its original owner-history
             // custody. Run no handler; disconnect retains admitted uncertainty.
             self.action_publication_failure = Some(

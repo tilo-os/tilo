@@ -311,6 +311,12 @@ impl App {
     pub(super) fn broadcast_doc_delta(&mut self) {
         let _phase = tilo_resource::profiling::Phase::start("ui.broadcast_doc_delta");
         self.restore_failed_document_publications();
+        // A surface's record is the desktop's own: it syncs with no one, so
+        // there is no document route to broadcast it on.
+        if self.collaboration.manager.hosts_surface() {
+            self.broadcast_room_index_delta();
+            return;
+        }
         if self.collaboration.manager.is_connected() {
             match self.pending_primary_document_delta() {
                 Ok((delta, heads)) if !delta.is_empty() => {

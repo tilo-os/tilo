@@ -400,6 +400,12 @@ impl App {
     }
 
     fn queue_owned_documents_after_refresh(&mut self) -> Result<(), &'static str> {
+        // A surface's records stay in its process: the desktop that placed
+        // it gets its actions, never its document, so there is no route to
+        // publish one on and none it waits for.
+        if self.collaboration.manager.hosts_surface() {
+            return Ok(());
+        }
         // Every live owner must have an actual publication route.
         let current = live_document_owners(self.root_widget.as_ref());
         if current.is_empty() {

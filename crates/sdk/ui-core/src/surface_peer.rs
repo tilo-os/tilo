@@ -27,20 +27,18 @@ use tilo_lock::MutexRecover as _;
 
 use crate::collaboration::{CollabEvent, CollabRequest, PeerTransport};
 
-thread_local! {
-    /// What this process's surface publishes, shared with the peer that
-    /// answers the session: the app hands its resources over every frame it
-    /// draws, as a hosted app hands them to its host.
-    static PUBLISHED: std::cell::RefCell<Option<Arc<std::sync::Mutex<crate::collaboration::SurfaceTable>>>> =
-        const { std::cell::RefCell::new(None) };
-}
+/// What this process's surface publishes, shared with the peer that answers
+/// the session: the app hands its resources over every frame it draws, as a
+/// hosted app hands them to its host.
+static PUBLISHED: std::sync::LazyLock<
+    std::sync::Mutex<Option<Arc<std::sync::Mutex<crate::collaboration::SurfaceTable>>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 /// Publish what this surface offers now, as its frame ends: the resources
 /// the app was built from, with the actions they carry. Nothing happens in a
 /// process that is not a surface.
 pub fn publish(resources: &[tilo_actions::ResourceSpec]) {
-    let table = PUBLISHED.with(|slot| slot.borrow().clone());
-    let Some(table) = table else {
+    let Some(table) = PUBLISHED.lock_recover().clone() else {
         return;
     };
     let descriptors = tilo_actions::door::survey(resources);
@@ -120,7 +118,7 @@ impl SurfacePeer {
             });
         }
         let published: Arc<std::sync::Mutex<crate::collaboration::SurfaceTable>> = Arc::default();
-        PUBLISHED.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&published)));
+        *PUBLISHED.lock_recover() = Some(Arc::clone(&published));
         Self {
             outgoing,
             app_id: String::new(),
@@ -181,9 +179,9 @@ impl SurfacePeer {
                     resource: request.target.address.resource,
                     action: request.target.address.action,
                     argument,
-                    // Asked by the desktop itself, which is what the surface
-                    // is a surface of.
-                    actor: String::from("the desktop"),
+                    // Asked by the person at the desktop that placed the
+                    // surface: their own keys reach it the same way.
+                    actor: crate::collaboration::local_user_id().0,
                     context: None,
                 });
                 None
@@ -202,6 +200,10 @@ impl SurfacePeer {
 impl PeerTransport for SurfacePeer {
     fn is_connected(&self) -> bool {
         self.connected
+    }
+
+    fn hosts_surface(&self) -> bool {
+        true
     }
 
     fn send(&mut self, request: CollabRequest) -> Result<(), String> {
@@ -262,7 +264,11 @@ impl PeerTransport for SurfacePeer {
 
     fn poll(&mut self) -> Vec<CollabEvent> {
         while let Ok(message) = self.incoming.try_recv() {
-            self.answer(message);
+            // What the session asked and this app answers itself: its
+            // catalogue of actions goes back to it right away.
+            if let Some(reply) = self.answer(message) {
+                let _ = self.outgoing.send(reply);
+            }
         }
         self.received.drain(..).collect()
     }

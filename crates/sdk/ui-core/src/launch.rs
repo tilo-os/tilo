@@ -888,7 +888,10 @@ fn run_parsed(
     // Attachment can exec the runtime host in this process's place, and marks
     // the inherited launch guard close-on-exec: it finishes before the
     // renderer preparation below starts a thread.
-    if opens_native_window(&args) && (spec.runtime_attachment)(&args) {
+    // A surface of the desktop is shown by the session that placed it and
+    // reaches it over its own actions socket: it needs no runtime host.
+    let attaches = !is_surface() && (spec.runtime_attachment)(&args);
+    if opens_native_window(&args) && attaches {
         attach(spec.app_id).map_err(|error| {
             LaunchError::Operation(format!("native runtime attachment failed: {error}"))
         })?;
@@ -1312,6 +1315,14 @@ fn selected_local_construction()
     .map_err(LaunchError::Operation)
 }
 
+/// Whether the session that started this process placed it as one of its
+/// surfaces: it handed it the actions socket in
+/// [`crate::surface_peer::ACTIONS_FD_ENV`].
+#[cfg(feature = "native")]
+fn is_surface() -> bool {
+    std::env::var_os(crate::surface_peer::ACTIONS_FD_ENV).is_some()
+}
+
 /// The actions socket the session handed this process, when it is a
 /// surface app's: `None` when the number in [`crate::surface_peer::ACTIONS_FD_ENV`]
 /// names no socket.
@@ -1327,12 +1338,13 @@ fn native_launch_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
 ) -> Result<crate::collaboration::CollaborationManager, LaunchError> {
-    crate::collaboration::native_initial::ensure_unoccupied().map_err(LaunchError::Operation)?;
     // A surface app is handed the actions of the desktop that places its
-    // window, in place of a room it never joins.
+    // window, in place of a room it never joins: it needs no workspace of
+    // its own, selected or not.
     if let Some(peer) = surface_peer() {
         return Ok(crate::collaboration::CollaborationManager::with_peer_transport(peer));
     }
+    crate::collaboration::native_initial::ensure_unoccupied().map_err(LaunchError::Operation)?;
     if !(spec.runtime_attachment)(args) {
         return Ok(crate::collaboration::CollaborationManager::disabled());
     }
