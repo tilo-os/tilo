@@ -27,7 +27,7 @@ kind `tasks.tracker`), written the one way every app is
 | `priority` | `Option<u8>`, 1 (most urgent) to 4 | `plan` |
 | `cost_budget` | `Option<u64>`, read-only: the most its work may cost | `plan` |
 | `spend` | `Option<u64>`, read-only: what its runs settled, its sub-issues' work included, in millionths of the budget's currency | the tracker, from its ledger |
-| `budget` | the run's model turns, its turn and total time ceilings, and the spend limits | `set-execution-budget`; `ask-agent` from a chat sets the chat's |
+| `budget` | the run's model turns, its turn and total time ceilings, and the spend limits | `set-execution-budget`; none unless its person sets one |
 | `comments` | `Collection<Message>`, the thread | `comment`, `send-message`, the run's reports |
 | `run` | `Option<Run>`, read-only | the run verbs below |
 
@@ -115,15 +115,22 @@ syncs to each of their devices like their accounts.
 
 ## Agents
 
-Assigning an issue to an agent queues it; nothing runs until a person approves.
-Every step is an action on the issue, so it is a permission in the one action
-system and an entry in its history:
+A person's own ask runs at once, and so does work a person gives an agent
+(`create` with an agent as assignee, `assign`): the run starts as they do it,
+acting for them. Nothing gates it besides the permission system: each of the
+run's steps is admitted against that person's live grants, so it never does
+what they could not, and a step that asks first waits for its answer. Work an
+agent or an automation hands on waits for a person's `approve-run`, there
+being no person whose authority it would act with. Every step is an action
+on the issue, so it is a permission in the one action system and an entry in
+its history:
 
 | Action | Who | What |
 |---|---|---|
 | `ask-agent` | people | an issue assigned to an agent whose run the asking starts (the "Tell an agent" composer) |
 | `choose-model` | anyone who may edit | the model the issue's runs plan with, while no run is going |
-| `approve-run` | people | starts run *n*+1 for the assigned agent, acting for the approver |
+| `assign` | anyone who may edit | gives the issue to a person or an agent; a person giving it to an agent starts its run, acting for them |
+| `approve-run` | people | starts run *n*+1 for the assigned agent, acting for the approver: work an agent handed on, or a run again |
 | `stop-run` | people | stops the run; what it already changed stays |
 | `set-execution-budget` | people | model turns, turn and total time ceilings, and the spend limits, while no run is active |
 | `send-message` | anyone who may comment | a message in the thread to the run going on |
@@ -180,12 +187,12 @@ the run, its approver and the messages it took in, and admits the action
 against the freshly published contract only. Stop and a revoked grant fence
 both the launch and the action after it.
 
-A run's limit is its issue's budget: the model turns it may take, the
-longest turn and the longest run (`set-execution-budget`). The agent has no
-turn cap of its own; a run whose issue sets no budget takes the runner's
-default (30 turns in 5 minutes), and an issue asked in an agent chat
-(`ask-agent` with `chat`) starts with the chat's budget, sized for a task
-of many items: 300 turns in up to two hours, three minutes a turn. A long
+A run has no turn or time cap of its own. What bounds it is what its person
+set: its issue's budget, the model turns it may take, the longest turn and
+the longest run, and the spend limits (`set-execution-budget`, see Budgets
+and spend). A run whose issue sets none, a chat's included, goes on until it
+is done or its person stops it; each model turn is still bounded by what one
+provider call may take. A long
 run stays within its model's context by compacting what it sends: results
 read long ago are put aside as their `read_result` handles with a short
 summary, and past that its oldest turns fold into one note listing each

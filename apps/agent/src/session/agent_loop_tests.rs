@@ -2459,9 +2459,26 @@ fn explicit_total_task_deadline_stops_silent_transport_before_any_step() {
     );
 }
 
-/// A model that never finishes is stopped at its budget's turns: the
-/// runner's default for an issue that sets none, and the issue's own turns
-/// when it sets them, past the old fixed bound.
+/// A run has no turn cap of its own: one whose issue sets no budget goes on
+/// past the 30 turns the runner used to allow until it is done.
+#[test]
+fn a_run_without_a_budget_goes_past_thirty_turns_until_it_is_done() {
+    let mut turns: Vec<Vec<TurnEvent>> = (0..45)
+        .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
+        .collect();
+    turns.push(turn(&[finish("Looked everywhere.", true)], 8));
+    let mut f = fixture("look around", World::default(), turns);
+    f.session.run_task(&f.run).unwrap();
+    assert_eq!(f.script.bodies.lock().unwrap().len(), 46);
+    assert!(matches!(
+        terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Succeeded { message } if message == "Looked everywhere."
+    ));
+    assert!(f.session.task_deadline.is_none(), "no time cap either");
+}
+
+/// A model that never finishes is stopped at the turns its issue's budget
+/// sets: the limit is the person's.
 #[test]
 fn a_loop_that_never_finishes_stops_at_its_budgets_turns() {
     let wander = |count: usize| -> Vec<Vec<TurnEvent>> {
@@ -2469,14 +2486,7 @@ fn a_loop_that_never_finishes_stops_at_its_budgets_turns() {
             .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
             .collect()
     };
-    let mut f = fixture("wander", World::default(), wander(DEFAULT_LOOP_TURNS + 2));
-    f.session.run_task(&f.run).unwrap();
-    assert_eq!(f.script.bodies.lock().unwrap().len(), DEFAULT_LOOP_TURNS);
-    assert!(matches!(
-        terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed { message } if message.contains("model turns of its budget")
-    ));
-    let turns = DEFAULT_LOOP_TURNS * 2 + 5;
+    let turns = 65;
     let mut f = execution_fixture(
         "wander",
         World::default(),
@@ -2651,7 +2661,10 @@ fn anthropic_tasks_share_the_cached_catalogue_block() {
     assert!(first[1].get("cache_control").is_none());
     // What the task is and where it is come after the catalogue, in the block that changes.
     let task = first[1]["text"].as_str().unwrap();
-    assert!(task.starts_with("Limits: at most"), "{task}");
+    assert!(
+        !task.contains("Limits:"),
+        "a run nobody limited is told no limits: {task}"
+    );
     assert!(task.ends_with("The request:\n\npost hello"), "{task}");
     let task = second[1]["text"].as_str().unwrap();
     assert!(

@@ -264,9 +264,10 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
             message: "One card is left.".into()
         }
     );
-    // The first message says where the task is: its limits and the apps its programs reach.
+    // The first message says where the task is: the apps its programs reach, and no limits
+    // when its person set none.
     let first = bodies[0].to_string();
-    assert!(first.contains("Limits: at most"), "{first}");
+    assert!(!first.contains("Limits:"), "{first}");
     assert!(first.contains("`board`: Board"), "{first}");
     assert!(first.contains("types Card, Column"), "{first}");
     assert!(tool_names(&bodies[0]).contains(&crate::programs::TILO.to_owned()));

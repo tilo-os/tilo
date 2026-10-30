@@ -67,11 +67,6 @@ mod resume;
 mod compaction;
 mod progress;
 
-/// The model turns of a run whose issue sets no budget: a request asked in
-/// passing. Turns are cheap (well under two seconds each); what they must
-/// not do is wander, which the discovery nudge below and the wall-clock
-/// budget bound. A run whose issue sets a budget takes the turns it says.
-pub(super) const DEFAULT_LOOP_TURNS: usize = 30;
 /// After this many turns that only looked things up, every discovery answer
 /// also says how many turns are left and asks the model to act.
 const DISCOVERY_NUDGE: usize = 3;
@@ -81,9 +76,6 @@ const DISCOVERY_NUDGE: usize = 3;
 const OPEN_SETTLE: Duration = Duration::from_secs(8);
 /// Most newly available operations an open lists.
 const MOST_NEWLY_OPENED: usize = 40;
-/// Wall-clock budget of a run whose issue sets none: model turns and steps
-/// together.
-const DEFAULT_LOOP_TIME: Duration = Duration::from_secs(300);
 /// The most one model turn may take: the model gateway's own ceiling for a
 /// provider call, and a managed agent's model budget. Hosted reasoning
 /// models answer most turns in seconds but take up to a minute on some
@@ -362,12 +354,14 @@ fn streamed_call(output: &str, index: usize) -> Option<StreamedCall> {
     })
 }
 
-/// What one run may take.
+/// What one run may take. A run has no cap of its own: what bounds it is
+/// what its person set (its issue's budget), else it goes until it is done
+/// or stopped.
 struct RunBudget {
-    /// Its model turns; `None` when its time alone bounds it.
+    /// Its model turns; `None` when nobody limited them.
     turns: Option<usize>,
-    /// Its whole time.
-    total: Duration,
+    /// Its whole time; `None` when nobody limited it.
+    total: Option<Duration>,
     /// The longest one model turn may take.
     turn: Duration,
 }
@@ -602,7 +596,7 @@ impl LoopState {
             refusals: 0,
             discovery_turns: 0,
             turn: 0,
-            turns: Some(DEFAULT_LOOP_TURNS),
+            turns: None,
             progress: None,
             failures: HashSet::new(),
             in_flight: Vec::new(),
@@ -993,16 +987,18 @@ impl Session {
         result
     }
 
-    /// What `run` may take: its issue's budget (its turns, none when its
-    /// time alone bounds it, and its time), else the runner's default.
+    /// What `run` may take: its issue's budget (its turns, none when it
+    /// limits only time, and its time). Without one the run has no turn or
+    /// time cap: it goes until it is done or its person stops it, each turn
+    /// bounded only by what one provider call may take.
     ///
     /// # Errors
     /// An issue's budget no run may have.
     fn run_budget(&self, run: &runtime_collab::TaskRunEnvelope) -> Result<RunBudget, String> {
         let Some(budget) = run.execution_budget else {
             return Ok(RunBudget {
-                turns: Some(DEFAULT_LOOP_TURNS),
-                total: DEFAULT_LOOP_TIME,
+                turns: None,
+                total: None,
                 turn: MAX_LOOP_TURN_TIME.min(self.chooser.timeout().max(Duration::from_secs(1))),
             });
         };
@@ -1011,7 +1007,7 @@ impl Session {
             turns: budget
                 .max_turns
                 .map(|turns| usize::try_from(turns).unwrap_or(usize::MAX)),
-            total: Duration::from_millis(u64::from(budget.total_ms)),
+            total: Some(Duration::from_millis(u64::from(budget.total_ms))),
             turn: Duration::from_millis(u64::from(budget.turn_ms)),
         })
     }
@@ -1119,15 +1115,15 @@ impl Session {
                     state.completed
                 )));
             }
-            let left = total_budget.saturating_sub(began.elapsed());
-            if left.is_zero() {
+            let left = total_budget.map(|total| total.saturating_sub(began.elapsed()));
+            if left.is_some_and(|left| left.is_zero()) {
                 return Ok(LoopEnd::Failed(
                     "The task ran out of time before it finished".into(),
                 ));
             }
             // This explicit caller budget comes only from the broker-minted
             // owner policy; the gateway still enforces its selected-model ceiling.
-            let timeout = left.min(turn_budget);
+            let timeout = left.map_or(turn_budget, |left| left.min(turn_budget));
             state.turn = turn;
             if let Some(end) = self.run_turn(run, &mut conversation, state, turn, timeout)? {
                 return Ok(end);

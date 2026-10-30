@@ -310,17 +310,19 @@ pub(super) fn where_section(
     }
     let seconds = run
         .execution_budget
-        .map_or(super::DEFAULT_LOOP_TIME.as_secs(), |budget| {
-            u64::from(budget.total_ms) / 1000
-        });
-    // The run's budget, as the loop enforces it: its turns when it has a
-    // turn ceiling, and its time.
-    let _ = match most_turns {
-        Some(turns) => writeln!(
+        .map(|budget| u64::from(budget.total_ms) / 1000);
+    // The run's budget, as the loop enforces it: its turns and its time when
+    // its person limited them, and nothing when they did not.
+    let _ = match (most_turns, seconds) {
+        (Some(turns), Some(seconds)) => writeln!(
             out,
             "Limits: at most {turns} model turns and {seconds} seconds for the whole task."
         ),
-        None => writeln!(out, "Limits: at most {seconds} seconds for the whole task."),
+        (Some(turns), None) => writeln!(out, "Limits: at most {turns} model turns."),
+        (None, Some(seconds)) => {
+            writeln!(out, "Limits: at most {seconds} seconds for the whole task.")
+        }
+        (None, None) => Ok(()),
     };
     if let Some(subject) = run
         .subject
