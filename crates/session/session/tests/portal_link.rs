@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use tilo_compositor::{OutputConfig, Selection};
+use tilo_compositor::{InputEvent, OutputConfig, Selection};
 use tilo_portal::input_capture::InputCaptures;
 use tilo_portal::remote_desktop::RemoteInput;
 use tilo_portal::streams::{CaptureSource, SourceKind, StreamRequest};
@@ -162,6 +162,75 @@ fn the_portals_pointer_moves_the_sessions_pointer() {
         Some(seen).filter(|seen| *seen != before)
     });
     assert_eq!(seen, (300.0, 200.0), "{before:?} -> {seen:?}");
+}
+
+#[test]
+fn the_persons_cut_chord_stops_the_portals_input_until_sharing_is_allowed_again() {
+    let (mut session, side) = serving(None);
+    session.step(SETTLE).unwrap();
+    let input = side.input();
+    assert!(input.inject(RemoteInput::PointerMotionAbsolute {
+        stream: 0,
+        x: 300.0,
+        y: 200.0,
+    }));
+    let moved = until(&mut session, |session| {
+        Some(session.compositor().pointer_location()).filter(|seen| *seen != (0.0, 0.0))
+    });
+    assert_eq!(moved, (300.0, 200.0), "the app drives the seat");
+
+    // Ctrl+Alt+Escape on the person's own keyboard.
+    for event in [
+        InputEvent::Key {
+            keycode: 29,
+            pressed: true,
+        },
+        InputEvent::Key {
+            keycode: 56,
+            pressed: true,
+        },
+        InputEvent::Key {
+            keycode: 1,
+            pressed: true,
+        },
+    ] {
+        session.compositor().input(event).unwrap();
+        session.step(SETTLE).unwrap();
+    }
+    assert!(session.compositor().remote_input_cut(), "the chord cut it");
+
+    // Once the person's own input stops counting, which takes half a
+    // second, the app still moves nothing.
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(600) {
+        session.step(SETTLE).unwrap();
+    }
+    assert!(input.inject(RemoteInput::PointerMotionAbsolute {
+        stream: 0,
+        x: 20.0,
+        y: 30.0,
+    }));
+    for _ in 0..10 {
+        session.step(SETTLE).unwrap();
+    }
+    assert_eq!(
+        session.compositor().pointer_location(),
+        (300.0, 200.0),
+        "remote input stays cut"
+    );
+
+    // Sharing comes back when the person allows it again.
+    session.compositor().allow_remote_input();
+    assert!(!session.compositor().remote_input_cut());
+    assert!(input.inject(RemoteInput::PointerMotionAbsolute {
+        stream: 0,
+        x: 20.0,
+        y: 30.0,
+    }));
+    let moved = until(&mut session, |session| {
+        Some(session.compositor().pointer_location()).filter(|seen| *seen != (300.0, 200.0))
+    });
+    assert_eq!(moved, (20.0, 30.0));
 }
 
 #[test]

@@ -384,7 +384,7 @@ impl SessionLink {
             Ask::Stop(node) => self.stop(node),
             Ask::Inject(input) => {
                 if let Some(event) = self.event(compositor, input)
-                    && let Err(error) = compositor.input(event)
+                    && let Err(error) = compositor.input_remote(event)
                 {
                     tracing::debug!(%error, "the portal's input was not delivered");
                 }

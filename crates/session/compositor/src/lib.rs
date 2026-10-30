@@ -50,6 +50,7 @@ pub mod policy;
 mod power;
 mod present;
 mod protocols;
+pub mod remote_input;
 pub mod render;
 mod requests;
 pub mod selection;
@@ -1194,6 +1195,36 @@ impl Compositor {
     /// The last frame drawn on the output named `name`.
     pub fn screenshot(&mut self, name: &str) -> Result<Screenshot, Error> {
         Ok(self.data.backend.screenshot(&mut self.data.state, name)?)
+    }
+
+    /// Route one input event from another device — a portal
+    /// `RemoteDesktop` or `InputCapture` session, a share, a remote-typing
+    /// link — through the firewall ([`remote_input`]): it reaches the seat
+    /// only while the person allows it.
+    pub fn input_remote(&mut self, event: InputEvent) -> Result<(), Error> {
+        self.data.state.handle_remote_input(event);
+        self.start_asked_drags();
+        self.sync_power();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// Cut every remote input: nothing from another device reaches the seat
+    /// until the person allows it again ([`Compositor::allow_remote_input`]).
+    /// The person's own Ctrl+Alt+Escape does this too.
+    pub fn cut_remote_input(&mut self) {
+        self.data.state.remote_input.cut();
+    }
+
+    /// Let remote input in again, after a cut.
+    pub fn allow_remote_input(&mut self) {
+        self.data.state.remote_input.allow();
+    }
+
+    /// Whether remote input is cut.
+    #[must_use]
+    pub fn remote_input_cut(&self) -> bool {
+        self.data.state.remote_input.is_cut()
     }
 
     /// Mark every window of `app_id` as private, or no longer: screenshots,
