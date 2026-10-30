@@ -1482,10 +1482,6 @@ impl Session {
     /// # Errors
     /// The compositor or its window did not start.
     pub fn nested(options: Options, config: &NestedConfig) -> Result<Self, Error> {
-        let options = Options {
-            hosted: true,
-            ..options
-        };
         let mut session = Self::new(options, |policy| Compositor::nested(policy, config))?;
         session.warm()?;
         Ok(session)
