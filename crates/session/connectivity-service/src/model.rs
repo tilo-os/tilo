@@ -181,12 +181,12 @@ impl From<os_actions::ConnectivityState> for Connectivity {
     }
 }
 
-impl From<&os_actions::BtDeviceInfo> for Accessory {
-    fn from(device: &os_actions::BtDeviceInfo) -> Self {
+impl From<&os_actions::bluez::DeviceInfo> for Accessory {
+    fn from(device: &os_actions::bluez::DeviceInfo) -> Self {
         Self {
             name: device.name.clone(),
-            address: device.mac.clone(),
-            battery: (device.battery > 0).then_some(device.battery),
+            address: device.address.clone(),
+            battery: device.battery.filter(|percentage| *percentage > 0),
             connected: device.connected,
         }
     }

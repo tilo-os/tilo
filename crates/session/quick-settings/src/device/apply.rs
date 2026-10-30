@@ -155,13 +155,13 @@ pub(crate) fn wifi_networks(qs: &mut QuickSettingsState, networks: Vec<qs::WifiN
         .collect();
 }
 
-pub(crate) fn bt_devices(qs: &mut QuickSettingsState, devices: Vec<qs::BtDeviceInfo>) {
+pub(crate) fn bt_devices(qs: &mut QuickSettingsState, devices: Vec<qs::bluez::DeviceInfo>) {
     qs.bt_devices = devices
         .into_iter()
         .map(|d| BtDevice {
             name: d.name,
-            address: d.mac,
-            battery: d.battery,
+            address: d.address,
+            battery: d.battery.unwrap_or(0),
             connected: d.connected,
         })
         .collect();

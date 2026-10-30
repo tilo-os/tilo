@@ -49,7 +49,7 @@ pub trait DeviceReads: Send + Sync {
     /// # Errors
     /// Why the scan failed.
     fn scan_wifi(&self) -> Result<(), String>;
-    fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>>;
+    fn bt_devices(&self) -> Option<Vec<qs::bluez::DeviceInfo>>;
     /// How many firmware updates are offered; `None` without fwupd.
     fn firmware_updates(&self) -> Option<usize>;
     /// Which controls the machine has hardware for, beyond what the other
@@ -85,7 +85,7 @@ impl DeviceReads for OsReads {
     }
 
     fn bluetooth(&self) -> Option<bool> {
-        qs::log_get("get_bluetooth", qs::get_bluetooth())
+        qs::log_get("get_bluetooth", qs::bluez::is_powered())
     }
 
     fn power(&self) -> Option<qs::PowerProfile> {
@@ -132,8 +132,8 @@ impl DeviceReads for OsReads {
         qs::scan_wifi()
     }
 
-    fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
-        qs::log_get("list_bt_devices", qs::list_bt_devices())
+    fn bt_devices(&self) -> Option<Vec<qs::bluez::DeviceInfo>> {
+        qs::log_get("list_bt_devices", qs::bluez::paired_devices())
     }
 
     fn firmware_updates(&self) -> Option<usize> {
@@ -405,7 +405,7 @@ pub(crate) enum QsReading {
     Field(FieldReading),
     Firmware(Option<usize>),
     WifiNetworks(Result<Vec<qs::WifiNetworkInfo>, String>),
-    BtDevices(Option<Vec<qs::BtDeviceInfo>>),
+    BtDevices(Option<Vec<qs::bluez::DeviceInfo>>),
     WifiJoin(WifiJoinResult),
     Wrote(WriteDone),
 }

@@ -399,7 +399,7 @@ pub(crate) mod tests {
         fn scan_wifi(&self) -> Result<(), String> {
             Ok(())
         }
-        fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
+        fn bt_devices(&self) -> Option<Vec<qs::bluez::DeviceInfo>> {
             None
         }
         fn firmware_updates(&self) -> Option<usize> {
@@ -710,7 +710,7 @@ pub(crate) mod tests {
             self.hit("scan_wifi");
             Ok(())
         }
-        fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
+        fn bt_devices(&self) -> Option<Vec<qs::bluez::DeviceInfo>> {
             self.hit("bt_devices");
             None
         }

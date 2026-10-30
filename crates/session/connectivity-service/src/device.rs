@@ -95,9 +95,9 @@ impl Device for OsDevice {
             .collect();
         let adapter = os_actions::bluez::has_adapter();
         let bluetooth_on =
-            adapter && read_or_log("bluetooth", os_actions::get_bluetooth()).unwrap_or(false);
+            adapter && read_or_log("bluetooth", os_actions::bluez::is_powered()).unwrap_or(false);
         let accessories = if bluetooth_on {
-            read_or_log("bluetooth accessories", os_actions::list_bt_devices())
+            read_or_log("bluetooth accessories", os_actions::bluez::paired_devices())
                 .unwrap_or_default()
                 .iter()
                 .map(Accessory::from)
@@ -154,8 +154,8 @@ impl Device for OsDevice {
             }
             Change::Leave { network } => os_actions::disconnect_wifi(network),
             Change::Bluetooth(on) => RealDispatcher.set_bluetooth(*on),
-            Change::Connect { address } => os_actions::bt_connect(address),
-            Change::Disconnect { address } => os_actions::bt_disconnect(address),
+            Change::Connect { address } => os_actions::bluez::connect_address(address),
+            Change::Disconnect { address } => os_actions::bluez::disconnect_address(address),
             Change::Vpn { profile, on } => os_actions::set_vpn_connection_uuid(profile, *on),
         }
     }

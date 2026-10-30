@@ -25,7 +25,7 @@ struct Inner {
     radios: os_actions::RadioState,
     vpns: Vec<os_actions::VpnConnectionInfo>,
     networks: Vec<os_actions::WifiNetworkInfo>,
-    accessories: Vec<os_actions::BtDeviceInfo>,
+    accessories: Vec<os_actions::bluez::DeviceInfo>,
     battery: u8,
     /// Changes made, in order.
     calls: Vec<String>,
@@ -66,11 +66,12 @@ impl Machine {
                 connected: true,
                 known: true,
             }];
-            inner.accessories = vec![os_actions::BtDeviceInfo {
+            inner.accessories = vec![os_actions::bluez::DeviceInfo {
                 name: "Headphones".into(),
-                mac: "00:1B:66:A1:B2:C3".into(),
-                battery: 80,
+                address: "00:1B:66:A1:B2:C3".into(),
+                battery: Some(80),
                 connected: true,
+                ..os_actions::bluez::DeviceInfo::default()
             }];
             inner.battery = 64;
         }
@@ -160,7 +161,7 @@ impl DeviceReads for Machine {
     fn scan_wifi(&self) -> Result<(), String> {
         Ok(())
     }
-    fn bt_devices(&self) -> Option<Vec<os_actions::BtDeviceInfo>> {
+    fn bt_devices(&self) -> Option<Vec<os_actions::bluez::DeviceInfo>> {
         Some(self.0.lock().unwrap().accessories.clone())
     }
     fn firmware_updates(&self) -> Option<usize> {
@@ -210,7 +211,7 @@ impl os_actions::Dispatcher for Machine {
     fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
         self.change(format!("disconnect:{address}"), "disconnect")?;
         for accessory in &mut self.0.lock().unwrap().accessories {
-            if accessory.mac == address {
+            if accessory.address == address {
                 accessory.connected = false;
             }
         }
