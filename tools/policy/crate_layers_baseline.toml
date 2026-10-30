@@ -4,21 +4,6 @@
 # fails. `check_crate_layers.py --write-baseline` drops stale entries; it
 # never records a new one.
 
-# The surface host draws the shell's surface apps itself: it rasterizes their
-# frames on the CPU and hands the compositor smithay memory render buffers,
-# where a surface app presents through ui-core and the compositor's API like
-# every app. Both edges go with the work that draws a surface in its own
-# process, through the compositor's API.
-[[violation]]
-rule = "tilo-cpu-raster"
-package = "tilo-surface-host"
-path = "Cargo.toml"
-
-[[violation]]
-rule = "smithay"
-package = "tilo-surface-host"
-path = "Cargo.toml"
-
 # The session's network, portal and chrome modules name the compositor's
 # smithay types: buffers and client ids, allocator formats, or an event loop
 # taken from smithay's reexport. Each goes when tilo-compositor's API hands

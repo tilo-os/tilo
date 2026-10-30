@@ -1410,6 +1410,17 @@ readers = [
 
 
 [[cargo]]
+package = "tilo-session"
+# The first-boot unit the image ships, and the components that name where
+# each binary is installed.
+inputs = [
+  "os/usr/lib/systemd/system/shell-firstboot.service",
+  "os/components.toml",
+]
+readers = ["crates/session/session/tests/firstboot.rs"]
+
+
+[[cargo]]
 package = "tilo-browser-peer"
 # The actual microphone fixture serves the production web modules and pinned
 # MoQ bundle to two isolated Chromium profiles.
