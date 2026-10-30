@@ -322,6 +322,8 @@ class CargoReaderTests(unittest.TestCase):
                 '#[path = "../../../crates/ui/src/shared.rs"]\nmod shared;\n',
                 'let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../os/share/data.json");\n',
                 'let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../os/share/data.json");\n',
+                # A macro's include whose path a concat! builds from its arguments.
+                'const A: &str = include_str!(concat!("../../../os/share/", $name, ".json"));\n',
                 'let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))\n    .parent()\n    .unwrap()\n    .join("x");\n',
             ):
                 with self.subTest(text=text):
@@ -333,6 +335,7 @@ class CargoReaderTests(unittest.TestCase):
             for text in (
                 'const A: &str = include_str!("../tests/fixtures/a.json");\n',
                 'const A: &str = include_str!("strings.ftl");\n',
+                'const A: &str = include_str!(concat!("../tests/fixtures/", $name));\n',
                 '#[path = "platform/linux.rs"]\nmod platform;\n',
                 'let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");\n',
                 'let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/review");\n',
