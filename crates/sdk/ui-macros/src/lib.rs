@@ -43,6 +43,61 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Say of a public widget why it is not a described component, where it is declared:
+/// `#[not_a_component(layout, "the language's `stack`")]`. The toolkit's coverage check reads
+/// it: every public widget is either described (`impl Described`) or says why not, so a widget
+/// that works in Tilo is either in tilolang or names the reason it never will be.
+///
+/// The kinds:
+///
+/// - `layout`: a layout the language's own primitive builds (name it);
+/// - `shell`: window management the system owns, never inside an app's window;
+/// - `system`: a surface only the system may draw (a prompt for a secret or a permission, the
+///   palette, system search), which an app must not be able to forge;
+/// - `part`: a part of another component, reached through it (name it);
+/// - `framework`: behaviour the framework applies around a view, not something a view places.
+///
+/// The item is left as it is.
+#[proc_macro_attribute]
+pub fn not_a_component(attr: TokenStream, item: TokenStream) -> TokenStream {
+    match exemption(attr.into()) {
+        Ok(()) => item,
+        Err(error) => {
+            let mut tokens: Tokens = error.to_compile_error();
+            tokens.extend(Tokens::from(item));
+            tokens.into()
+        }
+    }
+}
+
+/// The kinds `not_a_component` takes.
+const EXEMPTIONS: [&str; 5] = ["layout", "shell", "system", "part", "framework"];
+
+fn exemption(attr: Tokens) -> syn::Result<()> {
+    let parser = |input: syn::parse::ParseStream<'_>| -> syn::Result<()> {
+        let kind: syn::Ident = input.parse()?;
+        if !EXEMPTIONS.iter().any(|k| kind == k) {
+            return Err(syn::Error::new(
+                kind.span(),
+                format!(
+                    "a widget is not a component for one of: {}",
+                    EXEMPTIONS.join(", ")
+                ),
+            ));
+        }
+        input.parse::<syn::Token![,]>()?;
+        let reason: LitStr = input.parse()?;
+        if reason.value().trim().is_empty() {
+            return Err(syn::Error::new(
+                reason.span(),
+                "say why it is not a component",
+            ));
+        }
+        Ok(())
+    };
+    syn::parse::Parser::parse2(parser, attr)
+}
+
 /// The struct attribute.
 #[derive(Default)]
 struct Head {

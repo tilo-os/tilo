@@ -77,6 +77,7 @@ pub enum ScreenshotMarkupCommand {
 
 /// A modal editor, intentionally implemented in `ui` rather than shell so an
 /// image app can host the identical canvas and controls.
+#[crate::component::not_a_component(system, "screen capture is the system's")]
 pub struct ScreenshotMarkup {
     image: Image,
     original: Arc<[u8]>,

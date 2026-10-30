@@ -66,6 +66,10 @@ impl Resolved {
 }
 
 /// A child with how it is sized and placed.
+#[crate::component::not_a_component(
+    part,
+    "a child's place in the language's `stack`, `row` and `grid`"
+)]
 pub struct Slot {
     pub(super) element: Element,
     pub fit: Fit,
@@ -139,6 +143,7 @@ pub trait Layout {
 /// A container arranged by `L`. The primitives are this type with a layout:
 /// [`Stack`](super::Stack), [`Row`](super::Row), [`Grid`](super::Grid), [`Split`](super::Split),
 /// [`Page`](super::Page) and [`Layers`](super::Layers).
+#[crate::component::not_a_component(layout, "the language's `stack`, `row` and `grid`")]
 pub struct Arranged<L: Layout> {
     pub(super) layout: L,
     pub(super) slots: Vec<Slot>,

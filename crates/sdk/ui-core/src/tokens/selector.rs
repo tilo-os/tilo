@@ -83,12 +83,19 @@ impl SelectorFinish {
     }
 
     /// What a frosted strip of `ground` tinted at `opacity` can look like at
-    /// its darkest and its lightest: the tint over black and over white.
-    /// Ink on the strip holds against both, whatever the desktop is.
+    /// its darkest and its lightest: the tint over each end of the band the
+    /// desktop picture is held in first
+    /// ([`crate::tokens::finish::material_band`]),
+    /// as every blurred material is. Ink on the strip holds against both,
+    /// whatever the desktop is.
     #[must_use]
-    pub fn frosted_extremes(ground: Color, opacity: f32) -> [Color; 2] {
-        [Color::BLACK, Color::WHITE]
-            .map(|backdrop| crate::tokens::colors::over(backdrop, ground, opacity))
+    pub fn frosted_extremes(
+        colors: &crate::tokens::Colors,
+        ground: Color,
+        opacity: f32,
+    ) -> [Color; 2] {
+        let (dark, light) = crate::tokens::finish::material_band(colors, ground);
+        [dark, light].map(|backdrop| crate::tokens::colors::over(backdrop, ground, opacity))
     }
 
     /// The finish actually painted: where nothing may be translucent (forced

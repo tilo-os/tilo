@@ -193,6 +193,7 @@ fn line_count(n: usize) -> f64 {
 /// The results overlay. Populate it with [`set_groups`](Self::set_groups) each
 /// time the query changes, drive selection with the keyboard or pointer, and
 /// drain activations with [`take_activated`](Self::take_activated).
+#[crate::component::not_a_component(system, "system search")]
 pub struct SearchResultsView {
     groups: Vec<SearchGroup>,
     /// flat index → (group idx, result idx) for the selectable rows.

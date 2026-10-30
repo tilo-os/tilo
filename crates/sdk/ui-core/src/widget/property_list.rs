@@ -1304,6 +1304,7 @@ impl crate::widget::controls::ActionControls for PropertyList {
 /// shows where it cannot be edited (an account id, a generated key), in
 /// primary ink with its kind's text treatment and an optional trailing copy
 /// action. Unbreakable kinds are elided before the action.
+#[crate::component::not_a_component(part, "a value of `ui.PropertyList`, from its `ui.Property`")]
 pub struct PropertyValue {
     id: Option<String>,
     value: String,

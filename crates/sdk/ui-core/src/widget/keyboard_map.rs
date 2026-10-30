@@ -129,6 +129,7 @@ impl KeyboardMapInput {
 /// Theme-aware map of an explicitly selected physical model. It observes
 /// only ordinary focused window events, never global devices or document edits.
 #[derive(Clone)]
+#[crate::component::not_a_component(system, "the keyboard settings' map of a physical model")]
 pub struct KeyboardMap {
     keys: Vec<KeyboardMapKey>,
     model_size: Size<f64>,
@@ -740,6 +741,7 @@ impl Widget for KeyboardMap {
 
 /// Action-bound inspection over the shared physical map. Keyboard presses
 /// never select an inspector or publish entered text.
+#[crate::component::not_a_component(system, "the keyboard settings' map of a physical model")]
 pub struct KeyboardMapSelection {
     map: KeyboardMap,
     action: Option<crate::widget::ActionEmitter<String>>,
