@@ -21756,6 +21756,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-store-node"
+version = "0.1.0"
+dependencies = [
+ "channel-crypto",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "iroh",
+ "iroh-base",
+ "neighbour-wire",
+ "postcard",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-clock",
+ "tilo-files",
+ "tilo-lock",
+ "tilo-user-identity",
+ "tokio",
+ "tracing",
+ "uuid",
+ "web-time",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-subject"
 version = "0.1.0"
 dependencies = [

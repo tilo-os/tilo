@@ -255,6 +255,7 @@ members = [
     "crates/hosting/tilo-relay-shell",
     "crates/hosting/tilo-relay-store",
     "crates/hosting/tilo-room-host",
+    "crates/hosting/tilo-store-node",
 
     # Media
     "crates/media/ocr",
