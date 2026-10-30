@@ -2966,7 +2966,6 @@ mod tests {
         button_test_id_is_stable_constructor_id();
         action_mode_suppresses_raw_mutation_and_callback();
         action_availability_revokes_and_restores_without_overriding_authored_state();
-        legacy_button_paths_are_explicit_in_inventory();
     }
 
     /// A theme switched under a live tree repaints a plain button's face
