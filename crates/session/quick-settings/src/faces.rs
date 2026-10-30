@@ -610,6 +610,12 @@ pub(crate) enum Item {
     Message(String),
     Network(NetworkFace),
     Accessory(crate::BtDevice),
+    /// "Look for devices", or "Stop looking" while the panel is looking.
+    LookForDevices {
+        looking: bool,
+    },
+    /// A Bluetooth device in reach, which a press pairs.
+    Nearby(crate::BtNearby),
     Profile {
         name: String,
         active: bool,
@@ -736,10 +742,14 @@ fn bluetooth(state: &QuickSettingsState) -> Vec<Item> {
                 .cmp(&a.connected)
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
-        if devices.is_empty() {
+        if devices.is_empty() && state.bt_nearby.is_empty() {
             items.push(Item::Message(t("qs-bluetooth-empty")));
         }
         items.extend(devices.into_iter().map(Item::Accessory));
+        items.push(Item::LookForDevices {
+            looking: state.bt_scanning,
+        });
+        items.extend(state.bt_nearby.iter().cloned().map(Item::Nearby));
     } else {
         items.push(Item::Message(t("qs-bluetooth-off")));
     }

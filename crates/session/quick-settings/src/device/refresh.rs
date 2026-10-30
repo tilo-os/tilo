@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use super::reads::{
-    DeviceReads, Failure, FastReading, QsField, QsReading, ReadBack, Reader, WifiJoinResult,
-    WriteDone,
+    BluetoothReading, DeviceReads, Failure, FastReading, QsField, QsReading, ReadBack, Reader,
+    WifiJoinResult, WriteDone,
 };
 
 /// What wakes the session's loop when a worker is done.
@@ -197,7 +197,13 @@ impl QsRefresh {
 
     pub(crate) fn kick_bt_devices(&mut self) {
         let reads = Arc::clone(&self.reads);
-        self.spawn(Tier::Bt, move || QsReading::BtDevices(reads.bt_devices()));
+        self.spawn(Tier::Bt, move || {
+            QsReading::BtDevices(BluetoothReading {
+                paired: reads.bt_devices(),
+                nearby: reads.nearby_bluetooth(),
+                scanning: reads.scanning_bluetooth(),
+            })
+        });
     }
 
     /// Join without ever waiting on `NetworkManager` on the session's
@@ -399,7 +405,7 @@ pub(crate) mod tests {
         fn scan_wifi(&self) -> Result<(), String> {
             Ok(())
         }
-        fn bt_devices(&self) -> Option<Vec<qs::bluez::DeviceInfo>> {
+        fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
             None
         }
         fn firmware_updates(&self) -> Option<usize> {
@@ -710,7 +716,7 @@ pub(crate) mod tests {
             self.hit("scan_wifi");
             Ok(())
         }
-        fn bt_devices(&self) -> Option<Vec<qs::bluez::DeviceInfo>> {
+        fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
             self.hit("bt_devices");
             None
         }

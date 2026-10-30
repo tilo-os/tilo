@@ -120,6 +120,15 @@ impl QsActions for UnavailableQsActions {
     fn disconnect_bluetooth(&self, _address: &str) -> Result<(), String> {
         Err("Quick Settings service is unavailable".into())
     }
+    fn scan_bluetooth(&self, _on: bool) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn pair_bluetooth(&self, _address: &str) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn forget_bluetooth(&self, _address: &str) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
     fn set_wired(&self, _enabled: bool) -> Result<(), String> {
         Err("Quick Settings service is unavailable".into())
     }

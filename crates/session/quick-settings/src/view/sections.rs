@@ -5,7 +5,7 @@
 
 use ui::LocalState;
 use ui::TextRole;
-use ui::framework::ViewCx;
+use ui::framework::{ActionControl as _, ViewCx};
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
@@ -100,6 +100,23 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
                     binding,
                 );
             }
+            if let Some(forget) = actions.effect(&QsEffect::ForgetBluetooth {
+                address: device.address.clone(),
+            }) {
+                row = row.trailing(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_rhythm(Rhythm::Related)
+                        .push(Box::new(
+                            Button::icon_only(
+                                &format!("qs-bluetooth-forget-{}", device.address),
+                                Icon::Trash2,
+                                &t("qs-bluetooth-forget"),
+                            )
+                            .bind_action(forget),
+                        ) as Element),
+                ));
+            }
             let press = if device.connected {
                 QsEffect::DisconnectBluetooth {
                     address: device.address.clone(),
@@ -110,6 +127,35 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
                 }
             };
             vec![Box::new(actions.bind_effect_invocation(row, &press))]
+        }
+        Item::LookForDevices { looking } => {
+            let row = ListRow::new(
+                "qs-bluetooth-look",
+                t(if *looking {
+                    "qs-bluetooth-looking"
+                } else {
+                    "qs-bluetooth-look"
+                }),
+            )
+            .icon(Icon::Search);
+            vec![Box::new(actions.bind_effect_invocation(
+                row,
+                &QsEffect::ScanBluetooth { on: !looking },
+            ))]
+        }
+        Item::Nearby(device) => {
+            let mut row = ListRow::new(format!("qs-nearby-{}", device.address), &device.name)
+                .icon(Icon::Bluetooth)
+                .secondary(t("qs-bluetooth-in-reach"));
+            if let Some(signal) = device.signal {
+                row = row.value(format!("{signal} dBm"));
+            }
+            vec![Box::new(actions.bind_effect_invocation(
+                row,
+                &QsEffect::PairBluetooth {
+                    address: device.address.clone(),
+                },
+            ))]
         }
         Item::Profile { name, active } => {
             let switch = actions.bind_effect(

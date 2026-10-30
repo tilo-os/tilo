@@ -279,6 +279,25 @@ fn opened_to_paste_the_panel_is_the_clipboard_alone_and_typing_searches_it() {
 }
 
 #[test]
+fn a_paired_device_is_forgotten_from_its_own_button() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("bluetooth");
+    click(&mut app, "qs-bluetooth-forget-00:1B:66:D4:E5:F6");
+    assert!(host.ran().is_empty(), "a pairing is not dropped unasked");
+    assert!(
+        app.confirm_asked().is_some(),
+        "the person agrees to forget it"
+    );
+    app.settle();
+    assert_eq!(
+        host.ran(),
+        [QsEffect::ForgetBluetooth {
+            address: "00:1B:66:D4:E5:F6".into(),
+        }],
+        "the device's own button forgets it"
+    );
+}
+
 fn a_copy_is_pinned_and_removed_from_its_own_buttons() {
     // Where things rest: the motion on the way is its own test.
     let _settled = ui::motion::testing::settled();

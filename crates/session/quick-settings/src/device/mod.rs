@@ -237,6 +237,12 @@ impl DeviceHost {
         }
         if !open {
             self.0.wifi_scanned_at.set(None);
+            if self.0.state.borrow().bt_scanning
+                && let Err(error) = self.run_effect(QsEffect::ScanBluetooth { on: false })
+            {
+                // Nobody is looking at the devices in reach any more.
+                tracing::warn!(%error, "Bluetooth did not stop looking for devices");
+            }
         }
         self.feed_now_playing();
     }
@@ -373,8 +379,7 @@ impl DeviceHost {
                         }
                     }
                 }
-                QsReading::BtDevices(Some(devices)) => apply::bt_devices(&mut state, devices),
-                QsReading::BtDevices(None) => {}
+                QsReading::BtDevices(reading) => apply::bluetooth(&mut state, reading),
                 QsReading::Firmware(updates) => state.firmware_updates = updates,
                 QsReading::WifiJoin(join) => told = apply::wifi_join(&mut state, join),
                 QsReading::Wrote(done) => {
@@ -803,6 +808,27 @@ impl DeviceHost {
             QsEffect::CancelWifiPassword => state().wifi_password = None,
             QsEffect::ConnectBluetooth { address } => self.accessory(&address, true),
             QsEffect::DisconnectBluetooth { address } => self.accessory(&address, false),
+            QsEffect::ScanBluetooth { on } => {
+                state().bt_scanning = on;
+                self.write(
+                    "scan_bluetooth",
+                    Failure::State(t("host-qs-change-failed-bluetooth")),
+                    ReadBack::Accessories,
+                    move |d| d.scan_bluetooth(on),
+                );
+            }
+            QsEffect::PairBluetooth { address } => self.write(
+                "pair_bluetooth",
+                Failure::Refreshing(t("host-qs-change-failed-bluetooth")),
+                ReadBack::Accessories,
+                move |d| d.pair_bluetooth(&address),
+            ),
+            QsEffect::ForgetBluetooth { address } => self.write(
+                "forget_bluetooth",
+                Failure::Refreshing(t("host-qs-change-failed-bluetooth")),
+                ReadBack::Accessories,
+                move |d| d.forget_bluetooth(&address),
+            ),
             effect @ (QsEffect::ShowControl { .. }
             | QsEffect::HideControl { .. }
             | QsEffect::MoveControl { .. }
@@ -861,6 +887,13 @@ impl DeviceHost {
     /// Read what the page or section the panel shows lists.
     fn follow_showing(&self) {
         let section = self.0.showing.borrow().section;
+        if section != Some(QsSection::Bluetooth) && self.0.state.borrow().bt_scanning {
+            // Nobody is looking at the devices in reach any more: the radio
+            // stops looking for them.
+            if let Err(error) = self.run_effect(QsEffect::ScanBluetooth { on: false }) {
+                tracing::warn!(%error, "Bluetooth did not stop looking for devices");
+            }
+        }
         let mut refresh = self.0.refresh.borrow_mut();
         match section {
             // The first scan starts at the next pump; the section keeps
@@ -983,6 +1016,18 @@ impl Dispatcher for ValidatedQsActions<'_> {
 
     fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
         self.inner.disconnect_bluetooth(address)
+    }
+
+    fn scan_bluetooth(&self, on: bool) -> Result<(), String> {
+        self.inner.scan_bluetooth(on)
+    }
+
+    fn pair_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.inner.pair_bluetooth(address)
+    }
+
+    fn forget_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.inner.forget_bluetooth(address)
     }
 
     fn set_wired(&self, enabled: bool) -> Result<(), String> {

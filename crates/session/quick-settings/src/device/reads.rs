@@ -49,7 +49,15 @@ pub trait DeviceReads: Send + Sync {
     /// # Errors
     /// Why the scan failed.
     fn scan_wifi(&self) -> Result<(), String>;
-    fn bt_devices(&self) -> Option<Vec<qs::bluez::DeviceInfo>>;
+    fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>>;
+    /// The Bluetooth devices in reach that are not paired, strongest first.
+    fn nearby_bluetooth(&self) -> Vec<qs::NearbyBtDevice> {
+        Vec::new()
+    }
+    /// Whether `BlueZ` is looking for devices now.
+    fn scanning_bluetooth(&self) -> Option<bool> {
+        None
+    }
     /// How many firmware updates are offered; `None` without fwupd.
     fn firmware_updates(&self) -> Option<usize>;
     /// Which controls the machine has hardware for, beyond what the other
@@ -132,8 +140,16 @@ impl DeviceReads for OsReads {
         qs::scan_wifi()
     }
 
-    fn bt_devices(&self) -> Option<Vec<qs::bluez::DeviceInfo>> {
-        qs::log_get("list_bt_devices", qs::bluez::paired_devices())
+    fn bt_devices(&self) -> Option<Vec<qs::BtDeviceInfo>> {
+        qs::log_get("list_bt_devices", qs::list_bt_devices())
+    }
+
+    fn nearby_bluetooth(&self) -> Vec<qs::NearbyBtDevice> {
+        qs::log_get("nearby_bluetooth", qs::nearby_bluetooth()).unwrap_or_default()
+    }
+
+    fn scanning_bluetooth(&self) -> Option<bool> {
+        qs::log_get("scanning_bluetooth", qs::scanning_bluetooth())
     }
 
     fn firmware_updates(&self) -> Option<usize> {
@@ -398,6 +414,15 @@ pub(crate) struct WriteDone {
     pub(crate) result: Result<(), String>,
 }
 
+/// What the panel lists of Bluetooth: the paired accessories, the devices
+/// in reach, and whether `BlueZ` is looking for more.
+#[derive(Debug)]
+pub(crate) struct BluetoothReading {
+    pub(crate) paired: Option<Vec<qs::BtDeviceInfo>>,
+    pub(crate) nearby: Vec<qs::NearbyBtDevice>,
+    pub(crate) scanning: Option<bool>,
+}
+
 /// What a worker hands back.
 #[derive(Debug)]
 pub(crate) enum QsReading {
@@ -405,7 +430,7 @@ pub(crate) enum QsReading {
     Field(FieldReading),
     Firmware(Option<usize>),
     WifiNetworks(Result<Vec<qs::WifiNetworkInfo>, String>),
-    BtDevices(Option<Vec<qs::bluez::DeviceInfo>>),
+    BtDevices(BluetoothReading),
     WifiJoin(WifiJoinResult),
     Wrote(WriteDone),
 }

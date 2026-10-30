@@ -4,9 +4,9 @@
 
 use os_actions as qs;
 
-use super::reads::{FastReading, FieldReading, WifiJoinResult};
+use super::reads::{BluetoothReading, FastReading, FieldReading, WifiJoinResult};
 use crate::i18n::{t, t_args};
-use crate::{BtDevice, DisplayBrightness, PowerProfile, QuickSettingsState, WifiNetwork};
+use crate::{BtDevice, BtNearby, DisplayBrightness, PowerProfile, QuickSettingsState, WifiNetwork};
 
 /// The panel's three-way profile, from the daemon's.
 pub(crate) const fn ui_power_profile(profile: qs::PowerProfile) -> PowerProfile {
@@ -155,16 +155,30 @@ pub(crate) fn wifi_networks(qs: &mut QuickSettingsState, networks: Vec<qs::WifiN
         .collect();
 }
 
-pub(crate) fn bt_devices(qs: &mut QuickSettingsState, devices: Vec<qs::bluez::DeviceInfo>) {
-    qs.bt_devices = devices
+pub(crate) fn bluetooth(qs: &mut QuickSettingsState, reading: BluetoothReading) {
+    if let Some(devices) = reading.paired {
+        qs.bt_devices = devices
+            .into_iter()
+            .map(|d| BtDevice {
+                name: d.name,
+                address: d.mac,
+                battery: d.battery,
+                connected: d.connected,
+            })
+            .collect();
+    }
+    qs.bt_nearby = reading
+        .nearby
         .into_iter()
-        .map(|d| BtDevice {
+        .map(|d| BtNearby {
             name: d.name,
             address: d.address,
-            battery: d.battery.unwrap_or(0),
-            connected: d.connected,
+            signal: d.rssi,
         })
         .collect();
+    if let Some(scanning) = reading.scanning {
+        qs.bt_scanning = scanning;
+    }
 }
 
 /// Land a join: the network joined, or why not — in the password prompt

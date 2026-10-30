@@ -1,6 +1,6 @@
 //! Quick Settings' state: what the panel shows, local to this device.
 
-use crate::{BtDevice, PowerProfile, QsLevel, WifiNetwork};
+use crate::{BtDevice, BtNearby, PowerProfile, QsLevel, WifiNetwork};
 
 /// Where clipboard history was summoned to paste: the focused field's caret
 /// and the focused window, in desktop coordinates, either unknown.
@@ -109,6 +109,11 @@ pub struct QuickSettingsState {
     /// an irrelevant secret field.
     pub wifi_joining: Option<String>,
     pub bt_devices: Vec<BtDevice>,
+    /// The Bluetooth devices in reach that are not paired, strongest signal
+    /// first.
+    pub bt_nearby: Vec<BtNearby>,
+    /// `BlueZ` is looking for devices now.
+    pub bt_scanning: bool,
     /// The passphrase prompt for a protected network; `None` except
     /// while the user is typing into it.
     pub wifi_password: Option<crate::WifiPasswordPrompt>,
@@ -187,6 +192,8 @@ impl Default for QuickSettingsState {
             wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
+            bt_nearby: Vec::new(),
+            bt_scanning: false,
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
             power_profiles: Vec::new(),
@@ -255,6 +262,8 @@ impl QuickSettingsState {
             wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
+            bt_nearby: Vec::new(),
+            bt_scanning: false,
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
             power_profiles: Vec::new(),

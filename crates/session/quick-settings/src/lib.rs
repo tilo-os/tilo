@@ -274,6 +274,17 @@ pub struct BtDevice {
     pub connected: bool,
 }
 
+/// A Bluetooth device in reach that is not paired yet, as the Bluetooth
+/// section lists it while it looks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtNearby {
+    pub name: String,
+    /// `BlueZ`'s address: what pairing it names.
+    pub address: String,
+    /// Signal while it is in reach, in dBm.
+    pub signal: Option<i16>,
+}
+
 /// The three canonical profiles `powerprofilesctl` exposes on Linux.
 #[derive(
     Clone,

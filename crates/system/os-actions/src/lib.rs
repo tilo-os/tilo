@@ -324,6 +324,31 @@ pub trait Dispatcher {
     fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
         bluez::disconnect_address(address)
     }
+    /// Look for Bluetooth devices in reach, or stop looking.
+    ///
+    /// # Errors
+    ///
+    /// An adapter that cannot be reached.
+    fn scan_bluetooth(&self, on: bool) -> Result<(), String> {
+        bluetooth::scan_bluetooth(on)
+    }
+    /// Pair the device at `address`, trusting it and connecting it. What it
+    /// asks to compare is a question its pairing agent asks the person.
+    ///
+    /// # Errors
+    ///
+    /// An address `BlueZ` does not know, or what it refused.
+    fn pair_bluetooth(&self, address: &str) -> Result<(), String> {
+        bluetooth::pair_bluetooth_handoff(address)
+    }
+    /// Forget the device at `address`: its bond, its keys and its trust.
+    ///
+    /// # Errors
+    ///
+    /// An address `BlueZ` does not know, or what it refused.
+    fn forget_bluetooth(&self, address: &str) -> Result<(), String> {
+        bluetooth::forget_bluetooth(address)
+    }
     /// Enable or disable wired (ethernet) networking.
     ///
     /// # Errors

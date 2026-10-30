@@ -231,6 +231,103 @@ fn what_only_the_desktop_can_do_comes_back_to_the_session() {
     );
 }
 
+#[test]
+fn bluetooth_devices_are_looked_for_paired_and_forgotten_in_the_section() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    desk.until("the first reading", |state| state.bluetooth);
+    desk.host.set_open(true);
+    desk.app
+        .invoke(QuickSettings::OPEN_SECTION.with(QsSection::Bluetooth))
+        .unwrap();
+    desk.app.settle();
+    desk.until("the section's reads", |state| !state.bt_nearby.is_empty());
+    assert!(desk.has("qs-bluetooth-look"), "a row to look for devices");
+    assert!(
+        desk.has("qs-nearby-AA:CC:DD:EE:FF:00"),
+        "the speaker in reach is listed"
+    );
+
+    desk.app
+        .effect(&QsEffect::ScanBluetooth { on: true })
+        .unwrap();
+    assert!(desk.host.state().bt_scanning, "looking at once");
+    desk.until("the radio looking", |state| state.bt_scanning);
+
+    desk.app
+        .effect(&QsEffect::PairBluetooth {
+            address: "AA:CC:DD:EE:FF:00".into(),
+        })
+        .unwrap();
+    desk.until("the pairing and its read-back", |state| {
+        state.bt_nearby.is_empty()
+            && state
+                .bt_devices
+                .iter()
+                .any(|device| device.address == "AA:CC:DD:EE:FF:00")
+    });
+    assert!(
+        desk.has("qs-accessory-AA:CC:DD:EE:FF:00"),
+        "paired, it is listed as an accessory"
+    );
+
+    desk.app
+        .harness()
+        .click_named("qs-bluetooth-forget-AA:CC:DD:EE:FF:00")
+        .unwrap();
+    desk.app.settle();
+    assert!(
+        desk.app.confirm_asked().is_some(),
+        "the person agrees to forget it"
+    );
+    desk.app.settle();
+    desk.until("the forgetting and its read-back", |state| {
+        !state
+            .bt_devices
+            .iter()
+            .any(|device| device.address == "AA:CC:DD:EE:FF:00")
+    });
+    assert!(!desk.has("qs-accessory-AA:CC:DD:EE:FF:00"), "it is gone");
+    assert_eq!(
+        machine.calls(),
+        [
+            "scan:true",
+            "pair:AA:CC:DD:EE:FF:00",
+            "forget:AA:CC:DD:EE:FF:00"
+        ]
+    );
+}
+
+#[test]
+fn leaving_the_bluetooth_section_stops_looking_for_devices() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    desk.until("the first reading", |state| state.bluetooth);
+    desk.host.set_open(true);
+    desk.app
+        .invoke(QuickSettings::OPEN_SECTION.with(QsSection::Bluetooth))
+        .unwrap();
+    desk.app
+        .effect(&QsEffect::ScanBluetooth { on: true })
+        .unwrap();
+    desk.until("the radio looking", |state| state.bt_scanning);
+
+    desk.app
+        .invoke(QuickSettings::TOGGLE_SECTION.with(QsSection::Bluetooth))
+        .unwrap();
+    desk.app.settle();
+    desk.until("the radio stopping", |state| !state.bt_scanning);
+    assert_eq!(
+        machine.calls(),
+        ["scan:true", "scan:false"],
+        "nobody looks for devices no longer listed"
+    );
+}
+
 /// The helper's side of the line: the requests the panel sent, and a way
 /// to say what plays.
 struct Helper {

@@ -25,7 +25,9 @@ struct Inner {
     radios: os_actions::RadioState,
     vpns: Vec<os_actions::VpnConnectionInfo>,
     networks: Vec<os_actions::WifiNetworkInfo>,
-    accessories: Vec<os_actions::bluez::DeviceInfo>,
+    accessories: Vec<os_actions::BtDeviceInfo>,
+    nearby: Vec<os_actions::NearbyBtDevice>,
+    scanning: bool,
     battery: u8,
     /// Changes made, in order.
     calls: Vec<String>,
@@ -66,12 +68,17 @@ impl Machine {
                 connected: true,
                 known: true,
             }];
-            inner.accessories = vec![os_actions::bluez::DeviceInfo {
+            inner.accessories = vec![os_actions::BtDeviceInfo {
                 name: "Headphones".into(),
-                address: "00:1B:66:A1:B2:C3".into(),
-                battery: Some(80),
+                mac: "00:1B:66:A1:B2:C3".into(),
+                battery: 80,
                 connected: true,
-                ..os_actions::bluez::DeviceInfo::default()
+            }];
+            inner.nearby = vec![os_actions::NearbyBtDevice {
+                name: "Speaker".into(),
+                address: "AA:CC:DD:EE:FF:00".into(),
+                rssi: Some(-52),
+                paired: false,
             }];
             inner.battery = 64;
         }
@@ -161,8 +168,14 @@ impl DeviceReads for Machine {
     fn scan_wifi(&self) -> Result<(), String> {
         Ok(())
     }
-    fn bt_devices(&self) -> Option<Vec<os_actions::bluez::DeviceInfo>> {
+    fn bt_devices(&self) -> Option<Vec<os_actions::BtDeviceInfo>> {
         Some(self.0.lock().unwrap().accessories.clone())
+    }
+    fn nearby_bluetooth(&self) -> Vec<os_actions::NearbyBtDevice> {
+        self.0.lock().unwrap().nearby.clone()
+    }
+    fn scanning_bluetooth(&self) -> Option<bool> {
+        Some(self.0.lock().unwrap().scanning)
     }
     fn firmware_updates(&self) -> Option<usize> {
         Some(2)
@@ -214,6 +227,41 @@ impl os_actions::Dispatcher for Machine {
             if accessory.address == address {
                 accessory.connected = false;
             }
+        }
+        Ok(())
+    }
+    fn scan_bluetooth(&self, on: bool) -> Result<(), String> {
+        self.change(format!("scan:{on}"), "scan")?;
+        self.0.lock().unwrap().scanning = on;
+        Ok(())
+    }
+    fn pair_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.change(format!("pair:{address}"), "pair")?;
+        {
+            let mut inner = self.0.lock().unwrap();
+            let at = inner
+                .nearby
+                .iter()
+                .position(|device| device.address == address);
+            if let Some(found) = at.map(|at| inner.nearby.remove(at)) {
+                inner.accessories.push(os_actions::BtDeviceInfo {
+                    name: found.name,
+                    mac: found.address,
+                    battery: 0,
+                    connected: true,
+                });
+            }
+        }
+        Ok(())
+    }
+    fn forget_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.change(format!("forget:{address}"), "forget")?;
+        {
+            let mut inner = self.0.lock().unwrap();
+            inner
+                .accessories
+                .retain(|accessory| accessory.mac != address);
+            inner.nearby.retain(|device| device.address != address);
         }
         Ok(())
     }

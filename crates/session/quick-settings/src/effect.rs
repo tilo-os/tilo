@@ -252,6 +252,32 @@ pub enum QsEffect {
         #[param("The accessory's address")]
         address: String,
     },
+    /// Look for Bluetooth devices in reach, or stop looking.
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "search",
+        keywords = "discover, find device, pair, new accessory"
+    )]
+    ScanBluetooth {
+        #[param("Whether to look for devices")]
+        on: bool,
+    },
+    /// Pair the Bluetooth device at this address: `BlueZ` bonds with it,
+    /// trusting it and connecting it. What it asks to compare is a question
+    /// its pairing agent asks the person.
+    #[effect(own_device, icon = "bluetooth", keywords = "pair, bond, new accessory")]
+    PairBluetooth {
+        #[param("The device's address")]
+        address: String,
+    },
+    /// Forget a Bluetooth device, so that it must be paired again from
+    /// scratch: its bond, its keys and its trust go.
+    #[effect(own_device, destructive, icon = "trash-2", keywords = "unpair, remove")]
+    ForgetBluetooth {
+        #[param("The device's address")]
+        address: String,
+    },
     /// Move a Bluetooth accessory to another of your devices.
     #[effect(own_device)]
     HandOffBluetooth {
@@ -498,6 +524,9 @@ fn radio_statuses(can: crate::actions::QsActionAvailability, pending: bool) -> V
         ),
         shown(QsEffect::CONNECT_BLUETOOTH, None, lacks(can.bluetooth)),
         shown(QsEffect::DISCONNECT_BLUETOOTH, None, lacks(can.bluetooth)),
+        shown(QsEffect::SCAN_BLUETOOTH, None, lacks(can.bluetooth)),
+        shown(QsEffect::PAIR_BLUETOOTH, None, lacks(can.bluetooth)),
+        shown(QsEffect::FORGET_BLUETOOTH, None, lacks(can.bluetooth)),
         shown(QsEffect::HAND_OFF_BLUETOOTH, None, lacks(can.bluetooth)),
     ]
     .into_iter()
