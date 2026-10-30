@@ -61,20 +61,9 @@ fn prepare(
                 .ok_or_else(|| io::Error::other("native app authorship broker unavailable"))?
                 .upgrade()
                 .map_err(io::Error::other)?;
-            let job = broker.change_workspace_membership(
-                &room.to_string(),
-                &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-                    app: app.package_id.clone(),
-                }, &certificate,
-            ).map_err(io::Error::other)?;
-            drop(broker);
-            let completed = job
-                .completion
-                .recv_timeout(Duration::from_secs(30))
-                .map_err(io::Error::other)?;
-            if !completed.code.is_empty() {
-                return Err(io::Error::other(completed.message));
-            }
+            broker
+                .grant_app_authorship(&room.to_string(), &app.package_id, &certificate)
+                .map_err(|error| io::Error::other(error.to_string()))?;
         }
     }
     // Reload the owner's committed projection after normal durable delegation.

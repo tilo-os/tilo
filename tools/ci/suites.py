@@ -408,6 +408,9 @@ RUST_INCLUDE = re.compile(
 _INCLUDE = re.compile(r'include(?:_str|_bytes)?!\s*\(\s*"([^"\\]+)"\s*\)')
 _PATH_ATTRIBUTE = re.compile(r'#\[\s*path\s*=\s*"([^"\\]+)"\s*\]')
 _WORD = re.compile(r"\w")
+# An include whose path a concat! builds (a macro's `concat!("../../apps/tl/", $name, "/app.tl")`):
+# the leading literal names the directory it reads under.
+_CONCAT_INCLUDE = re.compile(r'include(?:_str|_bytes)?!\s*\(\s*concat!\s*\(\s*"([^"\\]*/)')
 
 
 def rust_includes(text: str) -> list[tuple[int, str]]:
@@ -600,6 +603,14 @@ def cross_package_reads(root: Path, tracked: list[str],
             inside = (target + "/").startswith(directory + "/") if directory else not target.startswith("..")
             if not inside:
                 reads.append(CrossRead(text.count("\n", 0, start) + 1, target))
+        for match in _CONCAT_INCLUDE.finditer(text):
+            if match.start() and _WORD.match(text[match.start() - 1]):
+                continue
+            target = os.path.normpath(os.path.join(path.rpartition("/")[0], match.group(1)))
+            inside = (target + "/").startswith(directory + "/") if directory else not target.startswith("..")
+            if not inside:
+                # Some file under the directory: an input must cover one there.
+                reads.append(CrossRead(text.count("\n", 0, match.start()) + 1, target, runtime=True))
         for match in MANIFEST_DIR.finditer(text):
             statement = STATEMENT_END.split(text[match.end():match.end() + 800], maxsplit=1)[0]
             if CLIMB.search(statement) and not BUILD_OUTPUT.search(statement):
