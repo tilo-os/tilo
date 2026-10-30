@@ -125,6 +125,7 @@ fn undo(r: &mut Replica) {
             run: None,
             by: None,
             to: None,
+            step: None,
         },
     );
 }
@@ -342,6 +343,7 @@ fn an_agent_run_undone_while_a_person_edited_the_same_note_keeps_the_persons_edi
             run: Some(RUN.to_owned()),
             by: None,
             to: None,
+            step: None,
         },
     );
     ada.sync_with(&mut ben);
