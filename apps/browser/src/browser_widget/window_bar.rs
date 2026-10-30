@@ -42,6 +42,9 @@ pub(super) enum BarCommand {
     },
     PrivateWindow,
     Settings,
+    /// The page again, in a window of the person's own: with their
+    /// sign-ins.
+    OwnWindow,
 }
 
 fn t(key: &str) -> String {
@@ -73,6 +76,9 @@ pub(super) struct BarInputs {
     navigation: ToolbarNavigation,
     /// Its buttons and menus, exactly as declared.
     actions: Vec<ToolbarAction>,
+    /// What it says after back and forward: whether the window browses as
+    /// a visitor, which changes once a credential is entered in it.
+    leading: Vec<ToolbarAction>,
     favicon: Option<Vec<u8>>,
     suggestions: Vec<LocationSuggestion>,
     /// The Library's place while it is shown: its name, then its section's,
@@ -156,6 +162,7 @@ impl BrowserWidget {
             uri: self.current_uri.clone(),
             navigation: self.bar_navigation(),
             actions: self.bar_actions(),
+            leading: self.custody_leading(),
             favicon: self.favicon_png.clone(),
             suggestions: self.bar_suggestions(),
             library: self.show_library.then(|| self.library_segments()),
@@ -353,8 +360,37 @@ impl BrowserWidget {
             navigation: Some(self.bar_navigation()),
             location: Some(location),
             actions: self.bar_actions(),
+            leading: self.custody_leading(),
             ..WindowToolbar::default()
         }
+    }
+
+    /// What says, right after back and forward, that the window was opened
+    /// for an agent and browses as a visitor, without the person's
+    /// sign-ins: a button saying so, whose menu opens the page in a window
+    /// of the person's own. Their own window says nothing: it is the
+    /// ordinary one; nor does a visitor's once a credential was entered in
+    /// it, since its page may then hold a sign-in.
+    pub(super) fn custody_leading(&self) -> Vec<ToolbarAction> {
+        if self.browsing_mode != crate::browsing_mode::BrowsingMode::Visitor
+            || self.page_holds_sign_in()
+        {
+            return Vec::new();
+        }
+        let page = super::is_supported_web_url(&self.current_uri);
+        vec![
+            ToolbarAction::new("custody", "bot", t("browser-visitor-window"))
+                .labelled()
+                .with_items(vec![
+                    self.bar_entries
+                        .entry(
+                            "user",
+                            t("browser-visitor-open-signed-in"),
+                            BarCommand::OwnWindow,
+                        )
+                        .enabled(page),
+                ]),
+        ]
     }
 
     /// The Library in the bar's location: the Library, then its section.
@@ -475,6 +511,11 @@ impl BrowserWidget {
                 }
                 Some(BarCommand::Site { information }) => (self.site.open_command(information))(),
                 Some(BarCommand::PrivateWindow) => self.private_window_request.set(true),
+                // A window of the person's own is an ordinary Browser launch
+                // of the page: the desktop's tab beside this one.
+                Some(BarCommand::OwnWindow) => {
+                    ui::shell_tabs::open_beside(Some(self.current_uri.clone()), false);
+                }
                 Some(BarCommand::Settings) => {
                     let (resource, action) = self.settings_command();
                     self.queue_unit_operation(resource, action);
