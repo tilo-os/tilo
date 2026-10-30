@@ -48,7 +48,7 @@ fn main() {
         }
     };
     if std::env::args().skip(1).any(|arg| arg == "--serve") {
-        serve(runtime.handle().clone());
+        serve();
         return;
     }
     let mpris = Mpris::start(runtime.handle().clone(), |event| emit(&event));
@@ -83,9 +83,9 @@ fn main() {
 /// The session's audio service: the policy on a thread of its own, the
 /// sound and media resources served on the pipes until the session closes
 /// them.
-fn serve(runtime: tokio::runtime::Handle) {
+fn serve() {
     use std::sync::Arc;
-    use tilo_audio_service::media::MediaService;
+    use tilo_audio_service::media::{MediaService, pause_playing};
     use tilo_audio_service::sound::{SoundService, SystemGraph};
     use tilo_service::{Services, lines};
 
@@ -98,8 +98,13 @@ fn serve(runtime: tokio::runtime::Handle) {
         }
     };
     let refresh = sound.refresher();
-    let media = MediaService::start(runtime, Some(wake));
-    let mpris = media.mpris().clone();
+    let (media, mpris) = match MediaService::start(Some(wake)) {
+        Ok(started) => started,
+        Err(error) => {
+            tracing::error!(%error, "the media service did not start");
+            return;
+        }
+    };
     let mut services = Services::default();
     services.add(Box::new(sound));
     services.add(Box::new(media));
@@ -110,7 +115,7 @@ fn serve(runtime: tokio::runtime::Handle) {
         .spawn(move || {
             policy::serve(
                 move |_| refresh(),
-                move || mpris.pause_playing(),
+                move || pause_playing(mpris.as_ref()),
                 events,
                 &received,
             );

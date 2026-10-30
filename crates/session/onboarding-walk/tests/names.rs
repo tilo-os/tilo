@@ -2,9 +2,8 @@
 //! a name it never registers is never listed, and a walk waiting for it
 //! runs out its timeout.
 
-/// The setup app draws onboarding's controls. A checkbox is named by the
-/// acknowledgement it is built as (`acknowledgement(id, ..)` names its row
-/// with `with_id`); any other control by its id.
+/// A checkbox is named by its row (`with_id`); the first argument of
+/// `Checkbox::new` names nothing.
 #[test]
 fn the_walk_presses_the_sessions_own_controls() {
     // The view and the page modules beside it.
@@ -16,18 +15,13 @@ fn the_walk_presses_the_sessions_own_controls() {
             view.push_str(&std::fs::read_to_string(path).unwrap());
         }
     }
-    let acknowledgements: Vec<&str> = view
-        .match_indices("acknowledgement(")
-        .filter_map(|(at, _)| view.get(at..))
-        .map(|rest| rest.split(')').next().unwrap_or(rest))
-        .collect();
     for press in onboarding_walk::PRESSES {
-        let quoted = format!("\"{}\"", press.name);
+        let name = press.name;
         let named = if press.checkbox {
-            acknowledgements.iter().any(|call| call.contains(&quoted))
+            view.contains(&format!(".with_id(\"{name}\")"))
         } else {
-            view.contains(&quoted)
+            view.contains(&format!("\"{name}\""))
         };
-        assert!(named, "the onboarding app names no control {}", press.name);
+        assert!(named, "the onboarding view names no control {name}");
     }
 }

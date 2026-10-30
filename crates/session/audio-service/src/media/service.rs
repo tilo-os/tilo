@@ -190,6 +190,21 @@ impl MediaService {
         Ok(service)
     }
 
+    /// The service over the session bus's players, following them as they
+    /// come, go and change what they play, with the players themselves for
+    /// what pauses them when the private output leaves.
+    ///
+    /// # Errors
+    /// The session bus cannot be reached, or the worker's thread did not
+    /// start.
+    pub fn start(wake: Option<Wake>) -> std::io::Result<(Self, Arc<Mpris>)> {
+        let players = Arc::new(Mpris::new().map_err(std::io::Error::other)?);
+        let read: Arc<dyn Players> = players.clone();
+        let service = Self::new(read, wake)?;
+        players.follow(service.refresher())?;
+        Ok((service, players))
+    }
+
     /// What reads the players again when called: for their signals.
     pub fn refresher(&self) -> impl Fn() + Send + Sync + 'static {
         let jobs = self.worker.jobs();
