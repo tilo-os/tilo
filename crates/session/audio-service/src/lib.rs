@@ -14,15 +14,16 @@
 //! Started with `--serve`, it is the session's audio service instead: it
 //! serves the [`sound`] resource over JSON lines ([`tilo_service::lines`])
 //! on the same pipes, reading the graph again whenever a device arrives or
-//! leaves.
+//! leaves, and the [`media`] resource: the players on the session bus and
+//! their controls, read again whenever one signals a change.
 
 pub mod client;
 pub mod handoff;
+pub mod media;
 #[cfg(feature = "service")]
 pub mod mpris;
 #[cfg(feature = "service")]
 pub mod policy;
-#[cfg(feature = "service")]
 pub mod sound;
 
 use serde::{Deserialize, Serialize};
@@ -31,7 +32,19 @@ use serde::{Deserialize, Serialize};
 /// MPRIS names must not grow the compositor's copy without bound.
 pub const MAX_PLAYERS: usize = 16;
 
-/// An audio device arrived or left.
+/// What the audio service publishes, from its readings as they travel on
+/// its pipes: the sound resource and what plays.
+#[must_use]
+pub fn publish(
+    readings: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Vec<tilo_actions::ResourceSpec> {
+    let mut resources = sound::publish(readings);
+    resources.extend(media::publish(readings));
+    resources
+}
+
+/// An audio device arrived or left: the one thing the helper tells the
+/// compositor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceEvent {
     Connected,

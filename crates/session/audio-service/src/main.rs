@@ -79,15 +79,29 @@ fn main() {
     );
 }
 
+/// The players on the session bus, and what follows their changes.
+type Follow = Box<dyn FnOnce(Box<dyn Fn() + Send + Sync>) -> std::io::Result<()>>;
+
+fn media() -> zbus::Result<(
+    std::sync::Arc<dyn tilo_audio_service::media::Players>,
+    Follow,
+)> {
+    let players = std::sync::Arc::new(tilo_audio_service::media::Mpris::new()?);
+    let following = std::sync::Arc::clone(&players);
+    Ok((players, Box::new(move |changed| following.follow(changed))))
+}
+
 /// The session's audio service: the policy on a thread of its own, the
-/// sound resource served on the pipes until the session closes them.
+/// sound resource and what plays served on the pipes until the session
+/// closes them.
 fn serve(mpris: Mpris) {
     use std::sync::Arc;
+    use tilo_audio_service::media::MediaService;
     use tilo_audio_service::sound::{SoundService, SystemGraph};
     use tilo_service::lines;
 
     let (incoming, requests, wake) = lines::incoming();
-    let mut sound = match SoundService::new(Arc::new(SystemGraph::default()), Some(wake)) {
+    let sound = match SoundService::new(Arc::new(SystemGraph::default()), Some(wake.clone())) {
         Ok(sound) => sound,
         Err(error) => {
             tracing::error!(%error, "the sound service did not start");
@@ -95,6 +109,19 @@ fn serve(mpris: Mpris) {
         }
     };
     let refresh = sound.refresher();
+    let mut services = tilo_service::Services::default();
+    match media() {
+        Ok((players, follow)) => match MediaService::new(players, Some(wake)) {
+            Ok(media) => {
+                if let Err(error) = follow(Box::new(media.refresher())) {
+                    tracing::warn!(%error, "what plays is read only when asked");
+                }
+                services.add(Box::new(media));
+            }
+            Err(error) => tracing::warn!(%error, "the media service did not start"),
+        },
+        Err(error) => tracing::warn!(%error, "the session bus has no players to follow"),
+    }
     let (events, received) = mpsc::channel();
     let stop = events.clone();
     let policy = std::thread::Builder::new()
@@ -114,7 +141,8 @@ fn serve(mpris: Mpris) {
         tracing::error!(%error, "the request reader did not start");
         return;
     }
-    if let Err(error) = lines::serve(&mut sound, &requests, std::io::stdout().lock()) {
+    services.add(Box::new(sound));
+    if let Err(error) = lines::serve(&mut services, &requests, std::io::stdout().lock()) {
         tracing::warn!(%error, "the session stopped reading");
     }
     let _ = stop.send(PolicyEvent::Stop);
