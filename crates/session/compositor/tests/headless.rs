@@ -268,6 +268,52 @@ fn a_window_is_composited_where_the_policy_places_it() {
 }
 
 #[test]
+fn a_window_opens_from_its_first_buffer() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = TestClient::connect(&mut compositor);
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.wm_base.is_some() && clients[0].seen.seat.is_some()
+    });
+    client.open_window("opening");
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.configured
+    });
+    // Committed without a buffer, it is not on the desktop yet: nothing
+    // stands there to be animated open.
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    assert!(compositor.windows().is_empty());
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(frame.pixel(320, 240), Some(BACKGROUND));
+
+    // Its first buffer is what it opens from: the desktop animates the
+    // window it can already see.
+    client.show(200, 100, [255, 0, 0, 255]);
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        !compositor.windows().is_empty()
+    });
+    let (info, rect) = compositor.windows()[0].clone();
+    assert_eq!(rect, (220, 190, 200, 100));
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(frame.pixel(320, 240), Some([255, 0, 0, 255]));
+
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            opacity: 0.5,
+            scale: 0.9,
+            ..WindowEffect::default()
+        }),
+    );
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let opening = frame.pixel(320, 240).expect("a pixel");
+    assert_ne!(opening, [255, 0, 0, 255], "opening faded");
+    assert_ne!(opening, BACKGROUND, "from its first buffer");
+}
+
+#[test]
 fn a_scaled_output_composites_in_physical_pixels() {
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).unwrap();
     compositor
