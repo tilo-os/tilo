@@ -366,7 +366,7 @@ pub(super) fn dispatch(
 }
 
 /// Flash the outputs if the assists dropped a press as contact bounce.
-pub(super) fn show_alert(input: &Rc<RefCell<Input>>, state: &mut State, now: Instant) {
+pub(super) fn show_alert(input: &Rc<RefCell<Input>>, state: &State, now: Instant) {
     if input.borrow_mut().access.take_alert() {
         crate::a11y::flash_all(state, now);
     }

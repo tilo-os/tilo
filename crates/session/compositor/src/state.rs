@@ -418,7 +418,7 @@ impl State {
 
     /// Ask the window `id` to close, as its own close button would: the
     /// client decides what closing means, and does it.
-    pub(crate) fn close_window(&mut self, id: u64) {
+    pub(crate) fn close_window(&self, id: u64) {
         let Some(window) = self
             .space
             .elements()
