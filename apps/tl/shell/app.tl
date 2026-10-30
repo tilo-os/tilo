@@ -86,17 +86,21 @@ action overview(d: Desk) (icon: .layout_grid, label: "Overview") {
 /// The top bar: the system's menu and the workspace in front, which opens the workspaces to
 /// switch between, then the tasks running; the time in the middle; the people here, the person
 /// and the device's status at the end. Each part is a view of its own, so a change runs only
-/// the part that reads it: the minute, the clock alone.
+/// the part that reads it: the minute, the clock alone. Narrower than its parts, the bar takes a
+/// second line rather than pressing one part into another.
 view bar(d: Desk) {
-    row(padding: .tight, align: .center) {
-        places(d, fill)
+    row(padding: .tight, align: .center, wrap: true) {
+        places(d)
+        spacer
         clock(d)
-        presence(d, fill)
+        spacer
+        presence(d)
     }
 }
 
 /// Where the person is: the system's menu, the workspace in front with the workspaces to
-/// switch to, the strip in front, and the tasks running.
+/// switch to, the strip in front, and the tasks running. A narrow output keeps the menu and the
+/// workspace; the strip and the tasks are in the overview.
 view places(d: Desk) {
     row(gap: .tight, align: .center) {
         ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
@@ -121,13 +125,15 @@ view places(d: Desk) {
                 on choose: overview(d)
             }
         }
-        if d.strip != "" {
-            ui.Button(d.strip, icon: .chevron_right, role: .bar) {
-                on press: strips(d)
+        if not space.compact {
+            if d.strip != "" {
+                ui.Button(d.strip, icon: .chevron_right, role: .bar) {
+                    on press: strips(d)
+                }
             }
-        }
-        for t in d.tasks {
-            ui.Button(t.title, icon: .bot, role: .bar)
+            for t in d.tasks {
+                ui.Button(t.title, icon: .bot, role: .bar)
+            }
         }
     }
 }
@@ -137,15 +143,35 @@ view clock(d: Desk) {
     ui.Text(d.clock, role: .subheading, numeric: true)
 }
 
-/// Who is here, the person, and the device's status.
+/// Who is here, the person, and the device's status. A narrow output keeps the status; who is
+/// here is in the system's menu.
 view presence(d: Desk) {
     row(gap: .sibling, align: .center, distribute: .end) {
-        for p in d.people {
-            ui.Avatar(name: .some(p.name))
+        if not space.compact {
+            for p in d.people {
+                ui.Avatar(name: .some(p.name))
+            }
+            ui.Avatar(name: .some(d.person))
         }
-        ui.Avatar(name: .some(d.person))
         ui.Button(if d.unread > 0 { "{d.unread}" } else { "Notifications" }, icon: if d.quiet { .bell_off } else { .bell }, icon_only: d.unread == 0, role: .bar) {
             on press: status(d)
         }
     }
+}
+
+/// An afternoon at the desk: two workspaces, the one in front on its first strip, someone else
+/// here, a task running and two notifications unread.
+scenario "an afternoon at the desk" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.weekday = "Thursday"
+    d.date = "October 30"
+    d.unread = 2
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.workspaces.insert(Workspace(key: "home", name: "Home"))
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
 }
