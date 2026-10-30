@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use tilo_desktop::overview_picture::GridMetrics;
-use tilo_desktop::window_flight::WindowFlight;
+use tilo_desktop::window_flight::{WindowFlight, WindowPicture};
 use tilo_desktop::window_switcher::{
     PreviewSource, PreviewState, PreviewWell, SwitcherWindow, WindowSwitcher, draw_preview_well,
 };
@@ -285,18 +285,7 @@ impl ShellOverlayHost {
                 .flies
                 .then(|| sources.get(&picture.tab).copied())
                 .flatten();
-            let (rect, radius, alpha) = match source {
-                Some(from) => (
-                    ui::motion::Zoom::rect_at(from, at_rest, p),
-                    ui::motion::Zoom::radius_at(g.window_radius, picture.radius, p),
-                    picture.alpha,
-                ),
-                None => (
-                    at_rest,
-                    picture.radius,
-                    picture.alpha * ui::motion::unit_opacity(p),
-                ),
-            };
+            let (rect, radius, alpha) = flight_frame(picture, source, at_rest, p, g.window_radius);
             if alpha <= 0.0 {
                 continue;
             }
@@ -330,5 +319,29 @@ impl ShellOverlayHost {
         }
         scene.pop_layer();
         self.overview_thumbnails = Some((key, thumbnails));
+    }
+}
+
+/// Where `picture` is drawn at the zoom's progress `p`, and how opaque: flying from `source`
+/// (where its window stands, of corner radius `window_radius`) to `at_rest`, or faded in at
+/// rest when it has nowhere to fly from.
+fn flight_frame(
+    picture: &WindowPicture,
+    source: Option<Rect>,
+    at_rest: Rect,
+    p: f64,
+    window_radius: f64,
+) -> (Rect, f64, f32) {
+    match source {
+        Some(from) => (
+            ui::motion::Zoom::rect_at(from, at_rest, p),
+            ui::motion::Zoom::radius_at(window_radius, picture.radius, p),
+            picture.alpha,
+        ),
+        None => (
+            at_rest,
+            picture.radius,
+            picture.alpha * ui::motion::unit_opacity(p),
+        ),
     }
 }

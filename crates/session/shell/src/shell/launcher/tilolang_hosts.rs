@@ -573,60 +573,76 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
     let (followed, key, kept) = (Arc::clone(&door), key.clone(), storage);
     std::thread::Builder::new()
         .name("tilolang-host".into())
-        .spawn(move || {
-            use runtime_portal::tilolang_host::{FromHost, receive_from_host};
-            // Why the host says it exits; none when it ended without saying (killed, crashed).
-            let mut reason: Option<String> = None;
-            loop {
-                match receive_from_host(&followed) {
-                    Ok(Some(FromHost::Ended(instance))) => ended(&key, generation, instance),
-                    Ok(Some(FromHost::Exiting(why))) => reason = Some(why),
-                    Ok(None) => break,
-                    // The packet was taken: the door carries the next one.
-                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                        tracing::error!(%error, workspace = %key.workspace, author = %key.author, "a tilolang host said something unreadable");
-                    }
-                    // The door failed: it carries nothing more; the host is waited for.
-                    Err(error) => {
-                        tracing::error!(%error, workspace = %key.workspace, author = %key.author, "a tilolang host's door failed");
-                        break;
-                    }
-                }
-            }
-            let status = child.wait();
-            let clean = status.as_ref().is_ok_and(std::process::ExitStatus::success);
-            // Its error output ends with it: what it said last is all read by now.
-            let last = said
-                .and_then(Result::ok)
-                .and_then(|reading| reading.join().ok())
-                .unwrap_or_default();
-            let reason = reason.unwrap_or_else(|| seen_end(&status, &last));
-            if clean {
-                tracing::info!(workspace = %key.workspace, author = %key.author, ?status, reason, "tilolang host ended");
-            } else {
-                tracing::error!(workspace = %key.workspace, author = %key.author, ?status, reason, "tilolang host ended");
-                // Every end of a process, clean or not, is on the session's log of app exits.
-                eprintln!(
-                    "app-exit: tilolang-host workspace={} author={} status={status:?} reason={reason}",
-                    key.workspace, key.author
-                );
-            }
-            // A task keeps nothing: its storage goes with it.
-            if key.author.starts_with(TASK_KEY) {
-                let _ = std::fs::remove_dir_all(&kept);
-            }
-            let mut hosts = lock(&HOSTS);
-            if let Some(hosts) = hosts.as_mut()
-                && hosts.get(&key).is_some_and(|host| host.generation == generation)
-            {
-                hosts.remove(&key);
-            }
-        })?;
+        .spawn(move || follow(&key, generation, &followed, child, said, &kept))?;
     Ok(Host {
         door,
         instances: HashSet::new(),
         generation,
     })
+}
+
+/// A host's error output, read on a thread of its own: its last lines once it has ended.
+type Said = Option<std::io::Result<std::thread::JoinHandle<std::collections::VecDeque<String>>>>;
+
+/// Follow the host `key` of `generation` over its door `followed` until it ends: each instance
+/// that ends is reported, then the host's own end and why, and the host is forgotten.
+fn follow(
+    key: &HostKey,
+    generation: u64,
+    followed: &OwnedFd,
+    mut child: std::process::Child,
+    said: Said,
+    kept: &std::path::Path,
+) {
+    use runtime_portal::tilolang_host::{FromHost, receive_from_host};
+    // Why the host says it exits; none when it ended without saying (killed, crashed).
+    let mut reason: Option<String> = None;
+    loop {
+        match receive_from_host(followed) {
+            Ok(Some(FromHost::Ended(instance))) => ended(key, generation, instance),
+            Ok(Some(FromHost::Exiting(why))) => reason = Some(why),
+            Ok(None) => break,
+            // The packet was taken: the door carries the next one.
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                tracing::error!(%error, workspace = %key.workspace, author = %key.author, "a tilolang host said something unreadable");
+            }
+            // The door failed: it carries nothing more; the host is waited for.
+            Err(error) => {
+                tracing::error!(%error, workspace = %key.workspace, author = %key.author, "a tilolang host's door failed");
+                break;
+            }
+        }
+    }
+    let status = child.wait();
+    let clean = status.as_ref().is_ok_and(std::process::ExitStatus::success);
+    // Its error output ends with it: what it said last is all read by now.
+    let last = said
+        .and_then(Result::ok)
+        .and_then(|reading| reading.join().ok())
+        .unwrap_or_default();
+    let reason = reason.unwrap_or_else(|| seen_end(&status, &last));
+    if clean {
+        tracing::info!(workspace = %key.workspace, author = %key.author, ?status, reason, "tilolang host ended");
+    } else {
+        tracing::error!(workspace = %key.workspace, author = %key.author, ?status, reason, "tilolang host ended");
+        // Every end of a process, clean or not, is on the session's log of app exits.
+        eprintln!(
+            "app-exit: tilolang-host workspace={} author={} status={status:?} reason={reason}",
+            key.workspace, key.author
+        );
+    }
+    // A task keeps nothing: its storage goes with it.
+    if key.author.starts_with(TASK_KEY) {
+        let _ = std::fs::remove_dir_all(kept);
+    }
+    let mut hosts = lock(&HOSTS);
+    if let Some(hosts) = hosts.as_mut()
+        && hosts
+            .get(key)
+            .is_some_and(|host| host.generation == generation)
+    {
+        hosts.remove(key);
+    }
 }
 
 /// How many of its last error lines a host that ended without saying why is reported by.

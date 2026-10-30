@@ -546,6 +546,24 @@ fn selection_area(window: Rect, caret: Option<Rect>, area: Option<Rect>) -> (Rec
     (at, at)
 }
 
+/// The active workspace's room, the person in it, and its agent members.
+fn active_room_agents(
+    state: &crate::shell::chrome_state::ChromeState,
+) -> Option<(String, crate::shell::state::UserId, Vec<String>)> {
+    use crate::shell::state::WorkspaceAuthority as _;
+    let tree = state.tree();
+    let workspace = tree.desktop.active_workspace()?;
+    let room = workspace.room().to_string();
+    let members = workspace
+        .agent_members()
+        .into_iter()
+        .map(|(agent, _)| agent)
+        .collect();
+    let person = state.active_local_user_in(&tree);
+    drop(tree);
+    Some((room, person, members))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,22 +612,4 @@ mod tests {
             selection_area(window, Some(caret), None)
         );
     }
-}
-
-/// The active workspace's room, the person in it, and its agent members.
-fn active_room_agents(
-    state: &crate::shell::chrome_state::ChromeState,
-) -> Option<(String, crate::shell::state::UserId, Vec<String>)> {
-    use crate::shell::state::WorkspaceAuthority as _;
-    let tree = state.tree();
-    let workspace = tree.desktop.active_workspace()?;
-    let room = workspace.room().to_string();
-    let members = workspace
-        .agent_members()
-        .into_iter()
-        .map(|(agent, _)| agent)
-        .collect();
-    let person = state.active_local_user_in(&tree);
-    drop(tree);
-    Some((room, person, members))
 }
