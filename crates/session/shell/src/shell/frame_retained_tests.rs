@@ -144,9 +144,9 @@ fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::Sc
 /// fading in (reduced motion keeps fades). Two paints a moment apart, while
 /// that pause runs out or the fade runs, catch the glance at different
 /// opacities, so a comparison of two paints waits for both.
-pub(super) fn settle_desk(frame: &mut PopulatedShellFixture) {
+pub(super) fn settle_desk(frame: &mut FrameBuilder) {
     let deadline = tilo_test_env::hang_deadline();
-    let desk_pending = |frame: &PopulatedShellFixture| {
+    let desk_pending = |frame: &FrameBuilder| {
         let now = std::time::Instant::now();
         frame.host.desk_animating(now)
             || frame.host.desk_wake_deadline(now).is_some_and(|due| {
@@ -3177,6 +3177,10 @@ fn overview_fade_repaints_one_display_and_matches_dense_in_every_theme() {
         // first, so the frames before the chord are settled and the fade is
         // the only thing that moves.
         settle_desk(&mut frame);
+        // Its hosted apps take what their first frames handed them in the
+        // loop's pumps: settled through those too.
+        let mut doc = automerge::AutoCommit::new();
+        frame.settle(&mut doc);
         let mut frames = vec![frame.paint_with_damage(), frame.paint_with_damage()];
         frame.with_chrome(|chrome| {
             chrome.overlays.overview = true;
@@ -3184,12 +3188,18 @@ fn overview_fade_repaints_one_display_and_matches_dense_in_every_theme() {
         });
         frame.host_mut().latch_overview_transition();
         // Produce the fade first: rendering 4K oracles between samples
-        // would outlast it.
+        // would outlast it. Each frame is the compositor loop's: the pump
+        // shows the overview's app the chord before the paint.
+        let mut fade_frame = |frame: &mut PopulatedShellFixture| {
+            frame.pump_apps(&mut doc, &automerge::ROOT);
+            frame.relayout_if_owed();
+            frame.paint_with_damage()
+        };
         for _ in 0..3 {
-            frames.push(frame.paint_with_damage());
+            frames.push(fade_frame(&mut frame));
             std::thread::sleep(std::time::Duration::from_millis(120));
         }
-        frames.push(frame.paint_with_damage());
+        frames.push(fade_frame(&mut frame));
         retained.forget_retained_for_test();
         let mut repainted = false;
         for (index, painted) in frames.iter().enumerate() {
