@@ -428,8 +428,10 @@ fn unconfigured_native_feedback_cannot_review_send_or_create_shared_drafts() {
 
 #[test]
 fn feedback_opened_from_a_window_is_about_its_app_and_attaches_it_only_with_consent() {
+    use crate::shell::feedback_entry::app_name;
     use crate::shell::window_actions::{Destination as Place, open_hosted};
     use tilo_desktop::feedback::{Focused, composer_tab, focused};
+    notes_launched();
     let root = tempfile::tempdir().unwrap();
     let mut apps = InProcessApps::at(
         &root.path().join("profile"),
@@ -456,7 +458,7 @@ fn feedback_opened_from_a_window_is_about_its_app_and_attaches_it_only_with_cons
         "Shopping list",
         Place::Beside,
     );
-    let Focused::App(notes) = focused(&chrome.borrow().tree().desktop, |_| None) else {
+    let Focused::App(notes) = focused(&chrome.borrow().tree().desktop, app_name) else {
         panic!("the opened window is in front");
     };
     assert_eq!(
@@ -465,7 +467,7 @@ fn feedback_opened_from_a_window_is_about_its_app_and_attaches_it_only_with_cons
     );
     crate::shell::feedback_entry::open(&mut chrome.borrow_mut()).unwrap();
     assert_eq!(
-        focused(&chrome.borrow().tree().desktop, |_| None),
+        focused(&chrome.borrow().tree().desktop, app_name),
         Focused::Composer
     );
     let opened = composer_tab(&chrome.borrow().tree().desktop).expect("the composer opened");
@@ -538,6 +540,16 @@ fn composers(desktop: &crate::shell::state::DesktopTree) -> usize {
         .count()
 }
 
+/// Notes runs as its own process, launched as the session launches it: its
+/// windows go by the name it was launched under.
+fn notes_launched() {
+    crate::shell::launcher::remember_launch_named(
+        "so.tilo.notes",
+        &["so.tilo.notes".to_owned()],
+        "Notes",
+    );
+}
+
 /// The one report sent: the description masked, the app named, no title.
 fn assert_sent_about_notes(sends: &[Submission]) {
     let sent = sends.first().unwrap();
@@ -565,6 +577,7 @@ fn assert_sent_about_notes(sends: &[Submission]) {
 #[test]
 fn the_desktop_drives_the_private_composer_through_its_device_local_actions() {
     use crate::shell::window_actions::{Destination as Place, open_hosted};
+    notes_launched();
     let root = tempfile::tempdir().unwrap();
     let mut apps = InProcessApps::at(
         &root.path().join("profile"),

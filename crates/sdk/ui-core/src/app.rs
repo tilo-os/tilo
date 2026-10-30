@@ -235,6 +235,7 @@ use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::widget::Widget;
 use taffy::{NodeId, TaffyTree};
+#[cfg(feature = "native")]
 use vello::kurbo::Rect as KurboRect;
 
 /// Cached [`crate::host::RunnerDiagnostics::perf_log`] check

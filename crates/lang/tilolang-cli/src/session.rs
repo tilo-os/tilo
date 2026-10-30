@@ -254,14 +254,22 @@ impl Peer {
     /// just started indexes the apps it installed as it comes up, and an app it has not indexed
     /// yet cannot be opened.
     ///
-    /// Nothing here pauses. Each listing request asks the shell to hold its answer until the
+    /// Nothing here pauses. The first listing is answered as it stands: the app's row is
+    /// usually there already, while other parts of the listing (the store's offers, the apps'
+    /// own actions) are still being indexed after the install, which the app's opening does not
+    /// need. Only without the row does a request ask the shell to hold its answer until the
     /// listing is complete and, once one was seen, until it differs from that one: the shell
     /// answers when its catalogue moves, not on a clock.
     pub(crate) fn wait_offered(&self, bin: &Path, app: &str) -> Result<(), String> {
         let started = std::time::Instant::now();
         let mut seen: Option<String> = None;
+        let mut held = false;
         loop {
-            let left = OFFER_WAIT.saturating_sub(started.elapsed());
+            let left = if held {
+                OFFER_WAIT.saturating_sub(started.elapsed())
+            } else {
+                std::time::Duration::ZERO
+            };
             let mut request = serde_json::json!({
                 "op": "actions_enumerate",
                 "query": app,
@@ -288,6 +296,10 @@ impl Peer {
             };
             if offers(answer, app) {
                 return Ok(());
+            }
+            if !held {
+                held = true;
+                continue;
             }
             // Only a listing the shell held until it settled can be asked for the next one; a
             // wait that ran out answers unsettled.
