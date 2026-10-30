@@ -16,7 +16,7 @@ mod display_input_tests;
 mod display_observation_refresh_tests;
 mod display_observations;
 mod governance_requests;
-mod governor_actions;
+mod hosted_actions;
 mod hosted_sites;
 mod room_rosters;
 mod room_window_carriers;
@@ -914,6 +914,17 @@ const SESSION_REACH_RECHECK: std::time::Duration = std::time::Duration::from_sec
 /// relay to name in it, when the relays were not already running: about
 /// what a net report and a relay handshake take.
 const INVITE_RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What the issuer answers when the workspace's policy does not let this
+/// person invite into it.
+const INVITE_REFUSED: &str = "you do not have permission to invite people to this workspace";
+/// What the issuer answers when another person's own device governs the
+/// room: only that device signs an invitation it will honour.
+const INVITE_OWNER_ONLY: &str = "only the governing workspace administrator can create invitations here; \
+     ask the workspace owner to invite this person";
+/// What the issuer answers while the room's host is not reached yet.
+const INVITE_HOST_UNREACHED: &str =
+    "this workspace is still connecting to its owner; try again in a moment";
 /// The longest a shell goes without that pull while nothing changes: the
 /// safety net under the repair pull, not a heartbeat. An idle, converged
 /// desktop asks once per this long.
@@ -4551,8 +4562,7 @@ impl ShellNetwork {
 
     /// Cancel one exact bearer credential. A later redemption carrying its
     /// hash has no pending authority grant and is refused. Existing members
-    /// are unaffected; removing them is a separate governance action. An
-    /// invitation a relay issued stays pending until that relay cancels it.
+    /// are unaffected; removing them is a separate governance action.
     pub fn cancel_invitation(&self, id: &[u8; 32]) -> bool {
         let room = match self.pending_identity_admissions.lock() {
             Ok(pending) => match pending.get(id) {
@@ -4562,7 +4572,7 @@ impl ShellNetwork {
             Err(_) => return false,
         };
         if let Err(error) = self.cancel_relay_invitation(room, *id) {
-            tracing::warn!(%error, "the relay did not cancel the invitation");
+            tracing::warn!(%error, "the invitation was not cancelled");
             return false;
         }
         let Ok(mut pending) = self.pending_identity_admissions.lock() else {
@@ -4700,8 +4710,9 @@ impl ShellNetwork {
             .unwrap_or_else(|| crate::shell::state::local_user_id_for_room(&room))
     }
 
-    /// Have the room's host issue an invitation into `local`'s room, when the
-    /// one invitation policy lets this device ask for one.
+    /// Ask `room`'s host for an invitation into `local`'s room, when the
+    /// workspace's policy lets this device's person invite there and the
+    /// host issues one this device asks for.
     fn issue_invite_for(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -4710,24 +4721,9 @@ impl ShellNetwork {
         role: crate::network::invite::InviteRole,
         recipient_user_public_key: Option<[u8; 32]>,
     ) -> Result<String, String> {
-        use crate::shell::invite_policy::InviteRoute;
-        // Attach the native owner, when this device has one, so the policy
-        // below reads the admitted governor of the room. A device without
-        // one holds no room yet.
-        if let Err(error) = self.native_owner() {
-            tracing::debug!(%error, "inviting without a native owner");
-        }
         let tree_handle = self.tree.clone();
         let missing = || format!("no workspace {} to invite into", local.raw());
-        // The room's governor is read outside the tree's lock (see
-        // `invite_policy::native_governor`); the decision below is taken on
-        // the workspace as it stands under one read, and issued for it.
-        let (room, owner) = {
-            let tree = tree_handle.read();
-            let room = tree.room_of(local).ok_or_else(missing)?;
-            (room, tree.installed_native_owner())
-        };
-        let governor = crate::shell::invite_policy::native_governor(owner, room);
+        let room = tree_handle.read().room_of(local).ok_or_else(missing)?;
         let local_user = self.person_in_room(room);
         let tree = tree_handle.read();
         let ws = tree
@@ -4738,36 +4734,39 @@ impl ShellNetwork {
             .cloned()
             .ok_or_else(missing)?;
         // The same decision the invite composer and the palette are gated
-        // on: who may invite, and which authority signs it.
-        let route = crate::shell::invite_policy::may_issue_invitation(&ws, &local_user, governor);
+        // on: this person may invite into this workspace.
+        let permitted = ws.may_govern_at(
+            &local_user,
+            tilo_action_policy::roles::governance::INVITE,
+            tilo_clock::unix_now(),
+        );
         drop(tree);
+        if !permitted {
+            return Err(INVITE_REFUSED.into());
+        }
+        let held = self.hosted_room(room).ok_or(INVITE_HOST_UNREACHED)?;
+        // Only a host of this person's own, or one hosting rooms for others,
+        // signs an invitation this device asks for: another person's own
+        // device signs its own.
+        if self.administered_room(room).is_none() && !held.invites_for_members() {
+            return Err(INVITE_OWNER_ONLY.into());
+        }
+        if held.hosted_here() {
+            // The invitee dials this device's host, so the invitation names
+            // its home relay: from behind a NAT a direct address alone may
+            // not reach it. The composer started the relays when it opened;
+            // an invitation issued straight away waits a moment for one, and
+            // names direct addresses if none comes.
+            self.reachability.wake("an invitation was issued");
+            let _ = self.reachability.relay_addr_within(INVITE_RELAY_WAIT);
+        }
         let terms = relay_rooms::RelayInvitation {
             role,
             recipient: recipient_user_public_key,
             invitee,
             lifetime: expiry_seconds_from_now,
         };
-        match route {
-            InviteRoute::Host => {
-                let held = self
-                    .hosted_room(ws.room())
-                    .ok_or("this workspace's host is not reachable yet; try again in a moment")?;
-                if held.hosted_here() {
-                    // The invitee dials this device's host, so the
-                    // invitation names its home relay: from behind a NAT a
-                    // direct address alone may not reach it. The composer
-                    // started the relays when it opened; an invitation
-                    // issued straight away waits a moment for one, and
-                    // names direct addresses if none comes.
-                    self.reachability.wake("an invitation was issued");
-                    let _ = self.reachability.relay_addr_within(INVITE_RELAY_WAIT);
-                }
-                self.issue_relay_invitation(&held, &terms)
-            }
-            InviteRoute::ViaGovernor | InviteRoute::Refused(_) => {
-                Err(route.refusal().unwrap_or_default().into())
-            }
-        }
+        self.issue_relay_invitation(&held, &terms)
     }
 
     /// Ask the person's other devices for their continuity and device

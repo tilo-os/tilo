@@ -558,6 +558,22 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
     assert_eq!(record(&path), committed);
 }
 
+/// Grant `person` the room's invite governance action in `workspace`.
+pub(crate) fn grant_invite(workspace: &mut crate::shell::state::Workspace, person: &str) {
+    let node = tilo_action_policy::roles::governance_action(
+        &workspace.policy.room,
+        tilo_action_policy::roles::governance::INVITE,
+    );
+    workspace.grant(tilo_action_policy::Grant::new(
+        format!("invite:{person}"),
+        tilo_action_policy::Subject::person(person),
+        node,
+        tilo_action_policy::KindSet::of(tilo_action_policy::roles::GOVERNANCE_KIND),
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Subject::person("room-owner"),
+    ));
+}
+
 pub(crate) fn test_enrolled_owner() -> (
     tempfile::TempDir,
     NativeWorkspaceOwner,

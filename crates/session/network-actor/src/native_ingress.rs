@@ -58,10 +58,6 @@ impl Routes {
             .get(&ws)
             .is_some_and(|route| route.link.establishing())
     }
-    /// Whether the room on topic `ws` is hosted on this device.
-    pub(super) fn is_local(&self, ws: u64) -> bool {
-        self.entries.get(&ws).is_some_and(|route| route.local)
-    }
     /// Dial the room on topic `ws` again now.
     pub(super) fn retry(&self, ws: u64) {
         if let Some(route) = self.entries.get(&ws) {
@@ -337,35 +333,6 @@ impl ActorState {
         }
         self.tell_unsynced(ws);
     }
-    /// Send `request` to the governor of the governed room on topic `ws`,
-    /// opening the room's private lane on first use.
-    pub(super) fn governor_action(
-        &mut self,
-        ws: u64,
-        room: uuid::Uuid,
-        request: Box<super::governor_lane::Request>,
-    ) {
-        let Some(runtime) = self
-            .host_sessions
-            .iter_mut()
-            .find_map(|((topic, _), runtime)| {
-                (*topic == ws
-                    && runtime
-                        .native_scope
-                        .as_ref()
-                        .is_some_and(|scope| scope.reaches_governor()))
-                .then_some(runtime)
-            })
-        else {
-            let _ = request.reply.send(Err(NOT_CONNECTED.into()));
-            return;
-        };
-        runtime
-            .governor
-            .get_or_insert_with(|| super::governor_lane::Lane::open(runtime.session.clone(), room))
-            .send(*request);
-    }
-
     pub(super) fn native_connect(&mut self, connect: Connect, https: Option<super::HttpsRoute>) {
         let ws = crate::room_topic_id(connect.room());
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
@@ -578,7 +545,6 @@ impl ActorState {
             HostRuntime {
                 replaying,
                 actions: None,
-                governor: None,
                 session,
                 pump,
                 native_scope: Some(scope),

@@ -20,7 +20,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) use publication_tests::edit as test_document_edit;
 #[cfg(test)]
-pub(crate) use tests::{test_enrolled_owner, test_owner_before_enrollment, tree_of};
+pub(crate) use tests::{grant_invite, test_enrolled_owner, test_owner_before_enrollment, tree_of};
 
 use super::state::{RoomId, WorkspaceId, WorkspaceTreeHandle};
 use std::path::{Path, PathBuf};
@@ -273,6 +273,26 @@ pub(crate) fn attached(tree: &WorkspaceTreeHandle) -> Option<NativeWorkspaceOwne
     runtime.owner_of(tree).ok().flatten()
 }
 
+/// Whether `room`'s host is one that hosts rooms for others: a device that
+/// acts as a host, named by the room's own transport hint. Such a host issues
+/// an invitation for every member the room's policy lets invite, where another
+/// person's own device signs its invitations alone.
+pub(crate) fn host_hosts_for_others(view: &NativeCommittedView, room: RoomId) -> bool {
+    let Ok(hint) = view.transport_hint() else {
+        return false;
+    };
+    let Ok((hint, _)) =
+        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+            hint,
+        )
+    else {
+        return false;
+    };
+    hint.room == room.to_string()
+        && &hint.host_device_certificate == view.room_host()
+        && view.room_host().capabilities.can_act_as_host
+}
+
 /// Another open of `tree`'s writer, in progress on a thread of its own
 /// until the returned sender is dropped (or `longest` passed): every other
 /// open of the writer waits behind it, so the owner stays opening
@@ -306,14 +326,13 @@ pub(crate) type GovernedRoomGuard = (tempfile::TempDir, NativeWorkspaceOwner);
 #[cfg(test)]
 pub(crate) fn test_chrome_governing_its_room()
 -> (crate::shell::chrome_state::Chrome, GovernedRoomGuard) {
-    use crate::shell::invite_policy::{native_governor, tests::grant_invite};
+    use crate::shell::native_workspace_owner::grant_invite;
     let (directory, owner, room, _now, _key) = test_enrolled_owner();
-    let governor = crate::shell::state::person_id_of(
-        native_governor(Some(owner.clone()), room)
-            .expect("the room's admitted governor")
-            .person,
-    )
-    .expect("person id");
+    let governor = owner
+        .with_current(room, |view| Ok(view.owner()))
+        .ok()
+        .and_then(crate::shell::state::person_id_of)
+        .expect("the room's admitted governor");
     let handle = test_tree_of(&owner);
     {
         let mut tree = handle.write();

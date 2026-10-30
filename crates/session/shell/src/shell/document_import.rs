@@ -9,21 +9,32 @@
 //! proposal waiting for them and sends the signed answer. Only the governor
 //! creates the record, and only for an accepted proposal.
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
-use tilo_actions::remote::Pending;
+use tilo_actions::ActionAddress;
+use tilo_actions::remote::{
+    ActionHost, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending,
+    ReceiptStatus, RemoteActionTarget,
+};
 use tilo_peer_state::document_import::{
     self as import, DocumentImportDecisionV1, DocumentImportProposalV1, DocumentImportTerms,
     ImportState, ProposeArgument,
 };
 use ui::record::RecordId;
 
+use crate::shell::certified_action_session::CertifiedActionSession;
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
 use crate::shell::network::{NativeOwnerStatus, ShellNetwork};
 use crate::shell::state::RoomId;
 
 /// How long a proposal waits for the owner before it lapses.
 pub const PROPOSAL_LIFETIME: Duration = Duration::from_secs(10 * 60);
+
+/// How long one import action may take on this device.
+const ACTION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often a running import action is looked at again.
+const POLL: Duration = Duration::from_millis(100);
 
 /// Where a proposal stands, as this device's copy of the room says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,12 +95,116 @@ fn fresh_id() -> [u8; 32] {
     id
 }
 
-/// An import action's argument as the governor takes it: the typed
-/// argument, serialized exactly, under `import`.
+/// An import action's argument as the room's import surface takes it: the
+/// typed argument, serialized exactly, under `import`.
 fn action_argument(
     argument: &impl serde::Serialize,
-) -> Result<serde_json::Value, serde_json::Error> {
-    Ok(serde_json::json!({ "import": serde_json::to_string(argument)? }))
+) -> Result<serde_json::Map<String, serde_json::Value>, serde_json::Error> {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("import".into(), serde_json::to_string(argument)?.into());
+    Ok(arguments)
+}
+
+/// Invoke an action of the room's import surface as the person at this
+/// screen, on a thread of its own — the caller asks from the frame loop,
+/// and admitting the person reads this device's identity files — and answer
+/// once the room recorded what it was asked.
+fn invoke_room(
+    room: RoomId,
+    action: &'static str,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> Pending<Result<(), String>> {
+    let (completer, answer) = tilo_actions::remote::pending();
+    let spawned = std::thread::Builder::new()
+        .name("tilo-document-import".into())
+        .spawn(move || completer.complete(invoke_here(room, action, arguments)));
+    if let Err(error) = spawned {
+        return Pending::ready(Err(error.to_string()));
+    }
+    answer
+}
+
+fn invoke_here(
+    room: RoomId,
+    action: &str,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let broker = crate::shell::link_open::session_broker()?;
+    let (host, caller) = CertifiedActionSession::open(broker, &room.to_string(), None)?.door();
+    let deadline = Instant::now()
+        .checked_add(ACTION_TIMEOUT)
+        .unwrap_or_else(Instant::now);
+    let provider = import_provider(host.as_ref(), &caller, action, deadline)?;
+    let invocation = tilo_actions::InvocationId::new();
+    let request = InvokeRequest {
+        invocation,
+        target: RemoteActionTarget {
+            provider,
+            address: ActionAddress::new(import::RESOURCE, action),
+        },
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let left = deadline.saturating_duration_since(Instant::now());
+    let mut status = match host.invoke(&caller, request).wait_timeout(left.max(POLL)) {
+        Ok(Some(Ok(receipt))) => receipt.status,
+        Ok(Some(Err(error))) => return Err(error.to_string()),
+        _ => return Err("the room did not answer".into()),
+    };
+    while matches!(status, ReceiptStatus::Accepted) {
+        if Instant::now() >= deadline {
+            return Err("the room did not record it in time".into());
+        }
+        std::thread::sleep(POLL);
+        if let Some(state) = host.observe(&caller, &invocation) {
+            status = state.receipt().status;
+        }
+    }
+    match status {
+        ReceiptStatus::Completed { .. } => Ok(()),
+        ReceiptStatus::Failed { error } => Err(error.message),
+        ReceiptStatus::Rejected { error } => Err(error.to_string()),
+        ReceiptStatus::Cancelled { .. } => Err("cancelled".into()),
+        ReceiptStatus::Accepted => Err("still running".into()),
+    }
+}
+
+/// The provider serving `action` of the room's import surface, as this
+/// person's session sees it.
+fn import_provider(
+    host: &(dyn ActionHost + Send + Sync),
+    caller: &Caller,
+    action: &str,
+    deadline: Instant,
+) -> Result<String, String> {
+    let query = CatalogueQuery {
+        app_id: Some(import::APP_ID.to_owned()),
+        needle: action.to_owned(),
+        max_results: MAX_CATALOGUE_PAGE,
+        ..CatalogueQuery::default()
+    };
+    let left = deadline.saturating_duration_since(Instant::now());
+    let page = match host.query(caller, query).wait_timeout(left.max(POLL)) {
+        Ok(Some(Ok(page))) => page,
+        Ok(Some(Err(error))) => return Err(error.to_string()),
+        _ => return Err("the room did not answer".into()),
+    };
+    page.rows
+        .into_iter()
+        .find(|row| {
+            row.resource.id == import::RESOURCE
+                && row
+                    .action
+                    .as_ref()
+                    .is_some_and(|offered| offered.address.action == action)
+        })
+        .map(|row| row.provider)
+        .ok_or_else(|| format!("this room does not take imports right now ({action})"))
 }
 
 /// Governed rooms as this desktop's network and native owner reach them.
@@ -198,15 +313,7 @@ impl HostedRooms for NativeHostedRooms {
             Ok(argument) => argument,
             Err(error) => return Pending::ready(Err(error.to_string())),
         };
-        self.0
-            .invoke_governor(
-                room,
-                import::APP_ID,
-                import::RESOURCE,
-                import::PROPOSE,
-                Some(argument),
-            )
-            .map(move |answer| answer.map(|_| id))
+        invoke_room(room, import::PROPOSE, argument).map(move |answer| answer.map(|()| id))
     }
 
     fn proposal(&self, room: RoomId, id: &[u8; 32]) -> Option<ProposalStatus> {
@@ -296,14 +403,6 @@ impl HostedRooms for NativeHostedRooms {
         } else {
             import::DECLINE
         };
-        self.0
-            .invoke_governor(
-                room,
-                import::APP_ID,
-                import::RESOURCE,
-                action,
-                Some(argument),
-            )
-            .map(|answer| answer.map(drop))
+        invoke_room(room, action, argument)
     }
 }

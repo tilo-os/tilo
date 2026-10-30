@@ -20,7 +20,6 @@ pub mod behaviour;
 mod device_sessions;
 pub mod fabric;
 mod fabric_link;
-pub mod governor_lane;
 pub mod held_log;
 pub mod host_ask;
 pub mod local_host;
@@ -397,12 +396,6 @@ pub enum NetCmd {
     /// for the collaboration broker's drain ([`native_ingress::ChannelQueue`]),
     /// while one runs; without one it goes to the frame loop.
     ChannelQueue(Option<Arc<native_ingress::ChannelQueue>>),
-    /// Ask a governed room's governor, on its room's native relay session.
-    GovernorAction {
-        ws: u64,
-        room: uuid::Uuid,
-        request: Box<governor_lane::Request>,
-    },
     NativePublish {
         ws: u64,
     },
@@ -958,8 +951,6 @@ struct HostRuntime {
     /// The session goes to this device's own host, in this process: no
     /// remote party, nothing to keep up.
     local: bool,
-    /// The private lane to a governed room's governor, opened on first use.
-    governor: Option<governor_lane::Lane>,
     actions: Option<tokio::task::JoinHandle<()>>,
     session: Arc<RelayCoeditSession>,
     pump: tokio::task::JoinHandle<()>,
@@ -1186,7 +1177,7 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
     Some(match command {
         NetCmd::Connect { .. } => "dialling a peer",
         NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(..) => "dialling a host",
-        NetCmd::GovernorAction { .. } | NetCmd::RoomGovernance(_) => "talking to a room's host",
+        NetCmd::RoomGovernance(_) => "talking to a room's host",
         NetCmd::AskHost(_) => "asking one of the person's hosts",
         NetCmd::NativeEnrollment(_) => "enrolling a device",
         NetCmd::NativeMedia(_) => "a call",
@@ -1672,9 +1663,6 @@ impl ActorState {
             Some(NetCmd::LocalHostReady) => self.retry_native_routes(),
             Some(NetCmd::ChannelQueue(queue)) => self.channel_queue = queue,
             Some(NetCmd::AskHost(request)) => self.ask_host(*request),
-            Some(NetCmd::GovernorAction { ws, room, request }) => {
-                self.governor_action(ws, room, request);
-            }
             Some(NetCmd::NativePublish { ws }) => self.drive_native_publication(ws),
             Some(NetCmd::NativeEnrollment(command)) => self.native_enrollment.handle(
                 command,
@@ -3268,7 +3256,6 @@ impl ActorState {
                         native_scope: None,
                         native_held: None,
                         local: false,
-                        governor: None,
                         actions,
                         session,
                         pump,
@@ -3607,7 +3594,6 @@ impl ActorState {
                 })
             }
             NetCmd::RoomGovernance(request) => request.to == own,
-            NetCmd::GovernorAction { ws, .. } => self.native_routes.is_local(*ws),
             _ => false,
         }
     }

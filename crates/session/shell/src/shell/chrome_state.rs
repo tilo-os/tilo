@@ -1290,6 +1290,55 @@ impl ChromeState {
         self.tree_handle.read()
     }
 
+    /// May the person at the screen invite into the workspace on screen: peer
+    /// sync is on, the workspace's policy grants them its invite action, and
+    /// its host is one that issues an invitation this device asks for (this
+    /// person's own, or a host hosting rooms for others). The one answer
+    /// every door (the bar's invite button, the people panel, the palette)
+    /// shows.
+    pub(crate) fn may_invite_here(&self) -> bool {
+        if !self.peer_sync_enabled {
+            return false;
+        }
+        let (local, room, owner) = {
+            let tree = self.tree();
+            let Some(workspace) = tree.desktop.active_workspace() else {
+                return false;
+            };
+            (
+                workspace.id,
+                workspace.room(),
+                tree.installed_native_owner(),
+            )
+        };
+        let local_user = self.local_user_for_room(&room);
+        // Asked outside the tree's lock: the owner answers it, and publishing
+        // takes the owner's lock before the tree's writer.
+        let host_signs = owner.is_some_and(|owner| {
+            owner
+                .with_current(room, |view| {
+                    Ok(crate::shell::state::person_id_of(view.owner()).as_ref()
+                        == Some(&local_user)
+                        || crate::shell::native_workspace_owner::host_hosts_for_others(view, room))
+                })
+                .unwrap_or(false)
+        });
+        if !host_signs {
+            return false;
+        }
+        let tree = self.tree();
+        tree.desktop
+            .active_workspace()
+            .filter(|workspace| workspace.id == local && workspace.room() == room)
+            .is_some_and(|workspace| {
+                workspace.may_govern_at(
+                    &local_user,
+                    tilo_action_policy::roles::governance::INVITE,
+                    tilo_clock::unix_now(),
+                )
+            })
+    }
+
     /// Caller-supplied principal, absent when identity comes from the session registry.
     pub(crate) fn explicit_local_user(&self) -> Option<&str> {
         match &self.identity_source {

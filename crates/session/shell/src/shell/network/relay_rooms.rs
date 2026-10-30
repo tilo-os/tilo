@@ -86,6 +86,9 @@ pub(super) struct HeldRoom {
     host: iroh::EndpointId,
     /// Whether that host is this device's own.
     here: bool,
+    /// The host is one that acts as a host for others, which issues an
+    /// invitation for every member the room's policy lets invite.
+    relay: bool,
 }
 
 impl HeldRoom {
@@ -97,6 +100,17 @@ impl HeldRoom {
     /// here, private until its person makes it public.
     pub(super) const fn hosted_here(&self) -> bool {
         self.here
+    }
+
+    /// The host's own device, the room's governor.
+    pub(super) const fn host(&self) -> iroh::EndpointId {
+        self.host
+    }
+
+    /// Whether the host issues an invitation this device asks for on anyone's
+    /// behalf, or only one this person governs the room for.
+    pub(super) const fn invites_for_members(&self) -> bool {
+        self.relay
     }
 }
 
@@ -314,6 +328,7 @@ impl ShellNetwork {
                     room,
                     host,
                     here: host == self.local_peer_id,
+                    relay: crate::shell::native_workspace_owner::host_hosts_for_others(view, room),
                 })
             })
             .ok()
@@ -515,8 +530,8 @@ impl ShellNetwork {
         self.remember_relay_invitation(target.room, &issued, terms)
     }
 
-    /// Cancel `invitation` of `room` at the relay governing it. `Ok(false)`
-    /// when no relay of this person governs `room`.
+    /// Cancel `invitation` of `room` at the host governing it. `Ok(false)`
+    /// when no host of this person governs `room`.
     pub(super) fn cancel_relay_invitation(
         &self,
         room: RoomId,
