@@ -120,7 +120,10 @@ pub(crate) mod time {
     // The broker's tests stamp records with it.
     #[cfg(all(test, feature = "broker-transport"))]
     pub use tilo_clock::SystemTime;
-    pub use tilo_clock::{Duration, Instant, now, wall};
+    // The broker stamps the documents it publishes with it.
+    #[cfg(feature = "broker-transport")]
+    pub use tilo_clock::wall;
+    pub use tilo_clock::{Duration, Instant, now};
 }
 #[cfg(feature = "broker-transport")]
 pub(crate) use tilo_rt::background;
