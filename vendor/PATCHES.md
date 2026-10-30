@@ -63,14 +63,11 @@ voice tests run the full handshake against it.
 
 ## iroh idle timers
 
-`iroh` 1.0.3, `netwatch` 0.19.1 and `iroh-gossip` 0.101.0 are the
+`iroh` 1.0.3 and `netwatch` 0.19.1 are the
 checksum-verified registry releases in the lock, each with small patches
 so an idle endpoint wakes for nothing: no re-STUN tick and no home relay
 while the relay map is empty, no 15 s wall-clock poll on Linux (a timerfd the
-kernel cancels on resume or a clock step replaces it), and no gossip cache
-sweep once a topic's caches are empty, no address-lookup sweep while it holds
-no addresses, and no membership shuffle without an active
-neighbor. A returning neighbor rearms the shuffle once. With relays, a net
+kernel cancels on resume or a clock step replaces it). With relays, a net
 report that keeps finding the same addresses waits longer before the next, up
 to five minutes, and paths may keep alive less often than every 5 s, which
 tilo-fs uses for its held connections. Network changes still arrive through
@@ -80,7 +77,7 @@ waking the process to ignore them. Its monitor also re-reads the interfaces
 once its netlink socket has subscribed, so a change made while it starts is
 not lost. Each directory's `TILO-PATCH.md` has the details and an
 upstream-ready description; `crates/system/fs/tests/iroh_idle.rs` pins them.
-`iroh` and `iroh-gossip` build an `rlib` only: as path packages their
+`iroh` builds an `rlib` only: as a path package its
 upstream `cdylib` dropped the hash from the library filenames, so two builds
 in one Cargo run overwrote each other's outputs (E0460/E0463).
 Remove a copy once its upstream release carries the change.

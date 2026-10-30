@@ -2014,84 +2014,7 @@ impl WindowGroup {
 
     pub fn from_detached(id: u64, desc: TabDescriptor, host: TileHost, width: WindowWidth) -> Self {
         let active_id = desc.id;
-        let tab_id = desc.id;
-        host.set_panic_scope(tab_id);
-        let mut bar = TabBar::new(&format!("g{id}"), vec![desc], active_id);
-        bar.set_drag_overlay_owned_by_parent(true);
-        bar.set_window_controls(true);
-        bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
-        Self {
-            id,
-            close_reports: vec![],
-            bar,
-            hosts: vec![(tab_id, Box::new(host))],
-            width,
-            strip_usable_px: DEFAULT_STRIP_USABLE_PX,
-            alone: false,
-            width_before_share: None,
-            rect: Rect::ZERO,
-            external_navigation: false,
-            fullscreen_presentation: false,
-            fullscreen_bar: fullscreen_bar::FullscreenBar::default(),
-            edge_drag: None,
-            edge_highlight: None,
-            edge_lit_drawn: false,
-            size_label_fade: None,
-            grip_dirty: false,
-            maximized: false,
-            search_active: false,
-            focused: false,
-            maximized_controls: crate::widget::PaintedTargets::new(),
-            registered_controls: None,
-            restore_rect: Rect::ZERO,
-            restore_hover: false,
-            fullscreen_rect: Rect::ZERO,
-            fullscreen_hover: false,
-            pending_fullscreen_request: false,
-            close_rect: Rect::ZERO,
-            close_hover: false,
-            title_rect: Rect::ZERO,
-            top_edge: crate::widget::TopEdgeReveal::default(),
-            bar_offered_to: None,
-            bar_slot: None,
-            chrome_motion: crate::tokens::EffectiveMotion::default(),
-            top_overlay_inset: 0.0,
-            top_slide_from: 0.0,
-            top_slide_since: None,
-            fills_display: false,
-            last_cursor: Point::ZERO,
-            tab_waiting: None,
-            tab_fade: None,
-            rect_spring: None,
-            width_spring: None,
-            content_px: 0.0,
-            rect_from_width: 0.0,
-            rest_layout_owed: false,
-            closing_hosts: HashMap::new(),
-            closing_at: None,
-            close_requested: false,
-            width_stepped: false,
-            close_rebuild_taken: false,
-            close_duration: window_close_time(),
-            close_lands: false,
-            reduce_motion: false,
-            motion_source: crate::tokens::MotionSource::default(),
-            style_dirty: false,
-            built_active: Some(active_id),
-            node: None,
-            laid_shape: None,
-            child_styles: Vec::new(),
-            pending_maximize_change: None,
-            pending_width_change: None,
-            pending_tab_reorder: None,
-            pending_search_open: None,
-            search: super::WindowSearch::new(),
-            search_tab: None,
-            window_offers: Vec::new(),
-            window_events: Vec::new(),
-            pending_new_tab: None,
-            pending_close_commit: Vec::new(),
-        }
+        Self::from_hosts(id, vec![(desc, host)], active_id, width)
     }
 
     pub fn tab_count(&self) -> usize {
@@ -2127,6 +2050,38 @@ impl WindowGroup {
             return false;
         }
         !self.tab_rects().iter().any(|r| r.contains(p))
+    }
+
+    /// Where the window can be carried by its bar while it stands on a
+    /// canvas: anywhere on the bar that is not a control, its title and
+    /// location included. The resize edge and the search control are not.
+    pub fn carry_grab_hit(&self, p: Point) -> bool {
+        self.navigation_bar_visible()
+            && self.bar_rect().contains(p)
+            && !self.resize_grab_hit(p)
+            && !self.search.hit(p)
+            && !self.bar.control_hit(p)
+    }
+
+    /// Whether the window can be carried by its bar from its title and
+    /// location ([`Self::carry_grab_hit`]): it stands on a canvas.
+    pub fn set_carriable(&mut self, carriable: bool) {
+        self.bar.set_carriable(carriable);
+    }
+
+    /// The press on the bar became a carry of the window.
+    pub fn cancel_press_for_carry(&mut self) {
+        self.bar.cancel_press_for_carry();
+    }
+
+    /// Whether the bar has a menu or picker open over the window.
+    pub fn bar_popup_open(&self) -> bool {
+        self.navigation_bar_visible() && self.bar.popup_open()
+    }
+
+    /// Close what the bar has open over the window. Whether anything was.
+    pub fn close_bar_popups(&mut self) -> bool {
+        self.bar.close_popups()
     }
 
     /// Whether `p` is on the window's own controls at the end of its bar

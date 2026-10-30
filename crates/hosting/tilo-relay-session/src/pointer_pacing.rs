@@ -6,11 +6,12 @@
 //! so a third of those moves buy nothing a receiver can show: on the relay
 //! path they are coalesced away on arrival, after costing an upstream packet
 //! and, on a short path, an acknowledgement-only packet back; on the direct
-//! (gossip) path they cost every neighbour a packet and an acknowledgement.
+//! device-to-device path they cost every neighbour a packet and an
+//! acknowledgement.
 //!
 //! Both paths therefore hold pointer presence per slot, with one
 //! [`PointerPacer`] and one classification ([`slot_pacing`]): the session
-//! writer for the relay, the shell's network actor for gossip.
+//! writer for the relay, the shell's network actor for the direct path.
 //!
 //! - **Leading edge.** A move of a slot that has not been written within the
 //!   gap is written at once.
@@ -156,7 +157,7 @@ fn later(at: Instant, by: Duration) -> Instant {
 }
 
 /// The pointer moves a writer holds back, per slot: envelopes in the relay
-/// session writer, encoded gossip messages in the shell's network actor.
+/// session writer, encoded neighbour messages in the shell's network actor.
 pub struct PointerPacer<T> {
     slots: HashMap<PointerKey, Slot<T>>,
     posted: u64,
@@ -515,7 +516,7 @@ pub(crate) mod tests {
         assert_eq!(slot_pacing(ROOM, caret.presence_slot()), Pacing::Passes);
         assert_eq!(slot_pacing(ROOM, None), Pacing::Ordered);
 
-        // Held items need not be envelopes: the gossip path holds encoded
+        // Held items need not be envelopes: the direct path holds encoded
         // messages, paced exactly alike.
         let t0 = Instant::now();
         let mut pacer = PointerPacer::<&str>::default();

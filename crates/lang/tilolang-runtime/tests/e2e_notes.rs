@@ -49,7 +49,11 @@ mod cases {
     fn a_new_note_is_untitled() {
         let n = Notes::new();
         let note = n.new_note();
-        assert_eq!(n.rt.read(&note, "title").unwrap(), Value::text("Untitled"));
+        assert_eq!(
+            n.rt.read(&note, "title").unwrap(),
+            Value::text(""),
+            "its title starts empty: what is typed first names it"
+        );
         assert_eq!(n.rt.read(&note, "pinned").unwrap(), Value::Bool(false));
         assert_eq!(n.count(), 1);
     }

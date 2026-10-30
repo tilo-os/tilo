@@ -409,10 +409,7 @@ impl App {
             .as_deref()
             .is_some_and(|palette| palette.is_presented())
         {
-            let node = self.layout.node_map.keys().copied().find(|&node| {
-                self.inspect_node(node, |widget| widget.test_id() == Some("action-palette"))
-                    .unwrap_or(false)
-            });
+            let node = self.tree().action_palette_node();
             self.focusable_order = node.into_iter().collect();
             self.accessibility.focus_trap_active = true;
             // The trap takes the keyboard as it appears, so the owner is
@@ -423,28 +420,17 @@ impl App {
             self.hand_focus_to(node);
             return;
         }
-        // Focus travels the laid out tree: a widget can lay its children out
-        // under nodes of its own (a shell's columns), and a component or
-        // History lays out nodes no widget lists as a child, so a walk of the
-        // widgets beside the layout pairs controls with the wrong nodes.
-        if self.close_admission.dialog.is_none() {
-            let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
-                self.root_widget.as_ref(),
-                &self.layout.taffy,
-            );
-            self.update_history_focus_order(&restrictions);
-            return;
-        }
         self.focusable_order.clear();
         let Some(root) = self.layout.root_node else {
             return;
         };
-
-        let (order, trap_active) = self
-            .with_native_presentation(|widget, nodes, _, taffy, _| {
-                crate::focus_navigation::order(root, widget, taffy, nodes)
-            })
-            .unwrap_or_default();
+        // The close dialog stands in for the app while it asks.
+        let (order, trap_active) = if let Some(dialog) = self.close_admission.dialog.as_deref() {
+            crate::focus_navigation::order(root, dialog, &self.layout.taffy, &self.layout.node_map)
+        } else {
+            let tree = self.tree();
+            tree.focus_order_under(root, &tree.focus_restrictions())
+        };
         self.focusable_order = order;
         if let Some(next) = crate::focus_navigation::reconcile_trap(
             &mut self.accessibility.focus_trap_active,
@@ -1073,31 +1059,6 @@ impl App {
         }
     }
 
-    fn navigate_focus(&mut self, direction: Direction) {
-        let order = self.keyboard_travel_order();
-        let Some(current_id) = self.focused_node else {
-            if let Some(&first) = order.first() {
-                self.set_focused_node(Some(first));
-            }
-            return;
-        };
-        let Ok(current_rect) = self.inspect_node(current_id, |widget| widget.get_rect()) else {
-            return;
-        };
-        let best_candidate = crate::focus_navigation::next(
-            (current_id, current_rect),
-            order.iter().filter_map(|&id| {
-                self.inspect_node(id, |widget| widget.get_rect())
-                    .ok()
-                    .map(|rect| (id, rect))
-            }),
-            direction,
-        );
-        if let Some(new_id) = best_candidate {
-            self.set_focused_node(Some(new_id));
-        }
-    }
-
     /// Gated on the focus-trap signal, not `modal_capture`: that governs only
     /// pointer click-through — gating Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
@@ -1107,71 +1068,6 @@ impl App {
             modal_rect,
             self.accessibility.focus_trap_active,
         )
-    }
-
-    /// Shared native Tab admission, preserving text-input and modal capture.
-    #[cfg(feature = "native")]
-    fn handle_tab_navigation(
-        &mut self,
-        event: &WindowEvent,
-        modal_rect: Option<KurboRect>,
-    ) -> bool {
-        if self.focused_widget_wants_tab_input() || !self.keyboard_nav_allowed(modal_rect) {
-            return false;
-        }
-        // Only Tab and Shift+Tab move focus. Ctrl+Tab and Ctrl+Shift+Tab a
-        // widget leaves unhandled are the desktop's next and previous tab
-        // (`crate::shell_tabs`), and Alt/Super chords are the desktop's too.
-        let modifiers = self.input.modifiers.state();
-        if matches!(event, WindowEvent::KeyboardInput { event, .. }
-            if event.state == winit::event::ElementState::Pressed
-                && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab))
-            && !modifiers.control_key()
-            && !modifiers.alt_key()
-            && !modifiers.super_key()
-        {
-            return self.focus_tab(modifiers.shift_key());
-        }
-        false
-    }
-
-    /// Where Tab and directional focus travel: the focus order, kept inside
-    /// the keyboard scope (the focused desktop window's content,
-    /// [`crate::widget::Widget::scopes_keyboard_focus`]) unless a trap owns
-    /// the keyboard.
-    fn keyboard_travel_order(&self) -> Vec<taffy::NodeId> {
-        if self.accessibility.focus_trap_active {
-            return self.focusable_order.clone();
-        }
-        self.tree()
-            .within_keyboard_scope(self.focusable_order.clone())
-    }
-
-    fn focus_tab(&mut self, shift: bool) -> bool {
-        let order = self.keyboard_travel_order();
-        let len = order.len();
-        if len == 0 {
-            return false;
-        }
-        // Shown inside a host whose focus order continues past the app, Tab
-        // from the last control (Shift+Tab from the first) leaves the app.
-        if self.input.tab_order_continues_in_host {
-            let at = self
-                .focused_node
-                .and_then(|id| order.iter().position(|&n| n == id));
-            if at == Some(if shift { 0 } else { len - 1 }) {
-                self.set_focused_node(None);
-                return false;
-            }
-        }
-        let Some(next_idx) = crate::focus_navigation::tab_index(&order, self.focused_node, shift)
-        else {
-            return false;
-        };
-        if let Some(&id) = order.get(next_idx) {
-            self.set_focused_node(Some(id));
-        }
-        true
     }
 
     /// `scale` is the window scale factor so bounds land in physical pixels
@@ -1356,15 +1252,15 @@ impl App {
                 .ok()
                 .flatten()?
         };
-        let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
+        let (taffy_id, key_path, ordinal_path, semantic_target) = match resolved {
             A11yTarget::Root => return None,
-            A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None, false),
+            A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None),
             A11yTarget::Synthetic {
                 owner,
                 key_path,
                 ordinal_path,
                 semantic_target,
-            } => (owner, key_path, ordinal_path, semantic_target, true),
+            } => (owner, key_path, ordinal_path, semantic_target),
         };
         if let Some(target) = semantic_target
             .as_deref()
@@ -1388,14 +1284,7 @@ impl App {
             self.finish_action_palette_input(handled);
             return None;
         }
-        let framework = crate::history_mode::embedded::owns_node(
-            self.root_widget.as_ref(),
-            taffy_id,
-            &self.layout.taffy,
-        ) || self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.owns_node(taffy_id, &self.layout.taffy));
+        let framework = self.tree().history_owns(taffy_id);
         let history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
             &self.framework_input,
             framework || self.bindings.owns_document(taffy_id),
@@ -1417,26 +1306,7 @@ impl App {
             })
             .flatten();
         let handled = self
-            .dispatch_semantic_node(taffy_id, |widget, doc, root| {
-                if let Some(target) = semantic_target.as_deref() {
-                    crate::a11y_child_route::perform(
-                        widget,
-                        target,
-                        action,
-                        &mut crate::widget::Edits::lend(doc),
-                        root,
-                    )
-                } else if synthetic {
-                    widget.perform_action(
-                        action,
-                        &key_path,
-                        &mut crate::widget::Edits::lend(doc),
-                        root,
-                    )
-                } else {
-                    widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
-                }
-            })
+            .perform_exported_action(taffy_id, semantic_target.as_deref(), &key_path, action)
             .ok()?;
         drop(history_frame);
         // The action may have replaced widgets: their nodes are forgotten
@@ -1493,7 +1363,7 @@ impl App {
         }
         match action {
             Action::Focus => {
-                if synthetic && !ordinal_path.is_empty() {
+                if !ordinal_path.is_empty() {
                     let _ = self.mutate_node(taffy_id, |widget| {
                         widget.focus_synthetic_accessibility(&ordinal_path)
                     });
@@ -1504,30 +1374,8 @@ impl App {
             Action::Activate | Action::ToggleCheck => {
                 // A widget reached through its painting ancestor is pressed
                 // where it stands.
-                let routed = semantic_target.as_deref().and_then(|target| {
-                    self.inspect_node(taffy_id, |widget| {
-                        crate::a11y_child_route::rect(widget, target)
-                    })
-                    .ok()
-                    .flatten()
-                });
-                let rect = if let Some(rect) = routed {
-                    rect
-                } else if synthetic {
-                    self.inspect_node(taffy_id, |widget| {
-                        widget.synthetic_accessibility_rect(&ordinal_path)
-                    })
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| {
-                        self.inspect_node(taffy_id, |widget| widget.get_rect())
-                            .unwrap_or(KurboRect::ZERO)
-                    })
-                } else {
-                    self.inspect_node(taffy_id, |widget| widget.get_rect())
-                        .unwrap_or(KurboRect::ZERO)
-                };
-                let c = rect.center();
+                let c =
+                    self.exported_press_point(taffy_id, semantic_target.as_deref(), &ordinal_path);
                 Some((c.x, c.y))
             }
             _ => None,
@@ -1921,36 +1769,7 @@ impl App {
             ) else {
                 return Ok(false);
             };
-            let keyed_path = semantic_target
-                .strip_prefix("tilo.key-action:")
-                .and_then(|target| target.rsplit_once(':'))
-                .map(|(_, path)| {
-                    path.split('/')
-                        .map(str::parse::<u64>)
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()
-                .map_err(|error| format!("invalid keyed semantic action: {error}"))?;
-            let handled = self
-                .dispatch_node(taffy_id, |widget, doc, root| {
-                    if let Some(key_path) = keyed_path {
-                        widget.perform_action(
-                            &verb,
-                            &key_path,
-                            &mut crate::widget::Edits::lend(doc),
-                            root,
-                        )
-                    } else {
-                        crate::a11y_child_route::perform(
-                            widget,
-                            &semantic_target,
-                            &verb,
-                            &mut crate::widget::Edits::lend(doc),
-                            root,
-                        )
-                    }
-                })
-                .map_err(|error| format!("component dispatch refused: {error:?}"))?;
+            let handled = self.perform_semantic_target(taffy_id, &semantic_target, &verb)?;
             if handled {
                 if matches!(verb, crate::a11y::Action::Focus) {
                     self.set_focused_node(Some(taffy_id));

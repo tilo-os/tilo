@@ -675,7 +675,7 @@ fn pointer_input_separates_delegate_presses_drag_scroll_and_selection() {
         let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
         assert!(dispatch(&mut list, &wheel, &taffy, node));
         assert_eq!(list.scroll_offset(), 60.0);
-        assert!(!list.momentum.is_active());
+        assert!(!list.scroll.momentum.is_active());
 
         let now = crate::time::now();
         let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
@@ -688,7 +688,7 @@ fn pointer_input_separates_delegate_presses_drag_scroll_and_selection() {
             &taffy,
             node
         ));
-        assert!(!list.momentum.is_active());
+        assert!(!list.scroll.momentum.is_active());
         assert!(!list.needs_animation_frame());
     }
 }
@@ -1142,9 +1142,9 @@ fn a_reveal_a_click_asked_for_glides_and_the_wheel_takes_over() {
             bottom_of(&list, 900),
             "no scrolling through"
         );
-        assert!(list.scroll_to.opacity(at(2000)) < 0.05);
+        assert!(list.scroll.to.opacity(at(2000)) < 0.05);
     });
-    assert!(list.scroll_to.opacity(at(2400)) >= 1.0);
+    assert!(list.scroll.to.opacity(at(2400)) >= 1.0);
 }
 
 #[test]

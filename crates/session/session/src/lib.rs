@@ -64,8 +64,8 @@ use ui::shortcut_table::ShortcutAction;
 
 pub use config::SessionConfig;
 pub use controls::{
-    DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, SESSION_RESOURCE,
-    SessionCommand,
+    DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
+    SESSION_RESOURCE, SessionCommand,
 };
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
@@ -101,6 +101,9 @@ const GENERATION: &str = "session";
 /// How soon after a press outside quick settings closed it the bar's own
 /// toggle of it is that same press, not a new ask to open it.
 const DISMISS_GRACE: Duration = Duration::from_millis(300);
+
+/// How warm the night light makes the displays, in kelvin.
+const NIGHT_LIGHT_WARMTH: u32 = 3_400;
 
 /// The workspace menu's action that opens workspace settings.
 const WORKSPACE_SETTINGS: &str = "workspace-settings";
@@ -654,6 +657,9 @@ pub struct Session {
     captures: Option<capture::Captures>,
     /// The windows opening and closing.
     windows: window_motion::WindowMotions,
+    /// Whether the night light is on, and whether a change is kept in the
+    /// person's settings.
+    night_light: (bool, bool),
 }
 
 /// The lock screen's passwords being checked, off the loop.
@@ -787,6 +793,7 @@ impl Session {
             },
             captures: options.captures,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
+            night_light: (options.config.night_light, options.config.kept),
             ended: false,
             magnifier: (
                 settings_store::magnifier::OFF,
@@ -804,6 +811,7 @@ impl Session {
         for output in outputs {
             session.compositor.add_output(output)?;
         }
+        session.warm()?;
         Ok(session)
     }
 
@@ -812,7 +820,17 @@ impl Session {
     /// # Errors
     /// The compositor did not start.
     pub fn drm(options: Options, config: DisplayConfig) -> Result<Self, Error> {
-        Self::new(options, |policy| Compositor::drm(policy, config))
+        let mut session = Self::new(options, |policy| Compositor::drm(policy, config))?;
+        session.warm()?;
+        Ok(session)
+    }
+
+    /// Warm the displays when the person left the night light on.
+    fn warm(&mut self) -> Result<(), Error> {
+        if self.night_light.0 {
+            self.compositor.set_night_light(Some(NIGHT_LIGHT_WARMTH))?;
+        }
+        Ok(())
     }
 
     /// The compositor, to connect clients, route input and read frames.
@@ -1115,6 +1133,17 @@ impl Session {
                     tracing::info!(%error, "no login wrapper to tell of the logout");
                 }
                 self.ended = true;
+                Ok(())
+            }
+            SessionCommand::NightLight { on } => {
+                let (now, kept) = self.night_light;
+                let on = on.unwrap_or(!now);
+                self.night_light.0 = on;
+                self.compositor
+                    .set_night_light(on.then_some(NIGHT_LIGHT_WARMTH))?;
+                if kept && let Err(error) = settings_store::hardware::NIGHT_LIGHT.set(on) {
+                    tracing::warn!(%error, "the night light setting was not kept");
+                }
                 Ok(())
             }
             SessionCommand::SetTouchpad { on } => {

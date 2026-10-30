@@ -545,36 +545,7 @@ impl FrameHarness {
                 A11yTarget::Root | A11yTarget::Synthetic { .. } => None,
             })
             .ok_or_else(|| format!("control {:?} is not in the current frame", node.id.0))?;
-        let key_path = semantic_target
-            .strip_prefix("tilo.key-action:")
-            .and_then(|target| target.rsplit_once(':'))
-            .map(|(_, path)| {
-                path.split('/')
-                    .map(str::parse::<u64>)
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()
-            .map_err(|error| format!("invalid keyed semantic action: {error}"))?;
-        let handled = self
-            .dispatch_semantic_node(owner, |widget, doc, root| {
-                if let Some(key_path) = &key_path {
-                    widget.perform_action(
-                        verb,
-                        key_path,
-                        &mut crate::widget::Edits::lend(doc),
-                        root,
-                    )
-                } else {
-                    crate::a11y_child_route::perform(
-                        widget,
-                        &semantic_target,
-                        verb,
-                        &mut crate::widget::Edits::lend(doc),
-                        root,
-                    )
-                }
-            })
-            .map_err(|error| format!("component dispatch refused: {error:?}"))?;
+        let handled = self.perform_semantic_target(owner, &semantic_target, verb)?;
         if handled {
             if matches!(verb, Action::Focus) {
                 self.set_focused(Some(owner));

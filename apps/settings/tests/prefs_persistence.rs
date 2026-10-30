@@ -61,7 +61,9 @@ fn local_prefs_and_accounts_persist_to_disk() {
         );
         assert_eq!(views[0].id, "test@gmail.com");
         assert_eq!(
-            dir.mail.accounts[0].config.imap_host, "imap.gmail.com",
+            dir.mail_config("test@gmail.com")
+                .map(|config| config.imap_host),
+            Some("imap.gmail.com".into()),
             "IMAP host was auto-configured from the address"
         );
         let id = views[0].id.clone();

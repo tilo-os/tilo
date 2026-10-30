@@ -65,16 +65,6 @@ pub fn register_named(app_id: &str, bytes: &[u8], hash: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// The variables that name `bytes`, read from `path`, as an app's surface:
-/// what a host that starts an app sets in its environment.
-#[must_use]
-pub fn launch_env(path: &std::path::Path, bytes: &[u8]) -> [(&'static str, String); 2] {
-    [
-        (SURFACE_FILE_ENV, path.display().to_string()),
-        (SURFACE_HASH_ENV, blake3::hash(bytes).to_hex().to_string()),
-    ]
-}
-
 /// Name `bytes`, the committed surface of an app a host runs in its own
 /// process (built into the host, no package of its own), for `app_id`,
 /// unless a package already named one.
@@ -326,13 +316,7 @@ mod tests {
     #[test]
     fn a_named_surface_registers_only_when_it_hashes_to_its_name() {
         let file = b"[[resources]]\n";
-        let path = std::path::Path::new("/payload/surface.toml");
-        let [(file_key, named_path), (hash_key, hash)] = launch_env(path, file);
-        assert_eq!(
-            (file_key, named_path.as_str()),
-            (SURFACE_FILE_ENV, "/payload/surface.toml")
-        );
-        assert_eq!(hash_key, SURFACE_HASH_ENV);
+        let hash = blake3::hash(file).to_hex().to_string();
 
         let other = hex::encode([1; 32]);
         assert!(register_named("test.surface-a", file, &other).is_err());

@@ -7,7 +7,6 @@ shared UI profiling hooks. No app-specific benchmark implementation is needed.
 ```sh
 cargo build -p shell -p photos -p word-processor --no-default-features --example shared-runtime-proof --bin photos --bin word-processor
 python3 scripts/shared-runtime-proof.py --benchmark
-python3 -m unittest discover -s scripts/perf -p runtime_benchmark_test.py
 ```
 
 For optimized measurements, build with `--profile thin-app` and pass

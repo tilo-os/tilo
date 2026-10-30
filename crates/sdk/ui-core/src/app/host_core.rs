@@ -115,6 +115,21 @@ impl crate::host_core::HostCore for App {
         self.root_widget.as_mut()
     }
 
+    fn focus_parts(&mut self) -> crate::host_core::HostFocus<'_> {
+        crate::host_core::HostFocus {
+            root: self.root_widget.as_mut(),
+            history: self.history.as_mut(),
+            node_map: &self.layout.node_map,
+            bindings: &self.bindings,
+            taffy: &self.layout.taffy,
+            focused: &mut self.focused_node,
+        }
+    }
+
+    fn history_focus_resumed(&mut self) {
+        self.history_focus = None;
+    }
+
     fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
         self.history.as_mut()
     }
@@ -153,5 +168,59 @@ impl crate::host_core::HostCore for App {
                     .confirmed(prepared.confirmed),
             ),
         }
+    }
+}
+
+impl crate::host_core::KeyHost for App {
+    fn modifiers(&self) -> &winit::event::Modifiers {
+        &self.input.modifiers
+    }
+
+    fn platform(&self) -> crate::platform::PlatformConventions {
+        self.input.platform
+    }
+
+    /// The focus order, kept inside the keyboard scope (the focused desktop
+    /// window's content, [`crate::widget::Widget::scopes_keyboard_focus`])
+    /// unless a trap owns the keyboard.
+    fn keyboard_travel_order(&self) -> Vec<taffy::NodeId> {
+        if self.accessibility.focus_trap_active {
+            return self.focusable_order.clone();
+        }
+        self.tree()
+            .within_keyboard_scope(self.focusable_order.clone())
+    }
+
+    fn keyboard_entry_order(&self) -> Vec<taffy::NodeId> {
+        self.focusable_order.clone()
+    }
+
+    fn move_focus(&mut self, node: Option<taffy::NodeId>) {
+        self.set_focused_node(node);
+    }
+
+    fn key_fallback_acted(&mut self) {
+        self.needs_sync = true;
+        self.layout.layout_dirty = true;
+    }
+
+    fn root_event(&mut self) -> Option<crate::host_core::RootEvent<'_>> {
+        Some(crate::host_core::RootEvent {
+            node: self.layout.root_node?,
+            root: self.root_widget.as_mut(),
+            state: &mut self.state,
+            modifiers: &self.input.modifiers,
+            taffy: &self.layout.taffy,
+            scale_factor: 1.0,
+        })
+    }
+
+    fn tab_order_continues_in_host(&self) -> bool {
+        self.input.tab_order_continues_in_host
+    }
+
+    #[cfg(feature = "native")]
+    fn handle_unconsumed_host_key(&mut self, event: &winit::event::WindowEvent) -> bool {
+        self.handle_unconsumed_search_key(event) || self.handle_unconsumed_typed_key(event)
     }
 }

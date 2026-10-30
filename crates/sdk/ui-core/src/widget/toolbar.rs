@@ -155,7 +155,6 @@ pub struct Toolbar {
     font: TextStyle,
     padding: f32,
     minimum: f32,
-    separator: f32,
     /// Main-axis gap between siblings (`spacing.s3`, HIG §7b).
     gap: f32,
     overflow_rect: Rect,
@@ -211,13 +210,8 @@ impl Toolbar {
             intrinsic: Size::ZERO,
             font: crate::tokens::typography::stock().style(TextRole::Label),
             padding: 8.0,
-            // Replaced by `build_layout` from `theme.tokens.metrics`; the
-            // unscaled reference keeps a renderer-less caller's estimate
-            // consistent with the real one.
+            // Replaced by `build_layout` from `theme.tokens.metrics`.
             minimum: crate::tokens::Metrics::BASE.min_pointer_target,
-            // Replaced by `build_layout`; the default-token value keeps a
-            // renderer-less caller's estimate consistent with the real one.
-            separator: SEPARATOR_HAIRLINE,
             gap: crate::tokens::Spacing::default().s3,
             overflow_rect: Rect::ZERO,
             overflow_native,
@@ -662,53 +656,19 @@ impl Toolbar {
         self.menu.is_open()
     }
 
-    /// Compatibility estimate for callers without a renderer. Real lifecycle layout
-    /// always replaces this decision with the measured extent cache.
-    pub fn recompute_visible(&mut self, axis_extent: f64, theme: &Theme) {
-        let mut used = 0.0;
-        let axes: Vec<f64> = self
-            .items
-            .iter()
-            .map(|item| match item {
-                ToolbarItem::Spacer => 0.0,
-                ToolbarItem::Separator => f64::from(separator_extent(theme)),
-                ToolbarItem::Element(element) => {
-                    let rect = element.get_rect();
-                    match self.orientation {
-                        Orientation::Horizontal => rect.width(),
-                        Orientation::Vertical => rect.height(),
-                    }
-                }
-                ToolbarItem::Button(command) => {
-                    let text = match self.orientation {
-                        Orientation::Horizontal => {
-                            f64_of_usize(command.label.chars().count()) * 7.0
-                        }
-                        Orientation::Vertical => {
-                            f64::from(theme.tokens.typography.size(TextRole::Caption))
-                        }
-                    };
-                    (text + 2.0 * f64::from(theme.tokens.spacing.s3))
-                        .max(f64::from(theme.tokens.metrics.min_pointer_target))
-                }
-            })
-            .collect();
-        let gap = f64::from(theme.tokens.spacing.s3);
-        let total = axes.iter().sum::<f64>() + gap * f64_of_usize(axes.len().saturating_sub(1));
-        let budget = if total <= axis_extent {
-            axis_extent
-        } else {
-            (axis_extent - 24.0 - gap).max(0.0)
-        };
-        self.visible_count = axes
-            .iter()
-            .enumerate()
-            .take_while(|(index, axis)| {
-                used += **axis + if *index > 0 { gap } else { 0.0 };
-                used <= budget
-            })
-            .count();
-        self.hidden = vec![false; self.items.len()];
+    /// A separator's box: its hairline along the row, a command's height
+    /// across it.
+    fn separator_size(&self) -> Size<f32> {
+        match self.orientation {
+            Orientation::Horizontal => Size {
+                width: SEPARATOR_HAIRLINE,
+                height: self.minimum,
+            },
+            Orientation::Vertical => Size {
+                width: self.minimum,
+                height: SEPARATOR_HAIRLINE,
+            },
+        }
     }
 
     fn axis(&self, size: Size<f32>) -> f64 {
@@ -749,16 +709,7 @@ impl Toolbar {
                 ToolbarItem::Spacer => Size::ZERO,
                 // A hosted control's size comes from its own layout.
                 ToolbarItem::Element(_) => previous.get(index).copied().unwrap_or(square),
-                ToolbarItem::Separator => match self.orientation {
-                    Orientation::Horizontal => Size {
-                        width: self.separator,
-                        height: self.minimum,
-                    },
-                    Orientation::Vertical => Size {
-                        width: self.minimum,
-                        height: self.separator,
-                    },
-                },
+                ToolbarItem::Separator => self.separator_size(),
             })
             .collect();
         let changed = extents != previous || chip != self.chip_extent;
@@ -783,7 +734,7 @@ impl Toolbar {
                     },
                 });
         // Siblings sit `gap` apart (HIG §7b): one gap per boundary.
-        let gaps = self.gap * count_to_f32(self.items.len().saturating_sub(1));
+        let gaps = self.gap * f32_of_f64(f64_of_usize(self.items.len().saturating_sub(1)));
         match self.orientation {
             Orientation::Horizontal => self.intrinsic.width += gaps,
             Orientation::Vertical => self.intrinsic.height += gaps,
@@ -824,39 +775,17 @@ impl Toolbar {
         used + gap * f64_of_usize(count.saturating_sub(1))
     }
 
-    /// Which commands give way to the More menu in `axis_total`: none when
-    /// the row fits; otherwise the lowest priority first, from the end
-    /// among equals, until the rest and the More button fit.
+    /// Which commands give way to the More menu in `axis_total`, by the
+    /// toolkit's one overflow rule ([`super::give_way`]).
     fn fit(&self, axis_total: f64) -> Vec<bool> {
-        let mut hidden = vec![false; self.items.len()];
-        if self.used(&hidden) <= axis_total {
-            return hidden;
-        }
-        let budget = (axis_total - self.axis(self.chip_extent) - f64::from(self.gap)).max(0.0);
-        // Each pass hides at least one more command, so this ends.
-        loop {
-            if self.used(&hidden) <= budget {
-                break;
-            }
-            let candidate = self
-                .items
-                .iter()
-                .enumerate()
-                .filter_map(|(index, item)| match item {
-                    ToolbarItem::Button(command) if !hidden.get(index).copied().unwrap_or(true) => {
-                        Some((command.priority, index))
-                    }
-                    _ => None,
-                })
-                .min_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
-            let Some((_, index)) = candidate else { break };
-            for member in self.joined_group(index) {
-                if let Some(slot) = hidden.get_mut(member) {
-                    *slot = true;
-                }
-            }
-        }
-        hidden
+        super::give_way(
+            self.items.len(),
+            axis_total,
+            self.axis(self.chip_extent) + f64::from(self.gap),
+            |hidden| self.used(hidden),
+            |index| self.command(index).map(|command| command.priority),
+            |index| self.joined_group(index),
+        )
     }
 
     /// The command at `index` and every command joined to it, through the
@@ -1389,21 +1318,11 @@ impl Toolbar {
     }
 }
 
-/// The separator's painted rule is a hairline, not a spacing step.
+/// Main-axis extent a separator occupies: its painted hairline alone, not
+/// a spacing step. The sibling gap on either side is its breathing room, so
+/// a group boundary reads as `gap + rule + gap` and never doubles up with
+/// margins of its own.
 const SEPARATOR_HAIRLINE: f32 = 1.0;
-
-/// Main-axis extent a separator occupies: the hairline alone. The sibling
-/// gap on either side is its breathing room, so a group boundary reads as
-/// `gap + rule + gap` and never doubles up with margins of its own. One
-/// definition for the renderer-less estimate and the measured layout so
-/// the two cannot disagree about where items fall.
-fn separator_extent(_theme: &Theme) -> f32 {
-    SEPARATOR_HAIRLINE
-}
-
-fn count_to_f32(n: usize) -> f32 {
-    f32::from(u16::try_from(n).unwrap_or(u16::MAX))
-}
 
 impl crate::widget::controls::ActionControls for Toolbar {
     fn install_control_custody(
@@ -1563,16 +1482,7 @@ impl Widget for Toolbar {
                     width: self.minimum,
                     height: self.minimum,
                 },
-                ToolbarItem::Separator => match self.orientation {
-                    Orientation::Horizontal => Size {
-                        width: self.separator,
-                        height: self.minimum,
-                    },
-                    Orientation::Vertical => Size {
-                        width: self.minimum,
-                        height: self.separator,
-                    },
-                },
+                ToolbarItem::Separator => self.separator_size(),
                 ToolbarItem::Spacer => Size::ZERO,
             })
             .collect();
@@ -2310,7 +2220,6 @@ impl Toolbar {
         // dense `spacing_px` rescales `s8` but must not shrink the pointer
         // target beneath the 32 px floor (HIG §7b).
         self.minimum = theme.tokens.metrics.min_pointer_target;
-        self.separator = separator_extent(theme);
         self.gap = theme.tokens.spacing.s3;
     }
 
@@ -2975,7 +2884,7 @@ mod tests {
                     "button {index} extent {extent:?} is under the {target} px pointer target"
                 );
             }
-            tb.recompute_visible(400.0, &dense);
+            tb.lay_out_in(Rect::new(0.0, 0.0, 400.0, 40.0), &mut text, &dense);
             assert_eq!(tb.visible_count(), 2);
         }
 

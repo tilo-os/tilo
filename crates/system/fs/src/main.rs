@@ -2230,8 +2230,7 @@ async fn serve(
                 transport_identity,
                 workspace_args,
                 records,
-            )
-            .await?;
+            )?;
             (workspace, ticket, false)
         }
         (None, Some(ticket)) => (
@@ -2258,8 +2257,7 @@ async fn serve(
                 namespace.clone(),
                 transport_identity,
                 workspace_args,
-            )
-            .await?;
+            )?;
             (workspace, ticket, false)
         }
     };

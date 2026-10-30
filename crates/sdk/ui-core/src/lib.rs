@@ -398,9 +398,7 @@ pub use winit;
 pub use app::{App, local_surface_id};
 pub use arriving::{Arrival, ArrivalClock, ArrivalCompletion, ArrivalWriter, Arriving};
 pub use caps_lock::CapsLockEstimate;
-pub use collection_transition::{
-    KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, RowMotion, RowMotions, TransitionVisual,
-};
+pub use collection_transition::{RowMotion, RowMotions};
 pub use color_compat::ColorCompat;
 pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
 pub use doc::{TextEdit, put_text_diffed, splice_text_diffed};

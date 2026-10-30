@@ -542,7 +542,6 @@ doc = false
 "iroh-base-1_0_3" = { package = "iroh-base", version = "^1.0.3", default-features = false, features = ["default", "key", "relay"] }
 "iroh-blobs-0_103_0" = { package = "iroh-blobs", version = "^0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
-"iroh-gossip-0_101_0" = { package = "iroh-gossip", path = "../../../vendor/iroh-gossip", default-features = false, features = ["default", "metrics", "net"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
 "iroh-relay-1_0_3" = { package = "iroh-relay", version = "^1.0.3", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
@@ -2962,7 +2961,6 @@ doc = false
 "iroh-base-1_0_3" = { package = "iroh-base", version = "^1.0.3", default-features = false, features = ["default", "key", "relay"] }
 "iroh-blobs-0_103_0" = { package = "iroh-blobs", version = "^0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
-"iroh-gossip-0_101_0" = { package = "iroh-gossip", path = "../../../vendor/iroh-gossip", default-features = false, features = ["default", "metrics", "net"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
 "iroh-relay-1_0_3" = { package = "iroh-relay", version = "^1.0.3", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }

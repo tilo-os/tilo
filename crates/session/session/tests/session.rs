@@ -588,11 +588,7 @@ fn the_play_key_reaches_whatever_publishes_the_player() {
     session.publish(Rc::new(RefCell::new(Player {
         asked: Rc::clone(&asked),
     })));
-    assert!(publishes(
-        &session,
-        tilo_session::MEDIA,
-        "play-pause"
-    ));
+    assert!(publishes(&session, tilo_session::MEDIA, "play-pause"));
     tap(&mut session, keys::PLAY_PAUSE);
     assert_eq!(*asked.borrow(), ["play-pause"]);
 }
@@ -795,6 +791,30 @@ fn the_magnifier_zooms_the_screen_about_the_pointer_by_its_actions() {
     assert_ne!(zoomed.rgba, plain.rgba, "the screen shows magnified");
     invoke(&mut session, tilo_session::MAGNIFIER_RESOURCE, "toggle");
     assert!((session.compositor().zoom() - 1.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn the_night_light_action_warms_the_displays_and_switches_back() {
+    let mut session = session();
+    assert_eq!(session.compositor().night_light(), None);
+    invoke(&mut session, tilo_session::NIGHT_LIGHT_RESOURCE, "toggle");
+    assert!(
+        session
+            .compositor()
+            .night_light()
+            .is_some_and(|kelvin| kelvin < 6_500)
+    );
+    session
+        .invoke(
+            tilo_session::NIGHT_LIGHT_RESOURCE,
+            "toggle",
+            &arguments(serde_json::json!({ "on": true })),
+        )
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(session.compositor().night_light().is_some(), "on stays on");
+    invoke(&mut session, tilo_session::NIGHT_LIGHT_RESOURCE, "toggle");
+    assert_eq!(session.compositor().night_light(), None);
 }
 
 fn active_workspace(session: &Session) -> Option<u64> {

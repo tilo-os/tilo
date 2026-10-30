@@ -37,16 +37,11 @@ use tilo_sort::CompactSort as _;
 mod audio_output;
 #[path = "broker_bytes.rs"]
 mod bytes;
-pub(crate) use bytes::ByteMeter;
-use bytes::{
-    command_bytes, event_diagnostics, fit_catalogue, remote_action_round_trip, serialized_bytes,
-};
+use bytes::{command_bytes, event_diagnostics, fit_catalogue, remote_action_round_trip};
 #[path = "change_waits.rs"]
 mod change_waits;
 #[path = "committed_document.rs"]
 pub(super) mod committed_document;
-#[path = "directory_client.rs"]
-pub(super) mod directory_client;
 #[path = "held_inbound.rs"]
 mod held_inbound;
 #[path = "inbound_bridge.rs"]
@@ -66,10 +61,6 @@ use key_fetch::{
     update_route_keys,
 };
 use key_schedule::{KeyRound, KeySchedule, KeySignal};
-// The managed sender itself is Unix-only (host_worker), and so is its transport.
-#[cfg(unix)]
-#[path = "managed_sender_transport.rs"]
-mod managed_sender_transport;
 #[path = "native_initial.rs"]
 pub mod native_initial;
 #[cfg(feature = "native")]
@@ -1098,10 +1089,6 @@ struct BridgeState {
     /// publishable and waited again.
     #[cfg(test)]
     publication_gate_waits: Arc<std::sync::atomic::AtomicUsize>,
-    /// A test's bound on this session's admission answers, in
-    /// milliseconds; `0` keeps the production bound.
-    #[cfg(test)]
-    admission_timeout_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Progress of the shovel's connection setup.
@@ -1288,8 +1275,6 @@ impl BridgeState {
             join_hold: Arc::default(),
             #[cfg(test)]
             publication_gate_waits: Arc::default(),
-            #[cfg(test)]
-            admission_timeout_ms: Arc::default(),
         }
     }
 
@@ -6833,25 +6818,6 @@ async fn dispatch_sdk_request(
                 let _ = handle.close().await;
             }
         }
-        CollabRequest::CompleteInvocation { id, code, message } => {
-            if let Err(error) = route.channel.complete_invocation(id, &code, &message).await {
-                // The peer answering that it will not take this completion is
-                // about this invocation; a lost call leaves its outcome
-                // unknown and, as ever, takes subsequent outbound work with it.
-                if refused_by_peer(&error) {
-                    tracing::warn!(
-                        %error,
-                        id,
-                        "collab: the broker refused this invocation completion; the bridge stays open"
-                    );
-                } else {
-                    tracing::warn!(%error, id, "collab: completing resource/action invocation failed");
-                    inbound_tx
-                        .state
-                        .fail_closed("invocation completion outcome unknown");
-                }
-            }
-        }
         CollabRequest::UpdateInvocation { id, update } => match serde_json::to_string(&update) {
             Ok(json) => {
                 if let Err(error) = route.channel.update_invocation(id, &json).await {
@@ -6931,19 +6897,6 @@ async fn dispatch_sdk_request(
             let answer = remote_action_round_trip(&route.channel, message).await;
             let _ = inbound_tx.send_reply(CollabEvent::RemoteAction { message: answer });
         }
-        #[cfg(unix)]
-        CollabRequest::ManagedInvocationAttempt { attempt } => {
-            let result = match attempt.claim(&route.spec) {
-                None => return true, // A clone cannot dispatch the same local attempt twice.
-                Some(Err(error)) => Err(error),
-                Some(Ok(request)) => {
-                    managed_sender_transport::send(route, request, attempt.deadline()).await
-                }
-            };
-            if let Some(result) = attempt.finish(result) {
-                let _ = inbound_tx.send_reply(CollabEvent::ManagedInvocationObservation { result });
-            }
-        }
         CollabRequest::ReportLocalDocumentAction { request_id, report } => {
             // Only the already authenticated route owns this call. In particular,
             // do not query the directory to rebase a stale captured revision.
@@ -6960,125 +6913,6 @@ async fn dispatch_sdk_request(
             .and_then(std::convert::identity);
             let _ = inbound_tx
                 .send_reply(CollabEvent::LocalDocumentActionReported { request_id, result });
-        }
-        CollabRequest::QueryActionDirectory { request_id, query } => {
-            let result = directory_client::query(route, &query).await;
-            let _ = inbound_tx.send_reply(CollabEvent::ActionDirectoryPage { request_id, result });
-        }
-        CollabRequest::ResolvePublishedAction {
-            request_id,
-            peer_id,
-            revision,
-            resource,
-            action,
-        } => {
-            let result =
-                directory_client::resolve(route, peer_id, &revision, &resource, &action).await;
-            let _ = inbound_tx
-                .send_reply(CollabEvent::PublishedActionResolution { request_id, result });
-        }
-        CollabRequest::InvokeResolvedPublishedAction {
-            request_id,
-            peer_id,
-            revision,
-            resource,
-            action,
-            arguments,
-            confirmation,
-        } => {
-            let result = directory_client::invoke(
-                route,
-                directory_client::admission_timeout(&inbound_tx.state),
-                peer_id,
-                &revision,
-                &resource,
-                &action,
-                arguments,
-                confirmation,
-            )
-            .await;
-            let _ = inbound_tx
-                .send_reply(CollabEvent::PublishedInvocationResult { request_id, result });
-        }
-        CollabRequest::InvokePublishedAction {
-            request_id,
-            peer_id,
-            resource,
-            action,
-            arguments,
-            confirmation,
-        } => {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(arguments)
-            );
-            let confirmation = confirmation.to_string();
-            let result = route
-                .channel
-                .invoke_published_action(
-                    peer_id,
-                    &resource,
-                    &action,
-                    Some(&argument),
-                    &confirmation,
-                )
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|(id, update)| {
-                    serde_json::from_str(&update)
-                        .map(|update| (id, update))
-                        .map_err(|error| error.to_string())
-                });
-            let _ = inbound_tx
-                .send_reply(CollabEvent::PublishedInvocationResult { request_id, result });
-        }
-        CollabRequest::PublishedInvocationStatus { request_id, id } => {
-            let result = route
-                .channel
-                .published_invocation_status(id)
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|update| {
-                    let update = update.ok_or_else(|| "unknown invocation id".to_string())?;
-                    serde_json::from_str(&update)
-                        .map(|update| (id, update))
-                        .map_err(|error| error.to_string())
-                });
-            let _ = inbound_tx
-                .send_reply(CollabEvent::PublishedInvocationResult { request_id, result });
-        }
-        CollabRequest::CancelPublishedInvocation { request_id, id } => {
-            let result = route
-                .channel
-                .cancel_published_invocation(id)
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|update| {
-                    serde_json::from_str(&update)
-                        .map(|update| (id, update))
-                        .map_err(|error| error.to_string())
-                });
-            let _ = inbound_tx
-                .send_reply(CollabEvent::PublishedInvocationResult { request_id, result });
-        }
-        CollabRequest::LaunchPublishedApplication {
-            request_id,
-            app_id,
-            content_hash,
-        } => {
-            let result = route
-                .channel
-                .launch_published_application(&app_id, content_hash.as_deref())
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|(id, update)| {
-                    serde_json::from_str(&update)
-                        .map(|update| (id, update))
-                        .map_err(|error| error.to_string())
-                });
-            let _ = inbound_tx
-                .send_reply(CollabEvent::PublishedInvocationResult { request_id, result });
         }
         CollabRequest::LaunchInstalledApplication {
             request_id,
@@ -7430,8 +7264,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    include!("directory_client_tests.rs");
-    #[cfg(unix)]
     #[cfg(test)]
     include!("committed_read_deadline_tests.rs");
     #[cfg(unix)]
@@ -7441,7 +7273,7 @@ mod tests {
     include!("committed_absent_tests.rs");
     #[cfg(test)]
     include!("committed_changes_tests.rs");
-    use crate::{CollaborationState, SignedSendError, SigningIdentity};
+    use crate::CollaborationState;
 
     fn plain_route_keys() -> SharedRouteKeys {
         std::sync::Arc::new(std::sync::Mutex::new(
@@ -7490,8 +7322,6 @@ mod tests {
         pub settings: Option<(String, Arc<dyn settings_store::SettingsSource>)>,
         /// The app and the board whose live activity the channel hands out.
         pub live_activities: Option<(String, Arc<runtime_collab::LiveActivities>)>,
-        #[cfg(unix)]
-        pub directory: DirectoryCaptures,
         pub committed_history_fixture: Option<Vec<u8>>,
         pub committed_revision: Option<[u8; 32]>,
         pub invocation_fixture_enabled: bool,
@@ -8218,9 +8048,6 @@ mod tests {
                 }
             })
         }
-
-        #[cfg(unix)]
-        directory_fake_methods!();
 
         fn committed_document(
             self: Rc<Self>,
@@ -12339,32 +12166,6 @@ mod tests {
 
     #[test]
     fn signed_documents_seal_snapshots_and_decrypt_history() {
-        // Case `signing_identity_refuses_sequence_reuse_at_u64_boundary`.
-        {
-            let secret_key = ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32]);
-            let mut identity = SigningIdentity::new(secret_key, collab_types::AttestationId::new());
-            identity.seq = u64::MAX - 1;
-            let artifact = collab_types::ArtifactId::new();
-
-            let final_op = identity
-                .sign_op(
-                    b"last unique operation".to_vec(),
-                    artifact,
-                    collab_types::OpKind::Change,
-                )
-                .expect("the final unique sequence remains valid");
-            assert_eq!(final_op.seq, u64::MAX);
-            assert_eq!(identity.seq, u64::MAX);
-
-            let exhausted = identity.sign_op(
-                b"must not reuse zero".to_vec(),
-                artifact,
-                collab_types::OpKind::Change,
-            );
-            assert!(matches!(exhausted, Err(SignedSendError::SequenceExhausted)));
-            assert_eq!(identity.seq, u64::MAX, "failure is non-mutating");
-        }
-
         // Case `signed_document_event_preserves_snapshot_kind`.
         {
             let op = SignedOp::new_unsigned(

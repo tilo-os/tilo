@@ -704,8 +704,10 @@ impl PeerHandle {
             .unwrap_or_default();
         channels.restore(saved.channels);
         channels.restore_requests(saved.requests);
+        #[cfg(feature = "toolkit")]
+        crate::replica::decide_with_page_surfaces();
         let task = Task {
-            replicas: crate::replica::Replicas::new(config.cert.device_public_key),
+            replicas: crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store)),
             commands: commands.downgrade(),
             watched: crate::watching::WatchedKeys::default(),
             config,
@@ -3481,7 +3483,7 @@ const REFUSAL: &str = "the workspace refused the change";
 
 /// This device's certificate for a room's other members. A native shell
 /// accepts a member's edits only from a device whose certificate it holds,
-/// and a browser has no gossip neighbours to hand it over, so it goes through
+/// and a browser has no direct neighbours to hand it over, so it goes through
 /// the host, which authenticates the author and keeps it for later joiners.
 fn identity_hello(workspace_id: u64, cert: &DeviceCert) -> Option<Envelope> {
     let hello = neighbour_wire::NeighbourMsg::IdentityHello {

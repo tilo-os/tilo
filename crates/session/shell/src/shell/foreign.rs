@@ -4257,6 +4257,13 @@ impl ForeignFrameStore {
         });
     }
 
+    /// How far the canvas the window stands on is zoomed (`1.0` off a
+    /// canvas, or for a surface this store does not know).
+    pub fn canvas_zoom(&self, id: SurfaceId) -> f64 {
+        let guard = self.entries.lock_recover();
+        guard.get(&id).map_or(1.0, |e| e.canvas_zoom)
+    }
+
     /// Whether [`Self::pin_placement`] currently holds this surface.
     pub fn is_pinned(&self, id: SurfaceId) -> bool {
         let guard = self.entries.lock_recover();

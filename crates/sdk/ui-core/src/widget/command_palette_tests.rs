@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::testing::{Dispatch, dispatch};
+use crate::tokens::TextRole;
 use taffy::TaffyTree;
 use winit::event::Modifiers;
 use winit::keyboard::SmolStr;
@@ -785,7 +786,7 @@ fn palette_accessibility_reports_open_modal_and_focus() {
         );
         assert_eq!(
             selected.action_target.as_deref(),
-            Some("command-palette:result:alpha"),
+            Some("alpha"),
             "row ids are model-stable rather than paint ordinals"
         );
         assert_eq!(

@@ -385,25 +385,11 @@ pub fn click_method_id(method: TouchpadClickMethod) -> &'static str {
         .map_or("default", |(id, _, _)| id)
 }
 
-pub fn click_method_for_id(id: &str) -> Option<TouchpadClickMethod> {
-    CLICK_METHOD_CHOICES
-        .iter()
-        .find(|(choice, _, _)| *choice == id)
-        .map(|(_, _, value)| *value)
-}
-
 pub fn scroll_method_id(method: TouchpadScrollMethod) -> &'static str {
     SCROLL_METHOD_CHOICES
         .iter()
         .find(|(_, _, value)| *value == method)
         .map_or("two_finger", |(id, _, _)| id)
-}
-
-pub fn scroll_method_for_id(id: &str) -> Option<TouchpadScrollMethod> {
-    SCROLL_METHOD_CHOICES
-        .iter()
-        .find(|(choice, _, _)| *choice == id)
-        .map(|(_, _, value)| *value)
 }
 
 /// `(id, translated label)` pairs for a dropdown over stable ids.

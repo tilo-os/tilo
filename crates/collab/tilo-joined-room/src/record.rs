@@ -85,6 +85,12 @@ pub(crate) struct StoredRoom {
     /// refused when restored.
     #[serde(flatten)]
     pub enrollment: Option<StoredEnrollment>,
+    /// The membership answer this device's host gave it for a room it
+    /// holds without an enrollment of its own
+    /// ([`crate::NativeWorkspaceOwner::install_vouched`]). A record holds
+    /// this or an enrollment, never both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vouched: Option<StoredVouch>,
     /// `StatePeer::durable()`: the largest field by far.
     #[serde(with = "base64_bytes")]
     pub peer: Vec<u8>,
@@ -127,6 +133,14 @@ pub(crate) struct StoredEnrollment {
     pub locator: Option<TransportHint>,
     pub hint: Option<TransportHint>,
     pub floor: Option<DescriptorFloor>,
+}
+/// The membership answer a host vouched for: a postcard
+/// [`tilo_peer_state::join::JoinTransportResponse`], checked again against
+/// the record whenever it is restored.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct StoredVouch {
+    #[serde(with = "base64_bytes")]
+    pub bootstrap: Vec<u8>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct DescriptorFloor {

@@ -1055,7 +1055,7 @@ fn the_area_builds_its_model_from_the_read_it_started() {
     assert!(area.start_read(), "the first read starts");
     assert!(!area.start_read(), "one read at a time");
     assert!(!area.is_open(), "a running read publishes nothing yet");
-    until_finished(|| area.read_finished());
+    until_finished(|| area.read.is_finished());
     let installed = area.model().borrow().snapshot.recommendation.clone();
     assert!(area.is_open());
     assert_eq!(

@@ -3045,19 +3045,22 @@ impl ActionPalette {
             return true;
         }
 
-        // Normal step: navigation keys + Enter drive the results view; every
-        // other key edits the query and re-runs the search.
-        let nav = matches!(
+        // Normal step: the list's keys move through the results, Enter
+        // drives the results view; every other key edits the query and
+        // re-runs the search.
+        let held = modifiers.state();
+        let caret = self.field.selection_anchor_focus_or_caret();
+        let end = self.field.value().len();
+        if self.results.handle_list_key(
             &key.logical_key,
-            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Enter)
-        );
-        if nav {
-            if matches!(
-                &key.logical_key,
-                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
-            ) {
-                self.missing_selection = None;
-            }
+            held.shift_key(),
+            held.control_key() || held.super_key(),
+            (caret == (0, 0), caret == (end, end)),
+        ) {
+            self.missing_selection = None;
+            return true;
+        }
+        if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
             self.route_to_results(event, *modifiers, doc, path);
             self.poll_view_activation();
         } else {

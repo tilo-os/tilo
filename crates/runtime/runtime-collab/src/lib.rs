@@ -2235,22 +2235,6 @@ impl ChannelHandle {
         Ok(reply.get()?.get_frame()?.to_vec())
     }
 
-    /// Snapshot the authenticated session action directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns malformed catalogue data.
-    pub async fn action_catalogue(&self) -> Result<String, NotAvailable> {
-        let reply = self.inner.action_catalogue_request().send().promise.await?;
-        Ok(reply
-            .get()?
-            .get_catalogue_json()?
-            .to_str()
-            .map_err(|error| capnp::Error::failed(format!("invalid action catalogue: {error}")))?
-            .to_owned())
-    }
-
     /// Subscribe to complete, level-triggered action-directory snapshots.
     ///
     /// # Errors
@@ -2415,21 +2399,6 @@ impl ChannelHandle {
             .to_owned())
     }
 
-    /// Ask the broker to launch an application from the published catalogue.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns a malformed launch update.
-    pub async fn launch_published_application(
-        &self,
-        app_id: &str,
-        content_hash: Option<&str>,
-    ) -> Result<(u64, String), NotAvailable> {
-        self.launch_installed_application(app_id, content_hash, None)
-            .await
-    }
-
     /// Launch an exact installed package through this authenticated channel,
     /// returning its observed startup outcome rather than a queue acceptance.
     ///
@@ -2477,42 +2446,6 @@ impl ChannelHandle {
                 .map_err(|error| capnp::Error::failed(format!("invalid launch update: {error}")))?
                 .to_owned(),
         ))
-    }
-
-    /// Ask this session to open the "say something about this" surface,
-    /// addressed to the compositor on the far end of this socket, not the
-    /// room. `reference` is a serialised `tilo_reference::ResourceRef`
-    /// (JSON); `beside` is `(x, y, w, h)` **in this window's own
-    /// coordinates** — the session converts, since only it knows where this
-    /// window sits on a desktop. The panel can't be drawn here: it opens
-    /// beside the app's context menu, and a Wayland client has no way to
-    /// paint outside its own window.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "beside carries on-screen window coordinates, always well within f32's \
-                  range; the wire schema is f32 and only sub-pixel precision is lost"
-    )]
-    pub async fn compose_remark(
-        &self,
-        reference: &str,
-        beside: (f64, f64, f64, f64),
-    ) -> Result<(), NotAvailable> {
-        let mut req = self.inner.compose_remark_request();
-        {
-            let mut b = req.get();
-            b.set_reference(reference);
-            b.set_x(beside.0 as f32);
-            b.set_y(beside.1 as f32);
-            b.set_w(beside.2 as f32);
-            b.set_h(beside.3 as f32);
-        }
-        req.send().promise.await?;
-        Ok(())
     }
 
     /// Fetch a page of previously-validated signed ops on a specific

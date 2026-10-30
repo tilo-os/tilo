@@ -21,6 +21,8 @@ mod busy_room;
 mod changes_read;
 #[path = "member_initialization_tests.rs"]
 mod member_initialization;
+#[path = "vouched_tests.rs"]
+mod vouched;
 
 struct Enrolled {
     _directory: tempfile::TempDir,

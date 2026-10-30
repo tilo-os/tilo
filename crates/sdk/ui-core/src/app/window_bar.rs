@@ -17,7 +17,7 @@
 //! History draws no toggle of its own.
 
 #[cfg(feature = "native")]
-use crate::host_core::HostCore as _;
+use crate::host_core::KeyHost as _;
 #[cfg(feature = "native")]
 use crate::widget::InPlace;
 use crate::widget::SearchDriver;
@@ -271,34 +271,6 @@ impl App {
         crate::window_toolbar::deliver(event);
         if hands_keyboard {
             self.hand_keyboard_to_app();
-        }
-    }
-
-    /// The window took the keyboard (it opened, was brought forward, or the
-    /// person pressed one of the app's slots in its bar): when nothing in it
-    /// holds the keyboard, the app's keyboard entry
-    /// ([`crate::widget::keyboard_entry_rank`]) takes it, so what is typed
-    /// next reaches the app. Never a button merely for being first.
-    #[cfg(feature = "native")]
-    pub(crate) fn hand_keyboard_to_app(&mut self) {
-        if self.focused_node.is_some() {
-            return;
-        }
-        let entry = self
-            .focusable_order
-            .iter()
-            .copied()
-            .filter_map(|node| {
-                let rank = self
-                    .inspect_node(node, crate::widget::keyboard_entry_rank)
-                    .ok()
-                    .flatten()?;
-                Some((rank, node))
-            })
-            .min_by_key(|(rank, _)| *rank)
-            .map(|(_, node)| node);
-        if entry.is_some() {
-            self.set_focused_node(entry);
         }
     }
 

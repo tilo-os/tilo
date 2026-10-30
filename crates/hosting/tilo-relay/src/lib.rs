@@ -191,7 +191,7 @@ pub use compute_worker::{
     run_compute_assignment, run_production_compute_worker, serve_worker_stream,
     serve_worker_stream_with, spawn_worker_stream,
 };
-pub use config::{PeerRelayConfig, RelayConfig};
+pub use config::RelayConfig;
 #[cfg(not(target_arch = "wasm32"))]
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use home_peer::{HomePeerRegistration, home_peer_registry_path, valid_home_peer_label};

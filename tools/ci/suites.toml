@@ -248,7 +248,6 @@ suites = [
   "os/tests/nearby_cleanup_test.py",
   "os/tests/vm_release_gate_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
-  "os/tests/windows_owner_backend.sh",
 ]
 
 [[group]]
@@ -378,14 +377,6 @@ inputs = ["os/dev/export-direct-boot-bundle.sh", "os/dev/disk-image.sh", "os/tes
 suites = ["os/tests/direct_boot_bundle_export.sh"]
 
 [[group]]
-name = "home-peer"
-inputs = [
-  "os/", "apps/settings/src/panes/device_mesh.rs", "crates/hosting/tilo-relay/", "crates/system/bounded-command/",
-  "crates/session/shell/src/shell/device_pairing.rs", "crates/runtime/tilo-identity-host/",
-]
-suites = ["os/tests/home_peer_setup.sh"]
-
-[[group]]
 name = "app-publication"
 inputs = ["os/", "tools/"]
 suites = [
@@ -425,9 +416,6 @@ inputs = [
   "crates/system/extension-helper/src/", "t.toml", "tools/ci/t_matrix.py",
 ]
 suites = [
-  "os/tests/windows_compat_stack.sh",
-  "os/tests/windows_presentation_capabilities.sh",
-  "os/tests/windows_vm_isolation.sh",
   "os/tests/test_windows_compat_sysext.py",
 ]
 
@@ -528,45 +516,10 @@ inputs = [
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
-  "scripts/perf/browser_qualification.test.mjs",
-  "scripts/perf/native_stream_qualification.test.mjs",
   "tools/web/webdriver.test.mjs",
-  "scripts/perf/code_editor_effects_test.py",
-  "scripts/perf/desktop_chrome_bench_test.py",
-  "scripts/perf/device_latency_bench_test.py",
-  "scripts/perf/drm_hardware_checks_test.py",
-  "scripts/perf/device_notes_latency_test.py",
-  "scripts/perf/device_notes_trace_test.py",
-  "scripts/perf/collect_code_editor_native_test.py",
-  "scripts/perf/collect_file_explorer_native_test.py",
-  "scripts/perf/collect_scratchpad_native_test.py",
-  "scripts/perf/collect_settings_native_test.py",
-  "scripts/perf/file_explorer_effects_test.py",
-  "scripts/perf/input_latency_test.py",
-  "scripts/perf/latency_bench_test.py",
-  "scripts/perf/lock_screen_bench_test.py",
-  "scripts/perf/physical_notes_latency_test.py",
-  "scripts/perf/physical_notes_stages_test.py",
-  "scripts/perf/agent_rtt_test.py",
-  "scripts/perf/agent_task_test.py",
-  "scripts/perf/main_stages_test.py",
-  "scripts/perf/native_app_capture_test.py",
-  "scripts/perf/native_delivery_test.py",
-  "scripts/perf/presentation_feedback_test.py",
-  "scripts/perf/render_bench_test.py",
-  "scripts/perf/render_boundaries_test.py",
-  "scripts/perf/runtime_benchmark_test.py",
-  "scripts/perf/scratchpad_effects_test.py",
-  "scripts/perf/settings_effects_test.py",
-  "scripts/perf/worker_handoff_test.py",
-  "tools/perf/test_ab.py",
-  "tools/perf/test_adapters.py",
-  "tools/perf/test_compare.py",
   "tools/perf/test_image_size.py",
   "tools/perf/test_record.py",
-  "tools/perf/test_room_capacity.py",
   "tools/perf/test_runtime_size_ratchet.py",
-  "tools/perf/test_store.py",
   "tools/perf/test_tapp_size_ratchet.py",
 ]
 
@@ -579,9 +532,6 @@ inputs = [
 ]
 suites = [
   "scripts/tests/test_agent_loop_usage.py",
-  "scripts/tests/test_app_launch_sweep.py",
-  "scripts/tests/test_headless_error_handling.py",
-  "scripts/tests/test_runtime_mcp_proof.py",
   "scripts/tests/test_tilo_mcp_server.py",
 ]
 

@@ -7364,11 +7364,8 @@ impl CapnpBrokerState {
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
-            | CollabEvent::PublishedInvocationResult { .. }
             | CollabEvent::LocalDocumentActionReported { .. }
             | CollabEvent::InstalledApplicationLaunchResult { .. }
-            | CollabEvent::ActionDirectoryPage { .. }
-            | CollabEvent::PublishedActionResolution { .. }
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
@@ -7392,10 +7389,6 @@ impl CapnpBrokerState {
             | CollabEvent::RemoteAction { .. } => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
-            }
-            #[cfg(unix)]
-            CollabEvent::ManagedInvocationObservation { .. } => {
-                // Funded sender observations remain with their local owner.
             }
         }
     }

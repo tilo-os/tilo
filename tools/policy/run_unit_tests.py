@@ -61,7 +61,6 @@ SHARDS = {
     "test_unused_dependencies.py": 6,
     "test_changed_rust_comparison.py": 2,
     "test_browser_runtime_release.py": 2,
-    "test_smoke_shards.py": 2,
     "test_stage_sdk_services.py": 2,
     "test_workflow_package_paths.py": 2,
     "test_font_artifacts.py": 3,

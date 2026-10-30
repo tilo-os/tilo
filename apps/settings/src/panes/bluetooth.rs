@@ -471,7 +471,7 @@ pub struct BluetoothArea {
     model: OnceCell<Rc<RefCell<BluetoothModel>>>,
     /// The adapter, read off the UI thread after the window's first frame
     /// ([`Self::start_read`]).
-    read: crate::device_read::DeviceRead<AdapterRead>,
+    pub(crate) read: crate::device_read::DeviceRead<AdapterRead>,
     /// What the adapter is read through, where it is not the device's or
     /// the sample's: a test's stand-in.
     #[cfg(test)]
@@ -539,16 +539,6 @@ impl BluetoothArea {
         }
         let control = self.control();
         self.read.start(move || read_adapter_of(control.as_ref()))
-    }
-
-    /// Whether the read [`Self::start_read`] started has ended.
-    pub(crate) fn read_finished(&self) -> bool {
-        self.read.is_finished()
-    }
-
-    /// What waits off the UI thread for the started read to end.
-    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
-        self.read.wait()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,

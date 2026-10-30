@@ -3934,9 +3934,10 @@ fn place_header(
         // The toolkit's one overflow rule: how many of the row's controls fit
         // beside the door's own button. What does not fit is named in the
         // menu, never dropped from the row.
-        let planned =
-            crate::widget::plan_overflow(band, compact.iter().copied(), gap, gap + more_w);
-        (true, planned.shown())
+        (
+            true,
+            crate::widget::plan_overflow(band, compact.iter().copied(), gap, gap + more_w),
+        )
     };
     fit.compact = use_compact;
     fit.shown = Some(shown);

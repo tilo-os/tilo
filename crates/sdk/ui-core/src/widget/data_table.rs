@@ -32,7 +32,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::Colors;
 use crate::virtual_viewport::{
-    DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
+    DragScroller, ScrollAlignment, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, SkeletonShape, TaffyTreeExt, Widget};
@@ -562,30 +562,11 @@ impl<Row: ?Sized> ColumnDef<Row> {
 
 pub type SortCmp<Row> = Box<dyn Fn(&Row, &Row) -> Ordering + Send + Sync>;
 
-/// One model notification batch consumed after the backing data has changed.
+/// One model notification batch consumed after the backing data has
+/// changed: a list's change ([`crate::widget::ListModelChange`]) over the table's row keys.
 /// Structural variants preserve mounted controls by stable row key;
-/// [`Self::RowsChanged`] rebuilds controls only for the named rows.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TableModelChange {
-    RowsInserted {
-        index: usize,
-        count: usize,
-    },
-    RowsRemoved {
-        index: usize,
-        count: usize,
-    },
-    /// `to` is the first destination index in the post-move order.
-    RowsMoved {
-        from: usize,
-        to: usize,
-        count: usize,
-    },
-    RowsChanged {
-        keys: Vec<u64>,
-    },
-    Reset,
-}
+/// `RowsChanged` rebuilds controls only for the named rows.
+pub type TableModelChange = crate::widget::virtual_list::ListModelChange<u64>;
 
 /// Unopinionated backing model for very large or asynchronously populated
 /// tables. Implementations need not keep all rows resident: `DataTable`
@@ -792,23 +773,15 @@ pub struct DataTableCore {
     on_header_click: Option<Box<dyn FnMut(usize)>>,
     /// For internal double-click detection (used only when `on_activate` is
     /// set and the table is long-lived).
-    last_click_row: Option<(usize, crate::time::Instant)>,
+    clicks: super::rows::Clicks<usize>,
     /// Active only in internal-virtualization mode (host called
     /// `set_viewport` and rows overflow it); dormant when wrapped in an
     /// outer [`crate::widget::Scrollable`], to avoid a double bar.
     vbar: Scrollbar,
     drag_scroll: DragScroller,
-    momentum: ScrollMomentum,
-    /// The motion toward a row [`Self::reveal_row`] was asked to show.
-    scroll_to: crate::motion::ScrollTo,
-    /// Device pixels per logical pixel where the table last handled input.
-    device_scale: f64,
+    scroll: super::rows::RowScroll,
     /// The motion the theme allows, sampled by the latest draw.
     motion: crate::tokens::EffectiveMotion,
-    /// The body's opacity in the latest draw and in the frame on screen:
-    /// below 1 while rows fade in after a long reveal.
-    fade_drawn: f32,
-    fade_shown: f32,
     /// What the rows, the bar over them and the chrome painted this frame
     /// and the last: a scroll that only moved the rows is offered to the
     /// host as a copy, and a row that changed repaints alone.
@@ -1247,15 +1220,11 @@ impl DataTableCore {
             on_row_click: None,
             on_activate: None,
             on_header_click: None,
-            last_click_row: None,
+            clicks: super::rows::Clicks::default(),
             vbar: Scrollbar::vertical(),
             drag_scroll: DragScroller::new(),
-            momentum: ScrollMomentum::new(),
-            scroll_to: crate::motion::ScrollTo::new(),
-            device_scale: 1.0,
+            scroll: super::rows::RowScroll::default(),
             motion: crate::tokens::EffectiveMotion::default(),
-            fade_drawn: 1.0,
-            fade_shown: 1.0,
             shown: crate::scroll_copy::PaintedFrames::default(),
             remount: false,
             reduce_motion: false,
@@ -1336,7 +1305,7 @@ impl DataTableCore {
             self.visible_window_changed();
         }
         if (self.viewport.offset() - offset.max(0.0)).abs() > f64::EPSILON {
-            self.momentum.stop();
+            self.scroll.momentum.stop();
             self.set_scroll_offset(offset.max(0.0));
         }
     }
@@ -1587,51 +1556,29 @@ impl DataTableCore {
         if index >= self.display_len() {
             return;
         }
-        self.momentum.stop();
         let now = crate::motion::frame_now();
         let drawn = self.viewport.offset();
-        if let Some(target) = self.scroll_to.target() {
-            self.viewport.set_offset(target.y);
-        }
-        self.viewport
-            .scroll_to_index(index, ScrollAlignment::Nearest);
-        let target = self.viewport.offset();
-        self.viewport.set_offset(drawn);
-        let jump = self.scroll_to.go(
-            vello::kurbo::Vec2::new(0.0, drawn),
-            vello::kurbo::Vec2::new(0.0, target),
-            vello::kurbo::Vec2::new(self.rect.width(), self.viewport.viewport()),
-            self.motion,
-            now,
-        );
-        if jump == crate::motion::ScrollJump::Glide {
-            self.follow_scroll_to(now);
-        } else if target.to_bits() != drawn.to_bits() {
-            self.set_scroll_offset(target);
-            self.visible_window_changed();
+        let width = self.rect.width();
+        match self
+            .scroll
+            .reveal(&mut self.viewport, index, width, self.motion, now)
+        {
+            Some(target) if target.to_bits() != drawn.to_bits() => {
+                self.set_scroll_offset(target);
+                self.visible_window_changed();
+            }
+            Some(_) => {}
+            None => self.follow_scroll_to(now),
         }
     }
 
     /// Follow a reveal in progress to where it is drawn at `now`.
     fn follow_scroll_to(&mut self, now: crate::time::Instant) {
-        if let Some(at) = self
-            .scroll_to
-            .offset_in_device_pixels(now, self.device_scale)
+        if let Some(at) = self.scroll.follow(now)
+            && at.to_bits() != self.viewport.offset().to_bits()
         {
-            if at.y.to_bits() != self.viewport.offset().to_bits() {
-                self.set_scroll_offset(at.y);
-            }
-            let _ = self.scroll_to.arrived(now);
+            self.set_scroll_offset(at);
         }
-    }
-
-    /// A reveal still moves, its rows still fade in, or the frame on screen
-    /// shows them faded.
-    fn reveal_in_progress(&self) -> bool {
-        self.scroll_to.target().is_some()
-            || self.scroll_to.is_moving(crate::motion::frame_now())
-            || self.fade_drawn < 1.0
-            || self.fade_shown < 1.0
     }
 
     /// Draw a rule between columns, through the header and the body: for
@@ -1972,27 +1919,14 @@ impl DataTableCore {
         let Some(target) = model.key_at(display_index) else {
             return;
         };
-        if shift {
-            let Some(anchor_index) = self
-                .model_selection
-                .anchor()
-                .and_then(|anchor| model.index_of(*anchor))
-            else {
-                self.model_selection.select_only(target);
-                return;
-            };
-            let (start, end) = if anchor_index <= display_index {
-                (anchor_index, display_index)
-            } else {
-                (display_index, anchor_index)
-            };
-            let keys = (start..=end).filter_map(|index| model.key_at(index));
-            self.model_selection.select_range(target, keys, ctrl);
-        } else if ctrl {
-            self.model_selection.toggle(target);
-        } else {
-            self.model_selection.select_only(target);
-        }
+        super::rows::choose(
+            &mut self.model_selection,
+            target,
+            (ctrl, shift),
+            true,
+            |key| model.index_of(*key),
+            |index| model.key_at(index),
+        );
     }
 
     fn move_selection_to(&mut self, display_index: usize, extend: bool) {
@@ -2279,7 +2213,7 @@ impl DataTableCore {
     }
 
     pub fn set_scroll_y(&mut self, y: f32) {
-        self.momentum.stop();
+        self.scroll.momentum.stop();
         self.set_scroll_offset(f64::from(y));
     }
 
@@ -2509,7 +2443,7 @@ impl DataTableCore {
     /// How far past an end fingers pull the rows, as drawn: negative before
     /// the start ([`crate::motion::RubberBand`]).
     fn give(&self) -> f64 {
-        self.momentum.give(crate::motion::frame_now())
+        self.scroll.momentum.give(crate::motion::frame_now())
     }
 
     fn internal_scroll(&self) -> bool {
@@ -2536,7 +2470,7 @@ impl DataTableCore {
     /// holds this table (the typed table around it), which offers the copy.
     fn collect_damage_of<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) {
         let bounds = self.paint_bounds();
-        if self.fade_drawn < 1.0 || self.fade_shown < 1.0 {
+        if self.scroll.fading() {
             regions.push(bounds);
             return;
         }
@@ -3226,7 +3160,7 @@ impl DataTableCore {
         if self.drag_scroll.is_tracking() {
             let now = crate::time::now();
             if let Some(update) = self.drag_scroll.update(pt.y, now) {
-                self.momentum.stop();
+                self.scroll.momentum.stop();
                 self.set_scroll_offset(update.target_offset);
                 *handled = true;
             }
@@ -3254,7 +3188,7 @@ impl DataTableCore {
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
     ) {
-        self.momentum.stop();
+        self.scroll.momentum.stop();
         let Some(pt) = self.last_cursor else { return };
         // 0. Built-in scrollbar wins over the body beneath it.
         if let Some(track) = self.v_track() {
@@ -3429,18 +3363,10 @@ impl DataTableCore {
             cb(source, ctrl, shift);
         }
         // Internal double-click → activate (long-lived hosts).
-        let now = crate::time::now();
-        let is_double = matches!(
-            self.last_click_row,
-            Some((pri, t)) if pri == ri && now.duration_since(t) < crate::gesture::multi_click_interval()
-        );
-        if is_double {
-            self.last_click_row = None;
-            if let Some(cb) = &mut self.on_activate {
-                cb(source);
-            }
-        } else {
-            self.last_click_row = Some((ri, now));
+        if self.clicks.register(ri)
+            && let Some(cb) = &mut self.on_activate
+        {
+            cb(source);
         }
     }
 
@@ -3475,9 +3401,9 @@ impl DataTableCore {
         if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
             if drag.dragged {
                 if self.reduce_motion {
-                    self.momentum.stop();
+                    self.scroll.momentum.stop();
                 } else {
-                    self.momentum.fling(drag.velocity);
+                    self.scroll.momentum.fling(drag.velocity);
                 }
             } else {
                 self.select_row_at_cursor(modifiers, handled, focus_target, node_id);
@@ -3524,11 +3450,12 @@ impl DataTableCore {
         }
         if self.internal_scroll() {
             self.drag_scroll.cancel();
-            *handled = match self.momentum.wheel(delta, phase, self.reduce_motion) {
+            *handled = match self.scroll.momentum.wheel(delta, phase, self.reduce_motion) {
                 WheelStep::Scroll(dy) => {
                     let before = self.viewport.offset();
                     self.set_scroll_offset(before + dy);
-                    self.momentum
+                    self.scroll
+                        .momentum
                         .wheel_applied(dy, self.viewport.offset() - before)
                 }
                 WheelStep::Fling => true,
@@ -3565,38 +3492,21 @@ impl DataTableCore {
             return;
         }
         let cur = self.primary_index();
+        match super::rows::row_step(&ke.logical_key, cur, len) {
+            Some(super::rows::RowStep::To(next)) => {
+                self.move_selection_to(next, shift);
+                self.viewport
+                    .scroll_to_index(next, ScrollAlignment::Nearest);
+                *handled = true;
+                return;
+            }
+            Some(super::rows::RowStep::Page(forward)) => {
+                *handled = self.page_selection(forward, shift);
+                return;
+            }
+            None => {}
+        }
         match &ke.logical_key {
-            Key::Named(NamedKey::ArrowDown) => {
-                let next = cur.map_or(0, |c| c.saturating_add(1).min(len.saturating_sub(1)));
-                self.move_selection_to(next, shift);
-                self.viewport
-                    .scroll_to_index(next, ScrollAlignment::Nearest);
-                *handled = true;
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                let next = cur.map_or(0, |c| c.saturating_sub(1));
-                self.move_selection_to(next, shift);
-                self.viewport
-                    .scroll_to_index(next, ScrollAlignment::Nearest);
-                *handled = true;
-            }
-            Key::Named(NamedKey::PageDown) => {
-                *handled = self.page_selection(true, shift);
-            }
-            Key::Named(NamedKey::PageUp) => {
-                *handled = self.page_selection(false, shift);
-            }
-            Key::Named(NamedKey::Home) => {
-                self.move_selection_to(0, shift);
-                self.viewport.scroll_to_index(0, ScrollAlignment::Start);
-                *handled = true;
-            }
-            Key::Named(NamedKey::End) => {
-                let last = len.saturating_sub(1);
-                self.move_selection_to(last, shift);
-                self.viewport.scroll_to_index(last, ScrollAlignment::End);
-                *handled = true;
-            }
             Key::Named(NamedKey::Enter) => {
                 let source = cur.map(|c| self.source_row(c));
                 if let Some(c) = source
@@ -3618,7 +3528,7 @@ impl DataTableCore {
                     *handled = self.toggle_check(c, column);
                 }
             }
-            Key::Character(s) if (s == "a" || s == "A") && modifiers.state().control_key() => {
+            key if super::rows::is_select_all(key, modifiers.state().control_key()) => {
                 if self.model.is_some() {
                     self.model_selection.select_all();
                 } else {
@@ -3769,9 +3679,11 @@ impl Widget for DataTableCore {
     /// change, or whose placeholder steps on, repaint the table; otherwise
     /// what its mounted cells say.
     fn needs_redraw(&self) -> bool {
-        self.fade_drawn < 1.0
-            || self.fade_shown < 1.0
-            || self.momentum.give_needs_frame(crate::motion::frame_now())
+        self.scroll.fading()
+            || self
+                .scroll
+                .momentum
+                .give_needs_frame(crate::motion::frame_now())
             || self.moving.rows.is_moving(crate::motion::frame_now())
             || self.arrivals.needs_redraw(crate::motion::frame_now())
             || self
@@ -3789,7 +3701,7 @@ impl Widget for DataTableCore {
     }
 
     fn mark_drawn(&mut self) {
-        self.fade_shown = self.fade_drawn;
+        self.scroll.fade_shown = self.scroll.fade_drawn;
         self.shown.present();
         for cell in &mut self.mounted_cells {
             cell.widget.mark_drawn();
@@ -3860,12 +3772,12 @@ impl Widget for DataTableCore {
         // report one (as `Scrollable::update`).
         let offset = self.viewport.offset();
         self.follow_scroll_to(crate::motion::frame_now());
-        if self.momentum.is_active() {
-            let delta = self.momentum.advance(now);
+        if self.scroll.momentum.is_active() {
+            let delta = self.scroll.momentum.advance(now);
             let before = self.viewport.offset();
             self.set_scroll_offset(before + delta);
             if self.viewport.offset().to_bits() == before.to_bits() {
-                self.momentum.stop();
+                self.scroll.momentum.stop();
             }
         }
         if self.viewport.offset().to_bits() != offset.to_bits()
@@ -3889,7 +3801,7 @@ impl Widget for DataTableCore {
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
         if self.reduce_motion {
-            self.momentum.stop();
+            self.scroll.momentum.stop();
         }
         self.take_up_row_motion();
         self.apply_type_metrics(theme);
@@ -4226,19 +4138,19 @@ impl Widget for DataTableCore {
         self.corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
         self.reduce_motion = theme.reduce_motion;
         self.motion = theme.motion();
-        self.momentum.set_view(
+        self.scroll.momentum.set_view(
             self.viewport.viewport(),
             self.internal_scroll(),
             self.motion,
         );
         if self.reduce_motion {
-            self.momentum.stop();
+            self.scroll.momentum.stop();
         }
         let now = crate::motion::frame_now();
         self.observe_arrivals(now);
         self.arrivals.mark_drawn(now);
         // After a long reveal the rows fade in where they landed.
-        self.fade_drawn = self.scroll_to.opacity(now);
+        self.scroll.fade_drawn = self.scroll.to.opacity(now);
         // What does not scroll with the rows: the header, the focus ring and
         // the sideways bar; compared frame to frame as one.
         let mut outside = Scene::new();
@@ -4259,7 +4171,7 @@ impl Widget for DataTableCore {
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
-            self.fade_drawn,
+            self.scroll.fade_drawn,
             transform,
             &body,
         );
@@ -4311,8 +4223,8 @@ impl Widget for DataTableCore {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        self.momentum.set_device_scale(ctx.scale_factor);
-        self.device_scale = ctx.scale_factor;
+        self.scroll.momentum.set_device_scale(ctx.scale_factor);
+        self.scroll.device_scale = ctx.scale_factor;
         // The hand takes over a reveal in progress from where it is drawn.
         if matches!(
             event,
@@ -4324,7 +4236,7 @@ impl Widget for DataTableCore {
                     ..
                 }
         ) {
-            self.scroll_to.take_over(crate::motion::frame_now());
+            self.scroll.to.take_over(crate::motion::frame_now());
         }
         // The row under the pointer, before a control in it takes the move.
         match event {
@@ -4394,7 +4306,7 @@ impl Widget for DataTableCore {
                 if self.selectable && self.is_focused && ke.state == ElementState::Pressed =>
             {
                 self.drag_scroll.cancel();
-                self.momentum.stop();
+                self.scroll.momentum.stop();
                 self.on_key(ke, *ctx.modifiers, ctx.handled);
             }
             _ => {}
@@ -4413,10 +4325,13 @@ impl Widget for DataTableCore {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.momentum.is_active()
-            || self.momentum.give_needs_frame(crate::motion::frame_now())
+        self.scroll.momentum.is_active()
+            || self
+                .scroll
+                .momentum
+                .give_needs_frame(crate::motion::frame_now())
             || self.moving.rows.is_moving(crate::motion::frame_now())
-            || self.reveal_in_progress()
+            || self.scroll.in_progress()
             || self.arrivals.is_moving(crate::motion::frame_now())
             || self.model.as_deref().is_some_and(TableModel::needs_poll)
             || self
@@ -7423,7 +7338,7 @@ mod tests {
             );
             assert!(handled);
             assert_eq!(table.scroll_y(), 60.0_f32);
-            assert!(!table.momentum.is_active());
+            assert!(!table.scroll.momentum.is_active());
 
             let now = crate::time::now();
             let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
@@ -7438,7 +7353,7 @@ mod tests {
                 &mut focus,
                 node,
             );
-            assert!(!table.momentum.is_active());
+            assert!(!table.scroll.momentum.is_active());
             assert!(!table.needs_animation_frame());
         }
 

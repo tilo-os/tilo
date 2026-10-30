@@ -261,12 +261,7 @@ impl Rooms {
                 self.page_pre_admit(device, request_id, grant, inviter_name)
                     .await?
             }
-            RoomsRequest::Notices { room } => {
-                let room = self.room(&room).await?;
-                let room = room.lock().await;
-                self.authorize(device, Some(&room), RoomOp::Govern(governance::INVITE), now)?;
-                RoomsReply::Notices(room.admissions.notices())
-            }
+            RoomsRequest::Notices { room } => self.page_notices(&room, device, now).await?,
             RoomsRequest::Permits { room, node } => {
                 RoomsReply::Permits(self.page_permits(&room, device, &node).await?)
             }
@@ -275,6 +270,19 @@ impl Rooms {
             }
             RoomsRequest::Name { room, name } => self.name_self(&room, device, &name, now).await?,
         })
+    }
+
+    /// The room's admission notices, for a device that may invite.
+    async fn page_notices(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        now: u64,
+    ) -> Result<RoomsReply, CollaborationError> {
+        let room = self.room(room).await?;
+        let room = room.lock().await;
+        self.authorize(device, Some(&room), RoomOp::Govern(governance::INVITE), now)?;
+        Ok(RoomsReply::Notices(room.admissions.notices()))
     }
 
     /// A page's share of one record or item with the room, or its end.

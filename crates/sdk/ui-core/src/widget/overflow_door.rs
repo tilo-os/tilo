@@ -12,9 +12,10 @@
 //!
 //! Two pieces make that up:
 //!
-//! - [`plan`] — how many of a row's items fit beside the door, given their
-//!   widths. It never decides to drop one: what does not fit is counted, not
-//!   discarded ([`DoorPlan::hidden`]).
+//! - [`give_way`] — which of a row's items give way to the door, given their
+//!   widths and ranks; [`Toolbar`](crate::widget::Toolbar) and `NavShell`'s
+//!   header both fit by it. It never decides to drop one: what does not fit
+//!   is behind the door, not discarded.
 //! - [`OverflowDoor`] — the button and the menu of what the plan put behind
 //!   it. `NavShell`'s header row uses the same door for actions that do not
 //!   fit ([`crate::widget::NavShell`]), so an app's own row and the shell's
@@ -40,99 +41,70 @@ use crate::theme::Theme;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{AppModel, Button, ModelPath, TaffyTreeExt, Widget};
 
-/// How many of a row's items the row has room for, and how many stand behind
-/// the door ([`plan`]).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DoorPlan {
-    shown: usize,
-    hidden: usize,
+/// The toolkit's one overflow rule: which of a row's `count` items give way
+/// to its door.
+///
+/// None when the row holds them all (`used` with nothing hidden fits
+/// `width`): a row that holds them all shows no door, so it is not narrowed
+/// for nothing. Otherwise the door takes `door` of the row (its gap
+/// included) and items give way, the lowest `priority` first and from the
+/// end among equals, each with its `group`, until the rest fit beside it.
+/// An item `priority` names no rank for (a separator, a hosted control)
+/// never gives way. When not even the door fits beside one item, every item
+/// that can stands behind it: a row too narrow for one control still offers
+/// that control, named in the menu, rather than drawing nothing.
+pub(crate) fn give_way(
+    count: usize,
+    width: f64,
+    door: f64,
+    used: impl Fn(&[bool]) -> f64,
+    priority: impl Fn(usize) -> Option<i32>,
+    group: impl Fn(usize) -> Vec<usize>,
+) -> Vec<bool> {
+    let mut hidden = vec![false; count];
+    if used(&hidden) <= width {
+        return hidden;
+    }
+    let budget = (width - door).max(0.0);
+    // Each pass hides at least one more item, so this ends.
+    loop {
+        if used(&hidden) <= budget {
+            break;
+        }
+        let candidate = (0..count)
+            .filter(|index| !hidden.get(*index).copied().unwrap_or(true))
+            .filter_map(|index| priority(index).map(|rank| (rank, index)))
+            .min_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        let Some((_, index)) = candidate else { break };
+        for member in group(index) {
+            if let Some(slot) = hidden.get_mut(member) {
+                *slot = true;
+            }
+        }
+    }
+    hidden
 }
 
-impl DoorPlan {
-    /// How many items the row shows.
-    #[must_use]
-    pub fn shown(&self) -> usize {
-        self.shown
-    }
-
-    /// How many items the door holds. Never dropped, never silently absent:
-    /// every item not shown is here, and the list is the menu's order.
-    #[must_use]
-    pub fn hidden(&self) -> usize {
-        self.hidden
-    }
-
-    /// Whether anything is behind the door (and so whether it shows at all).
-    #[must_use]
-    pub fn needs_door(&self) -> bool {
-        self.hidden > 0
-    }
-
-    /// The first `n` items the row shows, of `total`: the ones a caller
-    /// lays out in the row. The rest go in the menu, in the same order.
-    #[must_use]
-    pub fn shown_items(&self) -> std::ops::Range<usize> {
-        0..self.shown
-    }
-}
-
-/// Which of `items` fit in `width`, with `gap` between them and `door` of the
-/// row reserved for the door's own button.
-///
-/// The door is reserved only when at least one item does not fit — a row that
-/// holds them all shows no door, so the row is not narrowed for nothing. When
-/// not even the door's button fits beside the items, everything stands behind
-/// it: a row too narrow for one control still offers that control, named in
-/// the menu, rather than drawing nothing.
-///
-/// `widths` is the natural width of each item, in the row's order. They are
-/// taken in order: a row does not reorder its commands to fit more of them,
-/// because the order is what makes them findable.
+/// How many of a row's items, `widths` wide in the row's order with `gap`
+/// between them, stand in `width` beside a door `door` wide ([`give_way`]);
+/// the rest are behind the door, in the same order. A row does not reorder
+/// its commands to fit more of them, because the order is what makes them
+/// findable.
 #[must_use]
-pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, door: f64) -> DoorPlan {
+pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, door: f64) -> usize {
     let widths: Vec<f64> = widths.into_iter().collect();
-    let total = widths.len();
     let gap = gap.max(0.0);
-    let mut used = 0.0;
-    let mut shown = 0;
-    for (index, item) in widths.iter().enumerate() {
-        let next = if index == 0 {
-            *item
-        } else {
-            used + gap + *item
-        };
-        if next <= width {
-            used = next;
-            shown = index.saturating_add(1);
-        } else {
-            break;
-        }
-    }
-    if shown == total {
-        return DoorPlan { shown, hidden: 0 };
-    }
-    // Something did not fit: the door takes its own place in the row, and the
-    // items it holds are the ones after the last that fits beside it.
-    let room = (width - door).max(0.0);
-    let mut used = 0.0;
-    let mut beside = 0;
-    for (index, item) in widths.iter().enumerate() {
-        let next = if index == 0 {
-            *item
-        } else {
-            used + gap + *item
-        };
-        if next <= room {
-            used = next;
-            beside = index.saturating_add(1);
-        } else {
-            break;
-        }
-    }
-    DoorPlan {
-        shown: beside,
-        hidden: total.saturating_sub(beside),
-    }
+    let used = |hidden: &[bool]| {
+        let shown: Vec<f64> = widths
+            .iter()
+            .zip(hidden)
+            .filter(|(_, hidden)| !**hidden)
+            .map(|(width, _)| *width)
+            .collect();
+        shown.iter().sum::<f64>() + gap * crate::num::f64_of_usize(shown.len().saturating_sub(1))
+    };
+    let hidden = give_way(widths.len(), width, door, used, |_| Some(0), |i| vec![i]);
+    hidden.iter().take_while(|hidden| !**hidden).count()
 }
 
 /// The trailing "More actions" door: a button holding the menu of what did
@@ -398,11 +370,7 @@ mod tests {
 
     #[test]
     fn a_row_that_holds_them_all_shows_no_door() {
-        let plan = plan(400.0, [40.0, 40.0, 40.0], 8.0, 40.0);
-        assert_eq!(plan.shown(), 3);
-        assert_eq!(plan.hidden(), 0);
-        assert!(!plan.needs_door(), "nothing is behind it");
-        assert_eq!(plan.shown_items(), 0..3);
+        assert_eq!(plan(400.0, [40.0, 40.0, 40.0], 8.0, 40.0), 3);
     }
 
     #[test]
@@ -410,38 +378,22 @@ mod tests {
         // Four 40 px controls and their gaps want 184 px; a 170 px row has
         // room for two of them beside the door's own 40 px, so the last two
         // move behind it.
-        let plan = plan(170.0, [40.0, 40.0, 40.0, 40.0], 8.0, 40.0);
-        assert_eq!(plan.shown(), 2, "two fit beside the door's place");
-        assert_eq!(plan.hidden(), 2);
-        assert!(plan.needs_door());
-        assert_eq!(
-            plan.shown() + plan.hidden(),
-            4,
-            "every control is either in the row or behind the door"
-        );
+        assert_eq!(plan(170.0, [40.0, 40.0, 40.0, 40.0], 8.0, 40.0), 2);
     }
 
     #[test]
     fn a_row_too_narrow_for_one_control_still_offers_it() {
-        let plan = plan(30.0, [40.0, 40.0], 8.0, 40.0);
-        assert_eq!(plan.shown(), 0);
-        assert_eq!(plan.hidden(), 2, "both stand behind the door");
-        assert!(plan.needs_door());
+        assert_eq!(plan(30.0, [40.0, 40.0], 8.0, 40.0), 0);
     }
 
     #[test]
     fn the_door_holds_the_ones_after_the_last_that_fits() {
         // 40 + 8 + 40 + 8 + 40 = 136 fits in 200 - 40 = 160; the fourth does not.
-        let plan = plan(200.0, [40.0, 40.0, 40.0, 60.0], 8.0, 40.0);
-        assert_eq!(plan.shown(), 3);
-        assert_eq!(plan.hidden(), 1);
+        assert_eq!(plan(200.0, [40.0, 40.0, 40.0, 60.0], 8.0, 40.0), 3);
     }
 
     #[test]
     fn an_empty_row_has_no_door() {
-        let plan = plan(0.0, [], 8.0, 40.0);
-        assert_eq!(plan.shown(), 0);
-        assert_eq!(plan.hidden(), 0);
-        assert!(!plan.needs_door());
+        assert_eq!(plan(0.0, [], 8.0, 40.0), 0);
     }
 }

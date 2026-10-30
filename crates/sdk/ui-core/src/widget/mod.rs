@@ -3357,7 +3357,8 @@ pub use edge_resize::{EdgeGrab, ResizeMode, WidthLimits, WindowEdge};
 mod resize_handle;
 pub use resize_handle::{HANDLE_HIT_HALF_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle};
 mod overflow_door;
-pub use overflow_door::{DoorPlan, OverflowDoor, plan as plan_overflow};
+pub(crate) use overflow_door::give_way;
+pub use overflow_door::{OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
     CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, GroupRow, GroupTopology,
@@ -3515,6 +3516,7 @@ pub use tree_view::{
     TreeModel, TreeModelChange, TreeMove, TreeNode, TreeRowAction, TreeRowDecoration, TreeRowIcon,
     TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
 };
+mod rows;
 pub mod virtual_list;
 pub use virtual_list::{
     DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,
