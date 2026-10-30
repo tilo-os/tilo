@@ -805,14 +805,16 @@ impl ShellOverlayHost {
                 .is_some_and(|app| app.take_structure_dirty())
     }
 
-    /// Whether the bar is moving or fading, or has something new to show.
+    /// Whether the bar is moving or fading, or its app moves. A change the
+    /// bar has yet to draw is not motion: [`Self::update_topbar`] answers it
+    /// with one frame.
     pub(super) fn topbar_needs_frame(&self) -> bool {
         self.topbar.shown.animating
             || self
                 .topbar
                 .app
                 .as_ref()
-                .is_some_and(|app| app.needs_redraw())
+                .is_some_and(|app| app.needs_animation_frame())
     }
 
     /// When the bar next needs to run with nothing waking it.
