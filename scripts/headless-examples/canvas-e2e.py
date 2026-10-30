@@ -615,12 +615,12 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     """The canvas end to end, in a fresh session:
 
     1. the workspace shows its canvas, empty; a click on it puts the caret there (shot 1),
-       typing goes to it (shot 2), and Enter asks the workspace's agent: the ask's window (its
-       Tasks issue, which the agent works on) opens where the caret was (shot 3);
-    2. Board, Todo and Chat open over their sample data and take free space without moving the
-       answer (shot 4);
-    3. a sentence typed into the menu of Board (right-click, type, Enter) asks about it, and its
-       answer opens beside Board;
+       typing goes to it (shot 2), and Enter asks an agent: the caret says how the ask goes, in
+       place (that no model is set up, or the run of the Tasks issue it made), and no Tasks
+       window opens (shot 3);
+    2. Board, Todo and Chat open over their sample data and take free space (shot 4);
+    3. a sentence typed into the menu of Board (right-click, type, Enter) asks about it, said
+       at a caret beside Board, again with no Tasks window;
     4. panning, zooming and typing are measured from the frame trace;
     5. a restart keeps every window's place."""
     steps: dict = {}
@@ -643,14 +643,14 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     until("the sentence at the caret", lambda: (canvas_state(session).get("caret") or {}).get("text") == ASK_FREE, 10)
     session.snapshot(shots / "02-typing.png")
     session.key("Enter")
-    answer = until("the answer's window at the caret", lambda: next(
-        (w for w in canvas_windows(session).values()
-         if w.get("app_id") == TASKS and w.get("place")
-         and abs(w["place"][0] - caret["at"][0]) < 1 and abs(w["place"][1] - caret["at"][1]) < 1), None), 90)
-    until("the answer's window presents", lambda: session.presented(TASKS), 60)
+    said = until("the caret to say how the ask goes", lambda: (lambda c: c if c.get("refused")
+                 or c.get("follows") else None)(canvas_state(session).get("caret") or {}), 90)
     time.sleep(1.0)
-    session.snapshot(shots / "03-answer-arriving.png")
-    steps["free_space_ask"] = {"caret": caret, "answer_window": answer}
+    if any(w.get("app_id") == TASKS for w in session.windows()):
+        raise Failed("asking on the canvas opened a Tasks window")
+    session.snapshot(shots / "03-asked-in-place.png")
+    steps["free_space_ask"] = {"caret": caret, "said": said}
+    session.key("Escape")
 
     apps = [app_id(n) for n in TL_APPS]
     open_apps(session, apps)
@@ -658,9 +658,6 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     windows = until("every window placed, none over another", lambda: (lambda ws: ws if all(
         any(w.get("app_id") == a and w.get("place") for w in ws.values()) for a in apps) and no_overlaps(ws)
         else None)(canvas_windows(session)), 30)
-    kept = windows[answer["group"]]["place"]
-    if kept != answer["place"]:
-        raise Failed(f"the answer moved when the apps opened: {answer['place']} -> {kept}")
     time.sleep(1.5)
     session.snapshot(shots / "04-populated-canvas.png")
     steps["populated"] = {str(g): {"app": w["app_id"], "place": w["place"]} for g, w in windows.items()}
@@ -676,14 +673,15 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     time.sleep(0.4)
     session.snapshot(shots / "06-board-menu-typed.png")
     session.key("Enter")
-    beside = until("the menu's answer beside Board", lambda: next(
-        (w for g, w in canvas_windows(session).items()
-         if w.get("app_id") == TASKS and g not in tasks_before and w.get("place")), None), 90)
+    beside = until("the menu's ask said beside Board", lambda: (lambda c: c if c.get("refused")
+                   or c.get("follows") else None)(canvas_state(session).get("caret") or {}), 90)
     bp = board["place"]
-    gap = beside["place"][0] - (bp[0] + bp[2])
-    steps["board_menu_ask"] = {"board": bp, "answer_window": beside["place"], "gap_right_of_board": gap}
+    if any(w.get("app_id") == TASKS and w.get("group") not in tasks_before for w in session.windows()):
+        raise Failed("asking from Board's menu opened a Tasks window")
+    steps["board_menu_ask"] = {"board": bp, "caret": beside}
     time.sleep(1.5)
-    session.snapshot(shots / "07-answer-beside-board.png")
+    session.snapshot(shots / "07-asked-beside-board.png")
+    session.key("Escape")
 
     # Frame times: panning (wheel), zooming (Ctrl+wheel) and typing at a caret, on empty canvas.
     empty = (fx + fw - 40, fy + fh - 40)

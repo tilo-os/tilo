@@ -981,6 +981,9 @@ impl LauncherServices for NativeLauncher {
         };
         launched.map(|_| ()).map_err(|e| e.to_string())
     }
+    fn windowless(&self, app: &str, room: &str) -> Result<bool, String> {
+        super::windowless::request(app, room)
+    }
     fn begin_launch(
         &self,
         app: &str,

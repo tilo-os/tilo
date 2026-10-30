@@ -9,8 +9,10 @@
 //! them by reading one page, never the log or every item.
 //!
 //! Which version is first and last does not depend on the order a replica received the
-//! changes in: versions compare by their recorded time, then by the change's hash. Two replicas
-//! holding the same changes hold the same `created` and `updated`.
+//! changes in: versions compare by their recorded time, then by the change's place in the
+//! record's causal order (its first operation's counter, a Lamport clock: a change comes after
+//! every change it was made on top of, whatever their times' precision), then by the change's
+//! hash. Two replicas holding the same changes hold the same `created` and `updated`.
 //!
 //! A resource's versions stay when the resource is derived anew (its fields are read from the
 //! record again; its versions are not in the record) and when it is removed: an undone removal
@@ -57,11 +59,20 @@ pub struct Stamp {
     pub version: Version,
     /// The change's hash, as hex.
     pub change: String,
+    /// The counter of the change's first operation: a change made on top of another counts
+    /// past every operation of it, so of two versions recorded in the same second the later
+    /// change is the later version. [`PROVISIONAL`] for an action this device has not
+    /// committed yet.
+    pub op: u64,
 }
 
+/// The causal place of an action this device invoked and has not committed yet: after every
+/// change it holds, as the action was invoked on top of them.
+pub const PROVISIONAL: u64 = u64::MAX;
+
 impl Stamp {
-    fn order(&self) -> (&str, &str) {
-        (&self.version.at, &self.change)
+    fn order(&self) -> (&str, u64, &str) {
+        (&self.version.at, self.op, &self.change)
     }
 
     /// Whether this version comes before `other`.
@@ -78,6 +89,7 @@ impl Stamp {
             "at": self.version.at,
             "action": self.version.action,
             "change": self.change,
+            "op": self.op,
         })))
     }
 
@@ -95,6 +107,7 @@ impl Stamp {
                 action: text("action")?,
             },
             change: text("change").unwrap_or_default(),
+            op: json.get("op").and_then(Json::as_u64)?,
         })
     }
 }
@@ -141,6 +154,7 @@ pub fn stamp_of(change: &automerge::Change) -> Option<(Stamp, Vec<String>)> {
             action: action.action_id.clone(),
         },
         change: change.hash().to_string(),
+        op: change.start_op().get(),
     };
     Some((stamp, action.changed()))
 }

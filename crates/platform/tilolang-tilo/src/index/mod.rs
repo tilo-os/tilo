@@ -60,7 +60,7 @@ use self::codec::Corrupt;
 use self::lists::{Dir, Entry, ListEdits, ListSource, Pages};
 
 /// The version of what the index holds and how: an index of another is built anew.
-pub const FORMAT: u32 = 5;
+pub const FORMAT: u32 = 6;
 
 /// How much of the file a process keeps in memory, at most: pages read again come from the
 /// system's cache of the file, which is not the process's memory.

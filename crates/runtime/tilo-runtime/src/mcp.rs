@@ -7,6 +7,8 @@ mod confirm;
 mod content;
 #[path = "mcp_page.rs"]
 mod page;
+#[path = "mcp_providers.rs"]
+mod providers;
 #[path = "mcp_put.rs"]
 mod put;
 #[path = "mcp_schema.rs"]
@@ -1618,27 +1620,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
     /// Live, browsable application instances in this bridge's workspace,
     /// ordered by instance id.
-    async fn instances(&self) -> Result<(String, Vec<(u64, Value)>), String> {
-        let page = self.ask(instances_query()).await?;
-        let mut apps = page
-            .providers
-            .into_iter()
-            .filter(|provider| provider.browsable && provider.room == self.room)
-            .filter_map(|provider| {
-                let peer = provider.provider.parse::<u64>().ok()?;
-                Some((
-                    peer,
-                    json!({"peer_id":peer,"app_id":provider.app_id,"record_id":provider.record_id,"uri":format!("tilo://apps/{peer}")}),
-                ))
-            })
-            .collect::<Vec<_>>();
-        apps.sort_by_key(|(peer, _)| *peer);
-        *self.seen() = apps
-            .iter()
-            .map(|(peer, app)| (*peer, app["app_id"].as_str().map(str::to_owned)))
-            .collect();
-        Ok((page.revision, apps))
-    }
     fn seen(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Option<String>>> {
         self.seen.lock_recover()
     }
