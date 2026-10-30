@@ -222,6 +222,10 @@ impl DeviceHost {
     /// service owns the graph, so this is the panel's only sound reading.
     pub fn sound(&self, sound: &audio::sound::Sound) {
         sound::land(&mut self.0.state.borrow_mut(), sound);
+        if let Some(players) = self.0.players.borrow_mut().as_mut() {
+            players.set_outputs(sound::destinations(sound));
+        }
+        self.feed_now_playing();
         self.feed();
     }
 

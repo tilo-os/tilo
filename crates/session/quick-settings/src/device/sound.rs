@@ -12,7 +12,7 @@
 
 use audio::sound::Sound;
 
-use crate::{QuickSettingsState, SoundOutput};
+use crate::{MediaOutput, QuickSettingsState, SoundOutput};
 
 /// Land `sound` in the panel's readings: how loud the sound is, whether it
 /// is muted, which outputs there are and which one plays.
@@ -34,6 +34,20 @@ pub(crate) fn land(qs: &mut QuickSettingsState, sound: &Sound) {
         })
         .collect();
     qs.microphone_muted = sound.input_muted;
+}
+
+/// Where what plays can go: this machine's outputs, each named by the audio
+/// service's own resource for it, so the card's choice is that device.
+pub(crate) fn destinations(sound: &Sound) -> Vec<MediaOutput> {
+    sound
+        .outputs
+        .iter()
+        .map(|device| MediaOutput {
+            token: audio::sound::output_id(device.node),
+            label: device.label.clone(),
+            current: device.chosen,
+        })
+        .collect()
 }
 
 #[cfg(test)]

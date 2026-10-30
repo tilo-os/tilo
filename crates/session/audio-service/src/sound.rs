@@ -23,6 +23,21 @@ use tilo_service::{offer, unavailable};
 /// The resource's id.
 pub const SOUND: &str = "sound";
 
+/// What every output's resource id starts with.
+const OUTPUT: &str = "sound-output:";
+
+/// The id of the resource that stands for the output at `node`.
+#[must_use]
+pub fn output_id(node: u32) -> String {
+    format!("{OUTPUT}{node}")
+}
+
+/// The audio node the resource id `id` names, if it names an output.
+#[must_use]
+pub fn output_node(id: &str) -> Option<u32> {
+    id.strip_prefix(OUTPUT)?.parse().ok()
+}
+
 /// How far a step of the volume moves it.
 pub const VOLUME_STEP: f32 = 0.05;
 
@@ -178,7 +193,7 @@ pub fn resource(sound: &Sound) -> ResourceSpec {
     }
     let outputs = sound.outputs.iter().map(|device| {
         ResourceSpec::new(
-            format!("sound-output:{}", device.node),
+            output_id(device.node),
             "so.tilo.audio.output",
             device.label.clone(),
         )

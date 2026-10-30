@@ -742,3 +742,51 @@ fn what_plays_is_fed_from_the_players_and_steered_through_the_effects() {
         "an audio device arriving is the session's to sound"
     );
 }
+
+#[test]
+fn the_cards_destinations_are_the_machines_outputs_and_choosing_one_is_the_sessions() {
+    let machine = Machine::laptop();
+    let mut desk = Desk::on(&machine);
+    let (link, helper) = Helper::link();
+    desk.host.follow_players(link);
+    helper.players(vec![player("music", "Music", audio::Status::Playing)]);
+    desk.until("the players", |state| state.now_playing.is_some());
+    assert!(
+        !desk.has("qs-now-playing-output"),
+        "nothing has read where the sound can go"
+    );
+
+    // The audio service's reading is where the card's destinations come
+    // from, the output that plays marked.
+    desk.host.sound(&sound());
+    desk.app.settle();
+    let playing = desk.host.state().now_playing.expect("still playing");
+    assert_eq!(
+        playing
+            .outputs
+            .iter()
+            .map(|output| (output.label.as_str(), output.current))
+            .collect::<Vec<_>>(),
+        [("Speakers", true), ("Headphones", false)]
+    );
+    assert!(
+        desk.has("qs-now-playing-output"),
+        "the outputs to choose from"
+    );
+
+    // Choosing one is the session's to carry out through the audio
+    // service: the card names the output and never writes the graph.
+    let choose = QsEffect::ChooseOutput {
+        output: audio::sound::output_id(41),
+    };
+    desk.app.effect(&choose).unwrap();
+    assert_eq!(
+        desk.host.take_requests(),
+        [SessionRequest::Effect(choose)],
+        "the card asks the session"
+    );
+    assert!(
+        helper.heard.try_recv().is_err(),
+        "and never the players' helper"
+    );
+}

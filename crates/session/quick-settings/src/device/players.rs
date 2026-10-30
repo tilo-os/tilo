@@ -16,7 +16,7 @@ use audio::{Event, Request, Status};
 use ui::widget::TransportArt;
 
 use super::refresh::Wake;
-use crate::{MediaPlayer, NowPlaying, QsEffect};
+use crate::{MediaOutput, MediaPlayer, NowPlaying, QsEffect};
 
 /// Where the helper's lines come and go.
 pub struct PlayerLink {
@@ -71,6 +71,8 @@ pub(crate) struct Players {
     /// The last cover made into a picture, so an unchanged cover is the
     /// same picture and the card is not built again for it.
     art: Option<(Artwork, ui::vello::peniko::ImageData)>,
+    /// Where the sound can go, as the audio service last read it.
+    outputs: Vec<MediaOutput>,
 }
 
 impl Players {
@@ -124,6 +126,7 @@ impl Players {
             lines: heard,
             child,
             art: None,
+            outputs: Vec::new(),
         }
     }
 
@@ -150,6 +153,12 @@ impl Players {
             .is_some_and(|player| self.table.status(player) == Status::Playing)
     }
 
+    /// Where the sound can go, as the audio service reads it: the card
+    /// offers these as its destinations.
+    pub(crate) fn set_outputs(&mut self, outputs: Vec<MediaOutput>) {
+        self.outputs = outputs;
+    }
+
     /// What the card shows at `now`.
     pub(crate) fn now_playing(&mut self, now: Instant) -> Option<NowPlaying> {
         let art = self
@@ -169,7 +178,13 @@ impl Players {
                 image
             }
         });
-        now_playing(&self.table, self.preferred.as_deref(), image, now)
+        now_playing(
+            &self.table,
+            self.preferred.as_deref(),
+            image,
+            self.outputs.clone(),
+            now,
+        )
     }
 
     /// Carry out one of the card's effects.
@@ -221,11 +236,13 @@ impl Drop for Players {
 
 /// The now-playing card's reading: the player in front (the one chosen,
 /// else what plays, else what is paused) while anything plays or is
-/// paused; `None` otherwise. `image` is the front player's cover.
+/// paused; `None` otherwise. `image` is the front player's cover, and
+/// `outputs` where the sound can go.
 pub(crate) fn now_playing(
     table: &PlayerTable,
     preferred: Option<&str>,
     image: Option<ui::vello::peniko::ImageData>,
+    outputs: Vec<MediaOutput>,
     now: Instant,
 ) -> Option<NowPlaying> {
     if !table.any_playing() {
@@ -274,7 +291,7 @@ pub(crate) fn now_playing(
                 active: player.bus_name == front.bus_name,
             })
             .collect(),
-        outputs: Vec::new(),
+        outputs,
         speakers: None,
     })
 }
@@ -313,7 +330,7 @@ mod tests {
     fn the_card_shows_the_player_in_front_while_something_plays() {
         let now = Instant::now();
         let mut table = PlayerTable::new();
-        assert_eq!(now_playing(&table, None, None, now), None);
+        assert_eq!(now_playing(&table, None, None, Vec::new(), now), None);
         table.apply(
             Event::Players {
                 players: vec![
@@ -323,7 +340,7 @@ mod tests {
             },
             now,
         );
-        let card = now_playing(&table, None, None, now).expect("something plays");
+        let card = now_playing(&table, None, None, Vec::new(), now).expect("something plays");
         assert_eq!(card.title, "Music track");
         assert_eq!(card.subtitle, "An Artist");
         assert_eq!(card.player_name, "Music");
@@ -337,12 +354,24 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("Browser", false), ("Music", true)]
         );
-        let chosen = now_playing(&table, Some("org.mpris.MediaPlayer2.browser"), None, now)
-            .expect("the chosen one");
+        let chosen = now_playing(
+            &table,
+            Some("org.mpris.MediaPlayer2.browser"),
+            None,
+            Vec::new(),
+            now,
+        )
+        .expect("the chosen one");
         assert_eq!(chosen.player_name, "Browser");
         assert!(!chosen.playing);
-        let later = now_playing(&table, None, None, now + std::time::Duration::from_secs(2))
-            .expect("still playing");
+        let later = now_playing(
+            &table,
+            None,
+            None,
+            Vec::new(),
+            now + std::time::Duration::from_secs(2),
+        )
+        .expect("still playing");
         assert_eq!(later.position_ms, 52_000.0, "the playhead moves");
 
         table.apply(
@@ -351,6 +380,10 @@ mod tests {
             },
             now,
         );
-        assert_eq!(now_playing(&table, None, None, now), None, "stopped");
+        assert_eq!(
+            now_playing(&table, None, None, Vec::new(), now),
+            None,
+            "stopped"
+        );
     }
 }

@@ -86,6 +86,13 @@ fn sound_action(effect: &QsEffect) -> Option<(&'static str, Map<String, Value>)>
             arguments.insert("node".into(), Value::from(*node));
             "route-output"
         }
+        QsEffect::ChooseOutput { output } => {
+            // The card names a destination by the resource that stands for
+            // it; this machine's outputs are the audio service's.
+            let node = tilo_audio_service::sound::output_node(output)?;
+            arguments.insert("node".into(), Value::from(node));
+            "route-output"
+        }
         _ => return None,
     };
     Some((action, arguments))
@@ -104,6 +111,12 @@ mod tests {
             (QsEffect::SetMuted { muted: true }, "set-muted"),
             (QsEffect::ToggleMuted, "toggle-muted"),
             (QsEffect::RouteSound { node: 41 }, "route-output"),
+            (
+                QsEffect::ChooseOutput {
+                    output: "sound-output:41".into(),
+                },
+                "route-output",
+            ),
         ];
         for (effect, expected) in cases {
             let (action, _) = sound_action(&effect).expect("a sound effect");
@@ -113,6 +126,13 @@ mod tests {
             sound_action(&QsEffect::LockScreen).is_none(),
             "locking the screen is not a sound"
         );
+        assert!(
+            sound_action(&QsEffect::ChooseOutput {
+                output: "one of my other devices".into(),
+            })
+            .is_none(),
+            "somewhere else's destination is not this machine's output"
+        );
     }
 
     #[test]
@@ -121,6 +141,15 @@ mod tests {
         assert_eq!(arguments.get("level"), Some(&Value::from(0.4)));
         let (_, arguments) = sound_action(&QsEffect::RouteSound { node: 41 }).unwrap();
         assert_eq!(arguments.get("node"), Some(&Value::from(41)));
+        let (_, arguments) = sound_action(&QsEffect::ChooseOutput {
+            output: tilo_audio_service::sound::output_id(41),
+        })
+        .unwrap();
+        assert_eq!(
+            arguments.get("node"),
+            Some(&Value::from(41)),
+            "the card's destination is the output's device"
+        );
         let (_, arguments) = sound_action(&QsEffect::VolumeUp).unwrap();
         assert!(arguments.is_empty(), "a step takes nothing");
     }

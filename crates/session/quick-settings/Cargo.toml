@@ -16,7 +16,8 @@ path = "src/main.rs"
 test-support = []
 
 [dependencies]
-# The client side of the session audio helper's lines, for what plays.
+# The sound the audio service reads and publishes, and the client side of
+# its lines for what plays.
 audio = { package = "tilo-audio-service", path = "../audio-service", default-features = false }
 os-actions = { path = "../../system/os-actions" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
@@ -35,8 +36,6 @@ tilo-compositor = { path = "../compositor" }
 tilo-quick-settings = { path = ".", features = ["test-support"] }
 # The session that starts the panel, and the headless presentation it runs.
 tilo-session = { path = "../session" }
-# The reading the audio service publishes, which the panel shows.
-audio = { package = "tilo-audio-service", path = "../audio-service", default-features = false }
 tilo-test-env = { path = "../../dev/test-env" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 
