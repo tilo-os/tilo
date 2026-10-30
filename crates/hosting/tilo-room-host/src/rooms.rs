@@ -1299,8 +1299,8 @@ impl Rooms {
 
     /// The governor answering the workspace-join exchange for these rooms.
     #[must_use]
-    pub fn join_service(&self) -> tilo_governor::Governor<Self> {
-        tilo_governor::Governor(self.clone())
+    pub fn join_service(&self) -> tilo_peer_state::join_answer::JoinAnswer<Self> {
+        tilo_peer_state::join_answer::JoinAnswer(self.clone())
     }
 
     /// The current role of `device` only when room Write permission is allowed,

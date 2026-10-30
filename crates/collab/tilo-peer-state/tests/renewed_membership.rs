@@ -14,11 +14,11 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_desktop_model::RoomId;
-use tilo_governor::{Governor, GovernorStore, RoomTxn};
 use tilo_peer_state::join::invitations::{IssueInvitationRequest, IssuedInvitation};
 use tilo_peer_state::join::{
     self, JoinTransportRequest, JoinTransportResponse, MemberRole, TransportHint,
 };
+use tilo_peer_state::join_answer::{JoinAnswer, JoinRooms, RoomTxn};
 use tilo_peer_state::join_ledger::{GovernanceMessages, Governed, JoinError, JoinLedger, Signer};
 use tilo_peer_state::owner::testing::{self, ROOM};
 use tilo_peer_state::owner::{VerifiedNativeEnrollmentIntent, open_file};
@@ -99,14 +99,14 @@ impl RoomTxn for HeldRoom {
 }
 
 /// A governor of one room, kept in memory: the exchange every host
-/// answers ([`Governor`]) over the simplest store.
-struct MemoryGovernor {
+/// answers ([`JoinAnswer`]) over the simplest store.
+struct MemoryRooms {
     key: SigningKey,
     nonce: Mutex<u8>,
     room: Mutex<HeldRoom>,
 }
 
-impl GovernorStore for MemoryGovernor {
+impl JoinRooms for MemoryRooms {
     fn key(&self) -> &SigningKey {
         &self.key
     }
@@ -130,7 +130,7 @@ impl GovernorStore for MemoryGovernor {
     }
 }
 
-impl MemoryGovernor {
+impl MemoryRooms {
     /// A governor of `ROOM` signing as `device`, whose key `key` is.
     fn new(device: &DeviceCert, key: &SigningKey, now: SystemTime) -> Self {
         let mut peer = StatePeer::new(
@@ -171,7 +171,7 @@ impl MemoryGovernor {
     ) -> IssuedInvitation {
         let mut room = self.room.lock().unwrap();
         let mut ledger = room.ledger.clone();
-        let administrator = room.peer.0.owner_certificates()[0].clone();
+        let administrator = room.peer.0.owner_certificates().into_iter().next().unwrap();
         let issued = ledger
             .issue(
                 &room.governed(),
@@ -197,7 +197,7 @@ impl MemoryGovernor {
 /// `governor`'s answer to `request` from `remote` at `now`. Every step of
 /// a memory governor is decided before its future is first polled.
 fn answer(
-    governor: &Governor<MemoryGovernor>,
+    governor: &JoinAnswer<MemoryRooms>,
     remote: [u8; 32],
     request: JoinTransportRequest,
     now: SystemTime,
@@ -247,7 +247,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     let room = RoomId::parse(ROOM).unwrap();
     let joined_at = SystemTime::now();
     let joined_ns = testing::ns(joined_at).unwrap();
-    let governor = Governor(MemoryGovernor::new(&device, &key, joined_at));
+    let governor = JoinAnswer(MemoryRooms::new(&device, &key, joined_at));
     let workspace_id = join::room_workspace_id(ROOM).unwrap();
     let hint = IrohWorkspaceHostHintV1 {
         version: 1,

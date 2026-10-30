@@ -1,28 +1,27 @@
-//! The governor's side of the workspace-join exchange, once for every host
-//! that governs rooms: a relay, a cloud host or a person's own device.
+//! Answering the workspace-join exchange for a room this device holds.
 //!
-//! What differs between them is only where a room lives and how a change
-//! to it becomes durable and reaches its members: a [`GovernorStore`].
-//! Everything a governor decides (which invitation a device redeems, what
-//! a challenge binds, who is admitted, which certificate a member holds)
-//! is decided here, against the room's [`JoinLedger`] and its committed
-//! governance, so a room is joined the same way whoever hosts it.
+//! What differs between holders is only where a room lives and how a change
+//! to it becomes durable and reaches its members: a [`JoinRooms`].
+//! Everything decided (which invitation a device redeems, what a challenge
+//! binds, who is admitted, which certificate a member holds) is decided
+//! here, against the room's [`JoinLedger`] and its committed governance, so
+//! a room is joined the same way whichever device answers.
 
-use ed25519_dalek::SigningKey;
-use std::future::Future;
-use std::time::{Duration, SystemTime};
-use tilo_delivery_protocol::workspace_join::WorkspaceJoinService;
-use tilo_peer_state::StatePeer;
-use tilo_peer_state::join::{
+use crate::StatePeer;
+use crate::join::{
     JoinBootstrap, JoinChallengeResponse, JoinCompleteRequest, JoinInspection,
     JoinTransportRequest, JoinTransportResponse, MembershipChallengeResponse,
     MembershipCompleteRequest,
 };
-use tilo_peer_state::join_ledger::{
+use crate::join_ledger::{
     Governed, JoinError, JoinLedger, Redeeming, invitation_room, request_digest,
 };
+use ed25519_dalek::SigningKey;
+use std::future::Future;
+use std::time::{Duration, SystemTime};
+use tilo_delivery_protocol::workspace_join::WorkspaceJoinService;
 
-/// One room as a governor holds it while it decides: locked, so nothing
+/// One room as its holder keeps it while it decides: locked, so nothing
 /// else changes it meanwhile.
 pub trait RoomTxn {
     /// The room's id.
@@ -67,10 +66,9 @@ pub trait RoomTxn {
     }
 }
 
-/// Where a governor's rooms live: the one thing a relay and a device
-/// governing rooms do differently.
-pub trait GovernorStore: Send + Sync {
-    /// The key the governor signs its rooms' governance with.
+/// Where the rooms a join is answered for live.
+pub trait JoinRooms: Send + Sync {
+    /// The key this device signs the rooms' governance with.
     fn key(&self) -> &SigningKey;
 
     /// Fresh randomness for a challenge.
@@ -93,9 +91,9 @@ pub trait GovernorStore: Send + Sync {
     ) -> impl Future<Output = Result<T, JoinError>> + Send;
 }
 
-/// The governor of the rooms in `S`: answers the workspace-join exchange.
+/// The workspace-join exchange answered for the rooms in `S`.
 #[derive(Clone, Debug)]
-pub struct Governor<S>(pub S);
+pub struct JoinAnswer<S>(pub S);
 
 /// `now`, in nanoseconds since the Unix epoch, as a clock reading.
 fn at(now: u64) -> SystemTime {
@@ -174,7 +172,7 @@ pub fn admit(
     Ok(delivered)
 }
 
-impl<S: GovernorStore> Governor<S> {
+impl<S: JoinRooms> JoinAnswer<S> {
     /// Answer one workspace-join request from the device at
     /// `remote_endpoint`, its authenticated transport key.
     pub async fn answer(
@@ -346,9 +344,9 @@ fn membership_complete(
         .membership_complete(&room.governed(), remote_endpoint, request, now)
 }
 
-impl<S> WorkspaceJoinService for Governor<S>
+impl<S> WorkspaceJoinService for JoinAnswer<S>
 where
-    S: GovernorStore + Clone + std::fmt::Debug + 'static,
+    S: JoinRooms + Clone + std::fmt::Debug + 'static,
 {
     async fn handle(
         &self,

@@ -204,7 +204,6 @@ members = [
     "crates/collab/moderation",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
-    "crates/collab/tilo-governor",
     "crates/collab/tilo-lan-discovery",
     "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",

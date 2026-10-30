@@ -19203,19 +19203,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-governor"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek 3.0.0",
- "hex",
- "tilo-clock",
- "tilo-delivery-protocol",
- "tilo-peer-state",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-handoff"
 version = "0.1.0"
 dependencies = [
@@ -20481,7 +20468,6 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-files",
- "tilo-governor",
  "tilo-identity-host",
  "tilo-lock",
  "tilo-moq",
@@ -21092,7 +21078,6 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-files",
- "tilo-governor",
  "tilo-identity-host",
  "tilo-lock",
  "tilo-moq",
@@ -28079,7 +28064,6 @@ dependencies = [
  "tilo-frame-metrics",
  "tilo-fs",
  "tilo-fs-client",
- "tilo-governor",
  "tilo-handoff",
  "tilo-headless-schema",
  "tilo-highlight",

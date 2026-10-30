@@ -8,8 +8,8 @@
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_governor::{GovernorStore, RoomTxn};
 use tilo_peer_state::join::{JoinBootstrap, JoinProof, VerifiedRedemption};
+use tilo_peer_state::join_answer::{JoinRooms, RoomTxn};
 use tilo_peer_state::join_ledger::{Administered, Governed, Signer};
 pub use tilo_peer_state::join_ledger::{JoinError as CollaborationError, Redeeming};
 use tilo_relay_session::rooms::{
@@ -1051,7 +1051,7 @@ impl Rooms {
     }
 
     /// Admit the verified `joins` to `room` in one governance change: the
-    /// shared admission ([`tilo_governor::admit`]), published before anyone
+    /// shared admission ([`tilo_peer_state::join_answer::admit`]), published before anyone
     /// hears their answer. People arriving together cost the room one write
     /// and one publication instead of one each, and each of those grows
     /// with the room.
@@ -1066,7 +1066,7 @@ impl Rooms {
     ) -> Result<Vec<Result<JoinBootstrap, CollaborationError>>, CollaborationError> {
         let key = &self.inner.host.key;
         let mut held = HeldRoom::new(key, room);
-        let admitted = tilo_governor::admit(&mut held, joins, key, now);
+        let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, key, now);
         if held.committed {
             self.settle(room).await?;
             // Someone invited from the wait list is in now: their entry
@@ -1156,7 +1156,7 @@ impl RoomTxn for HeldRoom<'_> {
 /// everyone who staged one meanwhile (`Rooms::written`); a governance
 /// change is committed under the room's lock and published before the
 /// lock is released.
-impl GovernorStore for Rooms {
+impl JoinRooms for Rooms {
     fn key(&self) -> &SigningKey {
         &self.inner.host.key
     }

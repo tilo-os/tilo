@@ -1,5 +1,7 @@
 //! Shared native/browser neighbour wire and certified state admission.
 pub mod governance;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod join_answer;
 pub mod join_ledger;
 /// The workspace invitation and join contract (`tilo-workspace-join`).
 pub use tilo_workspace_join as join;

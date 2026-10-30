@@ -57,7 +57,6 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 app-registry = { path = "../../packaging/app-registry" }
 libc.workspace = true
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
-tilo-governor = { path = "../../collab/tilo-governor" }
 collab-types = { path = "../../collab/collab-types" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }

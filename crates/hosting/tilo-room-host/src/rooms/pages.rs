@@ -14,11 +14,11 @@
 //! ([`RoomsRequest::WaitList`]).
 
 use tilo_action_policy::roles::governance;
-use tilo_governor::Governor;
 use tilo_peer_state::join::{
     JoinChallenge, JoinChallengeRequest, JoinChallengeResponse, JoinProof, JoinTransportRequest,
     JoinTransportResponse, MemberRole, VerifiedRedemption,
 };
+use tilo_peer_state::join_answer::JoinAnswer;
 use tilo_relay_protocol::rooms::{
     Inviter, JoinReply, JoinRequest, JoinStep, MAX_JOIN_REQUESTS, PendingInvite, PreAdmission,
     Room, RoomMember, RoomNotice, RoomRole, RoomsReply, RoomsRequest, WaitListEntry,
@@ -1175,7 +1175,9 @@ impl Rooms {
                     request_id,
                 });
                 let JoinTransportResponse::Challenge(JoinChallengeResponse { challenge }) =
-                    Governor(self.clone()).decide(remote, request, now).await?
+                    JoinAnswer(self.clone())
+                        .decide(remote, request, now)
+                        .await?
                 else {
                     return Err(CollaborationError::new(
                         "the governor answered no challenge",
