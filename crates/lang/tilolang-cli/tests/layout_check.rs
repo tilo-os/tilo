@@ -123,9 +123,9 @@ fn the_apps_show_no_layout_problem_their_allow_list_does_not_name() {
 fn names_component(source: &str, name: &str) -> bool {
     let wanted = format!("ui.{name}");
     source.match_indices(&wanted).any(|(at, _)| {
-        !source[at + wanted.len()..]
-            .chars()
-            .next()
+        !source
+            .get(at.saturating_add(wanted.len())..)
+            .and_then(|rest| rest.chars().next())
             .is_some_and(|c| c.is_alphanumeric() || c == '_')
     })
 }
