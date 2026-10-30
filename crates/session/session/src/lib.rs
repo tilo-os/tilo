@@ -43,6 +43,7 @@ mod questions;
 mod search;
 mod setup;
 mod sheets;
+pub mod sync;
 mod system_sounds;
 pub mod unlock;
 mod wallpapers;
@@ -179,6 +180,10 @@ pub struct Options {
     /// left, and the pictures on it. Without one, the session starts on a
     /// fresh desk and keeps nothing (tests and screenshots).
     pub state: Option<std::path::PathBuf>,
+    /// Whether the session takes part in the collaboration plane: who is
+    /// here in each workspace's room, over Iroh. Off, this desktop has no
+    /// collaborators but its own person.
+    pub collab: bool,
 }
 
 /// Where quick settings reads the device from.
@@ -205,6 +210,30 @@ fn no_session_actions(action: SessionAction) -> Result<(), String> {
     Ok(())
 }
 
+/// Who is here: this session's membership of each workspace's room, over the
+/// collaboration plane. `None` when the session takes no part in it, or the
+/// device's endpoint did not bind: a desktop with no one else on it.
+fn start_collaboration(options: &Options) -> Option<Rc<sync::Client>> {
+    if !options.collab {
+        return None;
+    }
+    let identity = sync::device_identity();
+    let own = sync::OwnPresence {
+        label: options.person.clone(),
+        user: identity
+            .as_ref()
+            .map(|identity| hex::encode(identity.device_cert.user_public_key)),
+        ..sync::OwnPresence::default()
+    };
+    match sync::Client::start(identity, own, options.wake.handle()) {
+        Ok(sync) => Some(Rc::new(sync)),
+        Err(error) => {
+            tracing::warn!(%error, "the collaboration plane");
+            None
+        }
+    }
+}
+
 impl Default for Options {
     fn default() -> Self {
         Self {
@@ -228,6 +257,7 @@ impl Default for Options {
             questions: None,
             portal: None,
             state: None,
+            collab: true,
         }
     }
 }
@@ -296,6 +326,9 @@ struct Shared {
     notice_view: RefCell<Option<tilo_quick_settings::NotificationsView>>,
     /// What the services ask the person, on the sheets.
     asker: questions::Asker,
+    /// Who is here: this session's membership of each workspace's room,
+    /// when it takes part in the collaboration plane.
+    sync: Option<Rc<sync::Client>>,
 }
 
 /// The app a window shows, by its id.
@@ -1048,12 +1081,14 @@ impl Session {
 
         // The chrome above the windows: its own tree, beside the desk's.
         let intents = Rc::new(RefCell::new(Vec::new()));
+        let sync = start_collaboration(&options);
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
             Rc::clone(&intents),
             Rc::clone(&asks),
             Rc::clone(&notice_signals),
+            sync.clone(),
         )));
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
         doors.add(chrome);
@@ -1153,6 +1188,7 @@ impl Session {
             )),
             asker,
             notice_view: RefCell::new(None),
+            sync,
         };
         shared.start_search();
         // What the portal brings comes from any thread, and wakes the loop
@@ -1404,6 +1440,7 @@ impl Session {
     /// the gestures it took, the actions keys asked for, and what those
     /// asked in turn.
     fn settle(&mut self) -> Result<(), Error> {
+        self.follow_collaboration();
         self.follow_lock()?;
         if let Some(captures) = &self.captures {
             captures.serve(&mut self.compositor);
@@ -1432,6 +1469,16 @@ impl Session {
             self.shared.desktop.with_widgets(WidgetHost::relayout);
         }
         Ok(())
+    }
+
+    /// Keep the rooms this session takes part in current with the desktop's
+    /// workspaces, and hand the desktop who is here.
+    fn follow_collaboration(&self) {
+        let Some(sync) = &self.shared.sync else {
+            return;
+        };
+        self.shared.handle.read(|tree| sync.follow_desktop(tree));
+        sync.follow();
     }
 
     /// Tell the portal what it asks of the session about its apps: which

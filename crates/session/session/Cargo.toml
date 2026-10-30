@@ -40,6 +40,16 @@ tilo-quick-settings = { path = "../quick-settings" }
 tilo-notification-banners = { path = "../notification-banners" }
 tilo-onboarding-host = { path = "../onboarding-host" }
 tilo-sheets = { path = "../sheets" }
+# Who is here: the session's own membership of each workspace's room, on the
+# collaboration plane's peer actor.
+tilo-network-actor = { path = "../network-actor" }
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+collab-types = { path = "../../collab/collab-types" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+iroh.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+hex.workspace = true
 os-actions = { path = "../../system/os-actions" }
 tilo-service = { path = "../service" }
 tilo-connectivity-service = { path = "../connectivity-service" }

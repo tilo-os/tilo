@@ -168,6 +168,7 @@ fn session(places: &[(i32, i32)]) -> Session {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
             ..Options::default()
         },
         &outputs,

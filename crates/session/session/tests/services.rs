@@ -158,6 +158,7 @@ fn session() -> Session {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             services,
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", 1280, 720)],

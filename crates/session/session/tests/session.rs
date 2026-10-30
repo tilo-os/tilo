@@ -198,9 +198,12 @@ fn pump(
 }
 
 fn session() -> Session {
+    // Headless tests take no part in the collaboration plane: no endpoint, no
+    // room.
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -459,6 +462,7 @@ fn session_with_quick_settings() -> (Session, Rc<FixtureHost>) {
             quick_settings: Some(QuickSettings::Lent(
                 Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
             )),
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -665,6 +669,7 @@ fn the_lock_action_locks_the_session_behind_the_lock_screen_which_a_password_unl
             presentation: ui::headless::fixture_runner_inputs,
             user: "ada".to_owned(),
             verifier: std::sync::Arc::new(Sesame),
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -977,6 +982,7 @@ fn quick_settings_publishes_its_effects_and_they_reach_the_device() {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             quick_settings: Some(QuickSettings::Lent(lent)),
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -1024,6 +1030,7 @@ fn quick_settings_reads_the_device_and_its_power_menu_opens_the_sheet() {
                     wake,
                 )
             }))),
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -1067,6 +1074,7 @@ fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done()
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             setup: Some(tilo_session::OnboardingView::new_tour()),
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -1316,6 +1324,7 @@ fn asking() -> (Session, tilo_service::Questions) {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             questions: Some(questions.clone()),
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -2068,6 +2077,7 @@ fn the_display_action_steps_through_the_ways_of_using_two_displays() {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
@@ -2130,6 +2140,7 @@ fn the_portals_screenshot_is_a_picture_of_every_display() {
             presentation: ui::headless::fixture_runner_inputs,
             wake,
             captures: Some(captures),
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
@@ -2223,6 +2234,7 @@ fn light_session() -> Session {
     Session::headless(
         Options {
             presentation: light,
+            collab: false,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -2359,6 +2371,7 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
                 presentation: ui::headless::fixture_runner_inputs,
                 user: "ada".to_owned(),
                 verifier: std::sync::Arc::new(Sesame),
+                collab: false,
                 ..Options::default()
             },
             &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],

@@ -34,6 +34,10 @@ pub(crate) struct SessionChrome {
     /// The session has no quick settings panel: the status cluster is the
     /// bell that opens the notification centre.
     pub(crate) notifications_only: bool,
+    /// Who is here, when this session takes part in the collaboration
+    /// plane: the bar's trees carry them as the active workspace's
+    /// collaborators.
+    pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// `(tree revision, minute)` the snapshot revision was last bumped for.
     seen: Cell<(u64, i64)>,
     revision: Cell<u64>,
@@ -46,6 +50,7 @@ impl SessionChrome {
         person: String,
         signals: Rc<NoticeSignals>,
         notifications_only: bool,
+        sync: Option<Rc<crate::sync::Client>>,
     ) -> Self {
         Self {
             handle,
@@ -53,6 +58,7 @@ impl SessionChrome {
             person,
             signals,
             notifications_only,
+            sync,
             seen: Cell::new((u64::MAX, 0)),
             revision: Cell::new(0),
         }
@@ -81,12 +87,18 @@ impl DesktopChromeSource for SessionChrome {
         }
     }
 
-    fn app_notification_badge(&self, app_id: &str) -> u32 {
-        self.signals.badge(app_id)
+    fn tree(&self) -> DesktopTree {
+        let mut tree = self.handle.read(Clone::clone);
+        // Who is here, as the active workspace's collaborators: the bar's
+        // faces and every roster read the tree, not a list of their own.
+        if let Some(sync) = &self.sync {
+            sync.show(&mut tree, &|_: &str| None);
+        }
+        tree
     }
 
-    fn tree(&self) -> DesktopTree {
-        self.handle.read(Clone::clone)
+    fn app_notification_badge(&self, app_id: &str) -> u32 {
+        self.signals.badge(app_id)
     }
 
     fn intent(&self, intent: ChromeIntent) -> bool {
@@ -154,6 +166,7 @@ pub(crate) fn host(
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     signals: Rc<NoticeSignals>,
+    sync: Option<Rc<crate::sync::Client>>,
 ) -> WidgetHost {
     let rules = Rc::new(SessionRules {
         handle: handle.clone(),
@@ -168,6 +181,7 @@ pub(crate) fn host(
         options.person.clone(),
         signals,
         options.quick_settings.is_none(),
+        sync,
     ));
     let bar = TopBarChrome::from_tree(&tree)
         .with_chrome(source)
