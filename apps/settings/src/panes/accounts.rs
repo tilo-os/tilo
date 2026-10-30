@@ -1261,13 +1261,13 @@ impl AccountsPane {
             return cx.actions().effect(&SettingsEffect::from(effect));
         };
         let id = effect.id();
-        let spec = SettingsEffect::from(effect).bound();
-        let resource = ui::tilo_actions::ResourceSpec::new(
+        let resource = LiveRow::new(
             format!("settings.account:{account}"),
             "settings.account",
             &account,
         )
-        .with_action(spec);
+        .effect(&SettingsEffect::from(effect))
+        .into_resource();
         let invocation = ui::tilo_resource::ActionRef::<SettingsEffect, ()>::new(
             id,
             &[],
@@ -2290,12 +2290,13 @@ impl AccountsPane {
     fn files_button(&self, view: &AccountView, details: &mut Vec<String>) -> Option<Button> {
         let spec = self.files_handoff(view)?;
         let label = spec.label.clone();
-        let resource = ui::tilo_actions::ResourceSpec::new(
+        let resource = LiveRow::new(
             format!("settings.account:{}", view.id),
             "settings.account",
             &view.label,
         )
-        .with_action(spec);
+        .operation(spec)
+        .into_resource();
         let binding = ui::tilo_actions::ActionBinding::unit_for(&resource, "open-files").ok()?;
         let store = self.account_root.store();
         if let Some(account) = store.get(&view.id.clone().into()) {
