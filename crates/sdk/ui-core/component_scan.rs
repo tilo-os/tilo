@@ -22,7 +22,11 @@
     reason = "source text is cut at offsets found in that same text, at ASCII delimiters"
 )]
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+/// A `pub struct` found: its module path, name, file and `not_a_component`.
+type FoundStruct = (Vec<String>, String, PathBuf, Option<(String, String)>);
 
 /// A described widget: the registry builds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,10 +106,11 @@ pub fn scan(src: &Path) -> std::io::Result<Scan> {
     walk(src, &mut files)?;
     files.sort();
     let mut out = Scan::default();
-    let mut reexports: std::collections::BTreeMap<String, String> = Default::default();
+    let mut reexports: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::default();
     // The modules each top module declares `pub mod`: what they declare is public there.
     let mut pub_mods: Vec<(String, String)> = Vec::new();
-    let mut structs: Vec<(Vec<String>, String, PathBuf, Option<(String, String)>)> = Vec::new();
+    let mut structs: Vec<FoundStruct> = Vec::new();
     let mut widget_impls: Vec<String> = Vec::new();
     for file in &files {
         let raw = std::fs::read_to_string(file)?;
@@ -165,7 +170,12 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
             if name != "tests" && name != "testing" {
                 walk(&path, out)?;
             }
-        } else if name.ends_with(".rs") && name != "tests.rs" && !name.ends_with("_tests.rs") {
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("rs"))
+            && name != "tests.rs"
+            && !name.ends_with("_tests.rs")
+        {
             out.push(path);
         }
     }
@@ -189,8 +199,7 @@ fn module_path(rel: &Path) -> Vec<String> {
 }
 
 fn is_top_module_file(rel: &Path) -> bool {
-    let parts: Vec<_> = rel.components().collect();
-    match parts.len() {
+    match rel.components().count() {
         1 => true,
         2 => rel.file_name().is_some_and(|n| n == "mod.rs"),
         _ => false,
@@ -499,15 +508,17 @@ pub fn registry_source(scan: &Scan) -> String {
     }
     out.push_str("    ]\n}\n\n");
     out.push_str("/// The components that stand only in a slot of another, in source order.\n");
-    out.push_str(&format!(
-        "const GENERATED_PARTS: [fn() -> crate::component::Description; {}] = [\n",
+    let _ = writeln!(
+        out,
+        "const GENERATED_PARTS: [fn() -> crate::component::Description; {}] = [",
         parts.len()
-    ));
+    );
     for p in parts {
-        out.push_str(&format!(
-            "    <crate::{}::{} as crate::component::Component>::describe,\n",
+        let _ = writeln!(
+            out,
+            "    <crate::{}::{} as crate::component::Component>::describe,",
             p.top, p.name
-        ));
+        );
     }
     out.push_str("];\n");
     out
