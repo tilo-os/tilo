@@ -3607,6 +3607,9 @@ enum LaunchContext<'a> {
     None,
     Tool(&'a ToolIntent),
     Raw(String),
+    /// A Browser window that browses as a visitor, without the person's
+    /// sign-ins ([`ui::webview::VISITOR_WINDOW_FLAG`]).
+    Visitor,
 }
 
 /// A launch to run again once its app is updated: everything
@@ -3627,6 +3630,7 @@ enum ReplayContext {
     None,
     Tool(ToolIntent),
     Raw(String),
+    Visitor,
 }
 
 impl ReplayContext {
@@ -3637,6 +3641,7 @@ impl ReplayContext {
             LaunchContext::None => Self::None,
             LaunchContext::Tool(intent) => Self::Tool((*intent).clone()),
             LaunchContext::Raw(raw) => Self::Raw(raw.clone()),
+            LaunchContext::Visitor => Self::Visitor,
         }
     }
 }
@@ -3649,6 +3654,7 @@ impl Replay {
             ReplayContext::None => LaunchContext::None,
             ReplayContext::Tool(intent) => LaunchContext::Tool(intent),
             ReplayContext::Raw(raw) => LaunchContext::Raw(raw.clone()),
+            ReplayContext::Visitor => LaunchContext::Visitor,
         };
         execute_installed_inner(
             app,
@@ -4189,6 +4195,14 @@ fn apply_launch_context(
             command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded));
         }
         LaunchContext::Raw(encoded) => command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded)),
+        LaunchContext::Visitor => {
+            if uri.is_none() || document.is_some() {
+                return Err(LaunchError::RegistryUnreadable {
+                    detail: "a visitor window opens one web address".into(),
+                });
+            }
+            command.args.push(ui::webview::VISITOR_WINDOW_FLAG.into());
+        }
     }
     Ok(())
 }
@@ -4257,7 +4271,7 @@ pub(crate) fn queue_package_target_in_workspace(
     workspace: &Workspace,
     uri: String,
 ) -> Result<(), LaunchError> {
-    queue_package_open(package_id, None, workspace, None, Some(uri))
+    queue_package_open(package_id, None, workspace, None, Some(uri), false)
 }
 
 /// Open `document` or `uri` (or just the app) in the package `package_id`
@@ -4266,7 +4280,9 @@ pub(crate) fn queue_package_target_in_workspace(
 /// [`InstalledApp`]; a refusal arrives as a launch event, named
 /// `display_name` when the caller knows what the person asked to open (a
 /// package that is no longer installed has no registry name to fall back
-/// on), else the package's own display name.
+/// on), else the package's own display name. A `visitor` launch opens `uri`
+/// in a Browser window without the person's sign-ins
+/// ([`ui::webview::VISITOR_WINDOW_FLAG`]).
 ///
 /// # Errors
 ///
@@ -4278,6 +4294,7 @@ pub(crate) fn queue_package_open(
     workspace: &Workspace,
     document: Option<PathBuf>,
     uri: Option<String>,
+    visitor: bool,
 ) -> Result<(), LaunchError> {
     let workspace = workspace.clone();
     spawn_reporting(
@@ -4296,14 +4313,19 @@ pub(crate) fn queue_package_open(
                     });
                 }
                 let grants = workspace.launch_grants(tilo_clock::unix_now());
-                execute_installed(
+                execute_installed_inner(
                     app,
                     workspace.room(),
                     document.as_deref(),
                     uri.as_deref(),
-                    None,
+                    if visitor {
+                        LaunchContext::Visitor
+                    } else {
+                        LaunchContext::None
+                    },
                     None,
                     Some(grants),
+                    None,
                 )
             });
             if let Err(error) = outcome {

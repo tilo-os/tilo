@@ -210,6 +210,18 @@ impl BrowserWindow {
     }
 
     fn carry_out(&mut self, effect: BrowserEffect, cx: &mut EffectCx<Browser>) -> EffectAnswer {
+        if matches!(
+            effect,
+            BrowserEffect::ListServiceSessions
+                | BrowserEffect::OpenServiceSession { .. }
+                | BrowserEffect::RetryForgetServiceSession { .. }
+                | BrowserEffect::ForgetServiceSession { .. }
+        ) && !self.page.browsing_mode().holds_account_custody()
+        {
+            // The window's custody is fixed when it opens: what it publishes
+            // its page actions as stays true for as long as it is open.
+            return Err(crate::browsing_mode::NO_ACCOUNT_CUSTODY.into());
+        }
         match &effect {
             BrowserEffect::ListServiceSessions => {
                 let waker = self.waker.clone().ok_or("Account custody is unavailable")?;

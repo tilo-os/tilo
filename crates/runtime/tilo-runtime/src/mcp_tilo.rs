@@ -663,7 +663,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if let Some(found) = known.get(app) {
             return Ok(found.clone());
         }
-        let (_, running) = self.instances().await?;
+        let (_, running) = self.providers().await?;
         let found = running
             .iter()
             .rev()

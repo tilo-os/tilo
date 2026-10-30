@@ -83,6 +83,8 @@ browser-more-commands = More commands
 browser-private = Private
 browser-private-window = Private window
 browser-private-tooltip = Browsing data is removed when this window closes. Files you download remain.
+browser-visitor-window = Not signed in
+browser-visitor-open-signed-in = Open with your sign-ins
 
 ## The More menu
 browser-menu-site-information = Site information
