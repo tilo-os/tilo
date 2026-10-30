@@ -437,3 +437,6 @@ fn an_agent_opens_a_web_address_as_a_visitor_unless_it_asks_for_the_persons_sign
         "a resource opens as it is"
     );
 }
+
+#[path = "desktop_mail_tests.rs"]
+mod mail_review;

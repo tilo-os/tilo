@@ -1071,6 +1071,12 @@ impl ComposeWindow {
         self.draft.as_deref()
     }
 
+    /// The subject as typed.
+    #[cfg(test)]
+    pub(crate) fn subject_text(&self) -> String {
+        self.subject.value().to_owned()
+    }
+
     /// Reopen the draft `id` (the composer's own when `None`) for editing:
     /// every change is that draft's.
     pub fn open_draft(&mut self, id: Option<&str>, draft: &Draft) {

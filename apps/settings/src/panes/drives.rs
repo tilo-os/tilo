@@ -69,18 +69,18 @@ const MAX_GRANT_BYTES: usize = 64;
 #[effect(operation = "settings.effect")]
 pub enum DrivesEffect {
     /// Read the remembered drives again.
-    #[effect(job, idempotent)]
+    #[effect(job, idempotent, returns)]
     RefreshDrives,
     /// Forget a remembered drive: it is closed if open, and asked about
     /// again the next time.
-    #[effect(job, row, label = "Forget")]
+    #[effect(job, row, label = "Forget", returns)]
     ForgetDrive {
         #[param("The remembered drive, as the drive list names it")]
         grant: String,
     },
     /// Open a drive inside this computer safely (a confined driver, a bit
     /// slower) or with the faster kernel driver, from its next opening on.
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, returns)]
     SetDriveOpensSafely {
         #[param("The remembered drive, as the drive list names it")]
         grant: String,

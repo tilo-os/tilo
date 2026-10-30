@@ -30,13 +30,13 @@ pub const BACKUPS_OPERATION_TYPE: &str = "backups.operation";
 pub enum BackupsEffect {
     /// Create one new checksummed local snapshot, then keep only what the
     /// retention policy keeps.
-    #[effect(job, label = "Run backup now")]
+    #[effect(job, returns, label = "Run backup now")]
     BackupNow,
     /// Choose a local source and a destination outside it.
     #[effect(attended, job, label = "Set up backups")]
     Setup,
     /// Read every file in this stored snapshot and verify its checksum.
-    #[effect(job, kind = "read", label = "Verify snapshot")]
+    #[effect(job, returns, kind = "read", label = "Verify snapshot")]
     Verify {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,

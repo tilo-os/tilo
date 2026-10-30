@@ -42,6 +42,16 @@ fn widths_value(widths: &[(GroupId, WindowWidth)]) -> Value {
 }
 
 impl ShellOverlayHost {
+    /// Reach the broker's published windows and the session's action door
+    /// through `door`, as the session attaches its own.
+    #[cfg(test)]
+    pub(crate) fn attach_open_door(
+        &mut self,
+        door: crate::shell::search::providers::app_content::OpenDoor,
+    ) {
+        self.shared_window_follow.attach(door);
+    }
+
     /// Run what the broker asked of the desktop's layout, then open the
     /// windows waiting to be opened at a resource whose app may be up now.
     pub(crate) fn serve_desktop_jobs(&mut self) {
