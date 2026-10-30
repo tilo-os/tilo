@@ -369,6 +369,7 @@ fn the_model_field_follows_the_model_chosen_unless_the_person_edits_it() {
             let profile = panel.provider_config().profiles[0].clone();
             let field = panel.field_buffers(&profile).model;
             let value = field.lock_recover().clone();
+            drop(field);
             value
         })
     };
