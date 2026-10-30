@@ -78,6 +78,15 @@ their root, so it can be made on any device the person uses:
   revalidation. The certified-identity check accepts a verified task delegation as the
   agent's certification, beside a collaborator's grant.
 
+An agent that comes in through the session's agent door (an AI agent in a terminal,
+`tilo-runtime-mcp --connect`) is a task agent too. Admitting it in trusted chrome asks Tasks
+for an issue ("claude-code in this session") assigned to a task agent the shell mints for
+that connection; once its run goes, the connection joins it in the broker's own process
+(`TaskRunHost`) with the same presentation a launched task agent joins with, and every
+action it takes, an app's or a host step, is a child of that run. Its model is its own,
+outside Tilo; everything it does is admitted, attributed and stopped as the run's
+([runtime-mcp.md](../runtime-mcp.md#inside-a-tilo-session)).
+
 Both go through the same task, program path (app-language/agents.md) and recorded steps.
 The composer's agent choice defaults to a new task agent; picking a collaborator assigns the
 task to it. Asking is possible whenever an agent runtime is reachable and a model is

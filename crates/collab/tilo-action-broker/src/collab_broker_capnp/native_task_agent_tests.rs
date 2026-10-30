@@ -177,7 +177,7 @@ impl Fixture {
 
     /// The person's second device, certified by their root and admitted to
     /// the room's device list.
-    fn second_device(&self) -> (SigningKey, tilo_user_identity::DeviceCert) {
+    pub(super) fn second_device(&self) -> (SigningKey, tilo_user_identity::DeviceCert) {
         let key = SigningKey::from_bytes(&[93; 32]);
         let cert = tilo_joined_room::testing::certificate(
             &SigningKey::from_bytes(&[91; 32]),

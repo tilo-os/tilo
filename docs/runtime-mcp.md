@@ -123,30 +123,38 @@ agent runs in — is admitted to ask, and that app is named in the question.
 
 Nothing a client sends after its `initialize` is read until the person
 answers, in trusted chrome: "Claude Code (node, pid N) in
-org.alacritty.Alacritty — Work in “Home” as the agent claude-code". The same
-decision is the `permission-prompts` provider's `allow-once@…`,
-`allow-session@…`, `allow-always@…` and `deny@…` actions, so the owner can
-also answer remotely; those take optional `agent` (an existing agent member,
-or a new one by that name) and `preset` parameters. A refusal reaches the
+org.alacritty.Alacritty — Work in “Home” as claude-code, in a task you can
+follow and stop in Tasks". The same decision is the `permission-prompts`
+provider's `allow-once@…`, `allow-session@…`, `allow-always@…` and `deny@…`
+actions, so the owner can also answer remotely; those take an optional
+`agent` parameter, the name the client works under. A refusal reaches the
 client as a JSON-RPC error on its `initialize`, and the connection closes.
 
-Admitting a client makes it an agent member of the workspace in front of the
-person, through the same membership Settings → Agents shows and removes. Its
-connection is then served the MCP tools as `Caller::local_agent(agent)` in that
-workspace's room, in an execution of its own: every query and invocation
-passes the broker's ordinary gate and is attributed to `agent:<id>`. An agent
-holds no role, so it reaches only what the person grants it there (Settings →
-Agents → Review access); removing it ends both its catalogue and its authority
-at once. There are no pixel (`computer`) tools on the door.
+Admitting a client makes a task of the connection, as asking an agent does
+([agents.md](architecture/agents.md), "Task agents and collaborators"): an
+issue in the workspace's Tasks titled "claude-code in this session",
+assigned to a task agent the desktop mints for the connection and delegates
+with its device key, whose run the person's admission starts. The client is
+let in once the run goes, and is served the MCP tools through that run
+(`TaskRunHost` in the action broker): every action it takes, an app's or a
+host step such as `desktop#open`, is admitted by the run as the agent working
+on the issue for the person, exactly as a launched task agent's is. So it is
+attributed to the task agent, grouped under the run in History, held to the
+person's grants, the agent cap and grants naming the agent or the issue, asks
+first where the room's answers ask, and shows as a run in Tasks. Stopping the
+run (Stop on the issue or in its chat) ends what the connection may do at
+once; a run that ends any other way does too. The door makes nobody a member
+of the workspace, and there is no other way in. There are no pixel
+(`computer`) tools on the door.
 
 "This session" and "Always" remember that this client — the executable the
-kernel names, under the client name it gives — is that agent, and let it in
-without asking wherever that agent is still a member. "Always" is kept in
+kernel names, under the client name it gives — may come in, and let it in
+without asking, into a run of its own each time. "Always" is kept in
 `$XDG_STATE_HOME/tilo/agent-door-bindings.json` (0600), never in the
 replicated workspace document, and only a workspace owner may give it. Any
 process of the same account can claim the same name, so a remembered client is
 a convenience against repeated prompts, not a credential: what it can do is
-still exactly the agent's grants.
+still exactly what its run admits.
 
 
 
@@ -219,7 +227,7 @@ as `installed, not yours to open`: an observer may read the room but opens
 nothing until the person grants it an app, and an empty list would have told
 it there were none. Opening one says who decides instead of starting it.
 `none: …` means nothing runs and nothing is installed. When the session
-cannot answer for the agent at all (its membership was removed, the
+cannot answer for the agent at all (its run was stopped or ended, the
 workspace is gone from the device, the session's workspaces or policy clock
 are not available), the broker refuses with that reason and the agent reads
 it; a list of installed apps that could not be read is named with its reason
