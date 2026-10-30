@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime};
 
 use tilo_files::native::ChangeWatch;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
-use tilo_notifications_service::{Notification, Notifications};
+use tilo_notifications_service::{Notification, Notifications, Taken};
 use tilo_system_service::update;
 use ui::format::NaiveDate;
 
@@ -511,8 +511,10 @@ pub fn start(notifications: &Notifications) {
             }
         });
 
-    notifications.on_action(move |_id, key| {
-        if key == RESTART_ACTION {
+    notifications.on_taken(move |_id, taken| {
+        if let Taken::Action { key, .. } = taken
+            && key == RESTART_ACTION
+        {
             restart();
         }
     });
@@ -817,8 +819,10 @@ mod tests {
         let notifications = Notifications::new();
         let tapped = std::sync::Arc::new(Mutex::new(Vec::new()));
         let seen = tapped.clone();
-        notifications.on_action(move |id, key| {
-            if let Ok(mut seen) = seen.lock() {
+        notifications.on_taken(move |id, taken| {
+            if let Taken::Action { key, .. } = taken
+                && let Ok(mut seen) = seen.lock()
+            {
                 seen.push((id, key.to_owned()));
             }
         });

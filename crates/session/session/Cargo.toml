@@ -10,6 +10,14 @@ license.workspace = true
 name = "tilo-session"
 path = "src/main.rs"
 
+[features]
+# Stamps the developer-entry build marker into the binary so the package's
+# developer session entry can tell a session someone deliberately built from
+# any other executable before logging into it. Inert unless this is a debug
+# build, so a `--release --features dev-session` never carries it: the marker
+# is the entire content of the feature.
+dev-session = []
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # The surface apps' sockets are handed to their children as descriptors.
 libc.workspace = true
@@ -70,6 +78,8 @@ tilo-crash-records = { path = "../crash-records" }
 tilo-liveness = { path = "../liveness" }
 # The room left on the person's filesystems, for the storage notice.
 rustix = { workspace = true, features = ["fs"] }
+# Planning and starting the apps the person opens.
+tilo-app-launch = { path = "../app-launch" }
 tilo-connectivity-service = { path = "../connectivity-service" }
 tilo-system-service = { path = "../system-service" }
 tilo-settings-service = { path = "../settings-service" }

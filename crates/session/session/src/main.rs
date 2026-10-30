@@ -7,6 +7,16 @@
 //! services serve on the buses the environment names unless a flag names
 //! another (or none).
 
+/// Byte string stamped into a session built with `--features dev-session`, so
+/// the package's developer entry can tell a deliberately built session from
+/// any other executable before it starts one as the login session. A release
+/// build never carries it.
+///
+/// `#[used]` keeps the linker from discarding a static nothing reads.
+#[cfg(all(feature = "dev-session", debug_assertions))]
+#[used]
+static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-app-session-build-marker-v1";
+
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
@@ -99,11 +109,19 @@ fn main() -> std::process::ExitCode {
         .and_then(|desktop| desktop.portal())
         .map(|serving| link.with_captures(serving.input_captures().clone()));
     tell_the_person(backend, desktop.as_deref());
+    // The apps this session opens start from its own displays and the
+    // person's variables, once the compositor has bound its socket.
+    let launch = std::rc::Rc::new(tilo_session::mount::apps::Apps::new(
+        tilo_app_launch::SessionEnvironment::from_process(),
+        Some(wake.handle()),
+    ));
     let options = Options {
         services,
         wake,
         setup: setup(host_desktop),
         captures: Some(captures),
+        apps: Some(std::rc::Rc::clone(&launch) as std::rc::Rc<dyn tilo_session::AppActions>),
+        launch: Some(std::rc::Rc::clone(&launch)),
         desktop,
         portal,
         power,
@@ -127,7 +145,11 @@ fn main() -> std::process::ExitCode {
         }
     };
     watch_the_loop(backend, &mut session);
-    run(session, ours, command)
+    let session_bus = match &buses.session {
+        Bus::Address(address) => Some(address.clone()),
+        _ => None,
+    };
+    run(session, ours, command, Some(&launch), session_bus)
 }
 
 /// `session` running until `command` exits, its displays printed.
@@ -136,6 +158,8 @@ fn run(
     mut session: tilo_session::Session,
     ours: &[String],
     command: &[String],
+    launch: Option<&std::rc::Rc<tilo_session::mount::apps::Apps>>,
+    session_bus: Option<String>,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
     use tilo_session::SessionEnvironment;
@@ -153,6 +177,16 @@ fn run(
     } else {
         start_x11(session.compositor())
     };
+    // The apps opened from now on connect where the person's windows are.
+    // X11 needs the authority file Xwayland was started with as well, which
+    // the compositor does not hand out yet.
+    if let Some(launch) = launch {
+        launch.set_displays(
+            tilo_paths::xdg::runtime_dir_or_default().join(&socket),
+            x11_display.clone().map(|display| (display, None)),
+            session_bus,
+        );
+    }
     SessionEnvironment {
         wayland_display: socket.clone(),
         x11_display: x11_display.clone(),

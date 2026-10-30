@@ -150,12 +150,6 @@ impl DesktopServices {
         services
     }
 
-    /// What apps sent the notifications daemon, for the session to show.
-    #[must_use]
-    pub fn notifications(&self) -> tilo_notifications_service::Notifications {
-        self.notifications.clone()
-    }
-
     /// The portal backend, once it serves.
     #[must_use]
     pub const fn portal(&self) -> Option<&Portal> {

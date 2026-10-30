@@ -152,6 +152,9 @@ pub struct Options {
     /// chosen in search runs by address. Without one, search finds the
     /// desktop's own and starts nothing.
     pub apps: Option<Rc<dyn AppActions>>,
+    /// The apps this session starts: what the desktop asks for, by name, and
+    /// what a search row or a file opens.
+    pub launch: Option<Rc<mount::apps::Apps>>,
     /// Setup to run over everything before the desktop is used: the first
     /// use of this device, or the recovery of its identity.
     pub setup: Option<OnboardingView>,
@@ -275,6 +278,7 @@ impl Default for Options {
             services: Vec::new(),
             search: SearchOptions::default(),
             apps: None,
+            launch: None,
             setup: None,
             session_actions: no_session_actions,
             lock_power: false,
@@ -307,6 +311,8 @@ struct Shared {
     handle: DesktopHandle,
     desktop: DesktopHost,
     search: Rc<SessionSearch>,
+    /// The apps the person opens, when this session starts them.
+    launch: Option<Rc<mount::apps::Apps>>,
     /// What the desk and the chrome asked of the session.
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// Where the chrome takes intents the session raises.
@@ -1182,6 +1188,11 @@ impl Session {
                 .map(|workspace| workspace.id.0.to_string())
         }));
         wallpapers.start(&settings_store::load());
+        // The apps the person opens read their room from this desktop and
+        // leave their notice in it.
+        if let Some(launch) = &options.launch {
+            launch.attach(desktop.clone());
+        }
         let mut compositor = start(Box::new(policy))?;
         // What the services take in wakes the loop instead of waiting for
         // its next pass.
@@ -1270,6 +1281,7 @@ impl Session {
             handle,
             desktop,
             search,
+            launch: options.launch,
             asks,
             intents,
             quick_settings,
@@ -1300,7 +1312,7 @@ impl Session {
                 options
                     .desktop
                     .as_ref()
-                    .map(|desktop| desktop.notifications()),
+                    .map(|desktop| desktop.notifications().clone()),
                 notices,
                 banners.clone(),
                 notification_policy,
@@ -1651,6 +1663,10 @@ impl Session {
         // leaves to the session); a few rounds settle any chain.
         for _ in 0..4 {
             self.shared.follow_asks();
+            // What the desktop asked to open, and what stopped since.
+            if let Some(launch) = &self.shared.launch {
+                launch.follow();
+            }
             self.shared.follow_gestures();
             let ran = self.shared.run_invocations(self.compositor.locked());
             let commands = std::mem::take(&mut *self.shared.commands.borrow_mut());
