@@ -345,9 +345,6 @@ impl App {
                     crate::widget::ControlBindingKind::SemanticAction(_) => {
                         ControlBindingStatus::SemanticAction
                     }
-                    crate::widget::ControlBindingKind::LegacyCallback => {
-                        ControlBindingStatus::ExplicitLegacy
-                    }
                 };
                 ControlBindingCoverage { binding, status }
             })

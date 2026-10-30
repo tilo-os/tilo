@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 
+use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -320,6 +321,8 @@ pub struct Stepper {
     dirty: bool,
     id: String,
     on_station: Option<Box<dyn FnMut(usize)>>,
+    action: Option<crate::widget::ActionEmitter<usize>>,
+    native_resource: Option<crate::tilo_actions::ResourceSpec>,
     /// Where each station was painted, for the pointer.
     stations: Vec<Rect>,
     hovered: Option<usize>,
@@ -338,6 +341,8 @@ impl Stepper {
             dirty: true,
             id: "stepper".to_owned(),
             on_station: None,
+            action: None,
+            native_resource: None,
             stations: Vec::new(),
             hovered: None,
             focused: false,
@@ -370,8 +375,60 @@ impl Stepper {
 
     /// Let the person go back to a step that is done: `f` gets the
     /// station's index.
+    ///
+    /// The stepper, as control `id`, publishes going back as its view action
+    /// `select` with the station's index, so a person's press, a screen
+    /// reader, a script and an agent go back through the same action. Going
+    /// back is where the window is, never an edit.
     #[must_use]
-    pub fn on_station(mut self, f: impl FnMut(usize) + 'static) -> Self {
+    #[expect(
+        clippy::expect_used,
+        reason = "the generated integer parameter and its action are internally consistent"
+    )]
+    pub fn on_station_view(mut self, f: impl FnMut(usize) + 'static) -> Self {
+        use crate::tilo_actions::{
+            ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
+            ResourceSpec,
+        };
+
+        const TYPE_ID: &str = "tilo.ui.stepper.select";
+        let control_id = self.id.clone();
+        let label = format!(
+            "Step {}",
+            control_id.rsplit('.').next().unwrap_or(&control_id)
+        );
+        let spec = ActionSpec::typed_operation(
+            "select",
+            "Go back",
+            "Go back to a step that is done",
+            OperationKind::View,
+            TYPE_ID,
+            vec![ActionParam::required(
+                "station",
+                ParamType::Integer,
+                "Zero-based station index",
+            )],
+            move |args| {
+                EncodedAction::encode_operation(
+                    TYPE_ID,
+                    &serde_json::json!({
+                        "control": control_id,
+                        "station": args.integer("station").unwrap_or_default(),
+                    }),
+                )
+                .expect("generated stepper action payload is serializable")
+            },
+        )
+        .for_audience(crate::tilo_actions::Audience::Agents);
+        let resource =
+            ResourceSpec::new(format!("tilo.control:{}", self.id), "tilo.control", label)
+                .with_action(spec.clone());
+        let binding = ActionBinding::new(&resource, &spec, |station: usize| {
+            serde_json::Map::from_iter([("station".into(), serde_json::json!(station))])
+        })
+        .expect("station index matches the generated integer parameter");
+        self.action = Some(crate::widget::ActionEmitter::new(binding));
+        self.native_resource = Some(resource);
         self.on_station = Some(Box::new(f));
         self
     }
@@ -401,10 +458,56 @@ impl Stepper {
         if !self.is_station_enabled(index) {
             return false;
         }
+        if let Some(action) = &mut self.action {
+            if let Err(error) = action.emit(index) {
+                tracing::warn!(%error, "the stepper's action refused its station");
+            }
+            return true;
+        }
+        self.apply_station(index);
+        true
+    }
+
+    /// Take the person to `index`: the press, the key and the published view
+    /// action all arrive here.
+    fn apply_station(&mut self, index: usize) {
         if let Some(f) = &mut self.on_station {
             f(index);
         }
-        true
+    }
+
+    /// Apply a `tilo.ui.stepper.select` addressed to this control.
+    /// `Ok(false)` when the operation is not this control's.
+    fn select_station_operation(
+        &mut self,
+        kind: crate::tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<bool, String> {
+        const TYPE_ID: &str = "tilo.ui.stepper.select";
+        if kind != crate::tilo_actions::OperationKind::View
+            || type_id != TYPE_ID
+            || self.action.is_none()
+        {
+            return Ok(false);
+        }
+        let value: serde_json::Value =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if value.get("control").and_then(serde_json::Value::as_str) != Some(self.id.as_str()) {
+            return Ok(false);
+        }
+        let index = value
+            .get("station")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or_else(|| "station index is not a station".to_owned())?;
+        if !self.is_station_enabled(index) {
+            return Err(format!(
+                "station {index} is not one the stepper can go back to"
+            ));
+        }
+        self.apply_station(index);
+        Ok(true)
     }
 
     fn station_at(&self, point: Point) -> Option<usize> {
@@ -423,7 +526,11 @@ impl Stepper {
 }
 
 impl Widget for Stepper {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn build_layout(
         &mut self,
@@ -662,10 +769,76 @@ impl Widget for Stepper {
 
 impl crate::widget::controls::ActionControls for Stepper {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        self.enabled_stations()
-            .into_iter()
-            .map(|index| crate::widget::ControlBindingMetadata::semantic(self.station_id(index)))
-            .collect()
+        let mut bindings = self
+            .action
+            .as_ref()
+            .map(|action| vec![action.metadata(self.id.clone())])
+            .unwrap_or_default();
+        bindings.extend(
+            self.enabled_stations().into_iter().map(|index| {
+                crate::widget::ControlBindingMetadata::semantic(self.station_id(index))
+            }),
+        );
+        bindings
+    }
+
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
+        self.action
+            .as_mut()
+            .and_then(crate::widget::ActionEmitter::take)
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+}
+
+impl crate::widget::ResourceOperations for Stepper {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        if self.native_resource.is_some() {
+            &["tilo.ui.stepper.select"]
+        } else {
+            &[]
+        }
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .select_station_operation(request.kind, request.type_id, request.payload)?
+            .then(|| {
+                crate::widget::ResourceOperationStart::Completed(
+                    crate::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+}
+
+impl crate::resources::PublishesResources for Stepper {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::tilo_actions::ResourceSpec> {
+        self.native_resource.iter().cloned().collect()
     }
 }
 

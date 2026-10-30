@@ -483,7 +483,7 @@ impl<R: FileRow> FileTable<R> {
             .on_activate(move |index| activate.activate.set(Some(index)));
         if self.clicks {
             let click = Rc::clone(&self.mailbox);
-            table.on_row_click(move |index, ctrl, shift| {
+            table.on_row_click_view(format!("{}.click", self.id), move |index, ctrl, shift| {
                 click.click.set(Some((index, ctrl, shift)));
             })
         } else {

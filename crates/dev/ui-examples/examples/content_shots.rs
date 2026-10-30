@@ -402,7 +402,7 @@ fn progress() -> Element {
                         .collect(),
                 )
                 .current(2)
-                .on_station(|_| {}),
+                .on_station_view(|_| {}),
             ))
             .push(Box::new(StatGroup::new(vec![
                 Box::new(StatTile::new("Used", "1.2").unit("TB").note("of 2 TB")),
