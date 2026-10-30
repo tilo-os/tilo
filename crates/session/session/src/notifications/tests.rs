@@ -400,16 +400,47 @@ fn an_apps_badge_follows_its_count_until_this_person_hides_it() {
     message.badge_count = Some(7);
     rig.daemon.push(message);
     rig.step();
-    assert_eq!(rig.signals.badge("so.tilo.chat"), 7);
-    assert_eq!(rig.signals.badge("so.tilo.mail"), 0, "nothing for others");
+    assert_eq!(
+        rig.signals
+            .badges()
+            .get("so.tilo.chat")
+            .copied()
+            .unwrap_or(0),
+        7
+    );
+    assert_eq!(
+        rig.signals
+            .badges()
+            .get("so.tilo.mail")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "nothing for others"
+    );
 
     rig.policy.lock().unwrap().show_badges = false;
     rig.step();
-    assert_eq!(rig.signals.badge("so.tilo.chat"), 0, "hidden, not lost");
+    assert_eq!(
+        rig.signals
+            .badges()
+            .get("so.tilo.chat")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "hidden, not lost"
+    );
 
     rig.policy.lock().unwrap().show_badges = true;
     rig.step();
-    assert_eq!(rig.signals.badge("so.tilo.chat"), 7, "shown again as it is");
+    assert_eq!(
+        rig.signals
+            .badges()
+            .get("so.tilo.chat")
+            .copied()
+            .unwrap_or(0),
+        7,
+        "shown again as it is"
+    );
 
     let id = rig.daemon.alloc_id();
     let mut cleared = sent(id);
@@ -420,7 +451,15 @@ fn an_apps_badge_follows_its_count_until_this_person_hides_it() {
     cleared.badge_count = Some(0);
     rig.daemon.push(cleared);
     rig.step();
-    assert_eq!(rig.signals.badge("so.tilo.chat"), 0, "the app says none");
+    assert_eq!(
+        rig.signals
+            .badges()
+            .get("so.tilo.chat")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "the app says none"
+    );
 }
 
 #[test]

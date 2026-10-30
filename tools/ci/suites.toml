@@ -754,6 +754,7 @@ readers = [
   "apps/tilolang/src/packages.rs",
   "apps/tilolang/tests/board.rs",
   "apps/tilolang/tests/opening.rs",
+  "apps/tilolang/tests/support.rs",
 ]
 
 [[cargo]]
@@ -790,6 +791,7 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_todo.rs",
   "crates/lang/tilolang-runtime/tests/programs.rs",
   "crates/lang/tilolang-runtime/tests/rich_text.rs",
+  "crates/lang/tilolang-runtime/tests/written_views.rs",
 ]
 
 [[cargo]]
@@ -797,16 +799,21 @@ package = "tilolang-tilo"
 # The collaboration tests compile the built-in packages and the rich-text fixture from their sources.
 inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/"]
 readers = [
+  "crates/platform/tilolang-tilo/tests/agent_queries.rs",
   "crates/platform/tilolang-tilo/tests/budgets.rs",
   "crates/platform/tilolang-tilo/tests/bundle.rs",
   "crates/platform/tilolang-tilo/tests/chat.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
+  "crates/platform/tilolang-tilo/tests/legacy.rs",
+  "crates/platform/tilolang-tilo/tests/legibility.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
   "crates/platform/tilolang-tilo/tests/policy.rs",
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
+  "crates/platform/tilolang-tilo/tests/scenarios.rs",
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
+  "crates/platform/tilolang-tilo/tests/views_migration.rs",
 ]
 
 [[cargo]]
@@ -1149,6 +1156,8 @@ readers = [
   # Workspace certification's compute-package test reads real manifests.
   "crates/dev/tilo-app-cli/src/main.rs",
   "crates/dev/tilo-app-cli/src/native_sdk/tests.rs", "crates/dev/tilo-app-cli/tests/native_sdk.rs",
+  # `--from-example` embeds the example apps' files.
+  "crates/dev/tilo-app-cli/src/examples.rs",
 ]
 
 [[cargo]]

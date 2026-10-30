@@ -25,8 +25,11 @@ impl CertifiedEndpointIdentity {
                 &credentials.workspace_id,
             ))
             .to_bytes();
-        Ok(Self::new(credentials.presentation(proof)?, key)
-            .with_channel_keys(inherited_channel_keys()))
+        Ok(Self::delegated(
+            credentials.presentation(proof)?,
+            key,
+            inherited_channel_keys(),
+        ))
     }
 }
 
@@ -106,8 +109,8 @@ mod tests {
         };
         let identity = CertifiedEndpointIdentity::for_task_agent(&credentials).unwrap();
         assert!(
-            identity.channel_keys.is_some(),
-            "a task agent asks for its routes' channel keys"
+            matches!(identity.signer, super::super::EndpointSigner::Delegated(_)),
+            "a task agent signs as a delegated agent and asks for its routes' channel keys"
         );
     }
 }

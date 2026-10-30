@@ -52,6 +52,10 @@ pub enum Role {
     Warning,
     Danger,
     Info,
+    /// A translucent surface of a role over the worst backdrop it can show
+    /// ([`super::finish::worst_grounds`]). [`Role::of`] names the role's
+    /// opaque ground; the material findings measure both band ends.
+    Material(super::finish::SurfaceRole),
 }
 
 impl Role {
@@ -82,6 +86,18 @@ impl Role {
             Self::Warning => "semantic.warning",
             Self::Danger => "semantic.danger",
             Self::Info => "semantic.info",
+            Self::Material(super::finish::SurfaceRole::Window) => {
+                "material.window over the worst backdrop"
+            }
+            Self::Material(super::finish::SurfaceRole::Control) => {
+                "material.control over the worst backdrop"
+            }
+            Self::Material(super::finish::SurfaceRole::Floating) => {
+                "material.floating over the worst backdrop"
+            }
+            Self::Material(super::finish::SurfaceRole::Bar) => {
+                "material.bar over the worst backdrop"
+            }
         }
     }
 
@@ -113,6 +129,7 @@ impl Role {
             Self::Warning => colors.semantic.warning,
             Self::Danger => colors.semantic.danger,
             Self::Info => colors.semantic.info,
+            Self::Material(role) => super::finish::role_ground(colors, role),
         }
     }
 
@@ -307,6 +324,63 @@ pub fn audit(colors: &Colors) -> Vec<ContrastFinding> {
             })
         })
         .collect()
+}
+
+/// Every floor ink misses on a translucent surface under `finishes`, over
+/// the worst backdrop that surface can show ([`super::finish::worst_grounds`]):
+/// primary and secondary ink are body text there and tertiary ink large
+/// text, as on the opaque surfaces (AAA text on a high-contrast palette).
+/// Opaque roles add nothing: [`audit`] measures their grounds.
+#[must_use]
+pub fn audit_materials(
+    colors: &Colors,
+    finishes: &super::finish::RoleFinishes,
+) -> Vec<ContrastFinding> {
+    use super::finish::SurfaceRole;
+    let mut findings = Vec::new();
+    for role in [
+        SurfaceRole::Window,
+        SurfaceRole::Control,
+        SurfaceRole::Floating,
+        SurfaceRole::Bar,
+    ] {
+        if !finishes.of(role).translucent() {
+            continue;
+        }
+        let grounds = super::finish::worst_grounds(colors, finishes, role);
+        for (ink, role_ink, floor) in [
+            (
+                colors.text_primary,
+                Role::TextPrimary,
+                BODY_TEXT_MIN_CONTRAST,
+            ),
+            (colors.text_dim, Role::TextDim, BODY_TEXT_MIN_CONTRAST),
+            (
+                colors.text_tertiary,
+                Role::TextTertiary,
+                NON_TEXT_MIN_CONTRAST,
+            ),
+        ] {
+            let min_ratio = if colors.palette.high_contrast {
+                floor.max(HIGH_CONTRAST_TEXT_MIN_CONTRAST)
+            } else {
+                floor
+            };
+            let ratio = grounds
+                .iter()
+                .map(|ground| contrast_ratio(ink, *ground))
+                .fold(f64::INFINITY, f64::min);
+            if ratio < min_ratio {
+                findings.push(ContrastFinding {
+                    foreground: role_ink,
+                    ground: Role::Material(role),
+                    ratio,
+                    min_ratio,
+                });
+            }
+        }
+    }
+    findings
 }
 
 /// Step every foreground that misses a floor out, in OKLCH lightness at its
