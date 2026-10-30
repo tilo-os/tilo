@@ -6,15 +6,16 @@ use tilo_actions::DoorError;
 use tilo_service::{Service, Services, Started};
 
 use crate::device::{Change, System};
-use crate::model::{Power, PowerMode, Time};
+use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
-use crate::{POWER, SYSTEM_UPDATE, SystemService, TIME_ZONE};
+use crate::{KEYBOARD_BACKLIGHT, POWER, SYSTEM_UPDATE, SystemService, TIME_ZONE};
 
 /// A machine in memory, in Amsterdam unless told it is elsewhere.
 struct Fake {
     power: Mutex<Power>,
     update: Mutex<Update>,
     time: Mutex<Time>,
+    keyboard_light: Mutex<KeyboardLight>,
     location: Mutex<Result<Location, String>>,
     changes: Mutex<Vec<Change>>,
 }
@@ -32,6 +33,11 @@ impl Fake {
                 zone: Some("Europe/Amsterdam".into()),
                 network_time: Some(true),
                 ..Time::default()
+            }),
+            keyboard_light: Mutex::new(KeyboardLight {
+                level: Some(1),
+                max: 3,
+                ..KeyboardLight::default()
             }),
             location: Mutex::new(Err("no fix".into())),
             changes: Mutex::new(Vec::new()),
@@ -56,6 +62,10 @@ impl System for Fake {
         self.time.lock().unwrap().clone()
     }
 
+    fn keyboard_light(&self) -> KeyboardLight {
+        self.keyboard_light.lock().unwrap().clone()
+    }
+
     fn change(&self, change: &Change) -> Result<(), String> {
         self.changes.lock().unwrap().push(change.clone());
         match change {
@@ -68,6 +78,9 @@ impl System for Fake {
             Change::FollowedZone(zone) => self.time.lock().unwrap().zone = Some(zone.clone()),
             Change::AutomaticZone(on) => self.time.lock().unwrap().automatic = *on,
             Change::UpdateNow => return Err("nothing newer to fetch".into()),
+            Change::KeyboardLight(level) => {
+                self.keyboard_light.lock().unwrap().level = Some(*level);
+            }
             _ => {}
         }
         Ok(())
@@ -255,4 +268,46 @@ fn the_zone_follows_the_device_only_while_chosen_and_never_guesses() {
         service.read(TIME_ZONE).unwrap()["zone"],
         json!("Europe/Amsterdam")
     );
+}
+
+#[test]
+fn the_keyboard_keys_step_the_keyboard_light_through_its_levels() {
+    let fake = Fake::new();
+    let mut service = service(&fake);
+    let level =
+        |service: &SystemService| service.read(KEYBOARD_BACKLIGHT).unwrap()["level"].clone();
+    assert_eq!(level(&service), json!(1));
+    for (action, arguments_, expected) in [
+        ("brighter", json!({}), 2),
+        ("brighter", json!({}), 3),
+        ("brighter", json!({}), 3),
+        ("toggle", json!({}), 0),
+        ("toggle", json!({}), 3),
+        ("dimmer", json!({}), 2),
+        ("set-level", json!({"level": 0.34}), 1),
+    ] {
+        assert_eq!(
+            service.invoke(KEYBOARD_BACKLIGHT, action, &arguments(arguments_)),
+            Ok(Started::Accepted),
+            "{action}"
+        );
+        service.settle();
+        assert_eq!(level(&service), json!(expected), "{action}");
+    }
+    assert!(matches!(
+        service.invoke(
+            KEYBOARD_BACKLIGHT,
+            "set-level",
+            &arguments(json!({"level": 2.0}))
+        ),
+        Err(DoorError::InvalidArguments(_))
+    ));
+
+    *fake.keyboard_light.lock().unwrap() = KeyboardLight::default();
+    service.refresh();
+    service.settle();
+    assert!(matches!(
+        service.invoke(KEYBOARD_BACKLIGHT, "brighter", &Map::new()),
+        Err(DoorError::Unavailable { .. })
+    ));
 }

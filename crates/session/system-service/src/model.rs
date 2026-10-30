@@ -75,3 +75,36 @@ pub struct Time {
     pub pending: Vec<String>,
     pub problem: Option<String>,
 }
+
+/// The `device:keyboard-backlight` resource.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct KeyboardLight {
+    /// The light's level, from 0 to `max`; `None` without a keyboard light.
+    pub level: Option<u32>,
+    /// Its brightest level.
+    pub max: u32,
+    pub pending: Vec<String>,
+    pub problem: Option<String>,
+}
+
+impl KeyboardLight {
+    /// The light as the kernel reads it.
+    #[must_use]
+    pub fn of(light: os_actions::KeyboardBacklight) -> Self {
+        Self {
+            level: Some(light.level),
+            max: light.max,
+            ..Self::default()
+        }
+    }
+
+    /// The light's own reading, when there is a light.
+    #[must_use]
+    pub fn light(&self) -> Option<os_actions::KeyboardBacklight> {
+        self.level.map(|level| os_actions::KeyboardBacklight {
+            level,
+            max: self.max,
+        })
+    }
+}

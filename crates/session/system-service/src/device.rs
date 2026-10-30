@@ -1,10 +1,10 @@
 //! The machine under the service. The session's is [`OsSystem`]
 //! (power-profiles-daemon, logind, timedated, the update units, the
-//! Location portal); a test lends one of its own.
+//! Location portal, the keyboard's LED); a test lends one of its own.
 
 use settings_store::day_schedule::Location;
 
-use crate::model::{Power, PowerMode, Time};
+use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
 
 /// A change to make on the machine.
@@ -24,6 +24,8 @@ pub enum Change {
     FollowedZone(String),
     NetworkTime(bool),
     AutomaticZone(bool),
+    /// The keyboard light's level, in the light's own steps.
+    KeyboardLight(u32),
 }
 
 /// The machine: reads and changes. Called on the service's worker.
@@ -31,6 +33,7 @@ pub trait System: Send + Sync {
     fn power(&self) -> Power;
     fn update(&self) -> Update;
     fn time(&self) -> Time;
+    fn keyboard_light(&self) -> KeyboardLight;
 
     /// Make `change`.
     ///
@@ -84,6 +87,11 @@ impl System for OsSystem {
         }
     }
 
+    fn keyboard_light(&self) -> KeyboardLight {
+        os_actions::get_keyboard_backlight()
+            .map_or_else(|_| KeyboardLight::default(), KeyboardLight::of)
+    }
+
     fn change(&self, change: &Change) -> Result<(), String> {
         use os_actions::{SessionAction, perform_session_action};
         match change {
@@ -107,6 +115,7 @@ impl System for OsSystem {
             Change::AutomaticZone(on) => settings_store::clock::AUTOMATIC_ZONE
                 .set(*on)
                 .map_err(|error| error.to_string()),
+            Change::KeyboardLight(level) => os_actions::set_keyboard_backlight(*level),
         }
     }
 
