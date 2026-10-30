@@ -3580,6 +3580,9 @@ impl FrameHarness {
                 if self.slot_row.is_some() {
                     crate::widget::window_header::offer_window_search(self.root.as_mut(), true);
                 }
+                // What the rebuild builds hears how the person reaches the
+                // window, as the live app's rebuild tells it.
+                self.root.set_interaction_environment(self.interaction);
                 self.child_node = if let Some(history) = &mut self.history {
                     history.build_composition(
                         self.root.as_mut(),
@@ -8859,6 +8862,7 @@ impl crate::host_core::HostCore for FrameHarness {
             node_map: &mut self.node_map,
             bindings: &mut self.bindings,
             close_reports: &mut self.component_close_reports,
+            interaction: self.interaction,
         }
     }
 
