@@ -4,6 +4,43 @@
 
 use super::*;
 
+/// One frame as the compositor's loop makes it: the pump, the layout the
+/// frame owes, the paint.
+fn frame(fb: &mut FrameBuilder, doc: &mut AutoCommit) -> FramePaint {
+    fb.pump_apps(doc, &automerge::ROOT);
+    fb.relayout_if_owed();
+    fb.paint_with_damage()
+}
+
+/// Bring a fresh desktop to rest as the loop does: frames until none is
+/// asked for. Its hosted apps (the banners, the top bar) take what their
+/// first frame handed them in the pump of the next, and the desk's team
+/// glance, which comes in a moment after the desktop is first shown, has
+/// come and settled, so a later frame's damage is only what the test did.
+fn settle(fb: &mut FrameBuilder, doc: &mut AutoCommit) {
+    let _ = fb.paint_settled();
+    let deadline = tilo_test_env::hang_deadline();
+    let desk_pending = |fb: &FrameBuilder| {
+        let now = std::time::Instant::now();
+        fb.host.desk_animating(now)
+            || fb.host.desk_wake_deadline(now).is_some_and(|due| {
+                due.saturating_duration_since(now) < std::time::Duration::from_secs(10)
+            })
+    };
+    loop {
+        let _ = frame(fb, doc);
+        if !fb.needs_animation_frame() && !desk_pending(fb) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the desktop settles: {:?}",
+            fb.animation_owners()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+}
+
 fn both_directions_carry_the_desktop() {
     let mut fb = FrameBuilder::new((3200, 1080));
     let _ = fb.paint_settled();
@@ -95,7 +132,7 @@ fn overview_and_workspace_switch_request_their_frames() {
 
     fn compositor_paint_run_is_not_host_demand() {
         let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
+        settle(&mut fb, &mut AutoCommit::new());
         fb.with_chrome(|st| st.request_transition_paints(8));
         assert_eq!(fb.chrome().transition_paints_remaining(), 8);
         assert!(
@@ -143,8 +180,10 @@ fn overview_fade_damages_only_its_display_on_two_heads() {
     use crate::shell::output_scene::OutputGeometry;
 
     /// Every frame of a fade carries the desktop and a sparse proof, and
-    /// after the chord's own frame repaints only the first display.
-    fn fade(fb: &mut FrameBuilder, open: bool) {
+    /// after the chord's own frame repaints only the first display. Each
+    /// frame is the compositor loop's: the pump that shows the overview's
+    /// app what the chord asked, the layout it owes, the paint.
+    fn fade(fb: &mut FrameBuilder, doc: &mut AutoCommit, open: bool) {
         let direction = if open { "open" } else { "close" };
         fb.with_chrome(|st| {
             st.overlays.overview = open;
@@ -155,9 +194,9 @@ fn overview_fade_damages_only_its_display_on_two_heads() {
         for index in 0..8 {
             // The fade samples the wall clock in whole milliseconds.
             std::thread::sleep(std::time::Duration::from_millis(20));
-            let frame = fb.paint_with_damage();
+            let painted = frame(fb, doc);
             assert!(
-                !frame.scene.encoding().is_empty(),
+                !painted.scene.encoding().is_empty(),
                 "{direction} frame {index} draws the desktop, not an empty clip"
             );
             if index == 0 {
@@ -165,7 +204,7 @@ fn overview_fade_damages_only_its_display_on_two_heads() {
                 // top bar's button) once.
                 continue;
             }
-            let damage = frame.damage_regions.unwrap_or_else(|| {
+            let damage = painted.damage_regions.unwrap_or_else(|| {
                 panic!("{direction} frame {index} is sparse, not both displays")
             });
             for rect in &damage {
@@ -185,10 +224,11 @@ fn overview_fade_damages_only_its_display_on_two_heads() {
         OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
         OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
     ]);
-    let _ = fb.paint_settled();
-    let _ = fb.paint_with_damage();
-    fade(&mut fb, true);
-    fade(&mut fb, false);
+    let mut doc = AutoCommit::new();
+    settle(&mut fb, &mut doc);
+    let _ = frame(&mut fb, &mut doc);
+    fade(&mut fb, &mut doc, true);
+    fade(&mut fb, &mut doc, false);
 }
 
 #[test]
