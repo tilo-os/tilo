@@ -487,6 +487,29 @@ impl Instance {
         self.host.borrow().clone()
     }
 
+    /// How long from the platform's clock now until the time a view of the window read
+    /// (`today` in a query or a filter) next reads differently: the embedder wakes the instance
+    /// then (a frame's deadline, its wait's timeout), and that frame runs again exactly the
+    /// views that read it. Zero once it has. `None` when no view read the time: nothing about
+    /// the time ever wakes the instance.
+    #[must_use]
+    pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        let at = [self.root.as_ref(), self.detail.as_ref()]
+            .into_iter()
+            .flatten()
+            .filter_map(|shown| shown.view.borrow().wakes_at())
+            .min()?;
+        let clock = self.platform.now();
+        let Some(now) = tilolang::calendar::instant(&clock) else {
+            // The runtime read the same clock to answer the view: it could not have.
+            tracing::error!(clock, "the platform's clock reads no time");
+            return None;
+        };
+        Some(std::time::Duration::from_secs(
+            u64::try_from(at.saturating_sub(now)).unwrap_or(0),
+        ))
+    }
+
     /// The resource the root view shows.
     #[must_use]
     pub fn root_target(&self) -> Option<&ResourceRef> {
@@ -2012,8 +2035,17 @@ impl Instance {
         // Who is at a resource shows wherever a view reads its lenses.
         let lenses = std::mem::take(&mut self.lenses_changed);
         let members = self.follow_members();
-        let changed =
-            received || door || opened || pulled || settled || lenses || renamed || members;
+        // The time a view read moved on: the frame its embedder woke for it.
+        let timed = self.wakes_in().is_some_and(|wait| wait.is_zero());
+        let changed = received
+            || door
+            || opened
+            || pulled
+            || settled
+            || lenses
+            || renamed
+            || members
+            || timed;
         if changed {
             self.poll_views();
         }

@@ -62,7 +62,11 @@ impl Core {
         let Some(declared) = pkg.meta.types.iter().find(|t| t.id == ty) else {
             return trap(format!("query: type `{ty}` is not declared"));
         };
-        let resolved = resolve(&query, declared, &pkg.meta.enums, &self.query_clock()?)?;
+        let clock = self.query_clock()?;
+        let resolved = resolve(&query, declared, &pkg.meta.enums, &clock)?;
+        // A view that asked by the time (`is:today`, `received:-7d`) runs again when what it
+        // read of it moves on, and only then.
+        self.note_time(clock.changes_at())?;
         // A query that asks nothing: the items as they are.
         if resolved.pred == tilolang::pred::Pred::Const(true) && resolved.order.is_none() {
             let held = self.val(scope)?;

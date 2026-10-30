@@ -83,6 +83,9 @@ pub struct ViewState {
     /// Every `(resource, field)` read (the resource as `ResourceRef::id_string`), the view's
     /// dependencies.
     pub reads: Vec<(String, String)>,
+    /// When the time it read (`today` in a query or a filter) next reads differently, in
+    /// seconds since 1970 (UTC): it runs again then. `None` when it read no time.
+    pub changes_at: Option<i64>,
     /// What the view saw of the collections it read item by item.
     pub(crate) colls: Vec<crate::colls::CollSeen>,
     /// The listings of those collections, read once per run.

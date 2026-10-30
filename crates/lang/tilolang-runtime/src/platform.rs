@@ -383,6 +383,20 @@ impl Core {
         Ok(())
     }
 
+    /// Record, in a view's frame, that what it read of the time reads differently at
+    /// `changes_at` (seconds since 1970, UTC): it runs again then. Outside a view nothing
+    /// follows the time: an action reads one time throughout.
+    pub(crate) fn note_time(&self, changes_at: Option<i64>) -> HResult<()> {
+        if changes_at.is_none() {
+            return Ok(());
+        }
+        let mut frames = self.frames.borrow_mut();
+        if let FrameKind::View(vs) = &mut frames.top_mut()?.kind {
+            vs.changes_at = crate::render::earliest(vs.changes_at, changes_at);
+        }
+        Ok(())
+    }
+
     /// What the platform shows of the type `ty`, and of the resource `r` of it when there is
     /// one: a `host.Meta`.
     fn type_meta(&self, ty: &str, r: Option<&RefValue>) -> HResult<Value> {
@@ -619,6 +633,7 @@ impl Core {
             .render_at(&target, &[Value::Ref(subject.clone())], offer, None)
             .map_err(|e| e.to_string())?;
         self.note_reads(rendered.reads.iter().cloned())?;
+        self.note_time(rendered.changes_at)?;
         {
             let mut frames = self.frames.borrow_mut();
             if let FrameKind::View(vs) = &mut frames.top_mut()?.kind {
