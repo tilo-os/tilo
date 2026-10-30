@@ -250,13 +250,27 @@ enum DocumentChoice {
 }
 
 impl DocumentChoice {
-    const fn index(self) -> usize {
+    const ALL: [Self; 5] = [
+        Self::Scanner,
+        Self::Resolution,
+        Self::Color,
+        Self::Source,
+        Self::Language,
+    ];
+
+    /// The setting [`crate::actions::SCAN_SETTINGS`] names `key`.
+    fn of(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|choice| choice.key() == key)
+    }
+
+    /// Its name among [`crate::actions::SCAN_SETTINGS`].
+    const fn key(self) -> &'static str {
         match self {
-            Self::Scanner => 0,
-            Self::Resolution => 1,
-            Self::Color => 2,
-            Self::Source => 3,
-            Self::Language => 4,
+            Self::Scanner => "scanner",
+            Self::Resolution => "resolution",
+            Self::Color => "color",
+            Self::Source => "source",
+            Self::Language => "language",
         }
     }
 }
@@ -301,20 +315,12 @@ enum Action {
     /// turning Camera into a media browser.
     ImportScanImage,
     CaptureDocument,
-    /// Choose option `index` of a document scan setting.
-    SetDocumentChoice(DocumentChoice, usize),
     ApplyDocumentCrop,
     CancelDocumentCrop,
     CycleResolution,
-    SetResolution(Resolution),
-    SetPhotoFormat(PhotoFormat),
     SetTimer(Timer),
     ToggleGrid,
-    ToggleLevel,
-    ToggleMirror,
-    ToggleGeotag,
     ToggleHdr,
-    SetDefaultFacing(Facing),
     RetryCamera,
     OpenCameraPrivacySettings,
     OpenCameraChooser,
@@ -557,7 +563,7 @@ impl CameraApp {
             last_mouse: Point::new(-1_000.0, -1_000.0),
             document_scan: crate::document_scan::ScanSession::default(),
             document_settings: DocumentSettings::default(),
-            document_controls: document_view::DocumentControls::new(&ui_queue),
+            document_controls: document_view::DocumentControls::new(),
             settings_sheet: settings_sheet::SettingsSheet::new(&ui_queue, &Settings::default()),
             ui_queue,
             chooser: Popover::new(),
@@ -923,25 +929,12 @@ impl CameraApp {
             Action::Scan(index) => format!("camera.scan:{index}"),
             Action::ImportScanImage => "camera.scan-image".into(),
             Action::CaptureDocument => "camera.document.capture".into(),
-            Action::SetDocumentChoice(choice, index) => {
-                format!("camera.document.choice:{}:{index}", choice.index())
-            }
             Action::ApplyDocumentCrop => "camera.document.crop.apply".into(),
             Action::CancelDocumentCrop => "camera.document.crop.cancel".into(),
             Action::CycleResolution => "camera.resolution".into(),
-            Action::SetResolution(resolution) => {
-                format!("camera.resolution:{}", resolution.as_str())
-            }
-            Action::SetPhotoFormat(format) => format!("camera.format:{}", format.as_str()),
             Action::SetTimer(timer) => format!("camera.timer:{}", timer.seconds()),
             Action::ToggleGrid => "camera.grid".into(),
-            Action::ToggleLevel => "camera.level".into(),
-            Action::ToggleMirror => "camera.mirror".into(),
-            Action::ToggleGeotag => "camera.geotag".into(),
             Action::ToggleHdr => "camera.hdr".into(),
-            Action::SetDefaultFacing(facing) => {
-                format!("camera.default-facing:{}", facing.as_str())
-            }
             Action::RetryCamera => "camera.retry-camera".into(),
             Action::OpenCameraPrivacySettings => "camera.open-camera-privacy".into(),
             Action::OpenCameraChooser => "camera.open-camera-chooser".into(),
@@ -1037,20 +1030,6 @@ impl CameraApp {
                 ),
                 AccessState::new().focusable(true),
             ),
-            Action::SetResolution(resolution) => (
-                Role::RadioButton,
-                format!("{} resolution", resolution.label()),
-                AccessState::new()
-                    .focusable(true)
-                    .checked(self.settings.resolution == *resolution),
-            ),
-            Action::SetPhotoFormat(format) => (
-                Role::RadioButton,
-                format!("Save photos as {}", format.label()),
-                AccessState::new()
-                    .focusable(true)
-                    .checked(self.settings.photo_format == *format),
-            ),
             Action::SetTimer(timer) => (
                 Role::RadioButton,
                 format!("{} timer", timer.label()),
@@ -1065,40 +1044,12 @@ impl CameraApp {
                     .focusable(true)
                     .checked(self.settings.grid),
             ),
-            Action::ToggleLevel => (
-                Role::Switch,
-                "Level guide".into(),
-                AccessState::new()
-                    .focusable(true)
-                    .checked(self.settings.level),
-            ),
-            Action::ToggleMirror => (
-                Role::Switch,
-                "Mirror front camera".into(),
-                AccessState::new()
-                    .focusable(true)
-                    .checked(self.settings.mirror_front),
-            ),
-            Action::ToggleGeotag => (
-                Role::Switch,
-                "Save location with photos".into(),
-                AccessState::new()
-                    .focusable(true)
-                    .checked(self.settings.geotag),
-            ),
             Action::ToggleHdr => (
                 Role::Switch,
                 "HDR".into(),
                 AccessState::new()
                     .focusable(true)
                     .checked(self.settings.hdr),
-            ),
-            Action::SetDefaultFacing(facing) => (
-                Role::RadioButton,
-                format!("Start with the {} camera", facing.label().to_lowercase()),
-                AccessState::new()
-                    .focusable(true)
-                    .checked(self.settings.default_facing == *facing),
             ),
             Action::RetryCamera => (
                 Role::Button,
@@ -1128,22 +1079,6 @@ impl CameraApp {
                 AccessState::new()
                     .focusable(true)
                     .disabled(self.selected_scanner.is_none() || self.document_job.is_some()),
-            ),
-            Action::SetDocumentChoice(choice, index) => (
-                Role::RadioButton,
-                if matches!(choice, DocumentChoice::Scanner) {
-                    self.scanner_devices
-                        .get(*index)
-                        .map(|scanner| scanner.description.clone())
-                } else {
-                    document_view::choice_labels(*choice)
-                        .get(*index)
-                        .map(|label| (*label).to_owned())
-                }
-                .unwrap_or_else(|| format!("Option {}", index + 1)),
-                AccessState::new()
-                    .focusable(true)
-                    .disabled(self.document_job.is_some()),
             ),
             Action::ApplyDocumentCrop => (
                 Role::Button,
@@ -1191,6 +1126,16 @@ impl CameraApp {
             Some(dispatcher) => dispatcher.effect_on(row, effect),
             None => self.toast.show("Camera is not open on a record"),
         }
+    }
+
+    /// Bind the settings sheet and the document scan settings to the
+    /// resource's published effects.
+    pub(crate) fn attach_actions(
+        &mut self,
+        actions: &ui::framework::Actions<crate::record::Record>,
+    ) {
+        self.settings_sheet.attach(actions);
+        self.document_controls.attach(actions);
     }
 
     /// Edit the record through `dispatcher` from now on.
@@ -1362,19 +1307,12 @@ impl CameraApp {
             Action::OpenCameraChooser => self.open_camera_chooser(),
             Action::SelectCamera(device) => self.select_camera(&device),
             Action::CaptureDocument => self.capture_document_page(),
-            Action::SetDocumentChoice(choice, index) => self.apply_document_choice(choice, index),
             Action::ApplyDocumentCrop => self.apply_document_crop(),
             Action::CancelDocumentCrop => self.cancel_document_crop(),
             settings_action @ (Action::CycleResolution
-            | Action::SetResolution(_)
-            | Action::SetPhotoFormat(_)
             | Action::SetTimer(_)
             | Action::ToggleGrid
-            | Action::ToggleLevel
-            | Action::ToggleMirror
-            | Action::ToggleGeotag
-            | Action::ToggleHdr
-            | Action::SetDefaultFacing(_)) => {
+            | Action::ToggleHdr) => {
                 self.apply_settings_toggle(&settings_action);
             }
         }
@@ -1891,15 +1829,9 @@ impl CameraApp {
             Action::CycleResolution => {
                 settings.resolution = cycle(&Resolution::ALL, settings.resolution);
             }
-            Action::SetPhotoFormat(format) => settings.photo_format = *format,
-            Action::SetResolution(resolution) => settings.resolution = *resolution,
             Action::SetTimer(tm) => settings.timer = *tm,
             Action::ToggleGrid => settings.grid = !settings.grid,
-            Action::ToggleLevel => settings.level = !settings.level,
-            Action::ToggleMirror => settings.mirror_front = !settings.mirror_front,
-            Action::ToggleGeotag => settings.geotag = !settings.geotag,
             Action::ToggleHdr => settings.hdr = !settings.hdr,
-            Action::SetDefaultFacing(facing) => settings.default_facing = *facing,
             _ => {}
         });
     }
@@ -2094,6 +2026,15 @@ impl CameraApp {
             CameraEffect::SetDefaultLens { lens } => {
                 let facing = Facing::parse_str(&lens);
                 self.change_settings(|settings| settings.default_facing = facing);
+            }
+            CameraEffect::ChooseScanSetting { setting, choice } => {
+                let setting = DocumentChoice::of(&setting)
+                    .ok_or_else(|| format!("No scan setting `{setting}`"))?;
+                let choice = choice
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("`{choice}` is not a position in the list"))?;
+                self.apply_document_choice(setting, choice);
             }
             CameraEffect::Capture => {
                 self.capture(invocation)?;
@@ -4858,11 +4799,14 @@ mod tests {
                 (DocumentChoice::Source, 1),
                 (DocumentChoice::Language, 1),
             ] {
-                app.apply(
-                    Action::SetDocumentChoice(choice, selection),
-                    &mut Edits::lend(&mut doc),
-                    &root,
-                );
+                app.answer_effect(
+                    CameraEffect::ChooseScanSetting {
+                        setting: choice.key().to_owned(),
+                        choice: selection.to_string(),
+                    },
+                    None,
+                )
+                .unwrap();
             }
             app.drain_ui_queue(&mut Edits::lend(&mut doc), &root);
 

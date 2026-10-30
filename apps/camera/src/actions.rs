@@ -26,6 +26,10 @@ pub use ui::tilo_actions::remote::ApplicationLaunch;
 /// deterministic prefix keeps resource/search materialization bounded.
 pub const MAX_PUBLISHED_CAMERA_DEVICES: usize = 16;
 
+/// The document scan settings [`CameraEffect::ChooseScanSetting`] chooses
+/// among, in the order the document screen shows them.
+pub const SCAN_SETTINGS: [&str; 5] = ["scanner", "resolution", "color", "source", "language"];
+
 /// What Camera does on this device and what it shows, which change no
 /// document: the screens, the shutter and recorder, the cameras it can open,
 /// scanning a code out of an existing image, and the document scanner's
@@ -143,6 +147,16 @@ pub enum CameraEffect {
     /// barcode in it, without importing the image.
     #[effect(attended, row, job)]
     ImportImage,
+    /// Choose a document scan setting
+    ///
+    /// The scanner, resolution, color, paper source or text language the
+    /// next page scans with, by its place in that setting's list.
+    ChooseScanSetting {
+        #[param("Setting", choices = SCAN_SETTINGS.iter().copied())]
+        setting: String,
+        #[param("Position of the choice in the setting's list, from 0")]
+        choice: String,
+    },
     /// Capture document page
     #[effect(row, job, cancellable)]
     CapturePage,

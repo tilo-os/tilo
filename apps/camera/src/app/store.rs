@@ -303,6 +303,7 @@ pub(crate) fn window(cx: &ViewCx<Record>, mut app: CameraApp) -> Element {
         RunMode::Past => {}
     }
     app.attach_dispatcher(cx.dispatcher());
+    app.attach_actions(&cx.actions());
     {
         let mut store = app.state();
         store.document = Some(cx.live().clone());
