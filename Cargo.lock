@@ -21553,6 +21553,7 @@ dependencies = [
  "hex",
  "image",
  "iroh",
+ "libc",
  "neighbour-wire",
  "os-actions",
  "postcard",
