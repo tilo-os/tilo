@@ -238,8 +238,10 @@ impl PeerTransport for SurfacePeer {
                     })
                     .map_err(|_| String::from("the session closed the actions socket"))
             }
-            CollabRequest::PublishActionSurface { app_id, delta } => {
-                self.app_id = app_id;
+            CollabRequest::PublishActionSurface { delta } => {
+                // The app this peer is was named when it joined: a surface
+                // publishes what it offers, and the session reads it as the
+                // app it placed.
                 if let Err(error) = self.published.lock_recover().apply(&delta) {
                     tracing::warn!(%error, "a surface's action surface did not apply");
                 }
