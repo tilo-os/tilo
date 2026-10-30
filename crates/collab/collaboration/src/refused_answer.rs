@@ -5,6 +5,10 @@
 /// Follow `update`, the refused answer to invocation `id`, with the
 /// invocation's failure carrying `refusal`. Anything but a success is left
 /// as it was: there is nothing it would leave unanswered.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
 pub(super) async fn fail(
     channel: &runtime_collab::ChannelHandle,
     id: u64,
