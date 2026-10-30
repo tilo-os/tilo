@@ -24,6 +24,8 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::context_menu::{ContextMenu, MenuItem};
 
+#[path = "toolbar_component.rs"]
+mod component;
 #[path = "toolbar_damage.rs"]
 mod damage;
 use crate::a11y::{AccessNode, AccessState, Action, Role};
@@ -33,6 +35,9 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{TaffyTreeExt, Widget};
+pub use component::{
+    ToolbarButtonProps, ToolbarPart, ToolbarProps, ToolbarSeparatorProps, ToolbarSpacerProps,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Orientation {

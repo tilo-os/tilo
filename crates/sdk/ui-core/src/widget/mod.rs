@@ -3308,7 +3308,7 @@ pub use app_widget::{
 pub mod command_palette;
 pub mod input_hint;
 pub mod shortcut_recorder;
-pub use input_hint::{InputDeviceGlyph, InputHint, LegendConventions};
+pub use input_hint::{InputDeviceGlyph, InputHint, InputHintProps, LegendConventions};
 pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
@@ -3321,10 +3321,11 @@ pub use context_menu::{
 };
 mod row_menu;
 pub use primitives::{
-    BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureState, Fact, Facts,
-    FactsFace, FloatingPanel, FloatingPanelFace, FloatingPanelLayout, IconButton, KeyHint,
-    KeyHints, KeyHintsFace, Surface, SurfaceLevel, TextStack, TextStackFace, paint_see_through,
-    paint_surface,
+    BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureRowProps,
+    DisclosureState, Fact, FactProps, Facts, FactsFace, FactsProps, FloatingPanel,
+    FloatingPanelFace, FloatingPanelLayout, IconButton, KeyHint, KeyHintProps, KeyHints,
+    KeyHintsFace, KeyHintsProps, Surface, SurfaceLevel, TextStack, TextStackFace, TextStackProps,
+    paint_see_through, paint_surface,
 };
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
@@ -3388,11 +3389,11 @@ pub mod file_table;
 pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOutcome};
 
 pub mod progress_bar;
-pub use progress_bar::{ProgressBar, ProgressBarFace};
+pub use progress_bar::{ProgressBar, ProgressBarFace, ProgressBarProps};
 pub mod page_preview;
 pub use page_preview::PagePreview;
 pub mod spinner;
-pub use spinner::Spinner;
+pub use spinner::{Spinner, SpinnerProps};
 pub mod program_step;
 pub use program_step::{ProgramStepView, StepAnswer};
 pub mod date_field;
@@ -3434,19 +3435,22 @@ pub use secret_prompt::{
     SecretPrompt,
 };
 pub mod toolbar;
-pub use toolbar::Toolbar;
+pub use toolbar::{
+    Toolbar, ToolbarButtonProps, ToolbarPart, ToolbarProps, ToolbarSeparatorProps,
+    ToolbarSpacerProps,
+};
 pub mod undo_button;
 pub use undo_button::UndoButton;
 pub mod breadcrumb;
-pub use breadcrumb::Breadcrumb;
+pub use breadcrumb::{Breadcrumb, BreadcrumbProps, BreadcrumbSegmentProps};
 pub mod avatar;
 pub use avatar::{Avatar, AvatarFace, AvatarProps, AvatarSize, PresenceStatus, initials_for_name};
 pub mod badge;
-pub use badge::{Badge, BadgeContent, BadgeFace};
+pub use badge::{Badge, BadgeContent, BadgeFace, BadgeProps};
 pub mod icon;
-pub use icon::{IconSize, IconWidget};
+pub use icon::{IconProps, IconSize, IconWidget};
 pub mod signal_meter;
-pub use signal_meter::{SIGNAL_BARS, SignalLevel, SignalMeter, SignalMeterFace};
+pub use signal_meter::{SIGNAL_BARS, SignalLevel, SignalMeter, SignalMeterFace, SignalMeterProps};
 pub mod chart;
 pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
@@ -3503,8 +3507,8 @@ pub mod funnel_chart;
 pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStyle};
 pub mod gauge;
 pub use gauge::{
-    BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing, ProgressRingFace,
-    ProgressRingSize, RingReading,
+    BarGauge, BarGaugeProps, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing,
+    ProgressRingFace, ProgressRingProps, ProgressRingSize, RingReading,
 };
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
@@ -3554,7 +3558,9 @@ pub use drop_zone::{DropZone, DropZoneFace};
 pub mod file_open;
 pub use file_open::{FileOpenEvent, FileOpenSurface};
 pub mod skeleton;
-pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
+pub use skeleton::{
+    Skeleton, SkeletonFace, SkeletonForm, SkeletonProps, SkeletonShape, skeleton_tone,
+};
 pub mod arrival_failure;
 pub use arrival_failure::{WindowFailure, arrival_failure};
 pub mod arriving_rows;
@@ -3607,11 +3613,11 @@ pub use window_search::{
 pub mod search_results;
 pub use search_results::SearchResultsView;
 pub mod stat_tile;
-pub use stat_tile::{StatGroup, StatTile, StatTileFace, Trend};
+pub use stat_tile::{StatGroup, StatGroupProps, StatTile, StatTileFace, StatTileProps, Trend};
 pub mod banner;
-pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice};
+pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice, BannerProps};
 mod disclosure_band;
-pub use disclosure_band::DisclosureBand;
+pub use disclosure_band::{DisclosureBand, DisclosureBandProps};
 pub mod chip;
 mod chip_component;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle, REFERENCE_LEAD};
@@ -3633,7 +3639,8 @@ pub use card::{
 pub use tone::Tone;
 mod section;
 pub use section::{
-    ObjectHeader, Section, SectionHeader, SectionHeaderFace, SectionProps, StatusLine,
+    ObjectHeader, ObjectHeaderProps, Section, SectionHeader, SectionHeaderFace, SectionProps,
+    StatusLine, StatusLineProps,
 };
 pub mod capture_studio;
 pub use capture_studio::{
