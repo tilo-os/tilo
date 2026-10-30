@@ -21468,6 +21468,8 @@ dependencies = [
  "tilo-sheets",
  "tilo-surface-host",
  "tilo-system-service",
+ "tilo-test-env",
+ "tilo-tray-host",
  "tilo-ui",
  "tokio",
  "tracing",
@@ -21516,6 +21518,22 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-rt",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-settings-service"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "settings-sections",
+ "settings-store",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-resource",
+ "tilo-service",
+ "tilo-test-env",
  "tracing",
  "workspace-hack",
 ]
@@ -21789,11 +21807,15 @@ dependencies = [
 name = "tilo-tray-host"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "futures-util",
  "serde_json",
+ "tilo-actions",
  "tilo-clock",
  "tilo-copy-lint",
  "tilo-lock",
+ "tilo-resource",
+ "tilo-service",
  "tokio",
  "tracing",
  "workspace-hack",

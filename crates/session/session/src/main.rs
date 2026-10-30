@@ -247,6 +247,10 @@ fn services(wake: &tilo_service::LoopWake) -> (Vec<Box<dyn tilo_session::Service
     let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
     let mut following: Following = Vec::new();
     match Connectivity::new(Arc::new(OsDevice), Some(wake.handle())) {
+    services.push(Box::new(tilo_settings_service::SettingsService::new(
+        &tilo_session::Options::default().person,
+    )));
+    match Connectivity::new(Arc::new(OsDevice), None) {
         Ok(connectivity) => {
             match connectivity.follow() {
                 Ok(follow) => following.push(Box::new(follow)),
@@ -280,6 +284,7 @@ fn services(wake: &tilo_service::LoopWake) -> (Vec<Box<dyn tilo_session::Service
             tilo_audio_service::publish,
             Some(wake.handle()),
         )
+        tilo_service::lines::Process::spawn(command, tilo_audio_service::publish, None)
     }) {
         Some(Ok(audio)) => services.push(Box::new(audio)),
         Some(Err(error)) => tracing::warn!(%error, "the audio service did not start"),
