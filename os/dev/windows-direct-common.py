@@ -17,10 +17,6 @@ TILO_ROOT_GUID = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab"
 PLAN_SCHEMA = "tilo.windows-internal-install-plan.v1"
 
 
-def load_plan(_path):
-    raise ValueError("legacy staged final copy is not available in this tool")
-
-
 def integer(value, label, minimum=0):
     if type(value) is not int or value < minimum:
         raise ValueError(f"invalid {label}")

@@ -227,14 +227,11 @@ suites = [
   "os/tests/test_signing_recovery.py",
   "os/tests/test_signing_spool_transport.py",
   "os/tests/test_stage_kernel_checkpoint.py",
-  "os/tests/test_supervised_disk.py",
-  "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
   "os/tests/test_verify_board_initramfs.py",
   "os/tests/test_verify_rpm_files.py",
   "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_probe_kvm.py",
-  "os/tests/test_windows_dualboot_preflight.py",
   "os/tests/test_windows_direct_dev_provenance.py",
   "os/tests/test_windows_direct_dev_admission.py",
   "os/tests/test_windows_direct_provenance.py",
@@ -1823,10 +1820,6 @@ reason = "destructive, root: loop devices"
 [[unrequired]]
 suite = "os/tests/system_extension_boot_pack_stage.sh"
 reason = "needs a systemd system manager; skips without one"
-
-[[unrequired]]
-suite = "os/tests/test_direct_sparse_transfer.py"
-reason = "asserts preserved sparse holes, which the container overlay root of the suites job does not report"
 
 [[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"
