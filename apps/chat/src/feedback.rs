@@ -228,7 +228,7 @@ pub fn canonical_feedback_projection(
 /// current save status. The store is single-threaded, and no callback or yield
 /// separates this status check from the immutable document read.
 ///
-/// Hosts retain the admitted room/provider identity; neither the report nor an
+/// Hosts retain the admitted workspace/provider identity; neither the report nor an
 /// external URL selects this store or record.
 ///
 /// # Errors
@@ -242,9 +242,9 @@ pub fn receipt_from_record(
     let status = store
         .save_status(record)
         .map_err(|error| refused(error.to_string()))?;
-    let (package, room) = store.package_and_home();
+    let (package, workspace) = store.package_and_home();
     if package != <crate::resource::ChatShell as ui::framework::ResourceApp>::ID
-        || room != actual_destination.room
+        || workspace != actual_destination.room
     {
         return Err(refused("feedback canonical store mismatch"));
     }
@@ -253,10 +253,10 @@ pub fn receipt_from_record(
             let scope = ui::record::room_scope(doc);
             if scope
                 .as_deref()
-                .is_some_and(|room| room != actual_destination.room)
+                .is_some_and(|workspace| workspace != actual_destination.room)
                 || (!record.is_package_primary() && scope.is_none())
             {
-                return Err(refused("feedback canonical room mismatch"));
+                return Err(refused("feedback canonical workspace mismatch"));
             }
             durable_receipt(doc, id, actual_destination, &status)
         })

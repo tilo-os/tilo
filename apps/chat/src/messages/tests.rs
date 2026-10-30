@@ -4,7 +4,7 @@ use ui::framework::Chain;
 use ui::tilo_resource::Id;
 
 use super::*;
-use crate::demo::Room;
+use crate::demo::Workspace;
 use crate::parts::{PART_TEXT_BYTES, part_index};
 
 /// A post as long as one may be: a part fills after a few dozen of them.
@@ -15,10 +15,10 @@ fn long_post(n: usize) -> String {
 
 /// Post [`long_post`]s in `#general` until one no longer fits part
 /// `part`; that post's id, every one before it checked to be in `part`.
-fn fill_part(room: &mut Room, part: u64) -> String {
+fn fill_part(workspace: &mut Workspace, part: u64) -> String {
     for n in 0..=PART_TEXT_BYTES / long_post(0).len() + 1 {
-        let id = room.say("u_aria", "c_general", &long_post(n)).unwrap();
-        match room.messages().part_of(&Id::from_raw(&id)) {
+        let id = workspace.say("u_aria", "c_general", &long_post(n)).unwrap();
+        match workspace.messages().part_of(&Id::from_raw(&id)) {
             Some(at) if at == part => {}
             _ => return id,
         }
@@ -46,43 +46,49 @@ fn edit(message: &str, text: &str) -> ui::tilo_resource::Invoke<ChatPart> {
 
 #[test]
 fn a_full_part_rolls_posts_over_and_changes_land_where_the_message_is() {
-    let mut room = Room::demo().unwrap();
+    let mut workspace = Workspace::demo().unwrap();
     let welcome = "m_welcome";
-    assert_eq!(room.messages().part_of(&Id::from_raw(welcome)), Some(0));
-    let mine = room
+    assert_eq!(
+        workspace.messages().part_of(&Id::from_raw(welcome)),
+        Some(0)
+    );
+    let mine = workspace
         .say(crate::model::ME, "c_general", "mine, to edit later")
         .unwrap();
-    assert_eq!(room.messages().part_of(&Id::from_raw(&mine)), Some(0));
+    assert_eq!(workspace.messages().part_of(&Id::from_raw(&mine)), Some(0));
     // Long posts fill the head; the one after it is full starts part 1.
-    let later = fill_part(&mut room, 0);
-    assert_eq!(room.messages().part_of(&Id::from_raw(&later)), Some(1));
-    assert_eq!(room.part_numbers(), vec![0, 1]);
+    let later = fill_part(&mut workspace, 0);
+    assert_eq!(workspace.messages().part_of(&Id::from_raw(&later)), Some(1));
+    assert_eq!(workspace.part_numbers(), vec![0, 1]);
 
     // A reaction, an edit and a reply to messages of the full part go to it.
     assert_eq!(
-        room.apply_part_as(crate::model::ME, react(welcome, "🎉"))
+        workspace
+            .apply_part_as(crate::model::ME, react(welcome, "🎉"))
             .unwrap(),
         0
     );
     assert_eq!(
-        room.apply_part_as(crate::model::ME, edit(&mine, "mine, edited"))
+        workspace
+            .apply_part_as(crate::model::ME, edit(&mine, "mine, edited"))
             .unwrap(),
         0
     );
     let reply = crate::demo::post("c_general", "a reply in the old thread", Some(welcome));
-    assert_eq!(room.apply_part_as("u_sora", reply).unwrap(), 0);
+    assert_eq!(workspace.apply_part_as("u_sora", reply).unwrap(), 0);
     // A post that is not a reply goes on in the head.
     assert_eq!(
-        room.apply_part_as(
-            "u_sora",
-            crate::demo::post("c_general", "still the head", None)
-        )
-        .unwrap(),
+        workspace
+            .apply_part_as(
+                "u_sora",
+                crate::demo::post("c_general", "still the head", None)
+            )
+            .unwrap(),
         1
     );
 
     // A reader sees the channel across both parts, in order.
-    let rows = room.message_rows("c_general");
+    let rows = workspace.message_rows("c_general");
     let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
     assert_eq!(ids.first(), Some(&welcome));
     let at = |id: &str| ids.iter().position(|row| *row == id).unwrap();
@@ -107,10 +113,10 @@ fn a_full_part_rolls_posts_over_and_changes_land_where_the_message_is() {
 
 #[test]
 fn a_post_is_read_against_the_chat_record_where_it_is_invoked() {
-    let mut room = Room::demo().unwrap();
+    let mut workspace = Workspace::demo().unwrap();
     // A voice channel takes no posts, and an unknown channel none either.
-    assert!(room.say("u_aria", "c_standup", "hello?").is_err());
-    assert!(room.say("u_aria", "c_nowhere", "hello?").is_err());
+    assert!(workspace.say("u_aria", "c_standup", "hello?").is_err());
+    assert!(workspace.say("u_aria", "c_nowhere", "hello?").is_err());
     // A mention is resolved against the record's people, whatever the
     // caller sent.
     let mut post = crate::demo::post("c_general", "@Aria Chen look", None);
@@ -118,8 +124,8 @@ fn a_post_is_read_against_the_chat_record_where_it_is_invoked() {
         "mentions".into(),
         serde_json::json!([{ "user": "u_nobody", "start": 0, "len": 3, "is_agent": false }]),
     );
-    room.apply_part_as("u_milo", post).unwrap();
-    let row = room.message_rows("c_general").pop().unwrap();
+    workspace.apply_part_as("u_milo", post).unwrap();
+    let row = workspace.message_rows("c_general").pop().unwrap();
     assert_eq!(row.mentions.len(), 1);
     assert_eq!(row.mentions[0].user, "u_aria");
 }
@@ -174,44 +180,54 @@ fn the_window_chain_rolls_over_and_reads_across_its_parts() {
 
 #[test]
 fn read_marks_are_positions_in_the_chain() {
-    let mut room = Room::demo().unwrap();
+    let mut workspace = Workspace::demo().unwrap();
     let general = Id::from_raw("c_general");
-    fill_part(&mut room, 0);
-    room.say("u_milo", "c_general", "in part 1").unwrap();
-    let held = room.messages();
+    fill_part(&mut workspace, 0);
+    workspace.say("u_milo", "c_general", "in part 1").unwrap();
+    let held = workspace.messages();
     let end = held.read_to_end(&general);
     assert_eq!(end, crate::parts::ReadMark { part: 1, seen: 2 });
     assert_eq!(held.unread(&general, end), 0);
     let before = crate::parts::ReadMark { part: 0, seen: 1 };
     assert_eq!(held.unread(&general, before), held.top_level(&general) - 1);
-    room.apply_as(
-        crate::model::ME,
-        crate::resource::Chat::MARK_READ.with(crate::record::chat::MarkRead {
-            channel: general.clone(),
-            part: 1,
-            seen: 2,
-        }),
-    )
-    .unwrap();
-    assert_eq!(room.read().unread(&held, "c_general", crate::model::ME), 0);
+    workspace
+        .apply_as(
+            crate::model::ME,
+            crate::resource::Chat::MARK_READ.with(crate::record::chat::MarkRead {
+                channel: general.clone(),
+                part: 1,
+                seen: 2,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read()
+            .unread(&held, "c_general", crate::model::ME),
+        0
+    );
     // A mark never moves back.
-    room.apply_as(
-        crate::model::ME,
-        crate::resource::Chat::MARK_READ.with(crate::record::chat::MarkRead {
-            channel: general,
-            part: 0,
-            seen: 1,
-        }),
-    )
-    .unwrap();
-    assert_eq!(room.read().read_mark("c_general", crate::model::ME), end);
+    workspace
+        .apply_as(
+            crate::model::ME,
+            crate::resource::Chat::MARK_READ.with(crate::record::chat::MarkRead {
+                channel: general,
+                part: 0,
+                seen: 1,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        workspace.read().read_mark("c_general", crate::model::ME),
+        end
+    );
 }
 
-/// Two devices in one fresh room, each with a store of its own and a chain
+/// Two devices in one fresh workspace, each with a store of its own and a chain
 /// held in it: the poster's, and a guest's whose window was open before
 /// anyone posted.
 struct TwoDevices {
-    room: String,
+    workspace: String,
     poster: Chain<ChatPart>,
     guest: Chain<ChatPart>,
     guest_store: ui::record::RecordStore,
@@ -222,13 +238,13 @@ struct TwoDevices {
 
 impl TwoDevices {
     fn new() -> Self {
-        let room = uuid::Uuid::new_v4().to_string();
+        let workspace = uuid::Uuid::new_v4().to_string();
         let chat = Rc::new(crate::demo::demo(crate::model::ME));
         let device = |backend: &Rc<durable_store::MemoryStore>| {
             ui::record::RecordOwners::with_store(
                 Rc::clone(backend) as Rc<dyn durable_store::DurableStore>
             )
-            .open("so.tilo.chat", &room)
+            .open("so.tilo.chat", &workspace)
             .unwrap()
         };
         let base = || {
@@ -246,7 +262,7 @@ impl TwoDevices {
         let guest_store = device(&guest_backend);
         let guest =
             Chain::detached_in(guest_store.clone(), "so.tilo.chat", "u_aria", base()).unwrap();
-        assert_eq!(guest.head(), None, "a fresh room has no part yet");
+        assert_eq!(guest.head(), None, "a fresh workspace has no part yet");
         let shown = ui::record::RecordCheckout::new(
             ui::record::RecordId::derived("shown", &ui::record::RecordId::room_default()),
             ui::record::RecordKind::new("test.shown"),
@@ -257,7 +273,7 @@ impl TwoDevices {
             .initialize(|_| Ok(()))
             .unwrap();
         Self {
-            room,
+            workspace,
             poster,
             guest,
             guest_store,
@@ -275,7 +291,7 @@ impl TwoDevices {
     }
 
     /// The poster's first post, its part kept in the guest's store as the
-    /// room's replication keeps a record no window there has open.
+    /// workspace's replication keeps a record no window there has open.
     fn first_post_reaches_the_guest(&self) {
         use durable_store::DurableStore as _;
         self.poster
@@ -285,7 +301,7 @@ impl TwoDevices {
             .write(
                 &durable_store::StorageKey::record(
                     "so.tilo.chat",
-                    &self.room,
+                    &self.workspace,
                     crate::parts::part(0).storage_key(),
                 ),
                 durable_store::WriteOp::Replace(self.poster.part_bytes(0).unwrap()),
@@ -304,7 +320,7 @@ impl TwoDevices {
     }
 }
 
-/// The first post of a room starts part 0 on the poster's device. It reaches
+/// The first post of a workspace starts part 0 on the poster's device. It reaches
 /// a guest whose window already holds the chain by being kept in the
 /// guest's store, which whatever kept it tells the store
 /// ([`ui::record::RecordStore::note_kept`]). Nothing looks on a clock: until
@@ -326,7 +342,7 @@ fn a_kept_part_waits_for_word_of_its_arrival_not_a_clock() {
 }
 
 /// A store told that a record arrived ([`ui::record::RecordStore::note_kept`],
-/// as the browser's room replication tells it) has the window look at its
+/// as the browser's workspace replication tells it) has the window look at its
 /// next settle, not a moment later.
 #[test]
 fn a_store_told_of_a_kept_part_has_the_window_look_at_once() {
@@ -339,7 +355,7 @@ fn a_store_told_of_a_kept_part_has_the_window_look_at_once() {
     assert_eq!(devices.guest_reads().last().unwrap(), "the first post");
 }
 
-/// On a desktop the room does not keep a part another device started: the
+/// On a desktop the workspace does not keep a part another device started: the
 /// guest's window is told a peer wrote it, starts the same part itself
 /// (each part's genesis is the same everywhere), and the poster's changes
 /// then apply on it with nothing missing, as they arrive on its route.
@@ -375,10 +391,10 @@ fn a_part_a_peer_started_is_started_here_and_takes_the_peers_changes() {
 /// messages, not the chat record (which holds none), page by page.
 #[test]
 fn read_messages_pages_through_a_channel_across_its_parts() {
-    let mut room = Room::demo().unwrap();
-    let later = fill_part(&mut room, 0);
-    assert_eq!(room.messages().part_of(&Id::from_raw(&later)), Some(1));
-    let held = room.messages();
+    let mut workspace = Workspace::demo().unwrap();
+    let later = fill_part(&mut workspace, 0);
+    assert_eq!(workspace.messages().part_of(&Id::from_raw(&later)), Some(1));
+    let held = workspace.messages();
     let mut seen = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
@@ -422,9 +438,11 @@ fn read_messages_pages_through_a_channel_across_its_parts() {
 /// named: what the automatic status reads to say "Writing in #general".
 #[test]
 fn a_post_records_the_channel_it_went_to() {
-    let mut room = Room::demo().unwrap();
-    room.say("u_aria", "c_general", "where this went").unwrap();
-    let bytes = room.part_bytes(0).unwrap();
+    let mut workspace = Workspace::demo().unwrap();
+    workspace
+        .say("u_aria", "c_general", "where this went")
+        .unwrap();
+    let bytes = workspace.part_bytes(0).unwrap();
     let mut doc = ui::automerge::AutoCommit::load(&bytes).unwrap();
     let places: Vec<String> = ui::HistorySource::new()
         .entries(&mut doc)

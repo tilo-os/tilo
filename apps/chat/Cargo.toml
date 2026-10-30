@@ -24,7 +24,7 @@ path = "src/main.rs"
 web-features = []
 
 [features]
-# The demo room, the screenshot scenarios and the messages they stage, and
+# The demo workspace, the screenshot scenarios and the messages they stage, and
 # the helpers that write a chat as its people would: development runs,
 # captures and tests (here and in the crates that test against a chat) only,
 # never a release.
@@ -60,7 +60,7 @@ tilo-actions = { path = "../../crates/collab/actions" }
 # `Message::reference` — and the vocabulary an agent's own progress on a
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
 tilo-reference = { path = "../../crates/collab/reference" }
-# Reports of people and messages, which the room host's moderation agent
+# Reports of people and messages, which the workspace host's moderation agent
 # decides on; the record lives in the chat so every guest can file one.
 moderation-model = { path = "../moderation-model" }
 # Message bodies and drafts are rich text, written in the SDK editor.

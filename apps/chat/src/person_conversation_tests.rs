@@ -25,43 +25,43 @@ fn registered_person_effect_ids_match_the_native_broker_protocol() {
 
 #[test]
 fn accepted_person_send_cannot_clear_a_newer_editor_revision() {
-    let mut room = AutoCommit::new();
-    let before = room.get_heads();
+    let mut workspace = AutoCommit::new();
+    let before = workspace.get_heads();
     let key = person("workspace", "peer");
     let mut composer = DraftComposer::shared();
     composer.set_conversation_draft(&key);
-    composer.insert_text(&mut ui::widget::Edits::lend(&mut room), "First");
+    composer.insert_text(&mut ui::widget::Edits::lend(&mut workspace), "First");
     let sent_revision = composer.conversation_revision(&key).unwrap();
-    composer.insert_text(&mut ui::widget::Edits::lend(&mut room), " more");
+    composer.insert_text(&mut ui::widget::Edits::lend(&mut workspace), " more");
     assert!(!composer.clear_conversation_revision(&key, sent_revision));
     assert_eq!(composer.private_plain().as_deref(), Some("First more"));
     let current_revision = composer.conversation_revision(&key).unwrap();
     assert!(composer.clear_conversation_revision(&key, current_revision));
     assert_eq!(composer.private_plain().as_deref(), Some(""));
-    assert_eq!(room.get_heads(), before);
-    assert_eq!(room.pending_ops(), 0);
+    assert_eq!(workspace.get_heads(), before);
+    assert_eq!(workspace.pending_ops(), 0);
 }
 
 #[test]
-fn private_person_typing_never_mutates_the_room_document() {
-    let mut room = AutoCommit::new();
-    let before = room.get_heads();
+fn private_person_typing_never_mutates_the_workspace_document() {
+    let mut workspace = AutoCommit::new();
+    let before = workspace.get_heads();
     let mut composer = DraftComposer::shared();
     composer.set_conversation_draft(&person("workspace", "certified-person-key"));
-    composer.insert_text(&mut ui::widget::Edits::lend(&mut room), "Private body");
+    composer.insert_text(&mut ui::widget::Edits::lend(&mut workspace), "Private body");
     assert_eq!(composer.private_plain().as_deref(), Some("Private body"));
-    assert_eq!(room.get_heads(), before);
-    assert_eq!(room.pending_ops(), 0);
+    assert_eq!(workspace.get_heads(), before);
+    assert_eq!(workspace.pending_ops(), 0);
 }
 
 #[test]
 fn person_workspaces_retain_distinct_private_editors() {
-    let mut room = AutoCommit::new();
+    let mut workspace = AutoCommit::new();
     let mut composer = DraftComposer::shared();
     let first = person("one", "same-key");
     composer.set_conversation_draft(&first);
     composer.insert_text(
-        &mut ui::widget::Edits::lend(&mut room),
+        &mut ui::widget::Edits::lend(&mut workspace),
         "First person draft",
     );
     composer.set_conversation_draft(&person("two", "same-key"));
@@ -77,12 +77,12 @@ fn person_workspaces_retain_distinct_private_editors() {
 
 #[test]
 fn private_person_editor_survives_retained_surface_store_handoff() {
-    let mut room = AutoCommit::new();
+    let mut workspace = AutoCommit::new();
     let key = person("workspace", "certified-person-key");
     let mut attached = DraftComposer::shared();
     attached.set_conversation_draft(&key);
     attached.insert_text(
-        &mut ui::widget::Edits::lend(&mut room),
+        &mut ui::widget::Edits::lend(&mut workspace),
         "Unsent private text",
     );
     let mut floating = DraftComposer::shared();
@@ -93,9 +93,9 @@ fn private_person_editor_survives_retained_surface_store_handoff() {
         Some("Unsent private text")
     );
     assert_eq!(attached.private_plain(), floating.private_plain());
-    let before = room.get_heads();
+    let before = workspace.get_heads();
     floating.insert_text(
-        &mut ui::widget::Edits::lend(&mut room),
+        &mut ui::widget::Edits::lend(&mut workspace),
         " and more from the floating surface",
     );
     assert_eq!(attached.private_plain(), floating.private_plain());
@@ -107,6 +107,6 @@ fn private_person_editor_survives_retained_surface_store_handoff() {
     );
     floating.clear_conversation_draft(&key);
     assert_eq!(attached.private_plain().as_deref(), Some(""));
-    assert_eq!(room.get_heads(), before);
-    assert_eq!(room.pending_ops(), 0);
+    assert_eq!(workspace.get_heads(), before);
+    assert_eq!(workspace.pending_ops(), 0);
 }

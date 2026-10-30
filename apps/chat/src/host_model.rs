@@ -155,7 +155,7 @@ impl ChatApp {
         }
     }
 
-    /// What a bot is called: what the room calls it, else after the service
+    /// What a bot is called: what the workspace calls it, else after the service
     /// it bridges ("Discord bridge"), never a placeholder for an unknown id.
     fn bot_name(&self, message: &crate::model::Message) -> String {
         let named = self.user_name(&message.author);

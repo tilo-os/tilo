@@ -1,5 +1,5 @@
-//! Reading the room's document back into the window: the snapshot the
-//! conversation shows, the composers' reload, the people the room announces,
+//! Reading the workspace's document back into the window: the snapshot the
+//! conversation shows, the composers' reload, the people the workspace announces,
 //! and the read the person has reached.
 
 use std::collections::{HashMap, HashSet};
@@ -93,7 +93,7 @@ impl ChatApp {
             };
         }
         // Read every channel's messages once per reload: the open channel,
-        // search and the room's people directory all project from them
+        // search and the workspace's people directory all project from them
         // (reading them three times dominated typing with a long history).
         let per_channel: Vec<(Id, Vec<Message>)> = self
             .channels
@@ -139,13 +139,13 @@ impl ChatApp {
             .borrow_mut()
             .retain(|(_, id), _| shown.contains(id.as_str()));
         self.agent_authors = chat.agent_authors();
-        self.room_files = chat.files;
+        self.workspace_files = chat.files;
         // Who is in a call is projected only from the authenticated local
         // voice service's response.
         self.refresh_native_streams();
-        self.users = self.room_people_from(&chat, &per_channel);
+        self.users = self.workspace_people_from(&chat, &per_channel);
         self.sync_reload_composers(doc);
-        // A share started, switched or ended reaches the room as soon as
+        // A share started, switched or ended reaches the workspace as soon as
         // the record says so, not at the window's next settled frame,
         // which an idle window may not have for a long while.
         self.follow_share_grants();
@@ -201,11 +201,11 @@ impl ChatApp {
         self.draft_thread = self.composer_thread.value();
     }
 
-    /// Project the document's identity directory onto evidence in the room's
+    /// Project the document's identity directory onto evidence in the workspace's
     /// channels. Channel activity and voice membership are durable evidence;
-    /// the local identity is included so a brand-new room remains a valid
+    /// the local identity is included so a brand-new workspace remains a valid
     /// one-person surface.
-    pub(crate) fn room_people_from(
+    pub(crate) fn workspace_people_from(
         &self,
         chat: &crate::record::Chat,
         per_channel: &[(Id, Vec<Message>)],
@@ -221,7 +221,7 @@ impl ChatApp {
             for message in messages.into_iter().flatten() {
                 ids.insert(message.author.clone());
                 // A member who writes only from a linked account on a
-                // bridged service is still this room's person: their
+                // bridged service is still this workspace's person: their
                 // bridged messages read as theirs, by their name and colour,
                 // never as a namesake from that service.
                 if let Some(linked) = message
@@ -275,7 +275,7 @@ impl ChatApp {
 
     /// Announce this window's person into the shared roster once, under the
     /// name this device knows them by: what every member shows for them
-    /// until the room names them. A repeat writes nothing.
+    /// until the workspace names them. A repeat writes nothing.
     pub(super) fn announce_me(&mut self, doc: &AutoCommit) {
         if self.announce.is_none() {
             return;

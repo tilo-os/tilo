@@ -1,8 +1,8 @@
-//! The room's channels in the window's shell (`resource.rs`): the shell
+//! The workspace's channels in the window's shell (`resource.rs`): the shell
 //! keeps the sidebar, its width, its drawer in a narrow window and its
 //! keys, and this window says what it lists.
 //!
-//! The room is the one truth. Each settle this window declares the
+//! The workspace is the one truth. Each settle this window declares the
 //! sidebar's places (the channels outside any category, each category as
 //! a section, then the person's direct messages) through a [`NavFeed`];
 //! what the person chooses, folds, asks a menu of and renames there comes
@@ -86,7 +86,7 @@ impl ChatApp {
         self
     }
 
-    /// Hand the shell's sidebar the room's places, with the conversation
+    /// Hand the shell's sidebar the workspace's places, with the conversation
     /// that is open chosen.
     pub(crate) fn show_sidebar(&self) {
         let mut sections = Vec::new();
@@ -140,8 +140,8 @@ impl ChatApp {
 
     /// The people this person has a direct conversation with, each once,
     /// by the name they go by: those whose conversation holds messages and
-    /// the one open now. Everyone else in the room is reached from the
-    /// people overlay (or their card), not listed here: a room full of
+    /// the one open now. Everyone else in the workspace is reached from the
+    /// people overlay (or their card), not listed here: a workspace full of
     /// visitors must not push its channels out of sight.
     fn direct_message_items(&self) -> Vec<NavItem> {
         let mut people: Vec<(String, &ui::person_chat::Contact)> = self

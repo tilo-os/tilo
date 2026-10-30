@@ -83,7 +83,7 @@ fn answer(peer: &mut UnixStream, text: &str) {
     );
 }
 
-fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Room) {
+fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Workspace) {
     let backend = tilo_model_client::runtime_client::from_descriptor_selection(
         client.as_fd(),
         "chat-profile".into(),
@@ -92,7 +92,7 @@ fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Room) {
     .expect("bind Chat model descriptor");
     let models = Models::new(backend);
     let identity = LocalIdentity::demo();
-    let mut doc = crate::testing::Room::default();
+    let mut doc = crate::testing::Workspace::default();
     crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
     crate::testing::say(&mut doc, &identity.id, "c_chat", "Question");
     let mut app = ChatApp::new(
@@ -105,7 +105,7 @@ fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Room) {
         "so.tilo.chat",
         &identity.id,
     ));
-    app.attach_room(&doc);
+    app.attach_workspace(&doc);
     app.reload(&doc);
     app.ensure_selection();
     app.reload(&doc);
@@ -114,8 +114,8 @@ fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Room) {
 
 fn pump_until(
     app: &mut ChatApp,
-    doc: &mut crate::testing::Room,
-    done: impl Fn(&ChatApp, &crate::testing::Room) -> bool,
+    doc: &mut crate::testing::Workspace,
+    done: impl Fn(&ChatApp, &crate::testing::Workspace) -> bool,
 ) {
     tilo_test_env::wait_until("the native model attempt to make progress", || {
         app.pump_model();

@@ -1,16 +1,16 @@
 //! Chat — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A collaborative chat + calls surface that runs in a Tilo workspace, its
-//! room. The convergent state — categories, channels, messages, reactions,
+//! workspace. The convergent state — categories, channels, messages, reactions,
 //! edits + edit history, threads and members — is the [`record::Chat`]
-//! model, the room's own record of the chat, changed only through its verbs
+//! model, the workspace's own record of the chat, changed only through its verbs
 //! and field edits. Attachments are content-addressed references:
 //! the CRDT stores their identity and bounded metadata, while bytes stay in the
 //! app's content store. The [`app::ChatApp`] widget is a projection of that
 //! document plus an input router.
 //!
 //! ## Layout
-//! The window's shell (`ui::widget::NavShell`) keeps the room's channels in
+//! The window's shell (`ui::widget::NavShell`) keeps the workspace's channels in
 //! its sidebar (`sidebar.rs`) beside the conversation; a toolkit drawer
 //! (`ui::widget::SidebarDrawer`) holds the detail (people, or the open
 //! thread). Each docks beside the conversation on a wide window and floats

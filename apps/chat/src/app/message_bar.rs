@@ -194,7 +194,7 @@ impl ChatApp {
     }
 
     /// Open `msg`'s whole menu from its bar's More `button`: under it, its
-    /// trailing edge on the button's, and above it where there is no room
+    /// trailing edge on the button's, and above it where there is no workspace
     /// below, as a menu from a button at the end of a row opens.
     pub(crate) fn open_message_menu_from(&mut self, msg: Id, button: Rect) {
         self.open_message_menu(msg, Point::new(button.x1, button.y1));

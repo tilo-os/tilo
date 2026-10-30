@@ -1,10 +1,11 @@
-//! The chat record: the room's categories and channels, the people in the
-//! room, each person's read marks, reviewed feedback and moderation. Chat
-//! runs in a Tilo workspace (its room) and holds no workspaces of its own:
-//! every channel of the record is the room's. The channels' messages are kept in parts beside it
+//! The chat record: the workspace's categories and channels, the people in the
+//! workspace, each person's read marks, reviewed feedback and moderation. Chat's
+//! record is the chat of one Tilo workspace and holds no workspaces of its
+//! own: every channel of the record is the workspace's. The channels'
+//! messages are kept in parts beside it
 //! ([`crate::parts`], [`crate::messages`]), so the record stays small
 //! however long the chat runs. What someone is writing and has not sent
-//! is theirs, not the room's: it is kept in their own record
+//! is theirs, not the workspace's: it is kept in their own record
 //! ([`crate::drafts`]).
 //!
 //! Plain changes are the built-in field edits every path offers: renaming a
@@ -108,25 +109,26 @@ fn arrange<T>(items: &mut Collection<T>, order: &[Id]) {
     }
 }
 
-/// The id of the room's text channel every chat opens with, `#chat`.
+/// The id of the workspace's text channel every chat opens with, `#chat`.
 pub const CHAT_CHANNEL: &str = "c_chat";
-/// The id of the room's voice channel every chat opens with, `#voice`.
+/// The id of the workspace's voice channel every chat opens with, `#voice`.
 pub const VOICE_CHANNEL: &str = "c_voice";
 
 /// Bring a chat record of version `from` up to this one. No step deletes
 /// anything a person wrote: what the record no longer reads stays where it
-/// is. Version 1 kept everyone's unsent drafts in the room, where every
+/// is. Version 1 kept everyone's unsent drafts in the workspace, where every
 /// member edited one shared draft per channel; drafts are each writer's own
-/// now ([`crate::drafts`]), and the room's copy stays under `drafts`.
+/// now ([`crate::drafts`]), and the workspace's copy stays under `drafts`.
 /// Versions 1 and 2 kept the messages in the record and read marks as
 /// counts; new messages are kept in parts beside it now ([`crate::parts`])
 /// and a read mark is a position in them. The record's messages stay under
 /// `messages`, and the counts move to `read_counts` so `read` can hold
 /// positions ([`keep_read_counts`]). Versions 1 to 3
 /// kept workspaces of the chat's own, and each channel and category named
-/// its workspace; Chat runs in its room now and reads neither, so both stay
-/// where they are, names included, and every channel and category is the
-/// room's. Versions 1 to 4 kept a filed report's submission,
+/// its workspace; the record is the chat of the workspace the window is in
+/// now and reads neither, so both stay where they are, names included, and
+/// every channel and category is the workspace's. Versions 1 to 4 kept a
+/// filed report's submission,
 /// a triage step's update and a moderation decision's reports and
 /// take-backs as one JSON string each; they are model values now, rewritten
 /// in place. Chats made before Chat's record was a model kept each channel's
@@ -364,7 +366,7 @@ pub(crate) fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message>
 
 /// The names a chat from before its record was a model kept for the people
 /// in it, under `users`, by participant id: what the authors of its kept
-/// messages are called where the room no longer names them.
+/// messages are called where the workspace no longer names them.
 pub(crate) fn kept_names(doc: &ui::tilo_resource::Doc) -> BTreeMap<String, String> {
     use ui::automerge::{ROOT, ReadDoc as _};
     let Ok(Some(users)) = map_at(doc, &ROOT, "users") else {
@@ -407,12 +409,12 @@ fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<
     Ok(())
 }
 
-/// Give a room opened for the first time, with no channels at all, its
+/// Give a workspace opened for the first time, with no channels at all, its
 /// first two: `#chat` to talk in and `#voice` to call in, under fixed ids
-/// and with the same values, so every device that opens the room first
-/// makes the very same two, and their copies are one item each. A room
+/// and with the same values, so every device that opens the workspace first
+/// makes the very same two, and their copies are one item each. A workspace
 /// with any channel, even one that does not read, gets nothing.
-fn open_room(channels: &mut Collection<Channel>) {
+fn open_workspace(channels: &mut Collection<Channel>) {
     if !channels.is_empty() || !channels.quarantined().is_empty() {
         return;
     }
@@ -431,21 +433,21 @@ fn open_room(channels: &mut Collection<Channel>) {
     }
 }
 
-/// The room's chat. See the module docs.
+/// The workspace's chat. See the module docs.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Chat {
-    /// The room's channel categories, in sidebar order: made, ordered and
+    /// The workspace's channel categories, in sidebar order: made, ordered and
     /// removed only by the record's actions, which keep them to those who
-    /// keep the room's layout. A generic insert, move or removal would let
-    /// anyone who may edit the room (a public room's visitor) rearrange it.
+    /// keep the workspace's layout. A generic insert, move or removal would let
+    /// anyone who may edit the workspace (a public workspace's visitor) rearrange it.
     #[model(readonly)]
     pub categories: Collection<Category>,
-    /// The room's channels, in sidebar order within their category: made,
+    /// The workspace's channels, in sidebar order within their category: made,
     /// ordered and removed only by the record's actions, for the same
     /// reason as [`Self::categories`].
     #[model(readonly)]
     pub channels: Collection<Channel>,
-    /// The people and agents in the room, by their participant id.
+    /// The people and agents in the workspace, by their participant id.
     pub people: Keyed<Person>,
     /// The name every member shows for an agent task, as the person hosting
     /// it labelled it.
@@ -455,51 +457,51 @@ pub struct Chat {
     pub read: BTreeMap<String, BTreeMap<String, crate::parts::ReadMark>>,
     /// Reviewed feedback filed in a channel, under its submission's id.
     pub feedback: Collection<FeedbackReport>,
-    /// Reports of people and messages, and what the room's moderators (or
+    /// Reports of people and messages, and what the workspace's moderators (or
     /// its host's moderation agent) decided on them.
     pub moderation: moderation_model::Moderation,
-    /// What the room's host keeps of the files members post, as the host
+    /// What the workspace's host keeps of the files members post, as the host
     /// says: a member's Chat refuses, in plain words, a file the host would
     /// not take, rather than posting one that never reaches it.
     #[model(readonly)]
-    pub files: RoomFiles,
+    pub files: WorkspaceFiles,
 }
 
-/// What a room's host keeps of the files its members post; zero where it
+/// What a workspace's host keeps of the files its members post; zero where it
 /// sets no bound (a chat no host keeps files for).
 #[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RoomFiles {
+pub struct WorkspaceFiles {
     /// The largest file it keeps, in bytes.
     pub largest: u64,
     /// What it takes in of one member's files in any hour, in bytes.
     pub member_hourly: u64,
 }
 
-/// A collapsible group of the room's channels.
+/// A collapsible group of the workspace's channels.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Category {
     /// The category's name: changed by renaming it
-    /// ([`Chat::rename_category`]), which only those who keep the room's
+    /// ([`Chat::rename_category`]), which only those who keep the workspace's
     /// layout may.
     #[model(label, readonly)]
     pub name: String,
 }
 
-/// A text or voice channel of the room.
+/// A text or voice channel of the workspace.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Channel {
     /// The category it is listed under; none for uncategorised: changed by
-    /// [`Chat::set_channel_category`], which only those who keep the room's
+    /// [`Chat::set_channel_category`], which only those who keep the workspace's
     /// layout may.
     #[model(readonly)]
     pub category: Option<Id>,
     /// The channel's name: changed by renaming it
-    /// ([`Chat::rename_channel`]), which only those who keep the room's
+    /// ([`Chat::rename_channel`]), which only those who keep the workspace's
     /// layout may.
     #[model(label, readonly)]
     pub name: String,
     /// What the channel is about: changed by [`Chat::set_channel_topic`],
-    /// which only those who keep the room's layout may.
+    /// which only those who keep the workspace's layout may.
     #[model(readonly)]
     pub topic: String,
     /// A text channel has a conversation; a voice channel has a call.
@@ -507,7 +509,7 @@ pub struct Channel {
     pub kind: ChannelKind,
     /// Archived channels leave the sidebar and stay in the record: changed
     /// by archiving it ([`Chat::archive_channel`]), which only those who
-    /// keep the room's layout may.
+    /// keep the workspace's layout may.
     #[model(readonly)]
     pub archived: bool,
     /// Bare authenticated Agent id for a direct conversation; ordinary
@@ -632,7 +634,7 @@ pub struct ShownAs {
     /// The shown name.
     #[model(atom)]
     pub name: String,
-    /// BLAKE3 hex of an image in the room's content store.
+    /// BLAKE3 hex of an image in the workspace's content store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
     /// The outside account this stands for.
@@ -647,7 +649,7 @@ pub struct ShownPersona {
     pub service: String,
     #[model(atom)]
     pub account: String,
-    /// The room member the account is linked to.
+    /// The workspace member the account is linked to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked: Option<String>,
 }
@@ -711,7 +713,7 @@ pub struct Revision {
     pub text: String,
 }
 
-/// A person or agent in the room.
+/// A person or agent in the workspace.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Person {
     /// Their participant id: what messages, reactions and read marks name.
@@ -1157,7 +1159,7 @@ pub(crate) struct Posting {
 }
 
 impl Chat {
-    /// Everyone who can be mentioned: the room's people and agents.
+    /// Everyone who can be mentioned: the workspace's people and agents.
     #[must_use]
     pub fn participants(&self) -> Vec<crate::mention::Participant> {
         self.people
@@ -1216,7 +1218,7 @@ impl Chat {
         Ok(())
     }
 
-    /// The person `id`, added when the room does not know them yet.
+    /// The person `id`, added when the workspace does not know them yet.
     fn person(&mut self, id: &str) -> Result<&mut Person, Refusal> {
         let key = Id::from_raw(id);
         if self.people.find(&key).is_none() {
@@ -1231,8 +1233,8 @@ impl Chat {
             .ok_or_else(|| Refusal::new("there is no such person"))
     }
 
-    /// Start a fresh record: its creator, and the room's first channels
-    /// when it has none yet ([`open_room`]).
+    /// Start a fresh record: its creator, and the workspace's first channels
+    /// when it has none yet ([`open_workspace`]).
     pub(crate) fn begin(
         &mut self,
         creator: &str,
@@ -1243,7 +1245,7 @@ impl Chat {
         initials.clone_into(&mut person.initials);
         person.color = color;
         person.status = Presence::Online;
-        open_room(&mut self.channels);
+        open_workspace(&mut self.channels);
         Ok(())
     }
 }
@@ -1262,7 +1264,7 @@ impl Chat {
 impl Chat {
     /// Start the chat.
     ///
-    /// Its creator, and the room's first channels when it has none yet.
+    /// Its creator, and the workspace's first channels when it has none yet.
     #[action(housekeeping, audience = "agents")]
     pub fn begin_chat(
         &mut self,
@@ -1280,7 +1282,7 @@ impl Chat {
 
     /// Introduce yourself.
     ///
-    /// How you show in the room: your name, initials and colour, and that
+    /// How you show in the workspace: your name, initials and colour, and that
     /// you are here.
     #[action(housekeeping, audience = "agents")]
     pub fn introduce(
@@ -1318,7 +1320,7 @@ impl Chat {
         Ok(())
     }
 
-    // The room's channels and categories are its layout, kept by those who
+    // The workspace's channels and categories are its layout, kept by those who
     // moderate it (as a server's channels are kept by those who may manage
     // them): a member talks in the channels, and does not make, rename,
     // move or delete them.
@@ -1611,7 +1613,7 @@ impl Chat {
 
     /// Report message.
     ///
-    /// Tells the room's moderators that this message, and its author,
+    /// Tells the workspace's moderators that this message, and its author,
     /// should not be here.
     #[action(audience = "agents")]
     pub fn report_message(
@@ -1637,7 +1639,7 @@ impl Chat {
 
     /// Report person.
     ///
-    /// Tells the room's moderators that this person is misbehaving.
+    /// Tells the workspace's moderators that this person is misbehaving.
     #[action(item = people)]
     pub fn report_person(
         &mut self,
@@ -1655,7 +1657,7 @@ impl Chat {
     /// Decide on a report.
     ///
     /// Records what was done about a person and why, settling their
-    /// reports; the room's governance and history carry it out.
+    /// reports; the workspace's governance and history carry it out.
     #[action(moderation, audience = "agents")]
     pub fn decide_reports(
         &mut self,
@@ -1715,7 +1717,7 @@ impl Chat {
     ///
     /// A reviewed report, filed in the channel and kept with its triage;
     /// the channel shows it among its messages.
-    // Filing a report is commenting: whoever may comment in the room may.
+    // Filing a report is commenting: whoever may comment in the workspace may.
     // Only a person files one: the submission is what the feedback sheet
     // reviewed with them, which an agent cannot produce, so offering it to
     // agents only drew them away from `post`.

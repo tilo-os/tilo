@@ -8,18 +8,18 @@ use crate::model::{self, Id, User};
 use super::ChatApp;
 
 impl ChatApp {
-    /// What to call `id`: the room's answer first, the document's stored name
+    /// What to call `id`: the workspace's answer first, the document's stored name
     /// as an offline fallback, and the raw id last so a label is never blank.
-    /// People who share a name carry the number the room tells them apart
+    /// People who share a name carry the number the workspace tells them apart
     /// by ("Ada (2)"), this window's own person included.
     ///
     /// The precedence is the point. A client that could name itself would be
     /// telling every other peer what to call it, and two peers disagreeing
-    /// about a third's name is a difference nobody can settle. So the room
+    /// about a third's name is a difference nobody can settle. So the workspace
     /// answers, and a peer only ever supplies its id.
     pub fn display_name(&self, id: &str) -> String {
         if let Some(agent) = id.strip_prefix("agent:")
-            && self.room_agents.iter().any(|known| known == agent)
+            && self.workspace_agents.iter().any(|known| known == agent)
         {
             return self.agent_display_name(agent);
         }
@@ -28,10 +28,10 @@ impl ChatApp {
         {
             return own.clone();
         }
-        if let Some(n) = self.room_names.get(id)
+        if let Some(n) = self.workspace_names.get(id)
             && !n.trim().is_empty()
         {
-            let n = self.room_labels.label(id, n);
+            let n = self.workspace_labels.label(id, n);
             return if self.is_me(id) {
                 n
             } else {
@@ -44,16 +44,16 @@ impl ChatApp {
         if let Some(u) = self.users.iter().find(|u| u.id == id)
             && !u.name.trim().is_empty()
         {
-            let name = self.room_labels.label(id, &u.name);
+            let name = self.workspace_labels.label(id, &u.name);
             return if self.is_me(id) {
                 name
             } else {
                 crate::identity::shared_name_label(id, &name)
             };
         }
-        // Your own name, which this had no way to reach until the room named
+        // Your own name, which this had no way to reach until the workspace named
         // it: `me` is not necessarily a row in `users`, which is built from
-        // the room document, and a room this peer has not spoken in has
+        // the workspace document, and a workspace this peer has not spoken in has
         // never heard of it.
         if self.is_me(id) && !self.me.name.trim().is_empty() {
             return self.me.name.clone();
@@ -62,11 +62,11 @@ impl ChatApp {
     }
 
     /// What to call `id` on screen: this session's own participant by their
-    /// name like anyone else, and an honest placeholder for someone the room
+    /// name like anyone else, and an honest placeholder for someone the workspace
     /// has not named yet — nobody is ever shown their raw routing id.
     pub(crate) fn user_name(&self, id: &str) -> String {
         // `is_me` rather than a bare comparison: a peer that has adopted the
-        // room's address for itself still wrote its earlier lines under the
+        // workspace's address for itself still wrote its earlier lines under the
         // id it resolved at startup, and those are still its own. Their own
         // name, as everyone else reads it.
         if self.is_me(id) {
@@ -77,7 +77,7 @@ impl ChatApp {
             return crate::identity::unnamed_label(id);
         }
         if let Some(agent) = id.strip_prefix("agent:")
-            && self.room_agents.iter().any(|known| known == agent)
+            && self.workspace_agents.iter().any(|known| known == agent)
         {
             return crate::i18n::t_args(
                 "chat-agent-author",
@@ -100,7 +100,7 @@ impl ChatApp {
         crate::identity::unnamed_label(id)
     }
 
-    /// The avatar monogram for `id`, derived from whatever the room calls them
+    /// The avatar monogram for `id`, derived from whatever the workspace calls them
     /// so the letter never disagrees with the name beside it.
     pub fn initials_for(&self, id: &str) -> String {
         let name = self.display_name(id);
@@ -114,18 +114,18 @@ impl ChatApp {
     }
 
     /// The participant's own colour, in the shared presence vocabulary: the
-    /// room's assignment when it made one, otherwise the system-wide
+    /// workspace's assignment when it made one, otherwise the system-wide
     /// per-user colour every other surface derives the same way.
     pub fn participant_color(&self, id: &str) -> (u8, u8, u8) {
-        self.room_colors
+        self.workspace_colors
             .get(id)
             .copied()
             .unwrap_or_else(|| ui::presence::user_color(id))
     }
 
     /// The chat's people as the composers' `@` lists offer them beside the
-    /// room's roster: someone who wrote here stays mentionable after they
-    /// left the room.
+    /// workspace's roster: someone who wrote here stays mentionable after they
+    /// left the workspace.
     pub(crate) fn mention_people(&self) -> Vec<ui::widget::MentionCandidate> {
         self.users
             .iter()
@@ -140,7 +140,7 @@ impl ChatApp {
     }
 
     /// Everyone a message's `@name`s bind to when it is sent: the
-    /// document's own users, plus anyone the room is talking about who has
+    /// document's own users, plus anyone the workspace is talking about who has
     /// not yet written themselves into it.
     pub fn participants(&self) -> Vec<crate::mention::Participant> {
         let mut out: Vec<crate::mention::Participant> = self
@@ -153,12 +153,12 @@ impl ChatApp {
             })
             .collect();
         // Each person once: a device stands for its person, so neither the
-        // person's alias in `room_names` nor a device whose person already
+        // person's alias in `workspace_names` nor a device whose person already
         // wrote themselves in is a second candidate.
-        let aliases: std::collections::HashSet<&Id> = self.room_persons.values().collect();
-        for id in self.room_names.keys() {
+        let aliases: std::collections::HashSet<&Id> = self.workspace_persons.values().collect();
+        for id in self.workspace_names.keys() {
             let person_listed = self
-                .room_persons
+                .workspace_persons
                 .get(id)
                 .is_some_and(|person| out.iter().any(|p| &p.id == person));
             if !aliases.contains(id) && !person_listed && !out.iter().any(|p| &p.id == id) {
@@ -174,7 +174,7 @@ impl ChatApp {
     }
 
     /// The members roster shown in the right flap when no thread is open: every
-    /// user in the room paired with the voice channel they're currently in
+    /// user in the workspace paired with the voice channel they're currently in
     /// (if any). Sorted in-call first, then by presence, then by name. Real
     /// projection of the shared user list + voice membership — no placeholders.
     pub(crate) fn roster_rows(&self) -> Vec<(User, Option<String>)> {
@@ -234,14 +234,14 @@ impl ChatApp {
     /// presence answers who is present, that answer decides: present people
     /// keep the away or busy they set, everyone else is offline — including
     /// when the answer names nobody but this window's own person, which is
-    /// how a room that everybody has left reads. A window whose host has no
+    /// how a workspace that everybody has left reads. A window whose host has no
     /// presence at all (a chat on this device alone) keeps the recorded
     /// status.
     pub(crate) fn live_status(&self, person: &User) -> model::Presence {
-        if !self.room_presence_answers {
+        if !self.workspace_presence_answers {
             return person.status;
         }
-        let present = self.is_me(&person.id) || self.room_names.contains_key(&person.id);
+        let present = self.is_me(&person.id) || self.workspace_names.contains_key(&person.id);
         match (present, person.status) {
             (false, _) => model::Presence::Offline,
             (true, model::Presence::Offline) => model::Presence::Online,
@@ -249,7 +249,7 @@ impl ChatApp {
         }
     }
 
-    /// Whether this room has somebody besides the local participant. An
+    /// Whether this workspace has somebody besides the local participant. An
     /// agent is still a collaborator (and should surface collaboration
     /// controls), but it is never counted or labelled as a person.
     pub(crate) fn has_other_collaborator(&self) -> bool {

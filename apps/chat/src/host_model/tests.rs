@@ -71,25 +71,25 @@ fn backend(text: &str) -> Rc<Backend> {
     })
 }
 
-fn chat(backend: Rc<Backend>) -> (ChatApp, crate::testing::Room) {
-    let mut doc = crate::testing::Room::default();
+fn chat(backend: Rc<Backend>) -> (ChatApp, crate::testing::Workspace) {
+    let mut doc = crate::testing::Workspace::default();
     crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
     crate::testing::say(&mut doc, crate::model::ME, "c_chat", "Question");
     let mut app = ChatApp::new_ephemeral().with_models(Models::new(backend));
-    app.attach_room(&doc);
+    app.attach_workspace(&doc);
     app.reload(&doc);
     app.ensure_selection();
     app.reload(&doc);
     (app, doc)
 }
 
-fn pump(app: &mut ChatApp, doc: &mut crate::testing::Room) {
+fn pump(app: &mut ChatApp, doc: &mut crate::testing::Workspace) {
     app.pump_model();
     app.land(doc);
     app.reload(doc);
 }
 
-fn reply(doc: &crate::testing::Room, id: &serde_json::Value) -> crate::model::Message {
+fn reply(doc: &crate::testing::Workspace, id: &serde_json::Value) -> crate::model::Message {
     doc.message_row(id.as_str().unwrap()).unwrap()
 }
 
@@ -370,7 +370,7 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
 }
 
 /// A member who has only ever written from their linked Discord account is
-/// still one of the room's people: their bridged message is theirs, by
+/// still one of the workspace's people: their bridged message is theirs, by
 /// their name with Discord's mark, never "Dana · Discord" as if a namesake
 /// wrote it.
 #[test]
@@ -402,10 +402,10 @@ fn a_member_writing_only_from_a_linked_account_reads_as_themselves() {
             linked: Some("u_dana".into()),
         }),
     });
-    app.users = app.room_people_from(&record, &[(channel, vec![other, bridged.clone()])]);
+    app.users = app.workspace_people_from(&record, &[(channel, vec![other, bridged.clone()])]);
     assert!(
         app.users.iter().any(|user| user.id == "u_dana"),
-        "the linked member is one of the room's people"
+        "the linked member is one of the workspace's people"
     );
     let members: Vec<&str> = app.users.iter().map(|user| user.name.as_str()).collect();
     let name = app.message_author_name(&bridged);

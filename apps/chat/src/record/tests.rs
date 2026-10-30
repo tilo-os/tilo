@@ -21,7 +21,7 @@ fn begin(name: &str, initials: &str) -> Invoke<Chat> {
 }
 
 /// A starter chat Ada made, with Bo introduced.
-pub(super) fn room() -> Replica<Chat> {
+pub(super) fn workspace() -> Replica<Chat> {
     let mut ada = Replica::<Chat>::new().as_author(ADA);
     ada.set_now_ms(1_000_000);
     ada.apply(begin("Ada", "AD")).unwrap();
@@ -47,7 +47,7 @@ pub(super) struct Talk {
 
 impl Talk {
     pub(super) fn new() -> Self {
-        let chat = room();
+        let chat = workspace();
         let mut part = Replica::<ChatPart>::new().as_author(ADA);
         part.set_now_ms(1_000_000);
         Self {
@@ -160,8 +160,8 @@ fn reply(parent: &Id, text: &str) -> Invoke<ChatPart> {
 }
 
 #[test]
-fn a_new_chat_starts_with_its_creator_and_the_rooms_two_channels() {
-    let ada = room();
+fn a_new_chat_starts_with_its_creator_and_the_workspaces_two_channels() {
+    let ada = workspace();
     let chat = ada.state().unwrap();
     let channels = chat.channel_rows();
     assert_eq!(
@@ -188,8 +188,8 @@ fn a_new_chat_starts_with_its_creator_and_the_rooms_two_channels() {
     );
 }
 
-/// The room's two channels as a replica of `chat` lists them.
-fn room_channels(chat: &Chat) -> Vec<(String, String, ChannelKind)> {
+/// The workspace's two channels as a replica of `chat` lists them.
+fn workspace_channels(chat: &Chat) -> Vec<(String, String, ChannelKind)> {
     chat.channel_rows()
         .into_iter()
         .map(|channel| (channel.id, channel.name, channel.kind))
@@ -200,7 +200,7 @@ fn room_channels(chat: &Chat) -> Vec<(String, String, ChannelKind)> {
 fn first_opens_on_two_devices_converge_on_exactly_chat_and_voice() {
     let mut genesis = Replica::<Chat>::new().as_author(ADA);
     // Each device seeds the record it found empty, at once: Ada's laptop
-    // and phone, and Bo in the same room. Each device writes its own
+    // and phone, and Bo in the same workspace. Each device writes its own
     // changes for the person at it, as a host does: two devices writing as
     // one actor would each make that actor's first change, which no sync
     // can hold both of.
@@ -210,7 +210,7 @@ fn first_opens_on_two_devices_converge_on_exactly_chat_and_voice() {
     laptop.apply(begin("Ada", "AD")).unwrap();
     phone.apply(begin("Ada", "AD")).unwrap();
     bo.apply(begin("Bo", "BO")).unwrap();
-    // A device opening the room after it synced makes nothing more.
+    // A device opening the workspace after it synced makes nothing more.
     let mut first = genesis.fork().as_invoker(ADA);
     first.apply(begin("Ada", "AD")).unwrap();
     let mut second = first.fork().as_invoker(BO);
@@ -232,7 +232,7 @@ fn first_opens_on_two_devices_converge_on_exactly_chat_and_voice() {
     ];
     for replica in [&laptop, &phone, &bo, &first, &second] {
         let chat = replica.state().expect("the merged chat opens");
-        assert_eq!(room_channels(&chat), expected);
+        assert_eq!(workspace_channels(&chat), expected);
         assert!(chat.categories.is_empty());
         assert!(
             chat.channels.quarantined().is_empty(),
@@ -492,7 +492,7 @@ fn an_edit_keeps_the_earlier_text_and_a_delete_removes_the_message() {
 
 #[test]
 fn channels_and_categories_are_made_moved_and_deleted() {
-    let mut ada = room();
+    let mut ada = workspace();
     ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory {
         name: "Projects".parse().unwrap(),
     }))
@@ -590,8 +590,8 @@ fn channels_and_categories_are_made_moved_and_deleted() {
 /// the category named; what is not named keeps its place, and a category
 /// moves one place at a time.
 #[test]
-fn the_rooms_channels_are_arranged_in_one_go() {
-    let mut ada = room();
+fn the_workspaces_channels_are_arranged_in_one_go() {
+    let mut ada = workspace();
     for name in ["A", "B"] {
         ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory {
             name: name.parse().unwrap(),
@@ -693,7 +693,7 @@ fn the_rooms_channels_are_arranged_in_one_go() {
 
 #[test]
 fn a_channel_is_filed_only_under_a_category_that_exists() {
-    let mut ada = room();
+    let mut ada = workspace();
     let create = |category| {
         Chat::CREATE_CHANNEL.with(chat::CreateChannel {
             name: "project".parse().unwrap(),
@@ -866,7 +866,7 @@ fn an_agent_records_its_work_on_its_own_reply_to_the_summons() {
 #[test]
 fn an_agent_is_named_once_for_everyone() {
     const AGENT: &str = "agent-task:33333333-3333-4333-8333-333333333333";
-    let mut ada = room();
+    let mut ada = workspace();
     ada.apply(Chat::NAME_AGENT.with(chat::NameAgent {
         participant: AGENT.into(),
         name: "Tide".parse().unwrap(),
@@ -963,7 +963,7 @@ fn messages_channels_and_categories_change_only_through_their_actions() {
         assert!(talk.part.apply(Invoke::edit(&edit).unwrap()).is_err());
     }
 
-    // The room's layout is the moderators' to change, through its actions:
+    // The workspace's layout is the moderators' to change, through its actions:
     // no generic insert, removal or move of a channel or a category.
     let mut chat = talk.chat;
     let before = chat.state().unwrap();
@@ -984,7 +984,7 @@ fn messages_channels_and_categories_change_only_through_their_actions() {
     ] {
         assert!(
             chat.apply(Invoke::edit(&edit).unwrap()).is_err(),
-            "{:?} changed the room's layout",
+            "{:?} changed the workspace's layout",
             edit.op()
         );
     }
@@ -1160,7 +1160,7 @@ fn removing_a_message_sits_under_the_moderation_node() {
 }
 
 #[test]
-fn the_rooms_layout_is_kept_by_its_moderators() {
+fn the_workspaces_layout_is_kept_by_its_moderators() {
     let field = |id: &str| {
         Chat::declarations()
             .into_iter()
@@ -1268,7 +1268,7 @@ fn stored_value(doc: &automerge::AutoCommit, field: &str, id: &str) -> automerge
 
 #[test]
 fn a_chat_with_a_malformed_channel_opens_shows_the_rest_and_deletes_it() {
-    let mut ada = room();
+    let mut ada = workspace();
     let voice = stored_value(ada.doc(), "channels", VOICE_CHANNEL);
     // A peer's damaged write: a kind no channel has.
     ui::tilo_resource::Slot::Key(&voice, "kind")
@@ -1283,13 +1283,13 @@ fn a_chat_with_a_malformed_channel_opens_shows_the_rest_and_deletes_it() {
         .state()
         .expect("one malformed channel never makes the chat unopenable");
     assert_eq!(
-        room_channels(&chat),
+        workspace_channels(&chat),
         [(
             CHAT_CHANNEL.to_owned(),
             "chat".to_owned(),
             ChannelKind::Text
         )],
-        "the rest of the room shows"
+        "the rest of the workspace shows"
     );
     let held = chat.channels.quarantined();
     assert_eq!(held.len(), 1);
@@ -1318,7 +1318,7 @@ fn a_chat_with_a_malformed_channel_opens_shows_the_rest_and_deletes_it() {
         chat.channels.quarantined().is_empty(),
         "repaired by deleting it"
     );
-    assert_eq!(room_channels(&chat).len(), 1);
+    assert_eq!(workspace_channels(&chat).len(), 1);
 }
 
 /// The agent conversation the user's chat holds, under the id version 3
@@ -1425,7 +1425,7 @@ fn stored_ids(doc: &automerge::AutoCommit, field: &str) -> Vec<String> {
     doc.keys(&map).collect()
 }
 
-/// The room's channels, each with its category's name, as the record
+/// The workspace's channels, each with its category's name, as the record
 /// lists them.
 fn channels_with_categories(chat: &Chat) -> Vec<(String, String, Option<String>)> {
     chat.channels
@@ -1488,7 +1488,7 @@ fn the_migration_opens_the_users_chat_with_everything_in_it() {
         assert!(
             !chat.channels.contains(&id(CHAT_CHANNEL))
                 && !chat.channels.contains(&id(VOICE_CHANNEL)),
-            "a room that has channels gets no #chat or #voice"
+            "a workspace that has channels gets no #chat or #voice"
         );
         let (_, workspaces) = automerge::ReadDoc::get(&doc, automerge::ROOT, "workspaces")
             .unwrap()

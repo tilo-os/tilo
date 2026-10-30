@@ -45,7 +45,7 @@ pub(crate) fn max_card_width(theme: &ui::theme::Theme) -> f64 {
     2.0 * MediaSize::Regular.extent(theme)
 }
 
-/// What Chat keeps of the windows shared into the room.
+/// What Chat keeps of the windows shared into the workspace.
 #[derive(Default)]
 pub(crate) struct LiveShares {
     /// The "Share a window" panel, while it is open.
@@ -55,7 +55,7 @@ pub(crate) struct LiveShares {
     /// Whether each of this person's shares was last seen with its window
     /// open, by message: a change is written to the message.
     seen_open: HashMap<String, bool>,
-    /// What the shares grant, and what the room lets this person do.
+    /// What the shares grant, and what the workspace lets this person do.
     pub(crate) grants: crate::share_grants::ShareGrants,
 }
 
@@ -461,7 +461,7 @@ impl ChatApp {
         }
     }
 
-    /// Whether `author` is in the room now: a share is live only while its
+    /// Whether `author` is in the workspace now: a share is live only while its
     /// sharer is here to work on it.
     fn sharer_here(&self, author: &str) -> bool {
         self.user(author)
@@ -498,7 +498,7 @@ impl ChatApp {
     }
 
     /// Let the others do `access` with what `message` shares, in place:
-    /// the share stays live, and the room's grant follows.
+    /// the share stays live, and the workspace's grant follows.
     pub(crate) fn switch_share(
         &mut self,
         doc: &mut ui::widget::Edits<'_>,

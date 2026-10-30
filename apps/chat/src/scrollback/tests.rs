@@ -1,4 +1,4 @@
-//! A device that joins a chat whose messages fill several parts: the room
+//! A device that joins a chat whose messages fill several parts: the workspace
 //! sends it the head only, and it reads back through the earlier parts.
 
 use crate::testing::MountedChat;
@@ -100,7 +100,7 @@ fn three_parts(writer: &mut Window, per_part: usize) {
     writer.harness().relayout();
 }
 
-/// `reader` is a device that just joined: the room sends it the chain's
+/// `reader` is a device that just joined: the workspace sends it the chain's
 /// head only.
 fn join(writer: &mut Window, reader: &mut Window) {
     chain_of(reader).hold(2).unwrap();
@@ -161,7 +161,7 @@ fn scrolling_back_opens_earlier_parts_in_order_without_moving_the_view() {
     assert_eq!(held(&mut bo), vec![2], "nobody read back yet");
 
     // The reader scrolls to the top of what is held: the part before is
-    // opened, and is on its way until the room's copy arrives.
+    // opened, and is on its way until the workspace's copy arrives.
     bo.with_chat(|surface| {
         surface.scroll = 1.0e6;
         surface.timeline_at_end = false;
@@ -354,7 +354,7 @@ fn unread_counts_reach_the_first_part_without_holding_it() {
     let per_part = 4;
     three_parts(&mut ada, per_part);
     join(&mut ada, &mut bo);
-    // The head only, as the room sent it: what the window reads back to
+    // The head only, as the workspace sent it: what the window reads back to
     // for its short channel is left out.
     let messages = crate::messages::Messages::new(
         chain_of(&mut bo)
@@ -378,11 +378,11 @@ fn unread_counts_reach_the_first_part_without_holding_it() {
     );
 }
 
-/// Part 0, which the room's hosts have none of: the timeline says earlier
+/// Part 0, which the workspace's hosts have none of: the timeline says earlier
 /// messages are not available, asks for nothing more and spins nothing,
 /// until it arrives after all.
 #[test]
-fn an_earlier_part_the_room_lacks_ends_in_a_final_state() {
+fn an_earlier_part_the_workspace_lacks_ends_in_a_final_state() {
     let mut ada = Window::on_device("ada").unwrap();
     let mut bo = Window::on_device("bo").unwrap();
     three_parts(&mut ada, 2);

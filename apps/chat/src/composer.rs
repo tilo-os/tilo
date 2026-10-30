@@ -31,7 +31,7 @@ use crate::drafts::ChatDrafts;
 
 /// The draft a channel or thread composer edits: the rich text kept under
 /// its key in the person's own drafts record ([`ChatDrafts`]), never in the
-/// room's chat record.
+/// workspace's chat record.
 pub struct DraftField {
     key: String,
     record: Option<PersonRecord<ChatDrafts>>,
@@ -142,7 +142,7 @@ impl RichTextSource for DraftField {
 /// The source behind Chat's one retained composer. Ordinary channels point
 /// at their shared document draft; a direct conversation with a person points
 /// at a peer-local draft keyed by the exact workspace and person. Switching
-/// never copies private text into the room document.
+/// never copies private text into the workspace document.
 pub struct ComposerSource {
     shared: DraftField,
     private: LocalState<HashMap<String, Draft>>,
@@ -787,7 +787,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
             .set_popover_bounds(Some(bounds));
     }
 
-    /// Who the room's record knows beyond the room's roster, offered at `@`
+    /// Who the workspace's record knows beyond the workspace's roster, offered at `@`
     /// too.
     pub fn set_mention_people(&mut self, people: Vec<ui::widget::MentionCandidate>) {
         self.host
