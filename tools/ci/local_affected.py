@@ -27,9 +27,9 @@ how they run:
   tools/ci/t-nextest.sh) inside the builder's container, so helper binaries the tests
   need are built there and no test binary or artifact is fetched to this machine.
   Without rcargo the same commands run here.
-- The tests that failed in the last run against the same base run first, alone, so a
-  fix is confirmed (or not) within the time of its own tests; the rest follow without
-  them. The record is per worktree and base (`<git-dir>/local-affected/`).
+- The tests that failed in the last run against the same base run as a job of their
+  own beside the rest, so a fix is confirmed (or not) within the time of its own tests
+  and the rest is not held up by them. The record is per worktree and base (`<git-dir>/local-affected/`).
 - A big test set is split by package between the x86 and the arm builder
   (`--split auto`, the default): the arm builder takes a quarter of the work (compile
   cost and recorded test time), each builder compiles and runs only its share.
@@ -479,18 +479,20 @@ def main() -> int:
     if want("test") and tests:
         failing_first = {test for test in previous if package_of(test[0]) in set(tests)}
 
+        def failed_first(builder: Builder, packages: list[str], first: set[tuple[str, str]]):
+            def body(job: Job) -> None:
+                # Over the same packages as the full run, so both resolve features alike: the one
+                # that takes cargo's build lock second finds every test binary built.
+                job.run(f"{len(first)} test(s) that failed last time", builder,
+                        nextest(packages, f"({pull_filter}) and ({filterset_of(first)})", ["--no-tests=pass"]))
+            return body
+
         def test_share(builder: Builder, packages: list[str], first: set[tuple[str, str]]):
             def body(job: Job) -> None:
                 remaining = pull_filter
                 if first:
-                    # Over the same packages as the full run, so both resolve features alike and
-                    # the full run finds every test binary already built.
-                    job.run(f"{len(first)} test(s) that failed last time", builder,
-                            nextest(packages, f"({pull_filter}) and ({filterset_of(first)})", ["--no-tests=pass"]))
                     remaining = f"({pull_filter}) and not ({filterset_of(first)})"
-                if stop.is_set():
-                    return
-                # A package whose only selected tests ran first has nothing left: pass.
+                # A package whose only selected tests run first has nothing left: pass.
                 job.run(f"nextest ({len(packages)} packages)", builder,
                         nextest(packages, remaining, ["--no-tests=pass"] if first else []))
                 if want("goldens") and GOLDEN_PACKAGES & set(packages) and not stop.is_set():
@@ -500,7 +502,12 @@ def main() -> int:
 
         for index, (builder, packages) in enumerate(shares):
             mine = {test for test in failing_first if package_of(test[0]) in set(packages)}
-            spawn("test" if len(shares) == 1 else f"test-{builder.name}", test_share(builder, packages, mine))
+            label = "test" if len(shares) == 1 else f"test-{builder.name}"
+            # The tests that failed last time run beside the rest, not before them: they report
+            # within the time of their own tests, and the rest is not held up by them.
+            if mine:
+                spawn(f"{label}-failed", failed_first(builder, packages, mine))
+            spawn(label, test_share(builder, packages, mine))
 
     for thread in threads:
         thread.join()

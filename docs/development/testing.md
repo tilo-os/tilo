@@ -20,8 +20,9 @@ with `--closure`. Clippy and the tests run at
 the same time on the builders the `cargo` shim forwards to (rcargo; tests and
 lints go to the x86 builder): each job runs inside the builder's container, so
 the binaries the tests need are built there and nothing is fetched to your
-machine. Tests that failed in your last run against the same base run first,
-alone, so a fix is confirmed within the time of its own tests. A big test set
+machine. Tests that failed in your last run against the same base run as a job
+of their own beside the rest, so a fix is confirmed within the time of its own
+tests. A big test set
 is shared between the x86 and arm builders.
 
 Narrow it while you iterate:
