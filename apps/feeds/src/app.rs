@@ -120,8 +120,6 @@ pub(crate) enum Request {
     FeedMenu(Id, Rect, Option<Point>),
     /// The person folded (`true`) or unfolded a folder in the sidebar.
     SetFolderCollapsed(Id, bool),
-    SetFont(ReadFont),
-    SetPaper(ReadTheme),
     /// The reading scale as a percentage.
     SetScale(f64),
 }
@@ -482,6 +480,8 @@ pub(crate) struct Core {
     pub(crate) worker: Option<FetchWorker>,
     synced: bool,
     pub(crate) dispatcher: Option<ui::framework::Dispatcher<Library>>,
+    /// The library's published actions, which the reading settings bind to.
+    pub(crate) actions: Option<ui::framework::Actions<Library>>,
     read_settings: Option<ui::framework::Setting<ReadSettings>>,
     refresh_reply: Option<ui::framework::EffectReply>,
     /// The document heads the mirrored store was last reconciled against.
@@ -532,6 +532,7 @@ impl Core {
             worker: None,
             synced: false,
             dispatcher: None,
+            actions: None,
             read_settings: None,
             refresh_reply: None,
 
@@ -1480,8 +1481,6 @@ impl Core {
                     );
                 }
             }
-            Request::SetFont(font) => self.bump_setting(doc, |s| s.font = font),
-            Request::SetPaper(paper) => self.bump_setting(doc, |s| s.theme = paper),
             Request::SetScale(percent) => {
                 self.bump_setting(doc, |s| s.font_scale = (percent / 100.0) as f32);
             }
@@ -1920,12 +1919,12 @@ impl FeedsApp {
             self.close_settings_panel();
             return;
         }
-        let settings = {
+        let (settings, actions) = {
             let core = self.core.borrow();
             if core.open_article().is_none() {
                 return;
             }
-            core.settings
+            (core.settings, core.actions.clone())
         };
         // The panel opens from the window bar's Reading settings, which
         // stands over the article's column: under the column's top edge,
@@ -1935,12 +1934,16 @@ impl FeedsApp {
         self.core.borrow_mut().menu = None;
         let window = Widget::get_rect(&self.shell);
         self.settings_panel = Some(
-            Popover::with_content(reader_settings_panel(settings, &self.requests))
-                .with_label("Reading settings")
-                .anchored(anchor)
-                .side(PopoverSide::Below)
-                .with_viewport(window)
-                .open(true),
+            Popover::with_content(reader_settings_panel(
+                settings,
+                &self.requests,
+                actions.as_ref(),
+            ))
+            .with_label("Reading settings")
+            .anchored(anchor)
+            .side(PopoverSide::Below)
+            .with_viewport(window)
+            .open(true),
         );
         self.overlays_dirty = true;
     }
@@ -2719,6 +2722,7 @@ pub(crate) fn window(cx: &ViewCx<Library>) -> ui::widget::Element {
         let mut core = app.core.borrow_mut();
         core.live = Some(cx.live().clone());
         core.dispatcher = Some(cx.dispatcher());
+        core.actions = Some(cx.actions());
         core.follow_read_settings(cx.settings::<ReadSettings>());
         core.follow_document();
     }

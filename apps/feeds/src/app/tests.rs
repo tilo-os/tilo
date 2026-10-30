@@ -671,14 +671,16 @@ fn reader_state_edits_persist_through_the_document() {
     let mut a = app();
     let mut doc = synced(&mut a);
     assert_eq!(a.core().settings.theme, ReadTheme::System);
-    for request in [
-        Request::SetFont(ReadFont::Sans),
-        Request::SetPaper(ReadTheme::Sepia),
+    a.core_mut()
+        .change_read_settings(|settings| {
+            settings.font = ReadFont::Sans;
+            settings.theme = ReadTheme::Sepia;
+        })
+        .unwrap();
+    a.core_mut().apply(
         Request::SetScale(120.0),
-    ] {
-        a.core_mut()
-            .apply(request, &mut ui::widget::Edits::lend(&mut doc));
-    }
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     let settings = a.read_settings_for_test();
     assert_eq!(settings.font, ReadFont::Sans);
     assert_eq!(settings.theme, ReadTheme::Sepia);
@@ -1191,9 +1193,9 @@ fn reading_settings_open_under_their_button() {
         "the text size field is a control"
     );
     let (a, st) = Framed::split(&mut mounted);
-    a.requests
-        .borrow_mut()
-        .push(Request::SetPaper(ReadTheme::Dark));
+    a.core_mut()
+        .change_read_settings(|settings| settings.theme = ReadTheme::Dark)
+        .unwrap();
     a.settle(&mut ui::widget::Edits::lend(&mut st.doc), &st.root);
     assert_eq!(a.core().settings.theme, ReadTheme::Dark);
     // Escape closes the panel.
