@@ -21548,7 +21548,6 @@ dependencies = [
  "serde",
  "serde_json",
  "settings-store",
- "smithay",
  "tempfile",
  "tilo-accessibility-settings",
  "tilo-action-policy",

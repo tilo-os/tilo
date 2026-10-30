@@ -28,10 +28,9 @@ mod nested {
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
 
-    use smithay::utils::{Logical, Point, Rectangle};
     use tilo_compositor::{
-        Arrangement, Compositor, InputEvent, ModeRequest, OutputChange, OutputConfig, WindowInfo,
-        WindowPolicy,
+        Arrangement, Compositor, InputEvent, LayoutPoint, LayoutRect, ModeRequest, OutputChange,
+        OutputConfig, WindowInfo, WindowPolicy,
     };
 
     /// How long the session may take to show its window here.
@@ -56,7 +55,7 @@ mod nested {
         fn initial_size(
             &mut self,
             _window: &WindowInfo,
-            outputs: &[Rectangle<i32, Logical>],
+            outputs: &[LayoutRect],
         ) -> Option<(i32, i32)> {
             outputs.first().map(|output| (output.size.w, output.size.h))
         }
@@ -65,22 +64,22 @@ mod nested {
             &mut self,
             _window: &WindowInfo,
             _size: (i32, i32),
-            outputs: &[Rectangle<i32, Logical>],
-        ) -> Point<i32, Logical> {
+            outputs: &[LayoutRect],
+        ) -> LayoutPoint {
             outputs
                 .first()
-                .map_or_else(Point::default, |output| output.loc)
+                .map_or_else(LayoutPoint::default, |output| output.loc)
         }
 
         fn arrange(
             &mut self,
-            windows: &[(WindowInfo, Rectangle<i32, Logical>)],
-            outputs: &[Rectangle<i32, Logical>],
+            windows: &[(WindowInfo, LayoutRect)],
+            outputs: &[LayoutRect],
         ) -> Option<Vec<Arrangement>> {
             let output = outputs.first()?;
             let changes: Vec<_> = windows
                 .iter()
-                .filter(|(_, rect)| *rect != Rectangle::new(output.loc, output.size))
+                .filter(|(_, rect)| *rect != LayoutRect::new(output.loc, output.size))
                 .map(|(info, _)| Arrangement {
                     id: info.id,
                     location: output.loc,

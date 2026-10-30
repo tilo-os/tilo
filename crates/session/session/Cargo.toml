@@ -121,12 +121,6 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 # The stand-in logind and UPower a power test serves over a socket pair.
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 zbus = { workspace = true, features = ["tokio", "p2p"] }
-# The example implements the compositor's window policy, whose rectangles are
-# smithay's.
-smithay = { version = "0.7", default-features = false, features = [
-    "wayland_frontend",
-    "desktop",
-] }
 tilo-test-env = { path = "../../dev/test-env" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 futures-util.workspace = true
