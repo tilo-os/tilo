@@ -1,129 +1,89 @@
-//! [`ActionButton`] — the installer's primary/secondary call-to-action.
+//! [`ActionButton`]: a wizard action, composed from the toolkit's own
+//! controls.
 //!
-//! `ui::Button` is fixed at 120×40 px and always paints the same neutral
-//! "raised surface" fill, so it can't express a wizard's visual hierarchy
-//! (a prominent accent "Next"/"Begin" vs. a quieter "Back") or fill a nav
-//! row. `ActionButton` is a leaf widget that:
+//! A wizard's action is a `ui::Button` in the role the step gives it (the
+//! step's main action is primary, Back and the alternatives are secondary,
+//! a low-key way past is plain), or a `ui::Checkbox` for a promise the
+//! person makes. The toolkit draws it, sizes it and moves its focus; what
+//! this adds is what the installer needs from every control:
 //!
-//!   * grows to share its row's width (so a lone button fills the row and
-//!     a Back/Next pair splits it evenly),
-//!   * styles itself **primary** (accent fill, white label) or
-//!     **secondary** (raised fill, neutral label),
-//!   * supports a **disabled** state (dimmed, non-interactive, dropped
-//!     from the focus order),
-//!   * on click / Enter / Space / assistive activation fires its
-//!     [`Control`]: the published action the
-//!     [`crate::setup::destination::installer_app::InstallerApp`] runs through its action door.
-//!
-//! Every colour is read from the [`Theme`]; nothing is hard-coded.
+//!   * using it fires its [`Control`]: the published action the
+//!     [`crate::setup::destination::installer_app::InstallerApp`] runs
+//!     through its action door;
+//!   * its inventory entry names that action, not an anonymous callback;
+//!   * a disabled action leaves the focus order, so keyboard navigation
+//!     skips what cannot be used.
 
-use std::collections::HashMap;
-use ui::widget::ModelPath;
-use ui::widget::TaffyTreeExt;
+use ui::icons::Icon;
+use ui::widget::{Button, ButtonRole, Checkbox, ControlSize, Element, Widget};
 
-use taffy::style_helpers::length;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use crate::setup::destination::control::{Control, is_activation_key};
 
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
-
-use crate::setup::destination::control::Control;
-
-const HEIGHT: f32 = 44.0;
-const LABEL_SIZE: f32 = 15.0;
-
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent interaction/lifecycle flag (primary, quiet, large, disabled, hover, press, focus), not a combinatorial state machine"
-)]
 pub struct ActionButton {
     label: String,
-    /// The published action the button runs when it fires.
+    /// The published action the control runs when used.
     control: Control,
-    /// Stable E2E `test_id`. Defaults to the label, but the label can change
-    /// (e.g. a checkbox-style toggle), so it can be pinned via
-    /// [`ActionButton::with_test_id`] to stay addressable across rebuilds.
+    /// Stable E2E `test_id`. Defaults to the label, but the label can change,
+    /// so it can be pinned via [`ActionButton::with_test_id`] to stay
+    /// addressable across rebuilds.
     test_id: Option<String>,
-    /// `Some` turns the action into a checkbox with the supplied checked
-    /// state. Legacy callers may include a compact `[x]` prefix; drawing and
-    /// assistive technology both strip it in favour of a real checkbox mark.
+    /// `Some` makes the action a checkbox with this checked state.
     checked: Option<bool>,
-    /// The checkbox's mark on its way in or out. The view builds the
-    /// button anew on each change, so the motion goes on from the button
-    /// it replaces (`motion::keep`, by its test id or label).
-    check: ui::widget::CheckMotion,
-    /// It has looked for the motion its predecessor left.
-    check_taken: bool,
-    primary: bool,
-    /// Text-link look for a low-key alternative: no fill, no hairline.
-    quiet: bool,
-    /// A taller button with a larger label.
-    large: bool,
-    /// A fixed width instead of sharing the row.
-    width: Option<f32>,
-    disabled: bool,
-    rect: Rect,
-    is_hovered: bool,
-    is_pressed: bool,
-    is_focused: bool,
+    role: ButtonRole,
+    size: ControlSize,
+    icon: Option<Icon>,
+    enabled: bool,
+    /// The toolkit control showing all of the above.
+    inner: Element,
 }
 
 impl ActionButton {
-    /// A secondary (neutral) button firing `control` on activation.
+    /// A secondary button firing `control` when used.
     pub fn new(label: &str, control: Control) -> Self {
-        Self {
+        let mut button = Self {
             label: label.to_string(),
             control,
             test_id: None,
             checked: None,
-            check: ui::widget::CheckMotion::default(),
-            check_taken: false,
-            primary: false,
-            quiet: false,
-            large: false,
-            width: None,
-            disabled: false,
-            rect: Rect::ZERO,
-            is_hovered: false,
-            is_pressed: false,
-            is_focused: false,
-        }
+            role: ButtonRole::Secondary,
+            size: ControlSize::Regular,
+            icon: None,
+            enabled: true,
+            inner: Box::new(ui::widget::Spacer::new()),
+        };
+        button.compose();
+        button
     }
 
-    /// Promote to the accent-filled primary call-to-action.
+    /// The step's main action.
     #[must_use]
     pub fn primary(mut self) -> Self {
-        self.primary = true;
+        self.role = ButtonRole::Primary;
+        self.compose();
         self
     }
 
-    /// A low-key alternative drawn like a text link: dim label, no fill or
-    /// hairline until hovered. Still a full-size, focusable target.
+    /// A low-key alternative: a plain button, still a full-size target.
     #[must_use]
     pub fn quiet(mut self) -> Self {
-        self.quiet = true;
+        self.role = ButtonRole::Plain;
+        self.compose();
         self
     }
 
-    /// A step's one deliberate action: taller, with a larger label.
+    /// A step's one deliberate action, at the prominent control size.
     #[must_use]
     pub fn large(mut self) -> Self {
-        self.large = true;
+        self.size = ControlSize::Large;
+        self.compose();
         self
     }
 
-    /// Keep this width instead of sharing the row, so the button can stand
-    /// centred on its own.
+    /// Lead the label with `icon` (Back's chevron).
     #[must_use]
-    pub fn with_width(mut self, width: f32) -> Self {
-        self.width = Some(width);
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self.compose();
         self
     }
 
@@ -131,104 +91,119 @@ impl ActionButton {
     #[must_use]
     pub fn with_test_id(mut self, id: &str) -> Self {
         self.test_id = Some(id.to_string());
+        self.compose();
         self
     }
 
-    /// Expose this action as a native checkbox with a derived checked state.
+    /// Show the action as a checkbox in this checked state.
     #[must_use]
     pub fn checkbox(mut self, checked: bool) -> Self {
         self.checked = Some(checked);
+        self.compose();
         self
     }
 
-    /// The checkbox is still on its way.
-    fn check_moving(&self) -> bool {
-        self.checked.is_some() && self.check.is_moving(ui::motion::frame_now())
-    }
-
-    /// Its identity across rebuilds: its test id, else what it says.
-    fn carry_key(&self) -> String {
-        self.test_id
-            .clone()
-            .unwrap_or_else(|| self.accessible_label().to_owned())
-    }
-
-    /// Mark disabled: dimmed, non-interactive, and removed from the focus
-    /// order so keyboard nav skips it.
+    /// Disabled: dimmed, inert, and out of the focus order.
     #[must_use]
     pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
+        self.enabled = !disabled;
+        self.compose();
         self
     }
 
-    fn fire(&self) {
-        if self.disabled {
+    fn id(&self) -> &str {
+        self.test_id.as_deref().unwrap_or(self.label.as_str())
+    }
+
+    /// Build the toolkit control for the current settings.
+    fn compose(&mut self) {
+        let control = self.control.clone();
+        self.inner = if let Some(checked) = self.checked {
+            Box::new(
+                Checkbox::from_state(&ui::LocalState::new(checked))
+                    .with_id(self.id())
+                    .with_label(self.label.clone())
+                    .with_enabled(self.enabled)
+                    .on_change(move |_| control.fire()),
+            )
+        } else {
+            let mut button = Button::new(self.id(), &self.label)
+                .role(self.role)
+                .control_size(self.size)
+                .with_enabled(self.enabled)
+                .on_click(move || control.fire());
+            if let Some(icon) = self.icon {
+                button = button.with_icon(icon);
+            }
+            Box::new(button)
+        };
+    }
+}
+
+impl ui::widget::Decorator for ActionButton {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        &*self.inner
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        &mut *self.inner
+    }
+
+    ui::provides!(dyn ui::widget::controls::ActionControls; inner = inner);
+
+    fn is_focusable(&self) -> bool {
+        self.enabled && self.inner.is_focusable()
+    }
+
+    /// A focused action consumes its Enter and Space, so the wizard's own
+    /// Enter (advance the step) never acts past it: Enter on a focused Back
+    /// goes back.
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        if self.enabled && self.inner.is_focused() && is_activation_key(event) {
+            self.control.fire();
+            *ctx.handled = true;
             return;
         }
-        self.control.fire();
+        self.inner.handle_event(event, ctx);
     }
 
-    /// Fill and label colour by variant and interaction state.
-    fn face(&self, theme: &Theme) -> (Color, Color) {
-        let raised = theme.tokens.colors.surfaces.raised;
-        if self.disabled {
-            (raised, theme.text_dim)
-        } else if self.quiet {
-            let bg = if self.is_pressed {
-                theme.tokens.colors.lift_on(raised, 1.0)
-            } else if self.is_hovered {
-                theme.tokens.colors.lift_on(raised, 0.5)
-            } else {
-                Color::TRANSPARENT
-            };
-            (
-                bg,
-                if self.is_hovered || self.is_focused {
-                    theme.text_primary
-                } else {
-                    theme.text_dim
-                },
-            )
-        } else if self.primary {
-            let bg = if self.is_pressed || self.is_hovered {
-                theme.tokens.colors.intent.accent_hover
-            } else {
-                theme.tokens.colors.intent.accent
-            };
-            (bg, theme.tokens.colors.intent.on_accent)
-        } else {
-            let bg = if self.is_pressed {
-                theme.tokens.colors.lift_on(raised, 1.0)
-            } else if self.is_hovered {
-                theme.tokens.colors.lift_on(raised, 0.5)
-            } else {
-                raised
-            };
-            (bg, theme.text_primary)
-        }
+    /// A disabled action is announced as out of the focus order, as it is.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.inner.accessibility().map(|mut node| {
+            node.state.focusable = self.enabled && self.inner.is_focusable();
+            node
+        })
     }
 
-    fn accessible_label(&self) -> &str {
-        self.label
-            .strip_prefix("[x] ")
-            .or_else(|| self.label.strip_prefix("[ ] "))
-            .unwrap_or(self.label.as_str())
+    fn name(&self) -> &'static str {
+        "ActionButton"
+    }
+}
+
+impl ui::widget::controls::ActionControls for ActionButton {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        vec![self.control.metadata(self.id())]
     }
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::items_after_test_module,
-    reason = "the tests exercise both the inherent constructor above and Widget implementation below"
-)]
 mod tests {
+    use std::collections::HashMap;
 
     use automerge::{AutoCommit, ROOT, ReadDoc};
+    use taffy::TaffyTree;
+    use ui::synthetic_input::named_key;
+    use ui::theme::Theme;
+    use winit::keyboard::NamedKey;
 
     use super::*;
     use crate::setup::destination::effects::DestinationEffect;
-
-    use ui::synthetic_input::named_key;
 
     fn assert_key_fires(key: NamedKey) {
         let (control, presses) = Control::detached(DestinationEffect::Back);
@@ -238,12 +213,10 @@ mod tests {
         let mut taffy = TaffyTree::new();
         let mut node_map = HashMap::new();
         let node = button.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let handled = ui::testing::Dispatch::new()
+        ui::testing::Dispatch::new()
             .doc(&mut doc)
             .layout(&taffy, node)
-            .send(&mut button, &named_key(key))
-            .handled;
-        assert!(handled);
+            .send(&mut button, &named_key(key));
         let fired = presses.take().expect("the button fires its action");
         assert!(fired.effect == DestinationEffect::Back);
         assert!(presses.take().is_none(), "one activation is one press");
@@ -266,8 +239,9 @@ mod tests {
             let node = button.accessibility().expect("button semantics");
             assert_eq!(node.role, ui::a11y::Role::Button);
             assert_eq!(node.name.as_deref(), Some("Reboot now"));
-            assert!(node.state.focusable);
-            assert!(node.state.focused);
+            assert!(button.is_focusable());
+            assert!(button.is_focused());
+            assert_eq!(button.test_id(), Some("reboot"));
 
             let mut doc = AutoCommit::new();
             assert!(button.perform_action(
@@ -279,8 +253,9 @@ mod tests {
             assert!(presses.take().map(|press| press.effect) == Some(DestinationEffect::Reboot));
             assert_eq!(doc.length(ROOT), 0);
             assert!(button.is_focused(), "AT activation must not steal focus");
-            // A disabled button runs nothing.
+            // A disabled button runs nothing and leaves the focus order.
             let mut disabled = button.disabled(true);
+            assert!(!disabled.is_focusable());
             assert!(!disabled.perform_action(
                 &ui::a11y::Action::Activate,
                 &[],
@@ -291,353 +266,43 @@ mod tests {
         }
         // Phase `recovery_ack_is_a_cleanly_named_native_checkbox`.
         {
-            let (control, _) = Control::detached(DestinationEffect::SetRecoveryPromise {
+            let (control, presses) = Control::detached(DestinationEffect::SetRecoveryPromise {
                 acknowledged: false,
             });
-            let button = ActionButton::new("[x] I will save my recovery key", control)
+            let mut button = ActionButton::new("I will save my recovery key", control)
                 .with_test_id("recovery_ack")
                 .checkbox(true);
             let node = button.accessibility().expect("checkbox semantics");
             assert_eq!(node.role, ui::a11y::Role::Checkbox);
             assert_eq!(node.name.as_deref(), Some("I will save my recovery key"));
             assert_eq!(node.state.checked, Some(true));
-        }
-    }
-
-    /// The view builds the box anew on each change; the rebuilt button goes
-    /// on from the motion its predecessor left, and a key lands.
-    #[test]
-    fn a_rebuilt_checkbox_fades_its_mark_on_from_the_box_it_replaces() {
-        use ui::time::testing::with_monotonic_time;
-        use ui::tokens::MotionSource;
-        let theme = Theme::dark();
-        // What the view does: build the button for the value and lay it out.
-        let built = |checked: bool| {
-            let (control, _) = Control::detached(DestinationEffect::SetRecoveryPromise {
-                acknowledged: !checked,
-            });
-            let mut button = ActionButton::new("I will save my recovery key", control)
-                .with_test_id("recovery_ack")
-                .checkbox(checked);
-            button.build_layout(&mut TaffyTree::new(), &theme, &mut HashMap::new());
-            button.rect = Rect::new(0.0, 0.0, 320.0, 40.0);
-            button
-        };
-        let paint = |button: &mut ActionButton| {
-            button.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &theme,
-                &PresenceCtx::empty(),
+            assert_eq!(button.test_id(), Some("recovery_ack"));
+            let mut doc = AutoCommit::new();
+            assert!(button.perform_action(
+                &ui::a11y::Action::ToggleCheck,
+                &[],
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
+            assert!(
+                presses.take().map(|press| press.effect)
+                    == Some(DestinationEffect::SetRecoveryPromise {
+                        acknowledged: false
+                    })
             );
-        };
-        let t0 = ui::time::now();
-        let at = |ms: u64| t0 + ui::time::Duration::from_millis(ms);
-        let mut button = built(false);
-        with_monotonic_time(t0, || paint(&mut button));
-        assert!(!button.needs_animation_frame(), "first seen, it rests");
-        // A click: the view drops the button and builds a checked one.
-        drop(button);
-        let mut button = built(true);
-        with_monotonic_time(at(10), || {
-            ui::motion::note_source(MotionSource::Pointer);
-            paint(&mut button);
-        });
-        with_monotonic_time(at(20), || {
-            assert!(button.needs_animation_frame(), "the mark fades in");
-            assert!(button.needs_redraw());
-        });
-        // Rebuilt again mid-fade, it goes on fading rather than landing.
-        drop(button);
-        let mut button = built(true);
-        with_monotonic_time(at(30), || {
-            paint(&mut button);
-            assert!(button.needs_animation_frame(), "still on its way");
-        });
-        with_monotonic_time(at(2_000), || {
-            assert!(!button.needs_animation_frame(), "then rests");
-        });
-        // A key lands at once.
-        drop(button);
-        let mut button = built(false);
-        with_monotonic_time(at(3_000), || {
-            ui::motion::note_source(MotionSource::Keyboard);
-            paint(&mut button);
-            assert!(!button.needs_animation_frame());
-        });
-    }
-}
-
-impl Widget for ActionButton {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
-        // returns a bare `NodeId` across every implementor, so surfacing a
-        // theoretical error here would mean threading a `Result` through the
-        // whole toolkit for a branch that can't be taken.
-        let height = if self.large {
-            (theme.tokens.spacing.s12 + theme.tokens.spacing.s2)
-                .max(theme.text(ui::tokens::TextRole::Heading).size + theme.tokens.spacing.s6)
-        } else {
-            HEIGHT
-        };
-        let style = match self.width {
-            Some(width) => Style {
-                size: Size::from_lengths(width, height),
-                flex_grow: 0.0,
-                flex_shrink: 1.0,
-                ..Default::default()
-            },
-            None => Style {
-                size: Size {
-                    width: Dimension::auto(),
-                    height: Dimension::length(height),
-                },
-                // Grow to share the nav row's width; basis 0 so two
-                // buttons split evenly and a lone button fills the row.
-                flex_grow: 1.0,
-                flex_basis: length(0.0_f32),
-                flex_shrink: 1.0,
-                ..Default::default()
-            },
-        };
-        if self.checked.is_some() && !self.check_taken {
-            // Built again by its view: go on from the box it replaces.
-            self.check_taken = true;
-            if let Some(kept) = ui::motion::take_kept(&self.carry_key()) {
-                self.check = kept;
-            }
+            assert_eq!(doc.length(ROOT), 0);
         }
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    ui::rect_geometry!();
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        // The checkbox goes where its value is, as the input that changed
-        // it asks.
-        let now = ui::motion::frame_now();
-        let check_pose = self.checked.map(|checked| {
-            self.check
-                .follow_input(checked, ui::widget::CheckGlyph::Check, theme.motion(), now);
-            self.check.pose(now)
-        });
-        let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-
-        let (bg, label_color) = self.face(theme);
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-
-        // Border: focus ring wins; secondary buttons keep a hairline.
-        if self.is_focused && !self.disabled {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                theme.border_focus,
-                None,
-                &shape,
-            );
-        } else if !self.primary && !self.quiet {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &shape,
-            );
+        // Phase `the_inventory_names_the_published_action`.
+        {
+            let (control, _) = Control::detached(DestinationEffect::Reboot);
+            let button = ActionButton::new("Reboot now", control).with_test_id("reboot");
+            let bindings = ui::widget::controls::control_action_bindings(&button);
+            assert_eq!(bindings.len(), 1);
+            assert_eq!(bindings[0].control_id, "reboot");
+            assert!(matches!(
+                bindings[0].kind,
+                ui::widget::ControlBindingKind::Action(_)
+            ));
         }
-
-        let label = self.accessible_label();
-        let label_size = if self.large {
-            theme.tokens.typography.size(ui::tokens::TextRole::Heading)
-        } else {
-            LABEL_SIZE
-        };
-        let (tw, th) = text_renderer.measure(label, label_size, None);
-        let checkbox_width = self.checked.map_or(0.0, |_| 24.0);
-        let group_half_width = f64::midpoint(f64::from(tw) + checkbox_width, 0.0);
-        let tx = self.rect.center().x - group_half_width;
-        let ty = self.rect.y0 + (self.rect.height() - f64::from(th)) / 2.0;
-        if let Some(checked) = self.checked {
-            let side = 16.0;
-            let box_rect = Rect::new(
-                tx,
-                self.rect.center().y - side / 2.0,
-                tx + side,
-                self.rect.center().y + side / 2.0,
-            );
-            // The shared checkbox face, posed by its motion.
-            let mut face = ui::widget::CheckboxFace::new(box_rect, checked);
-            if let Some(pose) = check_pose {
-                face = face.pose(pose);
-            }
-            ui::widget::Checkbox::paint(scene, transform, theme, &face);
-        }
-        text_renderer.draw_text(
-            scene,
-            label,
-            label_size,
-            label_color,
-            transform.pre_translate(Vec2::new(tx + checkbox_width, ty)),
-            None,
-        );
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.disabled {
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let logical = ctx.logical(position);
-                let hover = self.rect.contains(logical);
-                if hover != self.is_hovered {
-                    self.is_hovered = hover;
-                    *ctx.handled = true;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: element_state,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if self.is_hovered {
-                    let pressed = *element_state == ElementState::Pressed;
-                    if pressed != self.is_pressed {
-                        self.is_pressed = pressed;
-                        *ctx.handled = true;
-                        if pressed {
-                            *ctx.focus_target = Some(ctx.node_id);
-                        } else {
-                            // Fire on release (matches ui::Button).
-                            self.fire();
-                        }
-                    }
-                } else if self.is_pressed {
-                    self.is_pressed = false;
-                    *ctx.handled = true;
-                }
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } if self.is_focused => {
-                self.fire();
-                *ctx.handled = true;
-            }
-            _ => {}
-        }
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.check_moving()
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.check_moving()
-    }
-
-    fn name(&self) -> &'static str {
-        "ActionButton"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some(self.test_id.as_deref().unwrap_or(self.label.as_str()))
-    }
-
-    fn is_focusable(&self) -> bool {
-        !self.disabled
-    }
-    fn set_focus(&mut self, focused: bool) {
-        self.is_focused = focused;
-    }
-    fn is_focused(&self) -> bool {
-        self.is_focused
-    }
-
-    fn is_enabled(&self) -> bool {
-        !self.disabled
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &ui::a11y::Action,
-        _key_path: &[u64],
-        _state: &mut ui::widget::Edits<'_>,
-        _root: &ModelPath,
-    ) -> bool {
-        let accepted = matches!(action, ui::a11y::Action::Activate)
-            || (self.checked.is_some() && matches!(action, ui::a11y::Action::ToggleCheck));
-        if self.disabled || !accepted {
-            return false;
-        }
-        self.fire();
-        true
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
-
-        let control_id = self.test_id().unwrap_or(self.label.as_str());
-        let clean_label = self.accessible_label();
-        let role = if self.checked.is_some() {
-            Role::Checkbox
-        } else {
-            Role::Button
-        };
-        Some(
-            AccessNode::new(role)
-                .with_semantic_key(control_id)
-                .with_name(clean_label)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused,
-                    disabled: self.disabled,
-                    checked: self.checked,
-                    ..Default::default()
-                })
-                .with_action_target(control_id),
-        )
-    }
-}
-
-impl ui::widget::controls::ActionControls for ActionButton {
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        vec![
-            self.control
-                .metadata(self.test_id().unwrap_or(self.label.as_str())),
-        ]
-    }
-}
-
-/// A checkbox a rebuild drops leaves its motion for the one put in its place.
-impl Drop for ActionButton {
-    fn drop(&mut self) {
-        if self.checked.is_none() || !self.check_taken {
-            return;
-        }
-        ui::motion::keep(
-            self.carry_key(),
-            Some(self.rect),
-            std::mem::take(&mut self.check),
-        );
     }
 }
