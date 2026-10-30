@@ -305,6 +305,17 @@ impl EmbeddedApp {
         }
     }
 
+    /// The control with the keyboard moved from `before`: the tree the
+    /// host's accessibility walk reads says so now. The host publishes that
+    /// tree in the tick the focus moved, before any frame paints, and a
+    /// reader left on the old control (or on the app as a whole) would
+    /// stay there until something else repainted the app.
+    fn follow_focus_in_semantics(&mut self, before: Option<NodeId>) {
+        if self.app.focused_control() != before {
+            let _ = self.app.refresh_semantic_tree();
+        }
+    }
+
     /// Give the app keyboard focus from its host's focus order, coming
     /// from after it with `backwards` (Shift+Tab): focus lands on its last
     /// control then, else on its first.
@@ -644,9 +655,11 @@ impl Widget for EmbeddedApp {
         self.entering_backwards = ctx.modifiers.state().shift_key();
         let local = self.local_event(event, ctx.scale_factor);
         self.app.set_surface_modifiers(*ctx.modifiers);
+        let control = self.app.focused_control();
         if self.app.surface_input(&self.region, local, false) {
             *ctx.handled = true;
         }
+        self.follow_focus_in_semantics(control);
         if self.region.redraw.replace(false) {
             self.wants_frame.set(true);
         }
@@ -733,6 +746,9 @@ impl Widget for EmbeddedApp {
             self.restore_focus = self.app.focused_control();
             self.app.restore_focused_control(None);
         }
+        // The reader follows the keyboard into (or out of) the app in the
+        // tick it moved, as `follow_focus_in_semantics` says.
+        let _ = self.app.refresh_semantic_tree();
     }
 
     fn is_focused(&self) -> bool {
@@ -1260,6 +1276,7 @@ impl EmbeddedApp {
                     if std::mem::discriminant(verb) == std::mem::discriminant(action))
             })
             .map(|candidate| candidate.name.clone());
+        let control = self.app.focused_control();
         let done = match offered {
             Some(name) => {
                 let argument = match action {
@@ -1280,6 +1297,7 @@ impl EmbeddedApp {
         if done && matches!(action, Action::Focus) && !self.focused {
             self.restore_focus = self.app.focused_control();
         }
+        self.follow_focus_in_semantics(control);
         self.wants_frame.set(true);
         done
     }

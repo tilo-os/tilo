@@ -57,7 +57,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
-from ci import nextest_filters  # noqa: E402
+from ci import capability_filter, nextest_filters  # noqa: E402
 from ci.affected_packages import package_cost, recorded_test_seconds  # noqa: E402
 
 DEFAULT_STAGES = "check,clippy,test,policy,goldens,certify,scenarios,scoped"
@@ -502,6 +502,30 @@ def main() -> int:
         return ["env", *filter_env, "bash", "tools/ci/t-nextest.sh", "cargo", "nextest", "run", "--locked",
                 "--profile", "ci", "--tests", *flags(packages), "-E", filterset, *(extra or []), *tail]
 
+    capability_filters: dict[str, str] = {}
+    capability_lock = threading.Lock()
+
+    def runnable_here(builder: Builder, filterset: str) -> str:
+        """`filterset` less the tests needing a capability `builder` lacks: the probe runs
+        there once (.config/nextest-capabilities.toml), and each group it leaves out is said
+        by capability, so the run counts those tests as not run rather than passed."""
+        with capability_lock:
+            if builder.name not in capability_filters:
+                left_out = ""
+                if not Job.dry_run:
+                    command, env = builder.command(capability_filter.PROBE)
+                    probed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True,
+                                            errors="replace")
+                    if probed.returncode != 0:
+                        raise RuntimeError(f"the capability probe failed on {builder.name}:\n"
+                                           f"{probed.stdout}{probed.stderr}")
+                    left_out, notes = capability_filter.exclusions(probed.stdout + probed.stderr)
+                    for note in notes:
+                        say(f"==> {builder.name}: {note}")
+                capability_filters[builder.name] = left_out
+            left_out = capability_filters[builder.name]
+        return f"({filterset}) and {left_out}" if left_out else filterset
+
     if want("test") and tests:
         failing_first = {test for test in previous if package_of(test[0]) in set(tests)}
 
@@ -510,7 +534,8 @@ def main() -> int:
                 # Over the same packages as the full run, so both resolve features alike: the one
                 # that takes cargo's build lock second finds every test binary built.
                 job.run(f"{len(first)} test(s) that failed last time", builder,
-                        nextest(packages, f"({pull_filter}) and ({filterset_of(first)})", ["--no-tests=pass"]))
+                        nextest(packages, runnable_here(builder, f"({pull_filter}) and ({filterset_of(first)})"),
+                                ["--no-tests=pass"]))
             return body
 
         def test_share(builder: Builder, packages: list[str], first: set[tuple[str, str]]):
@@ -520,7 +545,8 @@ def main() -> int:
                     remaining = f"({pull_filter}) and not ({filterset_of(first)})"
                 # A package whose only selected tests run first has nothing left: pass.
                 job.run(f"nextest ({len(packages)} packages)", builder,
-                        nextest(packages, remaining, ["--no-tests=pass"] if first else []))
+                        nextest(packages, runnable_here(builder, remaining),
+                                ["--no-tests=pass"] if first else []))
                 if want("goldens") and GOLDEN_PACKAGES & set(packages) and not stop.is_set():
                     job.run("visual goldens", builder,
                             nextest(sorted(GOLDEN_PACKAGES & set(packages)), golden, ["--no-tests=pass"]))

@@ -86,6 +86,11 @@ fn readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampe
         drop(environment);
         return;
     }
+    tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap_with_proc(),
+        "the admission fixture runs itself as uid 1000 under bubblewrap with its own /proc"
+    );
     // bwrap maps the child's uid 1000 onto whatever uid runs this test, root or
     // not, so the profiles created here are the child's own either way.
     let root = tempfile::tempdir().unwrap();
