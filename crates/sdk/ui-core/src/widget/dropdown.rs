@@ -38,7 +38,7 @@
 
 use crate::num::f32_of_f64;
 use crate::widget::autocomplete::{Suggestion, SuggestionList};
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::{AppModel, EventCtx, ModelPath};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -68,7 +68,6 @@ const CONTROL_HEIGHT: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f
 const MAX_LIST_HEIGHT: f64 = 240.0;
 const PAD_X: f64 = 10.0;
 const CHEVRON_W: f64 = 30.0;
-const LINE_PX: f32 = 60.0;
 
 /// The narrowest a menu button's list opens, so its choices read in full
 /// beside an icon-sized trigger: a utility panel's width.
@@ -882,7 +881,7 @@ impl Dropdown {
         self.open = false;
         self.appear.show(false);
         self.interactive_open = false;
-        self.list.release_scrollbar();
+        self.list.pointer_left();
         self.filter.clear();
         self.filter_selection = Selection::collapsed(0);
         self.filter_composition.clear();
@@ -934,21 +933,29 @@ impl Dropdown {
 
     /// `WindowEvent::CursorMoved` — hover tracking, plus (while open)
     /// following the highlight to the row under the pointer.
-    fn on_cursor_moved(&mut self, pos: Point, handled: &mut bool) {
+    fn on_cursor_moved(&mut self, event: &WindowEvent, pos: Point, ctx: &mut EventCtx<'_>) {
         self.last_cursor = pos;
         // A hover change is a repaint, not consumed input (see `Button`): a
         // parent that stops at the first handled child would otherwise never
         // deliver this move to the sibling the pointer went to, and the
         // sibling's hover — or this one's — would stick.
         self.is_hovered = self.rect.contains(pos);
-        // While open, hovering a row moves the highlight.
+        // While open, hovering a row moves the highlight; a held bar thumb follows.
         if self.open {
+            if self.scroll_event(event, ctx) || *ctx.handled {
+                return;
+            }
             // The list is hit where it is drawn while it arrives.
             let pos = self.list_pose.to_local(pos);
-            if self.list.drag_scrollbar(pos) || self.list.arm_at(pos) {
-                *handled = true;
+            if self.list.arm_at(pos) {
+                *ctx.handled = true;
             }
         }
+    }
+
+    /// Hand `event` to the open list's scroll region.
+    fn scroll_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        self.open && self.list.scroll_event(event, ctx)
     }
 
     /// `WindowEvent::MouseInput { state: Pressed, button: Left }` — select a
@@ -966,10 +973,6 @@ impl Dropdown {
             // The list is hit where it is drawn while it arrives.
             let at = self.list_pose.to_local(pos);
             if self.list_rect().contains(at) {
-                if self.list.press_scrollbar(at) {
-                    *handled = true;
-                    return;
-                }
                 if self.list.row_at(at).is_some() {
                     self.list.arm_at(at);
                     self.select_highlighted(state, root);
@@ -997,13 +1000,13 @@ impl Dropdown {
         }
     }
 
-    /// `WindowEvent::MouseWheel`, only routed here while open.
+    /// `WindowEvent::MouseWheel` off the list: an open dropdown scrolls from the field too.
     fn on_wheel(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
         let dy = match delta {
-            MouseScrollDelta::LineDelta(_, y) => *y * -LINE_PX,
-            MouseScrollDelta::PixelDelta(p) => f32_of_f64(-p.y),
+            MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * -self.list.row_height(),
+            MouseScrollDelta::PixelDelta(p) => -p.y,
         };
-        self.list.scroll_px(f64::from(dy));
+        self.list.scroll_px(dy);
         *handled = true;
     }
 
@@ -1355,7 +1358,13 @@ impl Widget for Dropdown {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.appear.is_moving()
+        self.appear.is_moving() || self.list.needs_animation_frame()
+    }
+
+    /// A glide after a flick scrolls the list as the wheel does.
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        self.list.advance();
+        false
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1387,19 +1396,23 @@ impl Widget for Dropdown {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pos = ctx.logical(position);
-                self.on_cursor_moved(pos, ctx.handled);
+                self.on_cursor_moved(event, pos, ctx);
             }
             // The pointer left the window: no `CursorMoved` follows, so the
             // resting hover veneer would otherwise stay painted.
             WindowEvent::CursorLeft { .. } => {
                 self.is_hovered = false;
-                self.list.leave_scrollbar();
+                self.list.pointer_left();
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
+                self.scroll_event(event, ctx);
+                if *ctx.handled {
+                    return;
+                }
                 self.on_left_press(
                     ctx.state.doc(),
                     ctx.path,
@@ -1413,10 +1426,14 @@ impl Widget for Dropdown {
                 button: MouseButton::Left,
                 ..
             } if self.open => {
-                *ctx.handled |= self.list.release_scrollbar();
+                self.scroll_event(event, ctx);
             }
+            // A wheel over the list scrolls it as every painted list scrolls;
+            // one elsewhere over an open dropdown goes on scrolling it too.
             WindowEvent::MouseWheel { delta, .. } if self.open => {
-                self.on_wheel(delta, ctx.handled);
+                if !self.scroll_event(event, ctx) {
+                    self.on_wheel(delta, ctx.handled);
+                }
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -2242,10 +2259,7 @@ mod tests {
         );
         frame.click_named("language-picker").unwrap();
         let (thumb, track) = frame
-            .with_widget_mut::<Dropdown, _>(|dropdown| {
-                let (bar, track, metrics) = dropdown.list.scrollbar_parts().unwrap();
-                (bar.thumb_rect(track, metrics).unwrap(), track)
-            })
+            .with_widget_mut::<Dropdown, _>(|dropdown| dropdown.list.scrollbar_thumb().unwrap())
             .unwrap();
         frame.drag_at(
             (thumb.center().x, thumb.center().y),
@@ -2257,7 +2271,7 @@ mod tests {
                     dropdown.list.scroll_offset() > 0.0,
                     "the actual shared scrollbar must scroll the list"
                 );
-                assert!(!dropdown.list.scrollbar_parts().unwrap().0.is_dragging());
+                assert!(!dropdown.list.is_dragging());
                 assert!(dropdown.is_open(), "dragging must not select an option");
             })
             .unwrap();

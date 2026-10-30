@@ -75,7 +75,7 @@ impl ContextMenu {
             return None;
         }
         let body = self.body_rect();
-        let top = body.y0 - self.scroll_offset + self.row_top(index);
+        let top = body.y0 - self.scroll.offset().y + self.row_top(index);
         Some(Rect::new(
             body.x0,
             top,

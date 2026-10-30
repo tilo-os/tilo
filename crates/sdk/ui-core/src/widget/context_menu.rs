@@ -9,7 +9,8 @@
 
 use std::cell::Cell;
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::scroll_region::ScrollRegion;
+use crate::widget::{AppModel, EventCtx, ModelPath};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke, Vec2};
@@ -462,7 +463,12 @@ pub struct ContextMenu {
     bounds: Option<(Rect, Rect)>,
     row_height: f64,
     measured_width: f64,
-    scroll_offset: f64,
+    /// The rows' scrolling: where they are scrolled to, the bar beside them
+    /// while they overflow, and the wheel over them.
+    scroll: ScrollRegion,
+    /// The theme the geometry was taken from, which the scroll region also
+    /// needs between paints (to hit-test and to read a wheel).
+    theme: Theme,
     active_touch: Option<u64>,
     text_scale: f64,
     viewport: Option<Rect>,
@@ -535,7 +541,8 @@ impl ContextMenu {
             bounds: None,
             row_height: ROW_HEIGHT,
             measured_width: MENU_WIDTH,
-            scroll_offset: 0.0,
+            scroll: ScrollRegion::vertical().with_overlaid_bars(),
+            theme: Theme::dark(),
             active_touch: None,
             text_scale: 1.0,
             viewport: None,
@@ -641,7 +648,7 @@ impl ContextMenu {
     pub fn open_at(&mut self, position: [f32; 2]) {
         self.prepare_query(Point::new(f64::from(position[0]), f64::from(position[1])));
         self.bounds = None;
-        self.scroll_offset = 0.0;
+        self.scroll.set_offset(Vec2::ZERO);
         self.open = true;
         self.appear.show(true);
         self.opened_under = Some(Point::new(f64::from(position[0]), f64::from(position[1])));
@@ -714,7 +721,7 @@ impl ContextMenu {
         self.appear.show(true);
         self.opened_under = None;
         self.hovered = None;
-        self.scroll_offset = 0.0;
+        self.scroll.set_offset(Vec2::ZERO);
         self.reanchor(anchor, viewport);
     }
 
@@ -749,6 +756,7 @@ impl ContextMenu {
 
     pub fn layout_within(&mut self, text: &mut TextRenderer, theme: &Theme) {
         self.set_text_scale(theme.text_scale);
+        self.cache_theme(theme);
         let style = theme.text(TextRole::Body);
         let mut width: f64 = 0.0;
         let mut height: f64 = 0.0;
@@ -871,8 +879,10 @@ impl ContextMenu {
         )
     }
 
-    fn max_scroll(&self) -> f64 {
-        (self.content_height() - self.body_rect().height()).max(0.0)
+    /// How far the rows are scrolled, in pixels.
+    #[cfg(test)]
+    fn scroll_offset(&self) -> f64 {
+        self.scroll.offset().y
     }
 
     /// Painted (clipped) geometry of an action row, in host coordinates.
@@ -884,7 +894,7 @@ impl ContextMenu {
             return None;
         }
         let body = self.body_rect();
-        let top = body.y0 - self.scroll_offset + self.row_top(index);
+        let top = body.y0 - self.scroll.offset().y + self.row_top(index);
         let rect = Rect::new(body.x0, top, body.x1, top + self.item_height(index)).intersect(body);
         (!rect.is_zero_area()).then_some(rect)
     }
@@ -911,20 +921,42 @@ impl ContextMenu {
         if self.bounds.is_none() {
             return;
         }
+        self.place_scroll();
         let Some(index) = self.hovered else {
-            self.scroll_offset = self.scroll_offset.clamp(0.0, self.max_scroll());
             return;
         };
         let top = self.row_top(index);
         let body_height = self.body_rect().height();
         // A row taller than the menu shows its top.
         let bottom = top + self.item_height(index).min(body_height);
-        self.scroll_offset = crate::widget::scroll_region::reveal_offset(
-            self.scroll_offset,
-            body_height,
-            top..bottom,
-            self.max_scroll(),
-        );
+        self.scroll
+            .scroll_into_view(Rect::new(0.0, top, 0.0, bottom));
+    }
+
+    /// Remember the theme the geometry was taken from; the scroll region
+    /// needs it between paints (a wheel, a bar's hover).
+    fn cache_theme(&mut self, theme: &Theme) {
+        if self.theme.tokens != theme.tokens {
+            self.theme = theme.clone();
+        }
+    }
+
+    /// Hand `event` to the rows' scroll region: a press or drag on its bar,
+    /// a wheel over it, the pointer's hover on it. `ctx.handled` says whether
+    /// a bar gesture took it; the return value is whether the scroll moved.
+    fn scroll_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        self.place_scroll();
+        self.scroll.handle_event(event, ctx, &self.theme)
+    }
+
+    /// Give the scroll region the rows' box and how tall they are, and the
+    /// step a wheel line takes (one row). It keeps the offset inside them.
+    fn place_scroll(&mut self) {
+        let body = self.body_rect();
+        self.scroll.set_viewport(body, &self.theme);
+        self.scroll
+            .set_content_size(body.width(), self.content_height());
+        self.scroll.set_line_step(self.row_height());
     }
 
     /// Mirrors the `build_layout` + `apply_layout` geometry without a taffy
@@ -970,7 +1002,7 @@ impl ContextMenu {
                     viewport,
                 )
                 .0;
-                self.scroll_offset = self.scroll_offset.clamp(0.0, self.max_scroll());
+                self.place_scroll();
                 return;
             }
             let below = floating_surface::anchored_room(anchor, PopoverSide::Below, gap, viewport);
@@ -1022,7 +1054,7 @@ impl ContextMenu {
                 _ => rect,
             };
             self.rect = rect;
-            self.scroll_offset = self.scroll_offset.clamp(0.0, self.max_scroll());
+            self.place_scroll();
             return;
         }
         let Some([px, py]) = self.position else {
@@ -1335,55 +1367,6 @@ impl ContextMenu {
     fn menu_width(&self) -> f64 {
         self.legacy_width()
     }
-    fn rows_viewport(&self) -> Rect {
-        self.body_rect()
-    }
-    fn has_overflow(&self) -> bool {
-        self.max_scroll() > 0.0
-    }
-    fn scroll_by(&mut self, delta: f64) {
-        self.scroll_offset = (self.scroll_offset + delta).clamp(0.0, self.max_scroll());
-    }
-
-    fn draw_scroll_affordance(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        if !self.has_overflow() {
-            return;
-        }
-        let rows_viewport = self.rows_viewport();
-        let viewport_height = rows_viewport.height();
-        let rows_height = self.content_height().max(1.0);
-        let track_width = (2.0 * self.text_scale).max(2.0);
-        let track_x1 = self.rect.x1 - 4.0 * self.text_scale;
-        let track = Rect::new(
-            track_x1 - track_width,
-            rows_viewport.y0,
-            track_x1,
-            rows_viewport.y1,
-        );
-        let min_thumb_height = (8.0 * self.text_scale).min(viewport_height);
-        let thumb_height = (viewport_height * viewport_height / rows_height)
-            .clamp(min_thumb_height, viewport_height);
-        let progress = self.scroll_offset / self.max_scroll();
-        let thumb_y0 = rows_viewport.y0 + (viewport_height - thumb_height) * progress;
-        let thumb = Rect::new(track.x0, thumb_y0, track.x1, thumb_y0 + thumb_height);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            crate::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.overlay, 26),
-            None,
-            &track,
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            crate::tokens::colors::Colors::hairline_on(
-                theme.tokens.colors.surfaces.overlay,
-                crate::chrome::GLOW_ALPHA.saturating_mul(2),
-            ),
-            None,
-            &thumb,
-        );
-    }
 
     /// Skips separators. `dir > 0` moves down, `dir < 0` up, through the
     /// rows shown in the order shown, wrapping round.
@@ -1507,7 +1490,7 @@ impl ContextMenu {
             transform,
             &self.body_rect(),
         );
-        let mut y = self.body_rect().y0 - self.scroll_offset;
+        let mut y = self.body_rect().y0 - self.scroll.offset().y;
         let has_leading_gutter = self.has_leading_gutter();
         for &idx in &self.shown {
             let Some(item) = self.items.get(idx) else {
@@ -1703,7 +1686,8 @@ impl ContextMenu {
             }
         }
         scene.pop_layer();
-        self.draw_scroll_affordance(scene, transform, theme);
+        self.scroll.note_shown(transform, theme);
+        self.scroll.paint_bars(scene, transform, theme);
     }
 
     /// Where the menu comes from: the control or row it is anchored to, or
@@ -1814,6 +1798,7 @@ impl Widget for ContextMenu {
         presence: &PresenceCtx,
     ) {
         self.set_text_scale(theme.text_scale);
+        self.cache_theme(theme);
         // It comes from where it was opened and goes back
         // (`motion::Appear`); a closing menu is drawn until it has gone but
         // takes no input.
@@ -1860,10 +1845,17 @@ impl Widget for ContextMenu {
 
     fn needs_animation_frame(&self) -> bool {
         self.appear.is_moving()
+            || self.scroll.needs_animation_frame(&self.theme)
             || self
                 .submenu
                 .as_ref()
                 .is_some_and(|(_, menu)| menu.needs_animation_frame())
+    }
+
+    /// A glide after a flick scrolls the rows as the wheel does.
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        self.scroll.advance();
+        false
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1875,6 +1867,9 @@ impl Widget for ContextMenu {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
+                // A held bar thumb follows the pointer; the bar's hover and
+                // the pointer's lane are the region's to track.
+                self.scroll_event(event, ctx);
                 // Rows are hit where they are drawn while the menu arrives.
                 self.last_cursor = self.drawn.to_local(ctx.logical(position));
                 // Hover follows the pointer once it moves; until then the
@@ -1910,11 +1905,14 @@ impl Widget for ContextMenu {
                 if self.bounds.is_some()
                     || self.contains([self.last_cursor.x, self.last_cursor.y]) =>
             {
-                let amount = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * self.row_height(),
-                    MouseScrollDelta::PixelDelta(position) => -position.y / ctx.scale_factor,
-                };
-                self.scroll_by(amount);
+                if !self.scroll_event(event, ctx) {
+                    let amount = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * self.row_height(),
+                        MouseScrollDelta::PixelDelta(position) => -position.y / ctx.scale_factor,
+                    };
+                    self.place_scroll();
+                    self.scroll.scroll_by(Vec2::new(0.0, amount));
+                }
                 self.hovered = self.enabled_item_at(self.last_cursor);
                 *ctx.handled = true;
             }
@@ -1974,6 +1972,11 @@ impl Widget for ContextMenu {
                 button: MouseButton::Left,
                 ..
             } => {
+                // A press on the bar grabs or pages it and takes no row.
+                self.scroll_event(event, ctx);
+                if *ctx.handled {
+                    return;
+                }
                 if self.place_query_caret(self.last_cursor) {
                     // A press in the field puts the caret there.
                 } else if let Some(idx) = self.item_at([self.last_cursor.x, self.last_cursor.y]) {
@@ -1984,6 +1987,13 @@ impl Widget for ContextMenu {
                     self.close();
                 }
                 *ctx.handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.scroll_event(event, ctx);
             }
             WindowEvent::Touch(touch) => {
                 let point = self.drawn.to_local(ctx.logical(touch.location));
@@ -2965,7 +2975,7 @@ mod tests {
             dispatch(&mut menu, &cursor_at(point));
             let wheel = |y| crate::synthetic_input::mouse_wheel(0.0, y);
             assert!(dispatch(&mut menu, &wheel(-100.0)));
-            assert_eq!(menu.scroll_offset, menu.max_scroll());
+            assert_eq!(menu.scroll_offset(), menu.scroll.max_offset().y);
             let last = menu.item_rect(19).unwrap().center();
             assert_eq!(menu.item_at([last.x, last.y]), Some(19));
             dispatch(&mut menu, &cursor_at(last));
@@ -2983,7 +2993,7 @@ mod tests {
             assert_eq!(menu.take_selection(), Some(19));
             menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
             dispatch(&mut menu, &wheel(100.0));
-            assert_eq!(menu.scroll_offset, 0.0);
+            assert_eq!(menu.scroll_offset(), 0.0);
         }
 
         fn viewport_bounds_menu_and_keeps_keyboard_target_reachable() {
@@ -3003,7 +3013,7 @@ mod tests {
             menu.set_viewport(Some(viewport));
             menu.open_at([390.0, 160.0]);
             assert!(
-                menu.has_overflow(),
+                menu.scroll.overflows_vertically(),
                 "clipped rows expose a scroll affordance"
             );
             assert_eq!(menu.get_rect().x1, viewport.x1);

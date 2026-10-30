@@ -62,6 +62,12 @@ pub struct ScrollRegion {
     /// Bars lie over the content's trailing edge instead of in lanes of
     /// their own ([`Self::with_overlaid_bars`]).
     overlaid_bars: bool,
+    /// The region shows no bars and keeps no lane for them
+    /// ([`Self::with_no_bars`]).
+    bars: bool,
+    /// The step a wheel line and an arrow key take, where the content has a
+    /// step of its own (a list's row) rather than the theme's line.
+    line_step: Option<f64>,
     persisted: Option<Rc<Cell<(f32, f32)>>>,
     /// What the frame being drawn shows of the content, and what the last
     /// frame the host presented showed ([`Self::offer_copy`]).
@@ -141,6 +147,8 @@ impl ScrollRegion {
             focused: false,
             edge_fade: false,
             overlaid_bars: false,
+            bars: true,
+            line_step: None,
             persisted: None,
             shown: crate::scroll_copy::ShownFrames::default(),
             corners: Cell::new(crate::widget::scrollbar::SurfaceCorners::default()),
@@ -194,6 +202,25 @@ impl ScrollRegion {
         self
     }
 
+    /// Show no bar and keep no lane for one: the content takes the region's
+    /// whole width whether or not it overflows, for a list the wheel and the
+    /// keyboard scroll that draws no bar of its own.
+    #[must_use]
+    pub fn with_no_bars(mut self) -> Self {
+        self.bars = false;
+        self
+    }
+
+    /// Step a wheel line and an arrow key by `step` rather than the theme's
+    /// line: a list whose content moves a row at a time.
+    pub fn set_line_step(&mut self, step: f64) {
+        self.line_step = Some(step.max(0.0));
+    }
+
+    fn line(&self) -> f64 {
+        self.line_step.unwrap_or(self.line)
+    }
+
     fn has_vertical(&self) -> bool {
         matches!(self.axis, ScrollAxis::Vertical | ScrollAxis::Both)
     }
@@ -205,7 +232,11 @@ impl ScrollRegion {
     /// The region's rect (bar lanes included) for this layout, and the
     /// theme its lanes and steps come from.
     pub fn set_viewport(&mut self, viewport: Rect, theme: &Theme) {
-        let lane = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        let lane = if self.bars {
+            f64::from(theme.tokens.metrics.scrollbar_gutter)
+        } else {
+            0.0
+        };
         if self.viewport != viewport || self.lane.to_bits() != lane.to_bits() {
             self.cancel_interaction();
         }
@@ -268,7 +299,9 @@ impl ScrollRegion {
         self.offset
     }
 
-    fn max_offset(&self) -> Vec2 {
+    /// The furthest the content scrolls, per axis.
+    #[must_use]
+    pub fn max_offset(&self) -> Vec2 {
         let shown = self.content_rect();
         Vec2::new(
             (self.content.x - shown.width()).max(0.0),
@@ -448,7 +481,7 @@ impl ScrollRegion {
     }
 
     fn v_track(&self, theme: &Theme) -> Option<Rect> {
-        self.overflows_vertically().then(|| {
+        (self.bars && self.overflows_vertically()).then(|| {
             let shown = self.inside_lanes();
             let lane = Rect::new(shown.x1, self.viewport.y0, self.viewport.x1, shown.y1);
             self.corners
@@ -458,7 +491,7 @@ impl ScrollRegion {
     }
 
     fn h_track(&self, theme: &Theme) -> Option<Rect> {
-        self.overflows_horizontally().then(|| {
+        (self.bars && self.overflows_horizontally()).then(|| {
             let shown = self.inside_lanes();
             let lane = Rect::new(self.viewport.x0, shown.y1, shown.x1, self.viewport.y1);
             self.corners
@@ -472,6 +505,23 @@ impl ScrollRegion {
     #[must_use]
     pub fn is_dragging(&self) -> bool {
         self.vbar.is_dragging() || self.hbar.is_dragging()
+    }
+
+    /// Whether a bar is held, hovered or the pointer is on its lane: what
+    /// its paint depends on besides the offset, for a host that keys a cache
+    /// on its scroll.
+    #[must_use]
+    pub fn is_bar_active(&self) -> bool {
+        self.pointer_near || self.vbar.is_active() || self.hbar.is_active()
+    }
+
+    /// The vertical thumb and its track, for a test that grabs one.
+    #[cfg(test)]
+    pub(crate) fn test_vertical_thumb(&self, theme: &Theme) -> Option<(Rect, Rect)> {
+        let track = self.v_track(theme)?;
+        self.vbar
+            .thumb_rect(track, self.v_metrics())
+            .map(|thumb| (thumb, track))
     }
 
     fn held(&self, theme: &Theme) -> bool {
@@ -826,7 +876,7 @@ impl ScrollRegion {
                 }
                 let (mut dx, mut dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => {
-                        (-f64::from(*x) * self.line, -f64::from(*y) * self.line)
+                        (-f64::from(*x) * self.line(), -f64::from(*y) * self.line())
                     }
                     MouseScrollDelta::PixelDelta(p) => (-p.x / scale_factor, -p.y / scale_factor),
                 };
@@ -913,13 +963,13 @@ impl ScrollRegion {
                     (Key::Named(NamedKey::End), true) => Vec2::new(0.0, far),
                     (Key::Named(NamedKey::Home), false) => Vec2::new(-far, 0.0),
                     (Key::Named(NamedKey::End), false) => Vec2::new(far, 0.0),
-                    (Key::Named(NamedKey::ArrowDown), true) => Vec2::new(0.0, self.line),
-                    (Key::Named(NamedKey::ArrowUp), true) => Vec2::new(0.0, -self.line),
+                    (Key::Named(NamedKey::ArrowDown), true) => Vec2::new(0.0, self.line()),
+                    (Key::Named(NamedKey::ArrowUp), true) => Vec2::new(0.0, -self.line()),
                     (Key::Named(NamedKey::ArrowRight), _) if self.has_horizontal() => {
-                        Vec2::new(self.line, 0.0)
+                        Vec2::new(self.line(), 0.0)
                     }
                     (Key::Named(NamedKey::ArrowLeft), _) if self.has_horizontal() => {
-                        Vec2::new(-self.line, 0.0)
+                        Vec2::new(-self.line(), 0.0)
                     }
                     _ => return false,
                 };
@@ -994,7 +1044,7 @@ impl ScrollRegion {
         };
         // A notch is the theme's line, not the momentum's own step.
         let step = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * self.line,
+            MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * self.line(),
             MouseScrollDelta::PixelDelta(_) => step,
         };
         let before = self.offset;

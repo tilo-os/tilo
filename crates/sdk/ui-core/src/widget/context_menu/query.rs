@@ -12,7 +12,7 @@
 use std::cell::Cell;
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::WindowEvent;
 
 use super::{CONTEXT_GESTURE, ContextMenu, MenuItem, PADDING, QUERY_GAP, label_inset};
@@ -181,7 +181,7 @@ impl ContextMenu {
         }
         self.close_submenu();
         self.refilter();
-        self.scroll_offset = 0.0;
+        self.scroll.set_offset(Vec2::ZERO);
         self.opened_under = Some(self.last_cursor);
         self.hovered = if typed {
             self.shown

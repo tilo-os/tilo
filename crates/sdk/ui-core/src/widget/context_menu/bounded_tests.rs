@@ -24,13 +24,13 @@ fn bounded_menu_measures_and_clamps_in_every_viewport() {
             assert_eq!(menu.get_rect().intersect(viewport), menu.get_rect());
             assert!(menu.row_height > ROW_HEIGHT);
             menu.focus_item(7);
-            assert!(menu.scroll_offset > 0.0);
+            assert!(menu.scroll_offset() > 0.0);
             let last = menu.item_rect(7).unwrap();
             assert_eq!(menu.item_at([last.center().x, last.center().y]), Some(7));
             assert!(menu.item_rect(0).is_none());
             menu.move_hover(1);
             assert_eq!(menu.hovered(), Some(0));
-            assert_eq!(menu.scroll_offset, 0.0);
+            assert_eq!(menu.scroll_offset(), 0.0);
         }
     }
 
@@ -58,7 +58,7 @@ fn bounded_menu_measures_and_clamps_in_every_viewport() {
                 950.0 + ROW_HEIGHT + 2.0 * PADDING
             )
         );
-        assert_eq!(wide.scroll_offset, 0.0);
+        assert_eq!(wide.scroll_offset(), 0.0);
     }
 
     fn tiny_viewport_keeps_focused_rows_reachable() {
