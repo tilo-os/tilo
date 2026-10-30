@@ -823,13 +823,12 @@ mod identity_admin_tests {
         }
     }
 
-    /// On a native host (one with the person's seat), an agent on this
-    /// machine that carries no custody (the session's agent door) runs a host
-    /// step as itself, as it runs an application's action; a person without
-    /// the seat's retained custody is still refused, never taken as an
-    /// actor-only caller.
+    /// On a native host (one with the person's seat), neither an agent nor a
+    /// person that carries no retained custody takes a host step: an agent
+    /// takes one only in its task run (`task_run_host`), a person only
+    /// through the seat. Neither is taken as an actor-only caller.
     #[test]
-    fn a_door_agent_runs_a_host_step_on_a_native_host_and_a_bare_person_does_not() {
+    fn a_keyless_agent_or_person_takes_no_host_step_on_a_native_host() {
         let host = Arc::new(Host::default());
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId(9), "Identities");
@@ -856,22 +855,16 @@ mod identity_admin_tests {
             },
         );
         let agent = Caller::local_agent("planner").in_room(room.clone());
-        invoked(&state, &agent, &request(identity_admin::LIST, None))
-            .expect("the agent's host step is admitted as the agent's own");
-        assert_eq!(
-            host.started.lock().unwrap().as_slice(),
-            &[(
-                room.clone(),
-                "agent:planner".to_owned(),
-                identity_admin::LIST.to_owned()
-            )]
+        assert!(
+            invoked(&state, &agent, &request(identity_admin::LIST, None)).is_err(),
+            "an agent outside any run takes no host step"
         );
         let person = Caller::local_person(owner).in_room(room);
         assert!(
             invoked(&state, &person, &request(identity_admin::LIST, None)).is_err(),
             "a person reaches a native host's steps only with the seat's custody"
         );
-        assert_eq!(host.started.lock().unwrap().len(), 1);
+        assert!(host.started.lock().unwrap().is_empty());
     }
 
     fn request(step: &str, confirmation: Option<Confirmation>) -> InvokeRequest {

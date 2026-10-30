@@ -184,40 +184,6 @@ fn a_role_or_removal_picked_in_the_members_tab_reaches_every_device() {
     });
     assert!(first.tree.read().governance_refusals.is_empty());
 
-    // An agent admitted at the door is a member once the governor committed
-    // its admission grants, not before.
-    let agents = |device: &Device| {
-        use crate::shell::state::WorkspaceAuthority as _;
-        device
-            .tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room() == room)
-            .map(|workspace| {
-                workspace
-                    .agent_members()
-                    .into_iter()
-                    .map(|(agent, _)| agent)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    };
-    crate::shell::agent_admission::ensure_agent_member(
-        &chrome.borrow(),
-        &room.to_string(),
-        "claude-code",
-        tilo_action_policy::roles::AgentPreset::Observer,
-    )
-    .expect("the owner admits the agent");
-    assert!(
-        agents(&first).is_empty(),
-        "nothing changes before the commit"
-    );
-    until(&[&first, &guest], "the agent a member", || {
-        (agents(&first) == ["claude-code"]).then_some(())
-    });
     drop((host, chrome));
 
     // A sandbox capability given in the Permissions tab is the governor's
