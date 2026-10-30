@@ -144,6 +144,10 @@ pub enum LockEffect {
 /// can be asked to do about it. A locked screen shows no more than that —
 /// no queue, no scrubber, no choice of player.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is an independent capability the player reports"
+)]
 pub struct Media {
     /// The song's name.
     pub title: String,
@@ -191,6 +195,10 @@ pub struct Status {
 
 /// What the lock screen shows: plain data the session keeps current.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one independent fact each about what the screen shows and what the session lets it do"
+)]
 pub struct Shown {
     /// The time, as the person reads clocks.
     pub clock: String,

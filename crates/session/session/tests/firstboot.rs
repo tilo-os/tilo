@@ -1,6 +1,14 @@
 //! The machine's first boot: which binary the unit starts, and what that
 //! binary does with the flag it is given.
 
+#![cfg(target_os = "linux")]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "test fixtures: a failed step is the assertion"
+)]
+
 use tilo_session::mount::firstboot::{OneShot, one_shot};
 
 /// The unit the image ships for the machine's own first-boot setup.

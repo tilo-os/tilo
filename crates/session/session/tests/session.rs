@@ -36,6 +36,7 @@ use tilo_service::{Answer, Asked};
 use tilo_session::{DeviceHost, Options, QuickSettings, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
+use tilo_sheets::lock::LockEffect;
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
 use tilo_sheets::workspace_settings::WorkspaceSettingsEffect;
@@ -716,7 +717,6 @@ fn the_lock_screens_transport_steers_whatever_plays() {
         session.accessible_labels()
     );
 
-    use tilo_sheets::lock::LockEffect;
     session
         .invoke(&screen, LockEffect::PLAY_PAUSE.id, &serde_json::Map::new())
         .expect("play/pause");
