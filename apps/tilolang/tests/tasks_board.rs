@@ -13,6 +13,11 @@
     reason = "test assertions"
 )]
 
+#[allow(
+    dead_code,
+    reason = "each test binary reads what it needs of the change marks"
+)]
+mod change_marks;
 mod support;
 
 use tilolang_app::app::TlApp;
@@ -146,6 +151,76 @@ fn a_card_dragged_within_its_lane_and_into_another_lands_where_it_was_dropped() 
         ]
     );
     assert_eq!(names(&lane(&mut app, packing_x)), ["Pack the kitchen"]);
+}
+
+/// What an agent's run did in Tasks is marked where the person sees it: the tasks it added and
+/// the one it checked off carry a mark in its colour on their rows, with no code of the app's,
+/// and the window's header counts them. With `TILO_LEGIBILITY_SHOTS=<dir>` the window is
+/// written, light and dark.
+#[test]
+fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
+    use change_marks::{RUN, action_id, chroma_in, marks, published_with, run, settle};
+    let mut app =
+        ui::framework::testing::HostedApp::open(support::installed("tasks"), "ada").unwrap();
+    settle(&mut app);
+    let root = app
+        .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
+        .remove(0);
+    let tasks = format!("tl:so.tilo.lang.tasks:{root}");
+    let add = action_id(&mut app, &tasks, "Add");
+    let titled = |title: &str| {
+        let mut args = serde_json::Map::new();
+        args.insert("title".to_owned(), title.into());
+        args
+    };
+    // Ada's own task first: nothing to mark.
+    app.invoke(None, None, &tasks, &add, &titled("Water the plants"), false)
+        .unwrap();
+    settle(&mut app);
+    assert!(marks(&mut app).is_empty());
+    let (agent, ambient) = run();
+    for title in ["Call the landlord", "Book the dentist"] {
+        app.invoke(
+            Some(agent.clone()),
+            Some(&ambient),
+            &tasks,
+            &add,
+            &titled(title),
+            false,
+        )
+        .unwrap();
+    }
+    // It checks off Ada's task too.
+    let task = published_with(&mut app, &tasks, "Complete");
+    let complete = action_id(&mut app, &task, "Complete");
+    app.invoke(
+        Some(agent),
+        Some(&ambient),
+        &task,
+        &complete,
+        &serde_json::Map::new(),
+        false,
+    )
+    .unwrap();
+    settle(&mut app);
+    let shown = marks(&mut app);
+    assert!(shown.len() >= 2, "{shown:?}");
+    let ground = chroma_in(&mut app, [0.0, 0.0, 8.0, 8.0]);
+    for (name, rect) in &shown {
+        assert!(
+            chroma_in(&mut app, *rect) > ground.saturating_add(24),
+            "{name} is drawn in the agent's colour"
+        );
+    }
+    if let Some(dir) = change_marks::shots_dir() {
+        for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+            app.harness().set_theme(theme);
+            settle(&mut app);
+            app.harness()
+                .render_png(&dir.join(format!("tasks-marks-{shade}.png")));
+        }
+    }
+    let _ = RUN;
 }
 
 #[test]

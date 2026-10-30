@@ -15,14 +15,14 @@ const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const NOTES_APP: &str = "so.tilo.lang.notes";
+pub(crate) const NOTES_APP: &str = "so.tilo.lang.notes";
 const TASKS_APP: &str = "so.tilo.lang.tasks";
 
-const AGENT: &str = "agent:helper";
-const RUN: &str = "issue-7@8000000000000001";
+pub(crate) const AGENT: &str = "agent:helper";
+pub(crate) const RUN: &str = "issue-7@8000000000000001";
 const LATER_RUN: &str = "issue-7@8000000000000002";
 
-fn call(r: &Replica, who: &str, app: &str, action: &str, args: Vec<Value>) -> Value {
+pub(crate) fn call(r: &Replica, who: &str, app: &str, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(app).unwrap().meta;
     let id = meta
         .actions
@@ -65,16 +65,16 @@ fn runs(versions: &[Version]) -> Vec<Option<&str>> {
 }
 
 /// Ada's room after an agent's run tidied her notes and tasks.
-struct Tidied {
-    ada: Replica,
+pub(crate) struct Tidied {
+    pub(crate) ada: Replica,
     /// The note the run made, the one it renamed and the one it deleted.
-    made: ResourceRef,
-    groceries: ResourceRef,
-    old: ResourceRef,
+    pub(crate) made: ResourceRef,
+    pub(crate) groceries: ResourceRef,
+    pub(crate) old: ResourceRef,
     /// The task it added, the one it checked off and the one it removed.
-    dentist: ResourceRef,
-    landlord: ResourceRef,
-    stale: ResourceRef,
+    pub(crate) dentist: ResourceRef,
+    pub(crate) landlord: ResourceRef,
+    pub(crate) stale: ResourceRef,
 }
 
 impl Tidied {
@@ -90,7 +90,7 @@ impl Tidied {
     }
 }
 
-fn a_run_in_notes_and_tasks() -> Tidied {
+pub(crate) fn a_run_in_notes_and_tasks() -> Tidied {
     let (mut ada, _) = Replica::new(
         "ada",
         AutoCommit::new(),
@@ -442,4 +442,45 @@ fn code_reads_a_versions_run_kind_and_fields_and_what_is_unseen() {
     );
     assert!(ada.host.runtime().mark_run_seen("ada", RUN));
     assert!(describe(&ada, &book).starts_with("0 unseen"));
+}
+
+#[test]
+fn undoing_the_run_takes_its_marks_with_it() {
+    use ui::history_source::revert::{changes_of_entries, revert_changes};
+    let Tidied {
+        mut ada,
+        made,
+        groceries,
+        landlord,
+        ..
+    } = a_run_in_notes_and_tasks();
+    // History takes the run back, as Ada.
+    let scope = ui::history_source::steps::Scope::Run(RUN.to_owned());
+    let entries: Vec<_> = tilo_resource::history::versions(&mut ada.doc)
+        .iter()
+        .filter(|version| scope.owns(version))
+        .map(|version| ui::history_source::entry_id_from_hash(&version.hash.to_string()))
+        .collect();
+    assert!(!entries.is_empty(), "the run's steps are in history");
+    let changes = changes_of_entries(&mut ada.doc, &entries);
+    revert_changes(
+        &mut ada.doc,
+        &changes,
+        &ui::history_source::authors::AuthorDirectory::new(),
+    )
+    .unwrap();
+    let message = tilo_actions::ActionContext::default()
+        .with_invoker(tilo_actions::ActionInvoker::actor("ada"))
+        .change_message()
+        .unwrap();
+    ada.doc
+        .commit_with(automerge::transaction::CommitOptions::default().with_message(message));
+    ada.host.sync_from(&ada.doc);
+    // What she took back is hers now: nothing of it is marked.
+    for at in [&groceries, &landlord, &made] {
+        assert!(
+            ada.host.runtime().unseen("ada", at).unwrap().is_empty(),
+            "{at:?} is no longer marked after the undo"
+        );
+    }
 }

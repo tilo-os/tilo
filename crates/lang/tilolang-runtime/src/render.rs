@@ -386,6 +386,8 @@ impl Core {
             self.resolve_foreign(cx, target, &mut node, acc)?;
         } else if n.kind == EMBED {
             self.resolve_embed(cx, &mut node, acc);
+        } else {
+            self.mark_unseen(&mut node, cx.offer.viewer, cx.offer.window, acc)?;
         }
         Ok(node)
     }

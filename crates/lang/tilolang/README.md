@@ -189,7 +189,13 @@ Int, Float, Text, Bool, Date or Time keys, and `desc` for the largest or latest 
 
 **Reflection.** The log records who made every change, when and by which action, so code reads
 it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
-`Option<host.Version>` (`.who`, `.at`, `.what`), `history(r)` all of them, oldest first.
+`Option<host.Version>` (`.who`, `.at`, `.what`), `history(r)` all of them, oldest first. A
+version also says which task run made it (`.task`, a `host.TaskRun`), what it did (`.kind`:
+`created`, `changed` or `removed`; a removed resource keeps its versions) and which `.fields`
+it changed. `changes(of: run)` is every version a run made, of every resource, and `unseen(r)`
+the versions of `r` an agent's run made that the person looking has not seen yet. The UI host
+marks those where views show them, with no code of the app's; `ui.ChangeMark(r)` places the
+mark where the default spot is wrong (task-legibility.md).
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
 `workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`

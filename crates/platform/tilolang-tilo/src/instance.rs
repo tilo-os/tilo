@@ -856,7 +856,9 @@ impl Instance {
             Ok(view) => {
                 let mut view = Shown::new(target.clone(), self.spaced(Lane::Detail, view));
                 view.with = with.map(str::to_owned);
-                self.detail = Some(view);
+                if let Some(shown) = self.detail.replace(view) {
+                    self.seen_in_window(&shown.target);
+                }
                 self.lenses_changed = true;
                 self.send_open(Lane::Detail, front);
                 self.commit_planned();
@@ -870,9 +872,24 @@ impl Instance {
 
     /// Close the detail view: Back.
     pub fn close_detail(&mut self) {
-        if self.detail.take().is_some() {
+        if let Some(shown) = self.detail.take() {
+            self.seen_in_window(&shown.target);
             self.lenses_changed = true;
             self.out.push(ToUi::Close);
+        }
+    }
+
+    /// The person had `target` open in a window of its own, and goes elsewhere: what it showed
+    /// is seen (task-legibility §4). While the window is open its marks stay, so the person
+    /// sees what changed where it changed.
+    fn seen_in_window(&mut self, target: &ResourceRef) {
+        let Some(host) = self.host() else {
+            return;
+        };
+        let person = host.viewer().0.clone();
+        if let Err(error) = host.runtime().mark_seen(&person, target) {
+            tracing::warn!(%error, "what a window showed could not be marked seen");
+            self.notice(Words::phrase("tilolang-seen-failed"), ui::NoticeKind::Error);
         }
     }
 
@@ -1043,6 +1060,8 @@ impl Instance {
                     let front = front.then_some(ui::Front::Input);
                     self.open_detail(&target, view.as_deref(), front);
                 }
+                // The run's log is the system's: the window's host shows it.
+                ViewEvent::Review { run, .. } => self.out.push(ToUi::ShowRun { run }),
             }
         }
     }

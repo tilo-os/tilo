@@ -59,6 +59,14 @@ impl ShellOverlayHost {
                         },
                     ));
                 }
+                ui::widget::AppHostIntent::ShowTaskRun { group } => {
+                    chrome.borrow_mut().open_room_activity(Some(
+                        crate::shell::chrome_state::ActivityFocus {
+                            group_id: Some(group),
+                            ..crate::shell::chrome_state::ActivityFocus::default()
+                        },
+                    ));
+                }
                 ui::widget::AppHostIntent::OpenSearch(request) => {
                     self.open_app_search(source_tab, &request);
                 }

@@ -13,7 +13,7 @@ use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
-use crate::host_ui::{OPEN_ACTION, SET_ACTION, THEN_ACTION};
+use crate::host_ui::{OPEN_ACTION, REVIEW_ACTION, SET_ACTION, THEN_ACTION};
 use crate::ids::{DocId, ModuleHash, Principal};
 use crate::live::{Live, LiveStats};
 use crate::meta::{EffectClass, FieldKind};
@@ -37,6 +37,9 @@ pub enum ViewEvent {
         /// column only (`open(r, front: false)`, a selection the keyboard moves).
         front: bool,
     },
+    /// A change mark was activated: show what the task run `run` (its group) did, where it
+    /// changed `target`.
+    Review { run: String, target: ResourceRef },
 }
 
 /// How an edit of a bound field ended.
@@ -464,6 +467,18 @@ impl ViewInstance {
         match aref.action.as_str() {
             SET_ACTION => self.platform_set(aref),
             OPEN_ACTION => self.platform_open(aref),
+            REVIEW_ACTION => {
+                let (Some(Value::Text(run)), Some(Value::Ref(r))) =
+                    (aref.args.first(), aref.args.get(1))
+                else {
+                    return Err(RuntimeError::BadArgs("a malformed change mark".into()));
+                };
+                self.events.borrow_mut().push(ViewEvent::Review {
+                    run: run.clone(),
+                    target: ResourceRef::clone(&r.target),
+                });
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
             THEN_ACTION => {
                 let [Value::Action(first), Value::Action(next)] = aref.args.as_slice() else {
                     return Err(RuntimeError::BadArgs("a malformed `then`".into()));

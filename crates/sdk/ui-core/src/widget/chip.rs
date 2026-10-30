@@ -43,10 +43,10 @@ use crate::widget::Widget;
 use crate::widget::activation::Activation;
 
 /// How strongly a tone washes the pill's body over its ground.
-const TINT_FILL: f32 = 0.15;
+pub(crate) const TINT_FILL: f32 = 0.15;
 /// How strongly the same tone draws the pill's edge: enough to close the
 /// shape on a dark and a light ground, quieter than the label.
-const TINT_EDGE: f32 = 0.38;
+pub(crate) const TINT_EDGE: f32 = 0.38;
 
 /// What a chip or badge is. The style is the whole appearance; there is no
 /// colour, size or radius to set.
@@ -374,6 +374,7 @@ impl<'a> ChipFace<'a> {
             &PillPaint {
                 rect: self.rect,
                 label: self.label,
+                face: "",
                 lead: self.lead,
                 style: self.style,
                 selected: self.selected,
@@ -402,6 +403,9 @@ impl<'a> ChipFace<'a> {
 pub(crate) struct PillPaint<'a> {
     pub rect: Rect,
     pub label: &'a str,
+    /// Whose face a [`ChipLead::Face`] shows, when the label says more than their name;
+    /// empty: the label is the name.
+    pub face: &'a str,
     pub lead: ChipLead,
     pub style: ChipStyle,
     pub selected: bool,
@@ -529,7 +533,12 @@ pub(crate) fn paint_pill(
             let side = metrics.face();
             let face = Rect::from_center_size(Point::new(x + side / 2.0, cy), (side, side));
             let mut ctx = crate::paint::PaintCtx::new(scene, transform, text_renderer, theme);
-            crate::widget::avatar::AvatarFace::new(pill.label, pill.label)
+            let name = if pill.face.is_empty() {
+                pill.label
+            } else {
+                pill.face
+            };
+            crate::widget::avatar::AvatarFace::new(name, name)
                 .presence(colour)
                 .paint(&mut ctx, face);
             x += side + metrics.gap;
@@ -599,6 +608,8 @@ pub(crate) fn paint_pill(
 )]
 pub struct Chip {
     label: String,
+    /// Whose face leads it ([`Self::with_face`]); empty: the label is the name.
+    face: String,
     selectable: bool,
     selected: bool,
     removable: bool,
@@ -668,6 +679,7 @@ impl Chip {
             tooltip: None,
             accessible_name: None,
             label,
+            face: String::new(),
             selectable: false,
             selected: false,
             removable: false,
@@ -688,6 +700,15 @@ impl Chip {
             interaction: crate::interaction::InteractionEnvironment::default(),
             footprint: None,
         }
+    }
+
+    /// Led by the face of `name` (their initials) on their presence `colour`, when the label
+    /// says more than their name: `Helper · Tidy my notes`.
+    #[must_use]
+    pub fn with_face(mut self, name: impl Into<String>, colour: Color) -> Self {
+        self.face = name.into();
+        self.lead = ChipLead::Face(colour);
+        self
     }
 
     /// A stable id for tests, inspection and the chip's bound action
@@ -1075,6 +1096,7 @@ impl Widget for Chip {
             &PillPaint {
                 rect: self.rect,
                 label: &self.label,
+                face: &self.face,
                 lead: self.lead,
                 style: self.style,
                 selected: self.shows_chosen(),
