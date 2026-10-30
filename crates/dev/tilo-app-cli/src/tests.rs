@@ -6388,3 +6388,5 @@ fn code_only_reads_past_quote_characters_and_raw_strings() {
     assert!(!code.contains("&quot;"), "{code}");
     assert_eq!(code.lines().count(), source.lines().count());
 }
+
+mod portability_gate;

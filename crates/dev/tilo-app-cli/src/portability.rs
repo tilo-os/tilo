@@ -2,7 +2,7 @@
 //! behind those APIs lives in Tilo's platform crates.
 //!
 //! The rules come from `tools/policy/app_portability_rules.toml`, the table
-//! the repository's policy gate (`tools/policy/check_app_portability.py`)
+//! `tilo-app check --lint --all` (the repository gate, run by `lint.yml`)
 //! counts against its baseline. The lint reads an app's shipped Rust sources
 //! (the module tree reachable from its library and binary roots, minus
 //! `#[cfg(test)]` items) and its Cargo manifest, and reports every site with
@@ -39,6 +39,38 @@ pub(crate) struct RulesTable {
     pub(crate) rules: BTreeMap<String, RuleSpec>,
     #[serde(default)]
     strict: Strict,
+    #[serde(default)]
+    scope: Scope,
+    #[serde(default)]
+    sdk: Sdk,
+    #[serde(default, rename = "target-cfg")]
+    target_cfg: TargetCfg,
+}
+
+/// The only places where code may select a target; every other file is
+/// counted.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct TargetCfg {
+    allowed: Vec<String>,
+}
+
+/// Which packages the gate counts beyond the apps.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+struct Scope {
+    /// The pattern of the app model crates, which get only `model-rules`.
+    model_crates: Option<String>,
+    model_rules: Vec<String>,
+}
+
+/// The SDK's own portable crates: the same run-time traps are banned there,
+/// whatever the crate's platforms.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Sdk {
+    rules: Vec<String>,
+    crates: Vec<String>,
 }
 
 /// Rules that are errors, whatever their severity, in an app that declares
@@ -119,10 +151,14 @@ pub enum Severity {
 
 impl RuleSpec {
     fn applies_to(&self, package: &Package) -> bool {
+        self.applies_to_platforms(package.platforms())
+    }
+
+    fn applies_to_platforms(&self, platforms: &[Platform]) -> bool {
         match self.applies {
             Applies::Always => true,
-            Applies::NotTiloOs => !package.supports(Platform::TiloOs),
-            Applies::Web => package.supports(Platform::Web),
+            Applies::NotTiloOs => !platforms.contains(&Platform::TiloOs),
+            Applies::Web => platforms.contains(&Platform::Web),
         }
     }
 }
@@ -428,20 +464,37 @@ fn source_line(path: &Path, line: usize) -> Option<String> {
 /// be read or parsed.
 pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
     let table = rules()?;
+    let manifest = app_manifest(app_dir)?;
+    let (findings, files) = package_findings(app_dir, table)?;
+    Ok(report_for(
+        app_dir,
+        &manifest.package,
+        table,
+        findings,
+        files,
+    ))
+}
+
+/// The app's `tilo-app.toml`.
+fn app_manifest(app_dir: &Path) -> Result<tilo_app_package::Manifest> {
     let manifest_path = app_dir.join("tilo-app.toml");
     let manifest_source = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("read {}", manifest_path.display()))?;
-    let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_source)
-        .with_context(|| format!("parse {}", manifest_path.display()))?;
+    tilo_app_package::Manifest::from_toml_str(&manifest_source)
+        .with_context(|| format!("parse {}", manifest_path.display()))
+}
 
-    let cargo = CargoFacts::read(app_dir, table)?;
+/// Every platform-specific site of every rule in `dir`: its manifest and its
+/// shipped code, deduplicated by path, line and rule. Which rules apply is
+/// the caller's to decide, from the package's platforms and its scope.
+fn package_findings(dir: &Path, table: &RulesTable) -> Result<(Vec<PortabilityFinding>, usize)> {
+    let cargo = CargoFacts::read(dir, table)?;
     let mut findings = cargo.findings.clone();
     let scanner = Scanner::new(table, &cargo.native_idents);
-    let roots = cargo.roots(app_dir);
     let mut files: usize = 0;
-    for (file, tokens) in shipped_modules(&roots)? {
+    for (file, tokens) in shipped_modules(&cargo.roots(dir))? {
         files = files.saturating_add(1);
-        let relative = file.strip_prefix(app_dir).unwrap_or(&file).to_path_buf();
+        let relative = file.strip_prefix(dir).unwrap_or(&file).to_path_buf();
         let mut hits = Vec::new();
         scanner.scan(tokens, &mut hits);
         findings.extend(
@@ -456,7 +509,40 @@ pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
                 }),
         );
     }
-    let package = &manifest.package;
+    findings.sort_by(|a, b| {
+        (&a.path, a.line, a.kind.rule(), a.kind).cmp(&(&b.path, b.line, b.kind.rule(), b.kind))
+    });
+    findings
+        .dedup_by(|a, b| a.path == b.path && a.line == b.line && a.kind.rule() == b.kind.rule());
+    let allowed = &table.target_cfg.allowed;
+    if !allowed.is_empty() {
+        let root = workspace(dir)
+            .0
+            .and_then(|root| std::fs::canonicalize(root).ok());
+        findings.retain(|finding| {
+            let relative = root
+                .as_deref()
+                .and_then(|root| {
+                    let file = std::fs::canonicalize(dir.join(&finding.path)).ok()?;
+                    Some(file.strip_prefix(root).ok()?.to_path_buf())
+                })
+                .unwrap_or_else(|| finding.path.clone());
+            !allowed
+                .iter()
+                .any(|glob| wildcard(glob, &relative.to_string_lossy().replace('\\', "/")))
+        });
+    }
+    Ok((findings, files))
+}
+
+/// The report of an app whose package and findings are already read.
+fn report_for(
+    app_dir: &Path,
+    package: &Package,
+    table: &RulesTable,
+    mut findings: Vec<PortabilityFinding>,
+    files: usize,
+) -> PortabilityReport {
     let mut web: Vec<PortabilityFinding> = findings
         .iter()
         .filter_map(|finding| {
@@ -490,7 +576,7 @@ pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
             a.path == b.path && a.line == b.line && a.kind.rule() == b.kind.rule()
         });
     }
-    Ok(PortabilityReport {
+    PortabilityReport {
         app_dir: app_dir.to_path_buf(),
         platforms: package.platforms().to_vec(),
         platform_reason: package.platform_reason.clone(),
@@ -498,7 +584,7 @@ pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
         exempt,
         web,
         files,
-    })
+    }
 }
 
 /// The app's shipped module trees (library and binaries), test items
@@ -512,8 +598,440 @@ pub(crate) fn shipped_sources(app_dir: &Path) -> Result<Vec<(PathBuf, TokenStrea
     shipped_modules(&cargo.roots(app_dir))
 }
 
+/// The repository's shrink-only record of the platform code that apps and
+/// the SDK's portable crates still hold.
+const BASELINE: &str = "tools/policy/app_portability_baseline.toml";
+
+/// The baseline's sections, in its order.
+const SECTIONS: [&str; 2] = ["apps", "sdk"];
+
+/// Sites per section, package and rule.
+type Counts = BTreeMap<String, BTreeMap<String, BTreeMap<String, usize>>>;
+
+fn counted(counts: &mut Counts, section: &str, package: &str, rule: &str) {
+    let slot = counts
+        .entry(section.to_owned())
+        .or_default()
+        .entry(package.to_owned())
+        .or_default()
+        .entry(rule.to_owned())
+        .or_insert(0);
+    *slot = slot.saturating_add(1);
+}
+
+/// `counts` as the baseline file for the tree that produced them, ready to
+/// replace [`BASELINE`] with: only rules with sites left, packages in name
+/// order.
+#[must_use]
+pub fn render_baseline(counts: &Counts) -> String {
+    let mut text = String::from(
+        "# Platform code that apps and the SDK's portable crates still contain\n\
+         # (the `portability` gate in `tilo-app check --lint --all`, rules in\n\
+         # app_portability_rules.toml). Keyed package -> rule -> count. Counts may\n\
+         # only fall: lower an entry when you remove sites (`tilo-app check --lint\n\
+         # --all --print-baseline` prints the tightened table); never add one. A new\n\
+         # app or rule starts at zero.\n",
+    );
+    for section in SECTIONS {
+        for (package, rules) in counts.get(section).into_iter().flatten() {
+            let rules: BTreeMap<&String, usize> = rules
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(rule, count)| (rule, *count))
+                .collect();
+            if rules.is_empty() {
+                continue;
+            }
+            let key = if package
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            {
+                package.clone()
+            } else {
+                format!("\"{package}\"")
+            };
+            let _ = write!(text, "\n[{section}.{key}]\n");
+            for (rule, count) in rules {
+                let _ = writeln!(text, "{rule} = {count}");
+            }
+        }
+    }
+    text
+}
+
+/// The baseline `path` records; a tree without one has no allowances.
+fn load_baseline(path: &Path) -> Result<Counts> {
+    let mut counts = Counts::new();
+    let Ok(source) = std::fs::read_to_string(path) else {
+        return Ok(counts);
+    };
+    let table: toml::Table =
+        toml::from_str(&source).with_context(|| format!("parse {}", path.display()))?;
+    for section in SECTIONS {
+        for (package, rules) in table
+            .get(section)
+            .and_then(toml::Value::as_table)
+            .into_iter()
+            .flatten()
+        {
+            for (rule, count) in rules.as_table().into_iter().flatten() {
+                if let Some(count) = count.as_integer() {
+                    counts
+                        .entry(section.to_owned())
+                        .or_default()
+                        .entry(package.clone())
+                        .or_default()
+                        .insert(rule.clone(), usize::try_from(count).unwrap_or_default());
+                }
+            }
+        }
+    }
+    Ok(counts)
+}
+
+/// The sites that grew past `baseline`, and the entries that fell below the
+/// tree: an improvement to lock in.
+fn compare(current: &Counts, baseline: &Counts) -> (Vec<String>, Vec<String>) {
+    let mut regressions = Vec::new();
+    let mut stale = Vec::new();
+    for section in SECTIONS {
+        for (package, rules) in current.get(section).into_iter().flatten() {
+            let allowed = baseline
+                .get(section)
+                .and_then(|section| section.get(package));
+            for (rule, found) in rules.iter().filter(|(_, found)| **found > 0) {
+                let limit = allowed
+                    .and_then(|rules| rules.get(rule))
+                    .copied()
+                    .unwrap_or_default();
+                if *found <= limit {
+                    continue;
+                }
+                if allowed.is_none() {
+                    regressions.push(format!(
+                        "{section}.{package}: {found} {rule} finding(s); a package without a \
+                         baseline entry must be clean"
+                    ));
+                } else {
+                    regressions.push(format!(
+                        "{section}.{package}: {found} {rule} finding(s), baseline allows {limit}"
+                    ));
+                }
+            }
+        }
+        for (package, rules) in baseline.get(section).into_iter().flatten() {
+            for (rule, limit) in rules {
+                let found = current
+                    .get(section)
+                    .and_then(|section| section.get(package))
+                    .and_then(|rules| rules.get(rule))
+                    .copied()
+                    .unwrap_or_default();
+                if found < *limit {
+                    stale.push(format!(
+                        "{section}.{package}: {rule} fell from {limit} to {found}"
+                    ));
+                }
+            }
+        }
+    }
+    (regressions, stale)
+}
+
+/// One site the gate counts, with the package and section it is in.
+#[derive(Clone, Debug)]
+pub struct PackageFinding {
+    /// `apps` or `sdk`.
+    pub section: String,
+    pub package: String,
+    pub finding: PortabilityFinding,
+}
+
+/// The workspace's app portability gate: every app, app model crate and
+/// portable SDK crate, its sites counted against the shrink-only baseline.
+///
+/// The apps' own reports come with it, so one run both tells a developer what
+/// to move and whether the repository's counts grew.
+#[derive(Debug)]
+pub struct PortabilityGate {
+    counts: Counts,
+    baseline: Counts,
+    apps: Vec<PortabilityReport>,
+    sites: Vec<PackageFinding>,
+    /// Whether any app's report fails, with no baseline allowance at all.
+    strict: bool,
+}
+
+impl PortabilityGate {
+    /// Whether the tree holds no more sites than the baseline allows, no app
+    /// breaks a strict rule, and no entry has room to fall.
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        let (regressions, stale) = compare(&self.counts, &self.baseline);
+        !self.strict && regressions.is_empty() && stale.is_empty()
+    }
+
+    /// The apps' reports, in name order.
+    #[must_use]
+    pub fn apps(&self) -> &[PortabilityReport] {
+        &self.apps
+    }
+
+    /// The baseline for the tree that produced this gate.
+    #[must_use]
+    pub fn baseline_table(&self) -> String {
+        render_baseline(&self.counts)
+    }
+
+    /// Prints every failing app's sites and the gate's own summary; returns
+    /// what failed, empty when the tree passes.
+    pub fn print_failures(&self) -> Vec<String> {
+        let mut failures = Vec::new();
+        for report in self.apps.iter().filter(|report| !report.passed()) {
+            println!("[check] lint: {LINT} in {}", report.app_dir.display());
+            println!("{}", report.render());
+            failures.push(report.app_dir.display().to_string());
+        }
+        println!("{}", self.render());
+        if !self.passed() {
+            failures.push("the repository's app portability baseline".into());
+        }
+        failures
+    }
+
+    /// The sites behind the counts, of every package or of the named ones.
+    #[must_use]
+    pub fn render_sites(&self, packages: &[String]) -> String {
+        let mut text = String::new();
+        for site in &self.sites {
+            if packages.is_empty() || packages.contains(&site.package) {
+                let _ = writeln!(
+                    text,
+                    "{}.{}: {}:{}: {} {}",
+                    site.section,
+                    site.package,
+                    site.finding.path.display(),
+                    site.finding.line,
+                    site.finding.kind.rule(),
+                    site.finding.what
+                );
+            }
+        }
+        text
+    }
+
+    /// What the gate has to say: why it failed, with the sites and the table
+    /// to commit; or how many sites the tree is allowed.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let mut text = String::new();
+        let (regressions, stale) = compare(&self.counts, &self.baseline);
+        if self.strict {
+            text.push_str("app portability FAILED: platform code in an app that runs everywhere\n");
+            for report in self.apps.iter().filter(|report| !report.passed()) {
+                let _ = writeln!(text, "  {}", report.app_dir.display());
+            }
+            text.push_str(
+                "\n  An app whose platforms are linux, macos and web holds no platform code:\n  \
+                 move it into a platform crate (crates/platform/*) or an SDK API.\n",
+            );
+        }
+        if !regressions.is_empty() {
+            text.push_str("app portability FAILED: platform code grew\n");
+            for line in &regressions {
+                let _ = writeln!(text, "  {line}");
+            }
+            text.push_str(
+                "\n  Apps call portable APIs; platform code lives in platform crates.\n  \
+                 `tilo-app check --lint --all --findings <name>` lists the sites. An app whose\n  \
+                 purpose is platform-specific narrows `[package] platforms` with a\n  \
+                 `platform-reason`.\n",
+            );
+        }
+        if !stale.is_empty() {
+            text.push_str("app portability: counts fell; lock the improvement in\n");
+            for line in &stale {
+                let _ = writeln!(text, "  {line}");
+            }
+            let _ = writeln!(
+                text,
+                "\n  Replace {BASELINE} with:\n\n{}",
+                self.baseline_table()
+            );
+        }
+        if text.is_empty() {
+            let total = |section: &str| {
+                self.counts
+                    .get(section)
+                    .into_iter()
+                    .flatten()
+                    .map(|(_, rules)| rules.values().sum::<usize>())
+                    .sum::<usize>()
+            };
+            let apps = self.counts.get("apps").map_or(0, BTreeMap::len);
+            let _ = writeln!(
+                text,
+                "app portability OK ({} baselined app site(s) in {apps} app(s); {} in the SDK's \
+                 portable crates)",
+                total("apps"),
+                total("sdk")
+            );
+        }
+        text
+    }
+}
+
+/// The platform code of every app, app model crate and portable SDK crate in
+/// the workspace containing `start`, counted against its baseline.
+///
+/// # Errors
+///
+/// When the workspace, a manifest, a rules table or a source file cannot be
+/// read.
+pub fn gate(start: &Path) -> Result<PortabilityGate> {
+    let table = rules()?;
+    let (root, _workspace) = workspace_dir(start)?;
+    let mut counts = Counts::new();
+    let mut sites = Vec::new();
+    let mut apps = Vec::new();
+    let mut strict = false;
+
+    let mut directories: Vec<PathBuf> = std::fs::read_dir(root.join("apps"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.join("Cargo.toml").is_file())
+                .collect()
+        })
+        .unwrap_or_default();
+    directories.sort();
+    let model_crates = table
+        .scope
+        .model_crates
+        .as_deref()
+        .unwrap_or("apps/*-model");
+    let model_rules: BTreeSet<&str> = table
+        .scope
+        .model_rules
+        .iter()
+        .map(String::as_str)
+        .filter(|rule| {
+            table
+                .rule(rule)
+                .is_some_and(|spec| spec.applies_to_platforms(tilo_app_package::DEFAULT_PLATFORMS))
+        })
+        .collect();
+    for directory in directories {
+        let name = directory
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        if directory.join("tilo-app.toml").is_file() {
+            let manifest = app_manifest(&directory)?;
+            let (findings, files) = package_findings(&directory, table)?;
+            let report = report_for(&directory, &manifest.package, table, findings, files);
+            for finding in &report.findings {
+                counted(&mut counts, "apps", &name, finding.kind.rule());
+                sites.push(PackageFinding {
+                    section: "apps".into(),
+                    package: name.clone(),
+                    finding: finding.clone(),
+                });
+            }
+            strict |= !report.passed();
+            apps.push(report);
+        } else if wildcard(model_crates, &format!("apps/{name}")) {
+            let (findings, _) = package_findings(&directory, table)?;
+            for finding in findings
+                .into_iter()
+                .filter(|finding| model_rules.contains(finding.kind.rule()))
+            {
+                counted(&mut counts, "apps", &name, finding.kind.rule());
+                sites.push(PackageFinding {
+                    section: "apps".into(),
+                    package: name.clone(),
+                    finding,
+                });
+            }
+        }
+    }
+
+    let sdk_rules: BTreeSet<&str> = table
+        .sdk
+        .rules
+        .iter()
+        .map(String::as_str)
+        .filter(|rule| table.rule(rule).is_some())
+        .collect();
+    for crate_path in &table.sdk.crates {
+        let directory = root.join(crate_path);
+        if !directory.join("Cargo.toml").is_file() {
+            continue;
+        }
+        let name = std::fs::read_to_string(directory.join("Cargo.toml"))
+            .ok()
+            .and_then(|source| toml::from_str::<toml::Table>(&source).ok())
+            .and_then(|manifest| {
+                manifest
+                    .get("package")?
+                    .get("name")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| crate_path.clone());
+        let (findings, _) = package_findings(&directory, table)?;
+        for finding in findings
+            .into_iter()
+            .filter(|finding| sdk_rules.contains(finding.kind.rule()))
+        {
+            counted(&mut counts, "sdk", &name, finding.kind.rule());
+            sites.push(PackageFinding {
+                section: "sdk".into(),
+                package: name.clone(),
+                finding,
+            });
+        }
+    }
+
+    Ok(PortabilityGate {
+        baseline: load_baseline(&root.join(BASELINE))?,
+        counts,
+        apps,
+        sites,
+        strict,
+    })
+}
+
 /// Every Tilo app that is a member of the workspace containing `start`.
 pub fn workspace_apps(start: &Path) -> Result<Vec<PathBuf>> {
+    let (dir, workspace) = workspace_dir(start)?;
+    let mut apps = BTreeSet::new();
+    let members = workspace.get("members").and_then(toml::Value::as_array);
+    for member in members
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_str)
+    {
+        if let Some(parent) = member.strip_suffix("/*") {
+            let Ok(entries) = std::fs::read_dir(dir.join(parent)) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                apps.insert(entry.path());
+            }
+        } else {
+            apps.insert(dir.join(member));
+        }
+    }
+    Ok(apps
+        .into_iter()
+        .filter(|path| path.join("tilo-app.toml").is_file() && path.join("Cargo.toml").is_file())
+        .collect())
+}
+
+/// The root of the Cargo workspace containing `start` and its `[workspace]`
+/// table.
+fn workspace_dir(start: &Path) -> Result<(PathBuf, toml::Table)> {
     let start =
         std::fs::canonicalize(start).with_context(|| format!("resolve {}", start.display()))?;
     for dir in start.ancestors() {
@@ -523,33 +1041,9 @@ pub fn workspace_apps(start: &Path) -> Result<Vec<PathBuf>> {
         };
         let table: toml::Table =
             toml::from_str(&source).with_context(|| format!("parse {}", manifest.display()))?;
-        let Some(workspace) = table.get("workspace").and_then(toml::Value::as_table) else {
-            continue;
-        };
-        let mut apps = BTreeSet::new();
-        let members = workspace.get("members").and_then(toml::Value::as_array);
-        for member in members
-            .into_iter()
-            .flatten()
-            .filter_map(toml::Value::as_str)
-        {
-            if let Some(parent) = member.strip_suffix("/*") {
-                let Ok(entries) = std::fs::read_dir(dir.join(parent)) else {
-                    continue;
-                };
-                for entry in entries.flatten() {
-                    apps.insert(entry.path());
-                }
-            } else {
-                apps.insert(dir.join(member));
-            }
+        if let Some(workspace) = table.get("workspace").and_then(toml::Value::as_table) {
+            return Ok((dir.to_path_buf(), workspace.clone()));
         }
-        return Ok(apps
-            .into_iter()
-            .filter(|path| {
-                path.join("tilo-app.toml").is_file() && path.join("Cargo.toml").is_file()
-            })
-            .collect());
     }
     anyhow::bail!(
         "no Cargo workspace above {}; `--all` lints the Tilo apps of a workspace",
@@ -961,6 +1455,11 @@ pub(crate) fn shipped_modules(roots: &[PathBuf]) -> Result<Vec<(PathBuf, TokenSt
             std::fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?;
         let mut syntax =
             syn::parse_file(&source).with_context(|| format!("parse {}", file.display()))?;
+        // A file whose own `#![cfg(test)]` only holds in a test build is test
+        // code, however it was declared.
+        if test_only(&syntax.attrs) {
+            continue;
+        }
         TestPruner.visit_file_mut(&mut syntax);
         let parent = file.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
         let mod_rs = is_root || file.file_name().is_some_and(|name| name == "mod.rs");
@@ -1219,13 +1718,19 @@ pub(crate) fn continues_path(tokens: &[TokenTree], index: usize) -> bool {
     match tokens.get(before) {
         Some(TokenTree::Punct(punct)) if punct.as_char() == '.' => true,
         Some(TokenTree::Punct(punct)) if punct.as_char() == ':' => {
-            // `::name` at the start of a path is still a crate name.
-            before.checked_sub(2).is_some_and(|start| {
-                matches!(
-                    tokens.get(start),
-                    Some(TokenTree::Ident(_) | TokenTree::Group(_))
-                )
-            })
+            // `::name` at the start of a path is still a crate name; a lone
+            // `:` is a field's type, which starts one.
+            let double = matches!(
+                before.checked_sub(1).map(|colon| tokens.get(colon)),
+                Some(Some(TokenTree::Punct(colon))) if colon.as_char() == ':'
+            );
+            double
+                && before.checked_sub(2).is_some_and(|start| {
+                    matches!(
+                        tokens.get(start),
+                        Some(TokenTree::Ident(_) | TokenTree::Group(_))
+                    )
+                })
         }
         _ => false,
     }

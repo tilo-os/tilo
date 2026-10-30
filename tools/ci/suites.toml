@@ -1104,9 +1104,11 @@ inputs = [
   "examples/apps/", "examples/README.md",
   # Task guides are embedded by the CLI from the published documentation.
   "docs/developers/tasks/",
-  # The portability lint compiles in the policy gate's rules table, and the
-  # capability check the table of what each capability's code uses.
-  "tools/policy/app_portability_rules.toml", "tools/policy/app_capability_usage.toml",
+  # The portability lint compiles in the policy gate's rules table and counts
+  # against its baseline; the capability check reads the table of what each
+  # capability's code uses.
+  "tools/policy/app_portability_rules.toml", "tools/policy/app_portability_baseline.toml",
+  "tools/policy/app_capability_usage.toml",
   # Standalone apps take the SDK's toolchain and lock file.
   "rust-toolchain.toml", "Cargo.lock",
   "tools/ci/rustc-sdk-consumer.sh", "os/dev/export-sdk-compiler.py",

@@ -480,9 +480,20 @@ struct LintScope {
     #[arg(long)]
     lint: bool,
 
-    /// Lint every Tilo app in the workspace containing PATH (or the current directory).
+    /// The repository gate: every app, app model crate and portable SDK crate
+    /// in the workspace containing PATH (or the current directory), counted
+    /// against `tools/policy/app_portability_baseline.toml`.
     #[arg(long, requires = "lint")]
     all: bool,
+
+    /// With --all: print the baseline for the current tree and change nothing.
+    #[arg(long, requires = "all")]
+    print_baseline: bool,
+
+    /// With --all: list the sites behind the counts, of every package or of
+    /// the named ones.
+    #[arg(long, requires = "all", num_args = 0.., value_name = "PACKAGE")]
+    findings: Option<Vec<String>>,
 }
 
 #[derive(clap::Args)]
@@ -2321,7 +2332,7 @@ fn run_setup(args: &SetupArgs) -> Result<Value> {
 fn run_check(args: CheckArgs) -> Result<Value> {
     let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
     if args.lints.all {
-        return lint_workspace(&path);
+        return lint_workspace(&path, &args.lints);
     }
     if !args.target.is_empty() {
         return check_targets(&path, &args);
@@ -2564,24 +2575,23 @@ fn check_platforms(requested: &[CheckPlatformArg]) -> Vec<tilo_app_cli::PackageP
 /// A `check` stage: its JSON name, its progress label, and the work.
 type CheckStage<'a> = (&'static str, &'static str, &'a dyn Fn() -> Result<()>);
 
-fn lint_workspace(start: &Path) -> Result<Value> {
-    let apps = tilo_app_cli::portability::workspace_apps(start)?;
-    let mut failures = Vec::new();
-    let mut reports = Vec::new();
-    for app in &apps {
-        let report = tilo_app_cli::portability::lint_app(app)?;
-        reports.push(report.to_json());
-        if report.passed() {
-            continue;
-        }
-        println!(
-            "[check] lint: {} in {}",
-            tilo_app_cli::portability::LINT,
-            app.display()
-        );
-        println!("{}", report.render());
-        failures.push(app.display().to_string());
+fn lint_workspace(start: &Path, lints: &LintScope) -> Result<Value> {
+    let gate = tilo_app_cli::portability::gate(start)?;
+    if lints.print_baseline {
+        print!("{}", gate.baseline_table());
+        return Ok(json!({"baseline": gate.baseline_table()}));
     }
+    if let Some(packages) = &lints.findings {
+        print!("{}", gate.render_sites(packages));
+        return Ok(json!({"findings": gate.render_sites(packages)}));
+    }
+    let reports: Vec<Value> = gate
+        .apps()
+        .iter()
+        .map(tilo_app_cli::portability::PortabilityReport::to_json)
+        .collect();
+    let mut failures = gate.print_failures();
+    let apps = tilo_app_cli::portability::workspace_apps(start)?;
     let mut contracts = Vec::new();
     for app in &apps {
         let report = tilo_app_cli::contract::check_app(app)?;
