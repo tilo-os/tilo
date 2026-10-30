@@ -1,11 +1,11 @@
 //! The window shows a scene the same way up as an output with no display.
 //!
 //! The nested backend draws the scene into a window; the window is a client of
-//! a compositor with no display in this process, so the run needs no desktop
-//! and nothing it draws reaches one. Three pictures of the same hosted layer
-//! must have its red half above its blue one: the window's output as the
-//! backend reads it back, the same window as the compositor around it shows
-//! it, and a headless output.
+//! a compositor with no display, so the run needs no desktop and nothing it
+//! draws reaches one. Three pictures of the same hosted layer must have its
+//! red half above its blue one: the window's output as the backend reads it
+//! back, the same window as the compositor around it shows it, and a headless
+//! output.
 //!
 //!     cargo run -p tilo-compositor --example nested_orientation
 #![allow(
@@ -19,13 +19,19 @@
 
 fn main() {
     #[cfg(target_os = "linux")]
-    nested::main();
+    if std::env::args().any(|argument| argument == "--window") {
+        nested::window_side();
+    } else {
+        nested::main();
+    }
 }
 
 #[cfg(target_os = "linux")]
 mod nested {
+    use std::io::Write as _;
     use std::path::{Path, PathBuf};
-    use std::time::Duration;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
 
     use smithay::backend::allocator::Fourcc;
     use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
@@ -36,6 +42,9 @@ mod nested {
 
     const WIDTH: i32 = 320;
     const HEIGHT: i32 = 200;
+
+    /// How long the window may take to show itself and report.
+    const OPENING: Duration = Duration::from_secs(60);
 
     /// A layer as tall as the output: red on top, blue below.
     struct Marker {
@@ -89,24 +98,94 @@ mod nested {
         fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
     }
 
+    /// The compositor with no display, and the window in a process of its
+    /// own on it.
+    ///
+    /// The window cannot start in this process: its client makes round trips
+    /// this compositor has to answer while the window is created.
     pub(crate) fn main() {
         let mut outer = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
         outer
             .add_output(&OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT))
             .expect("output");
+        outer.add_host(Box::new(Marker::new()));
         let socket = outer.listen().expect("socket");
-        // The window opens on the compositor here, by its full path: the
-        // process gets no other display to open it on.
+        // By its full path: the window's process gets a runtime directory of
+        // its own, so it cannot find the socket by name.
         let socket = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
             || PathBuf::from(&socket),
             |directory| Path::new(&directory).join(&socket),
         );
-        // The scope takes the environment lock and restores both variables
-        // when it ends.
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set("WAYLAND_DISPLAY", &socket);
-        environment.remove("DISPLAY");
 
+        let directory = tempfile::tempdir().expect("runtime directory");
+        let mut window = Command::new(std::env::current_exe().expect("own path"))
+            .arg("--window")
+            // Nothing of this desktop: no X display, and a runtime directory
+            // of its own. The window opens on the compositor here and
+            // nowhere else.
+            .env("WAYLAND_DISPLAY", &socket)
+            .env("XDG_RUNTIME_DIR", directory.path())
+            .env_remove("DISPLAY")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("window process");
+
+        // The window's frames arrive only while this compositor runs.
+        let deadline = Instant::now() + OPENING;
+        while window.try_wait().expect("wait").is_none() {
+            outer.dispatch(Duration::from_millis(16)).expect("wait");
+            outer.render().expect("render");
+            assert!(
+                Instant::now() < deadline,
+                "the window showed nothing here (no GPU to draw one)"
+            );
+        }
+        // The last frame the window committed, and the compositor's answer to
+        // it, are still on their way.
+        for _ in 0..5 {
+            outer.dispatch(Duration::from_millis(16)).expect("wait");
+            outer.render().expect("render");
+        }
+
+        let printed = window.wait_with_output().expect("report").stdout;
+        let printed = String::from_utf8(printed).expect("report is text");
+        eprintln!("{printed}");
+        let (above, below) = reported(&printed);
+
+        let headless = headless_picture();
+        let shown = outer.screenshot("HEADLESS-1").expect("screenshot");
+        let top = (WIDTH / 2, HEIGHT / 4);
+        let bottom = (WIDTH / 2, HEIGHT * 3 / 4);
+        // Where the compositor put the window: the same two points of the
+        // layer inside the window's rectangle, in the picture of the output.
+        let (x, y, width, height) = outer
+            .windows()
+            .into_iter()
+            .next()
+            .map(|(_, rect)| rect)
+            .expect("the window is on the output");
+        let shown_top = (x + width / 2, y + height / 4);
+        let shown_bottom = (x + width / 2, y + height * 3 / 4);
+        for (what, above, below) in [
+            ("the window", above, below),
+            (
+                "a headless output",
+                pixel(&headless, top),
+                pixel(&headless, bottom),
+            ),
+            (
+                "the window as shown",
+                pixel(&shown, shown_top),
+                pixel(&shown, shown_bottom),
+            ),
+        ] {
+            eprintln!("{what}: top {above:?}, bottom {below:?}");
+            assert!(is_red(above) && is_blue(below), "{what} is upside down");
+        }
+    }
+
+    /// The window's own picture of the layer, as it reports it.
+    pub(crate) fn window_side() {
         let mut window = match Compositor::nested(
             Box::new(StackPolicy),
             &NestedConfig {
@@ -121,29 +200,50 @@ mod nested {
             Err(error) => panic!("the window did not open on the output here: {error}"),
         };
         window.add_host(Box::new(Marker::new()));
-        // Both sides run: the window draws into its own output, and the
-        // compositor around it takes the window's frames.
         for _ in 0..10 {
             window.dispatch(Duration::from_millis(16)).expect("wait");
             window.render().expect("render");
-            outer.dispatch(Duration::from_millis(16)).expect("wait");
-            outer.render().expect("render");
         }
-
-        let headless = headless_picture();
-        let read_back = window.screenshot("NESTED-1").expect("screenshot");
-        let shown = outer.screenshot("HEADLESS-1").expect("screenshot");
+        let picture = window.screenshot("NESTED-1").expect("screenshot");
         let top = (WIDTH / 2, HEIGHT / 4);
         let bottom = (WIDTH / 2, HEIGHT * 3 / 4);
-        for (what, picture) in [
-            ("headless", &headless),
-            ("the window", &read_back),
-            ("the window as shown", &shown),
+        let mut report = std::io::stdout();
+        for (what, pixel) in [
+            ("top", pixel(&picture, top)),
+            ("bottom", pixel(&picture, bottom)),
         ] {
-            let (above, below) = (pixel(picture, top), pixel(picture, bottom));
-            eprintln!("{what}: top {above:?}, bottom {below:?}");
-            assert!(is_red(above) && is_blue(below), "{what} is upside down");
+            writeln!(
+                report,
+                "{what} {} {} {} {}",
+                pixel[0], pixel[1], pixel[2], pixel[3]
+            )
+            .expect("report");
         }
+    }
+
+    /// The first two pixels the window's report names: above the middle of
+    /// the layer, then below it.
+    fn reported(report: &str) -> ([u8; 4], [u8; 4]) {
+        let mut found: Vec<[u8; 4]> = Vec::new();
+        for line in report.lines() {
+            let mut fields = line.split_whitespace();
+            let Some(what) = fields.next() else {
+                continue;
+            };
+            if what != "top" && what != "bottom" {
+                continue;
+            }
+            let mut pixel = [0_u8; 4];
+            for channel in &mut pixel {
+                *channel = fields
+                    .next()
+                    .and_then(|field| field.parse().ok())
+                    .expect("a channel of a reported pixel");
+            }
+            found.push(pixel);
+        }
+        assert_eq!(found.len(), 2, "the window reported two pixels: {report}");
+        (found[0], found[1])
     }
 
     /// The scene on an output with no display.
