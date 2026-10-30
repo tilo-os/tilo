@@ -236,3 +236,81 @@ fn the_sessions_own_actions_are_found_and_run_on_its_published_surface() {
         "the overview shows over the desk"
     );
 }
+
+/// A session with the settings service, over a home of its own.
+fn session_with_settings() -> Session {
+    Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            services: vec![Box::new(tilo_settings_service::SettingsService::new(
+                "person",
+            ))],
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
+    )
+    .expect("session")
+}
+
+/// Search for `query` and choose the row titled `title`: a switch stays in
+/// view, anything else closes search.
+fn choose(session: &mut Session, query: &str, title: &str) {
+    invoke(
+        session,
+        DESK_RESOURCE,
+        "open-search",
+        serde_json::json!({ "query": query }),
+    );
+    for _ in 0..200 {
+        session.step(Duration::from_millis(1)).expect("step");
+        if row(session, title).is_some() {
+            break;
+        }
+    }
+    let Some(row) = row(session, title) else {
+        let labels: Vec<String> = rows(session).into_iter().map(|row| row.label).collect();
+        panic!("no row {title:?} for {query:?} among {labels:?}");
+    };
+    invoke(session, row.id.as_str(), "choose", serde_json::json!({}));
+}
+
+/// The field `field` of the settings section `kind` as stored.
+fn stored(session: &Session, kind: &str, field: &str) -> serde_json::Value {
+    session
+        .read(&format!("settings:{kind}"))
+        .map(|section| section[field].clone())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_switch_and_a_choice_are_changed_from_search_and_the_choice_is_kept() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_settings();
+    session.step(Duration::from_millis(1)).unwrap();
+
+    choose(&mut session, "high contrast", "High contrast");
+    // The switch flips where it is kept.
+    until(&mut session, |session| {
+        stored(session, "settings.appearance", "high_contrast") == serde_json::json!(true)
+    });
+    assert!(
+        find(&session.resources(), SEARCH_RESOURCE).is_some(),
+        "a switch stays in view"
+    );
+
+    choose(&mut session, "dark mode", "Dark mode");
+    until(&mut session, |session| {
+        stored(session, "settings.appearance", "mode") == serde_json::json!("dark")
+    });
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_none()
+    });
+
+    // What was chosen outlasts the session.
+    until(&mut session, |session| {
+        stored(session, "settings.search_history", "chosen")
+            .as_str()
+            .is_some_and(|chosen| !chosen.is_empty())
+    });
+}

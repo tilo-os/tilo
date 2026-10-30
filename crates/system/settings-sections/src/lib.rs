@@ -14,6 +14,7 @@ pub mod mobile_data;
 pub mod osk;
 pub mod prefs;
 pub mod providers;
+pub mod search;
 pub mod shortcuts;
 
 /// The app whose settings they are, whose controls change them and under
@@ -72,6 +73,7 @@ sections!(
     ui::text_assistance::TextAssistancePrefs,
     prefs::PowerPrefs,
     prefs::DeskWidgetsPrefs,
+    search::SearchHistory,
     prefs::UpdatePrefs,
     prefs::NotificationPrefs,
     prefs::AudioPrefs,

@@ -46,6 +46,11 @@ pub struct DesktopServices {
     /// The session bus connection the portal and the daemon serve on, and
     /// what keeps the daemon's tasks alive.
     _session: Option<(zbus::Connection, tilo_notifications_service::Server)>,
+    /// The applications' tray items, and what keeps their watcher served.
+    tray: Option<(
+        Arc<tilo_tray_host::Tray>,
+        tilo_tray_host::watcher::WatcherHandle,
+    )>,
 }
 
 impl DesktopServices {
@@ -66,6 +71,7 @@ impl DesktopServices {
         let roaming = RoamingWifiSlot::default();
         let (portal, session) =
             runtime.block_on(on_session_bus(&buses.session, &questions, &notifications));
+        let tray = runtime.block_on(tray_on(&buses.session));
         if buses.system != Bus::None {
             runtime.spawn(on_system_bus(
                 buses.system.clone(),
@@ -80,6 +86,7 @@ impl DesktopServices {
             notifications,
             roaming,
             _session: session,
+            tray,
         })
     }
 
@@ -100,6 +107,11 @@ impl DesktopServices {
         ];
         if let Some(portal) = &self.portal {
             services.push(Box::new(portal.clone()));
+        }
+        if let Some((tray, _)) = &self.tray {
+            services.push(Box::new(tilo_tray_host::service::TrayService::new(
+                Arc::clone(tray),
+            )));
         }
         services
     }
@@ -134,6 +146,31 @@ async fn connect(bus: &Bus, system: bool) -> Option<zbus::Connection> {
             tracing::warn!(%error, bus, "desktop services cannot reach the bus");
         })
         .ok()
+}
+
+/// The watcher of the applications' tray items, serving on `bus`. Nothing
+/// in the session draws an item's icon yet; an item that names its icon
+/// rather than sending it is kept without pixels.
+async fn tray_on(
+    bus: &Bus,
+) -> Option<(
+    Arc<tilo_tray_host::Tray>,
+    tilo_tray_host::watcher::WatcherHandle,
+)> {
+    let builder = match bus {
+        Bus::None => return None,
+        Bus::Default => zbus::connection::Builder::session(),
+        Bus::Address(address) => zbus::connection::Builder::address(address.as_str()),
+    };
+    let tray = tilo_tray_host::Tray::new(Arc::new(|_, _, _| None));
+    let served = match builder {
+        Ok(builder) => tilo_tray_host::watcher::serve(builder, Arc::clone(&tray)).await,
+        Err(error) => Err(error),
+    };
+    served
+        .inspect_err(|error| tracing::warn!(%error, "the tray watcher did not start"))
+        .ok()
+        .map(|watcher| (tray, watcher))
 }
 
 /// The portal backend and the notifications daemon, serving on `bus`.

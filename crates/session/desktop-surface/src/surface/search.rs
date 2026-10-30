@@ -58,6 +58,9 @@ pub struct SearchHostFeed {
     pub preferences: tilo_desktop_search::SearchPreferences,
     /// Now, in Unix seconds.
     pub now: u64,
+    /// What the person chose before, as the host keeps it; `None` keeps
+    /// what search learned while the desktop runs.
+    pub usage: Option<tilo_desktop_search::Usage>,
 }
 
 /// A host that adds to the desktop's search and carries out what is chosen
@@ -71,6 +74,9 @@ pub trait SearchHost {
     /// Whether the host carries out `target` itself; the desktop then hands
     /// it back through [`DesktopHandle::take_search_choices`].
     fn performs(&self, target: &Target) -> bool;
+    /// The person chose a row: `usage` is what search keeps of their
+    /// choices now, for the host to keep.
+    fn chose(&self, _usage: &tilo_desktop_search::Usage) {}
 }
 
 /// One row the open search shows, as the desktop publishes it.
@@ -510,7 +516,8 @@ impl DesktopSurface {
                 shared.search_host.clone(),
             )
         };
-        let feed = host.map(|host| host.feed(&room)).unwrap_or_default();
+        let mut feed = host.map(|host| host.feed(&room)).unwrap_or_default();
+        let usage = feed.usage.take();
         let mut applications = self.tiles.search_applications();
         applications.extend(feed.applications);
         let mut sources = feed.sources;
@@ -548,6 +555,9 @@ impl DesktopSurface {
             }
         }
         self.search.open(data);
+        if let Some(usage) = usage {
+            self.search.set_usage(usage);
+        }
         self.search.set_platform_conventions(self.platform);
         self.new_tab_into = None;
         self.search_window = None;
@@ -724,6 +734,12 @@ impl DesktopSurface {
             }
         }
         let choice = self.search.take_choice();
+        if choice.is_some()
+            && let Some(host) = self.shared.borrow().search_host.clone()
+            && let Some(usage) = self.search.usage()
+        {
+            host.chose(usage);
+        }
         if matches!(choice, Some(Target::Launch { .. })) {
             // The person opened something from search themselves: what
             // the desktop opens on its own (a room's home app) teaches

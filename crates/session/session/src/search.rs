@@ -12,7 +12,7 @@
 //! published surface, an app's through the action host by address (the app
 //! started first when it is closed), an app's start, an address.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -30,8 +30,9 @@ use tilo_desktop_search::providers::host_apps::{self, HostAppEntry, HostApps};
 use tilo_desktop_search::providers::jobs::{JobEntry, Jobs};
 use tilo_desktop_search::providers::places::{Continue, Place, RecentPlaces};
 use tilo_desktop_search::providers::settings::Settings;
+use tilo_desktop_search::providers::waiting::Waiting;
 use tilo_desktop_search::providers::{AppEntry, PublishedActions};
-use tilo_desktop_search::{DESKTOP_APP, InvokeTarget, SearchPreferences, Source, Target};
+use tilo_desktop_search::{DESKTOP_APP, InvokeTarget, SearchPreferences, Source, Target, Usage};
 use tilo_desktop_surface::{SearchHost, SearchHostFeed};
 
 /// The action host as the session's search reaches it: what open apps
@@ -106,6 +107,12 @@ pub(crate) struct SessionSearch {
     catalogue: Vec<app_catalogue::CatalogueEntry>,
     preferences: SearchPreferences,
     places: RefCell<RecentPlaces>,
+    /// What the person chose before; `None` until they chose or it was
+    /// restored.
+    usage: RefCell<Option<Usage>>,
+    /// The parts of the history changed since they were last kept: the
+    /// choices, the places.
+    unkept: Cell<(bool, bool)>,
     kept: RefCell<Kept>,
     apps: Option<Rc<dyn AppActions>>,
     /// What the session itself publishes, as of the last frame: the desk
@@ -113,6 +120,21 @@ pub(crate) struct SessionSearch {
     own: RefCell<Vec<tilo_actions::ActionDescriptor>>,
     /// The windows open, as of the last frame.
     open_tabs: RefCell<Vec<u64>>,
+    /// The live notifications the session publishes, as of the last frame.
+    notifications: RefCell<Vec<tilo_actions::ResourceSpec>>,
+}
+
+/// The resource of the section keeping search's history.
+pub(crate) const HISTORY: &str = "settings:settings.search_history";
+
+/// The field edit setting the history's field `field` to `value`.
+fn set_field(field: &str, value: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    let mut edit = serde_json::Map::new();
+    edit.insert(
+        "edit".into(),
+        serde_json::json!({ "path": [{ "field": field }], "op": "set", "value": value }),
+    );
+    edit
 }
 
 /// An app's name as people know it.
@@ -142,16 +164,26 @@ impl SessionSearch {
             catalogue,
             preferences,
             places: RefCell::new(places),
+            usage: RefCell::new(None),
+            unkept: Cell::new((false, false)),
             kept: RefCell::new(kept),
             apps,
             own: RefCell::default(),
             open_tabs: RefCell::default(),
+            notifications: RefCell::default(),
         }
     }
 
     /// What the session publishes now, and the windows open: read after
     /// each frame, outside the desktop's trees.
     pub(crate) fn observe(&self, own: &[tilo_actions::ResourceSpec], open_tabs: Vec<u64>) {
+        *self.notifications.borrow_mut() = own
+            .iter()
+            .find(|resource| {
+                resource.id.as_str() == tilo_notifications_service::NOTIFICATIONS_RESOURCE
+            })
+            .map(|notifications| notifications.children.clone())
+            .unwrap_or_default();
         let mut published = tilo_actions::door::survey(own);
         // Search does not list itself, nor opening itself.
         published.retain(|action| {
@@ -169,7 +201,50 @@ impl SessionSearch {
 
     /// A window was at `place`.
     pub(crate) fn record_place(&self, place: Place) {
-        self.places.borrow_mut().record(place);
+        let mut places = self.places.borrow_mut();
+        let before = places.places().first().cloned();
+        places.record(place);
+        if places.places().first() != before.as_ref() {
+            let (chosen, _) = self.unkept.get();
+            self.unkept.set((chosen, true));
+        }
+    }
+
+    /// Take up the history as the search history section ([`HISTORY`])
+    /// keeps it.
+    pub(crate) fn restore(&self, kept: &serde_json::Value) {
+        let text = |field: &str| kept.get(field).and_then(serde_json::Value::as_str);
+        if let (Some(chosen), Some(for_text)) = (text("chosen"), text("chosen_for_text"))
+            && !(chosen.is_empty() && for_text.is_empty())
+        {
+            *self.usage.borrow_mut() = Some(Usage::load(chosen, for_text));
+        }
+        if let Some(places) = kept
+            .get("places")
+            .filter(|places| !places.is_null())
+            .and_then(|places| serde_json::from_value(places.clone()).ok())
+        {
+            *self.places.borrow_mut() = places;
+        }
+    }
+
+    /// The field edits that keep what changed of the history since it was
+    /// last kept, for the search history section's `field-edit`.
+    pub(crate) fn take_unkept(&self) -> Vec<serde_json::Map<String, serde_json::Value>> {
+        let (chosen, places) = self.unkept.replace((false, false));
+        let mut edits = Vec::new();
+        if chosen && let Some(usage) = self.usage.borrow().as_ref() {
+            let (chosen, for_text) = usage.save();
+            edits.push(set_field("chosen", &chosen.into()));
+            edits.push(set_field("chosen_for_text", &for_text.into()));
+        }
+        if places {
+            match serde_json::to_value(&*self.places.borrow()) {
+                Ok(places) => edits.push(set_field("places", &places)),
+                Err(error) => tracing::warn!(%error, "recent places not kept"),
+            }
+        }
+        edits
     }
 
     /// Settings and the catalogue for `room`, built once per room.
@@ -180,7 +255,20 @@ impl SessionSearch {
         {
             return (Rc::clone(settings), Rc::clone(catalogue));
         }
-        let settings = Rc::new(Settings::new(room));
+        // Settings the settings service changes in place are found as its
+        // actions.
+        let in_place: std::collections::HashSet<String> = self
+            .own
+            .borrow()
+            .iter()
+            .filter_map(|action| {
+                tilo_settings_service::setting_of(action.address.resource.as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        let settings = Rc::new(Settings::changing_in_place(room, &|id| {
+            in_place.contains(id)
+        }));
         let catalogue = Rc::new(StoreCatalogue::new(self.catalogue.clone(), room));
         kept.room = Some((room.to_owned(), Rc::clone(&settings), Rc::clone(&catalogue)));
         (settings, catalogue)
@@ -250,6 +338,7 @@ impl SearchHost for SessionSearch {
             Box::new(settings),
             Box::new(catalogue),
             Box::new(Rc::clone(&kept.host_apps)),
+            Box::new(Waiting::new(room, self.notifications.borrow().clone())),
             Box::new(Continue::new(
                 &self.places.borrow(),
                 room,
@@ -280,7 +369,14 @@ impl SearchHost for SessionSearch {
             now: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_secs()),
+            usage: self.usage.borrow().clone(),
         }
+    }
+
+    fn chose(&self, usage: &Usage) {
+        *self.usage.borrow_mut() = Some(usage.clone());
+        let (_, places) = self.unkept.get();
+        self.unkept.set((true, places));
     }
 
     fn performs(&self, target: &Target) -> bool {

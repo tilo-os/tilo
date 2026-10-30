@@ -49,6 +49,7 @@ pub use tilo_service::{Service, Services};
 use chrome::{SessionChrome, SessionRules};
 use panels::{Banners, Held, Popover};
 use search::SessionSearch;
+use tilo_desktop_search::providers::places::Place;
 
 /// The generation the session's own desktop commands carry.
 const GENERATION: &str = "session";
@@ -158,6 +159,20 @@ struct Shared {
     /// Where everything the session publishes stood when search last read
     /// it: the desk's, the chrome's and the services' revisions.
     observed: Cell<Option<[u64; 3]>>,
+    /// The title each window had when search last recorded where it was.
+    places_seen: RefCell<std::collections::HashMap<u64, String>>,
+}
+
+/// The app a window shows, by its id.
+fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
+    use tilo_desktop_model::TileContent;
+    match tile {
+        TileContent::Foreign { app_id, .. }
+        | TileContent::LocalApp { app_id, .. }
+        | TileContent::PeerWindow { app_id, .. }
+        | TileContent::HostedWindow { app_id, .. } => Some(app_id.clone()),
+        _ => None,
+    }
 }
 
 impl Shared {
@@ -253,16 +268,67 @@ impl Shared {
         if self.observed.replace(now) == now {
             return;
         }
-        let open_tabs = self.handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .map(|tab| tab.id)
-                .collect()
+        let tabs = self.handle.read(|tree| {
+            let mut tabs = Vec::new();
+            for workspace in &tree.workspaces {
+                let room = workspace.room().to_string();
+                for tab in workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                {
+                    tabs.push((tab.id, room.clone(), tab_app(&tab.tile), tab.title.clone()));
+                }
+            }
+            tabs
         });
+        self.record_places(&tabs);
+        let open_tabs = tabs.iter().map(|(tab, ..)| *tab).collect();
         self.search.observe(&self.resources(), open_tabs);
+        self.keep_history();
+    }
+
+    /// Where each app's window is now, for search's Continue: a window
+    /// whose title changed since it was last seen was at a new place.
+    fn record_places(&self, tabs: &[(u64, String, Option<String>, String)]) {
+        let mut seen = self.places_seen.borrow_mut();
+        seen.retain(|tab, _| tabs.iter().any(|(open, ..)| open == tab));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        for (tab, room, app, title) in tabs {
+            let Some(app) = app else { continue };
+            if title.trim().is_empty() || seen.get(tab) == Some(title) {
+                continue;
+            }
+            seen.insert(*tab, title.clone());
+            self.search.record_place(Place {
+                app: app.clone(),
+                room: room.clone(),
+                tab: *tab,
+                label: title.clone(),
+                value: String::new(),
+                anchor: None,
+                at: now,
+                device: None,
+            });
+        }
+    }
+
+    /// Keep what changed of search's history in its settings section,
+    /// through the section's field edits; without a settings service it
+    /// lasts as long as the session.
+    fn keep_history(&self) {
+        for edit in self.search.take_unkept() {
+            let kept = self
+                .services
+                .borrow_mut()
+                .invoke(search::HISTORY, "field-edit", &edit);
+            if let Some(Err(error)) = kept {
+                tracing::warn!(%error, "search history not kept");
+            }
+        }
     }
 
     /// A card of the empty desk's launchpad: its app, else the desktop's
@@ -294,6 +360,43 @@ pub struct Session {
     compositor: Compositor,
     shared: Rc<Shared>,
     banners: tilo_notification_banners::Link,
+}
+
+/// The notification banners over the windows, and the link they are fed
+/// through.
+fn mount_banners(
+    compositor: &mut Compositor,
+    options: &Options,
+) -> tilo_notification_banners::Link {
+    let banners = tilo_notification_banners::Link::new();
+    match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
+        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
+    {
+        Ok(app) => {
+            compositor.add_host(Box::new(Banners::new(app, banners.clone(), options.scale)));
+        }
+        Err(error) => tracing::warn!(%error, "notification banners not mounted"),
+    }
+    banners
+}
+
+/// Quick settings, when the session has a panel for them: whether they are
+/// open.
+fn mount_quick_settings(compositor: &mut Compositor, options: &Options) -> Option<Rc<Cell<bool>>> {
+    let panel = options.quick_settings.clone()?;
+    let open = Rc::new(Cell::new(false));
+    match tilo_quick_settings::prepare(panel, &options.device, &options.person, 1)
+        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
+    {
+        Ok(app) => {
+            compositor.add_host(Box::new(Popover::new(app, Rc::clone(&open), options.scale)));
+            Some(open)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "quick settings not mounted");
+            None
+        }
+    }
 }
 
 impl Session {
@@ -364,36 +467,8 @@ impl Session {
         ));
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
 
-        let presentation = options.presentation;
-        let banners = tilo_notification_banners::Link::new();
-        match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
-            .and_then(|component| ui::App::from_component(component, presentation()))
-        {
-            Ok(app) => {
-                compositor.add_host(Box::new(Banners::new(app, banners.clone(), options.scale)));
-            }
-            Err(error) => tracing::warn!(%error, "notification banners not mounted"),
-        }
-
-        let quick_settings = options.quick_settings.and_then(|panel| {
-            let open = Rc::new(Cell::new(false));
-            match tilo_quick_settings::prepare(panel, &options.device, &options.person, 1)
-                .and_then(|component| ui::App::from_component(component, presentation()))
-            {
-                Ok(app) => {
-                    compositor.add_host(Box::new(Popover::new(
-                        app,
-                        Rc::clone(&open),
-                        options.scale,
-                    )));
-                    Some(open)
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "quick settings not mounted");
-                    None
-                }
-            }
-        });
+        let banners = mount_banners(&mut compositor, &options);
+        let quick_settings = mount_quick_settings(&mut compositor, &options);
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
         handle.set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
@@ -410,7 +485,11 @@ impl Session {
             quick_settings,
             services: RefCell::new(services),
             observed: Cell::new(None),
+            places_seen: RefCell::default(),
         });
+        if let Some(kept) = shared.services.borrow().read(search::HISTORY) {
+            shared.search.restore(&kept);
+        }
         shared.observe();
         Ok(Self {
             compositor,

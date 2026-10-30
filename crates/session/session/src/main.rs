@@ -187,6 +187,9 @@ fn services() -> (Vec<Box<dyn tilo_session::Service>>, Following) {
 
     let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
     let mut following: Following = Vec::new();
+    services.push(Box::new(tilo_settings_service::SettingsService::new(
+        &tilo_session::Options::default().person,
+    )));
     match Connectivity::new(Arc::new(OsDevice), None) {
         Ok(connectivity) => {
             match connectivity.follow() {
@@ -212,7 +215,7 @@ fn services() -> (Vec<Box<dyn tilo_session::Service>>, Following) {
     match audio_helper().map(|helper| {
         let mut command = std::process::Command::new(helper);
         command.arg("--serve");
-        tilo_service::lines::Process::spawn(command, tilo_audio_service::sound::publish, None)
+        tilo_service::lines::Process::spawn(command, tilo_audio_service::publish, None)
     }) {
         Some(Ok(audio)) => services.push(Box::new(audio)),
         Some(Err(error)) => tracing::warn!(%error, "the audio service did not start"),
