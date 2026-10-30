@@ -103,6 +103,10 @@ pub trait WindowPolicy {
     /// next arrangement.
     fn monitors(&mut self, _monitors: &[(Rectangle<i32, Logical>, String)]) {}
 
+    /// The pointer moved to `(x, y)` in the logical layout, wherever it
+    /// went: over a window, a hosted surface or nothing.
+    fn pointer_moved(&mut self, _x: f64, _y: f64) {}
+
     /// A window asked its size of ([`Self::initial_size`]) went away before
     /// it showed a buffer, so it never maps: whatever place it was given
     /// goes.

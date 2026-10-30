@@ -574,6 +574,7 @@ impl State {
     pub(crate) fn pointer_motion(&mut self, to: Point<f64, Logical>, serial: Serial, time: u32) {
         self.pointer = self.clamp_to_outputs(to);
         let location = self.pointer;
+        self.policy.pointer_moved(location.x, location.y);
         if self.drag_motion(location, serial, time) {
             return;
         }
