@@ -24,6 +24,8 @@ pub const INPUT_RESOURCE: &str = "session:input";
 pub const MAGNIFIER_RESOURCE: &str = "session:magnifier";
 /// The resource of the session itself.
 pub const SESSION_RESOURCE: &str = "session:screen";
+/// The resource of the night light.
+pub const NIGHT_LIGHT_RESOURCE: &str = "session:night-light";
 /// The resource of how the displays are used together.
 pub const DISPLAYS_RESOURCE: &str = "session:displays";
 
@@ -42,6 +44,9 @@ pub enum SessionCommand {
     Magnifier(Magnify),
     /// Use the displays together this way.
     Displays { mode: DisplayMode },
+    /// Turn the night light on (`Some(true)`), off, or (`None`) the other
+    /// way from how it is.
+    NightLight { on: Option<bool> },
 }
 
 /// A step of the magnifier.
@@ -115,6 +120,20 @@ fn resources() -> Vec<ResourceSpec> {
             .with_action(action("log-out", t("session-log-out"), Vec::new(), |_| {
                 SessionCommand::LogOut
             })),
+        ResourceSpec::new(NIGHT_LIGHT_RESOURCE, "session", t("session-night-light")).with_action(
+            action(
+                "toggle",
+                t("session-night-light-toggle"),
+                vec![ActionParam::optional_owned(
+                    "on",
+                    ParamType::Boolean,
+                    t("session-param-night-light-on"),
+                )],
+                |args| SessionCommand::NightLight {
+                    on: args.boolean("on"),
+                },
+            ),
+        ),
         ResourceSpec::new(MAGNIFIER_RESOURCE, "session", t("session-magnifier"))
             .with_action(action(
                 "toggle",
@@ -179,6 +198,11 @@ impl SessionControls {
 impl Published for SessionControls {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         resources()
+    }
+
+    fn revision(&self) -> Option<u64> {
+        // Its actions never change.
+        Some(0)
     }
 
     fn invoke(

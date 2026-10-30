@@ -660,6 +660,11 @@ fn the_lock_action_locks_the_session_behind_the_lock_screen_which_a_password_unl
         locked.rgba, unlocked.rgba,
         "the lock screen hides the desktop"
     );
+    let colours: std::collections::BTreeSet<&[u8]> = locked.rgba.chunks(4).collect();
+    assert!(
+        colours.len() > 2,
+        "the lock screen draws its clock and prompt, not only the dim"
+    );
 
     let type_password = tilo_sheets::lock::LockEffect::TYPE_PASSWORD.id;
     session
@@ -796,6 +801,30 @@ fn the_magnifier_zooms_the_screen_about_the_pointer_by_its_actions() {
     assert_ne!(zoomed.rgba, plain.rgba, "the screen shows magnified");
     invoke(&mut session, tilo_session::MAGNIFIER_RESOURCE, "toggle");
     assert!((session.compositor().zoom() - 1.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn the_night_light_action_warms_the_displays_and_switches_back() {
+    let mut session = session();
+    assert_eq!(session.compositor().night_light(), None);
+    invoke(&mut session, tilo_session::NIGHT_LIGHT_RESOURCE, "toggle");
+    assert!(
+        session
+            .compositor()
+            .night_light()
+            .is_some_and(|kelvin| kelvin < 6_500)
+    );
+    session
+        .invoke(
+            tilo_session::NIGHT_LIGHT_RESOURCE,
+            "toggle",
+            &arguments(serde_json::json!({ "on": true })),
+        )
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(session.compositor().night_light().is_some(), "on stays on");
+    invoke(&mut session, tilo_session::NIGHT_LIGHT_RESOURCE, "toggle");
+    assert_eq!(session.compositor().night_light(), None);
 }
 
 fn active_workspace(session: &Session) -> Option<u64> {
@@ -1364,7 +1393,7 @@ fn every_portal_question_kind_is_asked_on_the_sheet() {
         (
             "portal.wallpaper",
             serde_json::json!({
-                "uri": "file:///var/home/you/beach.png",
+                "uri": "file:///var/home/ada/beach.png",
                 "set_on": "both",
                 "preview": false,
             }),

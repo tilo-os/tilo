@@ -103,6 +103,10 @@ impl Published for Popover {
         self.host.resources()
     }
 
+    fn revision(&self) -> Option<u64> {
+        Published::revision(&self.host)
+    }
+
     fn invoke(
         &mut self,
         address: &ActionAddress,
@@ -170,6 +174,18 @@ impl SurfaceHost for Popover {
         self.host.prepare_frame();
     }
 
+    fn cursor(&self) -> tilo_compositor::CursorIcon {
+        self.host.cursor()
+    }
+
+    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+        self.host.backdrops()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+        self.host.set_backdrops(images);
+    }
+
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
         let Some((x, y, w, h)) = first(outputs) else {
             return;
@@ -207,6 +223,10 @@ impl Banners {
 impl Published for Banners {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         self.host.resources()
+    }
+
+    fn revision(&self) -> Option<u64> {
+        Published::revision(&self.host)
     }
 
     fn invoke(
@@ -259,6 +279,18 @@ impl SurfaceHost for Banners {
         self.host.prepare_frame();
     }
 
+    fn cursor(&self) -> tilo_compositor::CursorIcon {
+        self.host.cursor()
+    }
+
+    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+        self.host.backdrops()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+        self.host.set_backdrops(images);
+    }
+
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
         let Some((x, y, w, h)) = first(outputs) else {
             return;
@@ -300,6 +332,10 @@ impl Published for Readout {
         Published::resources(&mut self.host)
     }
 
+    fn revision(&self) -> Option<u64> {
+        Published::revision(&self.host)
+    }
+
     fn invoke(
         &mut self,
         address: &ActionAddress,
@@ -328,6 +364,18 @@ impl SurfaceHost for Readout {
 
     fn prepare_frame(&mut self) {
         self.host.prepare_frame();
+    }
+
+    fn cursor(&self) -> tilo_compositor::CursorIcon {
+        self.host.cursor()
+    }
+
+    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+        self.host.backdrops()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+        self.host.set_backdrops(images);
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
@@ -365,6 +413,10 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
 
     fn below_windows(&self) -> bool {
         self.0.borrow().below_windows()
+    }
+
+    fn lock_screen(&self) -> bool {
+        self.0.borrow().lock_screen()
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
@@ -409,5 +461,41 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
         self.0.borrow_mut().outputs_changed(outputs);
+    }
+
+    fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
+        self.0.borrow().window_pictures()
+    }
+
+    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+        self.0.borrow().backdrops()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+        self.0.borrow_mut().set_backdrops(images);
+    }
+
+    fn cursor(&self) -> tilo_compositor::CursorIcon {
+        self.0.borrow().cursor()
+    }
+
+    fn drop_offered(&mut self, mimes: &[String], x: f64, y: f64) -> Option<String> {
+        self.0.borrow_mut().drop_offered(mimes, x, y)
+    }
+
+    fn drop_left(&mut self) {
+        self.0.borrow_mut().drop_left();
+    }
+
+    fn drop_data(&mut self, mime: &str, data: Vec<u8>) {
+        self.0.borrow_mut().drop_data(mime, data);
+    }
+
+    fn take_drag(&mut self) -> Option<tilo_compositor::HostDrag> {
+        self.0.borrow_mut().take_drag()
+    }
+
+    fn drag_ended(&mut self, dropped: bool) {
+        self.0.borrow_mut().drag_ended(dropped);
     }
 }

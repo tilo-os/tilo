@@ -15,7 +15,7 @@ mod door;
 mod widget;
 
 pub use desktop::{DeskGesture, DesktopHost, StripPolicy, desktop, desktop_with};
-pub use door::{Doors, Published, Shared};
+pub use door::{Doors, Published, Shared, through_door};
 pub use widget::WidgetHost;
 
 use std::cell::Cell;
@@ -142,6 +142,9 @@ pub struct AppHost {
     provided: Vec<Option<vello::peniko::ImageData>>,
     /// The next frame is rasterized whole (its backdrops changed).
     full: bool,
+    /// Where what the app publishes stands: moves with every frame it
+    /// draws and every action it runs.
+    revision: u64,
 }
 
 impl AppHost {
@@ -171,6 +174,7 @@ impl AppHost {
             backdrops: Vec::new(),
             provided: Vec::new(),
             full: false,
+            revision: 0,
         }
     }
 
@@ -267,9 +271,16 @@ impl Published for AppHost {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
-        let started = self.app.invoke_local_resource_action(address, arguments);
-        self.wants = true;
-        started
+        // Through the app's own door, as every caller on this device.
+        let door = self.door.clone();
+        self.revision = self.revision.wrapping_add(1);
+        through_door(&door, address, arguments, || {
+            self.serve_door();
+        })
+    }
+
+    fn revision(&self) -> Option<u64> {
+        Some(self.revision)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -438,6 +449,7 @@ impl SurfaceHost for AppHost {
         if !(self.wants || self.surface.redraw.replace(false) || self.app.wake_pending() || due) {
             return;
         }
+        self.revision = self.revision.wrapping_add(1);
         self.app.surface_accessibility();
         self.scene.reset();
         // Translucent material records what lies below it; the compositor

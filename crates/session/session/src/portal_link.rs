@@ -596,6 +596,9 @@ impl SessionLink {
                 .find(|output| &output.name == name)
                 .and_then(|output| output.rect),
             Target::Window(identifier) => compositor.shareable_window_rect(identifier),
+            // A pointer's own image sits where the pointer is, not on the
+            // layout: only an output or a window a stream shows is placed.
+            Target::Cursor(_) => None,
         };
         let Some((left, top, w, h)) = place else {
             return (x, y);

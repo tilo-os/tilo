@@ -6,13 +6,13 @@
 //! person chose out. Its actions are published through its door while it
 //! is up.
 
+use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{HostKey, HostLayer, SurfaceHost};
 use tilo_sheets::Seat;
+use tilo_surface_host::Published;
 use tilo_surface_host::{AppHost, Placement};
 use ui::application::{ApplicationDefinition, ComponentRunnerInputs, prepare_private_surface};
-use ui::device_local_door::SharedDoor;
-
-use crate::panels::Served;
+use ui::host_operation::ResourceOperationStart;
 
 /// One sheet's app on its layer.
 pub(crate) struct Sheet<S: Seat> {
@@ -69,13 +69,25 @@ impl<S: Seat> Sheet<S> {
     }
 }
 
-impl<S: Seat> Served for Sheet<S> {
-    fn door(&self) -> SharedDoor {
-        self.host.door()
+impl<S: Seat> Published for Sheet<S> {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
+        self.host.resources()
     }
 
-    fn serve(&mut self) {
-        self.host.serve_door();
+    fn revision(&self) -> Option<u64> {
+        Published::revision(&self.host)
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        self.host.invoke(address, arguments)
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        self.host.accessible_labels()
     }
 
     fn offered(&self) -> bool {
@@ -143,6 +155,18 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         if self.drawn() {
             self.host.prepare_frame();
         }
+    }
+
+    fn cursor(&self) -> tilo_compositor::CursorIcon {
+        self.host.cursor()
+    }
+
+    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+        self.host.backdrops()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+        self.host.set_backdrops(images);
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {

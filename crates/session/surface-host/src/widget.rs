@@ -156,6 +156,10 @@ impl crate::Published for WidgetHost {
         self.host.resources()
     }
 
+    fn revision(&self) -> Option<u64> {
+        Some(self.revision)
+    }
+
     fn invoke(
         &mut self,
         address: &ui::tilo_actions::ActionAddress,

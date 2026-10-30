@@ -17,6 +17,11 @@ pub struct SessionConfig {
     /// How the desktop reads three- and four-finger touchpad gestures;
     /// `None` leaves every gesture to the clients.
     pub gestures: Option<GestureConfig>,
+    /// Whether the night light warms the displays.
+    pub night_light: bool,
+    /// Whether what the person changes in the session (the night light) is
+    /// kept in their settings: for settings loaded from them.
+    pub kept: bool,
 }
 
 impl Default for SessionConfig {
@@ -29,7 +34,11 @@ impl SessionConfig {
     /// The person's settings as stored.
     #[must_use]
     pub fn load() -> Self {
-        Self::from_settings(&RichInputConfig::load(), ShortcutConfig::load())
+        Self {
+            night_light: settings_store::hardware::NIGHT_LIGHT.get(),
+            kept: true,
+            ..Self::from_settings(&RichInputConfig::load(), ShortcutConfig::load())
+        }
     }
 
     /// The settings `input` and `shortcuts` hold, as the session applies
@@ -44,6 +53,8 @@ impl SessionConfig {
             shortcuts,
             input: input_config(input),
             gestures,
+            night_light: false,
+            kept: false,
         }
     }
 }

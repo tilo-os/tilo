@@ -11,12 +11,13 @@ use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 use std::task::Waker;
 
+use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{HostKey, HostLayer, SurfaceHost};
 use tilo_onboarding_host::view::OnboardingView;
 use tilo_surface_host::{Placement, WidgetHost};
+use tilo_surface_host::{Published, through_door};
 use ui::device_local_door::SharedDoor;
-
-use crate::panels::Served;
+use ui::host_operation::ResourceOperationStart;
 
 /// What this session lends setup. One per process, as setup reads it
 /// through a process-wide hook; each session started points it at itself.
@@ -105,8 +106,31 @@ impl Setup {
         !(self.finished)()
     }
 
-    /// The labels of setup's accessibility tree.
-    pub(crate) fn accessible_labels(&mut self) -> Vec<String> {
+    /// Run what its door holds now, and publish what setup offers: the
+    /// view does both on each pass of its own.
+    fn serve(&mut self) {
+        if self.up() && (self.door.has_queued() || self.door.revision() == 0) {
+            self.widgets.relayout();
+        }
+    }
+}
+
+impl Published for Setup {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
+        self.serve();
+        self.door.resources()
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        let door = self.door.clone();
+        through_door(&door, address, arguments, || self.serve())
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
         self.widgets
             .host_mut()
             .a11y_nodes()
@@ -114,23 +138,13 @@ impl Setup {
             .filter_map(|(_, node)| node.label().map(str::to_owned))
             .collect()
     }
-}
-
-impl Served for Setup {
-    fn door(&self) -> SharedDoor {
-        self.door.clone()
-    }
-
-    fn serve(&mut self) {
-        // The view runs what its door holds, and publishes what the setup
-        // app offers, on each pass of its own.
-        if self.up() && (self.door.has_queued() || self.door.revision() == 0) {
-            self.widgets.relayout();
-        }
-    }
 
     fn offered(&self) -> bool {
         self.up()
+    }
+
+    fn exclusive(&self) -> bool {
+        true
     }
 }
 
@@ -183,6 +197,18 @@ impl SurfaceHost for Setup {
         if self.up() {
             self.widgets.prepare_frame();
         }
+    }
+
+    fn cursor(&self) -> tilo_compositor::CursorIcon {
+        self.widgets.cursor()
+    }
+
+    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+        self.widgets.backdrops()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+        self.widgets.set_backdrops(images);
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
