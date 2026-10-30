@@ -554,6 +554,12 @@ impl Shown {
 
     /// The person confirmed, having picked `index` or the highlight.
     fn decide(&self, seat: &PortalSeat, index: Option<u32>) -> Step {
+        // A sheet that asks nothing of the person has nothing to decide:
+        // confirming a code on show leaves the question waiting until the
+        // other device has finished.
+        if matches!(self.plan, Plan::Nothing) {
+            return Step::Nothing;
+        }
         let mut copy = self.dialog.clone();
         if let Some(index) = index {
             copy.selected = usize::try_from(index).unwrap_or(usize::MAX);
@@ -623,11 +629,12 @@ impl Shown {
                 choice: choices.get(dialog.selected).copied(),
                 ..Answer::default()
             }),
-            Plan::Confirm
-            | Plan::Password { .. }
-            | Plan::Secrets { .. }
-            | Plan::Revoke { .. }
-            | Plan::Nothing => Ok(Answer::default()),
+            Plan::Confirm | Plan::Password { .. } | Plan::Secrets { .. } | Plan::Revoke { .. } => {
+                Ok(Answer::default())
+            }
+            // `decide` answers nothing for a sheet that asks nothing, so
+            // this never runs.
+            Plan::Nothing => Ok(Answer::default()),
             Plan::Agree => Ok(Answer {
                 choice: Some(0),
                 ..Answer::default()
