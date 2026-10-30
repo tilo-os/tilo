@@ -711,7 +711,6 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> Element {
         })
     };
     let preview_switch = {
-        let mode = ui.preview_view.clone();
         Row::new().with_padding_rhythm(None, None).push(Box::new(
             Dropdown::from_state(
                 [
@@ -723,7 +722,6 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> Element {
                 .to_vec(),
                 &ui.preview_view,
             )
-            .on_change(move |picked| mode.set(picked.to_owned()))
             .with_id("theme-preview-view")
             .with_accessible_name(t("themes-preview")),
         ))
