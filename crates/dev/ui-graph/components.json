@@ -657,6 +657,14 @@
           },
           "many": true,
           "default": true
+        },
+        {
+          "name": "removed",
+          "doc": "Items someone else removed that the person has not seen go: each a row after the items, its title struck through. The UI host places them.",
+          "accepts": {
+            "component": "ListItem"
+          },
+          "many": true
         }
       ],
       "events": [
@@ -1480,6 +1488,11 @@
           "type": {
             "option": "time"
           }
+        },
+        {
+          "name": "removed",
+          "doc": "The item was removed and the person has not seen it go: the row stands in for it, its title struck through, at the row's own height. The UI host places such rows.",
+          "type": "bool"
         }
       ],
       "slots": [

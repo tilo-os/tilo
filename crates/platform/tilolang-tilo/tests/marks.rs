@@ -135,6 +135,52 @@ fn the_host_marks_rows_and_the_window_and_a_mark_shows_its_run() {
     );
 }
 
+/// The rows the host placed in `list` for removed items: each one's title and mark.
+fn removed_rows(tree: &UiNode) -> Vec<(String, UiNode)> {
+    let mut out = Vec::new();
+    for list in all(tree, "ui.VirtualList") {
+        let Some(slot) = list
+            .children
+            .iter()
+            .find(|c| c.kind == "slot" && c.props.get("name") == Some(&Value::text("removed")))
+        else {
+            continue;
+        };
+        for item in &slot.children {
+            assert_eq!(item.props.get("removed"), Some(&Value::Bool(true)));
+            let title = all(item, "ui.ListRow")
+                .first()
+                .and_then(|row| row.props.get("title").cloned());
+            let mark = all(item, "ui.ChangeMark").first().map(|m| (*m).clone());
+            if let (Some(Value::Text(title)), Some(mark)) = (title, mark) {
+                out.push((title, mark));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
+    let Tidied { ada, .. } = a_run_in_notes_and_tasks();
+    let mut inbox = ada.view(crate::legibility::TASKS_APP);
+    inbox.poll_patches().unwrap();
+    let removed = removed_rows(inbox.tree());
+    assert_eq!(removed.len(), 1, "{removed:?}");
+    let (title, mark) = &removed[0];
+    assert_eq!(title, "Stale", "the row says what was removed");
+    assert_eq!(mark.props.get("kind"), Some(&Value::text("removed")));
+    assert_eq!(principal(mark, "by").as_deref(), Some(AGENT));
+    // The notebook's list shows the note it removed too; nothing else lists either.
+    let mut notebook = ada.view(NOTES_APP);
+    notebook.poll_patches().unwrap();
+    assert_eq!(removed_rows(notebook.tree()).len(), 1);
+    // Seen, the row goes.
+    assert!(ada.host.runtime().mark_run_seen("ada", RUN));
+    inbox.poll_patches().unwrap();
+    assert!(removed_rows(inbox.tree()).is_empty());
+}
+
 #[test]
 fn a_field_the_run_changed_takes_its_colour_and_says_what_it_held() {
     let Tidied { ada, groceries, .. } = a_run_in_notes_and_tasks();

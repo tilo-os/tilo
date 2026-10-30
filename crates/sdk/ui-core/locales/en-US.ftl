@@ -932,6 +932,8 @@ change-mark-created = Made by { $who }
 change-mark-changed = Changed by { $who }
 change-mark-removed = Removed by { $who }
 change-mark-open = Show what { $who } did
+# A row’s mark, read out and on hover: what they did, in which task run.
+change-mark-in-run = { $what } in “{ $run }”
 # A window's title, with how many changes there are the person has not seen, and by whom.
 change-window = { $count ->
     [one] One change by { $who }
