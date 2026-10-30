@@ -21503,6 +21503,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-desktop-surface",
+ "tilo-device-fabric",
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-identity-host",
