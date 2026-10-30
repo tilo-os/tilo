@@ -139,6 +139,64 @@ fn the_question_of_an_app_that_may_not_remember_offers_no_always() {
 }
 
 #[test]
+fn the_chooser_and_the_launcher_name_the_app_in_their_words() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, questions) = asking();
+    let asked = ask(
+        &questions,
+        tilo_portal::app_chooser::APP_CHOOSER_QUESTION,
+        serde_json::json!({
+            "choices": [{"id": "org.example.Notes", "name": "Notes", "icon": null}],
+            "last_choice": null,
+            "content_type": "text/markdown",
+            "uri": null,
+            "filename": "notes.md",
+        }),
+    );
+    session.step(Duration::from_millis(1)).expect("step");
+    let dialog = session
+        .portal()
+        .expect("portal sheet")
+        .dialog()
+        .expect("the sheet asks");
+    assert_eq!(dialog.detail, "org.example.Recorder wants to open notes.md");
+    press(&mut session, PortalEffect::CANCEL.id, serde_json::json!({}));
+    pump(&mut session, &mut [], |_, _| questions.pending().is_empty());
+    assert!(
+        asked.now_or_never().expect("answered").is_none(),
+        "declined"
+    );
+
+    let asked = ask(
+        &questions,
+        tilo_portal::dynamic_launcher::LAUNCHER_QUESTION,
+        serde_json::json!({
+            "name": "Inbox",
+            "editable_name": true,
+            "editable_icon": false,
+            "icon": "",
+            "target": "https://example.org",
+        }),
+    );
+    session.step(Duration::from_millis(1)).expect("step");
+    let dialog = session
+        .portal()
+        .expect("portal sheet")
+        .dialog()
+        .expect("the sheet asks");
+    assert_eq!(
+        dialog.detail,
+        "org.example.Recorder adds a launcher. The image it supplied has been checked."
+    );
+    press(&mut session, PortalEffect::CANCEL.id, serde_json::json!({}));
+    pump(&mut session, &mut [], |_, _| questions.pending().is_empty());
+    assert!(
+        asked.now_or_never().expect("answered").is_none(),
+        "declined"
+    );
+}
+
+#[test]
 fn every_portal_question_kind_is_asked_on_the_sheet() {
     let _settled = ui::motion::testing::settled();
     let (mut session, questions) = asking();

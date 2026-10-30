@@ -756,7 +756,9 @@ fn compose(question: &Question) -> Option<Composed> {
         }
         tilo_portal::screenshot::PICK_COLOR_QUESTION => pick_color(&question.handle),
         tilo_portal::usb::USB_QUESTION => usb(&question.handle, &who, details)?,
-        tilo_portal::app_chooser::APP_CHOOSER_QUESTION => app_chooser(&question.handle, details)?,
+        tilo_portal::app_chooser::APP_CHOOSER_QUESTION => {
+            app_chooser(&question.handle, &who, details)?
+        }
         tilo_portal::dynamic_launcher::LAUNCHER_QUESTION => {
             launcher(&question.handle, &who, details)?
         }
@@ -1062,7 +1064,7 @@ fn usb(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     ))
 }
 
-fn app_chooser(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+fn app_chooser(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: AppChooserQuestion = serde_json::from_value(details).ok()?;
     let what = asked
         .filename
@@ -1076,7 +1078,7 @@ fn app_chooser(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
         if what.is_empty() {
             word("portal-app-choice-detail-any")
         } else {
-            words("portal-app-choice-detail", &[("what", &what)])
+            words("portal-app-choice-detail", &[("app", who), ("what", &what)])
         },
     );
     let at = asked
@@ -1104,7 +1106,7 @@ fn launcher(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
         handle,
         words("portal-launcher-title", &[("name", &asked.name)]),
         who.to_owned(),
-        word("portal-launcher-detail"),
+        words("portal-launcher-detail", &[("app", who)]),
     );
     dialog.body = Body::Launcher {
         name: asked.editable_name.then(|| asked.name.clone()),
