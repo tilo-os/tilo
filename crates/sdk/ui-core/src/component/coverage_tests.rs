@@ -16,13 +16,28 @@ fn scan() -> component_scan::Scan {
     component_scan::scan(&src).expect("the toolkit's sources read")
 }
 
+/// Widgets written before the registry was generated that are not described yet. The list only
+/// shrinks: a widget described since must leave it, and no widget may join it.
+const NOT_YET_DESCRIBED: &str = include_str!("not_yet_described.txt");
+
 #[test]
 fn every_public_widget_is_a_component_or_says_why_not() {
     let scan = scan();
+    let owed: Vec<&str> = NOT_YET_DESCRIBED.lines().map(str::trim).collect();
+    for name in &owed {
+        assert!(
+            scan.widgets
+                .iter()
+                .any(|w| w.name == *name && w.exempt.is_none() && !scan.is_described(&w.name)),
+            "{name} is described now (or gone, or marked not a component): remove it from \
+             component/not_yet_described.txt"
+        );
+    }
     let missing: Vec<String> = scan
         .widgets
         .iter()
         .filter(|w| w.exempt.is_none() && !scan.is_described(&w.name))
+        .filter(|w| !owed.contains(&w.name.as_str()))
         .map(|w| format!("  {} ({})", w.name, w.file.display()))
         .collect();
     assert!(
