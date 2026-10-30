@@ -623,7 +623,13 @@ impl Browser {
                 tilo_relay_protocol::rooms::RoomsReply::Room(_)
             ));
         }
-        peer.join(workspace).unwrap();
+        // The person's own workspace is placed as a page of theirs places it; a room
+        // entered above is joined as it is.
+        if room == ROOM {
+            peer.join_placed(room, "Workspace").unwrap();
+        } else {
+            peer.join(workspace).unwrap();
+        }
         ready(&[&peer]).await;
         Self {
             peer,
@@ -1134,6 +1140,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         .await
         .unwrap();
     let (readable, _) = common::retained_documents(
+        &host.cert.device_public_key,
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
@@ -1413,6 +1420,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         .await
         .unwrap();
     let (readable, _) = common::retained_documents(
+        &host.cert.device_public_key,
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),

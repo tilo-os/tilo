@@ -247,8 +247,8 @@ fn a_grounds_texture_and_colour_changed_at_once_both_survive() {
 
 /// Store `value` under `key` of `obj` as one JSON string, as version 1 did.
 fn as_json(doc: &mut Doc, obj: &ui::automerge::ObjId, key: &str, value: &impl serde::Serialize) {
-    doc.put(obj, key, serde_json::to_string(value).unwrap())
-        .unwrap();
+    let stored = serde_json::to_string(value).unwrap();
+    evolution::fixture(doc, obj, &serde_json::json!({ key: stored })).unwrap();
 }
 
 /// The document of `replica` as version 1 stored it: each mark's shape and
