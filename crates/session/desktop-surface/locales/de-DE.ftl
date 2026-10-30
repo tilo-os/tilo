@@ -1384,3 +1384,13 @@ desktop-action-move-to-display = Das Fenster auf einen anderen Bildschirm versch
 desktop-action-param-window-steps = Wie viele Fenster weiter, negativ zurück
 desktop-action-param-display-steps = Wie viele Bildschirme weiter, negativ zurück
 desktop-display-name = Bildschirm { $number }
+# What a person can do to one window, from its own menu.
+window-menu-rename = Dieses Fenster benennen…
+window-menu-maximize = Den Streifen füllen
+window-menu-restore = Den Streifen zurückgeben
+window-menu-wider = Breiter
+window-menu-narrower = Schmaler
+window-menu-widest = So breit wie der Streifen
+window-menu-narrowest = So schmal wie ein Fenster sein kann
+window-menu-close = Schließen
+window-menu-someone-elses = { $name } hat dieses Fenster geöffnet

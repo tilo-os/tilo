@@ -31,8 +31,8 @@ use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::time::{Duration, Instant};
 use ui::vello::Scene;
 use ui::widget::{
-    GroupRow, OutputSpan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, TabDescriptor,
-    TaffyTreeExt as _, TileContent, TileHost, Widget, WindowGroup,
+    GroupRow, OutputSpan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, TaffyTreeExt as _,
+    TileHost, Widget, WindowGroup,
 };
 use ui::winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use ui::{TextRenderer, Theme};
@@ -56,7 +56,10 @@ mod personal_ask;
 mod search;
 mod seed;
 mod splice;
+mod tile_content;
 mod window_bars;
+pub mod window_menu;
+mod window_move;
 
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
@@ -66,6 +69,9 @@ pub use search::{
     search_chord_keys,
 };
 pub use seed::seed_tree;
+pub use tile_content::tile_app_kind;
+use tile_content::{build_tile, descriptor, placeholder};
+pub use window_menu::Row as WindowMenuRow;
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
@@ -1361,8 +1367,8 @@ impl DesktopSurface {
         let mut shared = self.shared.borrow_mut();
         let mut changed = false;
         if let Some(payload) = row.take_pending_cross_strip_detach() {
-            // Only one strip is on screen; there is nowhere else to drop.
-            row.restore_cross_strip_detach(payload);
+            let down = payload.release_point.y > row.get_rect().y1;
+            changed |= window_move::carry_out(&mut shared, strip_id, row, payload, down);
         }
         if let Some((group, index)) = row.take_pending_group_reorder() {
             changed |= shared
@@ -1523,6 +1529,15 @@ impl DesktopSurface {
                         {
                             group.maximized = maximized;
                             ops.push(RowOp::ToggleMaximized(ids.strip, ids.group));
+                        }
+                    }
+                    Admitted::Rename(ids, name) if live(&shared.tree, ids) => {
+                        if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group)
+                            && let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == ids.tab)
+                            && tab.rename(&name)
+                        {
+                            // The renamed window is a new tree the rows follow.
+                            shared.replaced = true;
                         }
                     }
                     Admitted::Close(ids) if live(&shared.tree, ids) => {
@@ -2295,79 +2310,6 @@ fn build_row(
     strip_row(groups)
 }
 
-/// `tab`'s content from `tiles`, its application named to a panic hook
-/// while it is built and whenever it runs, and bound to the host's
-/// `controls` when the host already bound the surface.
-fn build_tile(
-    tiles: &mut dyn TileSource,
-    controls: Option<&ui::ControlDomain>,
-    workspace: &Workspace,
-    tab: &Tab,
-) -> TileHost {
-    let _running = ui::widget::panic_scope::enter(Some(tab.id));
-    let mut host = tiles.tile(workspace, tab);
-    host.set_panic_scope(tab.id);
-    // Its app's bar is drawn here: what it declares goes on its window.
-    let window = ui::hosted_window::HostedWindow::new();
-    window.set_workspace(tiles.workspace_room());
-    host.set_hosted_window(window);
-    if let Some(domain) = controls {
-        ui::widget::controls::install_control_custody(
-            &mut host,
-            domain,
-            ui::control_custody::CustodyAttachment::Dynamic,
-        );
-    }
-    host
-}
-
-fn descriptor(tab: &Tab) -> TabDescriptor {
-    TabDescriptor {
-        app_kind: Some(tile_app_kind(&tab.tile)),
-        ..TabDescriptor::new(tab.id, tab.title.clone())
-    }
-}
-
-/// The mark a tab for `tile` wears: its app's own symbol for a window,
-/// the kind's glyph for a stand-in. Every host's title bar, switcher and
-/// overview name a window's app by this one mapping.
-pub fn tile_app_kind(tile: &tilo_desktop_model::TileContent) -> ui::widget::AppKind {
-    use ui::widget::AppKind as Kind;
-    match tile {
-        tilo_desktop_model::TileContent::AppPlaceholder { kind, .. }
-        | tilo_desktop_model::TileContent::Stub { kind, .. } => match kind {
-            tilo_desktop_model::AppKind::Terminal => Kind::Terminal,
-            tilo_desktop_model::AppKind::FileExplorer => Kind::Files,
-            tilo_desktop_model::AppKind::Browser => Kind::Browser,
-            tilo_desktop_model::AppKind::Other(id)
-                if ["Notes", "Word", "Editor"]
-                    .iter()
-                    .any(|known| id.eq_ignore_ascii_case(known))
-                    || ["so.tilo.word-processor", "so.tilo.notes"]
-                        .iter()
-                        .any(|known| id == known) =>
-            {
-                Kind::Editor
-            }
-            _ => Kind::Settings,
-        },
-        // A window wears its own app's glyph, never another app's.
-        tilo_desktop_model::TileContent::Foreign { app_id, .. }
-        | tilo_desktop_model::TileContent::LocalApp { app_id, .. }
-        | tilo_desktop_model::TileContent::PeerWindow { app_id, .. }
-        | tilo_desktop_model::TileContent::HostedWindow { app_id, .. } => {
-            Kind::App(ui::icons::app_glyph(app_id, None))
-        }
-    }
-}
-
-fn placeholder() -> TileContent {
-    TileContent::Notice {
-        title: String::new(),
-        detail: String::new(),
-    }
-}
-
 fn find_group(
     tree: &mut DesktopTree,
     strip: StripId,
@@ -2404,6 +2346,10 @@ impl Widget for DesktopSurface {
         self.end_idle_swipe(ui::time::now());
         self.reconcile();
         self.harvest();
+        // A window the pass just moved or renamed is a tree the rows follow
+        // now: what it was running goes to the window it moved to in this
+        // pass, rather than being built there again.
+        self.reconcile();
         {
             let (doc, root) = ui::doc::document_ref(state, path);
             self.apply_commands(doc, root);

@@ -156,6 +156,13 @@ pub enum Command {
         route: Route,
         maximized: bool,
     },
+    /// Name the window at `route`; a blank name gives it its window's title
+    /// back.
+    Rename {
+        generation: String,
+        route: Route,
+        name: String,
+    },
     Scroll {
         generation: String,
         region: String,
@@ -197,6 +204,7 @@ impl Command {
             | Self::Strip { generation, .. }
             | Self::Width { generation, .. }
             | Self::Maximize { generation, .. }
+            | Self::Rename { generation, .. }
             | Self::Scroll { generation, .. }
             | Self::GlobalSearch { generation }
             | Self::Commands { generation, .. }
@@ -240,6 +248,8 @@ pub enum Admitted {
     Close(RouteIds),
     Width(RouteIds, u32),
     Maximize(RouteIds, bool),
+    /// A person's name for the window; empty clears it.
+    Rename(RouteIds, String),
     Strip(WorkspaceId, StripId),
     Workspace(WorkspaceId),
     /// An application id; the host checked that it can open it.
@@ -310,6 +320,21 @@ pub const CAPABILITIES: Capabilities = Capabilities {
     notifications: false,
 };
 
+/// The longest name a person may give a window.
+pub const MAX_NAME_CHARS: usize = 200;
+
+/// A person's name for the window at `route`: trimmed, within the length a
+/// name may be, and refused for a window the tree no longer holds.
+fn named(route: &Route, name: &str, tree: &DesktopTree) -> Result<Admitted, String> {
+    if name.chars().count() > MAX_NAME_CHARS {
+        return Err("Window name too long".into());
+    }
+    let ids = route.ids()?;
+    locate(tree, ids)
+        .map(|_| Admitted::Rename(ids, name.trim().to_owned()))
+        .ok_or_else(|| "Window unavailable".into())
+}
+
 /// Check `command` against `generation` and `tree` without changing either.
 ///
 /// # Errors
@@ -378,6 +403,7 @@ pub fn admit_with(
             maximized,
             ..
         } => route(r).map(|ids| Admitted::Maximize(ids, *maximized)),
+        Command::Rename { route: r, name, .. } => named(r, name, tree),
         Command::Workspace { workspace: w, .. } => workspace(w).map(Admitted::Workspace),
         Command::Strip {
             workspace: w,

@@ -1369,3 +1369,14 @@ desktop-action-move-to-display = Move the window to another display
 desktop-action-param-window-steps = How many windows on, back when negative
 desktop-action-param-display-steps = How many displays on, back when negative
 desktop-display-name = Display { $number }
+# What a person can do to one window, from its own menu.
+window-menu-rename = Name this window…
+window-menu-maximize = Fill the strip
+window-menu-restore = Give the strip back
+window-menu-wider = Wider
+window-menu-narrower = Narrower
+window-menu-widest = As wide as the strip
+window-menu-narrowest = As narrow as a window goes
+window-menu-close = Close
+window-menu-someone-elses = { $name } opened this window
+

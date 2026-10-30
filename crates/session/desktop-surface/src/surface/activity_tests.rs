@@ -11,6 +11,7 @@ use tilo_desktop_model::WorkspaceId;
 use ui::{Arrival, RemoteActions};
 
 use super::*;
+use ui::widget::TileContent;
 
 const ROOM: &str = "room-a";
 
