@@ -220,7 +220,8 @@ fn the_person_can_rule_that_an_instruction_is_work_or_an_answer() {
 /// "Open as chat" moves what the person typed into a chat: it is asked
 /// as a task for a chat, and the composer gives way once it is asked.
 /// With a run followed it opens that run's issue as a chat, and with
-/// nothing typed and no run it waits disabled.
+/// nothing typed and no run it waits disabled; once a run ended, the
+/// chat of the run whose work it still shows opens.
 #[test]
 fn open_as_chat_asks_what_was_typed_as_a_chat_or_opens_the_followed_run() {
     let mut composer = AgentQuickComposer::default();
@@ -272,6 +273,16 @@ fn open_as_chat_asks_what_was_typed_as_a_chat_or_opens_the_followed_run() {
     assert_eq!(composer.take_open_chat(), None, "heard once");
     assert!(composer.take_request().is_none());
     assert!(composer.is_open());
+
+    // Ended, the run is no longer followed but its work stays shown, and
+    // the same control still opens its chat.
+    composer.project(&tide, Some(working("task:chat", RunPhase::Finished(None))));
+    composer.project(&tide, None);
+    assert!(composer.followed().is_none());
+    assert!(composer.view.can_chat.get(), "the ended run's chat opens");
+    press(&mut composer, &mut doc, "agent-quick-open-chat");
+    assert_eq!(composer.take_open_chat(), Some("task:chat".into()));
+    assert!(composer.take_request().is_none());
 }
 
 #[test]

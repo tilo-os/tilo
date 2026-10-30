@@ -1686,6 +1686,49 @@ fn a_run_that_reaches_its_budget_pauses_saying_which_limit_it_reached() {
 /// person tells it then starts the next run, which reads the message as its
 /// direction; while a run goes, the same message steers it.
 #[test]
+fn a_task_agents_next_run_carries_its_delegation_for_the_same_person_only() {
+    let mut person = ada();
+    let id = Id::from_raw("chat");
+    person
+        .apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
+            ask: crate::model::AgentRequest {
+                id: id.clone(),
+                title: "Review the applications".into(),
+                body: None,
+                agent: "agent:task-1".into(),
+                model: None,
+                subject: None,
+                quick: false,
+                chat: true,
+                delegation: Some("d1e9".into()),
+            },
+        }))
+        .unwrap();
+    let mut agent = person.fork().as_agent_for("agent:task-1", "ada");
+    agent
+        .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+            issue: id.clone(),
+            outcome: RunOutcome::Done,
+            summary: Some(nb("Reviewed Jane Doe")),
+        }))
+        .unwrap();
+    person.sync_with(&mut agent).unwrap();
+    person
+        .apply(Tracker::TELL_AGENT.with(tracker::TellAgent {
+            issue: id.clone(),
+            text: nb("Now do the same for the other two"),
+        }))
+        .unwrap();
+    let run = run_of(&person, &id);
+    assert_eq!(run.epoch, 2);
+    assert_eq!(
+        run.delegation.as_deref(),
+        Some("d1e9"),
+        "the task's agent goes on"
+    );
+}
+
+#[test]
 fn telling_an_agent_steers_its_run_or_starts_the_next_one_with_the_message() {
     let mut person = ada();
     person

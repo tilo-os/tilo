@@ -334,9 +334,16 @@ impl<S: Seat> ShellLayer for SheetHost<S> {
         self.close()
     }
 
+    /// The sheet moves while its app does. A sheet still to be laid out is
+    /// a structure change ([`Self::structure_changed`]) and a change still to
+    /// draw is answered by the update or input that made it: neither keeps
+    /// the frame clock running.
     fn is_animating(&self, _now: Instant) -> bool {
         self.is_drawn()
-            && (self.node.is_none() || self.app.as_ref().is_some_and(|app| app.needs_redraw()))
+            && self
+                .app
+                .as_ref()
+                .is_some_and(|app| app.needs_animation_frame())
     }
 }
 

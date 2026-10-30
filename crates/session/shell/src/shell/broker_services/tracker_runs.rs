@@ -400,6 +400,7 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
         epoch: run.epoch,
         starter: run.starter.clone(),
         active: run.phase.active(),
+        finished_by_agent: matches!(run.phase, RunPhase::Done | RunPhase::Failed),
         paused_through: run.paused.as_ref().map(|paused| paused.through),
         budget: issue.budget.as_ref().map(|budget| {
             collab_types::task_budget::TaskExecutionBudget {

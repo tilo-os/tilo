@@ -379,7 +379,7 @@ pub(crate) fn create_strip(
     actor: &Actor,
     focus: bool,
 ) -> Result<StripId, String> {
-    let name = crate::shell::search::providers::actions::valid_strip_name(name)
+    let name = crate::shell::actions::valid_strip_name(name)
         .ok_or("a strip name is 1 to 120 characters without control characters")?;
     let workspace = workspace_of(state, room)?;
     let kept = (!focus).then(|| KeptFocus::of(state, workspace));
@@ -411,7 +411,7 @@ pub(crate) fn rename_strip(
     name: &str,
     actor: &Actor,
 ) -> Result<(), String> {
-    let name = crate::shell::search::providers::actions::valid_strip_name(name)
+    let name = crate::shell::actions::valid_strip_name(name)
         .ok_or("a strip name is 1 to 120 characters without control characters")?;
     let workspace = workspace_of(state, room)?;
     let before = {

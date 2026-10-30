@@ -6925,7 +6925,9 @@ impl CapnpBrokerState {
                 (confirmed.0 || consequential, confirmed.1),
             )
         };
-        self.admit_tracker_action(run, &current, &requirement, &mut start)
+        let report =
+            tracker_runs::reports_on_own_issue(&run.task_id, (&surface.app_id, resource), argument);
+        self.admit_tracker_action(run, (&current, report), &requirement, &mut start)
     }
 
     fn disconnect_device_media(&self, peer_id: u64) {
@@ -7235,7 +7237,8 @@ impl CapnpBrokerState {
             .and_then(std::convert::identity)
             .and_then(|current| {
                 if let Some(task) = &current.task {
-                    self.task_goes(&route.cluster_id, task)?;
+                    // Its own finish ends the task, and it still hears it.
+                    self.task_heard(&route.cluster_id, task)?;
                 }
                 Ok(current)
             })

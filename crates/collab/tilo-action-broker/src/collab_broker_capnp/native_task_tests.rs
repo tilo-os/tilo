@@ -441,6 +441,7 @@ impl Fixture {
                 epoch,
                 starter: hex::encode(self.native.certificate.user_public_key),
                 active: true,
+                finished_by_agent: false,
                 paused_through: None,
                 budget: None,
                 subject: None,

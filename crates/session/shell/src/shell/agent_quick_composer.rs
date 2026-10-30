@@ -1739,9 +1739,11 @@ impl AgentQuickComposer {
         );
         self.view.running.set(running && !starting && !busy);
         let typed = !self.draft.get().trim().is_empty();
+        // The chat opened is the run shown: the one followed, else the one
+        // whose work stays shown after it ended; with none, what was typed.
         let can_chat = match run {
             Some(run) => run.phase != RunPhase::Starting,
-            None => typed && !busy,
+            None => (typed || worked.is_some()) && !busy,
         };
         self.view.can_chat.set(can_chat);
         self.view.enabled.set(
@@ -1789,12 +1791,21 @@ impl AgentQuickComposer {
             self.open_run = Some(run.task.task_id.clone());
         }
         if take(&self.presses.open_chat) {
-            match self.followed() {
-                Some(run) if run.phase != RunPhase::Starting => {
+            let typed = !self.draft.get().trim().is_empty();
+            // An ended run's work stays shown, and its chat is what opens,
+            // unless the person typed a new request to ask as a chat.
+            let shown = self
+                .owner
+                .as_ref()
+                .and_then(|owner| self.worked.get(owner))
+                .map(|(task, _)| task.clone());
+            match (self.followed(), shown) {
+                (Some(run), _) if run.phase != RunPhase::Starting => {
                     self.open_chat = Some(run.task.task_id.clone());
                 }
-                Some(_) => {}
-                None => self.chat_pending = !self.draft.get().trim().is_empty(),
+                (Some(_), _) => {}
+                (None, Some(task)) if !typed => self.open_chat = Some(task),
+                (None, _) => self.chat_pending = typed,
             }
         }
         if take(&self.presses.fix) {
