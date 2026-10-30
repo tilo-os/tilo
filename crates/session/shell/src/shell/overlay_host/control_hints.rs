@@ -17,8 +17,13 @@ use ui::control_hints::Quiet;
 impl ShellOverlayHost {
     /// What this frame shows the hints.
     fn control_hint_frame(&self, now: Instant) -> HintFrame {
+        // The strip's hints (move a window past another, resize one, scroll
+        // sideways to the windows out of view) are about the strip's row:
+        // a workspace showing its canvas has none, whatever its strips would
+        // lay out behind it.
         let row = self
             .active_strip_id()
+            .filter(|_| !self.canvas_shown())
             .and_then(|id| self.group_row_ptrs.get(&id).copied())
             // SAFETY: see field doc on `group_row_ptrs`.
             .map(|ptr| unsafe { &*ptr }.hint_places())
@@ -175,4 +180,80 @@ impl ShellOverlayHost {
 /// The hints a native desktop starts with: the person's record as kept.
 pub(super) fn load() -> ControlHints {
     ControlHints::new(LEARNED.get())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::shell::state::WorkspaceTree;
+    use crate::shell::test_support::PopulatedShellFixture;
+    use tilo_desktop_model::{Arrangement, ArrangementKind, CanvasPlace};
+
+    /// What the hints are shown of the desktop `tree` lays out on a narrow
+    /// screen, once it has drawn.
+    fn hint_row(tree: WorkspaceTree) -> (ui::widget::HintPlaces, bool) {
+        let mut fixture =
+            PopulatedShellFixture::with_tree((640, 480), ui::theme::Theme::dark(), tree);
+        // Frames as the compositor's loop makes them: the pump takes the
+        // workspace's arrangement (its canvas) before the layout.
+        let mut doc = automerge::AutoCommit::new();
+        for _ in 0..3 {
+            let _ = fixture.frame_of(&mut doc);
+        }
+        let host = fixture.host();
+        (
+            host.control_hint_frame(ui::time::now()).row,
+            host.canvas_shown(),
+        )
+    }
+
+    /// The demo's windows, every one its own group, on a strip or on the
+    /// canvas.
+    fn demo(canvas: bool) -> WorkspaceTree {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let workspace = &mut tree.desktop.workspaces[0];
+        let strip = &mut workspace.strips[0];
+        let first = strip.window_groups.remove(0);
+        let mut groups = Vec::new();
+        for (id, tab) in (930_001_u64..).zip(first.tabs) {
+            groups.push(crate::shell::state::WindowGroup {
+                id,
+                active_tab: tab.id,
+                tabs: vec![tab],
+                width: crate::shell::state::WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            });
+        }
+        groups.append(&mut strip.window_groups);
+        if canvas {
+            workspace.arrangement = Arrangement {
+                kind: ArrangementKind::Canvas,
+                places: (0_i32..)
+                    .zip(&groups)
+                    .map(|(index, group)| {
+                        (group.id, CanvasPlace::new(20 + 220 * index, 20, 200, 160))
+                    })
+                    .collect(),
+            };
+        }
+        strip.window_groups = groups;
+        tree
+    }
+
+    /// The strip's hints (scroll sideways to the windows out of view, move a
+    /// window past another, resize one) are not offered over the canvas,
+    /// where windows stand where they are placed and no strip row shows.
+    #[test]
+    fn the_canvas_offers_none_of_the_strips_hints() {
+        let (strip, shown) = hint_row(demo(false));
+        assert!(!shown, "the strips show");
+        assert!(
+            strip.windows >= 2 && (strip.beyond.0 || strip.beyond.1),
+            "the strip's windows run past a narrow screen: {strip:?}"
+        );
+        let (canvas, shown) = hint_row(demo(true));
+        assert!(shown, "the canvas shows");
+        assert_eq!(canvas.windows, 0, "{canvas:?}");
+        assert_eq!(canvas.beyond, (false, false), "{canvas:?}");
+    }
 }

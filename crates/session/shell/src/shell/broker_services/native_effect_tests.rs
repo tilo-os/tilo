@@ -223,6 +223,59 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
         .unwrap();
 }
 
+/// An app's first opening in a room is let author it by the room owner's
+/// commit alone: nothing is staged in the broker's invocation journal, so the
+/// opening never waits behind the journal's writes of the invocations queued
+/// before it (each a data barrier, seconds apiece on a loaded disk), nor for
+/// an answer the journal has to record first.
+#[test]
+fn an_apps_first_opening_commits_its_authorship_without_the_invocation_journal() {
+    let fixture = fixture();
+    let actions = fixture.broker.app_action_broker().unwrap();
+    let mut journal = fixture.path.clone().into_os_string();
+    journal.push(".invocations");
+    let journal = std::path::PathBuf::from(journal).join("records.json");
+    let before = std::fs::read(&journal).ok();
+    let opening = crate::shell::launcher::NativeAppOpening::default();
+    opening.attach(actions.downgrade());
+    let access = crate::shell::launcher::admit_native_app(
+        &fixture.owner,
+        fixture.room,
+        &fixture.certificate,
+        "so.tilo.chat",
+        &opening,
+    )
+    .unwrap();
+    assert_eq!(
+        access,
+        crate::shell::launcher::NativeAppOpenAccess::Delegate
+    );
+    fixture
+        .owner
+        .with_current(fixture.room, |view| {
+            let now = std::time::SystemTime::now();
+            let member = view
+                .peer()
+                .permissions(fixture.certificate.device_public_key, now)?;
+            assert!(
+                member
+                    .policy
+                    .app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now)),
+                "the opening let the app author the room"
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        std::fs::read(&journal).ok(),
+        before,
+        "the opening staged nothing in the broker's invocation journal"
+    );
+    drop(actions);
+    drop(fixture.broker);
+    crate::shell::persist::wait_for_saves();
+}
+
 /// An app opened in a workspace this device holds before the room's
 /// replica is projected here, so before the broker publishes the room's
 /// membership actions, waits for them on its own thread and is let author

@@ -3635,6 +3635,7 @@ fn execute_installed_inner(
     // Opening it is a use, whichever window it opens in, and whether or not
     // it must update first.
     let recorded = recorded_use::record(&app);
+    tilo_startup_metrics::launch_phase(&app.package_id, "recorded");
     // A build speaks exactly the interface versions this system serves, or
     // it does not start: one that is behind is updated first and starts
     // after, in the place held for it now.
@@ -3669,6 +3670,7 @@ fn execute_installed_inner(
             });
         }
     }
+    tilo_startup_metrics::launch_phase(&app.package_id, "versions");
     launch_fitting(
         app,
         room,
@@ -3717,6 +3719,8 @@ fn launch_fitting(
     };
     // Another window of an app already running in the room opens in its
     // process; the first one starts the process, reserving its door.
+    #[cfg(target_os = "linux")]
+    tilo_startup_metrics::launch_phase(&app.package_id, "home");
     #[cfg(target_os = "linux")]
     let Ok(door) = window_doors::route_or_reserve(
         &app,
@@ -4244,10 +4248,12 @@ pub(crate) fn queue_native_authoring_launch(
             // Asked for while the session's broker was still binding (an app
             // opened as the session starts): it is prepared once launches run.
             session.wait_while_launches_held();
+            tilo_startup_metrics::launch_phase(&package, "held");
             let expected = match asked_as {
                 Some(device) => device,
                 None => room_hold::committed_device(&session, &tree, room)?,
             };
+            tilo_startup_metrics::launch_phase(&package, "device");
             let unavailable = |detail: String| LaunchError::IdentityUnavailable { detail };
             let (_, certificate) =
                 tilo_identity_host::broker::trusted_current_device(&room.to_string())
@@ -4265,7 +4271,9 @@ pub(crate) fn queue_native_authoring_launch(
             // it no longer admits, an authorship its host refused) is told in
             // its own words, not as why the identity machinery said no.
             let access = admit_native_app(&owner, room, &certificate, &package, &opening)?;
+            tilo_startup_metrics::launch_phase(&package, "admitted");
             let workspace = native_launch_workspace(&tree, room).map_err(unavailable)?;
+            tilo_startup_metrics::launch_phase(&package, "grants");
             if access != NativeAppOpenAccess::Delegate {
                 return Ok(native_launch_capabilities(&workspace, &package, access));
             }
@@ -4294,52 +4302,17 @@ pub(crate) fn admit_native_app(
     if access != NativeAppOpenAccess::Delegate {
         return Ok(access);
     }
+    // The room's owner commits the grant on this launch's own thread, never
+    // the frame loop's, and the app starts once it is in the room: the
+    // owner's commit is all that is waited for, not the broker's journal of
+    // other invocations, nor a refresh publishing the room's membership
+    // actions (`AppActionBroker::grant_app_authorship`).
     let delegate = || -> Result<(), String> {
-        let opening = opening.settled()?;
-        // A room this device just made or joined has its membership actions
-        // published once its replica is projected here: the grant is asked
-        // once they are, never refused for coming first. Waited for on this
-        // launch's own thread, never the frame loop's.
-        let published = opening
+        opening
+            .settled()?
             .upgrade()?
-            .await_membership_surface(&room.to_string())?;
-        match published.recv() {
-            Ok(true) => {}
-            Ok(false) => {
-                return Err(
-                    "the workspace's membership actions are not published on this \
-                     device, and it neither holds, joins nor places the workspace's room"
-                        .into(),
-                );
-            }
-            Err(_) => {
-                return Err(
-                    "the session's broker ended before the workspace's membership \
-                 actions were published"
-                        .into(),
-                );
-            }
-        }
-        let broker = opening.upgrade()?;
-        let job = broker.change_workspace_membership(
-            &room.to_string(),
-            &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-                app: package.to_owned(),
-            },
-            certificate,
-        )?;
-        drop(broker);
-        let completed = job
-            .completion
-            .recv_timeout(Duration::from_secs(30))
-            .map_err(|error| format!("native app authorship did not durably complete: {error}"))?;
-        if !completed.code.is_empty() {
-            return Err(format!(
-                "native app authorship refused: {}",
-                completed.message
-            ));
-        }
-        Ok(())
+            .grant_app_authorship(&room.to_string(), package, certificate)
+            .map_err(|error| error.to_string())
     };
     let asked = delegate();
     // The grant can be in the room though its answer said otherwise (it
@@ -4454,10 +4427,12 @@ fn prepare_observed_native_launch(
         .map_err(|error| error.to_string())?;
     if access == NativeAppOpenAccess::Delegate {
         let job = original.delegate_authorship()?;
-        let completed = job
-            .completion
-            .recv_timeout(Duration::from_secs(30))
-            .map_err(|error| format!("native app authorship did not durably complete: {error}"))?;
+        // The invocation is answered however it ends (committed, refused,
+        // expired, or its service gone, which drops its sender): an answer
+        // that can no longer come is an error at once, not after a wait.
+        let completed = job.completion.recv().map_err(|_| {
+            "native app authorship ended without an answer: its invocation is gone".to_owned()
+        })?;
         if !completed.code.is_empty() {
             return Err(format!(
                 "native app authorship refused: {}",
