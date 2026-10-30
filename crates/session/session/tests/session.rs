@@ -33,6 +33,7 @@ use tilo_quick_settings::host::FixtureHost;
 use tilo_quick_settings::scenarios;
 use tilo_service::{Answer, Asked};
 use tilo_session::{DeviceHost, Options, QuickSettings, Session};
+use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
@@ -207,6 +208,20 @@ fn session() -> Session {
     .expect("session")
 }
 
+/// A session that keeps this device's desk under `state`, the way one with
+/// a state directory does.
+fn session_keeping(state: &std::path::Path) -> Session {
+    Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            state: Some(state.to_path_buf()),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session")
+}
+
 /// Connect a client and open a toplevel of `app_id`, drawn at the size it
 /// was configured to, and wait until it is mapped.
 fn mapped(session: &mut Session, app_id: &str) -> TestClient {
@@ -252,6 +267,17 @@ fn window_resource(session: &Session, app: &str) -> Option<ResourceSpec> {
         })
     }
     find(&session.resources(), app)
+}
+
+/// Invoke `action` of `resource` with `arguments`, then let the session run
+/// a frame.
+fn invoke_with(session: &mut Session, resource: &str, action: &str, arguments: &serde_json::Value) {
+    let empty = serde_json::Map::new();
+    let arguments = arguments.as_object().unwrap_or(&empty);
+    session
+        .invoke(resource, action, arguments)
+        .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
+    session.step(Duration::from_millis(1)).unwrap();
 }
 
 /// Invoke `action` of `resource` with no arguments, then let the session
@@ -1137,6 +1163,59 @@ fn workspace_settings_renames_the_workspace_through_its_action() {
             .map(|workspace| workspace.name.clone())
     });
     assert_eq!(name.as_deref(), Some("Garden"));
+}
+
+/// Workspace settings shows the tab the person picked, and moves the
+/// workspace among the ones this device has.
+#[test]
+fn workspace_settings_shows_a_tab_and_moves_the_workspace() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    let seat = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .clone();
+    seat.presentation().open(false);
+    session.step(Duration::from_millis(1)).unwrap();
+    let show = WorkspaceSettingsEffect::SHOW_TAB.id;
+    let sheet = publisher(&session, show).expect("the open sheet publishes its tabs");
+    session
+        .invoke(
+            &sheet,
+            show,
+            &arguments(serde_json::json!({ "tab": "people" })),
+        )
+        .expect("show tab");
+    session.step(Duration::from_millis(1)).unwrap();
+    assert_eq!(
+        seat.settings().tab,
+        tilo_sheets::workspace_settings::Tab::People,
+        "the sheet shows the tab the person picked"
+    );
+
+    invoke(&mut session, CHROME_RESOURCE, "new-workspace");
+    let names: Vec<String> = workspaces(&session)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names.len(), 2, "two workspaces: {names:?}");
+    let moved = WorkspaceSettingsEffect::MOVE.id;
+    let sheet = publisher(&session, moved).expect("the open sheet publishes moving");
+    session
+        .invoke(&sheet, moved, &arguments(serde_json::json!({ "step": -1 })))
+        .expect("move");
+    session.step(Duration::from_millis(1)).unwrap();
+    let after: Vec<String> = workspaces(&session)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(
+        after,
+        [names[1].clone(), names[0].clone()],
+        "the workspace in front moved one place earlier"
+    );
 }
 
 #[test]
@@ -2293,4 +2372,412 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
         capture(&mut session, "lock");
         drop(client);
     }
+}
+
+/// The id of the tab the desk holds for `app`.
+fn tab_of(session: &Session, app: &str) -> u64 {
+    let id = window_resource(session, app)
+        .expect("the desk publishes the window's tab")
+        .id;
+    id.as_str()
+        .strip_prefix("desktop:tab:")
+        .and_then(|id| id.parse().ok())
+        .expect("a tab's address names its id")
+}
+
+/// Make an empty strip called `name` after those the workspace in front
+/// has.
+fn add_strip(session: &Session, name: &str) {
+    let handle = session.handle();
+    let mut tree = handle.read(Clone::clone);
+    tilo_desktop_model::commands::apply_to_active_workspace(
+        &mut tree,
+        &tilo_desktop_model::commands::DesktopCommand::CreateStrip { name: name.into() },
+        &mut || Ok(handle.mint_id()),
+    )
+    .expect("a strip is made");
+    handle.replace_tree(tree);
+}
+
+/// The names of the workspaces, in order, and the strips of each.
+fn workspaces(session: &Session) -> Vec<(String, Vec<String>)> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .map(|workspace| {
+                (
+                    workspace.name.clone(),
+                    workspace
+                        .strips
+                        .iter()
+                        .map(|strip| strip.name.clone())
+                        .collect(),
+                )
+            })
+            .collect()
+    })
+}
+
+/// The ids of the windows the workspace `workspace` holds.
+fn tabs_in(session: &Session, workspace: u64) -> Vec<u64> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .filter(|held| held.id.0 == workspace)
+            .flat_map(|held| &held.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect()
+    })
+}
+
+/// The names of the strips the window `tab` stands on.
+fn strips_holding(session: &Session, tab: u64) -> Vec<String> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .filter(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .any(|group| group.tabs.iter().any(|held| held.id == tab))
+            })
+            .map(|strip| format!("{}/{}", strip.name, strip.id.0))
+            .collect()
+    })
+}
+
+/// Stepping past the first or the last workspace or strip says which end
+/// the person reached, rather than doing nothing.
+#[test]
+fn stepping_past_an_end_says_which_end_it_is() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "switch-workspace",
+        &serde_json::json!({"delta": 1}),
+    );
+    let said = session.accessible_labels().join("\n");
+    assert!(
+        said.contains("This is the last workspace"),
+        "stepping past the last workspace says so: {said}"
+    );
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "switch-workspace",
+        &serde_json::json!({"delta": -1}),
+    );
+    let said = session.accessible_labels().join("\n");
+    assert!(
+        said.contains("This is the first workspace"),
+        "and past the first: {said}"
+    );
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "step-strip",
+        &serde_json::json!({"steps": 1}),
+    );
+    let said = session.accessible_labels().join("\n");
+    assert!(
+        said.contains("This is the last strip"),
+        "stepping past the last strip says so: {said}"
+    );
+}
+
+/// Leaving a workspace the person is not in takes it away and leaves them
+/// where they are.
+#[test]
+fn leaving_another_workspace_keeps_the_person_where_they_are() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    let home = active_workspace(&session).expect("the first workspace is open");
+    invoke(&mut session, CHROME_RESOURCE, "new-workspace");
+    let other = active_workspace(&session).expect("the new workspace is open");
+    assert_ne!(home, other, "there are two workspaces");
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "switch-workspace",
+        &serde_json::json!({"delta": -1}),
+    );
+    assert_eq!(active_workspace(&session), Some(home), "back in the first");
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "leave-workspace",
+        &serde_json::json!({"workspace": other.to_string()}),
+    );
+    assert_eq!(workspaces(&session).len(), 1, "the other workspace is gone");
+    assert_eq!(
+        active_workspace(&session),
+        Some(home),
+        "the person did not move"
+    );
+}
+
+/// The next session comes up on the desk this one left: the workspaces,
+/// their strips and which one was in front, without the windows.
+#[test]
+fn the_next_session_comes_up_where_this_one_was() {
+    let _settled = ui::motion::testing::settled();
+    let state = tempfile::tempdir().expect("a state directory");
+    let home = {
+        let mut session = session_keeping(state.path());
+        session.step(Duration::from_millis(1)).unwrap();
+        add_strip(&session, "Second");
+        invoke(&mut session, CHROME_RESOURCE, "new-workspace");
+        let kept = workspaces(&session);
+        assert_eq!(kept.len(), 2, "two workspaces are set up: {kept:?}");
+        assert_eq!(
+            kept[0].1,
+            vec!["Main".to_string(), "Second".to_string()],
+            "the first workspace has the strip that was made"
+        );
+        let open = active_workspace(&session).expect("a workspace is open");
+        let index = session.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .position(|workspace| workspace.id.0 == open)
+        });
+        assert_eq!(index, Some(1), "the second workspace is in front");
+        kept
+    };
+
+    let mut second = session_keeping(state.path());
+    second.step(Duration::from_millis(1)).unwrap();
+    assert_eq!(
+        workspaces(&second),
+        home,
+        "the workspaces and their strips came back"
+    );
+    let open = active_workspace(&second).expect("a workspace is open");
+    let index = second.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .position(|workspace| workspace.id.0 == open)
+    });
+    assert_eq!(index, Some(1), "the workspace that was in front is");
+}
+
+/// What the overview offers as a window's own doings — sending it
+/// elsewhere, closing it — changes the desk, reachable by address as an
+/// agent or the palette does.
+#[test]
+fn the_desktop_sends_a_window_where_the_overview_offers_to() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let _client = mapped(&mut session, "org.example.Editor");
+    let tab = tab_of(&session, "org.example.Editor");
+    add_strip(&session, "Second");
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "move-tab-to-strip",
+        &serde_json::json!({"tab": tab, "strip": "Second"}),
+    );
+    let holding = strips_holding(&session, tab);
+    assert_eq!(
+        holding.len(),
+        1,
+        "the window stands on one strip: {holding:?}"
+    );
+    assert!(
+        holding[0].starts_with("Second/"),
+        "the window went to the strip the person chose: {holding:?}"
+    );
+
+    invoke(&mut session, CHROME_RESOURCE, "new-workspace");
+    let other = active_workspace(&session).expect("the new workspace is open");
+    let home = {
+        let (name, _) = workspaces(&session).remove(0);
+        name
+    };
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "switch-workspace",
+        &serde_json::json!({"delta": -1}),
+    );
+    let stayed = active_workspace(&session).expect("a workspace is open");
+    assert_ne!(stayed, other, "the person is back in the first workspace");
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "move-tab",
+        &serde_json::json!({"tab": tab, "workspace": other.to_string()}),
+    );
+    let landed = tabs_in(&session, other);
+    assert_eq!(landed, [tab], "the same window is in the other workspace");
+    assert_eq!(
+        active_workspace(&session),
+        Some(stayed),
+        "the person stays where they were"
+    );
+    assert!(
+        strips_holding(&session, tab)[0].starts_with("Main/"),
+        "the window went to a strip of the workspace it moved to"
+    );
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "leave-workspace",
+        &serde_json::json!({"workspace": other.to_string()}),
+    );
+    assert_eq!(workspaces(&session).len(), 1, "the workspace was left here");
+    assert_eq!(
+        workspaces(&session).remove(0).0,
+        home,
+        "the workspace the person is in is the one left"
+    );
+    assert_eq!(
+        active_workspace(&session),
+        Some(stayed),
+        "and the person did not move"
+    );
+    let left = session.accessible_labels().join("\n");
+    assert!(left.contains("You left"), "the person is told: {left}");
+}
+
+/// Naming and moving strips, as the overview's strip rows ask.
+#[test]
+fn the_desktop_names_and_moves_the_strips_the_overview_offers() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    add_strip(&session, "Second");
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "rename-strip",
+        &serde_json::json!({"strip": "Second", "name": "Later"}),
+    );
+    let (_, strips) = workspaces(&session).remove(0);
+    assert_eq!(strips, ["Main", "Later"], "the strip was renamed");
+
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "move-strip",
+        &serde_json::json!({"strip": "Later", "before": "Main"}),
+    );
+    let (_, strips) = workspaces(&session).remove(0);
+    assert_eq!(strips, ["Later", "Main"], "the strip moved above the first");
+
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "move-strip",
+        &serde_json::json!({"strip": "Later"}),
+    );
+    let (_, strips) = workspaces(&session).remove(0);
+    assert_eq!(strips, ["Main", "Later"], "and to the bottom");
+}
+
+/// The picture the person chose is the desk's, kept beside the desk for
+/// this device.
+#[test]
+fn the_desk_starts_on_the_picture_the_person_chose() {
+    let _settled = ui::motion::testing::settled();
+    let state = tempfile::tempdir().expect("a state directory");
+    settings_store::appearance::WALLPAPER
+        .set(Some("dunes".to_owned()))
+        .expect("the choice is written");
+    let mut session = session_keeping(state.path());
+    session.step(Duration::from_millis(1)).unwrap();
+    let kept = std::fs::read_to_string(state.path().join("tilo").join("wallpapers.json"))
+        .expect("the choice is kept beside the desk");
+    let kept: serde_json::Value = serde_json::from_str(&kept).expect("a record");
+    assert_eq!(
+        kept["default"], "dunes",
+        "every workspace the person gave no picture of its own shows the one chosen: {kept}"
+    );
+    assert!(
+        kept.get("workspaces").is_none(),
+        "and none of them has one of its own yet: {kept}"
+    );
+    settings_store::appearance::WALLPAPER
+        .set(None)
+        .expect("the choice is cleared");
+}
+
+/// The workspace menu offers joining, leaving and settings, and choosing
+/// join lists the workspaces this computer holds.
+#[test]
+fn the_workspace_menu_offers_joining_leaving_and_settings() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    invoke(&mut session, CHROME_RESOURCE, "toggle-workspace-menu");
+    let menu = session.accessible_labels().join("\n");
+    for row in [
+        "New workspace",
+        "Join a workspace",
+        "Leave this workspace",
+        "Workspace settings",
+    ] {
+        assert!(menu.contains(row), "the menu offers {row}: {menu}");
+    }
+    let offered: Vec<String> = session
+        .handle()
+        .host_actions()
+        .into_iter()
+        .map(|action| action.id)
+        .collect();
+    for id in [
+        "new-workspace",
+        "join-workspace",
+        "leave-workspace",
+        "workspace-settings",
+    ] {
+        assert!(
+            offered.iter().any(|held| held == id),
+            "the session offers {id}: {offered:?}"
+        );
+    }
+    invoke(&mut session, CHROME_RESOURCE, "toggle-workspace-menu");
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    let settings = session
+        .workspace_settings()
+        .expect("the session hosts the workspace settings");
+    assert!(
+        settings.presentation().is_open(),
+        "settings opens the sheet"
+    );
+    settings.presentation().close();
+    invoke(&mut session, CHROME_RESOURCE, "join-workspace");
+    let seat = session
+        .workspace_directory()
+        .expect("the session hosts the workspace directory");
+    assert!(seat.presentation().is_open(), "joining opens the directory");
+    let held: Vec<String> = workspaces(&session)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(held.len(), 1, "one workspace is held: {held:?}");
+    let listed: Vec<(String, tilo_sheets::directory::ListingAction)> = seat
+        .directory()
+        .listings
+        .iter()
+        .map(|listing| (listing.name.clone(), listing.action))
+        .collect();
+    assert_eq!(
+        listed,
+        [(held[0].clone(), tilo_sheets::directory::ListingAction::Open)],
+        "the directory lists what this computer holds, ready to open"
+    );
+    seat.presentation().close();
+    invoke(&mut session, CHROME_RESOURCE, "new-workspace");
+    assert_eq!(
+        workspaces(&session).len(),
+        held.len() + 1,
+        "a new workspace joins the desk"
+    );
 }

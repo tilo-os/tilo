@@ -30,6 +30,7 @@ pub mod capture;
 mod chrome;
 mod config;
 mod controls;
+mod desk_layout;
 pub mod desktop_services;
 pub mod displays;
 mod env;
@@ -44,7 +45,9 @@ mod setup;
 mod sheets;
 mod system_sounds;
 pub mod unlock;
+mod wallpapers;
 mod window_motion;
+mod workspaces;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -55,7 +58,9 @@ use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{Compositor, DisplayConfig, Error, OutputConfig, WindowPolicy};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_actions::{CHROME_RESOURCE, DESK_RESOURCE};
-use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk};
+use tilo_desktop::desktop_host::{
+    DeskLayer, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
+};
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop_surface::DesktopHandle;
@@ -89,12 +94,13 @@ use setup::Setup;
 use sheets::Sheet;
 use tilo_desktop_search::providers::places::Place;
 use tilo_sheets::Seat as _;
+use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::lock::LockSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::{PowerEffect, PowerSeat};
 use tilo_sheets::workspace_settings::{
-    Settings as WorkspaceSettings, WorkspaceSettingsEffect, WorkspaceSettingsSeat,
+    Settings as WorkspaceSettings, Tab, WorkspaceSettingsEffect, WorkspaceSettingsSeat,
 };
 
 pub use os_actions::SessionAction;
@@ -108,11 +114,11 @@ const GENERATION: &str = "session";
 /// toggle of it is that same press, not a new ask to open it.
 const DISMISS_GRACE: Duration = Duration::from_millis(300);
 
+/// How often the desk is written while it changes.
+const KEEP_DESK_EVERY: Duration = Duration::from_secs(2);
+
 /// How warm the night light makes the displays, in kelvin.
 const NIGHT_LIGHT_WARMTH: u32 = 3_400;
-
-/// The workspace menu's action that opens workspace settings.
-const WORKSPACE_SETTINGS: &str = "workspace-settings";
 
 /// What a session starts with.
 pub struct Options {
@@ -169,6 +175,10 @@ pub struct Options {
     /// The portal's link to the loop: what shares the session's screens,
     /// drives its seat and passes its selection.
     pub portal: Option<portal_link::SessionLink>,
+    /// Where this device keeps what outlives a session: the desk as it was
+    /// left, and the pictures on it. Without one, the session starts on a
+    /// fresh desk and keeps nothing (tests and screenshots).
+    pub state: Option<std::path::PathBuf>,
 }
 
 /// Where quick settings reads the device from.
@@ -217,6 +227,7 @@ impl Default for Options {
             desktop: None,
             questions: None,
             portal: None,
+            state: None,
         }
     }
 }
@@ -258,8 +269,21 @@ struct Shared {
     workspace_settings: Option<WorkspaceSettingsSeat>,
     portal: Option<PortalSeat>,
     file_picker: Option<FilePickerSeat>,
+    /// The workspaces this computer may join or open.
+    directory: Option<DirectorySeat>,
     /// The lock screen, while the session is locked.
     lock: Option<LockSeat>,
+    /// The desktop's own notices: what the session tells the person, such as
+    /// leaving a workspace.
+    notices: tilo_desktop_surface::DesktopNotifications,
+    /// The desk as this device last wrote it, and when, so a desk that keeps
+    /// changing (a drag, a rename) is written once in a while rather than
+    /// every frame.
+    kept: RefCell<Option<(String, Instant)>>,
+    /// Where the desk and its pictures are kept between sessions.
+    state: Option<std::path::PathBuf>,
+    /// The pictures the desk shows, by workspace.
+    wallpapers: std::sync::Arc<wallpapers::Wallpapers>,
     session_actions: fn(SessionAction) -> Result<(), String>,
     /// Where everything the session publishes stood when search last read
     /// it.
@@ -306,9 +330,19 @@ impl Shared {
                 DesktopAsk::Intent(ChromeIntent::ShowQuickSettings) => self.show_quick_settings(),
                 DesktopAsk::Launchpad(action) => self.launchpad(action),
                 DesktopAsk::Shortcut(action) => self.shortcut(action),
+                DesktopAsk::HostAction(action) if action == NEW_WORKSPACE => {
+                    self.new_workspace();
+                }
                 DesktopAsk::HostAction(action) if action == WORKSPACE_SETTINGS => {
                     self.open_workspace_settings();
                 }
+                DesktopAsk::HostAction(action) if action == JOIN_WORKSPACE => {
+                    workspaces::open_directory(self.directory.as_ref(), &self.handle);
+                }
+                DesktopAsk::HostAction(action) if action == LEAVE_WORKSPACE => {
+                    self.leave_workspace();
+                }
+                DesktopAsk::LeftWorkspace(name) => workspaces::left_workspace(&self.notices, &name),
                 other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
             }
         }
@@ -566,6 +600,90 @@ impl Shared {
         seat.presentation().open(false);
     }
 
+    /// Put the workspace in front one place earlier or later among this
+    /// device's workspaces.
+    fn move_workspace(&self, step: i32) {
+        let mut tree = self.handle.read(Clone::clone);
+        let Some(at) = tree
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == tree.active)
+        else {
+            return;
+        };
+        let last = tree.workspaces.len().saturating_sub(1);
+        let to = if step < 0 {
+            at.saturating_sub(usize::try_from(step.unsigned_abs()).unwrap_or(usize::MAX))
+        } else {
+            at.saturating_add(usize::try_from(step).unwrap_or(usize::MAX))
+                .min(last)
+        };
+        if to != at {
+            tree.workspaces.swap(at, to);
+            self.handle.replace_tree(tree);
+        }
+    }
+
+    /// Make a new workspace through the desk's own published action, so the
+    /// rules and the naming are the desk's.
+    fn new_workspace(&self) {
+        self.ask_of_desk("new-workspace");
+    }
+
+    /// Leave the workspace the person is in through the desk's own published
+    /// action, which takes it off this device and says it went.
+    fn leave_workspace(&self) {
+        self.ask_of_desk("leave-workspace");
+    }
+
+    /// Carry out the desk's action `action` as the person's ask, with no
+    /// arguments of its own.
+    fn ask_of_desk(&self, action: &str) {
+        let address = ActionAddress::new(CHROME_RESOURCE, action);
+        if let Err(error) = self.doors.invoke(&address, &serde_json::Map::new()) {
+            self.handle.acknowledge(error.to_string());
+        }
+    }
+
+    /// Keep this device's desk as it stands: the workspaces, what their
+    /// strips are called and which of them are in front, so the next
+    /// session starts here.
+    fn keep_desk_now(&self) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let tree = self.handle.read(Clone::clone);
+        let Some(text) = desk_layout::text(&tree) else {
+            return;
+        };
+        let unchanged = self
+            .kept
+            .borrow()
+            .as_ref()
+            .is_some_and(|(kept, _)| *kept == text);
+        if !unchanged && let Err(error) = desk_layout::save_at(state, &text) {
+            // The next pass tries again: the desk is written when it can
+            // be, not dropped because a write failed.
+            tracing::debug!(%error, "the desk is not kept");
+            return;
+        }
+        *self.kept.borrow_mut() = Some((text, Instant::now()));
+    }
+
+    /// [`Self::keep_desk_now`], once in a while.
+    fn keep_desk(&self) {
+        let now = Instant::now();
+        if self
+            .kept
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, at)| now.duration_since(*at) < KEEP_DESK_EVERY)
+        {
+            return;
+        }
+        self.keep_desk_now();
+    }
+
     /// Carry out what the person chose in the sheets.
     fn follow_sheets(&self) {
         if let Some(power) = &self.power {
@@ -590,6 +708,7 @@ impl Shared {
                 }
             }
         }
+        workspaces::follow_directory(self.directory.as_ref(), &self.handle);
         if let Some(settings) = &self.workspace_settings {
             for effect in settings.take_asked() {
                 match effect {
@@ -598,6 +717,16 @@ impl Shared {
                         .borrow_mut()
                         .push(ChromeIntent::RenameWorkspace { name }),
                     WorkspaceSettingsEffect::Close => {}
+                    WorkspaceSettingsEffect::ShowTab { tab } => {
+                        // The sheet shows the tab the person picked, and
+                        // keeps it for the next opening.
+                        if let Some(tab) = Tab::from_key(&tab) {
+                            let mut shown = settings.settings();
+                            shown.tab = tab;
+                            settings.show(shown);
+                        }
+                    }
+                    WorkspaceSettingsEffect::Move { step } => self.move_workspace(step),
                     other => tracing::debug!(
                         ?other,
                         "workspace settings asks what the session cannot do yet"
@@ -860,18 +989,28 @@ impl Session {
         ));
         let watched = std::sync::Arc::clone(&notification_policy);
         let woken = options.wake.handle();
+        // The pictures the desk shows are this device's, kept beside its
+        // desk: a change of the person's reaches them the same way.
+        let wallpapers = std::sync::Arc::new(wallpapers::Wallpapers::new(
+            options.state.clone(),
+            std::sync::Arc::clone(&woken),
+        ));
+        let watched_wallpapers = std::sync::Arc::clone(&wallpapers);
         // Artwork the session resolves off the loop wakes it when it is
         // ready, so the frame that painted the letter repaints with it.
         app_icons::set_wake(options.wake.handle());
         let settings_watch = settings_store::watch::watch_settings(move || {
+            let document = settings_store::load();
             *watched.lock_recover() =
-                settings_store::notification_policy::NotificationPolicy::load();
+                settings_store::notification_policy::NotificationPolicy::from_document(&document);
+            watched_wallpapers.follow(&document);
             woken();
         })
         .map_err(|error| tracing::debug!(%error, "settings are not watched"))
         .ok();
         let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
             surface.set_notifications(notices.clone());
+            let pictures = std::sync::Arc::clone(&wallpapers);
             Box::new(
                 DeskLayer::new(
                     Box::new(surface),
@@ -879,11 +1018,26 @@ impl Session {
                     CollaborationLaunchpad::new(),
                     Vec::new(),
                 )
-                .with_asks(Rc::clone(&asks)),
+                .with_asks(Rc::clone(&asks))
+                .with_wallpaper(move |workspace| pictures.picture(workspace)),
             )
         });
         desktop.set_gestures(options.config.gestures);
         let handle = desktop.with_policy(|policy| policy.handle().clone());
+        // The desk as this device left it: workspaces, their strips, and
+        // which of them are in front.
+        if let Some(kept) = options.state.as_deref().and_then(desk_layout::load_at) {
+            handle.replace_tree(kept);
+        }
+        workspaces::publish_host_actions(&handle);
+        // What the person's settings say the desk shows: a device that kept
+        // no picture yet takes the choice, and otherwise the workspaces keep
+        // the pictures this device kept for them until the setting changes.
+        wallpapers.set_active(handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id.0.to_string())
+        }));
+        wallpapers.start(&settings_store::load());
         let mut compositor = start(Box::new(policy))?;
         // What the services take in wakes the loop instead of waiting for
         // its next pass.
@@ -916,6 +1070,7 @@ impl Session {
             workspace_settings,
             portal,
             file_picker,
+            directory,
             lock,
         } = mount_sheets(&mut compositor, &mut doors, &options);
 
@@ -975,9 +1130,14 @@ impl Session {
             device,
             power,
             workspace_settings,
+            directory,
             portal,
             file_picker,
             lock,
+            notices: notices.clone(),
+            kept: RefCell::new(None),
+            state: options.state.clone(),
+            wallpapers,
             session_actions: options.session_actions,
             observed: RefCell::new(None),
             places_seen: RefCell::default(),
@@ -1189,6 +1349,13 @@ impl Session {
     #[must_use]
     pub fn workspace_settings(&self) -> Option<&WorkspaceSettingsSeat> {
         self.shared.workspace_settings.as_ref()
+    }
+
+    /// The workspace directory's seat: the workspaces this computer may
+    /// join or open, shown when the person asks for them.
+    #[must_use]
+    pub fn workspace_directory(&self) -> Option<&DirectorySeat> {
+        self.shared.directory.as_ref()
     }
 
     /// The portal sheet's seat: the portal, authentication and
@@ -1444,6 +1611,15 @@ impl Session {
         self.compositor.render()?;
         self.settle()?;
         self.shared.observe();
+        self.shared.keep_desk();
+        // The picture is the workspace in front's, which a change covering
+        // one workspace lands on.
+        self.shared
+            .wallpapers
+            .set_active(self.shared.handle.read(|tree| {
+                tree.active_workspace()
+                    .map(|workspace| workspace.id.0.to_string())
+            }));
         Ok(())
     }
 
@@ -1456,7 +1632,15 @@ impl Session {
             let timeout = self.compositor.next_wait();
             self.step(timeout)?;
         }
+        self.shared.keep_desk_now();
         Ok(())
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // The desk the person left, written whatever ended the session.
+        self.shared.keep_desk_now();
     }
 }
 
@@ -1641,6 +1825,7 @@ fn mount_device(
 struct Sheets {
     power: Option<PowerSeat>,
     workspace_settings: Option<WorkspaceSettingsSeat>,
+    directory: Option<DirectorySeat>,
     portal: Option<PortalSeat>,
     file_picker: Option<FilePickerSeat>,
     lock: Option<LockSeat>,
@@ -1664,6 +1849,14 @@ fn mount_sheets(compositor: &mut Compositor, doors: &mut Doors, options: &Option
         who,
         options,
     );
+    let directory = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::directory::definition(),
+        DirectorySeat::default(),
+        who,
+        options,
+    );
     let portal = mount_sheet(
         compositor,
         doors,
@@ -1684,6 +1877,7 @@ fn mount_sheets(compositor: &mut Compositor, doors: &mut Doors, options: &Option
     Sheets {
         power,
         workspace_settings,
+        directory,
         portal,
         file_picker,
         lock,

@@ -184,6 +184,7 @@ fn device_options() -> tilo_session::Options {
         session_actions: os_actions::perform_session_action,
         user: std::env::var("USER").unwrap_or_default(),
         verifier: tilo_session::unlock::installed(),
+        state: tilo_paths::state_dir(),
         ..Options::default()
     }
 }

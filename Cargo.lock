@@ -21517,6 +21517,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-tray-host",
  "tilo-ui",
+ "tilo-wallpapers",
  "tokio",
  "tracing",
  "url",

@@ -26,6 +26,8 @@ app-catalogue = { path = "../../packaging/app-catalogue" }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
 settings-store = { path = "../../system/settings-store" }
+# The pictures the desk shows: the image's own, and the person's.
+tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
 # The registries' listing as this device last accepted it, for the apps a
 # person can get.
 app-cli = { path = "../../packaging/app-cli" }
