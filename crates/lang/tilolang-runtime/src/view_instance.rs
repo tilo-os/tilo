@@ -663,6 +663,7 @@ impl ViewInstance {
             approved_by: None,
             at: Some(self.core.clock_now()),
             touched: vec![target.id_string()],
+            group: None,
         };
         let mut store = self.core.store.borrow_mut();
         let txn = store.begin()?;

@@ -90,9 +90,9 @@ host app, say) has the admin's whole authority over their account, so this
 socket serves it as the admin; in a Tilo Terminal tab it gets that Terminal's
 grants. For work attributed to the agent itself, it connects to the session's
 **agent door** instead (`$XDG_RUNTIME_DIR/tilo-session/agent.sock`), through
-`tilo-runtime-mcp --connect`, and acts as an agent member the person admits:
-attributed, limited to what the workspace grants that agent, and revoked with
-its membership. It is offered path-addressed tools (`tilo_ls`, `tilo_read`,
+`tilo-runtime-mcp --connect`, and works in a task run the person's admission
+starts: attributed to the task agent made for the connection, admitted by the
+run like any agent's work, shown in Tasks, and cut off when the run stops. It is offered path-addressed tools (`tilo_ls`, `tilo_read`,
 `tilo_do`, `tilo_find`) rather than ids: `notes/Todo/body#append-paragraph`.
 See [`runtime-mcp.md`](runtime-mcp.md#inside-a-tilo-session).
 ### Observing an installed native application's exact window
