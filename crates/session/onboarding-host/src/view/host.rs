@@ -20,7 +20,7 @@ use super::{
     KEY_CONNECT_NEARBY, KEY_CONNECT_RETRY, KEY_CREATE, KEY_EXISTING, KEY_FINISH, KEY_IMPORT,
     KEY_PREPARED_IMPORT, KEY_RECOVERY_KEY_CLOSE, KEY_RECOVERY_KEY_CONFIRM,
     KEY_RECOVERY_KEY_RESTORE, KEY_RECOVERY_KEY_SHOW, KEY_TOUR_BACK, KEY_TOUR_NEXT, KEY_TOUR_SKIP,
-    KEY_TOUR_START, OnboardingView, PickerPurpose,
+    OnboardingView, PickerPurpose,
 };
 
 /// The instance the app is mounted as: past every tab id, so setup never
@@ -175,7 +175,11 @@ impl Hosted {
 
     /// Run the app's pump: what it was asked lands in the seat.
     pub(super) fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
-        self.app.as_mut().is_some_and(|app| app.update(doc, path))
+        let changed = self.app.as_mut().is_some_and(|app| app.update(doc, path));
+        // A page that has not been laid out yet is presented by the frame
+        // that lays it out, so the pump's first look is not a change of its
+        // own: reporting it would present the page it just composed twice.
+        changed && self.node.is_some()
     }
 
     pub(super) fn widget(&self) -> Option<&dyn Widget> {
@@ -476,7 +480,6 @@ impl OnboardingView {
                 "backup-file" => KEY_CHOOSE_RESTORE,
                 "write-down-recovery-key" => KEY_RECOVERY_KEY_SHOW,
                 "another-copy" => KEY_BACKUP_ANOTHER,
-                "tour" => KEY_TOUR_START,
                 "install-codecs" => KEY_CODECS_INSTALL,
                 "accept-incomplete" => "onboarding.migration.continue",
                 _ => return None,

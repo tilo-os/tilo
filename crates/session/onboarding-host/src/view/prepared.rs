@@ -166,14 +166,17 @@ impl OnboardingView {
     }
 
     pub fn prepared_setup_status(&self) -> Option<&'static str> {
-        self.prepared_pending
-            .then_some(if self.prepared_worker.is_some() {
+        self.prepared_pending.then_some(
+            if self.prepared_worker.is_some()
+                || self.pressed.0.borrow().contains(KEY_PREPARED_IMPORT)
+            {
                 "busy"
             } else if self.prepared_review.is_some() {
                 "ready"
             } else {
                 "unavailable"
-            })
+            },
+        )
     }
     fn activate_prepared(
         &self,
@@ -379,7 +382,14 @@ impl OnboardingView {
             self.receive_from_peer();
             self.start_with_tpm_secret();
         }
-        if self.pressed.take(KEY_PREPARED_IMPORT) && self.prepared_worker.is_none() {
+        // The import waits, still pressed, for the frame that knows the home
+        // it reads the setup from and the identity directory it writes into,
+        // as an action that writes the journal waits for its write.
+        if self.prepared_worker.is_none()
+            && self.session.home.is_some()
+            && self.identity_dir.is_some()
+            && self.pressed.take(KEY_PREPARED_IMPORT)
+        {
             self.start_prepared_import();
         }
         self.settle_prepared_worker();
