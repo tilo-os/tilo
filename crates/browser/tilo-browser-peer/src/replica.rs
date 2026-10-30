@@ -32,10 +32,10 @@ use collab_types::Ed25519PublicKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::RoomId;
 use tilo_desktop_model::projection::{RoomLayout, room_layout, room_members};
+use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{
     Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, Store,
 };
-use tilo_peer_state::TransportOrigin;
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
@@ -227,8 +227,8 @@ impl Replicas {
     }
 
     /// The devices that may sign and be added to `route`'s channel: those
-    /// the room's governance lets read its record, the room's governor and
-    /// this device. `None` while the room's governance does not answer for
+    /// the room's governance lets read its record, the host the room was
+    /// joined through and this device. `None` while the room's governance does not answer for
     /// the route.
     pub(crate) fn participants(&self, route: &DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> {
         let workspace_id = route.workspace_id().ok()?;
@@ -247,7 +247,7 @@ impl Replicas {
                 .map(Ed25519PublicKey::from_bytes)
                 .collect();
             participants.insert(Ed25519PublicKey::from_bytes(
-                peer.authority().device_public_key,
+                view.room_host().device_public_key,
             ));
             participants.insert(Ed25519PublicKey::from_bytes(self.device.device_public_key));
             Ok(participants)
@@ -255,16 +255,16 @@ impl Replicas {
         .ok()
     }
 
-    /// One line per room for diagnostics: who governs it.
+    /// One line per room for diagnostics: the host it was joined through.
     pub(crate) fn describe(&self) -> String {
         self.rooms
             .keys()
             .filter_map(|workspace_id| {
                 self.with_room(*workspace_id, |view| {
                     Ok(format!(
-                        "room {}: governed by {}",
+                        "room {}: joined through {}",
                         view.peer().room(),
-                        hex::encode(&view.governor().device_public_key[..4])
+                        hex::encode(&view.room_host().device_public_key[..4])
                     ))
                 })?
                 .ok()
