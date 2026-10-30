@@ -1,15 +1,18 @@
 //! A member device's side of a workspace store.
 //!
-//! The device's replica ([`DirectSync`]) is the member's own history; a
-//! store is the copy another device of the workspace keeps for it while it
-//! is away. This crate joins the two:
+//! The device's replica ([`DirectSync`]) and its owner
+//! ([`NativeWorkspaceOwner`]) hold the member's own history; a store is the
+//! copy another device of the workspace keeps for it while it is away.
+//! This crate joins them:
 //!
-//! * it keeps what the device publishes at the store ([`StoreSession::keep`]),
-//!   which the store retains sealed and can never read;
+//! * it keeps what the device publishes at the store
+//!   ([`StoreSession::keep`], [`StoreSession::keep_room`]), which the store
+//!   retains sealed and can never read;
 //! * it catches the replica up from the store on start
-//!   ([`StoreSession::catch_up`]): it asks from the replica's own cursors
-//!   ([`cursors`]), and admits every replayed frame as its author's retained
-//!   history, the same admission a live frame from that device takes.
+//!   ([`StoreSession::catch_up`], [`StoreSession::catch_up_room`]): it asks
+//!   from the replica's own cursors ([`cursors`], [`room_cursors`]), and
+//!   admits every replayed frame as its author's retained history, the same
+//!   admission a live frame from that device takes.
 //!
 //! Membership is not decided here: the store admits the connecting device
 //! by the [`Access`](tilo_store_node::Access) its embedder gave it, and the
@@ -19,7 +22,10 @@
 
 use iroh::EndpointAddr;
 use neighbour_wire::NeighbourMsg;
+use tilo_desktop_model::RoomId;
 use tilo_peer_state::direct::DirectSync;
+use tilo_peer_state::owner::NativeWorkspaceOwner;
+use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_store_node::{Cursor, Lineage, Link, LinkError, advance};
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
@@ -77,22 +83,97 @@ impl StoreSession {
         self.workspace
     }
 
-    /// Keep `message` at the store. Returns whether it was a document frame
-    /// worth keeping; presence, surfaces and other live traffic is not
-    /// history and is not sent.
+    /// Keep `message` at the store. Returns whether it was a sealed document
+    /// frame it keeps; presence, surfaces and other live traffic is not
+    /// history, and neither is a cleartext frame a store can never hold.
     ///
     /// # Errors
     ///
     /// [`StoreLinkError::Store`] when the session broke or the store
     /// refused.
     pub async fn keep(&mut self, message: &NeighbourMsg) -> Result<bool, StoreLinkError> {
-        if author_of(message).is_none() {
+        if !sealed(message) {
             return Ok(false);
         }
         self.link
             .push(self.workspace, std::slice::from_ref(message))
             .await?;
         Ok(true)
+    }
+
+    /// Keep everything `owner` has published to `room` that it may send
+    /// now, in publication order. Returns how many frames the store took.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreLinkError::Store`] when the session broke or the store
+    /// refused, and [`StoreLinkError::Replica`] when the room is not held
+    /// here.
+    pub async fn keep_room(
+        &mut self,
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        now: std::time::SystemTime,
+    ) -> Result<usize, StoreLinkError> {
+        let outgoing: Vec<NeighbourMsg> = owner
+            .with_outgoing(room, now, |_, outgoing| {
+                outgoing
+                    .entries()
+                    .map(|entry| {
+                        postcard::from_bytes(entry.bytes()).map_err(|error| error.to_string())
+                    })
+                    .collect()
+            })
+            .map_err(StoreLinkError::Replica)?;
+        let mut kept = 0usize;
+        for message in &outgoing {
+            if self.keep(message).await? {
+                kept = kept.saturating_add(1);
+            }
+        }
+        Ok(kept)
+    }
+
+    /// Admit every frame the room lacks, from the store, until it holds
+    /// what the store has. Returns how many frames were replayed.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreLinkError::Store`] when the session broke, and
+    /// [`StoreLinkError::Replica`] when the owner refuses a frame: the
+    /// caller keeps the session and carries on, since the frames after a
+    /// refused one may still land.
+    pub async fn catch_up_room(
+        &mut self,
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        now: std::time::SystemTime,
+    ) -> Result<usize, StoreLinkError> {
+        let mut standing = room_cursors(owner, room).map_err(StoreLinkError::Replica)?;
+        let mut replayed = 0;
+        loop {
+            let replay = self.link.want(self.workspace, &standing).await?;
+            if replay.frames.is_empty() {
+                return Ok(replayed);
+            }
+            for message in &replay.frames {
+                let author = author_of(message).ok_or(StoreLinkError::NotAFrame)?;
+                owner
+                    .receive(
+                        room,
+                        TransportOrigin::RetainedRelayDelta(author),
+                        message.clone(),
+                        now,
+                    )
+                    .map_err(StoreLinkError::Replica)?;
+                replayed = replayed.saturating_add(1);
+            }
+            let before = standing.clone();
+            advance(&mut standing, &replay);
+            if !replay.more || standing == before {
+                return Ok(replayed);
+            }
+        }
     }
 
     /// Admit every frame the replica lacks, from the store, until it holds
@@ -140,16 +221,38 @@ pub fn workspace_of(room: &str) -> Result<u64, String> {
 /// history: what it asks a store to continue from.
 #[must_use]
 pub fn cursors(sync: &DirectSync) -> Vec<Cursor> {
-    sync.read(|peer| {
-        let room = peer.room().to_owned();
-        peer.replay_floors()
-            .into_iter()
-            .map(|(app, record, author, seq)| Cursor {
-                lineage: Lineage::of(&app, &room, &record, author),
-                after_seq: seq,
-            })
-            .collect()
-    })
+    sync.read(cursors_of)
+}
+
+/// Where `owner`'s copy of `room` stands, one cursor per author line of its
+/// sealed history.
+///
+/// # Errors
+///
+/// The room is not held here or is fenced.
+pub fn room_cursors(owner: &NativeWorkspaceOwner, room: RoomId) -> Result<Vec<Cursor>, String> {
+    owner.with_current(room, |view| Ok(cursors_of(view.peer())))
+}
+
+fn cursors_of(peer: &StatePeer) -> Vec<Cursor> {
+    let room = peer.room().to_owned();
+    peer.replay_floors()
+        .into_iter()
+        .map(|(app, record, author, seq)| Cursor {
+            lineage: Lineage::of(&app, &room, &record, author),
+            after_seq: seq,
+        })
+        .collect()
+}
+
+/// Whether `message` is a sealed document frame: the only history a store
+/// keeps, since it never holds a workspace's keys.
+#[must_use]
+pub fn sealed(message: &NeighbourMsg) -> bool {
+    match message {
+        NeighbourMsg::AppDocument { envelope, .. } => envelope.encryption.is_some(),
+        _ => false,
+    }
 }
 
 /// The device that signed `message`, when it is a document frame.
