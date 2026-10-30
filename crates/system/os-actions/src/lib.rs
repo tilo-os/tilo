@@ -402,6 +402,37 @@ pub trait Dispatcher {
     /// Returns an error message if the network is unreachable, the credentials are rejected, or
     /// the underlying call fails.
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String>;
+    /// Connect to `ssid`, which broadcasts no name, using `password` for
+    /// secured networks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the credentials are rejected or the
+    /// underlying call fails.
+    fn connect_hidden_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+        let _ = (ssid, password);
+        Err("joining a network with a hidden name is not supported by this dispatcher".into())
+    }
+    /// Forget the saved network `profile` (`NetworkManager`'s UUID): its
+    /// name and its password.
+    ///
+    /// # Errors
+    ///
+    /// A profile `NetworkManager` does not know, or what it refused.
+    fn forget_network(&self, profile: &str) -> Result<(), String> {
+        let _ = profile;
+        Err("forgetting saved networks is not supported by this dispatcher".into())
+    }
+    /// Whether the saved network `profile` connects on its own when it is in
+    /// reach.
+    ///
+    /// # Errors
+    ///
+    /// A profile `NetworkManager` does not know, or what it refused.
+    fn set_network_autoconnect(&self, profile: &str, on: bool) -> Result<(), String> {
+        let _ = (profile, on);
+        Err("saved network autoconnect is not supported by this dispatcher".into())
+    }
     /// Switch the active power profile.
     ///
     /// # Errors
@@ -497,6 +528,15 @@ impl Dispatcher for RealDispatcher {
     }
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
         network::connect_wifi(ssid, password)
+    }
+    fn connect_hidden_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+        network_settings::connect_hidden_wifi(ssid, password)
+    }
+    fn forget_network(&self, profile: &str) -> Result<(), String> {
+        network::forget_network_profile(profile)
+    }
+    fn set_network_autoconnect(&self, profile: &str, on: bool) -> Result<(), String> {
+        network::set_network_autoconnect(profile, on)
     }
     fn set_power_profile(&self, profile: PowerProfile) -> Result<(), String> {
         power::set_power_profile(profile)
