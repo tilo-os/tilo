@@ -954,3 +954,56 @@ fn reported_tools(receipt: &VerificationReceipt) -> Vec<Property> {
 }
 
 ui::reach_tests!(ChipDesignShell);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    use ui::framework::ResourceApp;
+    use ui::framework::testing::TestApp;
+    use ui::tilo_actions::ResourceSpec;
+
+    /// The document read of the first resource of `kind` any scenario
+    /// publishes, invoked as `tilo_read` on it does.
+    fn read_first(kind: &str) -> ui::serde_json::Value {
+        for scenario in <super::ChipDesignShell as ResourceApp>::scenarios() {
+            let mut app = TestApp::<super::ChipDesignShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            app.settle();
+            let resources = app.harness().resources();
+            if let Some((resource, read)) = document_read(&resources, kind) {
+                return app
+                    .call_on(&resource, &read, ui::serde_json::json!({}))
+                    .unwrap_or_else(|error| panic!("{kind} in {scenario}: {error}"))
+                    .unwrap_or_else(|| panic!("the read of {kind} answers"));
+            }
+        }
+        panic!("no scenario publishes a {kind} with a document read");
+    }
+
+    fn document_read(resources: &[ResourceSpec], kind: &str) -> Option<(String, String)> {
+        resources.iter().find_map(|resource| {
+            resource
+                .actions
+                .iter()
+                .find(|action| resource.kind == kind && action.contract.reads_document())
+                .map(|read| (resource.id.as_str().to_owned(), read.id.clone()))
+                .or_else(|| document_read(&resource.children, kind))
+        })
+    }
+
+    #[test]
+    fn a_report_and_a_receipt_are_read_through_the_project_read() {
+        let answer = read_first("chip_design.project.report");
+        assert!(answer.is_object(), "{answer}");
+        let answer = read_first("chip_design.project.verification");
+        assert!(answer.is_object(), "{answer}");
+    }
+
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<super::ChipDesignShell>()
+        {
+            panic!("{failures}");
+        }
+    }
+}

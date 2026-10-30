@@ -1443,13 +1443,13 @@ mod tests {
             children.iter().all(running),
             "a policy behind the owner's record withdraws nothing by itself"
         );
-        let sandbox = sandbox_revocation::Sandbox::capture(
+        let witness = sandbox_revocation::Sandbox::capture(
             children[0].id(),
             (ordinary, kept.id.clone(), "person".into()),
             std::slice::from_ref(&kept),
         )
         .unwrap();
-        let status = sandbox.authorization_status(&lock(&authority.published));
+        let status = witness.authorization_status(&lock(&authority.published));
         assert_eq!(status, Ok(sandbox_revocation::Standing::Awaiting));
         let (mut late, admitted) = launch(
             authority.clone(),
