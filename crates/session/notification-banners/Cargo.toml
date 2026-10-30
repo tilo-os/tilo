@@ -6,6 +6,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "tilo-notification-banners"
+path = "src/main.rs"
+
 [dependencies]
 tilo-desktop = { path = "../desktop" }
 # A framework app: the banners' resource, effects and surface.
@@ -15,6 +19,11 @@ winit.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+base64.workspace = true
+image = { workspace = true, features = ["png"] }
+tilo-compositor = { path = "../compositor" }
+# The session that starts the banners, and the headless presentation it runs.
+tilo-session = { path = "../session" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 
 [lints]

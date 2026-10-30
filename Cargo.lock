@@ -20069,8 +20069,12 @@ dependencies = [
 name = "tilo-notification-banners"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "image",
  "tilo-app",
+ "tilo-compositor",
  "tilo-desktop",
+ "tilo-session",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
