@@ -4,11 +4,11 @@ use super::tests::{
 };
 use super::{NetCmd, PersonalFabricPayload, ShellNetwork};
 use crate::shell::continuity_policy::ContinuityPolicySnapshot;
-use crate::shell::device_fabric::{InputLease, PersonalFabricAction, PersonalFabricActionEnvelope};
 use crate::shell::device_fabric_runtime::{
     grant_input_control, person_layout, revoke_input_control,
 };
 use std::collections::BTreeSet;
+use tilo_device_fabric::{InputLease, PersonalFabricAction, PersonalFabricActionEnvelope};
 use tilo_network_actor::fabric::DeviceId;
 use tokio::sync::mpsc;
 
@@ -226,8 +226,8 @@ fn recording_a_manual_decline_never_waits_for_the_disk() {
 
 #[test]
 fn automatic_display_input_requires_current_enrolment_and_certified_route() {
-    // A personal-device certificate enrols its device by itself
-    // (docs/device-mesh.md). This controller proves one for its assigned
+    // A personal-device certificate enrols its device by itself.
+    // This controller proves one for its assigned
     // workspaces only: its route is the person's, and only the registration
     // the fixture made enrols it.
     let mut fixture = Fixture::with_controller(authenticated_workspace_peer);
@@ -401,7 +401,7 @@ fn automatic_display_input_exclusion_revokes_only_the_matching_automatic_lease()
 /// The input the native compositor would take next, past its release barriers.
 fn admitted_spatial_input() -> Vec<(
     tilo_network_actor::fabric::DeviceId,
-    crate::shell::device_fabric::FabricInputEvent,
+    tilo_device_fabric::FabricInputEvent,
 )> {
     use crate::shell::device_fabric_runtime::{SpatialInputBatch, take_spatial_input_batches};
     let [_, SpatialInputBatch::Inputs(inputs)] = take_spatial_input_batches() else {
@@ -412,8 +412,8 @@ fn admitted_spatial_input() -> Vec<(
 
 #[test]
 fn spatial_protocol_crosses_certified_ingress_and_publishes_a_bound_ack() {
-    use crate::shell::device_fabric::FabricInputEvent;
     use crate::shell::device_fabric_runtime::handle_spatial_action;
+    use tilo_device_fabric::FabricInputEvent;
     let mut fixture = Fixture::new();
     Fixture::policy(false);
     let lease = grant_input_control(&fixture.network, &fixture.controller).unwrap();
@@ -518,10 +518,10 @@ fn spatial_protocol_crosses_certified_ingress_and_publishes_a_bound_ack() {
 #[cfg(target_os = "linux")]
 #[test]
 fn spatial_cleanup_native_teardown_survives_full_input_and_transport_queues() {
-    use crate::shell::device_fabric::FabricInputEvent;
     use crate::shell::device_fabric_runtime::{
         flush_spatial_input, handle_spatial_action, send_spatial_input_bound,
     };
+    use tilo_device_fabric::FabricInputEvent;
     let mut fixture = Fixture::new();
     Fixture::policy(false);
     let local = fixture.network.local_device_fabric_identity().unwrap().0;
@@ -648,7 +648,7 @@ impl SpatialSeat {
     fn keys(&mut self) -> BTreeSet<u32> {
         let held = &mut self.held;
         for event in self.state.take_personal_fabric_input() {
-            if let crate::shell::device_fabric::FabricInputEvent::Key {
+            if let tilo_device_fabric::FabricInputEvent::Key {
                 keycode, pressed, ..
             } = event
             {
@@ -662,23 +662,19 @@ impl SpatialSeat {
         held.clone()
     }
 }
-fn spatial_key(keycode: u32, pressed: bool) -> crate::shell::device_fabric::FabricInputEvent {
-    crate::shell::device_fabric::FabricInputEvent::Key {
+fn spatial_key(keycode: u32, pressed: bool) -> tilo_device_fabric::FabricInputEvent {
+    tilo_device_fabric::FabricInputEvent::Key {
         keycode,
         pressed,
         modifiers: 0,
     }
 }
 #[cfg(target_os = "linux")]
-fn spatial_button(button: u32, pressed: bool) -> crate::shell::device_fabric::FabricInputEvent {
-    crate::shell::device_fabric::FabricInputEvent::PointerButton { button, pressed }
+fn spatial_button(button: u32, pressed: bool) -> tilo_device_fabric::FabricInputEvent {
+    tilo_device_fabric::FabricInputEvent::PointerButton { button, pressed }
 }
 #[cfg(target_os = "linux")]
-fn admit_spatial(
-    fixture: &Fixture,
-    nonce: [u8; 16],
-    event: crate::shell::device_fabric::FabricInputEvent,
-) {
+fn admit_spatial(fixture: &Fixture, nonce: [u8; 16], event: tilo_device_fabric::FabricInputEvent) {
     let route = fixture
         .network
         .current_personal_route(&fixture.controller)

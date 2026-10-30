@@ -83,7 +83,7 @@ glyph-join 12 apps/imager/src/setup/destination/installer_app.rs
 glyph-join 1 apps/imager/src/setup/destination/installer_app/surface.rs
 glyph-join 1 apps/imager/src/setup/destination/step_indicator.rs
 glyph-join 2 crates/session/shell/src/bin/shots/main.rs
-glyph-join 6 crates/session/shell/src/bin/shots/scenario.rs
+glyph-join 5 crates/session/shell/src/bin/shots/scenario.rs
 glyph-join 1 crates/session/shell/src/compositor/backend/drm/seat_diag.rs
 glyph-join 1 crates/session/shell/src/compositor/native.rs
 glyph-join 1 crates/session/shell/src/portal/camera.rs
@@ -102,6 +102,7 @@ glyph-join 1 crates/session/shell/src/shell/overlay_host/shortcuts.rs
 glyph-join 1 crates/session/shell/src/shell/portal_dialog.rs
 glyph-join 4 crates/session/shell/src/shell/room_activity.rs
 glyph-join 1 crates/session/shell/src/shell/search/providers/actions.rs
+glyph-join 1 crates/session/speaker-service/src/settings.rs
 glyph-join 1 crates/session/shell/src/shell/speaker_settings.rs
 glyph-join 3 crates/session/shell/src/shell/test_control.rs
 glyph-join 1 crates/session/shell/src/shell/workspace_drop.rs

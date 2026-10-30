@@ -34,7 +34,6 @@ exclude = [
     "vendor/alacritty_terminal",
     "vendor/twilight-http-ratelimiting",
     "vendor/iroh",
-    "vendor/iroh-gossip",
     "vendor/netwatch",
     "vendor/accesskit_unix",
     "vendor/atspi",
@@ -307,6 +306,7 @@ members = [
     "crates/platform/tilo-input-context",
     "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
+    "crates/platform/tilo-durable-writer",
     "crates/platform/tilolang-tilo",
     "crates/platform/tilolang-host",
     "crates/platform/tilolang-mail",
@@ -400,10 +400,14 @@ members = [
 
     # Session
     "crates/session/color-pipeline",
+    "crates/session/compositor",
+    "crates/session/surface-host",
+    "crates/session/session",
     "crates/session/console-control",
     "crates/session/onboarding-walk",
     "crates/session/control-cli",
     "crates/session/desktop-model",
+    "crates/session/desktop-policy",
     "crates/session/desktop-search",
     "crates/session/desktop-surface",
     "crates/session/frame-metrics",
@@ -415,17 +419,28 @@ members = [
     "crates/session/network-actor",
     "crates/session/network-secret-agent",
     "crates/session/notification-banners",
+    "crates/session/notifications-service",
     "crates/session/onboarding",
+    "crates/session/onboarding-host",
     "crates/session/output-passes",
     "crates/session/overview",
     "crates/session/polkit-agent",
+    "crates/session/portal",
     "crates/session/quick-settings",
     "crates/session/session-record",
     "crates/session/sheets",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
     "crates/session/audio-service",
+    "crates/session/bluetooth-agent",
+    "crates/session/service",
+    "crates/session/connectivity-service",
+    "crates/session/system-service",
+    "crates/session/settings-service",
     "crates/session/messaging-service",
+    "crates/session/device-fabric",
+    "crates/session/nearby-service",
+    "crates/session/speaker-service",
     "crates/session/topbar",
     "crates/session/tray-host",
     "crates/session/wayland-ext",
@@ -742,7 +757,6 @@ iroh = "1.0.3"
 iroh-base = "1.0.3"
 # Disable unused RPC support and its platform certificate dependencies.
 iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
-iroh-gossip = "0.101.0"
 # iroh-blobs' BAO tree and RPC layer, for the content store's file-backed
 # provider (versions follow iroh-blobs).
 bao-tree = { version = "0.16", default-features = false, features = ["experimental-mixed"] }
@@ -1314,6 +1328,10 @@ hyper-proxy2 = { path = "vendor/hyper-proxy2" }
 # text is measured and kerned at the width it is drawn. See
 # vendor/cosmic-text/TILO-PATCH.md.
 cosmic-text = { path = "vendor/cosmic-text" }
+# Rounds layout onto the display's device pixels at any scale, not only whole
+# logical pixels, and measures a flex item at the cross size it is laid out
+# at. See vendor/taffy/TILO-PATCH.md.
+taffy = { path = "vendor/taffy" }
 # Erasing above the cursor clears the first line too. See
 # vendor/alacritty_terminal/PROVENANCE.md.
 alacritty_terminal = { path = "vendor/alacritty_terminal" }
@@ -1353,6 +1371,9 @@ rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 # compositor alive and treat the vanished object as a disconnected client.
 # See vendor/wayland-backend/TILO-PATCH.md.
 wayland-backend = { path = "vendor/wayland-backend" }
+# Tablet pads (zwp_tablet_pad_v2) for clients, which smithay 0.7 lacks.
+# See vendor/smithay/TILO-PATCH.md.
+smithay = { path = "vendor/smithay" }
 # The HTML5 entity table as offsets into two string literals instead of 2125
 # pairs of pointers the loader relocates in every app process (it is in the
 # shared runtime through the Markdown codec). See
@@ -1372,10 +1393,9 @@ regex-syntax = { path = "vendor/regex-syntax" }
 serde_json = { path = "vendor/serde_json" }
 # An idle endpoint wakes for nothing: no re-STUN tick and no home relay once
 # the relay map is empty, no wall-clock poll on Linux (a timerfd that the
-# kernel cancels on resume or a clock step replaces it), and no gossip cache
-# sweep once a topic's caches are empty. See each crate's TILO-PATCH.md.
+# kernel cancels on resume or a clock step replaces it). See each crate's
+# TILO-PATCH.md.
 iroh = { path = "vendor/iroh" }
-iroh-gossip = { path = "vendor/iroh-gossip" }
 netwatch = { path = "vendor/netwatch" }
 # Members depend on `workspace-hack = "0.1"`; this workspace builds the local
 # crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).

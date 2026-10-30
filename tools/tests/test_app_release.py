@@ -181,8 +181,7 @@ class AppReleaseTests(unittest.TestCase):
             self.assertEqual([], app_release.apps_from_changes(
                 ['docs/architecture.md', 'tools/ci/measure.sh'], CATALOG))
         with self.subTest(phase='check scheduling is not an app release dependency'):
-            paths = ['tools/ci/suites.py', 'tools/tests/test_suites.py',
-                     'docs/t.md']
+            paths = ['tools/ci/suites.py', 'tools/tests/test_suites.py']
             self.assertEqual([], app_release.apps_from_changes(paths, CATALOG))
             self.assertEqual({'binary': [], 'packaging': [], 'verification': []},
                              app_release.input_classification(paths))

@@ -21,7 +21,7 @@
 # OUT/generation (the OS release's).
 #
 # With TILO_RELEASE_OUT=DIR a release publishes the archive, digest and signature in DIR instead
-# of OUT's: a product whose release is derived from its build (products.toml's `release_build`)
+# of OUT's: a product whose release is derived from its build
 # publishes that image from stable and the build's from main. The receipt goes to OUT either way,
 # where the check's pointer reads it. A receipt-extra.json beside the archive, one JSON object on
 # one line, adds its members to the receipt (the web entry: the image it replaces, the version

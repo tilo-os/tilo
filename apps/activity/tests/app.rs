@@ -349,3 +349,22 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     })
     .unwrap_or_else(|error| panic!("{error}"));
 }
+
+#[test]
+fn removing_a_morning_source_asks_the_session_through_the_published_effect() {
+    english();
+    let mut app = TestApp::<App>::for_person("ada").expect("open");
+    asked(&mut app);
+    app.effect(&activity::ActivityEffect::RemoveSource {
+        key: "weather".to_owned(),
+    })
+    .expect("the window answers its own effect");
+    let requests = asked(&mut app);
+    let InvokeArgument::Json(argument) = &read(&requests, wire::SOURCE).argument else {
+        panic!("the request names the source");
+    };
+    let request: wire::SourceRequest =
+        serde_json::from_value(serde_json::Value::Object(argument.clone())).unwrap();
+    assert_eq!(request.key, "weather");
+    assert_eq!(request.command, wire::SourceCommand::Remove);
+}

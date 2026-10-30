@@ -66,7 +66,9 @@ fn attach(app: &InstalledApp, room: RoomId, origin: &str) -> std::io::Result<Own
             // It ended: start another.
             Err(error) => {
                 tracing::info!(%error, package_id = %app.package_id, origin, "an origin connector's door is closed");
-                connectors.remove(&key);
+                super::lock(&CONNECTORS)
+                    .get_or_insert_with(HashMap::new)
+                    .remove(&key);
             }
         }
     }

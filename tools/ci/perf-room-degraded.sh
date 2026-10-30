@@ -3,7 +3,7 @@
 # nobody else shares: the room-load bench measures the workload with the
 # machine to itself, with 70 % of the host's busiest second held back, and past
 # the room's own guest cap. tools/perf/room_capacity.py judges it against the
-# budget in docs/architecture/hosting-capacity.md; this script sets the
+# budget; this script sets the
 # degradation and nothing else.
 #
 #   perf-room-degraded.sh [command [args...]]    a command, run under it

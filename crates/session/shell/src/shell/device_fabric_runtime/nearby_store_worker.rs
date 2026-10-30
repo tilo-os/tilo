@@ -120,9 +120,7 @@ pub(super) fn on_store_thread_unhurried(
 /// Run `operation` on the store, on its thread, after every job queued
 /// before it; nothing follows on the loop.
 pub(super) fn on_store(
-    operation: impl FnOnce(
-        &mut crate::shell::nearby_transfer::NearbyTransferStore,
-    ) -> Result<(), String>
+    operation: impl FnOnce(&mut tilo_nearby_service::NearbyTransferStore) -> Result<(), String>
     + Send
     + 'static,
 ) {
@@ -269,8 +267,8 @@ pub(super) fn settle(network: &ShellNetwork) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::nearby_transfer::NearbyTransferStore;
     use tilo_lock::MutexRecover as _;
+    use tilo_nearby_service::NearbyTransferStore;
 
     fn network() -> ShellNetwork {
         crate::shell::network::shell_network_for_test(
@@ -328,15 +326,14 @@ mod tests {
         let source = source_dir.path().join("report.bin");
         std::fs::write(&source, vec![7_u8; 64 * 1024]).expect("source file");
         let transfer_id = crate::random::nonzero::<16>();
-        let staging = crate::shell::nearby_transfer::Staging::for_path(
+        let staging = tilo_nearby_service::Staging::for_path(
             &source,
             "staging-target".into(),
             tilo_clock::unix_now_ms(),
             transfer_id,
         )
         .expect("portable name");
-        let shape =
-            crate::shell::nearby_transfer::StageShape::of_path(&source).expect("source shape");
+        let shape = tilo_nearby_service::StageShape::of_path(&source).expect("source shape");
         super::super::stage_outside_store_lock(staging, shape, |reserved| {
             assert!(
                 super::super::nearby_store_cell().try_lock().is_ok(),
@@ -398,7 +395,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     fn drive_every_loop_entry_point(network: &ShellNetwork) {
-        use crate::shell::device_fabric::PersonalFabricAction;
+        use tilo_device_fabric::PersonalFabricAction;
         use tilo_network_actor::fabric::DeviceId;
 
         let source = DeviceId::new("loop-guard-source").expect("device id");
@@ -451,7 +448,7 @@ mod tests {
             PersonalFabricAction::NearbyTransferOffer {
                 transfer_id,
                 name: "film.mkv".into(),
-                kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+                kind: tilo_nearby_service::TransferKind::MediaHandoff,
                 total_bytes: 4,
                 content_hash: [4; 32],
             },

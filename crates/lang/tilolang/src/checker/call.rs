@@ -110,6 +110,8 @@ impl Checker<'_> {
             "created" | "updated" | "history" => {
                 return self.builtin_versions(name, args, span);
             }
+            "unseen" => return self.builtin_unseen(args, span),
+            "changes" => return self.builtin_changes(args, span),
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
@@ -1487,6 +1489,13 @@ impl Checker<'_> {
             }
             (Ty::Record(k), "group") if k.app == crate::host::HOST_APP && k.name == "Match" => {
                 self.match_group(r, args, span)
+            }
+            (Ty::Record(k), "is")
+                if k.app == crate::host::HOST_APP
+                    && crate::host::NAMES_AN_ACTION.contains(&k.name.as_str()) =>
+            {
+                let name = k.name.clone();
+                self.names_action(r, &name, args, span)
             }
             (other, _) => {
                 let t = self.show(other);

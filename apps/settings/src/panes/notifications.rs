@@ -238,7 +238,7 @@ pub struct NotificationsArea {
     sample: bool,
     /// The installed apps, read off the UI thread after the window's first
     /// frame ([`Self::start_read`]).
-    read: crate::device_read::DeviceRead<Vec<InstalledNotificationApp>>,
+    pub(crate) read: crate::device_read::DeviceRead<Vec<InstalledNotificationApp>>,
     /// The rows, kept for the policy version and locale they show, until
     /// the first mute they show runs out.
     rows: crate::effects::RowsMemo<(ui::storage::SettingsRevision, u64, Option<i64>)>,
@@ -293,16 +293,6 @@ impl NotificationsArea {
         let sample = self.sample;
         let per_app = self.prefs.borrow().get().per_app.clone();
         self.read.start(move || Self::read_apps(sample, &per_app))
-    }
-
-    /// Whether the read [`Self::start_read`] started has ended.
-    pub(crate) fn read_finished(&self) -> bool {
-        self.read.is_finished()
-    }
-
-    /// What waits off the UI thread for the started read to end.
-    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
-        self.read.wait()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,

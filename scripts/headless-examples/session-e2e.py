@@ -54,7 +54,7 @@ Speed: one session serves every check; the restart and `dev` start it again. No 
 fixed time: each waits for the condition it needs (a listing answered with `--wait`, a frame
 presented, a line from the REPL), bounded by HANG_BOUND seconds, and fails with what it saw.
 
-Where it runs: on this machine, never on the rcargo builders. Tilo's sandboxes mount a fresh
+Where it runs: on this machine, never on the remote builders. Tilo's sandboxes mount a fresh
 /proc, which the builders' containers refuse (aae4effbff4), so no app can start there. The
 session's build is the nested-session build of this tree: TILO_NESTED_SESSION_BUILD, else
 target/nested-session; --build makes it first (dist/dev/nested-session-build.sh, compiled on

@@ -189,21 +189,12 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::PublishSearchIndex { .. }
             | CollabRequest::ClearContinuation { .. }
             | CollabRequest::ReportHandoff { .. }
-            | CollabRequest::CompleteInvocation { .. }
             | CollabRequest::UpdateInvocation { .. }
             | CollabRequest::RecordLocalEffect { .. }
             | CollabRequest::RemoteAction { .. }
-            | CollabRequest::InvokePublishedAction { .. }
-            | CollabRequest::QueryActionDirectory { .. }
-            | CollabRequest::ResolvePublishedAction { .. }
-            | CollabRequest::InvokeResolvedPublishedAction { .. }
-            | CollabRequest::PublishedInvocationStatus { .. }
-            | CollabRequest::CancelPublishedInvocation { .. }
-            | CollabRequest::LaunchPublishedApplication { .. }
             | CollabRequest::LaunchInstalledApplication { .. }
             | CollabRequest::ReportTaskRun { .. }
             | CollabRequest::InvokeTaskAction { .. }
-            | CollabRequest::ManagedInvocationAttempt { .. }
             | CollabRequest::TaskRunCancellation { .. } => {
                 // Session-local and shell-owned control-plane commands never
                 // fan out through another application's document channel.

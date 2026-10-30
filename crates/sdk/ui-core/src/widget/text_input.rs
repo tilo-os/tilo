@@ -1656,9 +1656,10 @@ impl TextInput {
             let _ = crate::bound_dispatch::with_physical_text(physical_text, || {
                 action.emit(self.text.clone())
             });
-        } else {
-            self.publish_local_state();
         }
+        // The field's own state stays the one a bound local edit reads: an
+        // action publishing the text does not stand in for it.
+        self.publish_local_state();
         if let Some(callback) = self.on_change.as_mut() {
             callback(&self.text);
         }
@@ -4038,6 +4039,12 @@ impl TextInput {
     /// document view (a block, a table cell, a code view).
     pub(crate) fn keep_document_inset(&mut self) {
         self.document_inset = true;
+    }
+
+    /// Set the text flush with the field's edge, without the document's inset: a body read
+    /// where it stands under a name, as a message's does.
+    pub(crate) fn drop_document_inset(&mut self) {
+        self.document_inset = false;
     }
 
     /// Where the trailing accessory sits: a square at the field's trailing

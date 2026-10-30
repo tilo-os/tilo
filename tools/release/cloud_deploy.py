@@ -340,40 +340,6 @@ class Git:
     def count(self, old: str, new: str) -> int:
         return int(self.run("rev-list", "--count", f"{old}..{new}").stdout.strip())
 
-    def image_unchanged(self, service: Service, old: str, new: str) -> str | None:
-        """Why `service`'s image built at `new` may differ from the one built at `old`, or None.
-
-        t builds an image once per set of inputs and reuses it for later commits, so stable
-        publishes an image again only when what it is built from changed. The image checks'
-        definitions in t.toml and the files they read are what t keys that build by.
-        """
-        names = (f"image-{service.name}-context", f"image-{service.name}")
-
-        def checks(revision: str) -> dict[str, dict]:
-            shown = self.run("show", f"{revision}:t.toml", check=False)
-            if shown.returncode:
-                return {}
-            try:
-                document = tomllib.loads(shown.stdout)
-            except tomllib.TOMLDecodeError:
-                return {}
-            return {each["name"]: each for each in document.get("check", []) if each.get("name") in names}
-
-        before, after = checks(old), checks(new)
-        if not after:
-            return f"t.toml at {new[:12]} declares no image checks for it"
-        if before != after:
-            return f"its image checks in t.toml changed between {old[:12]} and {new[:12]}"
-        inputs = sorted({glob for each in after.values() for glob in each.get("inputs", [])})
-        if not inputs:
-            return "its image checks list no inputs"
-        diff = self.run("diff", "--quiet", old, new, "--", *(f":(glob){glob}" for glob in inputs), check=False)
-        if diff.returncode == 1:
-            return f"files it is built from changed between {old[:12]} and {new[:12]}"
-        if diff.returncode:
-            raise PromotionError(f"git diff {old[:12]} {new[:12]}: {diff.stderr.strip()}")
-        return None
-
     def pulls(self, old: str, new: str) -> list[tuple[str, str]]:
         """The branch's own commits between two revisions, newest first, as (short id, title)."""
         lines = self.run("log", "--first-parent", "--format=%h%x09%s", f"{old}..{new}").stdout.splitlines()
@@ -456,30 +422,16 @@ def verified_images(registry: Registry, git: Git, revision: str, receipts: Mappi
 
 
 def receipts_revision(git: Git, receipts: Mapping[str, Image], target: Target) -> str | None:
-    """The revision a set of receipts deploys: the newest of theirs.
-
-    Stable publishes an image again only when what it is built from changed, so the receipts of
-    stable's latest images often name different commits. They deploy the newest one only if the
-    other images' inputs did not change in between, so all are what that commit builds.
-    """
+    """The revision a set of receipts deploys: every image is built from that one commit."""
     if not receipts:
         return None
     if set(receipts) != {service.name for service in target.services}:
         raise PromotionError("give a receipt for every service of the target, or none: "
                              + ", ".join(each.name for each in target.services))
-    revisions = {name: git.commit(image.revision) for name, image in receipts.items()}
-    newest = next((each for each in revisions.values()
-                   if all(git.contains(other, each) for other in revisions.values())), None)
-    if newest is None:
-        raise PromotionError("the receipts come from different revisions on diverged histories: "
-                             + ", ".join(sorted(set(revisions.values()))))
-    for name, revision in revisions.items():
-        if revision != newest:
-            why = git.image_unchanged(target.service(name), revision, newest)
-            if why:
-                raise PromotionError(f"the receipts come from different revisions ({revision[:12]}, "
-                                     f"{newest[:12]}) and {name} may differ: {why}")
-    return newest
+    revisions = {git.commit(image.revision) for image in receipts.values()}
+    if len(revisions) != 1:
+        raise PromotionError("the receipts come from different revisions: " + ", ".join(sorted(revisions)))
+    return revisions.pop()
 
 
 @dataclasses.dataclass(frozen=True)

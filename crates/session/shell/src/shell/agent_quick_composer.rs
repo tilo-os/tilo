@@ -14,7 +14,7 @@ use tilo_reference::{ProgramStep, ResourceAt, StepChange, StepPreview};
 use ui::widget::{
     BlockEditor, Button, ButtonRole, Chip, Column, Container, ControlSize, Decorator,
     DisclosureGroup, Divider, Dropdown, ListRow, Popover, PopoverSide, ProgramStepView, Scrollable,
-    Slot, SlotHandle,
+    Slot, SlotHandle, StepAnswer,
 };
 use ui::widget::{Row, Spinner, Text, TextInput, When, Widget};
 use ui::{LocalState, Theme};
@@ -273,34 +273,25 @@ fn work_list(
         .with_intrinsic_height()
         .with_rhythm(ui::tokens::Rhythm::Section);
     for (index, step) in programs.iter().enumerate() {
-        let (open, undo, confirm, decline) = (
-            pressed(presses),
-            pressed(presses),
-            pressed(presses),
-            pressed(presses),
-        );
         let task = task.to_owned();
+        let (open, undo, resolve) = (pressed(presses), pressed(presses), pressed(presses));
         column = column.push(
             ProgramStepView::new(format!("agent-quick-step-{index}"), step.clone())
                 .with_disclosure(folds)
-                .on_open(move |resource| open(WorkPress::Open(resource.clone())))
-                .on_undo(move |change| {
-                    undo(WorkPress::Undo {
+                .answering(move |answer| match answer {
+                    StepAnswer::Open(resource) => open(WorkPress::Open(resource)),
+                    StepAnswer::Undo(change) => undo(WorkPress::Undo {
                         task: task.clone(),
-                        change: change.clone(),
-                    });
-                })
-                .on_confirm(move |preview| {
-                    confirm(WorkPress::Resolve {
-                        preview: preview.clone(),
+                        change,
+                    }),
+                    StepAnswer::Confirm(preview) => resolve(WorkPress::Resolve {
+                        preview,
                         approve: true,
-                    });
-                })
-                .on_decline(move |preview| {
-                    decline(WorkPress::Resolve {
-                        preview: preview.clone(),
+                    }),
+                    StepAnswer::Decline(preview) => resolve(WorkPress::Resolve {
+                        preview,
                         approve: false,
-                    });
+                    }),
                 })
                 .into_widget(),
         );
@@ -686,15 +677,17 @@ impl Default for AgentQuickComposer {
     }
 }
 
-/// How wide the composer is beside its subject: one width whatever it
-/// shows, so an answer arriving grows it downwards only.
-const COMPOSER_WIDTH: f32 = 360.0;
-/// Below this viewport width the composer is a sheet along the bottom.
-const SHEET_BELOW: f64 = 600.0;
+/// How wide the composer is beside its subject: a list panel's width
+/// whatever it shows, so an answer arriving grows it downwards only.
+const COMPOSER_WIDTH: f32 = ui::tokens::Metrics::BASE.panel_width_list;
+/// Below a sheet's width the viewport has no room beside the subject, and
+/// the composer is a sheet along the bottom.
+const SHEET_BELOW: f64 = ui::tokens::Metrics::BASE.panel_width_sheet as f64;
 /// The test id of the area showing the work: the steps, the answer view and the reply.
 const WORK_AREA: &str = "agent-quick-work";
-/// The tallest the work area starts, before the viewport it stands in is known.
-const WORK_MAX: f32 = 360.0;
+/// The tallest the work area starts, before the viewport it stands in is
+/// known: as tall as the composer is wide.
+const WORK_MAX: f32 = COMPOSER_WIDTH;
 /// The share of the viewport's height the work area may take; past it the work scrolls,
 /// following its end, so the field and its controls stay in view.
 const WORK_SHARE: f64 = 0.5;

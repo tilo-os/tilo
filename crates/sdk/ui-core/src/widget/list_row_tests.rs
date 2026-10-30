@@ -929,3 +929,55 @@ fn a_rows_skeleton_paints_where_the_row_does() {
         "the skeleton's bars start where the row's text does"
     );
 }
+
+/// On a touchscreen a row a person presses (one that opens, one with a checkbox) is at least
+/// the minimum target tall, as a button's face grows to it, so a finger never lands on the
+/// row beside it; a row that only reads keeps its height, and a mouse keeps the stock height.
+#[test]
+fn a_pressed_row_is_a_fingers_target_tall_on_touch() {
+    use crate::interaction::InteractionEnvironment;
+    let theme = Theme::light();
+    let single = f64::from(theme.tokens.metrics.row_single);
+    let touch = f64::from(InteractionEnvironment::TOUCH.minimum_collection_row());
+    let rows: [(&str, fn() -> ListRow, bool); 3] = [
+        (
+            "opening",
+            || ListRow::new("opens", "Q3 plan").on_activate(|| {}),
+            true,
+        ),
+        (
+            "checkbox",
+            || ListRow::new("checkbox", "Buy oat milk").checkbox(false, |_| {}),
+            true,
+        ),
+        (
+            "reading",
+            || ListRow::new("reads", "Battery").value("82%"),
+            false,
+        ),
+    ];
+    for (name, row, pressed) in rows {
+        for (input, want) in [
+            (InteractionEnvironment::POINTER, single),
+            (
+                InteractionEnvironment::TOUCH,
+                if pressed { touch } else { single },
+            ),
+        ] {
+            let mut h = FrameHarness::for_root(
+                crate::State::new(),
+                Column::new().push(Box::new(row())),
+                (360, 200),
+                theme.clone(),
+            );
+            h.set_interaction_environment(input);
+            h.relayout_at((360, 200)).expect("layout");
+            let inspection = h.inspection();
+            let height = rect_of(find(&inspection.root, "ListRow").expect("the row")).height();
+            assert!(
+                (height - want).abs() < 0.5,
+                "the {name} row is {want} tall for {input:?}, not {height}"
+            );
+        }
+    }
+}

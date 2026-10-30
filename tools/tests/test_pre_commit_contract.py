@@ -3,38 +3,12 @@ import re
 import shutil
 import subprocess
 import tempfile
-import tomllib
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 HOOK = ROOT / ".githooks" / "pre-commit"
-T_TOML = ROOT / "t.toml"
-
-
-class PreCommitContractTests(unittest.TestCase):
-    def test_local_hook_stays_non_compiling_while_t_owns_absolute_clippy(self) -> None:
-        with self.subTest(phase='local hook remains non compiling'):
-            hook = HOOK.read_text(encoding="utf-8")
-
-            for command in ("cargo check", "cargo clippy", "cargo test", "cargo nextest"):
-                self.assertNotIn(command, hook)
-        with self.subTest(phase='local hook admits only declared lock updates'):
-            hook = HOOK.read_text(encoding="utf-8")
-
-            self.assertIn('python3 "$root/tools/ci/check_lock_update.py" --root "$root" || fail=1', hook)
-            self.assertIn("TILO_CARGO_UPDATE=", hook)
-        with self.subTest(phase='t owns the absolute clippy gate'):
-            [clippy] = [family for family in tomllib.loads(T_TOML.read_text(encoding="utf-8"))["cargo"]
-                        if family["name"] == "clippy"]
-
-            self.assertEqual(clippy["tool"], "clippy")
-            self.assertIn("--all-targets", clippy["args"])
-            self.assertEqual(clippy["trailing"], ["-D", "warnings"])
-            # Native SDKs only some packages need stay with the checks that build them.
-            self.assertNotIn("--all-features", clippy["args"])
-            self.assertNotIn("--cap-lints", clippy["args"])
 
 
 class PreCommitMergeContentTests(unittest.TestCase):

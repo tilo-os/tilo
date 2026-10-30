@@ -109,7 +109,7 @@ pub(crate) fn prepare_device_send(path: &Path) -> Result<PreparedNearbyDrop, Str
             &[("path", path.display().to_string().into())],
         )
     })?;
-    let source = crate::shell::nearby_transfer::SecureNearbySource::open_beneath(folder, path)?;
+    let source = tilo_nearby_service::SecureNearbySource::open_beneath(folder, path)?;
     crate::shell::device_fabric_runtime::prepare_nearby_drop(source)
 }
 

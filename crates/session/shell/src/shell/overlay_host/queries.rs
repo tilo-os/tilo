@@ -57,7 +57,11 @@ impl ShellOverlayHost {
             } else {
                 resource_label
             };
-            return format!("‹ {label}");
+            // The token reads as where the search stands, in words.
+            return crate::shell::i18n::t_args(
+                "search-scope-in-resource",
+                &[("resource", label.into())],
+            );
         }
         match scope {
             SearchScope::ActiveApp => {
@@ -1114,18 +1118,6 @@ impl ShellOverlayHost {
             tab,
             &ui::search::SearchRequest::this_app().with_query(query),
         );
-    }
-
-    /// The rows the palette shows now, as (title, kind, provider), for
-    /// tests.
-    #[cfg(test)]
-    pub(crate) fn search_rows_for_tests(
-        &self,
-    ) -> Vec<(String, crate::shell::search::ResourceKind, String)> {
-        self.search_results
-            .iter()
-            .map(|row| (row.title.clone(), row.kind.clone(), row.provider_id.clone()))
-            .collect()
     }
 
     /// Hand `invocation` to the app of tab `tab`'s window, as a row chosen

@@ -269,6 +269,32 @@ impl InteractionEnvironment {
         }
     }
 
+    /// The environment the person shows they use by `event`: the pointer
+    /// for pointer motion, a press or a wheel, the keyboard for a key
+    /// press. A touch switches only once its gesture has landed, so it hits
+    /// what the person saw, and the pointer events it is emulated by do not
+    /// count (`touch_emulated`).
+    #[must_use]
+    pub fn detected_from(
+        self,
+        event: &winit::event::WindowEvent,
+        touch_emulated: bool,
+    ) -> Option<Self> {
+        use winit::event::{ElementState, WindowEvent};
+        if touch_emulated {
+            return None;
+        }
+        match event {
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. } => Some(self.with_pointer_modality()),
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                Some(self.with_keyboard_modality())
+            }
+            _ => None,
+        }
+    }
+
     /// Preserve pointer capability while recording keyboard navigation.
     #[must_use]
     pub const fn with_keyboard_modality(self) -> Self {

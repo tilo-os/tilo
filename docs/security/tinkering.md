@@ -211,13 +211,11 @@ Read from the tree; build on these rather than duplicating them.
 
   **The baseline filter denies `mount`, `unshare`, `setns`, `pivot_root`, `chroot`.** A layer session cannot use it unchanged. `[sandbox].seccomp` is already a *named* profile string, so the extension point is a second profile beside `compile_baseline()`, not a relaxation of the default.
 
-- **`netgate.rs` is the design precedent to imitate.** Per-host egress enforced by a SOCKS5/HTTP-CONNECT broker over a bind-mounted socket, with the property `docs/architecture/security.md:150` calls out: it *"needs no privilege and no kernel feature bwrap does not already require."* An earlier nftables draft was explicitly retracted because it needed `CAP_NET_ADMIN` the launcher does not have. That rejected-alternative note is the shape of argument this codebase expects.
+- **`netgate.rs` is the design precedent to imitate.** Per-host egress enforced by a SOCKS5/HTTP-CONNECT broker over a bind-mounted socket, with the property that it *"needs no privilege and no kernel feature bwrap does not already require."* An earlier nftables draft was explicitly retracted because it needed `CAP_NET_ADMIN` the launcher does not have. That rejected-alternative note is the shape of argument this codebase expects.
 
 - **The typed capability vocabulary already exists** in `crates/collab/collab-types/src/caps.rs`: `Verb`, `Principal`, `Subject`, `Scope` (including `FsPath`, `Device`, `NetHost`), `Expiry`, `Effect`, `CapOverride`, and a fail-closed `decide()`. `crates/session/shell/src/shell/state.rs` aliases `Expiry` as `GrantScope` with `GRANT_ONCE` / `GRANT_SESSION` / `GRANT_ALWAYS`, where session grants are **never written to disk**. Grants live on the workspace CRDT (`Workspace::capabilities: Vec<CapOverride>`), are evaluated at `crates/session/shell/src/portal/mod.rs::permits`, and reach the launcher as a `0600` JSON file under `$XDG_RUNTIME_DIR/tilo/capabilities/` that is deliberately *not* bound into the sandbox. **Do not add a second vocabulary.**
 
 - **The prompt UI exists**: `crates/sdk/ui-core/src/widget/permission_prompt.rs`, with Allow / Allow this session / Always allow / Deny, and "Always" disabled for non-owners.
-
-- **`docs/app-model/sandbox.md`** documents the three layers (bwrap → seccomp → Landlock shim) and notes that `[sandbox].namespaces` is parsed and ignored. Its hostname-allowlist section describes a DNS proxy that does not exist — `docs/architecture/security.md:140-154` is authoritative.
 
 - **`docs/app-model/trust.md`**: Ed25519 publisher identity; signed root over `manifest_hash || payload_root_hash || publisher_identity` whose BLAKE3 *is* the `PackageId`; attestations signed over an 82-byte preimage deliberately excluding the `PackageId` to avoid a fixed point; revocation checked **at install and at every launch**, with no "trusted once" cache.
 
@@ -577,8 +575,6 @@ Must change:
 - **`sudo` should go.** `os/config.toml` puts `tester` in `wheel`, so Tilo has
   ambient password root today. Removing it depends on `tilo-hold` covering the
   operations people need; remove it only after that replacement is available.
-- **`docs/app-model/sandbox.md`**'s hostname-allowlist section still describes a
-  DNS proxy that does not exist. Fix it while nearby.
 - **Base images need to ship in the OS image**, or first `tinker` needs a
   network pull. Sinty pre-bakes an apt/dpkg tools tree at
   `/usr/share/ush/tools` for the same reason.

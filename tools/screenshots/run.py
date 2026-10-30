@@ -33,9 +33,7 @@ Usage:
 
 `--bin-dir` holds the app executables (and a `fonts/` catalog beside them);
 `--lib-dir` adds directories the dynamic loader searches (a thin build's
-runtime library and libstd). tools/screenshots/build.sh builds both, and
-t.toml's `app-screenshots` check runs the two together:
-`t outputs app-screenshots`.
+runtime library and libstd). tools/screenshots/build.sh builds both.
 """
 
 from __future__ import annotations

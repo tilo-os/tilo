@@ -7,7 +7,7 @@
 //! - **Input level** forwards to the default *source* through
 //!   [`InputControl`].
 //! - **Device selection** enumerates the real sinks/sources and runs
-//!   `wpctl set-default <id>` through [`DeviceControl`], remembering the
+//!   `wpctl set-default <id>` through the graph's control, remembering the
 //!   choice in the person's `audio` settings. With no `PipeWire` nothing is
 //!   listed, and nothing is fabricated.
 //! - **Per-application routing** enumerates the `PipeWire` node graph via
@@ -465,34 +465,6 @@ impl AudioDevices {
     }
 }
 
-/// Side-effect interface for switching the default audio device. Production
-/// runs `wpctl set-default <id>`; tests inject a recorder.
-pub trait DeviceControl: Send + Sync {
-    /// # Errors
-    /// Returns the backend's error string when `wpctl set-default` fails
-    /// (missing binary, unknown device id, …).
-    fn set_default(&self, id: u32) -> Result<(), String>;
-}
-
-/// Production impl: `wpctl set-default <id>`.
-pub struct RealDevice;
-
-impl DeviceControl for RealDevice {
-    fn set_default(&self, id: u32) -> Result<(), String> {
-        RealGraphControl.set_default_sink(id)
-    }
-}
-
-/// A no-op [`DeviceControl`] used where no device set is injected (the volume
-/// change-guard tests), so those tests never touch `wpctl`.
-struct NoopDevice;
-
-impl DeviceControl for NoopDevice {
-    fn set_default(&self, _id: u32) -> Result<(), String> {
-        Ok(())
-    }
-}
-
 /// A static [`AudioEnumerator`] that always yields the same graph — used by the
 /// test/shots constructors so re-enumeration (when enabled) is deterministic
 /// and never touches `pw-dump`.
@@ -541,7 +513,7 @@ pub struct AudioArea {
     /// The device's audio, read off the UI thread after the window's first
     /// frame ([`Self::start_read`]); `None` stands for the sample graph a
     /// screenshot shows.
-    read: crate::device_read::DeviceRead<Option<AudioRead>>,
+    pub(crate) read: crate::device_read::DeviceRead<Option<AudioRead>>,
     /// Moves whenever what the page shows of the device does: a new
     /// reading, a change it took, a notice, a test starting or ending.
     shown: LocalState<u64>,
@@ -625,16 +597,6 @@ impl AudioArea {
         self.read.start(move || {
             device.then(|| AudioRead::of_device(output.as_deref(), input.as_deref()))
         })
-    }
-
-    /// Whether the read [`Self::start_read`] started has ended.
-    pub(crate) fn read_finished(&self) -> bool {
-        self.read.is_finished()
-    }
-
-    /// What waits off the UI thread for the started read to end.
-    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
-        self.read.wait()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -743,7 +705,6 @@ pub struct AudioModel {
     sections: crate::sections::Sections,
     output: Arc<dyn OutputControl>,
     input: Arc<dyn InputControl>,
-    device: Arc<dyn DeviceControl>,
     devices: AudioDevices,
     /// The `PipeWire` node graph: the per-application streams the
     /// "Applications" / "Recording" cards route, plus the devices they can
@@ -933,7 +894,7 @@ fn moves_graph(update: &serde_json::Value, graph: &mut std::collections::HashSet
 /// node graph, what the audio runtime can do and the installed sound
 /// themes. That is several `wpctl`/`pw-dump`/`pactl` runs, so the window's
 /// warm-up makes the read off the UI thread.
-struct AudioRead {
+pub(crate) struct AudioRead {
     initial: VolumeState,
     volume_error: Option<String>,
     input_volume: f32,
@@ -1043,7 +1004,6 @@ impl AudioModel {
         Self {
             output: Arc::new(SystemOutput(dispatcher_or_real(None))),
             input: Arc::new(RealInput),
-            device: Arc::new(RealDevice),
             devices,
             graph,
             gctl: Arc::new(RealGraphControl),
@@ -1085,7 +1045,6 @@ impl AudioModel {
         Self {
             output: Arc::new(NoopOutput),
             input: Arc::new(NoopInput),
-            device: Arc::new(NoopDevice),
             devices: AudioDevices::default(),
             graph: AudioGraph::default(),
             gctl: Arc::new(NoopGraphControl),
@@ -1248,7 +1207,7 @@ impl AudioModel {
                     .devices
                     .sink_id(name)
                     .ok_or_else(|| t("sound-notice-device-gone"))?;
-                let control = Arc::clone(&self.device);
+                let control = Arc::clone(&self.gctl);
                 // Leaving a speaker set: the chosen output first, so the
                 // set's sink going away leaves this choice in place.
                 let leaving = self
@@ -1260,7 +1219,7 @@ impl AudioModel {
                 device(
                     ChangeKey::OutputDevice,
                     Box::new(move || {
-                        control.set_default(id)?;
+                        control.set_default_sink(id)?;
                         leaving.map_or(Ok(()), |speakers| {
                             speaker_call(
                                 speakers.as_ref(),
@@ -1298,10 +1257,10 @@ impl AudioModel {
                     .devices
                     .source_id(name)
                     .ok_or_else(|| t("sound-notice-device-gone"))?;
-                let control = Arc::clone(&self.device);
+                let control = Arc::clone(&self.gctl);
                 device(
                     ChangeKey::InputDevice,
-                    Box::new(move || control.set_default(id)),
+                    Box::new(move || control.set_default_source(id)),
                     Settle::Input {
                         id,
                         name: name.clone(),
@@ -2007,19 +1966,6 @@ mod tests {
         }
     }
 
-    /// Records the device ids a `set_default` call switches to, so the picker
-    /// test can assert the right node id reached the backend.
-    #[derive(Default)]
-    struct RecordingDevice {
-        calls: Mutex<Vec<u32>>,
-    }
-    impl DeviceControl for RecordingDevice {
-        fn set_default(&self, id: u32) -> Result<(), String> {
-            self.calls.lock().unwrap().push(id);
-            Ok(())
-        }
-    }
-
     fn sample_devices() -> AudioDevices {
         let device = |id, name: &str, default| AudioDevice {
             id,
@@ -2240,13 +2186,13 @@ mod tests {
         let d = sample_devices();
         assert_eq!(d.default_sink(), Some("Built-in Audio Analog Stereo"));
 
-        let dev = Arc::new(RecordingDevice::default());
+        let dev = Arc::new(RecordingGraph::default());
         let mut app = on_sound();
         {
             let dev = Arc::clone(&dev);
             change_model(&mut app, move |model| {
                 model.devices = d;
-                model.device = dev;
+                model.gctl = dev;
             });
         }
         app.effect(&SettingsEffect::from(AudioEffect::SelectOutput {
@@ -2257,7 +2203,7 @@ mod tests {
             device: "USB Microphone".into(),
         }))
         .unwrap();
-        assert_eq!(dev.calls.lock().unwrap().as_slice(), [52, 54]);
+        assert_eq!(dev.calls(), ["default_sink(52)", "default_source(54)"]);
         let _ = frame(&mut app);
         let remembered = app.settings::<AudioDevicePrefs>().get();
         assert_eq!(

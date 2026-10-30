@@ -100,13 +100,12 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
 }
 
 /// A picker of `presets`, `chosen` shown as picked, each swatch drawn in
-/// the colour `colour` answers when it is drawn; `on_change` is told the
-/// preset picked.
+/// the colour `colour` answers when it is drawn. Bind it to what picking
+/// the preset at an index does.
 pub fn picker(
     presets: &'static [Preset],
     chosen: Preset,
     colour: impl Fn() -> String + 'static,
-    mut on_change: impl FnMut(Preset) + 'static,
 ) -> ColorSwatchPicker {
     let renderer = Rc::new(RefCell::new(Renderer::default()));
     let labels = presets
@@ -146,11 +145,15 @@ pub fn picker(
                 .draw(art, scene, place, text, &Options::default());
             scene.pop_layer();
         })
-        .on_change(move |index| {
-            if let Some(preset) = presets.get(index) {
-                on_change(*preset);
-            }
-        })
+}
+
+/// The name of the preset at `index` of `presets`; empty, which no preset
+/// is, past the end.
+pub fn preset_name(presets: &[Preset], index: usize) -> String {
+    presets
+        .get(index)
+        .map(|preset| preset.name().to_owned())
+        .unwrap_or_default()
 }
 
 /// Showing a picked swatch while building a picker.

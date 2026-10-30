@@ -706,6 +706,7 @@ impl ShellOverlayHost {
                 );
             }
             QsEffect::PressDevice { row, part } => {
+                // optional-decode: device rows are keyed by their index; a press on any other key names no device
                 if let Ok(index) = row.parse::<usize>() {
                     self.handle_qs_device_fabric_press(index, part);
                     self.refresh_qs_hosted_rows();
@@ -810,6 +811,14 @@ impl ShellOverlayHost {
                 self.open_power_menu();
                 self.close_quick_settings();
             }
+            // This shell feeds the panel no player: its own card beside
+            // the panel steers what plays.
+            QsEffect::PlayPause
+            | QsEffect::PreviousTrack
+            | QsEffect::NextTrack
+            | QsEffect::Seek { .. }
+            | QsEffect::ChoosePlayer { .. }
+            | QsEffect::ChooseOutput { .. } => {}
         }
         chrome.borrow_mut().bump();
     }
@@ -862,6 +871,7 @@ fn brightness_step(state: &tilo_quick_settings::QuickSettingsState, step: f64) -
 
 /// A clipboard copy's id, as its row's key names it.
 fn clipboard_id(key: &str) -> Option<[u8; 32]> {
+    // optional-decode: clipboard rows are keyed by the copy's hex id; any other key names no copy
     let bytes = hex::decode(key).ok()?;
     bytes.try_into().ok()
 }

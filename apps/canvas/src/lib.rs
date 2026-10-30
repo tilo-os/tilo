@@ -111,6 +111,10 @@ impl ResourceApp for App {
             device: cx.device().unwrap_or_default().into(),
             ..tools::Tools::default()
         };
+        {
+            let tools = tools.clone();
+            cx.effects(move |effect: tools::ToolEffect, _| tools.answer(effect));
+        }
         let compact = LocalState::new(false);
         let dock = LocalState::new(Dock::Layers);
         let staged = dock.clone();

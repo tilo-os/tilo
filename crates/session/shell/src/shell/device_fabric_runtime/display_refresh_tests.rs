@@ -6,7 +6,7 @@ use crate::compositor::selection::{
     set_mirror_text,
 };
 use crate::notifications::NotificationBridge;
-use crate::shell::device_fabric::{ClipboardEntry, ClipboardPayload};
+use tilo_device_fabric::{ClipboardEntry, ClipboardPayload};
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::FabricStamp;
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """The CI builder's candidate policy: its recipe, the canaries that run inside each candidate
-(tools/ci/publish/ci-builder-canary.sh) and the t checks that gate signing and publication on
-them (the ci-builder product of tools/ci/products.toml, generated into t.toml)."""
+(tools/ci/publish/ci-builder-canary.sh)."""
 
 import os
 from pathlib import Path
@@ -15,12 +14,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CANARY = (ROOT / 'tools/ci/publish/ci-builder-canary.sh').read_text()
-sys.path.insert(0, str(ROOT / 'tools/ci'))
-import t_matrix  # noqa: E402
-CHECKS = {check['name']: check for check in t_matrix.checks(ROOT)}
-ARCHES = ('x86_64', 'aarch64')
-# The checks that sign or push a candidate: each must wait for the canaries.
-PUBLICATION = ('sign-ci-builder', 'sign-dev-ci-builder', 'publish-ci-builder')
 BROWSER = '/usr/lib64/chromium-browser/chromium-browser'
 
 
@@ -30,16 +23,6 @@ def canary_arm(mode):
     if match is None:
         raise AssertionError(f'ci-builder-canary.sh has no {mode} arm')
     return textwrap.dedent(match.group(1))
-
-
-def published_tags(run):
-    """`channel:tag` pairs of each oci-publish.sh line, by the directory it publishes."""
-    tags = {}
-    for line in run.splitlines():
-        words = line.split()
-        if words[:2] == ['bash', 'tools/ci/publish/oci-publish.sh']:
-            tags[words[4].rsplit('/', 1)[1]] = [word.strip("'") for word in words[5:]]
-    return tags
 
 
 class BuilderCandidates(unittest.TestCase):
@@ -58,16 +41,13 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn("import {launch} from './tools/web/chrome.mjs'", script)
         self.assertIn("assert.equal(await tab.evaluate('6 * 7'), 42)", script)
         self.assertIn('await browser.close()', script)
-        for name in PUBLICATION:
-            with self.subTest(check=name):
-                self.assertIn('canary-ci-builder-browser-x86_64', CHECKS[name]['needs'])
 
     def test_native_wrapper_exports_browser_outside_home_and_keeps_overrides(self):
-        wrapper = ROOT / 'tools/ci/t-nextest.sh'
+        wrapper = ROOT / 'tools/ci/nextest.sh'
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'tools/ci').mkdir(parents=True)
-            script = root / 'tools/ci/t-nextest.sh'
+            script = root / 'tools/ci/nextest.sh'
             script.write_text(wrapper.read_text())
             (root / 'tools/ci/package_features.py').write_text(
                 (ROOT / 'tools/ci/package_features.py').read_text())
@@ -125,7 +105,7 @@ class BuilderCandidates(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             (work / 'tools/ci').mkdir(parents=True)
-            (work / 'tools/ci/t-nextest.sh').write_text(
+            (work / 'tools/ci/nextest.sh').write_text(
                 'printf "%s\\n" "$*" >> calls\n'
                 '[[ "$*" != *"$FAIL_PACKAGE"* ]]\n')
             for failure in ('none', 'tilo-browser-peer', 'tilo-agent-participant'):
@@ -217,83 +197,6 @@ test() {
                     self.assertEqual((work / 'jsign').read_text(),
                                      '#!/bin/sh\nexec java -jar /usr/local/share/jsign/jsign.jar "$@"\n')
 
-    def test_ref_override_and_gate_policy(self):
-        with self.subTest(phase="legacy_subjects_are_installed_only_for_e2e_and_cannot_be_skipped"):
-            subjects = ['gnome-text-editor', 'qt6-qtbase-examples', 'libreoffice-writer']
-            # The builder installs the shared script's `fedora test` profile, so the
-            # image's test subjects are the recipe plus that script.
-            builder = (ROOT / 'os/Containerfile.builder').read_text()
-            self.assertIn('install-build-deps.sh fedora test', builder)
-            recipe = builder + (ROOT / 'dist/ci/install-build-deps.sh').read_text()
-            for subject in subjects[1:]:
-                self.assertNotIn(subject, recipe)
-            self.assertIn("gnome-text-editor", recipe)
-            # The legacy-apps check installs them before it drives them.
-            subjects_script = 'scripts/legacy-app-subjects.sh'
-            run = CHECKS['legacy-apps']['run'].splitlines()
-            self.assertEqual(run[0], f'bash {subjects_script}')
-            self.assertIn('scripts/legacy-app-caret-e2e.py', run[1])
-            script = (ROOT / subjects_script).read_text()
-            # Execute the script with package installation and subject
-            # discovery intercepted. Missing subjects must still fail after dnf.
-            stubs = r'''dnf() { printf '%s\n' "$@" > dnf-args; test "$FAIL_AT" != dnf; }
-        rpm() { printf '%s\n' "$@" > rpm-args; test "$FAIL_AT" != rpm; }
-        command() { test "$2" != "$FAIL_AT"; }
-        find() { test "$FAIL_AT" != qt || return 1; echo /qt/widgets/lineedits/lineedits/lineedits; }
-        '''
-            for failure in ('none', 'dnf', 'rpm', 'gnome-text-editor', 'libreoffice', 'qt'):
-                with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
-                    work = Path(directory)
-                    result = subprocess.run(['bash', '-e', '-c', stubs + script], cwd=work,
-                                            env={**os.environ, 'FAIL_AT': failure},
-                                            capture_output=True, text=True)
-                    self.assertEqual(result.returncode == 0, failure == 'none', result.stderr)
-                    self.assertEqual((work / 'dnf-args').read_text().splitlines(),
-                                     ['install', '-y', '--setopt=install_weak_deps=False', *subjects])
-                    if failure == 'none':
-                        self.assertEqual((work / 'rpm-args').read_text().splitlines(), ['-q', *subjects])
-        with self.subTest(phase="only_immutable_same_repository_override_is_accepted"):
-            image = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
-            result, output = self.resolve(image)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(output, f'image={image}\n')
-            for invalid in [image[:-1], image.replace('tilo-builder', 'other'),
-                            'registry.tilo.so/tilo/tilo-builder:latest', image + '\ninjected=value',
-                            '$(touch /tmp/should-not-run)']:
-                with self.subTest(invalid=invalid):
-                    result, output = self.resolve(invalid)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertEqual(output, '')
-        with self.subTest(phase="main_publishes_development_tags_only"):
-            # Everyone pushes to main, so main's publication carries only dev- tags, signed with
-            # the development key; the release key and the release tags are stable's alone.
-            tags = published_tags(CHECKS['publish-ci-builder']['run'])
-            self.assertEqual(set(tags), {'x86_64', 'aarch64', 'index'})
-            for directory, pairs in tags.items():
-                for pair in pairs:
-                    channel, tag = pair.split(':', 1)
-                    with self.subTest(directory=directory, tag=pair):
-                        self.assertIn(channel, ('dev', 'release'))
-                        if channel == 'dev':
-                            self.assertTrue(tag.startswith('dev-{commit}'), tag)
-                        self.assertNotEqual(tag, 'latest')
-            self.assertEqual(tags['index'], ['dev:dev-{commit}', 'release:{commit}', 'release:{rust}'])
-            self.assertEqual(CHECKS['sign-ci-builder']['on'], ['stable'])
-            self.assertEqual(CHECKS['sign-ci-builder']['id_token'], ['sts.amazonaws.com'])
-            self.assertEqual(CHECKS['sign-dev-ci-builder']['id_token'], ['tilo-dev-signing'])
-            self.assertNotIn('stable', CHECKS['sign-dev-ci-builder']['on'])
-        with self.subTest(phase="both_architectures_are_signed_and_published_together"):
-            for name in PUBLICATION:
-                needs = CHECKS[name]['needs']
-                for need in ('image-ci-builder', *(f'image-ci-builder-{arch}' for arch in ARCHES)):
-                    self.assertIn(need, needs, name)
-                for arch in ARCHES:
-                    self.assertIn(f'/target/publish/ci-builder/{arch}', CHECKS[name]['run'], name)
-            self.assertEqual(CHECKS['image-ci-builder']['needs'],
-                             [f'image-ci-builder-{arch}' for arch in ARCHES])
-            for arch in ARCHES:
-                self.assertEqual(CHECKS[f'image-ci-builder-{arch}']['requires'], [f'arch={arch}'])
-
     def resolve(self, requested):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'outputs'
@@ -304,48 +207,6 @@ test() {
                 text=True, capture_output=True,
             )
             return result, output.read_text() if output.exists() else ''
-
-
-class CanaryIdentity(unittest.TestCase):
-    def test_canaries_run_in_the_candidate_the_run_built(self):
-        for arch in ARCHES:
-            for kind in ('cache-cold', 'cache-warm', 'browser', 'x11-bridge'):
-                name = f'canary-ci-builder-{kind}-{arch}'
-                with self.subTest(check=name):
-                    check = CHECKS[name]
-                    self.assertEqual(check['image']['check'], f'image-ci-builder-{arch}')
-                    self.assertEqual(check['image']['path'],
-                                     f'/target/publish/ci-builder/{arch}/image.oci.tar')
-                    self.assertEqual(check['requires'], [f'arch={arch}'])
-                    # Acceptance runs the candidate's code: it holds no credential.
-                    for key in ('id_token', 'secrets'):
-                        self.assertNotIn(key, check)
-
-    def test_warm_reads_what_cold_wrote_and_both_gate_publication(self):
-        for arch in ARCHES:
-            cold, warm = (CHECKS[f'canary-ci-builder-cache-{mode}-{arch}'] for mode in ('cold', 'warm'))
-            self.assertEqual(cold['run'],
-                             f'bash tools/ci/publish/ci-builder-canary.sh cold /target/publish/ci-builder/{arch}/canary')
-            self.assertEqual(warm['run'],
-                             f'bash tools/ci/publish/ci-builder-canary.sh warm /target/publish/ci-builder/{arch}/canary')
-            self.assertIn(f'canary-ci-builder-cache-cold-{arch}', warm['needs'])
-            self.assertIn(f'/target/publish/ci-builder/{arch}/canary/prefix', cold['outputs'])
-            for name in PUBLICATION:
-                with self.subTest(arch=arch, check=name):
-                    self.assertIn(f'canary-ci-builder-cache-warm-{arch}', CHECKS[name]['needs'])
-        for name in PUBLICATION:
-            self.assertIn('canary-ci-builder-x11-bridge-x86_64', CHECKS[name]['needs'])
-        cache = canary_arm('cold | warm')
-        for refusal in ("(( failed == 0 )) || die",
-                        "(( hits == 0 )) || die 'the cold canary hit entries under its fresh key'",
-                        "(( misses == 0 )) || die 'the warm canary missed compiles the cold one wrote'",
-                        "(( hits > 0 )) || die 'the warm canary got nothing from the cold one'"):
-            self.assertIn(refusal, cache)
-        # The CI hosts pull the builder from registry.tilo.so through their node cache;
-        # nothing mirrors it into a cloud registry.
-        for name in PUBLICATION:
-            self.assertNotIn('dkr.ecr.', CHECKS[name]['run'])
-        self.assertNotIn('dkr.ecr.', (ROOT / 'tools/ci/publish/ci-builder.sh').read_text())
 
 
 if __name__ == '__main__':

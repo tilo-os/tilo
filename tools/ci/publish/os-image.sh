@@ -73,19 +73,6 @@ save_image() {
   printf 'built %s of %s\n' "$(cat "$out/digest")" "$revision"
 }
 
-# The resealing bootc the board image computes its composefs digest with
-# (os/Containerfile.bootc-helper): the published build of these sources, else built here.
-bootc_helper() {
-  local key ref
-  key=$(cat os/Containerfile.bootc-helper os/external-assets/bootc-install-reseal/*.patch | sha256sum | cut -c1-16)
-  ref=registry.tilo.so/tilo/bootc-install-helper:$key-$(uname -m)
-  if ! podman pull -q "$ref" >/dev/null 2>&1; then
-    printf 'no published %s; building it\n' "$ref" >&2
-    podman build -q -f os/Containerfile.bootc-helper -t "$ref" . >/dev/null
-  fi
-  printf '%s' "$ref"
-}
-
 # os/Containerfile.board on the dev image BASE, sealed, as podman's localhost/tilo-board:ci. The
 # UKI seals the composefs digest `bootc install` computes from the image's layers, which a build
 # can't compute from its own merged tree (os/Containerfile.board): the first build seals a

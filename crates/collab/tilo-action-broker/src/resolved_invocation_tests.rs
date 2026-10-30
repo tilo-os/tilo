@@ -735,6 +735,7 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
             let (shape_id, template) = ([5; SHAPE_ID_BYTES], [6; SHAPE_ID_BYTES]);
             let resources = ["workspace:a", "workspace:b", "workspace:c"];
             let expanded = |resource: &str, label: &str| runtime_collab::ExportedAction {
+                state: tilo_actions::ActionState::default(),
                 resource: resource.into(),
                 resource_label: label.into(),
                 semantic_identity: None,

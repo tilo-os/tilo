@@ -2,7 +2,7 @@
 //! OS event loop; Windows and macOS use this same admission boundary.
 use super::{App, BrokerReply, ResourceInvocation};
 use crate::close_admission::{Choice, Command, OPERATION};
-use crate::host_core::HostCore as _;
+use crate::host_core::{HostCore as _, KeyHost as _};
 use crate::widget::Widget;
 
 // Compile the actual native Quit routing state in portable host tests. The

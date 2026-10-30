@@ -194,6 +194,7 @@ impl VelloDrmBridge {
             output_surfaces: Vec::new(),
             _device_memory: device_memory,
             logged_memory: None,
+            allocated_seen: 0,
             windows_closed_seen: crate::shell::heap_trim::windows_closed(),
             scratch_shrinks_seen: 0,
             #[cfg(test)]
@@ -1588,10 +1589,23 @@ impl VelloDrmBridge {
         let shrinks = self.target.vello().scratch_shrinks();
         let scratch_shrank = shrinks != self.scratch_shrinks_seen;
         self.scratch_shrinks_seen = shrinks;
+        let memory = self.target.vello().memory_stats();
+        let allocated = [
+            memory.image_bytes,
+            memory.pooled_buffer_bytes,
+            memory.live_buffer_bytes,
+            memory.bump_budget_bytes,
+            memory.sparse_upload_bytes,
+        ]
+        .into_iter()
+        .fold(0_u64, u64::saturating_add);
+        let freed_a_lot = crate::shell::heap_trim::freed_a_lot(self.allocated_seen, allocated);
+        self.allocated_seen = allocated;
         if atlas_before.is_some_and(|was| atlas_now < was) {
             self.target.renderer.trim_pooled_buffers();
             crate::shell::heap_trim::request();
-        } else if scratch_shrank {
+        } else if scratch_shrank || freed_a_lot {
+            // A software GPU keeps what the renderer freed until a trim punches it out.
             crate::shell::heap_trim::request();
         }
         self.log_memory_changes();

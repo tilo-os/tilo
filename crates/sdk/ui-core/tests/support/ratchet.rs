@@ -392,7 +392,7 @@ impl Ratchet {
         Err(format!(
             "{n} file(s) grew in the {name} ratchet \
              (crates/sdk/ui-core/tests/baselines/{name}/<unit>.txt).\n{grew}\n\n{advice}\n\
-             docs/ui-migration.md maps each pattern to the API that replaces it. Moving a \
+             The HIG names the API that replaces each pattern. Moving a \
              literal into a local, renaming a constant or reshaping a call so the pattern stops \
              matching is not a fix: it hides the debt from the ratchet (HIG §9.13).",
             n = grew.len(),

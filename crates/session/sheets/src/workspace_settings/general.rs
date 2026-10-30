@@ -165,6 +165,49 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     )
 }
 
+/// The devices that show the workspace, each shown or hidden, and the
+/// buttons that move it up or down their sidebars.
+fn devices(general: &General, parts: &Parts) -> Element {
+    let mut devices: Vec<Element> = general
+        .device_rows
+        .iter()
+        .map(|device| {
+            let key = device.key.clone();
+            Box::new(
+                ListRow::new(
+                    format!("ws-general-device-row-{}", device.key),
+                    device.label.clone(),
+                )
+                .trailing(Box::new(
+                    button(
+                        parts,
+                        &format!("ws-general-device-{}", device.key),
+                        &device.toggle,
+                        move || WorkspaceSettingsEffect::ToggleDevice {
+                            device: key.clone(),
+                        },
+                    )
+                    .toggled(device.shown),
+                )),
+            ) as Element
+        })
+        .collect();
+    devices.push(buttons(vec![
+        button(parts, "ws-general-move-up", &general.move_labels[0], || {
+            WorkspaceSettingsEffect::Move { step: -1 }
+        })
+        .with_enabled(general.move_enabled[0]),
+        button(
+            parts,
+            "ws-general-move-down",
+            &general.move_labels[1],
+            || WorkspaceSettingsEffect::Move { step: 1 },
+        )
+        .with_enabled(general.move_enabled[1]),
+    ]));
+    described(&general.devices, devices)
+}
+
 /// The name, typed in place; Enter saves it, as leaving the tab or the
 /// sheet does.
 fn name_field(general: &General, parts: &Parts) -> Element {
@@ -205,49 +248,6 @@ pub(super) fn buttons(buttons: Vec<Button>) -> Element {
         Row::new().with_rhythm(Rhythm::Related).align_start(),
         |row, button| row.push(Box::new(button)),
     ))
-}
-
-/// The devices the workspace shows on, each shown or hidden, and its place among the
-/// person's workspaces.
-fn devices(general: &General, parts: &Parts) -> Element {
-    let mut rows: Vec<Element> = general
-        .device_rows
-        .iter()
-        .map(|device| {
-            let key = device.key.clone();
-            Box::new(
-                ListRow::new(
-                    format!("ws-general-device-row-{}", device.key),
-                    device.label.clone(),
-                )
-                .trailing(Box::new(
-                    button(
-                        parts,
-                        &format!("ws-general-device-{}", device.key),
-                        &device.toggle,
-                        move || WorkspaceSettingsEffect::ToggleDevice {
-                            device: key.clone(),
-                        },
-                    )
-                    .toggled(device.shown),
-                )),
-            ) as Element
-        })
-        .collect();
-    rows.push(buttons(vec![
-        button(parts, "ws-general-move-up", &general.move_labels[0], || {
-            WorkspaceSettingsEffect::Move { step: -1 }
-        })
-        .with_enabled(general.move_enabled[0]),
-        button(
-            parts,
-            "ws-general-move-down",
-            &general.move_labels[1],
-            || WorkspaceSettingsEffect::Move { step: 1 },
-        )
-        .with_enabled(general.move_enabled[1]),
-    ]));
-    described(&general.devices, rows)
 }
 
 /// Whether anyone may find and join the workspace, and how.

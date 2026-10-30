@@ -23,22 +23,16 @@ runtime bundle tools (`os/scripts/collect-runtime-dependencies.py`,
 reading a GLib or GStreamer *variable*, the link itself fails, since nothing can
 provide one before the library loads.
 
-- **`runtime-size-<arch>`** in t (`t test runtime-size-aarch64`) compiles the apps of
-  `apps_without_media` as a release does, on the runtime and engines `thin-runtime-<arch>`
-  built (`tools/apps/t-release.sh runtime-size`), and holds the dylib, its engines and those
-  apps' loaded libraries to the budget. It is keyed by what those are built from, and runs when named,
-  not on main's commits; the whole collection's `app-sizes-<arch>` measures it too, on each new
-  head of `stable` and on `main`'s newest head when t has room.
 - **Release / apps** (`Shared runtime within its size budget`) measures the
   dylib it has just built, and the closures above. Its next steps report the
   loader's cost for an app without media (statistics, the objects it loads,
   its private dirty memory) and, when Video Player is built, decode its H.264
   fixture through the thin runtime.
-- **t's `perf-footprint` check** (the performance run's footprint group) fetches the newest published
+- **The performance run's footprint group** (`tools/ci/perf-scheduled.sh footprint`) fetches the newest published
   `so.tilo.runtime` of each architecture, holds it to the budgets of the commit that built it and records
   `footprint.runtime.<metric>.<arch>`.
-- **t's `changes` check** fails when a budget grows without a raise file new in
-  the same change.
+- **CI / fast quality** (`Runtime size budgets only decrease`) fails when a budget grows
+  without a raise file new in the same change.
 
 To raise a budget for an intended growth, add one file per change:
 

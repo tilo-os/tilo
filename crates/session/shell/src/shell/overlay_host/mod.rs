@@ -516,6 +516,8 @@ pub struct ShellOverlayHost {
     launcher: Option<launcher_host::LauncherHost>,
     /// The launcher cannot be mounted here.
     launcher_unavailable: bool,
+    /// The shell's own actions, published as its app in the room in front.
+    shell_actions: Option<crate::shell::actions::host::ShellActionsHost>,
     /// Search providers the palette fans out to. Built once at
     /// construction — providers are stateful (own background indexers),
     /// so re-registration would leak worker threads.
@@ -1004,6 +1006,9 @@ pub struct ShellOverlayHost {
     topbar: Box<topbar_host::TopBarHost>,
     /// The ask-agent chord's progress and the apps that answer it.
     selection_requests: crate::shell::selection_agent::SelectionRequests,
+    /// Agent door connections whose run waits for this device's identity in
+    /// their workspace to settle, and when it does: asked then.
+    door_runs_unsettled: Vec<(Instant, crate::shell::agent_admission::DoorRunAsk)>,
     /// Controls a development session's test control asked to activate in
     /// the focused window, by their test ids, not yet sent to its app.
     test_activations: Vec<String>,
@@ -1026,9 +1031,6 @@ pub struct ShellOverlayHost {
     /// Windows shared live into a conversation: the menus offering it, the
     /// sharing app's connections and the views windows embed.
     live_shares: live_shares::NativeLiveShares,
-    /// The tree revision the windows lent to apps the shell mounts were
-    /// last matched against the tabs at ([`Self::sync_hosted_windows`]).
-    hosted_windows_revision: Option<u64>,
     /// The tabs whose bar says "Controls your desktop", and the
     /// generations they were read at ([`desktop_control_chips`]).
     desktop_control: desktop_control_chips::DesktopControlMarks,
@@ -1820,10 +1822,6 @@ mod transient_zone_tests;
 #[cfg(test)]
 #[path = "window_bar_location_tests.rs"]
 mod window_bar_location_tests;
-
-#[cfg(test)]
-#[path = "hosted_window_tests.rs"]
-mod hosted_window_tests;
 
 #[cfg(test)]
 #[path = "room_window_stream_tests.rs"]

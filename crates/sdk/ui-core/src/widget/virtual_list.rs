@@ -29,8 +29,9 @@ use crate::selection::KeySelection;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::virtual_viewport::{
-    DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
+    DragScroller, ScrollAlignment, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
+use crate::widget::rows::RowStep;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{ArrivingRows, Element, TaffyTreeExt, Widget};
 
@@ -395,10 +396,13 @@ pub struct VirtualList<M: ListModel> {
     /// Choosing a row, published as the list's view action
     /// ([`VirtualList::on_view`]).
     view: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<M::Key>)>,
+    /// Opening a row, published as the list's view action
+    /// ([`VirtualList::on_activate_view`]).
+    opens: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<M::Key>)>,
     on_activate: Option<KeyCallback<M::Key>>,
     on_context: Option<ContextCallback<M::Key>>,
     /// The last row a click landed on and when, for a double click.
-    last_click: Option<(M::Key, Instant)>,
+    clicks: super::rows::Clicks<M::Key>,
     semantic_key: Option<SemanticKey<M::Key>>,
     accessible_name: Option<String>,
     rect: Rect,
@@ -408,11 +412,7 @@ pub struct VirtualList<M: ListModel> {
     reorder: ReorderController<M::Key>,
     reorder_validator: Option<ReorderValidator<M>>,
     reorder_commit: Option<ReorderCommit<M>>,
-    momentum: ScrollMomentum,
-    /// The motion toward a row [`Self::reveal`] was asked to show.
-    scroll_to: crate::motion::ScrollTo,
-    /// Device pixels per logical pixel where the list last handled input.
-    device_scale: f64,
+    scroll: super::rows::RowScroll,
     /// The motion the theme allows, sampled by the latest draw.
     motion: crate::tokens::EffectiveMotion,
     reduce_motion: bool,
@@ -542,9 +542,10 @@ impl<M: ListModel> VirtualList<M> {
             typing: crate::type_ahead::TypeAhead::default(),
             on_select: None,
             view: None,
+            opens: None,
             on_activate: None,
             on_context: None,
-            last_click: None,
+            clicks: super::rows::Clicks::default(),
             semantic_key: None,
             accessible_name: None,
             rect: Rect::ZERO,
@@ -554,9 +555,7 @@ impl<M: ListModel> VirtualList<M> {
             reorder: ReorderController::new(),
             reorder_validator: None,
             reorder_commit: None,
-            momentum: ScrollMomentum::new(),
-            scroll_to: crate::motion::ScrollTo::new(),
-            device_scale: 1.0,
+            scroll: super::rows::RowScroll::default(),
             motion: crate::tokens::EffectiveMotion::default(),
             reduce_motion: false,
             vbar: Scrollbar::vertical(),
@@ -614,27 +613,13 @@ impl<M: ListModel> VirtualList<M> {
         };
         self.focused_key = Some(key.clone());
         let now = crate::motion::frame_now();
-        let drawn = self.viewport.offset();
-        // Where showing the row takes the list, from where it is going.
-        if let Some(target) = self.scroll_to.target() {
-            self.viewport.set_offset(target.y);
-        }
-        self.viewport
-            .scroll_to_index(index, ScrollAlignment::Nearest);
-        let target = self.viewport.offset();
-        self.viewport.set_offset(drawn);
-        self.momentum.stop();
-        let jump = self.scroll_to.go(
-            vello::kurbo::Vec2::new(0.0, drawn),
-            vello::kurbo::Vec2::new(0.0, target),
-            vello::kurbo::Vec2::new(self.rect.width(), self.viewport.viewport()),
-            self.motion,
-            now,
-        );
-        if jump == crate::motion::ScrollJump::Glide {
-            self.follow_scroll_to(now);
-        } else {
-            self.set_scroll_offset(target);
+        let width = self.rect.width();
+        match self
+            .scroll
+            .reveal(&mut self.viewport, index, width, self.motion, now)
+        {
+            Some(target) => self.set_scroll_offset(target),
+            None => self.follow_scroll_to(now),
         }
         self.visible_window_changed();
         true
@@ -642,20 +627,16 @@ impl<M: ListModel> VirtualList<M> {
 
     /// Follow a reveal in progress to where it is drawn at `now`.
     fn follow_scroll_to(&mut self, now: Instant) {
-        if let Some(at) = self
-            .scroll_to
-            .offset_in_device_pixels(now, self.device_scale)
-        {
-            self.set_scroll_offset(at.y);
-            let _ = self.scroll_to.arrived(now);
+        if let Some(at) = self.scroll.follow(now) {
+            self.set_scroll_offset(at);
         }
     }
 
     /// A reveal still moves, or fades the rows in after a long jump.
     /// The frame after the fade arrives draws the rows whole again.
     fn reveal_in_progress(&self, now: Instant) -> bool {
-        self.scroll_to.target().is_some()
-            || self.scroll_to.is_moving(now)
+        self.scroll.to.target().is_some()
+            || self.scroll.to.is_moving(now)
             || self.shown.drawing().is_some_and(|shown| shown.in_motion)
     }
 
@@ -1137,7 +1118,7 @@ impl<M: ListModel> VirtualList<M> {
     /// How far past an end fingers pull the rows, as drawn: negative before
     /// the start ([`crate::motion::RubberBand`]).
     fn give(&self) -> f64 {
-        self.momentum.give(crate::motion::frame_now())
+        self.scroll.momentum.give(crate::motion::frame_now())
     }
 
     #[must_use]
@@ -1498,28 +1479,15 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     fn apply_selection(&mut self, key: M::Key, toggle: bool, extend: bool) {
-        if self.multi_select && extend {
-            let Some(anchor) = self.selection.anchor().cloned() else {
-                self.selection.select_only(key.clone());
-                self.emit_selection(key);
-                return;
-            };
-            let (Some(anchor_index), Some(target_index)) =
-                (self.model.index_of(&anchor), self.model.index_of(&key))
-            else {
-                self.selection.select_only(key.clone());
-                self.emit_selection(key);
-                return;
-            };
-            let lo = anchor_index.min(target_index);
-            let hi = anchor_index.max(target_index);
-            let keys = (lo..=hi).filter_map(|index| self.model.key_at(index));
-            self.selection.select_range(key.clone(), keys, toggle);
-        } else if self.multi_select && toggle {
-            self.selection.toggle(key.clone());
-        } else {
-            self.selection.select_only(key.clone());
-        }
+        let model = &self.model;
+        super::rows::choose(
+            &mut self.selection,
+            key.clone(),
+            (toggle, extend),
+            self.multi_select,
+            |key| model.index_of(key),
+            |index| model.key_at(index),
+        );
         self.emit_selection(key);
     }
 
@@ -1531,20 +1499,20 @@ impl<M: ListModel> VirtualList<M> {
         let extend = state.shift_key();
         self.apply_selection(key.clone(), toggle, extend);
         self.focused_key = Some(key.clone());
-        let now = crate::time::now();
-        let double = !toggle
-            && !extend
-            && self.last_click.as_ref().is_some_and(|(last, at)| {
-                *last == key
-                    && now.saturating_duration_since(*at) < crate::gesture::multi_click_interval()
-            });
-        if double {
-            self.last_click = None;
-            if let Some(callback) = &mut self.on_activate {
-                callback(key);
-            }
-        } else {
-            self.last_click = Some((key, now));
+        if toggle || extend {
+            self.clicks.record(key);
+        } else if self.clicks.register(key.clone()) {
+            self.activate_key(key);
+        }
+    }
+
+    /// Open `key` as Enter or a second click does: through the published view
+    /// action when the host bound one, else the activation callback.
+    fn activate_key(&mut self, key: M::Key) {
+        if let Some((_, handler)) = &mut self.opens {
+            handler(key);
+        } else if let Some(callback) = &mut self.on_activate {
+            callback(key);
         }
     }
 
@@ -1628,35 +1596,23 @@ impl<M: ListModel> VirtualList<M> {
             .focused_key
             .as_ref()
             .and_then(|key| self.model.index_of(key));
+        match super::rows::row_step(key, current, count) {
+            Some(RowStep::To(index)) => return self.focus_index(index, extend),
+            Some(RowStep::Page(forward)) => return self.page_focus(forward, extend),
+            None => {}
+        }
         match key {
-            Key::Named(NamedKey::ArrowDown) => self.focus_index(
-                current.map_or(0, |index| {
-                    index.saturating_add(1).min(count.saturating_sub(1))
-                }),
-                extend,
-            ),
-            Key::Named(NamedKey::ArrowUp) => {
-                self.focus_index(current.map_or(0, |index| index.saturating_sub(1)), extend)
-            }
-            Key::Named(NamedKey::PageDown) => self.page_focus(true, extend),
-            Key::Named(NamedKey::PageUp) => self.page_focus(false, extend),
-            Key::Named(NamedKey::Home) => self.focus_index(0, extend),
-            Key::Named(NamedKey::End) => self.focus_index(count.saturating_sub(1), extend),
             Key::Named(NamedKey::Enter) => self.focused_key.clone().is_some_and(|key| {
                 let ready = self
                     .model
                     .index_of(&key)
                     .is_some_and(|index| matches!(self.model.row_state(index), Arrival::Ready(())));
-                if ready && let Some(callback) = &mut self.on_activate {
-                    callback(key);
+                if ready {
+                    self.activate_key(key);
                 }
                 ready
             }),
-            Key::Character(text)
-                if self.multi_select
-                    && toggle
-                    && (text.as_str() == "a" || text.as_str() == "A") =>
-            {
+            _ if self.multi_select && super::rows::is_select_all(key, toggle) => {
                 self.selection.select_all();
                 true
             }
@@ -1672,19 +1628,21 @@ impl<M: ListModel> VirtualList<M> {
     /// Typing in the focused list: move to the first row whose name begins
     /// with what was typed. A list whose model names no rows lets the key go.
     fn type_ahead(&mut self, text: &str, current: Option<usize>) -> bool {
-        let count = self.model.len();
-        let labels: Vec<Option<String>> = (0..count).map(|index| self.model.label(index)).collect();
-        if labels.iter().all(Option::is_none) {
-            return false;
-        }
         if text == " " && !self.typing.is_typing(crate::time::now()) {
             return false;
         }
         self.typing.type_text(text, crate::time::now());
-        let target = self.typing.target(
-            labels.iter().map(|label| label.as_deref().unwrap_or("")),
-            current,
-        );
+        let model = &self.model;
+        let mut named = false;
+        let target = self.typing.target_at(model.len(), current, |index| {
+            let label = model.label(index);
+            named |= label.is_some();
+            label.map(std::borrow::Cow::Owned)
+        });
+        if !named {
+            self.typing.reset();
+            return false;
+        }
         if let Some(index) = target {
             // Typing moves to a row; it never extends a selection, whatever
             // case the letters were typed in.
@@ -1814,6 +1772,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
+        // Every structural rebuild repeats the window's input; what mounts
+        // since hears it as it mounts.
+        if self.interaction == environment {
+            return;
+        }
         self.interaction = environment;
         self.viewport
             .set_minimum_height(f64::from(environment.minimum_collection_row()));
@@ -1864,10 +1827,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // is no change of the model, so it does not report one (as
         // `Scrollable::update`).
         let offset = self.viewport.offset();
-        if self.momentum.is_active() {
-            let delta = self.momentum.advance(now);
+        if self.scroll.momentum.is_active() {
+            let delta = self.scroll.momentum.advance(now);
             if !self.scroll_by(delta) {
-                self.momentum.stop();
+                self.scroll.momentum.stop();
             }
         }
         // A reveal in progress, like a glide, moves only the viewport.
@@ -1898,7 +1861,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
         if self.reduce_motion {
-            self.momentum.stop();
+            self.scroll.momentum.stop();
         }
         self.gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
         self.bleed = match self.stance {
@@ -2066,19 +2029,19 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
         self.reduce_motion = theme.reduce_motion;
         if self.reduce_motion {
-            self.momentum.stop();
+            self.scroll.momentum.stop();
         }
         let now = crate::motion::frame_now();
         self.arrivals.mark_drawn(now);
         self.start_row_motion(theme.motion());
         self.motion = theme.motion();
-        self.momentum.set_view(
+        self.scroll.momentum.set_view(
             self.viewport.viewport(),
             self.scroll_metrics().overflows(),
             self.motion,
         );
         // After a long reveal the rows fade in where they landed.
-        let opacity = self.scroll_to.opacity(crate::motion::frame_now());
+        let opacity = self.scroll.to.opacity(crate::motion::frame_now());
         // How far the rows the last presented frame showed moved on screen:
         // the frame stands that much further along than that one did.
         let moved = self.moved_since_presented();
@@ -2246,8 +2209,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         reason = "keeps child, scrollbar, reorder, scroll, selection, and keyboard precedence explicit"
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        self.momentum.set_device_scale(ctx.scale_factor);
-        self.device_scale = ctx.scale_factor;
+        self.scroll.momentum.set_device_scale(ctx.scale_factor);
+        self.scroll.device_scale = ctx.scale_factor;
         // The hand takes over a reveal in progress from where it is drawn.
         if matches!(
             event,
@@ -2259,7 +2222,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     ..
                 }
         ) && self
-            .scroll_to
+            .scroll
+            .to
             .take_over(crate::motion::frame_now())
             .is_some()
         {
@@ -2287,14 +2251,14 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = ctx.logical(position);
                 if self.reorder.is_tracking() {
-                    self.momentum.stop();
+                    self.scroll.momentum.stop();
                     self.update_reorder_pointer(point, crate::time::now());
                     self.last_tick = Some(crate::time::now());
                     *ctx.handled = self.reorder.is_active();
                 } else if self.drag_scroll.is_tracking() {
                     let now = crate::time::now();
                     let update = self.drag_scroll.update(point.y, now);
-                    self.momentum.stop();
+                    self.scroll.momentum.stop();
                     if let Some(update) = update {
                         self.set_scroll_offset(update.target_offset);
                         self.last_tick = Some(now);
@@ -2321,7 +2285,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     self.drag_scroll
                         .begin(cursor.y, self.viewport.offset(), crate::time::now());
                 }
-                self.momentum.stop();
+                self.scroll.momentum.stop();
                 *ctx.focus_target = Some(ctx.node_id);
                 *ctx.handled = true;
             }
@@ -2342,9 +2306,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 } else if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
                     if drag.dragged {
                         if self.reduce_motion {
-                            self.momentum.stop();
+                            self.scroll.momentum.stop();
                         } else {
-                            self.momentum.fling(drag.velocity);
+                            self.scroll.momentum.fling(drag.velocity);
                             self.last_tick = Some(crate::time::now());
                         }
                     } else if let Some((_, key)) = self.row_at_cursor() {
@@ -2373,12 +2337,16 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     && !crate::content_zoom::is_zoom_scroll(event, ctx.modifiers) =>
             {
                 self.last_tick = Some(crate::time::now());
-                *ctx.handled = match self.momentum.wheel(delta, *phase, self.reduce_motion) {
+                *ctx.handled = match self
+                    .scroll
+                    .momentum
+                    .wheel(delta, *phase, self.reduce_motion)
+                {
                     WheelStep::Scroll(delta) => {
                         let before = self.viewport.offset();
                         self.scroll_by(delta);
                         let moved = self.viewport.offset() - before;
-                        self.momentum.wheel_applied(delta, moved)
+                        self.scroll.momentum.wheel_applied(delta, moved)
                     }
                     WheelStep::Fling => true,
                     WheelStep::Ignored => false,
@@ -2394,18 +2362,22 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 if (self.is_focused || self.mounted.iter().any(|row| row.widget.is_focused()))
                     && event.state == ElementState::Pressed =>
             {
-                self.momentum.stop();
+                self.scroll.momentum.stop();
                 if event.logical_key == Key::Named(NamedKey::Escape) && self.reorder.cancel() {
                     *ctx.handled = true;
                 } else if let Some(up) =
                     self.reorder_chord(&event.logical_key, ctx.modifiers.state())
                 {
-                    // The row moves and keeps the focus; a refused move is
-                    // no navigation either. A row that takes the keyboard
-                    // holds it from here, so the focus stays on that row
-                    // when whoever owns the order rebuilds the list.
-                    *ctx.handled = self.move_focused(up);
-                    if *ctx.handled
+                    // The chord belongs to this list wherever the row can go:
+                    // it moves and keeps the focus, and a move it refuses (at
+                    // the row's end, or where the order allows none) leaves
+                    // the keyboard on that row instead of stepping off it.
+                    // A row that takes the keyboard holds it from here, so the
+                    // focus stays on that row when whoever owns the order
+                    // rebuilds the list.
+                    let moved = self.move_focused(up);
+                    *ctx.handled = true;
+                    if moved
                         && self.is_focused
                         && let Some(node) = self
                             .mounted
@@ -2527,8 +2499,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
     fn needs_animation_frame(&self) -> bool {
         let now = crate::time::now();
-        self.momentum.is_active()
-            || self.momentum.give_needs_frame(crate::motion::frame_now())
+        self.scroll.momentum.is_active()
+            || self
+                .scroll
+                .momentum
+                .give_needs_frame(crate::motion::frame_now())
             || self.reveal_in_progress(crate::motion::frame_now())
             || self.row_motion.is_moving(now)
             || self.arrivals.is_moving(now)
@@ -2591,7 +2566,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             return;
         }
         let now = crate::motion::frame_now();
-        let own_redraw = self.momentum.give_needs_frame(now) || self.arrivals.needs_redraw(now);
+        let own_redraw =
+            self.scroll.momentum.give_needs_frame(now) || self.arrivals.needs_redraw(now);
         match self.shown.compare(self, regions) {
             crate::scroll_copy::Since::Copied => self.collect_row_damage(regions),
             // The same rows where they stood: what changed is what the rows
@@ -2609,7 +2585,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.momentum.give_needs_frame(crate::motion::frame_now())
+        self.scroll
+            .momentum
+            .give_needs_frame(crate::motion::frame_now())
             || self.arrivals.needs_redraw(crate::motion::frame_now())
             || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
@@ -2738,9 +2716,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 }
                 self.focused_key = Some(key.clone());
                 self.apply_selection(key.clone(), false, false);
-                if let Some(callback) = &mut self.on_activate {
-                    callback(key);
-                }
+                self.activate_key(key);
                 true
             }
             Action::ScrollIntoView => {

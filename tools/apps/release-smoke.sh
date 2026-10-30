@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # What a Release / apps build must show before its packages may be signed, run from the
 # repository root after dist/apps/package-apps.sh built every app of the default collection for
-# this machine's architecture into target/thin-app and packaged them into dist/app-release
-# (tools/apps/t-release.sh build). Each measurement gates on its own subject: a tapp over its
+# this machine's architecture into target/thin-app and packaged them into dist/app-release.
+# Each measurement gates on its own subject: a tapp over its
 # budget must not hide the runtime's numbers, or the reverse, so every one runs and the script
 # fails at the end if any did.
 #

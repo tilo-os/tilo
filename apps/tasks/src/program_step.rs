@@ -4,7 +4,7 @@
 
 use ui::prelude::*;
 use ui::tilo_reference::ProgramStep;
-use ui::widget::{Badge, ChipStyle, ProgramStepView};
+use ui::widget::{Badge, ChipStyle, ProgramStepView, StepAnswer};
 
 use crate::model::{Message, Tracker};
 use crate::tr;
@@ -20,12 +20,14 @@ pub(crate) fn step_row(cx: &ViewCx<Tracker>, heading: Row, message: &Message) ->
     });
     let dispatch = cx.dispatcher();
     let view = ProgramStepView::new(format!("step-{}-{}", message.run, message.at_ms), step)
-        .on_open(move |resource| {
-            dispatch.open_reference(
-                &resource.app,
-                resource.record.as_deref(),
-                &resource.reference,
-            );
+        .answering(move |answer| {
+            if let StepAnswer::Open(resource) = answer {
+                dispatch.open_reference(
+                    &resource.app,
+                    resource.record.as_deref(),
+                    &resource.reference,
+                );
+            }
         });
     Box::new(
         Column::new()

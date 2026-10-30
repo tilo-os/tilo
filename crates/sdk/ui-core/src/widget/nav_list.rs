@@ -57,7 +57,7 @@ pub struct NavSection {
     pub pending: u8,
     /// The window's filter narrows this section's items.
     pub filterable: bool,
-    /// The title can be renamed in place ([`NavList::on_rename`]).
+    /// The title can be renamed in place ([`NavList::on_rename_action`]).
     pub editable_title: bool,
     /// The header has a menu ([`NavList::on_context_menu`]).
     pub menu: bool,
@@ -259,8 +259,7 @@ fn matches_word_start(text: &str, query: &str) -> bool {
     })
 }
 
-/// One destination. Every part but the label is optional; see
-/// `docs/ui-migration.md`, "Rows: what each part of a `NavItem` means".
+/// One destination. Every part but the label is optional.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavItem {
     /// Stable across rebuilds; selection, expansion and focus follow it.
@@ -280,7 +279,7 @@ pub struct NavItem {
     pub ensure_expanded: bool,
     /// Other items may be dragged into this one ([`NavList::on_move`]).
     pub drop_target: bool,
-    /// The label can be renamed in place ([`NavList::on_rename`]).
+    /// The label can be renamed in place ([`NavList::on_rename_action`]).
     pub editable_label: bool,
     pub secondary: Option<String>,
     pub meta: Option<String>,
@@ -509,7 +508,7 @@ impl NavItem {
     }
 
     /// A checkbox in the leading slot (a calendar shown or hidden). The
-    /// whole row toggles it and reports through [`NavList::on_check`]; a
+    /// whole row toggles it and reports through [`NavList::on_check_action`]; a
     /// checkable row is not a destination and is never selected.
     #[must_use]
     pub fn checked(mut self, checked: bool) -> Self {
@@ -1096,11 +1095,15 @@ struct NavShared {
     view: Option<NavView>,
     selection_actions: HashMap<String, crate::widget::ActionEmitter<()>>,
     selection_emitted: bool,
+    /// What the list's gestures run as published actions ([`NavList::item_action`]
+    /// and the rest of `bound.rs`).
+    bound: bound::NavBindings,
     on_action: Option<Box<dyn FnMut(&str, &str)>>,
     on_section_action: Option<Box<dyn FnMut(&str, &str)>>,
+    /// What a [`NavFeed`] hears of renames and checks.
     on_rename: Option<Box<dyn FnMut(&str, String)>>,
-    on_move: Option<Box<dyn FnMut(&str, NavDrop)>>,
     on_check: Option<Box<dyn FnMut(&str, bool)>>,
+    on_move: Option<Box<dyn FnMut(&str, NavDrop)>>,
     on_expand: Option<Box<dyn FnMut(&str, bool)>>,
     on_delete: Callback<String>,
     on_menu: Option<Box<dyn FnMut(&str, Rect, Point)>>,
@@ -1133,6 +1136,8 @@ pub struct NavList {
     /// The feed the list answers "which place is here?" through, for a
     /// drag the app runs over it ([`NavFeed::place_at`]).
     feed: Option<NavFeed>,
+    /// The actions at the trailing edge of every item that offers them.
+    row_actions: Vec<NavAction>,
 }
 
 /// What a followed list reads: the sections and the chosen destination, or
@@ -1224,7 +1229,9 @@ impl NavList {
                 ) else {
                     return;
                 };
-                if let Some(callback) = shared.on_action.as_mut() {
+                if let Some(emitter) = shared.bound.items.get_mut(&action) {
+                    bound::emit(emitter, key);
+                } else if let Some(callback) = shared.on_action.as_mut() {
                     callback(&key, &action);
                 }
             })
@@ -1233,7 +1240,9 @@ impl NavList {
                 let Some(key) = shared.keys.get(&id).cloned() else {
                     return;
                 };
-                if let Some(callback) = shared.on_rename.as_mut() {
+                if let Some(emitter) = shared.bound.rename.as_mut() {
+                    bound::emit(emitter, (key, title));
+                } else if let Some(callback) = shared.on_rename.as_mut() {
                     callback(&key, title);
                 }
             })
@@ -1257,6 +1266,7 @@ impl NavList {
             source: None,
             headings: false,
             feed: None,
+            row_actions: Vec::new(),
         };
         list.install_presentation(false);
         list.refresh_keys();
@@ -1290,7 +1300,9 @@ impl NavList {
             ) else {
                 return;
             };
-            if let Some(callback) = shared.on_section_action.as_mut() {
+            if let Some(emitter) = shared.bound.sections.get_mut(&action) {
+                bound::emit(emitter, section);
+            } else if let Some(callback) = shared.on_section_action.as_mut() {
                 callback(&section, &action);
             }
         }));
@@ -1305,8 +1317,18 @@ impl NavList {
             };
             // The row shows the new state at once; the app's next sections
             // confirm it.
+            if shared
+                .bound
+                .check
+                .as_ref()
+                .is_some_and(|emitter| !emitter.is_available())
+            {
+                return;
+            }
             shared.checks.insert(id, !checked);
-            if let Some(callback) = shared.on_check.as_mut() {
+            if let Some(emitter) = shared.bound.check.as_mut() {
+                bound::emit(emitter, (key, !checked));
+            } else if let Some(callback) = shared.on_check.as_mut() {
                 callback(&key, !checked);
             }
         }));
@@ -1519,7 +1541,15 @@ impl NavList {
         actions: Vec<NavAction>,
         on_action: impl FnMut(&str, &str) + 'static,
     ) -> Self {
-        let row_actions = actions
+        self.row_actions = actions;
+        self.shared.borrow_mut().on_action = Some(Box::new(on_action));
+        self.with_installed_row_actions()
+    }
+
+    /// Hand the tree the row actions as they stand.
+    fn with_installed_row_actions(mut self) -> Self {
+        let row_actions = self
+            .row_actions
             .iter()
             .map(|action| {
                 let row = TreeRowAction::new(action.icon, action.label.clone());
@@ -1530,11 +1560,11 @@ impl NavList {
                 }
             })
             .collect();
-        {
-            let mut shared = self.shared.borrow_mut();
-            shared.item_actions = actions.into_iter().map(|action| action.id).collect();
-            shared.on_action = Some(Box::new(on_action));
-        }
+        self.shared.borrow_mut().item_actions = self
+            .row_actions
+            .iter()
+            .map(|action| action.id.clone())
+            .collect();
         self.tree = Box::new(self.tree.with_row_actions(row_actions));
         self
     }
@@ -1547,20 +1577,15 @@ impl NavList {
         self
     }
 
-    /// Called with the item id and the new label when the person renames an
-    /// editable item (F2 or a double click).
-    #[must_use]
-    pub fn on_rename(mut self, f: impl FnMut(&str, String) + 'static) -> Self {
+    /// Report renames to `f`: how a [`NavFeed`] hears of them.
+    fn on_rename(mut self, f: impl FnMut(&str, String) + 'static) -> Self {
         self.shared.borrow_mut().on_rename = Some(Box::new(f));
         self.tree = Box::new(self.tree.rename_on_double_click());
         self
     }
 
-    /// Called with the item id and its new state when the person toggles a
-    /// checkable row ([`NavItem::checked`]): a click anywhere on it, or
-    /// Space or Enter.
-    #[must_use]
-    pub fn on_check(self, f: impl FnMut(&str, bool) + 'static) -> Self {
+    /// Report checks to `f`: how a [`NavFeed`] hears of them.
+    fn on_check(self, f: impl FnMut(&str, bool) + 'static) -> Self {
         self.shared.borrow_mut().on_check = Some(Box::new(f));
         self
     }
@@ -1577,15 +1602,22 @@ impl NavList {
     /// (never Backspace, which belongs to whatever editor sits beside the
     /// list).
     #[must_use]
-    pub fn on_delete(mut self, f: impl FnMut(String) + 'static) -> Self {
+    pub fn on_delete(self, f: impl FnMut(String) + 'static) -> Self {
         self.shared.borrow_mut().on_delete = Some(Box::new(f));
+        self.with_delete_key()
+    }
+
+    /// Report Delete on a row to the bound action or the callback.
+    fn with_delete_key(mut self) -> Self {
         let shared = Rc::clone(&self.shared);
         self.tree = Box::new(self.tree.on_delete(move |id| {
             let mut shared = shared.borrow_mut();
             let Some(key) = shared.keys.get(&id).cloned() else {
                 return;
             };
-            if let Some(callback) = shared.on_delete.as_mut() {
+            if let Some(emitter) = shared.bound.delete.as_mut() {
+                bound::emit(emitter, key);
+            } else if let Some(callback) = shared.on_delete.as_mut() {
                 callback(key);
             }
         }));
@@ -1614,8 +1646,14 @@ impl NavList {
     /// section. The app moves the item in its own data and hands the list
     /// its new sections ([`Self::set_sections`]).
     #[must_use]
-    pub fn on_move(mut self, f: impl FnMut(&str, NavDrop) + 'static) -> Self {
+    pub fn on_move(self, f: impl FnMut(&str, NavDrop) + 'static) -> Self {
         self.shared.borrow_mut().on_move = Some(Box::new(f));
+        self.with_reordering()
+    }
+
+    /// Let items be dragged, reporting each drop to the bound action or the
+    /// callback.
+    fn with_reordering(mut self) -> Self {
         let shared = Rc::clone(&self.shared);
         self.tree = Box::new(self.tree.with_reorder(
             |model: &NavModel, source: NodeId, target: &DropTarget<NodeId>| {
@@ -1639,7 +1677,10 @@ impl NavList {
                     DropPlacement::Before => NavDrop::Before(target),
                     DropPlacement::After => NavDrop::After(target),
                 };
-                if let Some(callback) = shared.borrow_mut().on_move.as_mut() {
+                let mut shared = shared.borrow_mut();
+                if let Some(emitter) = shared.bound.moves.as_mut() {
+                    bound::emit(emitter, (source, drop));
+                } else if let Some(callback) = shared.on_move.as_mut() {
                     callback(&source, drop);
                 }
                 // The app owns the order; the list changes when it hands
@@ -2116,16 +2157,32 @@ pub(crate) fn take_navigation(widget: &mut dyn crate::widget::Widget) -> bool {
     found
 }
 
-/// Whether `node` is a destination's row whose selection action is
-/// unavailable.
+/// Whether `node` is a row or a row's button whose action is unavailable.
 fn unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
-    node.action_target
-        .as_deref()
-        .and_then(|target| target.strip_prefix("node:"))
+    let Some(target) = node.action_target.as_deref() else {
+        return false;
+    };
+    if let Some(id) = target
+        .strip_prefix("node:")
         .and_then(|id| id.parse::<NodeId>().ok())
-        .and_then(|id| shared.keys.get(&id))
-        .and_then(|key| shared.selection_actions.get(key))
-        .is_some_and(|action| !action.is_available())
+    {
+        return shared
+            .keys
+            .get(&id)
+            .and_then(|key| shared.selection_actions.get(key))
+            .is_some_and(|action| !action.is_available())
+            || shared.bound.unavailable_check(shared.checks.contains_key(&id));
+    }
+    shared.bound.unavailable_button(target, shared)
+}
+
+/// Whether any row or row button the list publishes is unavailable now.
+fn any_unavailable(shared: &NavShared) -> bool {
+    shared
+        .selection_actions
+        .values()
+        .any(|action| !action.is_available())
+        || shared.bound.any_unavailable()
 }
 
 /// Publish every row under `node` whose selection action is unavailable as
@@ -2264,11 +2321,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
         let mut access = crate::widget::Widget::accessibility_shared(&*self.tree)?;
         let shared = self.shared.borrow();
-        if shared
-            .selection_actions
-            .values()
-            .any(|action| !action.is_available())
-        {
+        if any_unavailable(&shared) {
             disable_unavailable(&mut access.node, &shared);
             for row in &mut access.children {
                 if has_unavailable(row, &shared) {
@@ -2321,6 +2374,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     }
 }
 
+mod bound;
 mod feed;
 pub use feed::NavFeed;
 
@@ -2337,6 +2391,7 @@ impl crate::widget::controls::ActionControls for NavList {
         for action in shared.selection_actions.values_mut() {
             let _ = action.install_custody(domain, attachment);
         }
+        shared.bound.install_custody(domain, attachment);
         if let Some(view) = shared.view.as_mut() {
             view.choice.install_custody(domain, attachment);
         }
@@ -2351,7 +2406,9 @@ impl crate::widget::controls::ActionControls for NavList {
                 .selection_actions
                 .values_mut()
                 .find_map(crate::widget::ActionEmitter::take);
-            selection.or_else(|| shared.view.as_mut().and_then(|view| view.choice.take()))
+            selection
+                .or_else(|| shared.bound.take())
+                .or_else(|| shared.view.as_mut().and_then(|view| view.choice.take()))
         };
         taken.or_else(|| crate::widget::controls::take_control_invocation(&mut *self.tree))
     }
@@ -2369,6 +2426,17 @@ impl crate::widget::controls::ActionControls for NavList {
             let Some(key) = shared.keys.get(&node) else {
                 continue;
             };
+            for bound in shared.bound.row_controls(node, &shared, self.tree.model()) {
+                bindings.retain(|binding| binding.control_id != bound.control_id);
+                bindings.push(bound);
+            }
+            if shared.checks.contains_key(&node)
+                && let Some(check) = shared.bound.check_control(node)
+            {
+                bindings.retain(|binding| binding.control_id != check.control_id);
+                bindings.push(check);
+                continue;
+            }
             let action = shared.selection_actions.get(key).map_or_else(
                 || {
                     shared
@@ -2404,7 +2472,19 @@ impl crate::widget::controls::ActionControls for NavList {
             !shared.selection_actions.is_empty()
                 && rows().any(|key| shared.selection_actions.contains_key(key))
         };
-        selection || crate::widget::controls::has_action_control_bindings(&*self.tree)
+        let bound = shared.bound.is_bound()
+            && self
+                .tree
+                .visible_row_range()
+                .filter_map(|index| self.tree.visible_row(index))
+                .any(|(node, _, _)| {
+                    (shared.checks.contains_key(&node) && shared.bound.check_control(node).is_some())
+                        || !shared
+                            .bound
+                            .row_controls(node, &shared, self.tree.model())
+                            .is_empty()
+                });
+        selection || bound || crate::widget::controls::has_action_control_bindings(&*self.tree)
     }
 
     fn refresh_control_action_availability(
@@ -2415,6 +2495,7 @@ impl crate::widget::controls::ActionControls for NavList {
         for action in shared.selection_actions.values_mut() {
             action.refresh_availability(allowed);
         }
+        shared.bound.refresh_availability(allowed);
         if let Some(view) = shared.view.as_mut() {
             view.choice.refresh_availability(allowed);
         }

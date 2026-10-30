@@ -9,7 +9,7 @@
 //! knowing it leaves a trace the daemon sees. Each one wakes the relays:
 //!
 //! * a peer the content plane learns of — persisted, bootstrapped from a
-//!   ticket, met over gossip or authenticated in a session
+//!   ticket or authenticated in a session
 //!   ([`crate::Hydrator::add_peer`]);
 //! * sync progress persisted with a peer: someone synced with this
 //!   namespace before;

@@ -546,14 +546,8 @@ a11y-placement-apply = Apply this reversible display placement
 a11y-placement-dismiss = Dismiss this display placement suggestion
 a11y-placement-undo = Undo placement for { $display }
 a11y-display-fallback = display
-a11y-speaker-join = Join { $group } as the { $role }
-a11y-speaker-join-description = { $leader } asked; you are asked once and can leave at any time
-a11y-speaker-join-allow = Join this speaker group
-a11y-speaker-join-decline = Decline this speaker group
 a11y-speaker-playing-on = Playing on { $group }
 a11y-speaker-setup = Set up speakers
-a11y-speaker-membership = { $role } in { $group }
-a11y-speaker-membership-description = This device plays in this speaker group; activate to leave
 a11y-remote-audio-play-here = Play { $media } here
 a11y-remote-audio-allow = Allow this remote audio once
 a11y-remote-audio-decline = Decline this remote audio
@@ -612,16 +606,19 @@ capability-network = Network access
 # terminal) asks to work in a workspace as an agent member.
 agent-door-client = { $client } ({ $program })
 agent-door-client-in-app = { $who } in { $app }
-agent-door-admission = Work in “{ $workspace }” as the agent { $agent }
-agent-door-param-agent = The agent to admit it as: an existing agent member, or a new one by this name. Defaults to the name the prompt proposes.
-agent-door-param-preset = A new agent's preset: Observer, Contributor, Operator, or Custom. Presets never grant access to a surface by themselves.
-agent-door-preset-invalid = Choose Observer, Contributor, Operator, or Custom.
+agent-door-admission = Work in “{ $workspace }” as { $agent }, in a task you can follow and stop in Tasks
+agent-door-param-agent = The name it works under, which titles its task. Defaults to the name the prompt proposes.
 agent-door-agent-invalid = An agent needs a name of up to 128 characters.
 agent-door-workspace-gone = The workspace this client asked to work in is gone.
-agent-door-not-administrator = You do not administer this workspace, so { $agent } was not added.
 agent-door-no-workspace = There is no workspace here to work in.
 agent-door-withdrawn = The request was withdrawn before anyone answered it.
 agent-door-declined = The person at this desktop declined this connection.
+agent-door-run-title = { $agent } in this session
+agent-door-run-body = { $who } works for you through this session's agent door. Its steps show here, and stopping this task ends what it may do.
+agent-door-run-refused = Tasks did not start a task for this connection: { $reason }
+agent-door-run-unknown = Tasks did not say which task this connection works in.
+agent-door-run-ended = This connection's task ended before it could start working.
+agent-door-identity-unavailable = This device has no identity in this workspace yet, so it cannot start a task for this connection.
 
 # The shortcut-guide pill in the display corner
 help-pill = Help
@@ -637,6 +634,7 @@ overview-site-here = { $count ->
 }
 
 # Search filter chips
+search-scope-in-resource = In { $resource }
 search-filter-all = All
 search-filter-more = More
 
@@ -672,9 +670,6 @@ qs-devices-place = Place { $display } { $side ->
     }
 qs-devices-place-note = Suggested by this device's sensors. Check it before applying.
 qs-devices-placement-undo-note = Restore the exact placement from before calibration
-qs-devices-speaker-join = Join { $group } as the { $role }?
-qs-devices-speaker-join-note = { $leader } asked. You can leave any time.
-qs-devices-speaker-join-note-output = { $leader } asked to play on { $output }. You can leave any time.
 qs-devices-speaker-for = Playing for { $peer }
 qs-devices-another-device = another device
 qs-devices-speaker-connecting = { $playing } playing, { $waiting } connecting
@@ -688,11 +683,6 @@ qs-devices-speaker-clock-failed = { $count ->
        *[other] { $count } speakers can't keep time: { $reason }
     }
 qs-devices-speaker-setup-note = Stereo pair or room speakers, in Settings
-qs-devices-speaker-membership-note = Set up on { $leader }
-qs-devices-speaker-listen = Let { $leader } use this microphone for { $group }?
-qs-devices-speaker-listen-note = Only while calibrating. The recording stays on this device.
-qs-devices-speaker-listen-note-microphone = Uses { $microphone } only while calibrating. The recording stays on this device.
-qs-devices-speaker-listener-note = Set up on { $leader }
 qs-devices-another-certified = Another of your devices
 qs-devices-requested-allow-once = { $source } asked for this
 qs-devices-audio-app = Audio of the focused app
@@ -744,7 +734,6 @@ qs-devices-action-stop = Stop
 qs-devices-action-cancel = Cancel
 qs-devices-action-retry = Try again
 qs-devices-action-dismiss = Dismiss
-qs-devices-action-leave = Leave
 qs-devices-action-disconnect = Disconnect
 qs-devices-tether-denied = Declined on the phone
 qs-devices-tether-expired = Request expired
@@ -962,6 +951,8 @@ window-share-failed = Couldn’t share the window
 window-unshare-failed = Couldn’t stop sharing the window
 window-share-end-failed = A closed window is still shared
 shell-terminal-unavailable = Terminal: { $error }
+shell-action-not-offered = Not available here
+shell-action-nothing-to-act-on = There is nothing to act on right now
 shell-app-unavailable = Application unavailable
 shell-activity-title = Activity
 shell-activity-loading = Loading workspace activity…
@@ -1041,15 +1032,7 @@ portal-capture-default-microphone = Default microphone
 portal-capture-default-camera = Default camera
 portal-capture-primary-display = Main display
 portal-capture-system-audio = System audio
-
 # A speaker's role in a speaker group, as the $role of a sentence ("Join Living room as the right speaker")
-speaker-role-left = left speaker
-speaker-role-right = right speaker
-speaker-role-centre = centre speaker
-speaker-role-subwoofer = subwoofer
-speaker-role-surround-left = left surround speaker
-speaker-role-surround-right = right surround speaker
-speaker-role-room = room speaker
 speaker-group-summary = { $total ->
     [one] { $ready } of 1 speaker ready
    *[other] { $ready } of { $total } speakers ready
@@ -1098,7 +1081,6 @@ search-kind-videos = Videos
 search-kind-playlists = Playlists
 search-kind-tabs = Tabs
 search-kind-window-groups = Window groups
-search-kind-answers = Answers
 search-kind-people = People
 
 # Search before anything is typed: the launcher
@@ -1154,8 +1136,6 @@ search-provider-records = Records
 search-provider-app-content = Content in your apps
 # A locked app's entries (a password vault's logins) match what was typed:
 # this row offers to unlock the app; Enter opens it to unlock.
-search-unlock-app = Unlock { $app } to search for “{ $query }”
-search-unlock-app-detail = { $app } is locked
 search-provider-session = Session
 search-provider-permission-prompts = Permission requests
 permission-request-expired = Permission request is no longer pending
@@ -1167,11 +1147,8 @@ search-provider-tray = Tray
 search-provider-files = Files
 search-provider-quick-answers = Quick answers
 search-provider-people = People
-search-answer-sum = { $expression } =
 search-answer-copied = Copied
-search-answer-money-stale = { $amount } = · rates from { $age }
 search-matches = Matches “{ $word }”
-search-answer-open-address = Open { $address }
 search-provider-ask-agent = Ask an agent
 search-kind-agent = Agent
 search-ask-agent = Ask an agent: { $query }
@@ -1188,11 +1165,6 @@ canvas-ask-stopped = Stopped.
 search-ask-agent-no-model = The agent has no AI model. Choose one in Settings.
 search-ask-agent-offline = You’re offline, and the agent’s model is on the internet.
 search-provider-web = Web
-search-kind-web = Web
-search-kind-websites = Websites
-search-web-for = Search the web for { $query }
-search-web-service-for = Search { $service } for { $query }
-search-web-subtitle = Web
 search-answer-no-browser = No app on this desktop opens web addresses.
 search-answer-bad-address = That address can’t be opened.
 search-people-invited = Invited
@@ -1617,20 +1589,10 @@ search-continuity-audio-decline = Decline live audio from { $device }
 search-continuity-audio-consent-subtitle = Resolve this exact remote-audio consent request
 search-continuity-audio-stop = Stop routing { $source }
 search-continuity-audio-stop-subtitle = Close and neutralize this exact live-audio route
-search-continuity-speaker-join = Join { $group } as the { $role }
-search-continuity-speaker-decline = Decline to join { $group } as the { $role }
-search-continuity-speaker-consent-subtitle = { $device } asked this device to play in a speaker group
-search-continuity-speaker-leave = Leave { $group }
-search-continuity-speaker-leave-subtitle = Stop playing as the { $role } in this speaker group
 search-continuity-speaker-play-subtitle = Play through every ready speaker of this group
 search-continuity-speaker-media-subtitle = Keep playing here and send the sound to this speaker group
 search-continuity-speaker-stop = Stop playing on { $group }
 search-continuity-speaker-stop-subtitle = End this speaker group playback on every speaker
-search-continuity-speaker-listen-allow = Let { $group } calibrate with this microphone
-search-continuity-speaker-listen-decline = Do not let { $group } use this microphone
-search-continuity-speaker-listen-subtitle = { $device } asked to listen with this device's microphone while calibrating speakers
-search-continuity-speaker-listen-stop = Stop { $group } using this microphone
-search-continuity-speaker-listen-stop-subtitle = Speaker calibration set up on { $leader } may listen with this microphone
 search-continuity-place-left = Place { $device } left
 search-continuity-place-right = Place { $device } right
 search-continuity-place-above = Place { $device } above
@@ -1696,59 +1658,19 @@ search-continuity-call-consent-subtitle = Resolve this exact call handoff consen
 # First-login identity setup: progress header
 
 # First-login identity setup: resuming after a restart
-onboarding-progress-unreadable = The saved setup position could not be read ({ $error }). Your identity is safe; setup resumed at the completion step.
-onboarding-progress-invalid-identity = Setup found unfinished progress but could not validate the existing identity: { $error }
-onboarding-progress-save-failed = Setup could not save its restart position: { $error }. No identity action was repeated.
-onboarding-progress-clear-failed = Setup finished, but its restart marker could not be removed: { $error }. Try Finish again so this screen does not return next login.
 
 # First-login identity setup: shared buttons
-onboarding-recovery-key-count = A recovery key has 24 words; this has { $found }.
-onboarding-recovery-key-unknown-word = Word { $position } isn't a recovery-key word. Check its spelling.
-onboarding-recovery-key-typo = Word { $position }, “{ $word }”, isn't a recovery-key word. Check its spelling.
-onboarding-recovery-key-suggestion = Word { $position }, “{ $word }”, isn't a recovery-key word. Did you mean “{ $suggestion }”?
-onboarding-recovery-key-checksum = These words don't form a recovery key. One is probably mistyped or out of order.
 
 # First-login identity setup: connecting an existing identity
-onboarding-connect-recovery-message = Your existing identity couldn't be verified. Unlock the desktop keyring and try again, or restore an encrypted backup. Your identity stays as it is until then.
-onboarding-connect-choose-file-first = Choose an encrypted backup or legacy identity file first.
-onboarding-keyring-unavailable = The desktop keyring is still unavailable. Unlock it and retry, or restore an encrypted backup: { $error }
 
-# First-login identity setup: pairing with a nearby device
-onboarding-nearby-failed-title = Pairing did not finish
-onboarding-nearby-ended = The pairing window closed or approval was cancelled. Choose Try again.
-onboarding-nearby-unknown = Choose Try again.
-onboarding-nearby-detail = Details: { $detail }
-onboarding-nearby-permission-title = Permission denied: this computer was not allowed to save the pairing
-onboarding-nearby-permission = This computer's device identity couldn't be saved. Once that's fixed, choose Try again.
-onboarding-nearby-storage-full-title = This computer's disk is full
-onboarding-nearby-storage-full = The pairing could not be saved. Free up some space, then choose Try again.
-onboarding-nearby-read-only-title = This computer's storage is read-only
-onboarding-nearby-read-only = The pairing could not be saved. Choose Try again once the storage can be written to.
-onboarding-nearby-unreachable-title = Your other device could not be reached
-onboarding-nearby-unreachable = Check that both devices are on the same network, then choose Try again.
-onboarding-nearby-timed-out-title = No trusted device approved this computer in time
-onboarding-nearby-timed-out = Choose Try again, then approve it on your other device.
-onboarding-nearby-invalid-identity-title = Your other device returned an invalid identity
-onboarding-nearby-invalid-identity = Choose Try again.
-onboarding-nearby-not-started-title = Nearby setup could not start
-onboarding-nearby-not-started = Choose Try again.
-onboarding-nearby-unavailable = Nearby setup is unavailable in this session
-onboarding-nearby-cancelled = Pairing cancelled. Choose Try again to start over.
-onboarding-nearby-connected = Connected. Your workspaces will appear automatically.
 
 # First-login identity setup: encrypted backup
-onboarding-passphrase-too-short = Use at least 12 characters. Make it long and unique; length alone does not make a common passphrase safe.
-onboarding-passphrase-mismatch = The two passphrases do not match.
-onboarding-passphrase-unavailable = The passphrase fields are temporarily unavailable.
 
 # First-login identity setup: review renderer fixtures
-onboarding-snapshot-restore-error = That backup could not be opened. Check the file and passphrase, then try again.
-onboarding-snapshot-create-error = The identity could not be saved. Nothing was created; check available storage and try again.
 
 # First-login identity setup: identity ready
 
 # First-login setup: more video and audio formats
-onboarding-codecs-installer-failed = The download could not start: { $error }
 
 # Desktop tour
 
@@ -1904,9 +1826,6 @@ peer-window-install = Install { $app }
 peer-window-installing = Installing { $app }…
 peer-window-unavailable = { $app } isn't available for this device.
 hosted-window-running-on = Running on { $device }
-shell-document-unavailable = Document unavailable
-shell-named-document-unavailable = { $name } unavailable
-shell-path-open-failed = Cannot open { $path }: { $error }
 editor-disk-conflict = File changed on disk; unsaved edits are preserved for conflict resolution
 editor-hint-disk-conflict = File changed on disk. Your unsaved edits are kept.
 editor-hint-focused = Live-shared code  ·  Ctrl+Z to undo
@@ -2122,65 +2041,16 @@ foreign-app-wait = Wait
 foreign-app-close = Close app
 
 # Why a speaker-group request failed, as Settings shows it
-speaker-error-too-many-groups = too many speaker groups
-speaker-error-group-exists = that speaker group already exists
-speaker-error-group-gone = that speaker group no longer exists
-speaker-error-not-in-group = that speaker is not in the group
-speaker-error-calibration-range = those calibration values are out of range
-speaker-error-request-expired = that speaker group request expired
-speaker-error-group-changed = that speaker group changed; ask again from its device
-speaker-error-too-many-memberships = this device is already in too many speaker groups
-speaker-error-not-a-member = this device is not in that speaker group
-speaker-error-too-many-sessions = too many speaker group sessions are active
-speaker-error-group-unavailable = that speaker group is not available
-speaker-error-none-ready = no speaker in that group is ready
-speaker-error-session-gone = that speaker group session is no longer active
-speaker-error-name = give the speakers a name of up to 64 characters
-speaker-error-roles = each speaker needs its own output and its own role, and a stereo pair needs both sides
-speaker-error-unavailable = speaker groups are unavailable
 device-fabric-error-no-identity = this device has no personal identity yet
-speaker-error-speaker-unavailable = that speaker is not available right now
-speaker-error-output-disconnected = that output is no longer connected
-speaker-error-already-playing = a speaker is already playing its sound
-speaker-error-speaker-output-gone = that speaker's output is no longer connected
-speaker-error-play-failed = could not play the sound: { $error }
-speaker-error-device-invalid = that device id is not valid
-speaker-error-output-invalid = that output is not valid
-speaker-error-group-invalid = that speaker group is not valid
 speaker-error-media-off = Turn on Media in Devices & Sync to use speakers across your devices
-speaker-error-no-calibration = there is no finished calibration to apply
-speaker-error-no-applied-calibration = there is no applied calibration to revert
-speaker-error-calibration-unavailable = calibration is unavailable
-speaker-error-calibration-gone = that calibration is no longer available
-speaker-error-network-unavailable = the device network is unavailable
-speaker-error-calibrate-on-leader = calibrate this group on the device that set it up
-speaker-error-not-all-ready = every speaker must be ready before calibrating
-speaker-error-request-failed = the speaker request failed
-speaker-error-app-stopped = that application stopped playing
-speaker-error-audio-unavailable = speaker group audio is unavailable
-speaker-error-other-session = another speaker group session is already playing from this device
 
 # Measuring speakers for calibration
-speaker-calibration-reason-microphone-gone = that microphone is no longer connected
-speaker-calibration-reason-output-gone = that speaker's output is no longer connected
-speaker-calibration-reason-play-failed = could not play the sweep: { $error }
-speaker-calibration-reason-clock = could not sync clocks with that speaker: { $reason }
 clock-sync-failure-media-disabled = media continuity is off on this device
 clock-sync-failure-no-reply = the other device did not answer clock sync
 now-playing-speakers-playing = Playing on { $group }
 now-playing-speakers-connecting = { $group }: connecting…
 now-playing-speakers-syncing = { $group }: syncing clocks…
 now-playing-speakers-clock-failed = { $group } can't play in time: { $reason }
-speaker-calibration-reason-not-heard = no sweep stood out of the noise there
-speaker-calibration-reason-not-allowed = that device has not allowed its microphone
-speaker-calibration-reason-out-of-window = the request reached that device too late
-speaker-calibration-reason-busy = that microphone was busy with another sweep
-speaker-calibration-reason-capture-failed = the recording failed
-speaker-calibration-reason-clock-unknown = that device's clock is not synchronised yet
-speaker-calibration-reason-no-answer = that device did not answer in time
-speaker-calibration-reason-not-at-seat = no microphone heard it clearly enough
-speaker-calibration-failed = Could not measure { $speaker }: { $reason }
-speaker-calibration-cancelled = Calibration was cancelled
 
 # Wireless display projection
 
@@ -2244,16 +2114,6 @@ continuity-disabled-file-transfer = file-transfer continuity is disabled on this
 continuity-disabled-realtime = realtime-session continuity is disabled on this device
 continuity-disabled-gamepad = typed-gamepad continuity is disabled on this device
 continuity-disabled-app-continuations = app-continuation continuity is disabled on this device
-remote-audio-all-system-audio = All system audio
-remote-audio-error-target-not-output = the target is not an online audio output
-remote-audio-error-unavailable = remote audio service is unavailable
-remote-audio-error-too-many = too many remote audio routes are active
-remote-audio-error-source-expired = that audio source picker entry expired
-remote-audio-error-request-expired = that remote audio request expired
-remote-audio-error-route-inactive = that remote audio route is no longer active
-remote-audio-speaker-group = Speaker group
-remote-audio-error-no-output = no local PipeWire output is available
-remote-audio-error-stream-ended = that application audio stream ended
 remote-capture-error-unavailable = remote capture service is unavailable
 remote-capture-error-busy = remote capture service is busy
 remote-capture-error-capacity = remote capture request capacity is exhausted
@@ -2297,23 +2157,6 @@ catalogue-error-flathub-untrusted = your Flathub source must be enabled, check s
 catalogue-error-flathub-missing = Flathub isn't set up on this device
 catalogue-error-flathub-not-found = it was installed but can't be found to open
 
-# Why sending to a nearby device failed
-nearby-error-destination-not-folder = Nearby Send destination is not a directory
-nearby-error-too-large = nearby transfer exceeds the size limit
-nearby-error-destination-name = Nearby Send destination name is unavailable
-nearby-error-outside-grant = Nearby Send source is outside this Files grant
-nearby-error-one-item = Nearby Send requires one regular file or folder
-nearby-error-queue-full = nearby transfer queue is full
-nearby-error-quota-full = nearby transfer quota is full
-nearby-error-disk-full = not enough free disk space for this transfer
-nearby-error-too-many = too many nearby transfers
-nearby-error-not-regular = source is not a regular file
-nearby-error-folder-too-many = folder contains too many entries
-nearby-error-folder-special = folder contains a link or special file
-nearby-error-folder-too-large = folder exceeds the size limit
-nearby-error-source-changed = nearby transfer source changed while staging
-nearby-error-name-not-portable = source name is not portable
-
 # AirDrop lab receiver verification
 airdrop-verify-title = Verify AirDrop receiver
 airdrop-verify-send-once = Send once
@@ -2330,7 +2173,6 @@ airdrop-error-verification = Fingerprint differs. Check the receiver; nothing se
 airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver and approve this file again.
 
 # A document a tab could not restore
-hosted-document-unavailable = { $path } is unavailable: { $error }
 
 # A camera, microphone or scanner shared from another of your devices
 remote-capture-source-label = { $app } on another device
@@ -2338,14 +2180,6 @@ remote-capture-source-label = { $app } on another device
 # Print jobs: the title a print queue shows when the app gave none
 print-untitled-document = Document
 
-a11y-speaker-listen = Let { $leader } use this microphone to calibrate { $group }
-a11y-speaker-listen-description = It records only while each speaker plays a test sweep; the recording stays on this device and only timing and level are sent
-a11y-speaker-listen-allow = Allow this microphone
-a11y-speaker-listen-decline = Do not allow this microphone
-a11y-speaker-listener = { $group } can calibrate with this microphone
-a11y-speaker-listener-description = Speaker calibration may listen with this microphone; activate to stop
-speaker-calibration-listening-refused = { $microphone } was not allowed to listen, so nothing can be measured from where you sit
-speaker-error-listening-unavailable = choose a microphone that can listen where you sit
 lock-screen-unlock = Unlock session
 shortcut-name-dictation-toggle = Start or finish dictation
 shortcut-name-dictation-finish = Finish dictation
@@ -2493,8 +2327,6 @@ activity-morning-source = { $source }, last activity { $time } · may be out of 
 activity-morning-open = Open morning source
 
 # Canonical first-use action admission; never includes private identity material.
-onboarding-semantic-unavailable = This setup action is no longer available at this step.
-onboarding-semantic-failed = Setup could not complete this action. The desktop remains protected.
 activity-morning-payload-unavailable = Provider summary unavailable. Open the source to inspect or refresh it.
 
 activity-morning-refresh = Refresh source
@@ -2510,18 +2342,12 @@ activity-morning-next = Next chosen source
 
 # Installed prepared setup and original-file migration.
 
-onboarding-prepared-other-person = This computer already has another person’s identity, so the prepared setup was left untouched. Restore that person’s own backup or connect their account instead.
-
-onboarding-portable-home-unavailable = Your transfer is not available on this computer yet. Try again or continue without bringing your files over.
-
-onboarding-migration-resume-unavailable = There is no deferred file migration available for your current identity.
 
 
-onboarding-portable-applications-unavailable = Your apps could not be restored. You can retry without replacing your existing files.
 
-onboarding-browser-unavailable = Your browser data is still waiting. Try again or continue for now.
 
-onboarding-backup-unavailable = A personal identity backup can’t be created on this device.
+
+
 
 # Why the first-use copy stopped, reported with its status.
 onboarding-copy-cleanup-unavailable = Temporary file cleanup is unavailable.

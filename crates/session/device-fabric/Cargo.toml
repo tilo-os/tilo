@@ -1,0 +1,40 @@
+[package]
+name = "tilo-device-fabric"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The convergent state one person's certified devices share: presence, media, clipboard, roaming settings, sealed Wi-Fi credentials, speaker groups, clocks, unlock, tethering and realtime calls, and the actions that change it."
+
+[lib]
+name = "tilo_device_fabric"
+path = "src/lib.rs"
+
+[dependencies]
+blake3.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+getrandom.workspace = true
+hex.workspace = true
+libc.workspace = true
+media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
+os-actions = { path = "../../system/os-actions" }
+postcard = { workspace = true, features = ["alloc"] }
+runtime-collab = { path = "../../runtime/runtime-collab" }
+serde.workspace = true
+serde_json.workspace = true
+settings-store = { path = "../../system/settings-store" }
+thiserror.workspace = true
+tilo-desktop-surface = { path = "../desktop-surface" }
+tilo-nearby-service = { path = "../nearby-service" }
+tilo-network-actor = { path = "../network-actor" }
+tilo-seal = { path = "../../system/tilo-seal" }
+tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+p256 = { version = "0.14", features = ["ecdsa"] }
+
+[lints]
+workspace = true

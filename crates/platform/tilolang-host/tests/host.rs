@@ -481,6 +481,22 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
         hosted.record().can_undo().1,
         "the window's Undo is ada's history undo: she can redo it"
     );
+
+    // Redo from the window brings it back, the same way.
+    let before = documents_sent(&sent);
+    window.send(&[ToApp::Redo]);
+    settle(&mut host, &mut window);
+    let hosted = host.instances().next().unwrap();
+    assert_eq!(value_of(hosted), 1, "redo brought the press back");
+    assert!(
+        documents_sent(&sent) > before,
+        "the redo went out on the connection"
+    );
+    assert_eq!(
+        hosted.record().can_undo(),
+        (true, false),
+        "and it is ada's to undo again"
+    );
 }
 
 #[test]

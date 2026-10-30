@@ -534,33 +534,7 @@ impl Checker<'_> {
                     param,
                     at,
                     action,
-                } => {
-                    if let Some(e) = d.event(&event.name) {
-                        let act = self.event_action(d, e, (param.as_ref(), at.as_ref()), action);
-                        if !act.ty.is_error() {
-                            self.emit(host(
-                                Imp::UiOn,
-                                vec![Ex::local(n, Ty::View), Ex::str(&event.name), act],
-                            ));
-                        }
-                    } else {
-                        self.err(
-                            "E063",
-                            event.span,
-                            format!(
-                                "{} has no event `{}`; its events: {}",
-                                shown(d),
-                                event.name,
-                                listed(d.events.iter().map(|e| format!(
-                                    "`{}`{}",
-                                    e.name,
-                                    doc_of(&e.doc)
-                                )))
-                            ),
-                        );
-                        let _ = self.expr(action, None);
-                    }
-                }
+                } => self.component_event(n, d, event, (param.as_ref(), at.as_ref()), action),
                 _ => content.push(s.clone()),
             }
         }
@@ -581,6 +555,45 @@ impl Checker<'_> {
         };
         self.slot_accepts(d, slot, &content);
         self.child_block("slot", &content, n);
+    }
+
+    /// `on <event>: <action>` in the block of the component `d`, whose node is `n`: the action
+    /// runs when the event fires. A primitive the toolkit's component draws (`rich_input`,
+    /// `button`) takes its component's events the same way, so both spellings share one
+    /// contract.
+    pub(super) fn component_event(
+        &mut self,
+        n: LocalId,
+        d: &'static Description,
+        event: &ast::Ident,
+        params: (Option<&ast::EventParam>, Option<&ast::EventParam>),
+        action: &ast::Expr,
+    ) {
+        let Some(e) = d.event(&event.name) else {
+            self.err(
+                "E063",
+                event.span,
+                format!(
+                    "{} has no event `{}`; its events: {}",
+                    shown(d),
+                    event.name,
+                    listed(
+                        d.events
+                            .iter()
+                            .map(|e| format!("`{}`{}", e.name, doc_of(&e.doc)))
+                    )
+                ),
+            );
+            let _ = self.expr(action, None);
+            return;
+        };
+        let act = self.event_action(d, e, params, action);
+        if !act.ty.is_error() {
+            self.emit(host(
+                Imp::UiOn,
+                vec![Ex::local(n, Ty::View), Ex::str(&event.name), act],
+            ));
+        }
     }
 
     /// What an event does: an action reference. An event that carries a value names it

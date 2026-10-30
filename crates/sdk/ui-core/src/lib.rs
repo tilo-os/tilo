@@ -165,6 +165,7 @@ pub mod content;
 pub mod content_layout;
 pub mod damage;
 pub mod date;
+pub mod device_local_door;
 pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
 /// Shared by the WebView's page buffers and the video decoder's hardware
@@ -397,9 +398,7 @@ pub use winit;
 pub use app::{App, local_surface_id};
 pub use arriving::{Arrival, ArrivalClock, ArrivalCompletion, ArrivalWriter, Arriving};
 pub use caps_lock::CapsLockEstimate;
-pub use collection_transition::{
-    KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, RowMotion, RowMotions, TransitionVisual,
-};
+pub use collection_transition::{RowMotion, RowMotions};
 pub use color_compat::ColorCompat;
 pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
 pub use doc::{TextEdit, put_text_diffed, splice_text_diffed};

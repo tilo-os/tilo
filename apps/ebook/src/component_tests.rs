@@ -160,13 +160,6 @@ fn invoke(
 /// The library resource, which every edit is published on.
 const LIBRARY: &str = "ebook.library";
 
-/// Where the reader is in `book` (its place in the library): the resource
-/// its view operations (selecting, going to a passage) are published on.
-fn reading(book: &str) -> String {
-    let id = book.rsplit_once("/book:").map_or(book, |(_, id)| id);
-    format!("ebook.selection:{id}")
-}
-
 fn shelf(doc: &ui::tilo_resource::Doc) -> Vec<crate::model::LibraryEntry> {
     crate::resource::read_doc(doc)
         .entries
@@ -505,7 +498,7 @@ fn go_to_moves_each_mount_to_its_own_chapter_and_block_without_a_selection() {
 
 /// Select a passage where the reader is in the book and highlight it.
 fn highlight_passage(driver: &mut FrameHarness, book: &str, passage: serde_json::Value) {
-    invoke(driver, &reading(book), "select-passage", passage).expect("select");
+    invoke(driver, book, "select-passage", passage).expect("select");
     invoke(
         driver,
         LIBRARY,

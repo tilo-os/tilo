@@ -21,9 +21,9 @@ use sha2::{Digest, Sha256};
 
 use super::nearby_transfer::{FILES_APP_ID, files_grants, nearby_source_from_grants};
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
-use crate::shell::nearby_transfer::SecureNearbySource;
 use crate::shell::portal_dialog::{FieldReviewRequest, PortalDialogQueue, ShortcutStepDecision};
 use crate::shell::state::WorkspaceTreeHandle;
+use tilo_nearby_service::SecureNearbySource;
 
 const SENDER: &str = include_str!("../../../../../../tools/protocols/airdrop_sender.py");
 const MAX_BYTES: u64 = 16 * 1024 * 1024;

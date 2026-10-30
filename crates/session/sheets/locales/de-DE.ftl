@@ -126,3 +126,127 @@ display-remote-offline-excluded = Offline, nicht in der Anordnung
 display-remote-switched-off = Auf dem Gerät ausgeschaltet
 display-remote-in-layout = Im Layout
 display-remote-out-of-layout = Nicht im Layout
+
+## The system sheets the shell asks with on an app's or a service's behalf
+portal-sheet-description = Gefragt von Tilo, nicht von der App. Eingabe antwortet, Escape lehnt ab.
+portal-back = Zurück
+portal-continue = Weiter
+portal-shortcut-not-set = Nicht festgelegt
+portal-usb-row-read-write = Lesen und Schreiben
+portal-usb-row-read-only = Nur lesen
+portal-a11y-name = Name
+portal-no-such-field = Die Frage hat kein solches Feld zum Eintippen.
+portal-secret-incomplete = Fülle zuerst aus, was die Frage verlangt.
+portal-a11y-answer = Antwort
+portal-allow = Erlauben
+portal-deny = Ablehnen
+portal-cancel = Abbrechen
+portal-allow-once = Einmal erlauben
+portal-allow-session = Für diese Sitzung erlauben
+portal-allow-always = Immer erlauben
+
+## Zugriff auf eine Fähigkeit
+portal-access-title = { $app } möchte { $what } verwenden
+portal-access-detail = Nichts wird geteilt, solange du es nicht erlaubst.
+portal-access-screenshot = deinen Bildschirm als Bild
+portal-access-screencast = deinen Bildschirm
+portal-access-remote-desktop = deinen Bildschirm und deine Eingaben
+portal-access-camera = deine Kamera
+portal-access-microphone = dein Mikrofon
+portal-access-speaker = deine Lautsprecher
+portal-access-location = deinen Standort
+portal-access-print = deine Drucker
+portal-access-usb = deine USB-Geräte
+portal-access-input-capture = deine Tastatur und deinen Zeiger
+portal-access-global-shortcuts = globale Tastenkürzel
+portal-access-notification = deine Benachrichtigungen
+portal-access-secret = deine gespeicherten Passwörter
+portal-access-generic = { $capability }
+
+## Die weiteren Fragen des Portals
+portal-account-title = Deine Identität mit { $app } teilen?
+portal-account-detail = { $app } fragt nach deinem Namen und deiner Konto-Kennung.
+portal-account-share = Identität teilen
+portal-email-title = Das Mailprogramm öffnen?
+portal-email-detail = Sieh die Nachricht durch, die { $app } vorbereitet hat, bevor sie weitergegeben wird.
+portal-email-to = An: { $addresses }
+portal-email-cc = Cc: { $addresses }
+portal-email-bcc = Bcc: { $addresses }
+portal-email-subject = Betreff: { $subject }
+portal-email-attachments = { $count } Anhang/Anhänge
+portal-email-open = Mailprogramm öffnen
+portal-background-title = { $app } weiterlaufen lassen?
+portal-background-background = Im Hintergrund laufen lassen
+portal-background-running = Laufen lassen, solange sein Fenster offen ist
+portal-background-active = Nur im Vordergrund laufen lassen
+portal-wallpaper-title = Das Hintergrundbild von { $app } setzen?
+portal-wallpaper-detail = { $app } ändert { $where }.
+portal-wallpaper-background = deinen Schreibtischhintergrund
+portal-wallpaper-lockscreen = deinen Sperrbildschirm
+portal-wallpaper-both = deinen Schreibtischhintergrund und Sperrbildschirm
+portal-wallpaper-set = Hintergrundbild setzen
+portal-print-title = „{ $title }“ drucken?
+portal-print-detail = { $copies } Kopien, auf dem Drucker, den du wählst.
+portal-print-print = Drucken
+portal-screenshot-title = { $app } einen Bildschirmausschnitt geben?
+portal-screenshot-detail = Es bekommt ein Bild des Bildschirms, wie er jetzt ist.
+portal-screenshot-take = Bildschirmausschnitt geben
+portal-pick-color-title = Eine Farbe wählen
+portal-pick-color-detail = Rot, Grün und Blau, jeweils von 0 bis 1.
+portal-pick-color-red = Rot
+portal-pick-color-green = Grün
+portal-pick-color-blue = Blau
+portal-pick-color-use = Farbe verwenden
+portal-pick-color-incomplete = Jeder Teil ist eine Zahl von 0 bis 1.
+portal-usb-title = { $app } USB-Geräte geben?
+portal-usb-detail = { $app } bekommt die angehakten Geräte, bis es nicht mehr fragt oder eins abgezogen wird.
+portal-usb-allow = Ausgewählte geben
+portal-app-choice-title = Womit öffnen?
+portal-app-choice-detail = { $app } möchte { $what } öffnen
+portal-app-choice-detail-any = Wähle die App, die es öffnet
+portal-app-choice-open = Öffnen
+portal-launcher-title = „{ $name }“ zu deinen Apps hinzufügen?
+portal-launcher-detail = { $app } fügt einen Starter hinzu. Das mitgelieferte Bild wurde geprüft.
+portal-launcher-app-icon = Das eigene Bild der App
+portal-launcher-monogram-icon = Tilo-Monogramm
+portal-launcher-web-icon = Tilo-Websymbol
+portal-launcher-add = Starter hinzufügen
+portal-launcher-bad-name = Gib dem Starter einen Namen, ohne Steuerzeichen.
+portal-shortcuts-title = Globale Tastenkürzel festlegen
+portal-shortcuts-detail = Wähle eine Zeile und drücke dann die Tasten. Rücktaste löscht sie.
+portal-shortcuts-save = Tastenkürzel speichern
+portal-shortcut-reserved = Von Tilo belegt. Wähle ein anderes.
+portal-shortcut-taken = Von { $app } belegt. Wähle ein anderes.
+portal-shortcut-not-taken = Drücke eine Taste mit Strg, Alt, Umschalt oder Super.
+portal-share-title = Deinen Bildschirm mit { $app } teilen?
+portal-share-detail = { $app } sieht, was du teilst, und nichts sonst.
+portal-share-share = Teilen
+portal-share-remember = Diese Wahl merken
+portal-remote-title = { $app } diesen Rechner steuern lassen?
+portal-remote-detail = { $app } sieht den geteilten Bildschirm und steuert die Eingaben, die du erlaubst.
+portal-remote-devices = Es möchte steuern: { $devices }
+
+## Anmeldung als Administrator
+portal-auth-heading = Administratorzugriff
+portal-auth-authenticate = Anmelden
+portal-auth-identity = Anmelden als
+portal-auth-ended = Die Anmeldung endete unerwartet.
+portal-auth-rejected = Dieses Passwort wurde nicht angenommen.
+
+## File chooser
+
+file-chooser-nothing-asked = Die Dateiauswahl fragt gerade nichts.
+file-chooser-answered = Die Dateiauswahl hat schon geantwortet.
+file-chooser-not-listed = Das steht nicht in der Liste der Dateiauswahl.
+file-chooser-not-a-folder = Das ist eine Datei, kein Ordner.
+file-chooser-outside = Das liegt außerhalb der Ordner, die die Dateiauswahl öffnen darf.
+file-chooser-changed = Die Dateiauswahl hat sich geändert. Sieh sie dir noch einmal an.
+file-chooser-unavailable = Das kann die Dateiauswahl gerade nicht.
+
+## The lock screen.
+lock-title = Gesperrt
+lock-unlock = Entsperren
+lock-checking = Wird geprüft …
+lock-no-password = Gib dein Passwort ein, um zu entsperren.
+lock-wrong-password = Mit diesem Passwort ließ sich nicht entsperren. Versuch es noch einmal.
+lock-unavailable = Das Passwort ließ sich nicht prüfen. Der Bildschirm bleibt gesperrt.

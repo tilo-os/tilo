@@ -29,73 +29,6 @@ fn visual_notification_alerts_enabled() -> bool {
     tilo_accessibility_settings::AccessibilitySettings::load().visual_alerts
 }
 
-#[cfg(test)]
-mod dropped_content_startup_tests {
-    use super::ChromeState;
-    use crate::shell::hosted_inputs::{HostedDocumentState, HostedTileInputs};
-    use crate::shell::state::WorkspaceTree;
-    use crate::shell::tab_binding::Placement;
-
-    #[test]
-    fn dropped_plain_text_is_bound_to_the_exact_hosted_editor_tab() {
-        let temp = tempfile::tempdir().unwrap();
-        let document = temp.path().join("carried.txt");
-        std::fs::write(&document, "carried words\n").unwrap();
-        let tree = WorkspaceTree::bootstrap_demo();
-        let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
-        let inputs = HostedTileInputs::fixture_in(temp.path()).unwrap();
-        let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
-
-        let tab = chrome
-            .borrow_mut()
-            .handle_file_drop_at_placement(&document, Placement::TabAt(group, 0))
-            .unwrap();
-        assert!(matches!(
-            chrome.borrow().hosted_inputs.document(tab),
-            Some(HostedDocumentState::Ready(opened))
-                if opened.path == document.canonicalize().unwrap()
-        ));
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let group = tree.desktop.workspaces[0].strips[0]
-            .window_groups
-            .iter()
-            .find(|candidate| candidate.id == group)
-            .unwrap();
-        assert_eq!(group.tabs[0].id, tab);
-        drop(tree);
-        drop(state);
-    }
-
-    /// A Wayland drop is handled on the compositor loop, and a file dropped
-    /// from the workspace mount hydrates from a peer on its first read. The
-    /// drop opens the editor on the file without reading it: a file whose
-    /// bytes never arrive (a FIFO nobody writes) still opens at once.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn dropping_a_file_never_reads_it_on_the_loop() {
-        let temp = tempfile::tempdir().unwrap();
-        let document = crate::shell::disk_sync_guard::blocking_source(temp.path(), "hydrating.txt");
-        let tree = WorkspaceTree::bootstrap_demo();
-        let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
-        let inputs = HostedTileInputs::fixture_in(temp.path()).unwrap();
-        let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
-
-        let (tab, read) = crate::shell::disk_sync_guard::read_while(&document, b"words\n", || {
-            chrome
-                .borrow_mut()
-                .handle_file_drop_at_placement(&document, Placement::TabAt(group, 0))
-        });
-        assert!(!read, "the drop read the file on the loop");
-        let tab = tab.expect("the drop opened a tab");
-        assert!(matches!(
-            chrome.borrow().hosted_inputs.document(tab),
-            Some(HostedDocumentState::Ready(opened))
-                if opened.path == document.canonicalize().unwrap()
-        ));
-    }
-}
-
 /// Whether a banner may surface while the person types into a window:
 /// only what is addressed to them (a message or mention from a verified
 /// person, a call, a reminder they set, an ask waiting on them), and the
@@ -669,14 +602,12 @@ pub struct ChromeState {
     /// restore.
     desk_undo_toasts: BTreeMap<u64, settings_store::desk_widgets::WidgetId>,
     desk_restores: Vec<settings_store::desk_widgets::WidgetId>,
-    /// Notices of an app that ran out of memory, by toast id: the closed-tab
-    /// serials of its windows, which Reopen puts back where they were.
-    memory_reopen_toasts: BTreeMap<u64, Vec<u64>>,
-    /// Agents whose admission a room's governor refused, as (room, agent,
-    /// the governor's reason): the agent door answers the client waiting on
-    /// that admission with it ([`crate::shell::agent_admission`]), and takes
-    /// them every turn.
-    pub(crate) refused_agent_admissions: Vec<(String, String, String)>,
+    /// Notices of an app that ran out of memory, by toast id: the tabs its
+    /// windows kept, which Reopen opens the app again into.
+    memory_reopen_toasts: BTreeMap<u64, Vec<crate::shell::state::TabId>>,
+    /// Agent door connections the person admitted, whose task run Tasks
+    /// is to make ([`crate::shell::agent_admission::DoorRunAsk`]).
+    door_runs: Vec<crate::shell::agent_admission::DoorRunAsk>,
     /// Notifications of new devices asking to be the person, with the
     /// request each answers and the code it shows.
     device_asking_toasts: BTreeMap<u64, ([u8; 32], String, bool)>,
@@ -873,7 +804,7 @@ impl ChromeState {
             desk_undo_toasts: BTreeMap::new(),
             desk_restores: Vec::new(),
             memory_reopen_toasts: BTreeMap::new(),
-            refused_agent_admissions: Vec::new(),
+            door_runs: Vec::new(),
             device_asking_toasts: BTreeMap::new(),
             consent_notices: BTreeMap::new(),
             device_asking_seen: std::collections::BTreeSet::new(),
@@ -2177,57 +2108,51 @@ impl ChromeState {
     }
 
     /// Tell the person memory ended an app or one of its jobs (`notice`
-    /// says which and why). The app's windows that went with it (`lost`)
-    /// are remembered as closed tabs, so Reopen Closed Tab brings them back
-    /// too, and the notice's Reopen puts them all back where they were.
-    /// Returns the notice's id.
+    /// says which and why). The app's windows that went with it kept their
+    /// places as the app's cards (`lost`, the tabs), and the notice's
+    /// Reopen opens the app again into all of them. Returns the notice's id.
     pub(crate) fn push_out_of_memory_notice(
         &mut self,
         notice: crate::shell::launcher::LaunchFailureNotice,
-        lost: Vec<crate::shell::closed_tabs::ClosedTab>,
+        lost: Vec<crate::shell::state::TabId>,
     ) -> u64 {
-        let serials: Vec<u64> = lost
-            .into_iter()
-            .map(|entry| self.closed_tabs.push(entry))
-            .collect();
         let mut toast = Notification::new(notice.title, notice.body)
             .with_severity(NotificationSeverity::Error)
             .with_app_name(crate::shell::i18n::t("host-source-applications"));
         toast.dismiss_after = crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME;
-        if !serials.is_empty() {
+        if !lost.is_empty() {
             toast.actions = vec![("default".into(), crate::shell::i18n::t("memory-app-reopen"))];
-            self.memory_reopen_toasts.insert(toast.id, serials);
+            self.memory_reopen_toasts.insert(toast.id, lost);
         }
         self.push_notification_full(toast)
     }
 
-    /// The out-of-memory notice's Reopen: the app's windows back where they
-    /// were, relaunched. Returns how many came back.
+    /// The out-of-memory notice's Reopen: the app opened again into the
+    /// places its windows kept. Returns how many came back.
     pub(crate) fn reopen_after_memory(&mut self, toast: u64) -> usize {
-        let Some(serials) = self.memory_reopen_toasts.remove(&toast) else {
+        let Some(lost) = self.memory_reopen_toasts.remove(&toast) else {
             return 0;
         };
-        let mut reopened = 0_usize;
-        for serial in serials {
-            if let Some(entry) = self.closed_tabs.take(serial)
-                && self.restore_closed_tab(entry).is_some()
-            {
-                reopened = reopened.saturating_add(1);
-            }
-        }
-        reopened
+        self.reopen_stopped(lost)
     }
 
-    /// Put `lost`, the windows of an app ended to start again on a newer
-    /// build, back where they were, relaunched as the out-of-memory notice's
-    /// Reopen does. Returns how many came back.
-    pub(crate) fn reopen_on_new_build(
-        &mut self,
-        lost: Vec<crate::shell::closed_tabs::ClosedTab>,
-    ) -> usize {
-        lost.into_iter()
-            .filter_map(|entry| self.restore_closed_tab(entry))
-            .count()
+    /// Open the app ended to start again on a newer build into the places
+    /// its windows kept (`lost`), as the out-of-memory notice's Reopen
+    /// does. Returns how many came back.
+    pub(crate) fn reopen_on_new_build(&mut self, lost: Vec<crate::shell::state::TabId>) -> usize {
+        self.reopen_stopped(lost)
+    }
+
+    /// Open the apps of the stopped cards `tabs` again into them.
+    fn reopen_stopped(&mut self, tabs: Vec<crate::shell::state::TabId>) -> usize {
+        let reopened = {
+            let mut tree = self.tree_mut();
+            tabs.into_iter()
+                .filter(|tab| crate::shell::peer_windows::reopen_stopped(&mut tree, *tab))
+                .count()
+        };
+        self.bump();
+        reopened
     }
 
     /// Ask the person about a new device asking to be them, once: what it
@@ -2482,34 +2407,8 @@ impl ChromeState {
         path: &std::path::Path,
         placement: crate::shell::tab_binding::Placement,
     ) -> Option<u64> {
-        const MAX_HOSTED_TEXT_BYTES: u64 = 32 * 1024 * 1024;
-        let mut hosted_document = None;
-        let mut files_directory = None;
         if path.exists() {
-            let canonical = path.canonicalize().ok()?;
-            if canonical.is_dir() {
-                files_directory = Some(canonical);
-            } else {
-                let is_editor = canonical
-                    .extension()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .is_some_and(|extension| {
-                        super::workspace_drop::EDITOR_EXTENSIONS
-                            .iter()
-                            .any(|candidate| candidate.eq_ignore_ascii_case(extension))
-                    });
-                if is_editor {
-                    // The size is metadata; the bytes are the editor's to
-                    // read. A drop from the workspace mount would hydrate
-                    // the file from a peer, which the loop must not wait for.
-                    if canonical.metadata().ok()?.len() > MAX_HOSTED_TEXT_BYTES {
-                        return None;
-                    }
-                    hosted_document = Some(canonical);
-                } else {
-                    files_directory = canonical.parent().map(std::path::Path::to_path_buf);
-                }
-            }
+            path.canonicalize().ok()?;
         }
         let tab_id = {
             let mut tree = self.tree_mut();
@@ -2533,29 +2432,6 @@ impl ChromeState {
         };
         if let Some((strip, group)) = address {
             self.grant_dropped_file_access(path, strip, group, tab_id);
-        }
-        // Exact placement is only half of opening a drop: hosted apps also
-        // need device-local startup data naming the thing they should show.
-        // Synthetic/nonexistent paths used by shell layout fixtures retain the
-        // historical placeholder behaviour; real paths are bound here.
-        if let Some(directory) = files_directory {
-            self.hosted_inputs.bind_files_directory(tab_id, directory);
-        }
-        if let Some(path) = hosted_document {
-            self.hosted_inputs.bind_document(
-                tab_id,
-                super::hosted_inputs::HostedDocument {
-                    provider_id: "org.tilo.Editor",
-                    path: path.clone(),
-                },
-            );
-            self.tree_mut().native_document_tabs.insert(
-                tab_id,
-                crate::shell::state::NativeDocumentReference {
-                    provider_id: "org.tilo.Editor".to_string(),
-                    path,
-                },
-            );
         }
         self.bump();
         Some(tab_id)
@@ -2891,7 +2767,7 @@ impl ChromeState {
             drop(tree);
             found
         };
-        let name = crate::shell::search::providers::actions::valid_strip_name(label).map_or_else(
+        let name = crate::shell::actions::valid_strip_name(label).map_or_else(
             || crate::shell::i18n::t("search-action-strip-create-default-name"),
             str::to_owned,
         );
@@ -3164,7 +3040,7 @@ impl ChromeState {
             return;
         }
         self.device_asking_toasts.remove(&n.id);
-        // The windows stay among the closed tabs; only the notice's offer lapses.
+        // The windows keep their places as the app's cards; only the notice's offer lapses.
         self.memory_reopen_toasts.remove(&n.id);
         self.notification_log.retain(n);
     }
@@ -3652,6 +3528,17 @@ impl ChromeState {
         std::mem::take(&mut self.agent_asks)
     }
 
+    /// Ask Tasks for the run of an agent door connection the person
+    /// admitted.
+    pub(crate) fn ask_door_run(&mut self, ask: crate::shell::agent_admission::DoorRunAsk) {
+        self.door_runs.push(ask);
+    }
+
+    /// The door connections whose runs to ask for since last taken.
+    pub(crate) fn take_door_runs(&mut self) -> Vec<crate::shell::agent_admission::DoorRunAsk> {
+        std::mem::take(&mut self.door_runs)
+    }
+
     /// Ask the workspace's agent `query` about what is focused (the
     /// selection in the focused window, else the window), in the composer
     /// beside it, where the answer shows: the search palette's question.
@@ -3969,9 +3856,7 @@ impl ChromeState {
                 return false;
             }
             let actor = workspace.actor_for_person(&self.local_user_for_room(&workspace.room()));
-            crate::shell::search::providers::actions::shell_action_authorized_for(
-                workspace, &actor, address,
-            )
+            crate::shell::actions::shell_action_authorized_for(workspace, &actor, address)
         })
     }
 

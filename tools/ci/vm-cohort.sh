@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The prebuilt layer cohort vm-acceptance-cohort installs through verified
-# swap-artifact (docs/layer-artifacts.md), as two t checks:
+# swap-artifact, as two checks:
 #
 #   vm-cohort.sh produce   vm-cohort-x86_64: this commit's launcher, install,
 #                          shell and apps+runtime as full signed layer streams,
@@ -30,8 +30,8 @@ forge=https://code.tilo.so/tilo/tilo.git
 case $mode in
   produce)
     source=$(git rev-parse --verify HEAD)
-    builder=$(python3 -c 'import tomllib; print(tomllib.load(open("t.toml", "rb"))["image"])')
-    # t numbers no runs: a random handoff number keeps every production's identity its own.
+    builder=$(python3 -c 'import sys; sys.path.insert(0, "tools/ci"); import resolve_builder; print(resolve_builder.resolve(""))')
+    # A random handoff number keeps every production's identity its own.
     run_id=$(python3 -c 'import secrets; print(secrets.randbelow(2**53 - 1) + 1)')
     rm -rf "$cohort"
     mkdir -p "$cohort"

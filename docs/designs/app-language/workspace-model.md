@@ -121,7 +121,8 @@ default view note_editor for Note
 
 A person's arrangement is typed state of theirs, in the shell's own terms, synced across their
 devices with history and undo. The shell is a view of it and of the workspace (resources,
-tasks, presence). Only the person arranges it (§7).
+tasks, presence). The person and the agents acting for them arrange it, attributed and undoable
+like any change; how agents' work shows up is the person's setting (shell.md §5).
 
 ## 10. Shells
 

@@ -125,7 +125,7 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
                 doc.put(ROOT, "body", "later").unwrap();
                 history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
                 history
-                    .undo_as(doc, Some(&binding.author), None, None, None)
+                    .undo_as(doc, Some(&binding.author), None, None)
                     .unwrap();
                 state.pending = Some(PendingRecordAction::new(&binding, doc.base_heads()));
                 prepare_content_restore(doc, &SCHEMA, &doc.base_heads(), &doc.base_heads()).unwrap()
@@ -167,7 +167,7 @@ fn owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary() {
                 doc.put(ROOT, "body", "later").unwrap();
                 history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
                 history
-                    .undo_as(doc, Some(&binding.author), None, None, None)
+                    .undo_as(doc, Some(&binding.author), None, None)
                     .unwrap();
                 state.pending = Some(PendingRecordAction::new(&binding, doc.base_heads()));
                 prepare_content_restore(doc, &SCHEMA, &doc.base_heads(), &target).unwrap()

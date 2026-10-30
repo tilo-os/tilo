@@ -35,7 +35,6 @@ mod invite_scenes;
 mod now_playing_fixture;
 
 #[cfg(feature = "test-support")]
-mod own_process_window;
 mod scene_catalogue;
 mod search_seed;
 mod secret_prompt_sim_scene;
@@ -127,10 +126,6 @@ pub struct ShellDriver {
         crate::own_device::OwnDevice,
         shell::shell::personal_workspaces::PersonalWorkspaces,
     )>,
-    /// Apps shown as windows of their own, reached only over their shell-ui
-    /// connection ([`crate::own_process`]).
-    #[cfg(feature = "test-support")]
-    own_process: Vec<crate::own_process::OwnProcessApp>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -222,8 +217,6 @@ impl ShellDriver {
             outputs: Vec::new(),
             held: Vec::new(),
             own_device: None,
-            #[cfg(feature = "test-support")]
-            own_process: Vec::new(),
         }
     }
 
@@ -257,61 +250,6 @@ impl ShellDriver {
         // changing the live rows until this production update pass runs.
         self.fb.pump_apps(&mut self.state, &self.root_obj);
         self.fb.relayout();
-        #[cfg(feature = "test-support")]
-        if self.serve_own_process_apps() {
-            self.fb.relayout();
-        }
-    }
-
-    /// Show `app` as the window of `surface_id`, reached only over its
-    /// shell-ui connection, as `app_id`.
-    ///
-    /// # Errors
-    /// The app's connection could not be set up.
-    #[cfg(feature = "test-support")]
-    pub fn add_own_process_app(
-        &mut self,
-        app: ui::App,
-        app_id: &'static str,
-        surface_id: u64,
-    ) -> Result<(), String> {
-        let size = shell::shell::foreign::store()
-            .viewport(surface_id)
-            .filter(|(w, h)| *w > 0 && *h > 0)
-            .unwrap_or((800, 600));
-        // Connection ids the shots never give a real client.
-        let connection = 0x5107_0000_u64.saturating_add(self.own_process.len() as u64);
-        let app = crate::own_process::OwnProcessApp::new(
-            app,
-            app_id,
-            connection,
-            surface_id,
-            size,
-            self.fb.theme().clone(),
-        )?;
-        self.own_process.push(app);
-        self.relayout();
-        Ok(())
-    }
-
-    /// One turn of every app in a window of its own against the shell, as
-    /// the compositor's loop serves their connections. Returns whether any
-    /// ran.
-    #[cfg(feature = "test-support")]
-    fn serve_own_process_apps(&mut self) -> bool {
-        if self.own_process.is_empty() {
-            return false;
-        }
-        let outbox = self.fb.host_mut().take_toolbar_outbox();
-        for app in &mut self.own_process {
-            let events = outbox
-                .iter()
-                .filter(|(connection, _)| *connection == app.connection)
-                .map(|(_, event)| event.clone())
-                .collect();
-            app.serve(self.fb.host_mut(), events);
-        }
-        true
     }
 
     /// Mutate chrome state — opens overlays, switches tabs, tweaks
@@ -601,32 +539,6 @@ impl ShellDriver {
         self.dispatch(&event);
     }
 
-    /// Type a literal string — one `Key::Character` event per non-control
-    /// character. Triggers the same `handle_event` path the live binary's
-    /// keyboard handler does. Caller is expected to have opened an
-    /// input target (palette, name editor, etc.) first.
-    /// Write `text` to the active Terminal window as its session's output.
-    ///
-    /// # Errors
-    /// No Terminal window is active.
-    pub fn feed_active_terminal(&mut self, text: &str) -> Result<(), String> {
-        self.fb.feed_active_terminal_for_shots(text.as_bytes())
-    }
-
-    /// What the active window's focused field asks an input method for, read
-    /// off the live widget tree as the compositor reads it off the wire.
-    #[cfg(feature = "hosted-test-control")]
-    pub fn active_ime_content_for_shots(&self) -> Option<ui::ime::InputContent> {
-        self.fb.active_ime_content_for_shots()
-    }
-
-    /// Draw the on-screen keyboard in the frame, in the layout `content`'s
-    /// purpose asks for; `None` puts it away.
-    #[cfg(feature = "hosted-test-control")]
-    pub fn set_shots_keyboard(&mut self, content: Option<ui::ime::InputContent>) {
-        self.fb.set_shots_keyboard(content);
-    }
-
     pub fn type_str(&mut self, s: &str) {
         for c in s.chars() {
             if c.is_control() {
@@ -655,10 +567,6 @@ impl ShellDriver {
             // Run the same readonly sync, typed settlement and update
             // as the native compositor before painting animations.
             self.fb.pump_apps(&mut self.state, &self.root_obj);
-            #[cfg(feature = "test-support")]
-            if self.serve_own_process_apps() {
-                self.fb.relayout();
-            }
             // Re-draw into a throwaway scene so tick functions inside
             // `draw` (overview crossfade tick, etc.) see elapsed time.
             let _ = self.paint();

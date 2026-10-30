@@ -984,6 +984,8 @@ mod tests {
         let screens = screens(&Frame {
             rect: Rect::new(0.0, 0.0, 1440.0, 900.0),
             rows: &[],
+            own: None,
+            persons: &[],
             people: std::slice::from_ref(&person),
             tree: &tree,
             records: &records,

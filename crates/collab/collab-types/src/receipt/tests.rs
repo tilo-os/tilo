@@ -482,6 +482,25 @@ fn a_change_reaches_outside_by_what_it_queued_in_an_outbox() {
     );
 }
 
+/// A history step may touch any unit, and its claim names them all rather
+/// than the entries it queued: a checkpoint no receiver read is an undoable
+/// change, and the devices that open it check what it queued.
+#[test]
+fn a_history_step_that_claims_every_unit_queues_nothing() {
+    let checkpoint = ClaimedAction::History(tilo_actions::HistoryOp::Checkpoint {
+        name: "before the party".into(),
+    });
+    let claims = [claim(5, checkpoint, vec![Vec::new(), uploads()])];
+    assert_eq!(calendar(&claims, false), Ok(Receipt::Admit));
+    assert!(matches!(
+        calendar(&claims, true),
+        Err(ReceiptRefusal::NotGranted {
+            kind: ActionKind::Outside,
+            ..
+        })
+    ));
+}
+
 /// One resource kind of a record that holds items of several (a tilolang app's root: its
 /// categories among its channels), publishing one verb.
 struct ItemKind(&'static str, &'static str);

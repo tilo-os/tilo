@@ -5,4 +5,3 @@ crates/session/shell/src/compositor/backend/headless.rs literal_color 1
 crates/session/shell/src/compositor/backend/winit.rs literal_color 1
 crates/session/shell/src/compositor/projection_capture.rs literal_color 1
 crates/session/shell/src/shell/frame.rs literal_color 1
-crates/session/shell/src/shell/frame.rs white_or_black 2

@@ -1,4 +1,4 @@
-//! The native local data plane (`docs/architecture/storage.md`, §6, Tier 1).
+//! The native local data plane.
 //!
 //! Resident files are real files on a dedicated Btrfs store volume. Reads,
 //! writes, `stat` and `mmap` of them never leave the kernel. This crate

@@ -47,7 +47,40 @@ pub(crate) trait ControlHost: HostCore {
         &mut self,
         intent: &ControlInvocation,
         owner: Option<crate::history_mode::HistoryOwner>,
-    ) -> bool;
+    ) -> bool {
+        let host_action = self.is_host_action_resource(&intent.address.resource);
+        if intent.address.resource != crate::history_mode::door::HISTORY_RESOURCE && !host_action {
+            return false;
+        }
+        let embedded = owner.filter(|_| !host_action).and_then(|owner| {
+            crate::history_mode::embedded::invoke_door(self.host_root_mut(), &owner, intent)
+        });
+        let result = if let Some(result) = embedded {
+            self.embedded_history_acted();
+            result
+                .map(|()| ResourceOperationStart::Completed(tilo_actions::ActionOutput::default()))
+        } else {
+            self.run_local_history_address(&intent.address, &json_argument(&intent.arguments))
+        };
+        crate::widget::controls::on_control_invocation_result(
+            self.host_root_mut(),
+            &intent.address,
+            &result,
+        );
+        true
+    }
+
+    /// Whether `resource` names one of the window's own actions that runs
+    /// like History (the unsaved-changes Retry in its header).
+    fn is_host_action_resource(&self, _resource: &str) -> bool {
+        false
+    }
+
+    /// Run a History door action, or one of the window's own, locally.
+    fn run_local_history_address(&mut self, address: &ActionAddress, argument: &str) -> Started;
+
+    /// A History surface embedded in the app took a control.
+    fn embedded_history_acted(&mut self) {}
 
     /// A control addressed to the host search door opens search instead of
     /// reaching the app; `owner` is the component it came from. Whether it

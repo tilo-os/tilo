@@ -92,13 +92,13 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
 
     // Undo takes it back as a new change; redo brings it back.
     history
-        .undo_as(&mut doc, Some(&ada), None, None, None)
+        .undo_as(&mut doc, Some(&ada), None, None)
         .expect("undo");
     assert_eq!(title(&doc), None);
     assert!(!history.can_undo_as(&doc, Some(&ada)));
     assert!(history.can_redo_as(&doc, Some(&ada)));
     history
-        .redo_as(&mut doc, Some(&ada), None, None, None)
+        .redo_as(&mut doc, Some(&ada), None, None)
         .expect("redo");
     assert_eq!(title(&doc).as_deref(), Some("Draft"));
     assert!(steps::undone(&doc).is_empty(), "the redo restored the step");

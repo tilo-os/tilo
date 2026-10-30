@@ -590,7 +590,7 @@ pub struct AccountsArea {
     account_root: Option<AccountRoot>,
     /// The credential vault, its custody and the sync statuses, opened off
     /// the UI thread after the window's first frame ([`Self::start_read`]).
-    read: crate::device_read::DeviceRead<AccountsRead>,
+    pub(crate) read: crate::device_read::DeviceRead<AccountsRead>,
     /// The linked accounts' revision the pane last showed.
     linked_seen: std::cell::Cell<u64>,
     /// Moves whenever what the page shows of the model does.
@@ -665,16 +665,6 @@ impl AccountsArea {
             .as_ref()
             .and_then(|root| root.explicit().map(std::path::Path::to_path_buf));
         self.read.start(move || AccountsRead::under(explicit))
-    }
-
-    /// Whether the read [`Self::start_read`] started has ended.
-    pub(crate) fn read_finished(&self) -> bool {
-        self.read.is_finished()
-    }
-
-    /// What waits off the UI thread for the started read to end.
-    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
-        self.read.wait()
     }
 
     pub(crate) fn with_account_root(mut self, root: AccountRoot) -> Self {
@@ -1271,13 +1261,13 @@ impl AccountsPane {
             return cx.actions().effect(&SettingsEffect::from(effect));
         };
         let id = effect.id();
-        let spec = SettingsEffect::from(effect).bound();
-        let resource = ui::tilo_actions::ResourceSpec::new(
+        let resource = LiveRow::new(
             format!("settings.account:{account}"),
             "settings.account",
             &account,
         )
-        .with_action(spec);
+        .effect(&SettingsEffect::from(effect))
+        .into_resource();
         let invocation = ui::tilo_resource::ActionRef::<SettingsEffect, ()>::new(
             id,
             &[],
@@ -2300,12 +2290,13 @@ impl AccountsPane {
     fn files_button(&self, view: &AccountView, details: &mut Vec<String>) -> Option<Button> {
         let spec = self.files_handoff(view)?;
         let label = spec.label.clone();
-        let resource = ui::tilo_actions::ResourceSpec::new(
+        let resource = LiveRow::new(
             format!("settings.account:{}", view.id),
             "settings.account",
             &view.label,
         )
-        .with_action(spec);
+        .operation(spec)
+        .into_resource();
         let binding = ui::tilo_actions::ActionBinding::unit_for(&resource, "open-files").ok()?;
         let store = self.account_root.store();
         if let Some(account) = store.get(&view.id.clone().into()) {
@@ -2332,15 +2323,13 @@ impl AccountsPane {
         let id = accounts::AccountId::from(view.id.clone());
         let runtime = self.sync_statuses.get(&id);
         let mount = self.cloud.mount(&view.id);
-        let pending = self
-            .dir
-            .mail
-            .accounts
-            .iter()
-            .any(|account| account.id == view.id && account.config.import_pending)
-            || self.account_root.store().get(&id).is_some_and(|account| {
-                account.config.get("pending_reconnect") == Some(&serde_json::Value::Bool(true))
-            });
+        let pending = self.dir.of(AccountKind::Mail).any(|account| {
+            account.id.as_str() == view.id
+                && (account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
+                    || account.config.get("import_pending") == Some(&serde_json::Value::Bool(true)))
+        }) || self.account_root.store().get(&id).is_some_and(|account| {
+            account.config.get("pending_reconnect") == Some(&serde_json::Value::Bool(true))
+        });
         let import_only = self.account_root.store().get(&id).is_some_and(|account| {
             accounts::cloud_types::files_mode(account)
                 == Some(accounts::cloud_types::FilesMode::Import)
@@ -2469,10 +2458,9 @@ impl AccountsPane {
         let service = if view.kind == AccountKind::GoogleDrive {
             Some(t("accounts-google-files-service"))
         } else if view.kind == AccountKind::Mail
-            && self.dir.mail.accounts.iter().any(|mail| {
-                mail.id == view.id
-                    && mail.config.auth == accounts::email::AuthMethod::OAuth
-                    && mail.config.imap_host == "imap.gmail.com"
+            && self.dir.mail_config(&view.id).is_some_and(|mail| {
+                mail.auth == accounts::email::AuthMethod::OAuth
+                    && mail.imap_host == "imap.gmail.com"
             })
         {
             Some(t("accounts-google-mail-service"))
@@ -2819,10 +2807,9 @@ impl AccountsPane {
         }
         let ids: Vec<String> = self
             .dir
-            .mail
-            .accounts
-            .iter()
-            .map(|account| account.id.clone())
+            .views_of(AccountKind::Mail)
+            .into_iter()
+            .map(|view| view.id)
             .collect();
         if self.mail_grants.asked.as_ref() == Some(&ids) {
             return;

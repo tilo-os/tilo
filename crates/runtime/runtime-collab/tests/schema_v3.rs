@@ -89,7 +89,7 @@ async fn blob_offers_wants_and_streams_reach_the_broker_verbatim() {
     clippy::too_many_lines,
     reason = "one scenario, one labelled phase per merged case"
 )]
-async fn actions_and_remarks_carry_type_attribution_and_opaque_payloads() {
+async fn actions_carry_type_attribution_and_opaque_payloads() {
     // phase: send_action_carries_type_id_and_opaque_payload
     {
         let local = LocalSet::new();
@@ -166,6 +166,7 @@ async fn actions_and_remarks_carry_type_attribution_and_opaque_payloads() {
                         "word-processor",
                         &[
                             ExportedAction {
+                                state: tilo_actions::ActionState::default(),
                                 semantic_identity: Some(
                                     runtime_collab::ExportedResourceSemanticIdentity {
                                         kind: "document".into(),
@@ -187,6 +188,7 @@ async fn actions_and_remarks_carry_type_attribution_and_opaque_payloads() {
                                 view: None,
                             },
                             ExportedAction {
+                                state: tilo_actions::ActionState::default(),
                                 semantic_identity: None,
                                 resource: "word-processor.document".into(),
                                 action: "insert-image".into(),
@@ -250,35 +252,6 @@ async fn actions_and_remarks_carry_type_attribution_and_opaque_payloads() {
                         wants_content: true,
                     }
                 );
-            })
-            .await;
-    }
-    // phase: compose_remark_carries_the_reference_and_the_window_local_rect
-    {
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let captures: SharedCaptures = Rc::new(RefCell::new(Captures::default()));
-                let broker = FakeBroker {
-                    captures: captures.clone(),
-                    ..Default::default()
-                };
-                let collab = stand_up_client(broker);
-                let channel = collab
-                    .join_channel("chan-remark", b"identity")
-                    .await
-                    .unwrap();
-
-                let reference = r#"{"referent":{"Doc":{"id":"plan"}}}"#;
-                channel
-                    .compose_remark(reference, (12.0, 34.0, 200.0, 24.0))
-                    .await
-                    .unwrap();
-
-                let c = captures.borrow();
-                assert_eq!(c.remarks.len(), 1);
-                assert_eq!(c.remarks[0].0, reference);
-                assert_eq!(c.remarks[0].1, (12.0, 34.0, 200.0, 24.0));
             })
             .await;
     }

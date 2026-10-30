@@ -43,8 +43,8 @@ run() {
   ) &
 }
 
-# Tests build Git repositories of their own: a GIT_DIR from the environment (a caller's
-# tools/ci/t-git-index.sh) would take over their Git commands.
+# Tests build Git repositories of their own: a GIT_DIR from the environment would take over
+# their Git commands.
 run_tests() {
   local label=$1
   shift
@@ -67,8 +67,7 @@ settle() {
   shown=${#labels[@]}
 }
 
-# The steps (tools/policy/steps.toml), which t runs one check each: first the checks of the
-# tree, then the tests, once nothing reads the tree any more: their fixtures create
+# The steps (tools/policy/steps.toml): first the checks of the tree, then the tests, once nothing reads the tree any more: their fixtures create
 # repositories and scratch files beside the sources.
 # Listed into a file first: a manifest steps.py refuses fails the suite, where a process
 # substitution's failure would go unheard and leave a suite of no steps that passes.

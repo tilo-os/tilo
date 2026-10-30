@@ -305,6 +305,7 @@ fn host_with_live_app(
         actions: actions
             .iter()
             .map(|action| PublishedAction {
+                state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 resource: resource.into(),
                 action: (*action).into(),

@@ -13,7 +13,7 @@ use crate::sample::sample_mailbox;
 use crate::state::{CtxAction, MailState};
 use automerge::AutoCommit;
 use tilo_actions::ActionRegistry;
-use tilo_actions::ActionSpec;
+use tilo_actions::{ActionSpec, ResourceSpec};
 use tilo_document::RichTextAction;
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Edit, Id, Invoke, Replica, Resource as _};

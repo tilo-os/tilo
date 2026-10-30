@@ -1469,11 +1469,10 @@ pub(crate) struct SessionLaunches {
     /// compositor never asked, and the person never reached the app to ask
     /// it. However the process then exits, the window was lost.
     vanished: Mutex<HashSet<String>>,
-    /// The tabs of windows that went away without being asked to close, by
-    /// launch key, as a reopen restores them: kept until the launch's end
+    /// The tabs kept for windows whose app went away with them open, by
+    /// launch key: kept until the launch's end
     /// says whether memory ended it (then its notice reopens them) or not.
-    lost_tabs:
-        Mutex<HashMap<String, Vec<(std::time::Instant, crate::shell::closed_tabs::ClosedTab)>>>,
+    lost_tabs: Mutex<HashMap<String, Vec<(std::time::Instant, crate::shell::state::TabId)>>>,
     /// Launch keys whose app has been handed an action invocation since it
     /// started: an agent, another device or the person drove it, so a
     /// window it then closes was closed on request.
@@ -3163,7 +3162,7 @@ pub fn launch_with_uri(
 pub fn launch_media_handoff(
     package_id: &str,
     room: RoomId,
-    locator: &crate::shell::device_fabric::MediaSourceLocator,
+    locator: &tilo_device_fabric::MediaSourceLocator,
     title: &str,
     request_id: [u8; 16],
     position_ms: u64,
@@ -3176,17 +3175,17 @@ pub fn launch_media_handoff(
         resume_playing,
     };
     match locator {
-        crate::shell::device_fabric::MediaSourceLocator::Workspace { path } => {
+        tilo_device_fabric::MediaSourceLocator::Workspace { path } => {
             let document = media::Source::workspace_root().join(path);
             launch_with_context(package_id, room, Some(&document), None, None, Some(state))
         }
-        crate::shell::device_fabric::MediaSourceLocator::RemoteStream { url } => {
+        tilo_device_fabric::MediaSourceLocator::RemoteStream { url } => {
             launch_with_context(package_id, room, None, Some(url), None, Some(state))
         }
-        crate::shell::device_fabric::MediaSourceLocator::AppResource { uri } => {
+        tilo_device_fabric::MediaSourceLocator::AppResource { uri } => {
             launch_with_context(package_id, room, None, Some(uri), None, Some(state))
         }
-        crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer { .. } => {
+        tilo_device_fabric::MediaSourceLocator::PersonalTransfer { .. } => {
             // Transfer identities are deliberately not paths. The fabric
             // runtime must resolve and hash-verify one before launching.
             Err(LaunchError::NoWorkspace)
@@ -4013,7 +4012,9 @@ fn apply_launch_context(
                     detail: "a visitor window opens one web address".into(),
                 });
             }
-            command.args.push(ui::webview::VISITOR_WINDOW_FLAG.into());
+            // The launcher's own switch: it hands the app its visitor switch
+            // after the address (`runtime_portal::windows::VISITOR_WINDOW_FLAG`).
+            command.args.push("--open-as-visitor".into());
         }
     }
     Ok(())
@@ -6088,9 +6089,9 @@ const LOST_TABS_PER_LAUNCH: usize = 8;
 /// not brought back.
 const LOST_WITH_THE_LAUNCH: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// A window of launch `key` went away without being asked to close; `tab`
-/// is its tab as a reopen restores it. Kept until the launch ends.
-pub(crate) fn note_lost_tab(key: &str, tab: crate::shell::closed_tabs::ClosedTab) {
+/// A window of launch `key` went away with its app; `tab` is the tab kept
+/// in its place. Kept until the launch ends.
+pub(crate) fn note_lost_tab(key: &str, tab: crate::shell::state::TabId) {
     LaunchSession::with(|session| {
         keep_lost_tab(
             lock(&session.lost_tabs).entry(key.to_string()).or_default(),
@@ -6102,8 +6103,8 @@ pub(crate) fn note_lost_tab(key: &str, tab: crate::shell::closed_tabs::ClosedTab
 /// Keep `tab` among a launch's lost tabs, forgetting the oldest past
 /// [`LOST_TABS_PER_LAUNCH`].
 fn keep_lost_tab(
-    tabs: &mut Vec<(std::time::Instant, crate::shell::closed_tabs::ClosedTab)>,
-    tab: crate::shell::closed_tabs::ClosedTab,
+    tabs: &mut Vec<(std::time::Instant, crate::shell::state::TabId)>,
+    tab: crate::shell::state::TabId,
 ) {
     if tabs.len() == LOST_TABS_PER_LAUNCH {
         tabs.remove(0);
@@ -6113,7 +6114,7 @@ fn keep_lost_tab(
 
 /// The tabs of launch `key`'s windows that went away unasked just before
 /// now, taken once; older ones are forgotten.
-pub(crate) fn take_lost_tabs(key: &str) -> Vec<crate::shell::closed_tabs::ClosedTab> {
+pub(crate) fn take_lost_tabs(key: &str) -> Vec<crate::shell::state::TabId> {
     lock(&LaunchSession::current().lost_tabs)
         .remove(key)
         .unwrap_or_default()

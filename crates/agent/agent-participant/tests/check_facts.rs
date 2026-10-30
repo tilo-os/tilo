@@ -79,13 +79,12 @@ impl Planner for Recording {
     }
 }
 
-/// Ed, the agent on the device whose key is `agent_key`, delegated by
-/// `root` to the video editor in the room for an hour.
-fn delegation(root: &ed25519_dalek::SigningKey, agent_key: [u8; 32]) -> Delegation {
+/// Ed's delegation: the room and the video editor, for an hour.
+fn delegate_to_ed(root: &ed25519_dalek::SigningKey, agent_device: &support::Device) -> Delegation {
     let now = tilo_clock::unix_now_ns();
     Delegation::sign(
         root,
-        agent_key,
+        agent_device.cert.device_public_key,
         tilo_relay_protocol::delegation::Delegate::Agent {
             agent_id: "ed".into(),
         },
@@ -96,7 +95,7 @@ fn delegation(root: &ed25519_dalek::SigningKey, agent_key: [u8; 32]) -> Delegati
             apps: vec![VIDEO.into()],
         },
         now,
-        now.saturating_add(3_600_000_000_000),
+        now.checked_add(3_600_000_000_000).unwrap(),
     )
     .unwrap()
 }
@@ -119,7 +118,7 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
     .await;
     let _laptop = participant::Participant::start(&host.relay, &root).await;
     let agent_device = enrol(&root, "Agent: Ed", CertificationPolicy::agent().ceiling);
-    let delegation = delegation(&root, agent_device.cert.device_public_key);
+    let delegation = delegate_to_ed(&root, &agent_device);
     host.relay
         .register_agent(&agent_device.cert, delegation.clone())
         .await

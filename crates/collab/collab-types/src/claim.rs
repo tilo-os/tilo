@@ -1,6 +1,6 @@
 //! What each change of a signed document op says it is.
 //!
-//! A receiver decides a change before merging it ([`permissions.md`] §5.2):
+//! A receiver decides a change before merging it:
 //! the relay checks, without app code and without reading content, that the
 //! action a change claims is granted to its author and that the change
 //! writes only the storage units that action may write; a device that has
@@ -9,8 +9,6 @@
 //! and it is derived from the change itself on the author's device: the
 //! history entry the executor writes into every change names the action
 //! ([`tilo_actions::Did`]), and the units are listed from the record.
-//!
-//! [`permissions.md`]: ../../../../docs/architecture/permissions.md
 
 use serde::{Deserialize, Serialize};
 pub use tilo_actions::FrameworkChange;

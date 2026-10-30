@@ -629,7 +629,9 @@ pub enum ToApp {
     FormCancel {
         form: u64,
     },
-    /// The person chose Undo on a notice.
+    /// The person asked to take back their last step: Undo on a notice, or the window's undo
+    /// (Ctrl+Z, Edit › Undo). The record's undo, the one undo there is: a field the person typed
+    /// into keeps no history of its own beside it.
     Undo,
     /// The keyboard focus is in the bound control `key` of `lane`, or in none.
     Focus {
@@ -651,6 +653,9 @@ pub enum ToApp {
         width: f32,
         height: f32,
     },
+    /// The person asked to bring back what their last undo took back: the window's redo
+    /// (Ctrl+Shift+Z, Edit › Redo). The mirror of [`ToApp::Undo`].
+    Redo,
 }
 
 /// Largest batch either side sends or accepts.

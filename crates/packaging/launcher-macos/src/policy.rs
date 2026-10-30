@@ -19,8 +19,7 @@
 //!
 //! ## What does not map
 //!
-//! Recorded per launch in [`SeatbeltPolicy::not_enforced`] and documented in
-//! `docs/app-model/sandbox.md` ("macOS: App Sandbox or Seatbelt"):
+//! Recorded per launch in [`SeatbeltPolicy::not_enforced`]:
 //!
 //! - **Device grants.** Cameras and microphones sit behind TCC on macOS, not
 //!   device nodes; the profile grants no TCC service, so a device grant is

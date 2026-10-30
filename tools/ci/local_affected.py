@@ -26,7 +26,7 @@ how they run:
 - Each job runs where it is compiled: through the command prefix in
   $TILO_BUILDER_EXEC_X86_64 (and $TILO_BUILDER_EXEC_AARCH64 for the second builder), any
   remote-exec tool that runs a command in a builder's copy of the worktree
-  (tools/ci/lint-affected.sh, tools/ci/t-nextest.sh), so helper binaries the tests need
+  (tools/ci/lint-affected.sh, tools/ci/nextest.sh), so helper binaries the tests need
   are built there and no test binary or artifact is fetched to this machine. Without
   them the same commands run here.
 - The tests that failed in the last run against the same base run as a job of their
@@ -238,7 +238,7 @@ class Job:
         return code
 
     def tail(self, lines: int = 120) -> str:
-        # Without libtest's JSON events (t-nextest.sh records test times from them).
+        # Without libtest's JSON events (nextest.sh records test times from them).
         text = [line for line in self.log.read_text(errors="replace").splitlines()
                 if not line[8:].lstrip().startswith(("{", "}", '"'))]
         return "\n".join(text[-lines:])
@@ -499,7 +499,7 @@ def main() -> int:
         spawn("check", check)
 
     def nextest(packages: list[str], filterset: str, extra: list[str] | None = None) -> list[str]:
-        return ["env", *filter_env, "bash", "tools/ci/t-nextest.sh", "cargo", "nextest", "run", "--locked",
+        return ["env", *filter_env, "bash", "tools/ci/nextest.sh", "cargo", "nextest", "run", "--locked",
                 "--profile", "ci", "--tests", *flags(packages), "-E", filterset, *(extra or []), *tail]
 
     capability_filters: dict[str, str] = {}

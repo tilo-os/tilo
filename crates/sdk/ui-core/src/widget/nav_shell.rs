@@ -1748,6 +1748,8 @@ pub struct NavShell {
     /// The window's search narrows the sidebar's list wherever it stands
     /// ([`Self::search_sidebar`]).
     sidebar_search: bool,
+    /// How the person reaches the window ([`Self::hear_input`]).
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl Default for NavShell {
@@ -1849,6 +1851,7 @@ impl NavShell {
             can_back: None,
             slot_edit: None,
             sidebar_search: false,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -3934,9 +3937,10 @@ fn place_header(
         // The toolkit's one overflow rule: how many of the row's controls fit
         // beside the door's own button. What does not fit is named in the
         // menu, never dropped from the row.
-        let planned =
-            crate::widget::plan_overflow(band, compact.iter().copied(), gap, gap + more_w);
-        (true, planned.shown())
+        (
+            true,
+            crate::widget::plan_overflow(band, compact.iter().copied(), gap, gap + more_w),
+        )
     };
     fit.compact = use_compact;
     fit.shown = Some(shown);
@@ -4065,6 +4069,7 @@ impl Widget for NavShell {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
+        self.hear_input(environment);
         self.for_each_owned_mut(|child| child.set_interaction_environment(environment));
     }
 

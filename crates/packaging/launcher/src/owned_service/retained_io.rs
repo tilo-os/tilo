@@ -18,8 +18,8 @@ use std::{
 
 pub const SOURCE_PATH: &str = "/run/tilo/retained/source";
 mod removal;
+use super::workspace;
 pub use removal::RetainedNativeOwner;
-mod workspace;
 pub const REMOVAL_DIRECTORY_FD: i32 = removal::FD;
 pub const REMOVAL_JOURNAL_FD: i32 = removal::JOURNAL_FD;
 pub const SOURCE_DATA_FD: i32 = removal::SOURCE_DATA_FD;
@@ -34,6 +34,11 @@ const NAMESPACES: [&str; 5] = ["mnt", "pid", "net", "ipc", "user"];
 fn refused(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
+const WORKSPACE: workspace::Layout = workspace::Layout {
+    label: "Retained source",
+    person: workspace::Person::Empty,
+    root,
+};
 fn root() -> io::Result<()> {
     super::capture::check_credentials(0)
 }
@@ -483,7 +488,17 @@ impl RetainedIoAdmission {
         if held.is_some() {
             return Err(refused("Worker already prepared"));
         }
-        *held = Some(workspace::prepare(path, &self.facts)?);
+        *held = Some({
+            self.facts.validate()?;
+            workspace::prepare(
+                WORKSPACE,
+                path,
+                workspace::Owner {
+                    uid: self.facts.uid,
+                    gid: self.facts.gid,
+                },
+            )?
+        });
         drop(held);
         Ok(())
     }

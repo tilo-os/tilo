@@ -66,6 +66,7 @@ mod tests {
     }
     fn action(action: &str) -> PublishedAction {
         PublishedAction {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: "word-processor.document".into(),
             action: action.into(),

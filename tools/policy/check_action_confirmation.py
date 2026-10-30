@@ -162,17 +162,61 @@ def statement_bounds(code: str, at: int) -> tuple[int, int]:
     return start, end
 
 
+def element_start(code: str, at: int) -> int | None:
+    """Where the array element holding `at` starts, when `at` is one: the
+    element after the `[` that opens the array or after the comma that ends
+    the one before it. A list of actions is a single statement — its elements
+    are separated by commas, not semicolons — so a deletion written as one
+    element is read as that element, never as the `const` the list is bound
+    to. `None` when no array literal encloses `at`."""
+    depth = 0
+    index = at
+    opened = None
+    while index > 0:
+        index -= 1
+        char = code[index]
+        if char in ")]}":
+            depth += 1
+        elif char in "([{":
+            if depth:
+                depth -= 1
+            elif char == "[":
+                opened = index
+                break
+            else:
+                # A brace or a call the element sits in is not an array: the
+                # chain reaches back no further than the block it is in.
+                return None
+    if opened is None:
+        return None
+    depth = 0
+    start = opened + 1
+    for index in range(opened + 1, at):
+        char = code[index]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            start = index + 1
+    return start
+
+
 def chain_bounds(code: str, at: int) -> tuple[int, int]:
     """The expression around the method call at `at`: back to the `let`,
     `const` or `static` that opens it (or the statement's own start), forward
     to the statement's end. A chain that is one arm of a conditional is read
-    as the arm it is."""
+    as the arm it is, and one written as an element of a list as the element
+    it is."""
     start = statement_bounds(code, at)[0]
     opening = None
     for opening in re.finditer(r"\b(?:let|const|static)\s", code[:start]):
         pass
     if opening is not None and not re.search(r"[;{}]", code[opening.end() : start]):
         start = opening.start()
+    element = element_start(code, at)
+    if element is not None and element > start:
+        start = element
     return start, statement_bounds(code, at)[1]
 
 
@@ -213,7 +257,7 @@ def built_action(code: str, at: int, name: str) -> str | None:
             return None
         seen.add(bound)
         built = code[code.index("=", bound) + 1 : statement_bounds(code, bound)[1]]
-        action = declared_action(built)
+        action = declared_action(built, code)
         if action is not None:
             return action
         # The binding builds what another binding holds, so that one names it:
@@ -232,7 +276,7 @@ def names_deletion(chain: str, code: str, start: int) -> str | None:
     names itself, or the one the binding it continues names (`spec` bound to
     an action built with `operation(…)`). A chain that names neither is a
     caller's own action, built where the ledger cannot see it."""
-    direct = declared_action(chain)
+    direct = declared_action(chain, code)
     if direct is not None:
         return direct
     name = binding(chain)
@@ -253,14 +297,51 @@ def continued_binding(code: str, start: int, name: str) -> str | None:
 
 
 
-def declared_action(chain: str) -> str | None:
-    """The action id `chain` builds: the literal it names (`operation("remove", …)`)
-    or the constant it continues (`Calendar::INVITE`). `None` when the word
-    closes a chain that names neither, which is a caller's own action built
-    somewhere the ledger cannot see."""
+# A string constant a crate declares, by name: the id an `Action` literal
+# names its action with.
+STRING_CONSTANT = re.compile(
+    r"\bconst\s+([A-Z][A-Z0-9_]*)\s*:\s*&(?:'static\s+)?str\s*=\s*\"([^\"]*)\""
+)
+_STRING_CONSTANTS: dict[str, str] = {}
+
+
+def string_constant(name: str) -> str | None:
+    """The value of the string constant `name` the tree declares: an action's
+    id is named by a constant in the module that owns the action, not at the
+    file that lists it. `None` when no crate declares one under that name."""
+    if not _STRING_CONSTANTS:
+        for tree in TREES:
+            for path in sorted((ROOT / tree).rglob("*.rs")):
+                relative = path.relative_to(ROOT)
+                if "target" in relative.parts:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+                for found in STRING_CONSTANT.finditer(text):
+                    _STRING_CONSTANTS.setdefault(found.group(1), found.group(2))
+    return _STRING_CONSTANTS.get(name)
+
+
+def declared_action(chain: str, code: str = "") -> str | None:
+    """The action id `chain` builds: the literal it names (`operation("remove", …)`),
+    the `id` its `Action` literal carries, or the constant it continues
+    (`Calendar::INVITE`). `None` when the word closes a chain that names none
+    of them, which is a caller's own action built somewhere the ledger cannot
+    see."""
     literal = re.search(r"\b(?:operation|typed_operation)\s*\(\s*\"([^\"]+)\"", chain)
     if literal is not None:
         return literal.group(1)
+    # An `Action` literal names the id it is declared with: written out, or
+    # the constant the crate declares the action under (`APP_UNINSTALL_ID`),
+    # which is a string constant elsewhere in the tree.
+    named = re.search(
+        r"\bid\s*:\s*(?:\"([^\"]+)\""
+        r"|([a-z_:]*[A-Z][A-Z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)?))",
+        chain,
+    )
+    if named is not None:
+        if named.group(1) is not None:
+            return named.group(1)
+        return string_constant(named.group(2).rsplit("::", 1)[-1])
     # A spec built from the declaration itself (`ActionSpec::typed(decl.id, …)`)
     # is each declaration's own action, offered with its item bound: the
     # declaration says what it destroys and whether it is tagged irreversible.

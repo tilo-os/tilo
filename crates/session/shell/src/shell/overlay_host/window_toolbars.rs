@@ -7,11 +7,6 @@
 //! the same way: the app says what its window offers them
 //! ([`WindowOffer`]), and the query, steps, close and History presses go
 //! back to it as toolbar events.
-//!
-//! An app the shell mounts in its own process (a Terminal tab) has no
-//! connection: it declares its slots, and asks to close its tab, on the
-//! window the shell lent it ([`ui::hosted_window::HostedWindow`]), which the
-//! shell looks at every frame ([`ShellOverlayHost::sync_hosted_windows`]).
 
 use ui::widget::{GroupRow, WindowGroup};
 use ui::window_toolbar::{ToolbarEvent, WindowOffer, WindowToolbar};
@@ -291,83 +286,6 @@ impl ShellOverlayHost {
                 row.groups.iter_mut()
             })
             .collect()
-    }
-
-    /// Look at the windows the shell lent the apps it mounts in its own
-    /// process: show the slots each declared in its tab's bar, hand it what
-    /// the person did with them, and close the tab of each that asked (its
-    /// shell exited), the window with it when it was the only tab. Runs every
-    /// frame, after the groups took this frame's input. Returns whether the
-    /// desktop shows something new or an app has something to hear.
-    pub(super) fn sync_hosted_windows(&mut self) -> bool {
-        let Some(chrome) = self.chrome.clone() else {
-            self.sync_window_toolbars();
-            return false;
-        };
-        let windows = {
-            let state = chrome.borrow();
-            state
-                .hosted_inputs
-                .in_process()
-                .map(|apps| apps.borrow().hosted_windows())
-                .unwrap_or_default()
-        };
-        let groups = self.window_groups_mut();
-        let sync = self.window_toolbars.sync_hosted(&windows, groups);
-        for tab in &sync.declared {
-            self.note_window_place(*tab);
-        }
-        if sync.searched {
-            // An app with nothing to search in place hands on to the palette.
-            self.harvest_pending_search_open();
-            self.sync_window_toolbars();
-        }
-        let mut changed = sync.changed;
-        let closing = sync.closing;
-        if !closing.is_empty() {
-            let mut state = chrome.borrow_mut();
-            for tab in closing {
-                if let Err(error) = crate::shell::window_actions::close_tab(&mut state, tab) {
-                    tracing::debug!(?error, tab, "the tab of an ended session did not close");
-                }
-            }
-            changed = true;
-        }
-        // The windows of tabs that are gone go with them.
-        let revision = chrome.borrow().revision;
-        if !windows.is_empty() && self.hosted_windows_revision != Some(revision) {
-            self.hosted_windows_revision = Some(revision);
-            let present: std::collections::HashSet<TabId> = {
-                let state = chrome.borrow();
-                let tree = state.tree();
-                tree.desktop
-                    .workspaces
-                    .iter()
-                    .flat_map(|workspace| &workspace.strips)
-                    .flat_map(|strip| &strip.window_groups)
-                    .flat_map(|group| &group.tabs)
-                    .map(|tab| tab.id)
-                    .collect()
-            };
-            let gone: Vec<TabId> = windows
-                .iter()
-                .map(|(tab, _)| *tab)
-                .filter(|tab| !present.contains(tab))
-                .collect();
-            if !gone.is_empty() {
-                if let Some(apps) = chrome.borrow().hosted_inputs.in_process() {
-                    let mut apps = apps.borrow_mut();
-                    for tab in &gone {
-                        apps.forget_hosted_window(*tab);
-                    }
-                }
-                for tab in gone {
-                    self.window_toolbars.forget_hosted(tab);
-                }
-                self.sync_window_toolbars();
-            }
-        }
-        changed
     }
 
     /// What goes back to the apps: their slots were used.

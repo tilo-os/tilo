@@ -29,6 +29,58 @@
 # the check says so, so an entry cannot outlive the code it was written for.
 
 [[deletion]]
+action = "app.uninstall"
+file = "crates/session/shell/src/shell/actions/all.rs"
+reason = """
+Uninstalling takes an app and what it keeps on this computer off it: the
+program's own files, and the settings and saved files its sheet offers to send
+to the Trash. None of them was ever in a document, so Undo holds no version of
+them. The shell's own sheet names the app and says whether its data goes; a
+person who wants it back takes it out of the Trash.
+"""
+
+[[deletion]]
+action = "app.remove-from-apps"
+file = "crates/session/shell/src/shell/actions/all.rs"
+reason = """
+Taking an app off the person's apps deletes nothing — its file stays on the
+computer — but the list it leaves is the system's own, and no document holds
+it, so Undo cannot put the entry back. The sheet says the app stays, and
+adding it again is one step.
+"""
+
+[[deletion]]
+action = "bot.remove"
+file = "crates/session/shell/src/shell/actions/all.rs"
+reason = """
+Removing a bot stops it on the host that runs it and takes it out of the
+workspace for every member at once. The bot's own store and the host's are not
+documents this person's Undo holds, so the question names the bot before
+either happens.
+"""
+
+[[deletion]]
+action = "agent.remove"
+file = "crates/session/shell/src/shell/actions/all.rs"
+reason = """
+Removing an agent revokes every grant it held in the workspace, and the members
+see it leave their copies too. The grants are the workspace's shared record and
+the agent's own store is not reachable from this machine, so Undo holds neither
+what it is given back nor what it lost.
+"""
+
+[[deletion]]
+action = "workspace.delete"
+file = "crates/session/shell/src/shell/actions/all.rs"
+reason = """
+Deleting a workspace deletes it here and, through the room's host, on the
+person's other devices, and this device leaves the room in the same step: it is
+joined again rather than undone. The other members' copies and the room's own
+record are not in this machine's document, so Undo cannot bring the workspace
+back — joining it again is how it returns.
+"""
+
+[[deletion]]
 action = "format"
 file = "apps/disks/src/resource.rs"
 effect = "Format"

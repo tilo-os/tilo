@@ -99,7 +99,7 @@ def main() -> int:
     violations = audit()
     if violations:
         for violation in violations:
-            # A finding names its workflow from the top of the tree (findings.py).
+            # A finding names its workflow from the top of the tree.
             path = (WORKFLOWS / violation.workflow).relative_to(ROOT).as_posix()
             print(f"{path}: {violation.message}")
         return 1

@@ -297,6 +297,43 @@ thread_local! {
     /// hold so an unchanged surface encodes identically frame to frame.
     static PLACEHOLDERS: RefCell<Vec<(PlaceholderKey, ImageData)>> =
         const { RefCell::new(Vec::new()) };
+    /// Blurred backdrops a host made outside the renderer, by region slot
+    /// of the outermost recording ([`provide_backdrops`]).
+    static PROVIDED: RefCell<Vec<(usize, ImageData)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Hand the next frames the blurred backdrops of their surfaces, by region
+/// slot of the outermost recording: a host that cannot blur in its
+/// renderer (an app rasterized on the CPU inside a compositor, which holds
+/// what lies below) has them made where that is known and drawn in place of
+/// the placeholders, so the material's band and tint apply to them as to a
+/// substituted blur. An image is used only while its size is the slot's
+/// placeholder size ([`backdrop_texels`]); the rest stay opaque.
+pub fn provide_backdrops(images: Vec<(usize, ImageData)>) {
+    PROVIDED.with(|provided| *provided.borrow_mut() = images);
+}
+
+/// The size in texels of the image a surface with `bounds` (recording
+/// pixels) is drawn with: what a provided backdrop must measure.
+#[must_use]
+pub fn backdrop_texels(bounds: Rect) -> (u32, u32) {
+    (texels(bounds.width()), texels(bounds.height()))
+}
+
+/// The provided backdrop of `slot` when it measures `width` by `height`.
+fn provided(slot: PlaceholderKey, width: u32, height: u32) -> Option<ImageData> {
+    if slot.0 != 0 {
+        return None;
+    }
+    PROVIDED.with(|provided| {
+        provided
+            .borrow()
+            .iter()
+            .find(|(index, image)| {
+                *index == slot.1 && image.width == width && image.height == height
+            })
+            .map(|(_, image)| image.clone())
+    })
 }
 
 /// Records the surfaces drawn in the blurred material on this thread until
@@ -486,7 +523,9 @@ fn record(
         }
         recording.next_slot = slot_index.saturating_add(1);
         let (width, height) = (texels(bounds.width()), texels(bounds.height()));
-        let image = placeholder((recording.depth, slot_index), width, height, ground);
+        let key = (recording.depth, slot_index);
+        let image =
+            provided(key, width, height).unwrap_or_else(|| placeholder(key, width, height, ground));
         // Brush space is the fill's space: undo `transform`, then map the
         // image onto the surface's bounds in recording coordinates, so the
         // backdrop stays put while the surface scales or slides in.

@@ -1108,12 +1108,6 @@ mod tests {
             output: ui::tilo_actions::ActionOutput::default(),
         };
         app.with_surface::<StoreApp, _>(|surface| {
-            surface
-                .state()
-                .handle_collab_event(&CollabEvent::PublishedInvocationResult {
-                    request_id,
-                    result: Ok((7, update.clone())),
-                });
             surface.state().set_worker_busy(false);
             assert!(
                 surface

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Per-package test times from libtest's JSON events, and the regression warning.
 
-t's test wrapper (tools/ci/t-nextest.sh) runs the tests with libtest's own JSON
+t's test wrapper (tools/ci/nextest.sh) runs the tests with libtest's own JSON
 events on. Those events name each test's package and how long it took, so the
 wrapper passes them through `record`, which forwards every line to the job's log
 unchanged and records, per package, how many tests ran, how long they took and

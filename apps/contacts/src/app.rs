@@ -16,6 +16,9 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui::framework::{Dispatcher, Jobs};
+use ui::tilo_actions::ActionBinding;
+
+use crate::actions::ContactsEffect;
 use ui::tilo_resource::Invoke;
 use ui::widget::{AppModel, ModelPath};
 
@@ -180,6 +183,9 @@ pub struct ContactsApp {
     form: Option<EditForm>,
     form_epoch: u64,
     sort: SortKey,
+    /// What the list's order picker runs, once the window takes part in
+    /// the book.
+    sort_binding: Option<ActionBinding<String>>,
     group_filter: Option<String>,
     duplicate_review: Option<DuplicateReview>,
     duplicate_candidate: Option<crate::actions::DuplicateCandidate>,
@@ -217,6 +223,8 @@ pub struct ContactsApp {
     show_pane: Option<NavPane>,
     /// The last website opened from a contact.
     opened_url: Option<String>,
+    /// The book's published actions, which the page's controls run.
+    pub(crate) actions: Option<ui::framework::Actions<Contacts>>,
     /// Calls, messages and email drafts handed to the desktop, waiting for
     /// its answer.
     hand_off: Vec<handoff::PendingHandOff>,
@@ -283,21 +291,20 @@ fn sort_value(sort: SortKey) -> &'static str {
         .map_or("name", |(value, ..)| value)
 }
 
-/// The list's order, which the shell stands under the overview's header.
-fn sort_control(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
+/// The list's order, which the shell stands under the overview's header;
+/// choosing one runs `sort`, the window's `sort-contacts` effect.
+fn sort_control(sort: Option<&ActionBinding<String>>, sort_choice: &LocalState<String>) -> Element {
     let labels: Vec<String> = SORTS
         .iter()
         .map(|(_, label, _)| (*label).to_owned())
         .collect();
-    let chosen = std::rc::Rc::clone(shared);
-    let mut sort = Dropdown::from_state(labels, sort_choice)
+    let picker = Dropdown::from_state(labels, sort_choice)
         .with_id("contacts.sort")
-        .with_accessible_name("Sort contacts")
-        .on_change(move |value| {
-            if let Some((.., key)) = SORTS.iter().find(|(v, ..)| *v == value) {
-                chosen.borrow_mut().push(Request::Sort(*key));
-            }
-        });
+        .with_accessible_name("Sort contacts");
+    let mut sort = match sort {
+        Some(sort) => picker.on_action(sort.clone()),
+        None => picker.with_enabled(false),
+    };
     sort.set_value_options(
         SORTS
             .iter()
@@ -370,6 +377,21 @@ impl ContactsApp {
 
     pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Contacts>) {
         self.dispatcher = Some(dispatcher);
+    }
+
+    /// Bind the list's order picker to the book's published effects.
+    pub(crate) fn attach_actions(&mut self, actions: &ui::framework::Actions<Contacts>) {
+        self.sort_binding = actions.effect_binding(ContactsEffect::SORT_CONTACTS);
+    }
+
+    /// Sort the list by `order`, as the order picker names it.
+    pub(crate) fn sort_by(&self, order: &str) -> Result<(), String> {
+        let (.., sort) = SORTS
+            .iter()
+            .find(|(value, ..)| *value == order)
+            .ok_or_else(|| format!("Contacts sort by name or organization, not `{order}`"))?;
+        self.shared.borrow_mut().push(Request::Sort(*sort));
+        Ok(())
     }
 
     /// Show the book the document holds now, when it changed since.
@@ -571,6 +593,7 @@ impl ContactsApp {
             form: None,
             form_epoch: 0,
             sort: SortKey::Name,
+            sort_binding: None,
             group_filter: None,
             duplicate_review: None,
             duplicate_candidate: None,
@@ -593,6 +616,7 @@ impl ContactsApp {
             menu_follows: None,
             show_pane: None,
             opened_url: None,
+            actions: None,
             hand_off: Vec::new(),
             detail_scroll: (None, std::rc::Rc::default()),
             last_mouse: Point::ZERO,
@@ -788,6 +812,17 @@ impl ContactsApp {
             chosen.strip_prefix(GROUP_DESTINATION).map(str::to_owned)
         };
         self.set_group_filter(group);
+    }
+
+    /// Open contact `id`'s form on `slot`.
+    pub(super) fn edit_field(&mut self, id: ContactId, slot: crate::form::Slot) {
+        if let Some(contact) = self.store.contact(id).cloned() {
+            self.selected = Some(id);
+            self.begin_edit(contact, false);
+            if let Some(form) = &mut self.form {
+                form.focus = Some(slot);
+            }
+        }
     }
 
     fn begin_edit(&mut self, draft: Contact, is_new: bool) {
@@ -1455,7 +1490,7 @@ impl ContactsApp {
             .with_no_padding()
             .with_intrinsic_height();
         if self.sort_shown {
-            controls = controls.push(sort_control(&self.shared, &self.sort_choice));
+            controls = controls.push(sort_control(self.sort_binding.as_ref(), &self.sort_choice));
         }
         if let Some(work) = key.1 {
             let label = match work {
@@ -1521,7 +1556,12 @@ impl ContactsApp {
                     if self.detail_scroll.0 != Some(contact.id) {
                         self.detail_scroll = (Some(contact.id), std::rc::Rc::default());
                     }
-                    crate::detail::contact_page(contact, &self.shared, &self.detail_scroll.1)
+                    crate::detail::contact_page(
+                        contact,
+                        &self.shared,
+                        self.actions.as_ref(),
+                        &self.detail_scroll.1,
+                    )
                 }
                 ContentKey::Edit { .. } => match &self.form {
                     Some(form) => form.element(&self.shared),
@@ -1656,15 +1696,6 @@ impl ContactsApp {
                     self.begin_edit(contact, false);
                 }
             }
-            Request::EditField(id, slot) => {
-                if let Some(contact) = self.store.contact(id).cloned() {
-                    self.selected = Some(id);
-                    self.begin_edit(contact, false);
-                    if let Some(form) = &mut self.form {
-                        form.focus = Some(slot);
-                    }
-                }
-            }
             Request::ContextMenu(id, point) => {
                 if self.mode == Mode::Edit && self.form.as_ref().is_some_and(|f| f.draft.id != id) {
                     self.request_select(id);
@@ -1735,7 +1766,6 @@ impl ContactsApp {
                     form.calendar_open = false;
                 }
             }
-            Request::OpenWebsite(url) => self.open_website(url),
             Request::Call(value) => self.hand_off_value(handoff::HandOff::Call, &value),
             Request::WriteMessage(value) => self.hand_off_value(handoff::HandOff::Message, &value),
             Request::WriteEmail(value) => self.hand_off_value(handoff::HandOff::Email, &value),

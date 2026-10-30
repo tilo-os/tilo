@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use account_custody::cloud_projects::{self, CloudProject};
-use account_custody::{Capability, Custodian, CustodyError, LoopbackCancel, OAuthIssuer, OAuthUse};
+use account_custody::{Capability, Custodian, CustodyError, OAuthIssuer, OAuthUse};
 use accounts::AccountId;
 use agent_provider_config::{
     ModelDescriptor, ProviderConfig, ProviderProfile, SignInCredential, VERTEX_DEFAULT_LOCATION,
@@ -31,10 +31,10 @@ use ui::framework::Actions;
 use ui::widget::{Button, Row, TextInput};
 
 use super::agent_models::{AgentModelsEffect, invoking};
-use crate::channel::{self, Receiver, TryRecvError};
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
 use crate::panes::accounts::BrowserOpener;
+use crate::panes::agent_sign_in::{SignInWait, Waited};
 use crate::resource::Settings;
 use provider_settings_ui::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
 
@@ -64,11 +64,7 @@ enum Stage {
     /// Explained; nothing started.
     Intro,
     /// The browser is open; a worker waits for Google's redirect.
-    Waiting {
-        cancel: LoopbackCancel,
-        launch: Option<ui::portal::LaunchChannel>,
-        result: Receiver<Result<SignedIn, String>>,
-    },
+    Waiting(SignInWait<Result<SignedIn, String>>),
     /// Signed in; the project, location and model are being chosen.
     Choose,
 }
@@ -166,7 +162,7 @@ impl VertexSetup {
 
     /// Whether a worker waits for the browser.
     pub(crate) fn waiting(&self) -> bool {
-        matches!(self.stage, Stage::Waiting { .. })
+        matches!(self.stage, Stage::Waiting(_))
     }
 
     /// Whether the person is choosing the project of a new provider.
@@ -210,12 +206,11 @@ impl VertexSetup {
             self.message = Some(t("agent-vertex-ports-busy"));
             return;
         };
-        let launch = opener.open(authorization.url());
-        let (sender, result) = channel::sync_channel(1);
+        let url = authorization.url().to_owned();
         let custodian = custodian.clone();
         let grant = grant_id(&self.profile_id);
-        std::thread::spawn(move || {
-            let outcome = Custodian::finish_sign_in(authorization)
+        let wait = SignInWait::browser(&url, cancel, opener, move || {
+            Ok(Custodian::finish_sign_in(authorization)
                 .map_err(|error| error.to_string())
                 .and_then(|tokens| {
                     if tokens.scope.as_deref().is_some_and(|scopes| {
@@ -234,49 +229,32 @@ impl VertexSetup {
                     )
                     .map_err(|error| error.to_string());
                     Ok(SignedIn { projects })
-                });
-            let _ = sender.send(outcome);
+                }))
         });
-        self.stage = Stage::Waiting {
-            cancel,
-            launch: Some(launch),
-            result,
-        };
+        self.stage = Stage::Waiting(wait);
     }
 
     /// Stop waiting for the browser.
     pub(crate) fn cancel(&mut self) {
-        if let Stage::Waiting { cancel, .. } = &self.stage {
-            cancel.cancel();
+        if let Stage::Waiting(wait) = &self.stage {
+            wait.cancel();
         }
         self.stage = Stage::Intro;
     }
 
     /// Take the browser's outcome and the worker's result when they arrive.
     pub(crate) fn poll(&mut self) -> Polled {
-        let Stage::Waiting { launch, result, .. } = &mut self.stage else {
+        let Stage::Waiting(wait) = &mut self.stage else {
             return Polled::Nothing;
         };
-        if let Some(channel) = launch {
-            match channel.try_recv() {
-                Ok(ui::portal::LaunchOutcome::Opened) | Err(TryRecvError::Disconnected) => {
-                    *launch = None;
-                }
-                Ok(ui::portal::LaunchOutcome::Failed(error)) => {
-                    self.cancel();
-                    self.message = Some(t_args(
-                        "agent-vertex-browser-failed",
-                        &[("error", error.into())],
-                    ));
-                    return Polled::Changed;
-                }
-                Err(TryRecvError::Empty) => {}
+        let outcome = match wait.poll() {
+            Ok(Waited::Done(outcome)) => outcome,
+            Ok(Waited::Nothing | Waited::Changed) => return Polled::Nothing,
+            Err(error) => {
+                self.stage = Stage::Intro;
+                self.message = Some(error);
+                return Polled::Changed;
             }
-        }
-        let outcome = match result.try_recv() {
-            Ok(outcome) => outcome,
-            Err(TryRecvError::Empty) => return Polled::Nothing,
-            Err(TryRecvError::Disconnected) => Err(t("agent-vertex-stopped")),
         };
         match outcome {
             Ok(_) if self.existing => {
@@ -340,7 +318,7 @@ impl VertexSetup {
                         .push(cancel()),
                 )));
             }
-            Stage::Waiting { .. } => {
+            Stage::Waiting(_) => {
                 body.push(note(&t("agent-vertex-waiting")));
                 body.push(row(cancel()));
             }

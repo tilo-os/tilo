@@ -1063,6 +1063,7 @@ fn membership_action(
     params: Vec<tilo_actions::ActionParam>,
 ) -> PublishedAction {
     PublishedAction {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         resource: resource.into(),
         action: action.into(),

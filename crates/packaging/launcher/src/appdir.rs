@@ -22,8 +22,7 @@
 //!
 //! Some of an app's data belongs to the person rather than to any room:
 //! what they watched, the words they taught the keyboard. Those records
-//! live in the person's own room (`docs/architecture/storage.md`, "Person
-//! records") and must be one record on the device whatever room the app is
+//! live in the person's own room and must be one record on the device whatever room the app is
 //! opened in, so the launcher binds one more directory, the same for every
 //! room: `<data home>/tilo-person/<package>` at [`SANDBOX_PERSON_DIR`],
 //! named by [`PERSON_DIR_ENV`]. The app keeps nothing else there.

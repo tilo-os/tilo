@@ -18,11 +18,11 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use crate::shell::device_fabric::{
+use crate::shell::network::ShellNetwork;
+use tilo_device_fabric::{
     DeviceFabric, Ipv4Subnet, PersonalFabricAction, PersonalFabricActionEnvelope,
     WakeInterfaceKind, WakeOutcome, WakeRoute,
 };
-use crate::shell::network::ShellNetwork;
 use tilo_network_actor::fabric::DeviceId;
 
 /// The discard port Wake-on-LAN senders conventionally use.
@@ -677,7 +677,7 @@ fn scan_interfaces() -> Vec<WakeRoute> {
             magic_packet,
             subnet: subnets.get(&name).copied(),
         };
-        if routes.len() < crate::shell::device_fabric::MAX_WAKE_ROUTES
+        if routes.len() < tilo_device_fabric::MAX_WAKE_ROUTES
             && !routes.iter().any(|known: &WakeRoute| known.mac == mac)
         {
             routes.push(route);
@@ -811,7 +811,7 @@ fn magic_packet_enabled(interface: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::device_fabric::{
+    use tilo_device_fabric::{
         DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
         FabricCapabilities, OwnerSession,
     };
@@ -859,8 +859,8 @@ mod tests {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
-            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
-            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
+            unlock: tilo_device_fabric::unlock::UnlockFabricState::default(),
+            speakers: tilo_device_fabric::speaker_group::SpeakerFabricState::default(),
         }
     }
 

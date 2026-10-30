@@ -69,6 +69,8 @@ impl QsActionAvailability {
             // NetworkManager is asked over D-Bus and ships with the OS; the
             // radios themselves are looked for in `detect`.
             wifi: true,
+            // The profiles are power-profiles-daemon's; its client ships with
+            // the daemon.
             power_profile: present("powerprofilesctl"),
             vpn: true,
             // The radio is BlueZ's; its client ships with the daemon.

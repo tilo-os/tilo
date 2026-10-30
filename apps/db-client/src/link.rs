@@ -110,7 +110,6 @@ pub enum Intent {
     /// Open a saved connection or saved query a search hit or an agent
     /// names.
     OpenItem(Uuid),
-    RemoveConnection(Uuid),
     /// Show the new-connection form.
     NewConnection,
     SaveConnection(Box<ConnectionProfile>),

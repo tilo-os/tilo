@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A broken update falls back by itself, proved on this tree's own dev image
-# booted under KVM, as t's boot-assessment-x86_64 check runs it (t.toml).
+# booted under KVM.
 #
 # The disk is this tree's dev image (os-dev-image-x86_64, which the check
 # needs), installed as vm-acceptance.sh installs it. The update staged on it is
@@ -24,7 +24,7 @@ dev=/target/publish/os-dev/$arch
 fault=${T_INPUT_FAULT:-unlock}
 case $fault in unlock|greetd|greeter) ;; *) echo "fault must be unlock, greetd or greeter" >&2; exit 2 ;; esac
 
-# The check's setup layer has these already (t.toml); without it, they come from dnf.
+# Where the image lacks these, they come from dnf.
 bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt
 command -v qemu-system-x86_64 qemu-img ssh sshpass socat podman systemd-repart >/dev/null
 

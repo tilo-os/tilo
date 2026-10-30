@@ -365,6 +365,10 @@ pub struct ListRowFace<'a> {
     /// the rect the text is laid out in (a retained row whose trailing
     /// control wrapped under its text).
     frame: Option<Rect>,
+    /// The least a row a person presses is tall: the input's minimum for adjacent collection
+    /// rows (48 for a finger, as a button's face grows to its target), so a finger never lands
+    /// on the row beside it.
+    min_target: f64,
 }
 
 /// Where `line` has one of `words`: at the start of a word of it, compared
@@ -455,6 +459,7 @@ impl<'a> ListRowFace<'a> {
             trailing_after: 0.0,
             interaction: Interaction::default(),
             frame: None,
+            min_target: 0.0,
         }
     }
 
@@ -859,7 +864,8 @@ impl<'a> ListRowFace<'a> {
             )
         );
         let min = RowMetrics::min_height_for(theme, self.extra_lines() > 0, big_leading)
-            .max(m.min_height);
+            .max(m.min_height)
+            .max(self.min_target);
         (self.text_block(text, &m).max(leading_h).max(value) + 2.0 * m.pad_y)
             .max(min)
             .ceil()
@@ -2706,6 +2712,9 @@ impl ListRow {
             .tags(&tags)
             .meta_spans(&spans)
             .interaction(interaction);
+        if self.answers_pointer() {
+            face.min_target = f64::from(self.environment.minimum_collection_row());
+        }
         if self.two_line_title {
             face = face.two_line_title();
         }

@@ -20,6 +20,9 @@ use tilo_lock::MutexRecover as _;
 
 /// Shown while the local instance is starting.
 pub(crate) const OPENING: &str = "Opening here…";
+/// Said of a window whose app ended without closing it (it crashed or was
+/// killed): its card opens the app again into its place.
+pub(crate) const STOPPED: &str = "The app stopped";
 /// Said of a window whose app this machine does not have.
 pub(crate) const NOT_INSTALLED: &str = "Not installed on this machine";
 
@@ -239,6 +242,33 @@ pub(crate) fn reopen_local_restore(
     expected_app: &str,
 ) -> bool {
     reset_local_restore(tree, tab_id, expected_app).is_some()
+}
+
+/// Open the app of `tab` again into its place, when the tab is the card a
+/// window left when its app stopped ([`STOPPED`]): the card is cleared, so
+/// the restore path launches the app and binds its window into the tab, as
+/// it reopens a saved window. Whether the tab was such a card.
+pub(crate) fn reopen_stopped(tree: &mut WorkspaceTree, tab: TabId) -> bool {
+    let reopened = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.strips)
+        .flat_map(|strip| &mut strip.window_groups)
+        .flat_map(|group| &mut group.tabs)
+        .find(|candidate| candidate.id == tab)
+        .is_some_and(|candidate| match &mut candidate.tile {
+            TileContent::LocalApp { note, .. } if note == STOPPED => {
+                note.clear();
+                true
+            }
+            _ => false,
+        });
+    if reopened {
+        crate::shell::tab_binding::mark_tree_changed(tree);
+        tree.queue_save();
+    }
+    reopened
 }
 
 /// None is a stale/nonlocal target; Some says whether this exact local card
@@ -1406,12 +1436,10 @@ mod tests {
         set_note(&mut tree, tab, "A launch failed".into());
         tree.remember_local_app_record(tab, 8181);
         let records = tree.local_app_records.clone();
-        let inputs = crate::shell::hosted_inputs::HostedTileInputs::fixture().unwrap();
         let tile = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0]
             .tile
             .clone();
-        let ui::widget::TileContent::App(card) =
-            crate::shell::to_ui_tile_for_tab_with_inputs(&tile, tab, &inputs)
+        let ui::widget::TileContent::App(card) = crate::shell::to_ui_tile_for_tab(&tile, tab)
         else {
             panic!("the saved failure card must offer recovery, not only static text");
         };

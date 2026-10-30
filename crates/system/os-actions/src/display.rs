@@ -254,34 +254,14 @@ fn set_backlight_with(
 
 /// A host session (Silverblue, Bazzite) has no udev rule handing the attribute to
 /// the user, and the user is usually not in `video`. logind's `SetBrightness`
-/// lets the seat's active session set it; it is how GNOME and KDE dim there. The
-/// connection is kept because brightness keys auto-repeat.
+/// lets the seat's active session set it; it is how GNOME and KDE dim there.
 fn logind_set_brightness(name: &str, raw: u32) -> Result<(), String> {
-    static SYSTEM_BUS: std::sync::Mutex<Option<zbus::Connection>> = std::sync::Mutex::new(None);
-    let name = name.to_owned();
-    crate::block_on(async move {
-        let cached = SYSTEM_BUS.lock().ok().and_then(|bus| bus.clone());
-        let bus = if let Some(bus) = cached {
-            bus
-        } else {
-            let bus = zbus::Connection::system()
-                .await
-                .map_err(|e| format!("cannot reach the system bus: {e}"))?;
-            if let Ok(mut slot) = SYSTEM_BUS.lock() {
-                *slot = Some(bus.clone());
-            }
-            bus
-        };
-        bus.call_method(
-            Some("org.freedesktop.login1"),
-            "/org/freedesktop/login1/session/auto",
-            Some("org.freedesktop.login1.Session"),
-            "SetBrightness",
-            &("backlight", name.as_str(), raw),
-        )
-        .await
-        .map_err(|e| format!("logind SetBrightness: {e}"))?;
-        Ok(())
+    crate::block_on(async {
+        crate::session::logind()
+            .await?
+            .set_brightness("backlight", name, raw)
+            .await
+            .map_err(|e| format!("logind SetBrightness: {e}"))
     })
 }
 

@@ -528,7 +528,7 @@ impl Widget for FileExplorerWidget {
 
     fn traps_focus(&self) -> bool {
         let state = self.state.borrow();
-        state.collab_panel.is_some() || state.app_chooser_open()
+        state.collab_panel.is_some()
     }
 
     fn is_focusable(&self) -> bool {
@@ -546,7 +546,7 @@ impl Widget for FileExplorerWidget {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.state.borrow().window_accessibility()
+        Some(self.state.borrow().window_accessibility())
     }
 
     fn perform_semantic_action(
@@ -567,7 +567,7 @@ impl ui::widget::controls::ActionControls for FileExplorerWidget {
             if let Some(invocation) = state.selected_open.control.take() {
                 return Some(invocation);
             }
-            if let Some(invocation) = state.app_chooser.take_control_invocation() {
+            if let Some(invocation) = state.app_chooser.take() {
                 return Some(invocation);
             }
         }

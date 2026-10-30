@@ -37,8 +37,8 @@
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{Read as _, Write as _};
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
+use std::io::Read as _;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -377,15 +377,6 @@ impl<'de> Visitor<'de> for StrictVisitor {
     }
 }
 
-/// `repr(text)` of a key, as the refusal names it.
-fn repr(text: &str) -> String {
-    if text.contains('\'') && !text.contains('"') {
-        format!("\"{text}\"")
-    } else {
-        format!("'{}'", text.replace('\'', "\\'"))
-    }
-}
-
 fn int(value: &Value, label: &str, minimum: i128) -> Result<i128> {
     let number = value
         .as_i64()
@@ -661,7 +652,10 @@ pub fn parse_handoff(data: &[u8]) -> Result<Handoff> {
                 .strip_prefix(REPEATED)
                 .map(|rest| rest.split(" at line ").next().unwrap_or(rest))
             {
-                return refuse(format!("handoff repeats the field {}", repr(key)));
+                return refuse(format!(
+                    "handoff repeats the field {}",
+                    crate::py::repr_str(key)
+                ));
             }
             refuse(format!("handoff is not valid JSON: {message}"))
         }
@@ -939,24 +933,13 @@ fn or_empty(value: Option<&Value>) -> String {
     match value {
         None | Some(Value::Null) => String::new(),
         Some(value) if !crate::py::truthy(value) => String::new(),
-        Some(value) => python_str(value),
-    }
-}
-
-/// `str(value)` of a JSON value.
-fn python_str(value: &Value) -> String {
-    match value {
-        Value::Null => "None".into(),
-        Value::Bool(true) => "True".into(),
-        Value::Bool(false) => "False".into(),
-        Value::String(text) => text.clone(),
-        other => other.to_string(),
+        Some(value) => crate::py::str_of(value),
     }
 }
 
 /// `'%s' % node.get(key)`.
 fn shown(node: &Map<String, Value>, key: &str) -> String {
-    python_str(node.get(key).unwrap_or(&Value::Null))
+    crate::py::str_of(node.get(key).unwrap_or(&Value::Null))
 }
 
 fn lsblk_disk(host: &dyn Host, disk: &str) -> Result<Map<String, Value>> {
@@ -1047,7 +1030,7 @@ fn with_gpt_facts(
         else {
             return refuse(format!(
                 "the GPT of {disk} does not list {}",
-                python_str(&name)
+                crate::py::str_of(&name)
             ));
         };
         fill(child, "partuuid", part.get("uuid"))?;
@@ -1092,7 +1075,7 @@ fn mounts(node: &Map<String, Value>) -> Vec<String> {
     points
         .iter()
         .filter(|point| crate::py::truthy(point))
-        .map(python_str)
+        .map(crate::py::str_of)
         .collect()
 }
 
@@ -1130,7 +1113,7 @@ fn disk_facts(host: &dyn Host, disk: &str, handoff: &Handoff) -> Result<(i128, V
     let node = lsblk_disk(host, disk)?;
     let lower = |key: &str| {
         node.get(key)
-            .map_or_else(String::new, python_str)
+            .map_or_else(String::new, crate::py::str_of)
             .to_lowercase()
     };
     if lower("pttype") != "gpt" {
@@ -1416,25 +1399,11 @@ pub fn check_mounts_command(host: &dyn Host, handoff_path: &Path, disk: &str) ->
     check_mounts(&handoff, &partitions, root)
 }
 
-/// Replaces `path` with `data` (mode `mode`) through a synced temporary file.
+/// Replaces `path` with `data` at exactly `mode`, atomically and durably.
 fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
-    let directory = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".tilo-staging.")
-        .tempfile_in(&directory)?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(mode))?;
-    temporary.write_all(data)?;
-    temporary.as_file().sync_all()?;
-    temporary
-        .persist(path)
-        .map_err(|error| Fail::from(error.error))?;
-    fs::File::open(&directory)?.sync_all()?;
-    Ok(())
+    Ok(tilo_files::native::atomic::write_with_mode(
+        path, data, mode,
+    )?)
 }
 
 fn canonical(document: &Value) -> Vec<u8> {

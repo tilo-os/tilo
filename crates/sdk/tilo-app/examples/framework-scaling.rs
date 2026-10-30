@@ -29,7 +29,7 @@
 //! macOS) to see typing alone.
 //!
 //! With `TILO_PROFILE_RESOURCES=1` each move's resource work is printed to
-//! stderr as `input_carry` stages (see `docs/app-performance.md`), and in
+//! stderr as `input_carry` stages, and in
 //! the `focus` mode every scope of one more added task as an `add_item` line.
 //!
 //! A second argument `open` measures only the open, for profiling it. Each

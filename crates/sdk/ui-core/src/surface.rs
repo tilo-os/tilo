@@ -80,6 +80,45 @@ pub fn floating_drag_grip(scene: &mut Scene, transform: Affine, rect: Rect, colo
     );
 }
 
+/// The resize handle in a resizable surface's free corner: three short
+/// diagonal strokes hugging the corner of `grip` that `anchor` names (`true`
+/// for the left, top edge), in `color`.
+pub fn corner_resize_grip(
+    scene: &mut Scene,
+    transform: Affine,
+    grip: Rect,
+    anchor: (bool, bool),
+    color: Color,
+) {
+    let corner = vello::kurbo::Point::new(
+        if anchor.0 {
+            grip.x0 + 4.0
+        } else {
+            grip.x1 - 4.0
+        },
+        if anchor.1 {
+            grip.y0 + 4.0
+        } else {
+            grip.y1 - 4.0
+        },
+    );
+    let sx = if anchor.0 { 1.0 } else { -1.0 };
+    let sy = if anchor.1 { 1.0 } else { -1.0 };
+    for k in [4.0, 8.0, 12.0] {
+        let line = vello::kurbo::Line::new(
+            vello::kurbo::Point::new(corner.x + sx * k, corner.y),
+            vello::kurbo::Point::new(corner.x, corner.y + sy * k),
+        );
+        scene.stroke(
+            &Stroke::new(1.4).with_caps(vello::kurbo::Cap::Round),
+            transform,
+            color,
+            None,
+            &line,
+        );
+    }
+}
+
 /// Resolution of the baked falloff along the profile axis: 256 samples
 /// across a band at most a couple hundred logical px wide is plenty.
 const SHADOW_SPRITE_SIZE: u32 = 256;
@@ -741,6 +780,16 @@ pub fn floating_shadow(
             &layer.with_alpha_scaled(alpha),
         );
     }
+}
+
+/// Every pixel [`floating_shadow`] can paint for a surface at `rect`, the
+/// surface's own included.
+pub fn floating_shadow_bounds(rect: Rect, theme: &Theme) -> Rect {
+    let elevation = &theme.tokens.elevation;
+    [elevation.contact, elevation.floating]
+        .iter()
+        .filter_map(|layer| shadow_bounds(rect, layer))
+        .fold(rect, |all, layer| all.union(layer))
 }
 
 /// The 1 px inner hairline a floating surface carries on its outermost

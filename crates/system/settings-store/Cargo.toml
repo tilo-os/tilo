@@ -20,6 +20,8 @@ tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 serde.workspace = true
 serde_json.workspace = true
+# A copy's payload bytes inside the JSON document.
+base64.workspace = true
 # The person's and the device's settings documents.
 automerge.workspace = true
 # Changes another process made, taken whole or not at all.

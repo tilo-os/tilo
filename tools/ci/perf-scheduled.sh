@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# One KPI group of the scheduled performance run, as a t check (t.toml,
-# perf-*). Each group measures this tree and writes its records to
+# One KPI group of the scheduled performance run. Each group measures this tree and writes its records to
 # /target/perf/<group>/<group>.jsonl (with its logs beside them); perf-compare
 # takes every group's records, compares them with the store and, on main,
 # publishes them.
@@ -220,8 +219,7 @@ case $group in
     # The host's state lives on memory. On the node's shared overlay disk a durable commit
     # waits for every other job's writes: with the node's load average past 1000, single
     # commits took up to 15 s and a quarter of the guests had no Ready within 60 s, while
-    # the same build on memory, in the same job, joined all 100 with p99 1.8 s, as in
-    # docs/benchmarks/room-host-capacity-2026-10.md's tmpfs runs. The disk measured other
+    # the same build on memory, in the same job, joined all 100 with p99 1.8 s. The disk measured other
     # jobs; eu1 keeps its state on local NVMe.
     for run in 1 2 3; do
       state=$(mktemp -d /dev/shm/room-load.XXXXXX)
@@ -232,7 +230,7 @@ case $group in
     python3 tools/perf/adapters.py room-load --env-json "$out/env.json" "$out"/room-load-*.json \
       > "$out/hosting-room.jsonl"
     # The same host at its declared capacity under a host nobody shares, and
-    # past the room's cap (docs/architecture/hosting-capacity.md): three runs
+    # past the room's cap: three runs
     # through tools/ci/perf-room-degraded.sh, which steals CPU from the host's
     # own process tree and slows the loopback the guests dial, so nothing else
     # on the node is shaped. room_capacity.py judges them against the service

@@ -6,7 +6,7 @@
 //! rows and preview pages are published beneath the workspace by the
 //! view.
 
-use ui::tilo_actions::ResourceSpec;
+use ui::framework::LiveRow;
 use ui::tilo_resource::{self, Effect};
 
 /// Bound how many live diagnostic / preview-page rows the palette materialises.
@@ -111,7 +111,7 @@ fn truncate_label(text: &str, max_chars: usize) -> String {
     format!("{cut}…")
 }
 
-fn diagnostic_resource(index: usize, diag: &crate::compile::Diagnostic) -> ResourceSpec {
+fn diagnostic_row(index: usize, diag: &crate::compile::Diagnostic) -> LiveRow {
     use crate::compile::DiagKind;
     let severity = match diag.kind {
         DiagKind::Error => "Error",
@@ -123,30 +123,30 @@ fn diagnostic_resource(index: usize, diag: &crate::compile::Diagnostic) -> Resou
         (Some(line), None) => format!("{severity} on line {line}: {message}"),
         _ => format!("{severity}: {message}"),
     };
-    ResourceSpec::new(
+    LiveRow::new(
         format!("typst.diagnostic:{index}"),
         "typst.diagnostic",
         label,
     )
-    .with_action(TypstEffect::GoToDiagnostic { index }.bound())
+    .effect(&TypstEffect::GoToDiagnostic { index })
 }
 
-fn preview_page_resource(page: usize) -> ResourceSpec {
-    ResourceSpec::new(
+fn preview_page_row(page: usize) -> LiveRow {
+    LiveRow::new(
         format!("typst.preview-page:{page}"),
         "typst.preview-page",
         format!("Page {}", page + 1),
     )
-    .with_action(TypstEffect::GoToPage { page }.bound())
+    .effect(&TypstEffect::GoToPage { page })
 }
 
 /// Live Problems rows and preview-page hits — presentation cache, not
 /// document state — which the view publishes beneath the workspace, so
 /// agents keep jump targets.
-pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<ResourceSpec> {
+pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<LiveRow> {
     let mut extras = Vec::new();
     if !ctx.diagnostics.is_empty() {
-        let mut problems = ResourceSpec::new(
+        let mut problems = LiveRow::new(
             "typst.problems",
             "typst.problems",
             format!("Problems ({})", ctx.diagnostics.len()),
@@ -157,18 +157,18 @@ pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<ResourceSpec> {
             .take(LIVE_EXTRA_RESOURCE_LIMIT)
             .enumerate()
         {
-            problems = problems.with_child(diagnostic_resource(index, diag));
+            problems = problems.row(diagnostic_row(index, diag));
         }
         extras.push(problems);
     }
     if ctx.page_count > 0 {
-        let mut pages = ResourceSpec::new(
+        let mut pages = LiveRow::new(
             "typst.preview-pages",
             "typst.preview-pages",
             format!("Preview pages ({})", ctx.page_count),
         );
         for page in 0..ctx.page_count.min(LIVE_EXTRA_RESOURCE_LIMIT) {
-            pages = pages.with_child(preview_page_resource(page));
+            pages = pages.row(preview_page_row(page));
         }
         extras.push(pages);
     }

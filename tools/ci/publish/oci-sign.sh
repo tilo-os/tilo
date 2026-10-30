@@ -27,8 +27,8 @@ out=${2:?}
 # A build that installed from a frozen RPM snapshot records which (lib.sh snapshot_for_build):
 # one built from a package set stable has not published is never signed.
 if [[ -f $out/rpms-source ]]; then require_published_snapshot "$out/rpms-source"; fi
-# A development candidate may be signed too, with the development key only (TILO_DEV_SIGNING=1,
-# `dev_signed` in products.toml): its signature says the candidate came from t's trusted build of
+# A development candidate may be signed too, with the development key only (TILO_DEV_SIGNING=1):
+# its signature says the candidate came from CI's trusted build of
 # main or of a branch of this repository, and no release verification accepts that key.
 run_channel=$(channel)
 if [[ ${TILO_DEV_SIGNING:-} == 1 ]]; then

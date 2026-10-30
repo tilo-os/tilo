@@ -3,9 +3,9 @@
 #
 #   dev-installer-medium.sh ARCH IMAGE_DIR OUT
 #
-# IMAGE_DIR is what os-image-ARCH left: the image composed from its layer actions as an OCI
-# layout (oci/) and its digest. This check consumes that exact image, never a registry tag, and
-# writes OUT/disk.qcow2 with its
+# IMAGE_DIR is what os/image/build-layer.sh compose left: the image composed from its layer
+# actions as an OCI layout (oci/) and its digest. The medium is made from that exact image,
+# never a registry tag, and writes OUT/disk.qcow2 with its
 # SHA-256, the media-provenance sidecar the canonical disk step records, and source.json naming
 # the image commit and OCI digest the medium was made from.
 #
@@ -18,7 +18,7 @@
 # or receiver proof, and it writes nothing to the source tree.
 #
 # The medium is deliberately unsigned and developer-only. It is never published to a registry,
-# never tagged `latest` or for a release channel, and no check here signs anything.
+# never tagged `latest` or for a release channel, and nothing here signs anything.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
@@ -34,13 +34,13 @@ esac
 [[ $(uname -m) == "$arch" ]] || die "the $arch medium builds natively, not on $(uname -m)"
 
 # The image is composed from layer actions keyed by what they read, so it names no commit
-# itself; the medium is of this check's commit, whose run composed it.
+# itself; the medium is of the commit whose run composed it.
 revision=$(git rev-parse --verify HEAD) || die 'the medium names its commit: git = true'
 expected_digest=$(tr -d '[:space:]' < "$in/digest") || die "$in/digest is not readable"
 [[ $expected_digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "$in/digest does not name an image: $expected_digest"
 [[ -f $in/oci/index.json ]] || die "$in holds no OS image layout (oci/)"
 
-rootfs=${4:-${T_INPUT_ROOTFS:-${TILO_INSTALLER_ROOTFS:-ext4}}}
+rootfs=${TILO_INSTALLER_ROOTFS:-ext4}
 case $rootfs in
   btrfs|ext4) ;;
   *) die "the live medium's root filesystem must be btrfs or ext4, not $rootfs" ;;
@@ -85,7 +85,7 @@ mkdir -p "$out"
 medium="$out/disk.qcow2"
 installer_output="$out/installer"
 rm -rf "$medium" "$medium.sha256" "$medium.hardware.json" "$out/source.json" "$installer_output"
-# A unique local tag keeps this check apart from another architecture's images in one guest.
+# A unique local tag keeps the medium apart from another architecture's images in one guest.
 tag="dev-installer-medium-$arch-${revision:0:12}"
 export TILO_DISTROBOX=
 export TILO_LOCAL_TAG=$tag

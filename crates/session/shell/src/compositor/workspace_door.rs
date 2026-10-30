@@ -218,9 +218,8 @@ pub(crate) fn hidden(provider: &str) -> bool {
 }
 
 /// Providers that open apps: in the workspace in front, as the palette does.
-const APP_PROVIDERS: [&str; 3] = [
+const APP_PROVIDERS: [&str; 2] = [
     "applications",
-    "host-applications",
     crate::shell::search::providers::store_catalogue::PROVIDER_ID,
 ];
 

@@ -67,7 +67,7 @@ fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
         &mut broken,
         &automerge::ROOT,
         "people",
-        &"not a roster".to_owned(),
+        &ui::tilo_resource::Atom("not a roster".into()),
     )
     .expect("the field is written");
     assert!(<crate::record::Chat as ui::tilo_resource::Resource>::read(&broken).is_err());

@@ -11,7 +11,6 @@ pub(super) fn notes_search_in_place() -> Scenario {
         name: "notes_search_in_place",
         description: "Search in the window bar: the control after the title expands into a field, the long note highlights every match with n of m, and Enter steps on.",
         actions: vec![
-            Action::SeedLongNotes(0),
             Action::Wait(2),
             Action::Relayout,
             Action::Snapshot("00-control-at-rest"),
@@ -33,7 +32,6 @@ pub(super) fn notes_search_options() -> Scenario {
         name: "notes_search_options",
         description: "The window bar's search on the long note with its options open: the control after the steps opens a panel under the field with Match case and Whole word, and turning Match case on finds again under it.",
         actions: vec![
-            Action::SeedLongNotes(0),
             Action::Wait(2),
             Action::Relayout,
             Action::ClickNamed("window-search-open"),
@@ -61,7 +59,6 @@ pub(super) fn notes_replace_in_place() -> Scenario {
         name: "notes_replace_in_place",
         description: "Replace in the window bar's search on the long note: the options panel holds the replacement, Replace changes the current match in the note and the count drops by one, Replace all changes the rest.",
         actions: vec![
-            Action::SeedLongNotes(0),
             Action::Wait(2),
             Action::Relayout,
             Action::ClickNamed("window-search-open"),

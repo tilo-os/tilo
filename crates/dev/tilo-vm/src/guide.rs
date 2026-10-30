@@ -209,8 +209,6 @@ mod tests {
             let images = topic("images").unwrap();
             assert!(images.contains("## Pick the fastest loop"));
             assert!(images.contains("--from sha:<commit>"));
-            assert!(images.contains("ref-<branch>-<sha7>-<target>"));
-            assert!(images.contains("--ref <branch>"));
         }
 
         // Phase: guides_use_the_current_command_shapes.
@@ -249,7 +247,6 @@ mod tests {
                 "tilo-vm seat claim",
                 "ends whoever is logged in",
                 "tilo-vm shot",
-                "tilo-vm-ref:ref-<branch>-<sha7>-<board>",
                 "credentials never reach the device",
                 "passphrase",
             ] {
@@ -257,7 +254,6 @@ mod tests {
             }
             let platforms = topic("platforms").unwrap();
             assert!(platforms.contains("virt-manager"));
-            assert!(platforms.contains("t dispatch publish-os-dev-disk-x86_64"));
             let fedora = topic("fedora-loop").unwrap();
             assert!(fedora.contains("dist/dev/fedora44-vm-iterate.sh"));
             assert!(fedora.contains("deploy-apps"));

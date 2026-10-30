@@ -2720,10 +2720,9 @@ fn a_visitor_launch_hands_browser_the_visitor_switch() {
     let url = "https://github.com/ada";
     apply_launch_context(LaunchContext::Visitor, (None, Some(url)), &mut command)
         .expect("a visit opens one web address");
-    assert_eq!(
-        command.args,
-        vec![ui::webview::VISITOR_WINDOW_FLAG.to_owned()]
-    );
+    // The launcher's switch; the launcher hands Browser its own after the
+    // address (launcher `run::a_visitor_launch_hands_the_app_its_visitor_switch`).
+    assert_eq!(command.args, vec!["--open-as-visitor".to_owned()]);
     for named in [
         (None, None),
         (Some(Path::new("/home/ada/cv.pdf")), Some(url)),

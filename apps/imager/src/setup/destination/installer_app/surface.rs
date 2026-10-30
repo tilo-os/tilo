@@ -545,7 +545,7 @@ impl InstallerApp {
                 label: disk.label(),
                 presentation: ResourcePresentation {
                     detail: Some(bounded(
-                        &format!("{} · {}", capacity(disk), disk.contents_summary()),
+                        &format!("{}, {}", capacity(disk), disk.contents_summary()),
                         160,
                     )),
                     badge: Some(badge.to_owned()),

@@ -51,14 +51,11 @@ class CargoRecipes(unittest.TestCase):
         self.assertEqual(len(examples), 1)
         self.assertEqual(examples[0][1], ["cargo", "test", "--locked", "-p", "shell", "--test", "it"])
 
-    def test_entry_pages_stay_short_and_sources_exist(self):
+    def test_published_pages_exist(self):
         import tomllib
-        manifest = tomllib.loads((ROOT / "docs/development/pages.toml").read_text())
-        for page in manifest["page"]:
-            self.assertTrue((ROOT / page["source"]).is_file(), page["source"])
-        for source in ("docs/development/README.md", "docs/development/setup.md"):
-            self.assertLessEqual(len((ROOT / source).read_text().splitlines()), 100, source)
-
+        for manifest in book.MANIFESTS:
+            for page in tomllib.loads((ROOT / manifest).read_text())["page"]:
+                self.assertTrue((ROOT / page["source"]).is_file(), page["source"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -249,6 +249,7 @@ mod tests {
                 presentation: None,
             },
             action: Some(ActionDescriptor {
+                state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address,
                 resource_kind: SHORTCUT_RESOURCE_KIND.into(),

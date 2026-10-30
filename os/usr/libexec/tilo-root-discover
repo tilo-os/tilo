@@ -34,6 +34,7 @@ unlock_bin="${TILO_ROOT_UNLOCK:-/usr/libexec/tilo-rollback-initrd-unlock}"
 signin_bin="${TILO_ROOT_SIGNIN:-/usr/libexec/tilo/tilo-boot-signin}"
 sibling_bin="${TILO_ROOT_SIBLING_UNLOCK:-tilo-sibling-unlock}"
 systemctl_bin="${TILO_ROOT_SYSTEMCTL:-systemctl}"
+udevadm_bin="${TILO_ROOT_UDEVADM:-udevadm}"
 
 die() { printf 'tilo-root: %s\n' "$*" >&2; exit 1; }
 # Each step of opening the root says what it does, in the journal.
@@ -52,7 +53,7 @@ case "$loader_var" in
 esac
 
 esp="$devroot/disk/by-partuuid/$loader_var"
-for _ in $(seq 1 100); do [ -e "$esp" ] && break; udevadm settle 2>/dev/null || true; sleep .05; done
+for _ in $(seq 1 100); do [ -e "$esp" ] && break; "$udevadm_bin" settle 2>/dev/null || true; sleep .05; done
 [ -e "$esp" ] || die "boot ESP $loader_var did not appear"
 esp="$(readlink -f "$esp")"
 mapfile -t parents < <("$lsblk_bin" -dno PKNAME "$esp")
@@ -71,6 +72,18 @@ for token in "${cmdline[@]}"; do
   [ "$token" != tilo.install ] || live=1
 done
 
+# lsblk reads a partition's type from udev's database, which holds it only once
+# udev has processed that partition; before then the type reads as empty and
+# the root is not found. The boot ESP's link shows only that udev is done with
+# the ESP. The kernel's list of the disk's partitions is complete already, so
+# wait until udev has initialized every one of them, then read their types.
+listed="$("$lsblk_bin" -lnpo NAME,TYPE "$disk")" \
+  || die "could not list the partitions of the boot ESP's disk"
+mapfile -t on_disk < <(awk 'tolower($2)=="part" {print $1}' <<<"$listed")
+if [ "${#on_disk[@]}" -gt 0 ]; then
+  "$udevadm_bin" wait --initialized=yes -- "${on_disk[@]}" \
+    || die "udev did not finish with the partitions of the boot ESP's disk"
+fi
 partitions="$("$lsblk_bin" -lnpo NAME,TYPE,PARTTYPE "$disk")" \
   || die "could not list the partitions of the boot ESP's disk"
 of_type() {

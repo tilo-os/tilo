@@ -23,7 +23,6 @@
 //! whose provided methods are the production behaviour; nothing is read from
 //! the environment.
 
-mod py;
 pub mod record;
 
 use std::fmt;
@@ -33,6 +32,7 @@ use std::process::{Command, Stdio};
 
 use advisory_lock::FileLock;
 use serde_json::Value;
+use tilo_pycompat as py;
 
 pub use record::{Extent, Record};
 
@@ -218,13 +218,31 @@ const fn kind(value: &Value) -> &'static str {
 }
 
 fn int(value: Option<&Value>) -> Result<i128, Error> {
-    py::int_of(value).map_err(|message| {
+    py::int_of(value.unwrap_or(&Value::Null)).map_err(|message| {
         if message.starts_with("int() argument") {
             Error::Crash(message)
         } else {
             Error::Incomplete(message)
         }
     })
+}
+
+/// Whether Python would treat the value (`None` when missing) as false.
+fn falsy(value: Option<&Value>) -> bool {
+    !value.is_some_and(py::truthy)
+}
+
+/// `str(value or '')`.
+fn str_or_empty(value: Option<&Value>) -> String {
+    value
+        .filter(|value| py::truthy(value))
+        .map_or_else(String::new, py::str_of)
+}
+
+/// `repr()` of a string list, as a `CalledProcessError` shows its command.
+fn repr_list(items: &[&str]) -> String {
+    let shown: Vec<String> = items.iter().map(|item| py::repr_str(item)).collect();
+    format!("[{}]", shown.join(", "))
 }
 
 fn list(value: Option<&Value>) -> Result<Vec<Value>, Error> {
@@ -328,8 +346,8 @@ pub fn find_disk(host: &dyn Host, record: &Record) -> Result<String, Error> {
     for item in &mut candidates {
         // lsblk reads PTTYPE/PTUUID from udev; read the GPT itself when the
         // udev database has nothing (containers, very early boot).
-        if py::is_falsy(get(item, "ptuuid")?) || py::is_falsy(get(item, "pttype")?) {
-            let name = py::str_of(Some(index(item, "name")?));
+        if falsy(get(item, "ptuuid")?) || falsy(get(item, "pttype")?) {
+            let name = py::str_of(index(item, "name")?);
             let probe = host.run(&["sfdisk", "--json", &name], None)?;
             if probe.code == 0 {
                 let parsed = json(&probe.stdout)?;
@@ -337,7 +355,7 @@ pub fn find_disk(host: &dyn Host, record: &Record) -> Result<String, Error> {
                 let table = get(&parsed, "partitiontable")?.unwrap_or(&empty).clone();
                 for (field, source) in [("ptuuid", "id"), ("pttype", "label")] {
                     let current = get(item, field)?.cloned();
-                    let value = if py::is_falsy(current.as_ref()) {
+                    let value = if falsy(current.as_ref()) {
                         get(&table, source)?.cloned().unwrap_or(Value::Null)
                     } else {
                         current.unwrap_or(Value::Null)
@@ -351,7 +369,7 @@ pub fn find_disk(host: &dyn Host, record: &Record) -> Result<String, Error> {
     }
     let mut disks = Vec::new();
     for item in candidates {
-        if py::str_or_empty(get(&item, "ptuuid")?).to_lowercase() == record.disk_guid {
+        if str_or_empty(get(&item, "ptuuid")?).to_lowercase() == record.disk_guid {
             disks.push(item);
         }
     }
@@ -363,13 +381,12 @@ pub fn find_disk(host: &dyn Host, record: &Record) -> Result<String, Error> {
         )));
     };
     let size = get(disk, "size")?;
-    let size = if py::is_falsy(size) { 0 } else { int(size)? };
-    if py::str_or_empty(get(disk, "pttype")?).to_lowercase() != "gpt"
-        || size != record.disk_size_bytes
+    let size = if falsy(size) { 0 } else { int(size)? };
+    if str_or_empty(get(disk, "pttype")?).to_lowercase() != "gpt" || size != record.disk_size_bytes
     {
         return Err(Error::Mismatch(format!(
             "disk {} differs from the recorded disk",
-            py::str_of(get(disk, "name")?)
+            py::str_of(get(disk, "name")?.unwrap_or(&Value::Null))
         )));
     }
     match index(disk, "name")? {
@@ -405,7 +422,7 @@ pub fn partition_table(
 ) -> Result<Vec<Partition>, Error> {
     let parsed = json(&checked(host, &["sfdisk", "--json", disk])?.stdout)?;
     let table = index(&parsed, "partitiontable")?;
-    let id = get(table, "id")?.map_or_else(String::new, |id| py::str_of(Some(id)));
+    let id = get(table, "id")?.map_or_else(String::new, py::str_of);
     if get(table, "label")?.and_then(Value::as_str) != Some("gpt")
         || id.to_lowercase() != record.disk_guid
     {
@@ -429,11 +446,11 @@ pub fn partition_table(
         let size = int(Some(index(&part, "size")?))?;
         let text = |key: &str| -> Result<String, Error> {
             Ok(get(&part, key)?
-                .map_or_else(String::new, |v| py::str_of(Some(v)))
+                .map_or_else(String::new, py::str_of)
                 .to_lowercase())
         };
         parts.push(Partition {
-            node: py::str_of(Some(index(&part, "node")?)),
+            node: py::str_of(index(&part, "node")?),
             partuuid: text("uuid")?,
             kind: text("type")?,
             first_lba: start,
@@ -484,16 +501,16 @@ fn holders_and_mounts(host: &dyn Host, node: &str) -> Result<(Vec<Value>, usize)
         }
     };
     let mounts = get(device, "mountpoints")?;
-    let points = if py::is_falsy(mounts) {
+    let points = if falsy(mounts) {
         0
     } else {
         list(mounts)?
             .iter()
-            .filter(|point| !py::is_falsy(Some(point)))
+            .filter(|point| py::truthy(point))
             .count()
     };
     let children = get(device, "children")?;
-    let children = if py::is_falsy(children) {
+    let children = if falsy(children) {
         Vec::new()
     } else {
         list(children)?
@@ -692,7 +709,7 @@ pub fn reclaim(host: &dyn Host, record: &Record) -> Result<(), Error> {
             if outcome.code != 0 {
                 return Err(Error::Incomplete(format!(
                     "Command '{}' returned non-zero exit status {}.",
-                    py::repr_list(&argv),
+                    repr_list(&argv),
                     outcome.code
                 )));
             }
@@ -725,7 +742,7 @@ fn grow_filesystem(host: &dyn Host, node: &str) -> Result<(), Error> {
     let mut mappers = Vec::new();
     for child in &children {
         if get(child, "type")?.and_then(Value::as_str) == Some("crypt") {
-            mappers.push(py::str_of(Some(index(child, "name")?)));
+            mappers.push(py::str_of(index(child, "name")?));
         }
     }
     if mappers.len() > 1 {

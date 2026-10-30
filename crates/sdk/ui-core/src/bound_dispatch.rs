@@ -4498,14 +4498,6 @@ impl CallbackBinding {
         self.with_document(outer, |doc, _| self.finish_action_boundary(doc))?
     }
 
-    pub(crate) fn history_request(
-        &self,
-        outer: &mut AutoCommit,
-        request: crate::undo::UndoRequest,
-    ) -> Result<Option<crate::state::UndoEntry>, BoundDispatchError> {
-        self.history_request_with_registry(outer, request, None)
-    }
-
     /// Outside changes need a new admitted history invocation: a local
     /// stack inversion has no current broker caller for its consequence.
     pub(crate) fn history_uses_compensation(
@@ -4524,11 +4516,11 @@ impl CallbackBinding {
         })
     }
 
-    pub(crate) fn history_request_with_registry(
+    /// Undo or redo in place, reverting the step's changes.
+    pub(crate) fn history_request(
         &self,
         outer: &mut AutoCommit,
         request: crate::undo::UndoRequest,
-        registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Result<Option<crate::state::UndoEntry>, BoundDispatchError> {
         self.with_document(outer, |doc, _| {
             self.finish_action_boundary(doc)?;
@@ -4543,12 +4535,12 @@ impl CallbackBinding {
                 crate::undo::UndoRequest::Undo => {
                     frame
                         .history
-                        .undo_in(doc, &self.author, self.instance_id, None, None, registry)
+                        .undo_in(doc, &self.author, self.instance_id, None, None)
                 }
                 crate::undo::UndoRequest::Redo => {
                     frame
                         .history
-                        .redo_in(doc, &self.author, self.instance_id, None, None, registry)
+                        .redo_in(doc, &self.author, self.instance_id, None, None)
                 }
             };
             frame.state.pending = Some(PendingRecordAction::new(self, doc.get_heads()));

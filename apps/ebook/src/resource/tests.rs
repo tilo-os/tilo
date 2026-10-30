@@ -3,8 +3,6 @@
 
 use std::rc::Rc;
 
-use ui::framework::LiveRow;
-
 use super::*;
 use crate::model::{CompositionStyle, FontKind, LibrarySort, MAX_NOTE_BYTES, ReadMode, ReadTheme};
 use tilo_document::RichTextAction;
@@ -1024,10 +1022,10 @@ fn every_scenario_stages_the_sample_shelf_through_the_librarys_edits() {
     );
 }
 
-/// The reader publishes where it is and nothing of the library: the
-/// library's places and verbs are the record's.
+/// The library's verbs bound to where the reader is follow the page and
+/// the selection.
 #[test]
-fn the_reader_publishes_only_where_it_is() {
+fn the_library_verbs_bound_to_the_reader_follow_the_selection() {
     use ui::widget::Widget;
 
     let mut app = BooksApp::with_library(
@@ -1036,43 +1034,6 @@ fn the_reader_publishes_only_where_it_is() {
     );
     let doc = ui::automerge::AutoCommit::new();
     app.sync(&doc, &ui::automerge::ROOT);
-    let extras: Vec<_> = app
-        .store()
-        .borrow()
-        .shown
-        .live_rows()
-        .into_iter()
-        .map(LiveRow::into_resource)
-        .collect();
-    assert_eq!(
-        extras.len(),
-        1,
-        "the reader publishes where it is and nothing of the library: {:?}",
-        extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-    );
-    let book_id = app.open_book().expect("a sample book is open").id.clone();
-    assert_eq!(extras[0].id.as_str(), format!("ebook.selection:{book_id}"));
-    for id in [
-        "previous-page",
-        "next-page",
-        "contents",
-        "notes",
-        "settings",
-        "select-passage",
-        "go-to",
-    ] {
-        assert!(
-            extras[0].actions.iter().any(|action| action.id == id),
-            "the reader offers `{id}`"
-        );
-    }
-    assert!(
-        extras[0]
-            .actions
-            .iter()
-            .all(|action| action.kind != ui::tilo_actions::OperationKind::Document),
-        "where the reader is changes no document"
-    );
 
     let bound = |app: &BooksApp| -> Vec<&'static str> {
         app.reading_declarations()

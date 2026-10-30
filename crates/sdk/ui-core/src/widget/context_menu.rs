@@ -1386,44 +1386,32 @@ impl ContextMenu {
     }
 
     /// Skips separators. `dir > 0` moves down, `dir < 0` up, through the
-    /// rows shown in the order shown.
+    /// rows shown in the order shown, wrapping round.
     fn move_hover(&mut self, dir: i32) {
-        let n = self.shown.len();
-        if n == 0 {
-            return;
-        }
-        let down = dir > 0;
-        // With nothing hovered, entering from above starts at the first row
-        // and entering from below at the last; otherwise step off the row we
-        // are on. Either way the walk then visits at most `n` candidates.
         let at = self
             .hovered
             .and_then(|hovered| self.shown.iter().position(|&index| index == hovered));
-        let mut slot = match at {
-            Some(i) => wrapping_step(i, n, down),
-            None if down => 0,
-            None => n.saturating_sub(1),
-        };
-        for _ in 0..n {
-            let index = self.shown[slot];
-            if self.items.get(index).is_some_and(MenuItem::is_enabled) {
-                self.hovered = Some(index);
-                self.ensure_hover_visible();
-                return;
-            }
-            slot = wrapping_step(slot, n, down);
+        let next = crate::widget::autocomplete::step_pickable(
+            self.shown.len(),
+            at,
+            dir > 0,
+            true,
+            |slot| {
+                self.items
+                    .get(self.shown[slot])
+                    .is_some_and(MenuItem::is_enabled)
+            },
+        );
+        if let Some(slot) = next {
+            self.hovered = Some(self.shown[slot]);
+            self.ensure_hover_visible();
         }
     }
-}
 
-/// One step through `n` items, wrapping past either end. Kept in `usize`
-/// so a menu index can never go negative or wrap through a cast.
-fn wrapping_step(i: usize, n: usize, down: bool) -> usize {
-    if down {
-        let next = i.saturating_add(1);
-        if next >= n { 0 } else { next }
-    } else {
-        i.checked_sub(1).unwrap_or_else(|| n.saturating_sub(1))
+    /// The enabled row under `point`.
+    fn enabled_item_at(&self, point: Point) -> Option<usize> {
+        self.item_at([point.x, point.y])
+            .filter(|index| self.items[*index].is_enabled())
     }
 }
 
@@ -1898,9 +1886,7 @@ impl Widget for ContextMenu {
                     return;
                 }
                 self.opened_under = None;
-                self.hovered = self
-                    .item_at([self.last_cursor.x, self.last_cursor.y])
-                    .filter(|index| self.items[*index].is_enabled());
+                self.hovered = self.enabled_item_at(self.last_cursor);
                 self.follow_emoji_cell();
                 // Hovering a row with a nested menu opens it; hovering
                 // another row closes it.
@@ -1919,17 +1905,17 @@ impl Widget for ContextMenu {
                 // Not marked handled (so cursor presence still flows) —
                 // only presses are.
             }
+            // Over the menu, or anywhere while an anchored menu is open.
             WindowEvent::MouseWheel { delta, .. }
-                if self.contains([self.last_cursor.x, self.last_cursor.y]) =>
+                if self.bounds.is_some()
+                    || self.contains([self.last_cursor.x, self.last_cursor.y]) =>
             {
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * self.row_height(),
                     MouseScrollDelta::PixelDelta(position) => -position.y / ctx.scale_factor,
                 };
                 self.scroll_by(amount);
-                self.hovered = self
-                    .item_at([self.last_cursor.x, self.last_cursor.y])
-                    .filter(|index| self.items[*index].is_enabled());
+                self.hovered = self.enabled_item_at(self.last_cursor);
                 *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
@@ -1983,15 +1969,6 @@ impl Widget for ContextMenu {
                 self.edit_query(event, *ctx.modifiers);
                 *ctx.handled = true;
             }
-            WindowEvent::MouseWheel { delta, .. } if self.bounds.is_some() => {
-                let delta = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.row_height,
-                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
-                };
-                self.scroll_offset = (self.scroll_offset - delta).clamp(0.0, self.max_scroll());
-                self.hovered = self.item_at([self.last_cursor.x, self.last_cursor.y]);
-                *ctx.handled = true;
-            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -2014,16 +1991,12 @@ impl Widget for ContextMenu {
                     winit::event::TouchPhase::Started if self.active_touch.is_none() => {
                         self.active_touch = Some(touch.id);
                         self.last_cursor = point;
-                        self.hovered = self
-                            .item_at([point.x, point.y])
-                            .filter(|index| self.items[*index].is_enabled());
+                        self.hovered = self.enabled_item_at(point);
                         *ctx.handled = true;
                     }
                     winit::event::TouchPhase::Moved if self.active_touch == Some(touch.id) => {
                         self.last_cursor = point;
-                        self.hovered = self
-                            .item_at([point.x, point.y])
-                            .filter(|index| self.items[*index].is_enabled());
+                        self.hovered = self.enabled_item_at(point);
                         *ctx.handled = true;
                     }
                     winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {

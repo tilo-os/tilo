@@ -10,6 +10,5 @@
 #   tools/ci/test-changed.sh --closure           # lint every reverse dependency, as the batch does
 #
 # Tests that failed last time against the same base run first. Run it directly (not
-# through tdev). tools/ci/local_affected.py describes what runs where;
-# docs/development/testing.md when to use what.
+# through tdev). tools/ci/local_affected.py describes what runs where.
 exec python3 "$(dirname "$0")/local_affected.py" --changed "$@"

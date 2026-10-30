@@ -20,8 +20,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{Read as _, Write as _};
-use std::os::unix::fs::PermissionsExt;
+use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
@@ -71,55 +70,13 @@ pub fn check_device_label(label: &OsStr) -> Result<()> {
     Ok(())
 }
 
-/// Python's `str.splitlines()`: every Unicode line boundary, `\r\n` as one.
-fn split_lines(text: &str) -> Vec<&str> {
-    let mut lines = Vec::new();
-    let mut start = 0;
-    let mut chars = text.char_indices().peekable();
-    while let Some((index, c)) = chars.next() {
-        let boundary = matches!(
-            c,
-            '\n' | '\r'
-                | '\u{0b}'
-                | '\u{0c}'
-                | '\u{1c}'
-                | '\u{1d}'
-                | '\u{1e}'
-                | '\u{85}'
-                | '\u{2028}'
-                | '\u{2029}'
-        );
-        if !boundary {
-            continue;
-        }
-        lines.push(text.get(start..index).unwrap_or_default());
-        let mut end = index.saturating_add(c.len_utf8());
-        if c == '\r'
-            && let Some((next, '\n')) = chars.peek().copied()
-        {
-            chars.next();
-            end = next.saturating_add(1);
-        }
-        start = end;
-    }
-    if start < text.len() {
-        lines.push(text.get(start..).unwrap_or_default());
-    }
-    lines
-}
-
-/// Python's `str.isspace()` for one character.
-fn python_space(c: char) -> bool {
-    c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
-}
-
 /// The machine-info text with `label` as the only `PRETTY_HOSTNAME=`, quoted
 /// for systemd's shell-like parser.
 fn machine_info(existing: &str, label: &str) -> String {
     let mut out = String::new();
-    for line in split_lines(existing) {
+    for line in tilo_pycompat::splitlines(existing) {
         if !line
-            .trim_start_matches(python_space)
+            .trim_start_matches(tilo_pycompat::is_space)
             .starts_with("PRETTY_HOSTNAME=")
         {
             out.push_str(line);
@@ -153,21 +110,11 @@ pub fn write_machine_info(path: &Path, label: &OsStr) -> Result<()> {
     } else {
         String::new()
     };
-    let parent = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    };
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    temporary.write_all(machine_info(&existing, label).as_bytes())?;
-    temporary.flush()?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o644))?;
-    temporary.as_file().sync_all()?;
-    temporary
-        .persist(path)
-        .map_err(|error| Fail::Os(error.error.to_string()))?;
-    fs::File::open(parent)?.sync_all()?;
+    tilo_files::native::atomic::write_with_mode(
+        path,
+        machine_info(&existing, label).as_bytes(),
+        0o644,
+    )?;
     Ok(())
 }
 
@@ -594,16 +541,6 @@ pub fn run(command: &str, args: &[OsString]) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn lines_split_as_python_splits_them() {
-        assert_eq!(
-            split_lines("a\r\nb\rc\u{2028}d\n\ne"),
-            ["a", "b", "c", "d", "", "e"]
-        );
-        assert_eq!(split_lines("a\n"), ["a"]);
-        assert!(split_lines("").is_empty());
-    }
 
     #[test]
     fn machine_info_replaces_only_the_pretty_hostname() {

@@ -116,3 +116,16 @@ index_digest() {
 archive_digest() {
   tar -xOf "$1" index.json | index_digest "$1 index.json"
 }
+
+# The resealing bootc a sealed image's composefs digest is computed with
+# (os/Containerfile.bootc-helper): the published build of these sources, else built here.
+bootc_helper() {
+  local key ref
+  key=$(cat os/Containerfile.bootc-helper os/external-assets/bootc-install-reseal/*.patch | sha256sum | cut -c1-16)
+  ref=registry.tilo.so/tilo/bootc-install-helper:$key-$(uname -m)
+  if ! podman pull -q "$ref" >/dev/null 2>&1; then
+    printf 'no published %s; building it\n' "$ref" >&2
+    podman build -q -f os/Containerfile.bootc-helper -t "$ref" . >/dev/null
+  fi
+  printf '%s' "$ref"
+}

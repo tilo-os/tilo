@@ -79,6 +79,26 @@ pub(crate) fn mint(room: &str, work_group: &str) -> Result<MintedTaskAgent, Stri
 }
 
 impl MintedTaskAgent {
+    /// What the agent joins with: the device's certificate and the task
+    /// delegation, proved by the task key's signature over the room's join
+    /// bytes. The desktop's agent door joins its connection's run with it
+    /// ([`tilo_action_broker::collab_broker_capnp::TaskRunHost`]).
+    ///
+    /// # Errors
+    /// The presentation could not be encoded.
+    pub(crate) fn presentation(&self) -> Result<Vec<u8>, String> {
+        use ed25519_dalek::Signer as _;
+        let credentials = &self.credentials;
+        let proof = ed25519_dalek::SigningKey::from_bytes(&credentials.agent_key)
+            .sign(&runtime_identity::collaboration_join_signing_bytes(
+                &credentials.workspace_id,
+            ))
+            .to_bytes();
+        credentials
+            .presentation(proof)
+            .map_err(|error| format!("encoding the task agent's presentation failed: {error}"))
+    }
+
     /// Launch the agent for its task, under its key: once the task's run
     /// carries its delegation, so its join finds the task going.
     ///

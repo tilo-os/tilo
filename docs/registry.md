@@ -107,8 +107,7 @@ An app entry's `kind` is omitted and its versions keep their flat `tapp_*` field
 entry carries `"kind": "bot"`, its versions carry `bot` instead of the
 `tapp_*` fields, and its signature uses the bot domain, so neither kind can
 pass for the other. Snapshots list both kinds under `entries`, and the
-owner (or channel) signature and the snapshot hash cover all of them. See
-[architecture/bots.md](architecture/bots.md) §10 for bot entries.
+owner (or channel) signature and the snapshot hash cover all of them.
 
 Postcard was chosen over JSON because JSON's key order and
 whitespace are not deterministic across encoders — signatures
@@ -363,9 +362,7 @@ registry.tilo.so/tilo/tilo-registry-server@sha256:<digest>
 
 It runs as UID/GID 65532 and supports a read-only root filesystem. Mount the
 state directory read-write, mount `/tmp` as a small tmpfs, and probe
-`GET /health` on port 8443. On main, t's `publish-registry-server` check
-publishes only an immutable `sha-<full-source-revision>` tag and records the
-deployable digest in its `receipt.json`.
+`GET /health` on port 8443.
 
 Behind nginx / Caddy — see TLS below.
 

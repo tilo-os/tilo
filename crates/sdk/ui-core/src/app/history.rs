@@ -18,12 +18,7 @@ impl App {
     pub fn validate_history_registration(
         &self,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        let history = self
-            .history
-            .as_ref()
-            .ok_or(crate::history_mode::HistoryRegistrationError::Missing)?;
-        history.validate()?;
-        history.validate_root(self.root_widget.as_ref())
+        self.tree().validate_history_registration()
     }
     pub(super) fn history_presentation_roots(&self) -> Vec<&dyn Widget> {
         let mut roots = Vec::new();
@@ -308,109 +303,6 @@ impl App {
         self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
-    pub(super) fn update_history_focus_order(
-        &mut self,
-        restrictions: &crate::history_mode::embedded::FocusRestrictions,
-    ) {
-        self.focusable_order.clear();
-        let root = self
-            .history
-            .as_ref()
-            .and_then(|history| history.review_layout_node())
-            .or(self.layout.root_node);
-        let (order, trap_active) = root.map_or_else(
-            || (Vec::new(), false),
-            |root| {
-                // One sweep asks every mapped node, entering each
-                // component's scope once rather than once a node.
-                let sweep = std::cell::RefCell::new(crate::bound_dispatch::NodeSweep::new(
-                    &self.bindings,
-                    &self.layout.node_map,
-                ));
-                crate::focus_navigation::layout_map_order(
-                    root,
-                    &self.layout.taffy,
-                    restrictions,
-                    self.history.as_deref(),
-                    |node| {
-                        // SAFETY: App owns this stable tree and no target reference escapes.
-                        unsafe {
-                            sweep
-                                .borrow_mut()
-                                .inspect(node, crate::focus_navigation::probe)
-                        }
-                        .ok()
-                    },
-                )
-            },
-        );
-        self.focusable_order = order;
-        if let Some(next) = crate::focus_navigation::reconcile_trap(
-            &mut self.accessibility.focus_trap_active,
-            &mut self.accessibility.focus_before_trap,
-            self.focused_node,
-            &self.focusable_order,
-            trap_active,
-        ) {
-            self.set_focused_node(next);
-        }
-    }
-    pub(super) fn suspend_history_focus(&mut self, target: Option<NodeId>) {
-        if unsafe {
-            crate::history_mode::embedded::move_focus(
-                self.root_widget.as_mut(),
-                target,
-                self.focused_node,
-                &self.layout.node_map,
-                &self.bindings,
-                &self.layout.taffy,
-            )
-        } {
-            self.focused_node = None;
-        }
-        let resumed = self.history.as_ref().is_some_and(|history| {
-            !history.captures_input()
-                && history.has_saved_focus()
-                && target.is_some_and(|node| !history.owns_node(node, &self.layout.taffy))
-        });
-        if resumed {
-            if let Some(history) = &mut self.history {
-                history.discard_saved_focus();
-            }
-            self.history_focus = None;
-            let old: Vec<_> = self
-                .layout
-                .node_map
-                .keys()
-                .copied()
-                .filter(|node| {
-                    Some(*node) != target
-                        && self
-                            .inspect_node(*node, |widget| widget.is_focused())
-                            .unwrap_or(false)
-                })
-                .collect();
-            for node in old {
-                let _ = self.mutate_node(node, |widget| widget.set_focus(false));
-            }
-        }
-        if let Some(history) = &mut self.history
-            && target.is_some_and(|node| history.owns_node(node, &self.layout.taffy))
-            && self
-                .focused_node
-                .is_some_and(|node| !history.owns_node(node, &self.layout.taffy))
-        {
-            unsafe {
-                history.preserve_focus(
-                    self.focused_node,
-                    &self.layout.node_map,
-                    &self.bindings,
-                    &self.layout.taffy,
-                );
-            }
-            self.focused_node = None;
-        }
-    }
     pub(super) fn history_controls_event(&mut self, event: &WindowEvent, scale: f64) -> bool {
         let nested = crate::history_mode::embedded::observe_event(
             self.root_widget.as_mut(),
@@ -449,16 +341,10 @@ impl App {
                     (Some(index), false) => index.saturating_add(1).checked_rem(len).unwrap_or(0),
                     (None, _) => 0,
                 };
-                controls |= self.focusable_order.get(next).is_some_and(|node| {
-                    crate::history_mode::embedded::owns_node(
-                        self.root_widget.as_ref(),
-                        *node,
-                        &self.layout.taffy,
-                    ) || self
-                        .history
-                        .as_ref()
-                        .is_some_and(|history| history.owns_node(*node, &self.layout.taffy))
-                });
+                controls |= self
+                    .focusable_order
+                    .get(next)
+                    .is_some_and(|&node| self.tree().history_owns(node));
             }
         }
         if controls

@@ -18,7 +18,7 @@
 //! followed from another device does not spread further either. Unlocking always takes the person's credential on one of
 //! their devices.
 
-use super::device_fabric::{DevicePresence, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession};
+use tilo_device_fabric::{DevicePresence, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession};
 
 /// What this device does to follow the person's other devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

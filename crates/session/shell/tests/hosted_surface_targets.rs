@@ -4,6 +4,11 @@
 //! or an agent drives it: one name per control, no label and no place on
 //! screen.
 
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "a test holds its harness's frame builder and host for the length of the test"
+)]
+
 use settings_store::hardware::QuickSettingsConfig;
 use shell::shell::chrome_state::Chrome;
 use shell::shell::overlay_host::ShellOverlayHost;

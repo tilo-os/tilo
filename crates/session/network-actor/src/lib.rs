@@ -696,7 +696,7 @@ impl NetEvent {
             Self::HostMember { .. } => "HostMember",
             Self::HostReady { .. } => "HostReady",
             Self::RecordOpened { .. } => "RecordOpened",
-            Self::SiblingMsg { msg, .. } | Self::Msg { msg, .. } | Self::OwnReplay { msg, .. } => {
+            Self::Msg { msg, .. } | Self::OwnReplay { msg, .. } | Self::SiblingMsg { msg, .. } => {
                 msg.kind()
             }
             Self::PersonalFabric { .. } => "PersonalFabric",

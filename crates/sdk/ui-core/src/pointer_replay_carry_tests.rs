@@ -353,7 +353,7 @@ fn a_media_card_and_its_hover_action_carry_their_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
             Box::new(
-                MediaCard::new("album", MediaSource::Kind(Icon::Music)).hover_action(
+                MediaCard::new("album", MediaSource::Kind(Icon::Music)).hover_action_view(
                     Icon::Play,
                     "Play",
                     log(clicks, generation),
@@ -378,7 +378,7 @@ fn a_collapsible_section_header_carries_its_press_across_a_rebuild() {
                     "Details",
                     vec![Box::new(crate::widget::Text::new("Body"))],
                 )
-                .on_toggle(move |_| ran()),
+                .on_expand(move |_| ran()),
             )
         },
         |h| pressable_centre(h),

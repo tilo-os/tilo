@@ -36,7 +36,7 @@ impl ShellOverlayHost {
         // or not the app runs, opened through the broker like a live hit.
         let app_content =
             std::rc::Rc::new(crate::shell::search::providers::AppContentProvider::new(
-                crate::shell::search::app_content_index::session(),
+                tilo_desktop_search::content_index::session(),
                 broker.clone(),
             ));
         self.search_registry
@@ -44,7 +44,7 @@ impl ShellOverlayHost {
                 as std::rc::Rc<dyn crate::shell::search::SearchProvider>);
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ContinueProvider::new(
-                crate::shell::search::app_content_index::session(),
+                tilo_desktop_search::content_index::session(),
                 broker.clone(),
             ),
         ));
@@ -159,7 +159,9 @@ impl ShellOverlayHost {
             ),
         ));
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ApplicationsProvider::new(),
+            crate::shell::search::providers::ApplicationsProvider::with_preferences(
+                search_registry.preferences_handle(),
+            ),
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::NativeApplicationsProvider::default(),
@@ -176,11 +178,6 @@ impl ShellOverlayHost {
         // manifests: found whether or not the app ever ran.
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::StoreCatalogueProvider::installed(),
-        ));
-        // Applications Tilo did not package: unconfined, separate chip
-        // from the one above.
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::HostApplicationsProvider::new(),
         ));
         // Downloaded programs running now that are not in the person's apps
         // yet, to add.
@@ -204,7 +201,7 @@ impl ShellOverlayHost {
         // anchor goes through the broker once one is attached.
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ContinueProvider::without_broker(
-                crate::shell::search::app_content_index::session(),
+                tilo_desktop_search::content_index::session(),
             ),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -460,6 +457,7 @@ impl ShellOverlayHost {
             palette_was_visible: false,
             launcher: None,
             launcher_unavailable: false,
+            shell_actions: None,
             palette_transition: ui::motion::Presence::closed(),
             faces: ui::widget::FaceMotions::default(),
             group_row_ptrs: HashMap::new(),
@@ -590,6 +588,7 @@ impl ShellOverlayHost {
             agent_quick_composer_node: None,
             topbar: Box::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
+            door_runs_unsettled: Vec::new(),
             test_activations: Vec::new(),
             canvas: canvas::CanvasLayer::default(),
             feedback_point: crate::shell::feedback_entry::FeedbackPoint::default(),
@@ -598,7 +597,6 @@ impl ShellOverlayHost {
             placed_toolbar_events: Vec::new(),
             chrome_input_clock: 0,
             live_shares: live_shares::NativeLiveShares::default(),
-            hosted_windows_revision: None,
             desktop_control: desktop_control_chips::DesktopControlMarks::default(),
             window_share_controls: window_share_controls::WindowShareControls::default(),
             shared_window_follow: shared_window_follow::SharedWindowFollow::default(),
@@ -631,7 +629,8 @@ impl ShellOverlayHost {
 
     pub(super) fn register_onboarding_actions(&mut self) {
         if let Some(view) = self.onboarding.as_deref() {
-            self.search_registry.register(view.semantic_provider());
+            self.search_registry
+                .register(crate::onboarding_host::setup_actions(view));
         }
         self.register_authentication_actions();
     }

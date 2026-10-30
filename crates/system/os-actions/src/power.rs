@@ -1,6 +1,6 @@
-//! Power profile control via `powerprofilesctl`.
+//! Power profile control through power-profiles-daemon's D-Bus interface.
 
-use crate::process::{run, run_capture};
+use tilo_power_mgmt::PowerProfilesMonitor;
 
 /// Power profile, mirrors `shell::quick_settings::PowerProfile` —
 /// duplicated so this crate doesn't need to import the popover state
@@ -13,7 +13,7 @@ pub enum PowerProfile {
 }
 
 impl PowerProfile {
-    /// Stringly-typed cli argument used by `powerprofilesctl set <name>`.
+    /// The daemon's name for the profile.
     pub fn cli_arg(self) -> &'static str {
         match self {
             PowerProfile::Saver => "power-saver",
@@ -33,46 +33,66 @@ impl PowerProfile {
     }
 }
 
-/// Set the active power profile via `powerprofilesctl set <profile>`.
-pub fn set_power_profile(profile: PowerProfile) -> Result<(), String> {
-    run("powerprofilesctl", &["set", profile.cli_arg()])
+/// The power-profiles daemon on the system bus.
+async fn daemon() -> Result<PowerProfilesMonitor, String> {
+    let bus = zbus::Connection::system()
+        .await
+        .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+    PowerProfilesMonitor::with_connection(&bus)
+        .await
+        .map_err(|e| format!("power-profiles-daemon: {e}"))
 }
 
-/// Read the active power profile via `powerprofilesctl get`.
+/// Set the active power profile.
+pub fn set_power_profile(profile: PowerProfile) -> Result<(), String> {
+    crate::block_on(async move {
+        daemon()
+            .await?
+            .set_active_profile(profile.cli_arg())
+            .await
+            .map_err(|e| format!("power-profiles-daemon refused {}: {e}", profile.cli_arg()))
+    })
+}
+
+/// Read the active power profile.
 pub fn get_power_profile() -> Result<PowerProfile, String> {
-    let out = run_capture("powerprofilesctl", &["get"])?;
-    PowerProfile::from_cli(out.trim())
-        .ok_or_else(|| format!("powerprofilesctl get unexpected: {out:?}"))
+    let active = crate::block_on(async {
+        daemon()
+            .await?
+            .active_profile()
+            .await
+            .map_err(|e| format!("power-profiles-daemon: {e}"))
+    })?;
+    PowerProfile::from_cli(&active)
+        .ok_or_else(|| format!("power-profiles-daemon reports an unknown profile: {active:?}"))
 }
 
 /// Return only the profiles the running power-profiles daemon advertises.
 ///
-/// `powerprofilesctl list` is deliberately treated as the capability source;
-/// callers must not offer a profile merely because it is part of the protocol.
+/// The daemon's `Profiles` list is deliberately treated as the capability
+/// source; callers must not offer a profile merely because it is part of the
+/// protocol.
 pub fn available_power_profiles() -> Result<Vec<PowerProfile>, String> {
-    let out = run_capture("powerprofilesctl", &["list"])?;
-    parse_available_profiles(&out)
+    let names = crate::block_on(async {
+        daemon()
+            .await?
+            .profiles()
+            .await
+            .map_err(|e| format!("power-profiles-daemon: {e}"))
+    })?;
+    advertised_profiles(&names)
 }
 
-fn parse_available_profiles(out: &str) -> Result<Vec<PowerProfile>, String> {
+fn advertised_profiles(names: &[String]) -> Result<Vec<PowerProfile>, String> {
     let mut profiles = Vec::new();
-    for line in out.lines() {
-        let candidate = line
-            .trim()
-            .strip_prefix('*')
-            .unwrap_or_else(|| line.trim())
-            .trim()
-            .strip_suffix(':')
-            .unwrap_or("");
-        if let Some(profile) = PowerProfile::from_cli(candidate)
-            && !profiles.contains(&profile)
-        {
+    for profile in names.iter().filter_map(|name| PowerProfile::from_cli(name)) {
+        if !profiles.contains(&profile) {
             profiles.push(profile);
         }
     }
     if profiles.is_empty() {
         Err(format!(
-            "powerprofilesctl list did not advertise a supported profile: {out:?}"
+            "power-profiles-daemon advertised no supported profile: {names:?}"
         ))
     } else {
         Ok(profiles)
@@ -100,24 +120,22 @@ mod tests {
             assert_eq!(PowerProfile::from_cli("garbled"), None);
         }
         {
-            let output = r"  performance:
-        Driver: platform_profile
-    * balanced:
-        Driver: platform_profile
-      power-saver:
-        Driver: platform_profile
-    ";
+            let names = |list: &[&str]| list.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
             assert_eq!(
-                parse_available_profiles(output).unwrap(),
+                advertised_profiles(&names(&[
+                    "performance",
+                    "balanced",
+                    "power-saver",
+                    "balanced"
+                ]))
+                .unwrap(),
                 vec![
                     PowerProfile::Performance,
                     PowerProfile::Balanced,
                     PowerProfile::Saver
                 ]
             );
-        }
-        {
-            assert!(parse_available_profiles("Driver: placeholder\n").is_err());
+            assert!(advertised_profiles(&names(&["placeholder"])).is_err());
         }
     }
 }

@@ -408,6 +408,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "aliasable"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "250f629c0161ad8107cf89319e990051fae62832fd343083bea452d93e2205fd"
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8044,31 +8050,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh-gossip"
-version = "0.101.0"
-dependencies = [
- "blake3",
- "bytes",
- "data-encoding",
- "derive_more",
- "futures-concurrency",
- "hex",
- "indexmap",
- "iroh",
- "iroh-base",
- "iroh-metrics",
- "irpc",
- "n0-error",
- "n0-future",
- "postcard",
- "rand 0.10.3",
- "serde",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
 name = "iroh-io"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12335,6 +12316,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pixman"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cea217d496c19ac0a8e502b37078e1f683d16344adee9eb247a5d57c165e1edf"
+dependencies = [
+ "drm-fourcc",
+ "paste",
+ "pixman-sys",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "pixman-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1a0483e89e81d7915defe83c51f23f6800594d64f6f4a21253ce87fd8444ada"
+
+[[package]]
 name = "pkcs1"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15334,6 +15333,7 @@ dependencies = [
 name = "settings-store"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "hex",
  "serde",
  "serde_json",
@@ -15537,7 +15537,6 @@ dependencies = [
  "accesskit_unix",
  "account-custody",
  "accounts",
- "activity",
  "agent-provider-config",
  "app-catalogue",
  "app-cli",
@@ -15545,7 +15544,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bounded-command",
- "browser",
  "browser-continuity",
  "bytes",
  "capnp",
@@ -15580,7 +15578,6 @@ dependencies = [
  "legacy-agent-protocol",
  "libc",
  "mail",
- "messages",
  "mime_guess",
  "naga",
  "neighbour-wire",
@@ -15590,7 +15587,6 @@ dependencies = [
  "p256 0.14.0",
  "package-store",
  "parking_lot",
- "passwords",
  "percent-encoding",
  "pipewire",
  "pollster",
@@ -15618,7 +15614,6 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "sheets",
- "shell",
  "signal-hook-registry",
  "smithay",
  "smithay-client-toolkit",
@@ -15627,7 +15622,6 @@ dependencies = [
  "tar",
  "tasks",
  "tempfile",
- "terminal",
  "test-http",
  "thiserror 2.0.21",
  "threshold-identity",
@@ -15662,11 +15656,13 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-desktop-model",
  "tilo-desktop-search",
+ "tilo-device-fabric",
  "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-documents",
+ "tilo-durable-writer",
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-frame-metrics",
@@ -15685,6 +15681,7 @@ dependencies = [
  "tilo-messaging-service",
  "tilo-model-client",
  "tilo-moq",
+ "tilo-nearby-service",
  "tilo-net",
  "tilo-net-answers",
  "tilo-network-actor",
@@ -15693,6 +15690,7 @@ dependencies = [
  "tilo-notification-banners",
  "tilo-ntfs-mount",
  "tilo-onboarding",
+ "tilo-onboarding-host",
  "tilo-output-passes",
  "tilo-overview",
  "tilo-owner-commit",
@@ -15718,6 +15716,7 @@ dependencies = [
  "tilo-secret-service",
  "tilo-secrets",
  "tilo-sheets",
+ "tilo-speaker-service",
  "tilo-startup-metrics",
  "tilo-system-stats",
  "tilo-test-env",
@@ -15968,9 +15967,8 @@ dependencies = [
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "740cea6927892bc182d5bf70c8f79806c8bc9f68f2fb96e55a30be171b63af98"
 dependencies = [
+ "aliasable",
  "appendlist",
  "atomic_float",
  "bitflags 2.11.0",
@@ -15982,6 +15980,7 @@ dependencies = [
  "drm",
  "drm-ffi",
  "drm-fourcc",
+ "encoding_rs",
  "errno",
  "gbm",
  "gl_generator",
@@ -15990,10 +15989,12 @@ dependencies = [
  "libc",
  "libloading",
  "libseat",
+ "pixman",
  "pkg-config",
  "profiling",
  "rand 0.9.2",
  "rustix 1.1.4",
+ "scopeguard",
  "sha2 0.10.9",
  "smallvec",
  "tempfile",
@@ -16004,6 +16005,7 @@ dependencies = [
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "wayland-server",
+ "x11rb",
  "xkbcommon",
 ]
 
@@ -16809,8 +16811,6 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aea22054047c16c3f34d3ac473a2170be1424b1115b2a3adcf28cfb067c88859"
 dependencies = [
  "arrayvec",
  "grid",
@@ -17738,13 +17738,25 @@ dependencies = [
 name = "tilo-audio-service"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "futures-util",
+ "image",
  "libc",
+ "percent-encoding",
+ "serde",
  "serde_json",
  "settings-store",
+ "tempfile",
+ "tilo-actions",
  "tilo-media",
+ "tilo-resource",
+ "tilo-service",
  "tilo-test-env",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "workspace-hack",
  "zbus",
 ]
@@ -17844,6 +17856,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-bluetooth-agent"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tilo-bluez",
+ "tilo-copy-lint",
+ "tilo-service",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-bluez"
 version = "0.1.0"
 dependencies = [
@@ -17859,12 +17889,10 @@ name = "tilo-board-successor"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "hex",
+ "bounded-command",
  "libc",
  "regex",
- "rustix 1.1.4",
  "serde_json",
- "sha2 0.11.0",
  "tempfile",
  "tilo-pycompat",
  "tilo-test-env",
@@ -17877,6 +17905,7 @@ version = "0.1.0"
 dependencies = [
  "rustix 1.1.4",
  "tempfile",
+ "tilo-pycompat",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -18148,6 +18177,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-clock",
  "tilo-control",
+ "tilo-files",
  "tilo-paths",
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
@@ -18221,6 +18251,41 @@ dependencies = [
  "tilo-ui",
  "tilo-vello",
  "tilo-wayland-ext",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-compositor"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "qcms",
+ "rustix 1.1.4",
+ "settings-store",
+ "smithay",
+ "tempfile",
+ "tilo-frame-metrics",
+ "tilo-wayland-ext",
+ "tracing",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "workspace-hack",
+ "x11rb",
+ "xcursor",
+]
+
+[[package]]
+name = "tilo-connectivity-service"
+version = "0.1.0"
+dependencies = [
+ "os-actions",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-resource",
+ "tilo-service",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -18447,6 +18512,7 @@ dependencies = [
  "tilo-clock",
  "tilo-copy-lint",
  "tilo-desktop-model",
+ "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-emoji-catalogue",
  "tilo-sort",
@@ -18503,12 +18569,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-desktop-policy"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-desktop-surface",
+ "tilo-ui",
+]
+
+[[package]]
 name = "tilo-desktop-search"
 version = "0.1.0"
 dependencies = [
+ "app-catalogue",
  "app-fleet",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "settings-store",
+ "tempfile",
+ "tilo-action-policy",
  "tilo-actions",
+ "tilo-files",
+ "tilo-lock",
+ "tilo-paths",
+ "tilo-reference",
+ "tilo-search",
+ "tilo-test-env",
  "tilo-ui",
+ "tracing",
+ "walkdir",
  "workspace-hack",
 ]
 
@@ -18562,6 +18654,34 @@ dependencies = [
  "tokio",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-device-fabric"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "libc",
+ "os-actions",
+ "p256 0.14.0",
+ "postcard",
+ "runtime-collab",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "thiserror 2.0.21",
+ "tilo-desktop-surface",
+ "tilo-media",
+ "tilo-nearby-service",
+ "tilo-network-actor",
+ "tilo-seal",
+ "tilo-ui",
+ "tilo-unlock-protocol",
+ "tilo-user-identity",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -18687,7 +18807,18 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-files",
  "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-durable-writer"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "tilo-test-env",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -18793,6 +18924,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tilo-advisory-lock",
+ "tilo-files",
  "tilo-net",
  "tilo-nm",
  "tilo-pycompat",
@@ -18884,6 +19016,7 @@ dependencies = [
  "getrandom 0.4.3",
  "rustix 1.1.4",
  "tempfile",
+ "tilo-pycompat",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -18950,7 +19083,6 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-blobs",
- "iroh-gossip",
  "iroh-relay",
  "irpc",
  "libc",
@@ -19274,6 +19406,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-pycompat",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -19323,6 +19456,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-board-successor",
  "tilo-esp-write",
+ "tilo-files",
  "tilo-firstboot-files",
  "tilo-handoff",
  "tilo-pycompat",
@@ -19539,7 +19673,6 @@ dependencies = [
  "tilo-platform-caps",
  "tilo-test-env",
  "tracing",
- "tracing-subscriber",
  "url",
  "wasm-bindgen",
  "workspace-hack",
@@ -19748,6 +19881,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-nearby-service"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "iroh",
+ "libc",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "tilo-files",
+ "tilo-network-actor",
+ "tilo-test-env",
+ "tilo-ui",
+ "tokio",
+ "walkdir",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-net"
 version = "0.1.0"
 dependencies = [
@@ -19870,6 +20026,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "os-actions",
+ "serde",
  "serde_json",
  "tempfile",
  "tilo-copy-lint",
@@ -19877,6 +20034,7 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-secret-vault",
+ "tilo-service",
  "tilo-test-env",
  "tokio",
  "tokio-util",
@@ -19905,12 +20063,44 @@ dependencies = [
 name = "tilo-notification-banners"
 version = "0.1.0"
 dependencies = [
- "durable-store",
  "tilo-app",
  "tilo-desktop",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-notifications-service"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "chrono",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hex",
+ "image",
+ "libc",
+ "resvg",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-clock",
+ "tilo-copy-lint",
+ "tilo-desktop-entry",
+ "tilo-files",
+ "tilo-lock",
+ "tilo-notify",
+ "tilo-paths",
+ "tilo-resource",
+ "tilo-service",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "url",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
@@ -19958,6 +20148,7 @@ dependencies = [
 name = "tilo-ntfs-mount"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "libc",
  "serde",
  "serde_json",
@@ -20046,6 +20237,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-onboarding-host"
+version = "0.1.0"
+dependencies = [
+ "bounded-command",
+ "browser-continuity",
+ "collab-types",
+ "durable-store",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "launcher",
+ "libc",
+ "os-actions",
+ "postcard",
+ "rand_core 0.10.0",
+ "rcgen",
+ "runtime-identity",
+ "rustix 1.1.4",
+ "rustls",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "sha2 0.11.0",
+ "taffy",
+ "tempfile",
+ "threshold-identity",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-clock",
+ "tilo-desktop",
+ "tilo-durable-writer",
+ "tilo-files",
+ "tilo-handoff",
+ "tilo-identity-ceremony",
+ "tilo-identity-host",
+ "tilo-onboarding",
+ "tilo-paths",
+ "tilo-relay-protocol",
+ "tilo-resource",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-user-identity",
+ "tilo-vello",
+ "tilo-winit",
+ "tracing",
+ "uuid",
+ "wire-frame",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-os-search"
 version = "0.1.0"
 dependencies = [
@@ -20060,6 +20303,7 @@ dependencies = [
  "tilo-actions",
  "tilo-lock",
  "tilo-search",
+ "tilo-test-env",
  "tokio",
  "tracing",
  "workspace-hack",
@@ -20256,15 +20500,67 @@ dependencies = [
 name = "tilo-polkit-agent"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "libc",
  "rustix 1.1.4",
+ "serde",
+ "serde_json",
  "tilo-copy-lint",
  "tilo-lock",
+ "tilo-service",
  "tokio",
  "tokio-util",
  "tracing",
  "workspace-hack",
  "zbus",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-portal"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bounded-command",
+ "calloop",
+ "desktop-policy",
+ "futures-util",
+ "hex",
+ "image",
+ "percent-encoding",
+ "pipewire",
+ "rand 0.10.3",
+ "reis",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-accessibility-settings",
+ "tilo-actions",
+ "tilo-content-types",
+ "tilo-desktop-entry",
+ "tilo-dialogs",
+ "tilo-files",
+ "tilo-lock",
+ "tilo-lockdown-policy",
+ "tilo-notifications-service",
+ "tilo-paths",
+ "tilo-power-mgmt",
+ "tilo-resource",
+ "tilo-seal",
+ "tilo-secrets",
+ "tilo-service",
+ "tilo-ui",
+ "tilo-wallpapers",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "workspace-hack",
+ "zbus",
+ "zeroize",
 ]
 
 [[package]]
@@ -20363,7 +20659,9 @@ name = "tilo-pycompat"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "hex",
  "serde_json",
+ "sha2 0.11.0",
  "workspace-hack",
 ]
 
@@ -20371,14 +20669,16 @@ dependencies = [
 name = "tilo-quick-settings"
 version = "0.1.0"
 dependencies = [
- "durable-store",
  "os-actions",
  "parking_lot",
  "serde",
  "settings-store",
  "tilo-app",
+ "tilo-audio-service",
  "tilo-media",
  "tilo-power-mgmt",
+ "tilo-quick-settings",
+ "tilo-test-env",
  "tracing",
  "workspace-hack",
 ]
@@ -21121,6 +21421,7 @@ dependencies = [
  "security-framework",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-files",
  "tilo-platform-caps",
  "tilo-rt",
  "tilo-seal",
@@ -21151,6 +21452,93 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-service"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-lock",
+ "tilo-resource",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-session"
+version = "0.1.0"
+dependencies = [
+ "app-catalogue",
+ "app-cli",
+ "bounded-command",
+ "chrono",
+ "collab-types",
+ "futures-util",
+ "hex",
+ "image",
+ "iroh",
+ "neighbour-wire",
+ "os-actions",
+ "postcard",
+ "resvg",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tempfile",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-audio-service",
+ "tilo-bluetooth-agent",
+ "tilo-bluez",
+ "tilo-compositor",
+ "tilo-connectivity-service",
+ "tilo-desktop",
+ "tilo-desktop-entry",
+ "tilo-desktop-model",
+ "tilo-desktop-search",
+ "tilo-desktop-surface",
+ "tilo-device-fabric",
+ "tilo-endpoint-reachability",
+ "tilo-files",
+ "tilo-identity-host",
+ "tilo-installed-apps",
+ "tilo-lock",
+ "tilo-media",
+ "tilo-network-actor",
+ "tilo-network-secret-agent",
+ "tilo-notification-banners",
+ "tilo-notifications-service",
+ "tilo-onboarding",
+ "tilo-onboarding-host",
+ "tilo-paths",
+ "tilo-polkit-agent",
+ "tilo-portal",
+ "tilo-quick-settings",
+ "tilo-service",
+ "tilo-settings-service",
+ "tilo-sheets",
+ "tilo-surface-host",
+ "tilo-system-service",
+ "tilo-test-env",
+ "tilo-tray-host",
+ "tilo-ui",
+ "tilo-user-identity",
+ "tilo-wallpapers",
+ "tokio",
+ "tracing",
+ "url",
+ "wayland-client",
+ "wayland-protocols",
+ "workspace-hack",
+ "xkeysym",
+ "zbus",
+ "zeroize",
 ]
 
 [[package]]
@@ -21195,11 +21583,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-settings-service"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "settings-sections",
+ "settings-store",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-resource",
+ "tilo-service",
+ "tilo-test-env",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-sheets"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "tempfile",
  "tilo-app",
+ "tilo-test-env",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -21230,6 +21638,27 @@ dependencies = [
 [[package]]
 name = "tilo-sort"
 version = "0.1.0"
+
+[[package]]
+name = "tilo-speaker-service"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "getrandom 0.4.3",
+ "postcard",
+ "rand_core 0.10.0",
+ "runtime-collab",
+ "serde_json",
+ "tilo-device-fabric",
+ "tilo-lock",
+ "tilo-media",
+ "tilo-network-actor",
+ "tilo-test-env",
+ "tilo-ui",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+]
 
 [[package]]
 name = "tilo-spellcheck"
@@ -21278,6 +21707,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-advisory-lock",
+ "tilo-pycompat",
  "workspace-hack",
 ]
 
@@ -21311,6 +21741,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-surface-host"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "smithay",
+ "tilo-compositor",
+ "tilo-cpu-raster",
+ "tilo-desktop-policy",
+ "tilo-desktop-surface",
+ "tilo-topbar",
+ "tilo-ui",
+ "tilo-vello",
+ "tilo-winit",
+ "tracing",
+ "url",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-system-info"
 version = "0.1.0"
 dependencies = [
@@ -21318,6 +21767,23 @@ dependencies = [
  "sysinfo",
  "tilo-paths",
  "tilo-system-stats",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-system-service"
+version = "0.1.0"
+dependencies = [
+ "bounded-command",
+ "os-actions",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tilo-actions",
+ "tilo-location",
+ "tilo-resource",
+ "tilo-service",
  "tracing",
  "workspace-hack",
 ]
@@ -21344,6 +21810,7 @@ name = "tilo-test-env"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "serde_json",
  "tempfile",
  "tilo-automerge",
@@ -21388,7 +21855,6 @@ dependencies = [
 name = "tilo-topbar"
 version = "0.1.0"
 dependencies = [
- "durable-store",
  "tilo-app",
  "tilo-desktop",
  "tilo-desktop-model",
@@ -21401,11 +21867,15 @@ dependencies = [
 name = "tilo-tray-host"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "futures-util",
  "serde_json",
+ "tilo-actions",
  "tilo-clock",
  "tilo-copy-lint",
  "tilo-lock",
+ "tilo-resource",
+ "tilo-service",
  "tokio",
  "tracing",
  "workspace-hack",
@@ -26857,7 +27327,6 @@ dependencies = [
  "iroh-base",
  "iroh-blobs",
  "iroh-dns",
- "iroh-gossip",
  "iroh-io",
  "iroh-metrics",
  "iroh-metrics-derive",
@@ -27520,6 +27989,7 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-desktop-policy",
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-device-admin",

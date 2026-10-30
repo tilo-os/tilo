@@ -7290,7 +7290,7 @@ struct SpatialControlSession {
     target: tilo_network_actor::fabric::DeviceId,
     lease_nonce: [u8; 16],
     output: Option<String>,
-    return_edge: crate::shell::device_fabric::DisplayEdge,
+    return_edge: tilo_device_fabric::DisplayEdge,
     x: f64,
     y: f64,
     pressed_keys: std::collections::BTreeSet<u32>,
@@ -7331,7 +7331,7 @@ fn queue_personal_fabric_input(
     backend: &mut dyn Backend,
     pending: &mut std::collections::VecDeque<BackendEvent>,
 ) {
-    use crate::shell::device_fabric::{FabricInputEvent, ScrollUnit};
+    use tilo_device_fabric::{FabricInputEvent, ScrollUnit};
     let device_id = winit::event::DeviceId::dummy();
     for event in state.take_personal_fabric_input() {
         let input = match event {
@@ -7416,7 +7416,7 @@ pub(crate) fn teardown_spatial_control_for_test(
         target,
         lease_nonce: nonce,
         output: None,
-        return_edge: crate::shell::device_fabric::DisplayEdge::Right,
+        return_edge: tilo_device_fabric::DisplayEdge::Right,
         x: 0.0,
         y: 0.0,
         pressed_keys: held.0,
@@ -7441,7 +7441,7 @@ fn spatial_coord(value: f64) -> i32 {
     reason = "wheel deltas are clamped to the bounded fabric wire representation"
 )]
 fn spatial_scroll(value: f64) -> i32 {
-    (value * crate::shell::device_fabric::ScrollUnit::STEPS)
+    (value * tilo_device_fabric::ScrollUnit::STEPS)
         .clamp(-1_000_000.0, 1_000_000.0)
         .round() as i32
 }
@@ -7631,7 +7631,7 @@ fn move_to_observed_display(
             target: target.clone(),
             lease_nonce: lease.nonce,
             output: Some(destination.1.clone()),
-            return_edge: crate::shell::device_fabric::DisplayEdge::Left,
+            return_edge: tilo_device_fabric::DisplayEdge::Left,
             x: point.0,
             y: point.1,
             pressed_keys: std::collections::BTreeSet::new(),
@@ -7644,7 +7644,7 @@ fn move_to_observed_display(
         network,
         &target,
         lease.nonce,
-        crate::shell::device_fabric::FabricInputEvent::PointerMotion {
+        tilo_device_fabric::FabricInputEvent::PointerMotion {
             x: spatial_coord(point.0),
             y: spatial_coord(point.1),
         },
@@ -7667,7 +7667,7 @@ fn move_to_observed_display(
             target,
             lease_nonce: lease.nonce,
             output: Some(destination.1),
-            return_edge: crate::shell::device_fabric::DisplayEdge::Left,
+            return_edge: tilo_device_fabric::DisplayEdge::Left,
             x: point.0,
             y: point.1,
             pressed_keys: std::collections::BTreeSet::new(),
@@ -7702,10 +7702,10 @@ fn move_legacy_spatial_pointer(
         let max_x = f64::from(rect.width.saturating_sub(1));
         let max_y = f64::from(rect.height.saturating_sub(1));
         let crossed_back = match session.return_edge {
-            crate::shell::device_fabric::DisplayEdge::Left => session.x < 0.0,
-            crate::shell::device_fabric::DisplayEdge::Right => session.x > max_x,
-            crate::shell::device_fabric::DisplayEdge::Top => session.y < 0.0,
-            crate::shell::device_fabric::DisplayEdge::Bottom => session.y > max_y,
+            tilo_device_fabric::DisplayEdge::Left => session.x < 0.0,
+            tilo_device_fabric::DisplayEdge::Right => session.x > max_x,
+            tilo_device_fabric::DisplayEdge::Top => session.y < 0.0,
+            tilo_device_fabric::DisplayEdge::Bottom => session.y > max_y,
         };
         if crossed_back {
             end_spatial_control(network, active);
@@ -7717,7 +7717,7 @@ fn move_legacy_spatial_pointer(
             network,
             &session.target,
             session.lease_nonce,
-            crate::shell::device_fabric::FabricInputEvent::PointerMotion {
+            tilo_device_fabric::FabricInputEvent::PointerMotion {
                 x: spatial_coord(session.x),
                 y: spatial_coord(session.y),
             },
@@ -7765,7 +7765,7 @@ fn move_legacy_spatial_pointer(
         network,
         &session.target,
         session.lease_nonce,
-        crate::shell::device_fabric::FabricInputEvent::PointerMotion {
+        tilo_device_fabric::FabricInputEvent::PointerMotion {
             x: spatial_coord(session.x),
             y: spatial_coord(session.y),
         },
@@ -7780,8 +7780,8 @@ fn move_legacy_spatial_pointer(
 
 fn begin_spatial_control(
     network: &crate::shell::network::ShellNetwork,
-    transition: crate::shell::device_fabric::EdgeTransition,
-    edge: crate::shell::device_fabric::DisplayEdge,
+    transition: tilo_device_fabric::EdgeTransition,
+    edge: tilo_device_fabric::DisplayEdge,
     delta: (f64, f64),
 ) -> Option<SpatialControlSession> {
     let pending_drag = file_explorer::external_drag::unclaimed();
@@ -7812,8 +7812,8 @@ fn spatial_departure_edge(
     height: u32,
     dx: f64,
     dy: f64,
-) -> Option<crate::shell::device_fabric::DisplayEdge> {
-    use crate::shell::device_fabric::DisplayEdge;
+) -> Option<tilo_device_fabric::DisplayEdge> {
+    use tilo_device_fabric::DisplayEdge;
     let max_x = f64::from(width.saturating_sub(1));
     let max_y = f64::from(height.saturating_sub(1));
     let horizontal = if cursor_x <= 0.0 && dx < 0.0 {
@@ -7917,13 +7917,13 @@ fn forward_spatial_window_event(
             let Some(button) = crate::shell::input_policy::evdev_button(*button) else {
                 return true;
             };
-            crate::shell::device_fabric::FabricInputEvent::PointerButton {
+            tilo_device_fabric::FabricInputEvent::PointerButton {
                 button,
                 pressed: *state == ElementState::Pressed,
             }
         }
         WindowEvent::MouseWheel { delta, .. } => {
-            use crate::shell::device_fabric::ScrollUnit;
+            use tilo_device_fabric::ScrollUnit;
             let (horizontal, vertical, unit) = match delta {
                 MouseScrollDelta::LineDelta(x, y) => (
                     spatial_scroll(f64::from(*x)),
@@ -7936,7 +7936,7 @@ fn forward_spatial_window_event(
                     ScrollUnit::Pixels,
                 ),
             };
-            let event = crate::shell::device_fabric::FabricInputEvent::Scroll {
+            let event = tilo_device_fabric::FabricInputEvent::Scroll {
                 horizontal,
                 vertical,
                 unit,
@@ -7954,7 +7954,7 @@ fn forward_spatial_window_event(
             let Some(keycode) = ui::evdev::from_physical(event.physical_key) else {
                 return true;
             };
-            crate::shell::device_fabric::FabricInputEvent::Key {
+            tilo_device_fabric::FabricInputEvent::Key {
                 keycode,
                 pressed: event.state == ElementState::Pressed,
                 modifiers: 0,
@@ -7973,14 +7973,14 @@ fn forward_spatial_window_event(
         end_spatial_control(network, active);
     } else if let Some(session) = active.as_mut() {
         match fabric_event {
-            crate::shell::device_fabric::FabricInputEvent::PointerButton { button, pressed } => {
+            tilo_device_fabric::FabricInputEvent::PointerButton { button, pressed } => {
                 if pressed {
                     session.pressed_buttons.insert(button);
                 } else {
                     session.pressed_buttons.remove(&button);
                 }
             }
-            crate::shell::device_fabric::FabricInputEvent::Key {
+            tilo_device_fabric::FabricInputEvent::Key {
                 keycode, pressed, ..
             } => {
                 if pressed {
@@ -7989,8 +7989,8 @@ fn forward_spatial_window_event(
                     session.pressed_keys.remove(&keycode);
                 }
             }
-            crate::shell::device_fabric::FabricInputEvent::PointerMotion { .. }
-            | crate::shell::device_fabric::FabricInputEvent::Scroll { .. } => {}
+            tilo_device_fabric::FabricInputEvent::PointerMotion { .. }
+            | tilo_device_fabric::FabricInputEvent::Scroll { .. } => {}
         }
     }
     true
@@ -17133,7 +17133,7 @@ mod tests {
             shown_hosted_windows(&tree, &tiles),
             vec![(
                 desk,
-                crate::shell::device_fabric::WindowView {
+                tilo_device_fabric::WindowView {
                     tab: 62,
                     width: 800,
                     height: 600,
@@ -19890,6 +19890,7 @@ mod tests {
                         presentation: None,
                     },
                     action: Some(tilo_actions::ActionDescriptor {
+                        state: tilo_actions::ActionState::default(),
                         semantic_identity: None,
                         address: tilo_actions::ActionAddress::new(
                             "calculator.graph:curve2d:stable-17",

@@ -51,7 +51,7 @@ const IDLE: Duration = Duration::from_secs(60);
 ///
 /// Where the gate runs, loaded, its threads block more than when focused:
 /// nightly's 12.05/s against about 10/s focused on the same code before
-/// #4074 (#3983, `docs/benchmarks/idle-wakeups-2026-10-09.md`). The
+/// #4074 (#3983). The
 /// focused p95, 7.2/s, a third more for that, plus a quarter: 12/s.
 const IDLE_WAKEUP_BUDGET: f64 = 12.0;
 /// Most CPU the two desktops' own threads may use while idle, in percent of

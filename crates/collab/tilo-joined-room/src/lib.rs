@@ -38,6 +38,7 @@ pub mod testing;
 mod tests;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod voice;
+mod vouched;
 mod workspace_membership;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
@@ -95,8 +96,9 @@ pub fn hosted_by(hint: &tilo_peer_state::join::TransportHint, device: &[u8; 32])
     &hint.host.device_public_key == device
 }
 
-/// Where an owner's record is durable.
-pub trait Store: std::any::Any + Send + Sync {
+/// Where an owner's record is durable. A page's store lives on its one
+/// thread, so only a device with threads shares it between them.
+pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     /// Durably retain immutable owner history through the existing content backend.
     /// The state publication may reference the returned address only after this succeeds.
     ///
@@ -345,6 +347,18 @@ impl WeakNativeWorkspaceOwner {
     }
 }
 impl NativeWorkspaceOwner {
+    /// An owner of no rooms yet, publishing through `store`.
+    #[must_use]
+    pub fn empty(store: Arc<dyn Store>) -> Self {
+        Self(Arc::new(SharedOwner {
+            store,
+            authority: RwLock::new(NativeAuthorityStorage::default()),
+            mutation: Mutex::new(()),
+            current: RwLock::new(Current::default()),
+            listeners: Mutex::new(Vec::new()),
+            direct_changes: Mutex::new(BTreeMap::new()),
+        }))
+    }
     /// Restore every enrolled room of `authority`, the record `store` last
     /// published. The owner is not yet shared with anyone.
     pub fn restore(
@@ -654,7 +668,9 @@ impl NativeWorkspaceOwner {
     ) -> Result<AdmissionReport, String> {
         if !matches!(
             message,
-            NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
+            NeighbourMsg::SyncResp { .. }
+                | NeighbourMsg::AppDocument { .. }
+                | NeighbourMsg::IdentityHello { .. }
         ) {
             return Err("native owner admits only workspace state messages".into());
         }

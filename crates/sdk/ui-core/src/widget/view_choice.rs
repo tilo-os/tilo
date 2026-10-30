@@ -57,9 +57,20 @@ impl ViewChoice {
         }
     }
 
+    /// The control's id.
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
     /// The control as published now, offering `entries` (key, label).
     pub(crate) fn resource(&self, entries: Vec<(String, String)>) -> tilo_actions::ResourceSpec {
         Self::resource_of(&self.id, self.label, Some(Choices::Labelled(entries)))
+    }
+
+    /// The control as published now, its entries too many to list (a long
+    /// table's rows): an entry is checked when it is chosen.
+    pub(crate) fn resource_unlisted(&self) -> tilo_actions::ResourceSpec {
+        Self::resource_of(&self.id, self.label, None)
     }
 
     /// The control as published now, offering its entries by key alone, for
@@ -135,6 +146,14 @@ impl ViewChoice {
         attachment: crate::control_custody::CustodyAttachment,
     ) {
         let _ = self.action.install_custody(domain, attachment);
+    }
+
+    /// Choose `entry` through the published action, as a person's press
+    /// does: the host runs it and the widget answers it in [`Self::start`].
+    pub(crate) fn emit(&mut self, entry: String) {
+        if let Err(error) = self.action.emit(entry) {
+            tracing::warn!(%error, control = %self.id, "a choice refused its entry");
+        }
     }
 
     pub(crate) fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {

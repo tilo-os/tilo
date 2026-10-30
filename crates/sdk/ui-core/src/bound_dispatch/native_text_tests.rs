@@ -163,7 +163,7 @@ fn restore(
     request: crate::undo::UndoRequest,
 ) -> crate::state::UndoEntry {
     binding
-        .history_request_with_registry(outer, request, Some(&registry()))
+        .history_request(outer, request)
         .unwrap()
         .expect("the actual owned history entry")
 }

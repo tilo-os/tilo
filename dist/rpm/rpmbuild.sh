@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Run rpmbuild on this machine, or, on an image-based host without rpm-build,
-# in the development container named by `.build-container` (DEVELOPMENT.md,
-# "If you build in a container"). Only packaging runs there: the binaries it
+# in the development container named by `.build-container`. Only packaging runs there: the binaries it
 # packages are compiled before, by whatever `cargo` this host has.
 #
 #   dist/rpm/rpmbuild.sh --check     say where rpmbuild runs, or fail saying how to fix it
@@ -44,8 +43,7 @@ if ! command -v rpmbuild >/dev/null 2>&1; then
         main=$(main_checkout)
         die "rpmbuild is not installed here, and no build container is named.
 Install rpm-build, or name the distrobox that has it (the one your cargo builds in):
-    printf '%s\\n' <distrobox> > ${main:-$repo_root}/.build-container
-(see DEVELOPMENT.md, \"If you build in a container\")"
+    printf '%s\\n' <distrobox> > ${main:-$repo_root}/.build-container"
     }
     container=$(head -n1 "$marker" | tr -d '[:space:]')
     [[ -n $container ]] || die "$marker is empty; it must name a distrobox"

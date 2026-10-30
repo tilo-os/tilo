@@ -9,15 +9,18 @@
 //! ([`crate::app::ContactsApp::window_toolbar`]).
 
 use ui::TextRole;
+use ui::framework::Actions;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::widget::{
     Avatar, AvatarSize, Chip, Column, Element, Property, PropertyList, Row, Scrollable, Text,
 };
 
+use crate::actions::ContactsEffect;
 use crate::form::Slot;
 use crate::model::{Address, Contact};
-use crate::view::{Request, Shared, queue};
+use crate::resource::Contacts;
+use crate::view::Shared;
 
 /// A vCard type ("mobile", "work") as a property label ("Mobile"). A kind
 /// another app invented reads as the card wrote it.
@@ -144,6 +147,7 @@ pub(crate) fn primary_email(contact: &Contact) -> Option<&str> {
 pub(crate) fn contact_page(
     contact: &Contact,
     shared: &Shared,
+    actions: Option<&Actions<Contacts>>,
     scroll: &std::rc::Rc<std::cell::Cell<(f32, f32)>>,
 ) -> Element {
     let mut page = Column::new()
@@ -165,7 +169,7 @@ pub(crate) fn contact_page(
         page = page.push(Box::new(tags));
     }
 
-    let facts = contact_properties(contact, shared);
+    let facts = contact_properties(contact, actions);
     if !facts.is_empty() {
         page = page.push(Box::new(PropertyList::new(facts)));
     }
@@ -185,8 +189,45 @@ pub(crate) fn contact_page(
     )
 }
 
+/// `property` with a trailing button running `effect`, when the book
+/// publishes it.
+fn with_effect(
+    property: Property,
+    actions: Option<&Actions<Contacts>>,
+    icon: Icon,
+    label: &str,
+    effect: &ContactsEffect,
+) -> Property {
+    match actions.and_then(|actions| actions.effect(effect)) {
+        Some(binding) => property.action_binding(icon, label, binding),
+        None => property,
+    }
+}
+
+/// `property` with an Edit button opening the contact's form on `slot`.
+fn editable(
+    property: Property,
+    actions: Option<&Actions<Contacts>>,
+    contact: &Contact,
+    slot: Slot,
+) -> Property {
+    let Some(field) = slot.detail_key() else {
+        return property;
+    };
+    with_effect(
+        property,
+        actions,
+        Icon::Pencil,
+        "Edit",
+        &ContactsEffect::EditField {
+            contact: contact.id,
+            field,
+        },
+    )
+}
+
 /// Editable contact facts in their shared label/value column, in reading order.
-fn contact_properties(contact: &Contact, shared: &Shared) -> Vec<Property> {
+fn contact_properties(contact: &Contact, actions: Option<&Actions<Contacts>>) -> Vec<Property> {
     // Every fact in one list, so its labels and values keep one column down
     // the page; the label says what kind of fact a value is.
     let mut facts: Vec<Property> = Vec::new();
@@ -197,14 +238,10 @@ fn contact_properties(contact: &Contact, shared: &Shared) -> Vec<Property> {
             .enumerate()
             .filter(|(_, phone)| !phone.value.trim().is_empty())
             .map(|(index, phone)| {
-                Property::new(phone_label(&phone.label), phone.value.clone())
+                let property = Property::new(phone_label(&phone.label), phone.value.clone())
                     .with_kind(TextKind::Numeric)
-                    .copyable()
-                    .action(
-                        Icon::Pencil,
-                        "Edit",
-                        queue(shared, Request::EditField(contact.id, Slot::Phone(index))),
-                    )
+                    .copyable();
+                editable(property, actions, contact, Slot::Phone(index))
             }),
     );
     facts.extend(
@@ -214,14 +251,10 @@ fn contact_properties(contact: &Contact, shared: &Shared) -> Vec<Property> {
             .enumerate()
             .filter(|(_, email)| !email.value.trim().is_empty())
             .map(|(index, email)| {
-                Property::new(qualified(&email.label, "email"), email.value.clone())
+                let property = Property::new(qualified(&email.label, "email"), email.value.clone())
                     .with_kind(TextKind::Identifier)
-                    .copyable()
-                    .action(
-                        Icon::Pencil,
-                        "Edit",
-                        queue(shared, Request::EditField(contact.id, Slot::Email(index))),
-                    )
+                    .copyable();
+                editable(property, actions, contact, Slot::Email(index))
             }),
     );
     facts.extend(
@@ -231,47 +264,37 @@ fn contact_properties(contact: &Contact, shared: &Shared) -> Vec<Property> {
             .enumerate()
             .filter(|(_, address)| !address.is_empty())
             .map(|(index, address)| {
-                Property::new(qualified(&address.label, "address"), address_lines(address))
-                    .copyable()
-                    .action(
-                        Icon::Pencil,
-                        "Edit",
-                        queue(
-                            shared,
-                            Request::EditField(contact.id, Slot::AddrStreet(index)),
-                        ),
-                    )
+                let property =
+                    Property::new(qualified(&address.label, "address"), address_lines(address))
+                        .copyable();
+                editable(property, actions, contact, Slot::AddrStreet(index))
             }),
     );
     if let Some(birthday) = &contact.birthday {
-        facts.push(
-            Property::new("Birthday", birthday.pretty())
-                .with_kind(TextKind::Numeric)
-                .action(
-                    Icon::Pencil,
-                    "Edit",
-                    queue(shared, Request::EditField(contact.id, Slot::Birthday)),
-                ),
-        );
+        let property =
+            Property::new("Birthday", birthday.pretty()).with_kind(TextKind::Numeric);
+        facts.push(editable(property, actions, contact, Slot::Birthday));
     }
     let website = contact.website.trim();
     if !website.is_empty() {
-        facts.push(
-            Property::new("Website", website)
-                .with_kind(TextKind::Identifier)
-                .action(
-                    Icon::ExternalLink,
-                    "Open",
-                    queue(shared, Request::OpenWebsite(website.to_owned())),
-                ),
-        );
+        let property = Property::new("Website", website).with_kind(TextKind::Identifier);
+        facts.push(with_effect(
+            property,
+            actions,
+            Icon::ExternalLink,
+            "Open",
+            &ContactsEffect::OpenWebsite {
+                contact: contact.id,
+            },
+        ));
     }
     let notes = contact.notes.trim();
     if !notes.is_empty() {
-        facts.push(Property::new("Notes", notes).action(
-            Icon::Pencil,
-            "Edit",
-            queue(shared, Request::EditField(contact.id, Slot::Notes)),
+        facts.push(editable(
+            Property::new("Notes", notes),
+            actions,
+            contact,
+            Slot::Notes,
         ));
     }
     facts
