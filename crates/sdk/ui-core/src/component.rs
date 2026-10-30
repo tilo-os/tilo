@@ -456,6 +456,7 @@ choice!(crate::widget::ButtonRole, "ButtonRole", {
     Destructive => "destructive",
     Plain => "plain",
     Key => "key",
+    Bar => "bar",
 });
 
 choice!(crate::widget::ControlSize, "ControlSize", {
