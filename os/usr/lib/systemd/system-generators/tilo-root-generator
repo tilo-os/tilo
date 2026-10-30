@@ -1,7 +1,16 @@
 #!/usr/bin/bash
 # Generate the fixed target-independent Tilo root discovery path in the initrd.
 set -eu
-out="${1:-/run/systemd/generator}"
+# systemd runs every generator at once, and systemd-fstab-generator, which
+# always honours root= in the initrd, writes a sysroot.mount of its own for
+# root=tilo-auto (What=tilo-auto) into the normal directory, the first
+# argument. Sharing that file was a race: its content depended on which
+# generator wrote last, and when this one wrote first, systemd-fstab-generator
+# failed on the existing file. These units go to the early directory (the
+# second argument) instead, which comes before the normal one on systemd's unit
+# path, so they replace systemd's whatever the order, and no file is written by
+# both.
+out="${2:-/run/systemd/generator.early}"
 # Only the initrd finds and mounts the root. The booted system's systemd runs
 # its generators too, with the same command line; there these units would
 # rediscover a root that is already mounted, and fail at every boot.

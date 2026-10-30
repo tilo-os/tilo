@@ -146,20 +146,67 @@ echo 'ok: an unreadable kernel command line fails closed'
 
 printf 'root=tilo-auto quiet\n' >"$work/cmdline"
 : >"$work/initrd-release"
-mkdir -p "$work/generator"
-TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_INITRD_RELEASE="$work/initrd-release" \
-  "$repo/os/usr/lib/systemd/system-generators/tilo-root-generator" "$work/generator"
-grep -q 'What=/run/tilo-root/device' "$work/generator/sysroot.mount"
-grep -q 'ExecStart=/usr/libexec/tilo-root-discover' "$work/generator/tilo-root-discover.service"
-grep -qx 'RemainAfterExit=yes' "$work/generator/tilo-root-discover.service"
+# A generator is run with systemd's normal, early and late directories.
+root_generator() {
+  local dirs="$1" release="$2"
+  mkdir -p "$dirs/normal" "$dirs/early" "$dirs/late"
+  TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_INITRD_RELEASE="$release" \
+    "$repo/os/usr/lib/systemd/system-generators/tilo-root-generator" \
+    "$dirs/normal" "$dirs/early" "$dirs/late"
+}
+fstab_generator() {
+  local dirs="$1"
+  mkdir -p "$dirs/normal" "$dirs/early" "$dirs/late"
+  : >"$work/fstab"
+  SYSTEMD_PROC_CMDLINE="$(cat "$work/cmdline")" SYSTEMD_IN_INITRD=1 SYSTEMD_LOG_LEVEL=err \
+    SYSTEMD_FSTAB="$work/fstab" SYSTEMD_SYSROOT_FSTAB="$work/fstab" \
+    /usr/lib/systemd/system-generators/systemd-fstab-generator \
+    "$dirs/normal" "$dirs/early" "$dirs/late"
+}
+# The unit file systemd loads: the first on its unit path, where the early
+# directory comes before the normal one and the late one comes last.
+loaded() {
+  local dir
+  for dir in early normal late; do
+    [ -e "$1/$dir/$2" ] && { printf '%s\n' "$1/$dir/$2"; return 0; }
+  done
+  return 1
+}
+root_generator "$work/generator" "$work/initrd-release"
+grep -q 'What=/run/tilo-root/device' "$(loaded "$work/generator" sysroot.mount)"
+grep -q 'ExecStart=/usr/libexec/tilo-root-discover' \
+  "$(loaded "$work/generator" tilo-root-discover.service)"
+grep -qx 'RemainAfterExit=yes' "$(loaded "$work/generator" tilo-root-discover.service)"
 echo 'ok: target-independent initrd units generated'
+
+# systemd runs its generators alongside, and systemd-fstab-generator makes a
+# sysroot.mount of its own out of root=tilo-auto (What=tilo-auto) in the normal
+# directory. Whichever order the two run in, and were they to run at once, no
+# file is written by both, and the root's units are the ones systemd loads.
+[ -x /usr/lib/systemd/system-generators/systemd-fstab-generator ] \
+  || { echo 'systemd-fstab-generator is missing; this suite needs systemd' >&2; exit 1; }
+[ -z "$(ls -A "$work/generator/normal")" ]
+[ -z "$(ls -A "$work/generator/late")" ]
+fstab_generator "$work/fstab-only"
+grep -qx 'What=tilo-auto' "$work/fstab-only/normal/sysroot.mount"
+for order in fstab-first root-first; do
+  dirs="$work/both-$order"
+  if [ "$order" = fstab-first ]; then
+    fstab_generator "$dirs"; root_generator "$dirs" "$work/initrd-release"
+  else
+    root_generator "$dirs" "$work/initrd-release"; fstab_generator "$dirs"
+  fi
+  cmp "$work/fstab-only/normal/sysroot.mount" "$dirs/normal/sysroot.mount"
+  cmp "$work/generator/early/sysroot.mount" "$(loaded "$dirs" sysroot.mount)"
+  cmp "$work/generator/early/tilo-root-discover.service" \
+    "$(loaded "$dirs" tilo-root-discover.service)"
+done
+echo 'ok: no unit file is shared with systemd-fstab-generator, and the root units win in either order'
 
 # The booted system runs its generators with the same command line; the root is
 # already mounted there, and the units must not appear.
-mkdir -p "$work/generator-booted"
-TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_INITRD_RELEASE="$work/no-initrd-release" \
-  "$repo/os/usr/lib/systemd/system-generators/tilo-root-generator" "$work/generator-booted"
-[ -z "$(ls -A "$work/generator-booted")" ]
+root_generator "$work/generator-booted" "$work/no-initrd-release"
+[ -z "$(find "$work/generator-booted" -mindepth 2)" ]
 echo 'ok: no root discovery units outside the initrd'
 
 # Exercise the encrypted production path with an attach implementation that
