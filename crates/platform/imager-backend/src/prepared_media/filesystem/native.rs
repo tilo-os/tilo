@@ -1,6 +1,6 @@
 //! Linux filesystem authority for the reviewed removable medium.
-use super::root::PinnedRoot;
 use crate::media_model::TargetDrive;
+use crate::migration_directory::PinnedDirectory;
 use block_devices::{BlockDevice, Lsblk};
 use cap_primitives::fs::MetadataExt;
 use std::{
@@ -30,7 +30,7 @@ struct PartitionBinding {
 pub struct MediaFilesystemGrant {
     target: TargetDrive,
     root: PathBuf,
-    pin: Arc<PinnedRoot>,
+    pin: Arc<PinnedDirectory>,
     partition: PartitionBinding,
 }
 impl MediaFilesystemGrant {
@@ -90,7 +90,7 @@ impl MediaFilesystemGrant {
         mounted_root: &Path,
         devices: &[BlockDevice],
     ) -> io::Result<Self> {
-        let pin = PinnedRoot::open_absolute(mounted_root)?;
+        let pin = PinnedDirectory::open_absolute(mounted_root)?;
         pin.validate_destination()?;
         writable(&pin)?;
         let partition = select_partition(devices, target, mounted_root, pin.identity.dev())?;
@@ -116,7 +116,7 @@ impl MediaFilesystemGrant {
             ));
         }
         crate::write::revalidate_target(target)?;
-        let pin = PinnedRoot::open_absolute(mounted_root)?;
+        let pin = PinnedDirectory::open_absolute(mounted_root)?;
         pin.validate_destination()?;
         writable(&pin)?;
         let partition = select_partition(&inventory()?, target, mounted_root, pin.identity.dev())?;
@@ -209,7 +209,7 @@ fn select_partition(
         )),
     }
 }
-fn writable(pin: &PinnedRoot) -> io::Result<()> {
+fn writable(pin: &PinnedDirectory) -> io::Result<()> {
     check_writable_directory(&pin.file)
 }
 /// Check that the descriptor's filesystem is not mounted read-only.
