@@ -867,6 +867,185 @@ impl tilo_session::unlock::PasswordVerifier for Sesame {
     }
 }
 
+/// A session action runner that records what it was asked to do, so a test
+/// can say nothing reached the machine it runs on.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the shape every session action runner has"
+)]
+fn record_session_action(action: tilo_session::SessionAction) -> Result<(), String> {
+    ACTIONS.with_borrow_mut(|actions| actions.push(action));
+    Ok(())
+}
+
+thread_local! {
+    static ACTIONS: RefCell<Vec<tilo_session::SessionAction>> = const { RefCell::new(Vec::new()) };
+}
+
+fn taken_actions() -> Vec<tilo_session::SessionAction> {
+    ACTIONS.with_borrow_mut(std::mem::take)
+}
+
+/// A session in a window of another desktop runs no idle timers: that
+/// desktop owns idle, blanking, locking and suspend.
+#[test]
+fn a_session_in_a_window_runs_no_idle_timers() {
+    let _settled = ui::motion::testing::settled();
+    let mut hosted = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            hosted: true,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    assert_eq!(
+        hosted.compositor().idle_config(),
+        tilo_compositor::IdleConfig::never(),
+        "a session in a window starts with no idle timers"
+    );
+    // The settings the person's settings app applies reach every session;
+    // here they must not bring the timers back.
+    hosted
+        .compositor()
+        .set_idle_config(tilo_compositor::IdleConfig::default());
+    assert_eq!(
+        hosted.compositor().idle_config(),
+        tilo_compositor::IdleConfig::never(),
+        "the host desktop owns idle, whatever this session is told"
+    );
+
+    let mut own = session();
+    own.compositor()
+        .set_idle_config(tilo_compositor::IdleConfig::default());
+    assert_eq!(
+        own.compositor().idle_config(),
+        tilo_compositor::IdleConfig::default(),
+        "a session with displays of its own keeps its timers"
+    );
+}
+
+/// Every power choice a session in a window takes stays in that session:
+/// nothing reaches the machine the window runs on, and shutting down ends
+/// the session rather than the host.
+#[test]
+fn a_session_in_a_window_takes_no_power_on_its_host() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            hosted: true,
+            session_actions: record_session_action,
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).unwrap();
+    session
+        .power_menu()
+        .expect("power menu")
+        .presentation()
+        .open(false);
+    session.step(Duration::from_millis(1)).unwrap();
+    let locked = PowerEffect::LOCK.id;
+    let menu = publisher(&session, locked)
+        .into_iter()
+        .find(|resource| resource != tilo_session::SESSION_RESOURCE)
+        .expect("the open menu publishes its choices");
+
+    // The machine's own power is not offered, and an action that asks for
+    // it anyway is refused here.
+    for action in [
+        PowerEffect::SWITCH_USER.id,
+        PowerEffect::SUSPEND.id,
+        PowerEffect::RESTART.id,
+    ] {
+        assert!(
+            session
+                .invoke(&menu, action, &serde_json::Map::new())
+                .is_err(),
+            "{action} is not offered here"
+        );
+    }
+    assert!(
+        taken_actions().is_empty(),
+        "no session action reached the host"
+    );
+    assert!(!session.ended(), "and the session runs on");
+
+    // Shutting down ends this session and nothing else: the person's own
+    // press on the row is their decision, and here it ends the session
+    // rather than the machine it runs on.
+    let row = session
+        .power_menu()
+        .expect("power menu")
+        .rows()
+        .into_iter()
+        .find(|(effect, _)| *effect == PowerEffect::ShutDown)
+        .map(|(_, row)| row)
+        .expect("the open menu has a shut down row");
+    let (x, y) = (f64::midpoint(row.x0, row.x1), f64::midpoint(row.y0, row.y1));
+    for event in [
+        InputEvent::PointerMotion { x, y },
+        InputEvent::PointerButton {
+            button: 0x110,
+            pressed: true,
+        },
+        InputEvent::PointerButton {
+            button: 0x110,
+            pressed: false,
+        },
+    ] {
+        session.compositor().input(event).unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert!(session.ended(), "shutting down ends the session");
+    assert!(
+        taken_actions().is_empty(),
+        "and did not reach the host's machine"
+    );
+}
+
+/// A session that cannot check a password never locks: the lock screen
+/// could not be left again. Locking stays on offer where a password does
+/// unlock it.
+#[test]
+fn a_session_that_cannot_check_a_password_never_locks() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    // The session's own lock action, as the key or a client sends it.
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(
+        !session.compositor().locked(),
+        "no password can be checked here, so the screen stays unlocked"
+    );
+    // Nor does the power menu offer it.
+    session
+        .power_menu()
+        .expect("power menu")
+        .presentation()
+        .open(false);
+    session.step(Duration::from_millis(1)).unwrap();
+    let menu = publisher(&session, PowerEffect::LOCK.id)
+        .into_iter()
+        .find(|resource| resource != tilo_session::SESSION_RESOURCE)
+        .expect("the open menu publishes its choices");
+    assert!(
+        session
+            .invoke(&menu, PowerEffect::LOCK.id, &serde_json::Map::new())
+            .is_err(),
+        "locking is not offered where nothing could unlock it"
+    );
+}
+
 #[test]
 fn quick_settings_opens_by_its_action_and_a_press_outside_closes_it() {
     let _settled = ui::motion::testing::settled();
@@ -1420,7 +1599,16 @@ fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done()
 fn the_power_menu_is_a_sheet_whose_lock_locks_the_screen() {
     use tilo_sheets::Seat as _;
     let _settled = ui::motion::testing::settled();
-    let mut session = session();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
     session.step(Duration::from_millis(1)).unwrap();
     let lock = PowerEffect::LOCK.id;
     // The session's own screen resource locks too; the sheet's is another.

@@ -37,9 +37,15 @@ impl Mirror {
     /// Follow this session's settings and tell the daemon at `socket` about
     /// the comforts that change; `wake` brings the session's loop back to
     /// look.
-    pub fn mount(socket: PathBuf, wake: impl Fn() + Send + 'static) -> Self {
+    pub fn mount(socket: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> Self {
         let (sender, updates) = mpsc::channel();
+        // The loader's notifications come from whichever thread writes the
+        // settings; the sender is shared through a lock so it can.
+        let sender = std::sync::Mutex::new(sender);
         let following = SessionConfig::follow(move |config| {
+            let sender = sender
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let _ = sender.send((config.comforts, config.apply_comforts_to_sign_in));
             wake();
         })

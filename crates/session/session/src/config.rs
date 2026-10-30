@@ -6,8 +6,6 @@
 //! battery do, the pointer's size, and the comforts the login screens start
 //! with.
 
-use std::time::Duration;
-
 use settings_store::hardware::{
     AccelProfile, KeyboardInputSource, RichInputConfig, ShortcutConfig,
 };
@@ -297,6 +295,7 @@ fn input_config(input: &RichInputConfig) -> InputConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn stored_preferences_reach_the_compositor_and_the_gestures() {

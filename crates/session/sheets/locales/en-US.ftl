@@ -15,6 +15,9 @@ power-restart = Restart
 power-restart-detail = Open apps close
 power-shut-down = Shut down
 power-shut-down-detail = Open apps close
+power-shut-down-session-detail = End this session; the window closes
+power-not-offered-switch-user = This session cannot switch user
+power-not-offered-power = This session does not own the computer's power
 
 ## Display change
 

@@ -76,7 +76,9 @@ use tilo_desktop_surface::navigation::Command;
 use tilo_lock::MutexRecover as _;
 use tilo_quick_settings::QsEffect;
 use tilo_service::Started;
-use tilo_surface_host::{DeskGesture, DesktopHost, Doors, Published, WidgetHost, desktop_with};
+use tilo_surface_host::{
+    DeskGesture, DesktopHost, Doors, Published, StripPolicy, WidgetHost, desktop_with,
+};
 use ui::application::ComponentRunnerInputs;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
@@ -229,12 +231,13 @@ pub enum QuickSettings {
 const SETTINGS_APP: &str = "so.tilo.settings";
 
 /// The default for [`Options::session_actions`]: a session that owns no
-/// machine (a test, a screenshot) carries out nothing.
+/// machine (a test, a screenshot, a session in a window) carries out
+/// nothing.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "the shape every session action runner has"
 )]
-fn no_session_actions(action: SessionAction) -> Result<(), String> {
+pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
     tracing::info!(?action, "this session carries out no session actions");
     Ok(())
 }
@@ -821,6 +824,23 @@ impl Shared {
                         self.commands.borrow_mut().push(SessionCommand::LogOut);
                         continue;
                     }
+                    PowerEffect::ShutDown if self.hosted => {
+                        self.commands.borrow_mut().push(SessionCommand::End);
+                        continue;
+                    }
+                    PowerEffect::SwitchUser | PowerEffect::Suspend | PowerEffect::Restart
+                        if self.hosted =>
+                    {
+                        // The desktop it runs in owns the machine's power and
+                        // its session switching; the menu does not offer
+                        // these here, and a published action that asks anyway
+                        // stops at this session.
+                        tracing::info!(
+                            ?effect,
+                            "a session in a window owns no power: nothing was done"
+                        );
+                        continue;
+                    }
                     PowerEffect::SwitchUser => SessionAction::SwitchUser,
                     PowerEffect::Suspend => SessionAction::Suspend,
                     PowerEffect::Restart => SessionAction::Restart,
@@ -1122,6 +1142,31 @@ struct Unlocking {
     wake: std::task::Waker,
 }
 
+/// The desk of this session's workspace and the policy placing its windows,
+/// with what its tree asks of the session. The chrome above it asks through
+/// the same list.
+fn desk(
+    options: &Options,
+    notices: tilo_desktop_surface::DesktopNotifications,
+    pictures: std::sync::Arc<wallpapers::Wallpapers>,
+) -> (DesktopHost, StripPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
+    let asks = Rc::new(RefCell::new(Vec::new()));
+    let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
+        surface.set_notifications(notices);
+        Box::new(
+            DeskLayer::new(
+                Box::new(surface),
+                handle.clone(),
+                CollaborationLaunchpad::new(),
+                Vec::new(),
+            )
+            .with_asks(Rc::clone(&asks))
+            .with_wallpaper(move |workspace| pictures.picture(workspace)),
+        )
+    });
+    (desktop, policy, asks)
+}
+
 impl Session {
     /// A session on the compositor `start` makes with the desktop's window
     /// policy.
@@ -1140,7 +1185,6 @@ impl Session {
         let mut doors = Doors::default();
         // What the desk and the chrome ask of the session, from their own
         // widget trees.
-        let asks = Rc::new(RefCell::new(Vec::new()));
         let notices = tilo_desktop_surface::DesktopNotifications::default();
         // What the bar reads of the notifications, and the policy arrivals
         // are judged by: the person may change it at any time.
@@ -1169,20 +1213,8 @@ impl Session {
         })
         .map_err(|error| tracing::debug!(%error, "settings are not watched"))
         .ok();
-        let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
-            surface.set_notifications(notices.clone());
-            let pictures = std::sync::Arc::clone(&wallpapers);
-            Box::new(
-                DeskLayer::new(
-                    Box::new(surface),
-                    handle.clone(),
-                    CollaborationLaunchpad::new(),
-                    Vec::new(),
-                )
-                .with_asks(Rc::clone(&asks))
-                .with_wallpaper(move |workspace| pictures.picture(workspace)),
-            )
-        });
+        let (desktop, policy, asks) =
+            desk(&options, notices.clone(), std::sync::Arc::clone(&wallpapers));
         desktop.set_gestures(options.config.gestures);
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         // The desk as this device left it: workspaces, their strips, and
@@ -1205,6 +1237,9 @@ impl Session {
             launch.attach(desktop.clone());
         }
         let mut compositor = start(Box::new(policy))?;
+        // A session in a window of another desktop runs no idle timers: that
+        // desktop owns idle, blanking, locking and suspend.
+        compositor.set_hosted(options.hosted);
         // What the services take in wakes the loop instead of waiting for
         // its next pass.
         options.wake.bind(compositor.waker());
@@ -1415,6 +1450,10 @@ impl Session {
     /// # Errors
     /// The compositor or its window did not start.
     pub fn nested(options: Options, config: &NestedConfig) -> Result<Self, Error> {
+        let options = Options {
+            hosted: true,
+            ..options
+        };
         let mut session = Self::new(options, |policy| Compositor::nested(policy, config))?;
         session.warm()?;
         Ok(session)
@@ -1810,8 +1849,14 @@ impl Session {
                 }
                 SessionTransition::Suspend => {
                     // The idle timers ran out: the machine sleeps, unless
-                    // something holds it awake.
-                    self.suspend_for_idle();
+                    // something holds it awake. A session in a window of
+                    // another desktop runs no idle timers, and never
+                    // suspends the host that desktop owns.
+                    if self.shared.hosted {
+                        tracing::info!("a session in a window does not suspend its host");
+                    } else {
+                        self.suspend_for_idle();
+                    }
                 }
                 _ => {}
             }
@@ -1979,7 +2024,16 @@ impl Session {
 
     fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
         match command {
-            SessionCommand::Lock => self.compositor.lock_now(),
+            SessionCommand::Lock => {
+                // A session that cannot check a password never locks: the
+                // lock screen could not be left again.
+                if self.unlocking.verifier.available() {
+                    self.compositor.lock_now()?;
+                } else {
+                    tracing::warn!("no password can be checked here: not locking");
+                }
+                Ok(())
+            }
             SessionCommand::Displays { mode } => {
                 let changes = displays::arrange(mode, &self.compositor.outputs());
                 // A refused arrangement leaves the displays as they were.
@@ -1998,8 +2052,12 @@ impl Session {
             }
             SessionCommand::LogOut => {
                 // The login wrapper tears the session down once this
-                // process ends; without one, ending is the whole of it.
-                if let Err(error) = os_actions::request_logout() {
+                // process ends; without one, ending is the whole of it. A
+                // session in a window of another desktop has no wrapper of
+                // its own: ending is all logging out is there.
+                if !self.shared.hosted
+                    && let Err(error) = os_actions::request_logout()
+                {
                     tracing::info!(%error, "no login wrapper to tell of the logout");
                 }
                 // Apps are told the session ends before the loop stops
@@ -2007,6 +2065,10 @@ impl Session {
                 if let Some(desktop) = &self.desktop {
                     desktop.end();
                 }
+                self.ended = true;
+                Ok(())
+            }
+            SessionCommand::End => {
                 self.ended = true;
                 Ok(())
             }
@@ -2336,6 +2398,17 @@ fn mount_sheets(compositor: &mut Compositor, doors: &mut Doors, options: &Option
         who,
         options,
     );
+    if let Some(power) = &power {
+        // The host's power is the host's: a session in a window offers no
+        // switching user, suspending or restarting, and a session that
+        // cannot check a password offers no locking.
+        power.set_offers(tilo_sheets::power::Offers {
+            user_switching: !options.hosted,
+            host_power: !options.hosted,
+            locking: options.verifier.available(),
+            hangs_from: 0.0,
+        });
+    }
     let workspace_settings = mount_sheet(
         compositor,
         doors,

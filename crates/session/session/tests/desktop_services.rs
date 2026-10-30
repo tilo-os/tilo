@@ -83,6 +83,7 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
             &wake.handle(),
             std::sync::Arc::new(tilo_portal::NoCapture),
             &side,
+            None,
         )
         .unwrap(),
     );
@@ -218,6 +219,7 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
             &wake.handle(),
             std::sync::Arc::new(tilo_portal::NoCapture),
             &side,
+            None,
         )
         .unwrap(),
     );

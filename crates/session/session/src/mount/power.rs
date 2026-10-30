@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tilo_compositor::{Compositor, IdleConfig};
-use tilo_power_mgmt::{PowerPolicy, PowerSignal};
+use tilo_power_mgmt::PowerSignal;
 use tilo_session_power::PowerLink;
 
 use crate::{Error, Options, Session, SessionConfig, a11y_settings};
@@ -60,7 +60,7 @@ impl PowerRun {
     fn follow_settings(
         &mut self,
         waker: std::task::Waker,
-    ) -> settings_store::watch::SettingsWatch {
+    ) -> std::io::Result<settings_store::watch::SettingsWatch> {
         let reload = Arc::clone(&self.reload);
         let next = Arc::clone(&self.next);
         SessionConfig::follow(move |config| {

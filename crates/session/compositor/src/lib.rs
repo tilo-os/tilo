@@ -22,7 +22,7 @@
 
 #![cfg(target_os = "linux")]
 
-mod a11y;
+pub mod a11y;
 pub mod backdrop;
 pub mod backend;
 pub mod capture;
