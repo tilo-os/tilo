@@ -189,7 +189,7 @@ fn a_title_somebody_else_set_since_keeps_their_value_and_the_step_counts_as_undo
     assert_eq!(undone.len(), 1);
     assert_eq!(doc.text(&title).unwrap(), "Oat milk", "Bob's title stays");
     assert_eq!(
-        doc.get(ROOT, "done").unwrap().unwrap().0.to_bool(),
+        doc.get(ROOT, "done").unwrap().unwrap().0.as_bool(),
         Some(false),
         "Bob's checkbox stays"
     );
@@ -228,7 +228,7 @@ fn a_value_nobody_changed_since_is_restored() {
     undo_as(&mut doc, ALICE, &scope(ALICE));
     assert_eq!(doc.text(&title).unwrap(), "");
     assert_eq!(
-        doc.get(ROOT, "done").unwrap().unwrap().0.to_bool(),
+        doc.get(ROOT, "done").unwrap().unwrap().0.as_bool(),
         Some(false)
     );
     assert!(doc.get(ROOT, "due").unwrap().is_some(), "Bob's date stays");
@@ -319,7 +319,7 @@ fn an_agent_run_undone_while_a_person_edited_the_same_record_keeps_the_persons_e
         "Alice edited the run's title"
     );
     assert_eq!(
-        doc.get(ROOT, "done").unwrap().unwrap().0.to_bool(),
+        doc.get(ROOT, "done").unwrap().unwrap().0.as_bool(),
         Some(false)
     );
 }

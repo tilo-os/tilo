@@ -34,7 +34,7 @@ fn room() -> (Replica, Replica) {
         .runtime()
         .set_clock(|| "2026-10-30T09:00:00Z".to_owned());
     ada.commit();
-    let mut ben = ada.fork("ben", &packages());
+    let ben = ada.fork("ben", &packages());
     ben.host.sync_from(&ben.doc);
     (ada, ben)
 }
@@ -80,7 +80,10 @@ fn edit(r: &mut Replica, app: &str, (item, ty, field): (&ResourceRef, &str, &str
 
 fn type_at(r: &mut Replica, note: &ResourceRef, after: &str, typed: &str) {
     let body = text(r, note, "body");
-    let at = body.find(after).unwrap() + after.chars().count();
+    let at = body
+        .find(after)
+        .unwrap()
+        .saturating_add(after.chars().count());
     edit(
         r,
         NOTES_APP,
@@ -267,7 +270,7 @@ fn a_removed_task_comes_back_after_the_task_beside_it_changed() {
         "ada",
         TASKS_APP,
         "remove",
-        vec![tasks.clone(), Value::resource(&milk)],
+        vec![tasks, Value::resource(&milk)],
     );
     ada.commit();
     edit(
