@@ -909,19 +909,41 @@ impl<H: PanelBindings> ProviderPanel<H> {
             .clone()
     }
 
+    /// The draft fields of `profile`'s form. Each follows the profile as it
+    /// changes (a model chosen with Use, a rename an agent made) unless the
+    /// person has edited it since it last did: their draft stays theirs.
     pub fn field_buffers(&self, profile: &ProviderProfile) -> HostedFieldBuffers {
+        let stored = [
+            profile.label.clone(),
+            profile.endpoint.clone(),
+            profile.default_model.clone().unwrap_or_default(),
+        ];
         let mut buffers = self.provider_field_buffers.lock_recover();
-        buffers
+        let fields = buffers
             .entry(profile.id.clone())
             .or_insert_with(|| HostedFieldBuffers {
                 original_endpoint: Arc::new(Mutex::new(String::new())),
-                label: Arc::new(Mutex::new(profile.label.clone())),
-                endpoint: Arc::new(Mutex::new(profile.endpoint.clone())),
-                model: Arc::new(Mutex::new(
-                    profile.default_model.clone().unwrap_or_default(),
-                )),
+                label: Arc::new(Mutex::new(stored[0].clone())),
+                endpoint: Arc::new(Mutex::new(stored[1].clone())),
+                model: Arc::new(Mutex::new(stored[2].clone())),
+                followed: Arc::new(Mutex::new(stored.clone())),
             })
-            .clone()
+            .clone();
+        drop(buffers);
+        let mut followed = fields.followed.lock_recover();
+        for ((field, last), now) in [&fields.label, &fields.endpoint, &fields.model]
+            .into_iter()
+            .zip(followed.iter_mut())
+            .zip(stored)
+        {
+            let mut draft = field.lock_recover();
+            if *last != now && *draft == *last {
+                draft.clone_from(&now);
+            }
+            *last = now;
+        }
+        drop(followed);
+        fields
     }
 
     pub fn hosted_profiles(&self) -> SettingsSection {
@@ -1838,6 +1860,9 @@ pub struct HostedFieldBuffers {
     pub label: Arc<Mutex<String>>,
     pub endpoint: Arc<Mutex<String>>,
     pub model: Arc<Mutex<String>>,
+    /// The label, endpoint and model as the drafts last took them from the
+    /// profile: a draft still equal to it is not the person's edit.
+    followed: Arc<Mutex<[String; 3]>>,
 }
 
 #[derive(Clone)]
