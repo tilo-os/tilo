@@ -38,25 +38,28 @@ type Canvas { places: Map<Place, Point> }      type Place { shows: Resource, vie
 - Today's arrangement in `tilo_desktop_model` (shared, on the workspace) moves here; the
   migration keeps every window, strip and canvas place.
 
-## 3. Opening
+## 3. References, not opening
 
-`open(r)` is what a person's input does to a resource: pressing a row, following a link,
-picking a search result. Its meaning is the shell's:
+A resource appears in other places as a **reference**: in a chat message, an agent's answer, a
+list row, a search result. A reference is drawn with a view of its resource and can be
+activated. Nothing in an app or an agent "opens" anything; activating a reference is the
+person's input, and their shell decides what it does:
 
-| Shell | `open(r)` |
+| Shell | Activating a reference |
 |---|---|
 | strips | a column after the one it came from |
-| windows | a new frame, or the same frame split, or a tab, by the person's setting |
+| windows | a new frame, the same frame split, or a tab, by the person's setting |
 | canvas | a place next to where it came from |
 | phone | a page, with Back |
 | conversation | an embedded view in the transcript |
 
-So apps never decide layout. A list says it opens its items; whether list and item sit side by
-side, in one frame or on two pages is the shell's and the person's. "One reason, one window" is
-the strips shell's policy, not a rule for apps.
+So apps never decide layout. A list's rows are references to its items; whether list and item
+sit side by side, in one frame or on two pages is the shell's and the person's. "One reason,
+one window" is the strips shell's policy, not a rule for apps. Someone sending a resource in
+chat and an agent handing one over are the same thing: a reference.
 
-Opening something already open goes to it. A shell may offer "open another view" for two
-views of one resource side by side, each with its own window state.
+Activating something already shown goes to it. A shell may offer "another view" for two views
+of one resource side by side, each with its own window state.
 
 ## 4. Windows
 
@@ -88,11 +91,15 @@ deleted, in which steps. The system presents them from that record:
 
 - **Always.** Whatever the agent answers or forgets, its effects are shown; an agent can neither
   hide its work nor fail to show it.
-- **As the person chooses** (a setting, applied by their shell), for example:
-  - open what the task creates beside what they're working on;
-  - a result card where they asked, listing every change, each openable;
-  - only marks in views already open, with the task listing everything;
-  - a notification that opens the result, on a phone.
+- **As the person chooses**, by default and per task, switchable while it runs:
+  - **watching**: what the task creates appears near where they asked, placed by their shell
+    under their setting; things already shown that it changes are marked; its presence moves
+    to what it's working on (e.g. on the canvas);
+  - **contained**: nothing in their arrangement changes; the task's log shows each step with
+    embedded, live views of what it touched (e.g. in a chat log);
+  - on a phone, a notification whose activation shows the result.
+
+  The agent does the same work either way and isn't told which.
 - **Marks in place.** Views showing a changed resource mark the change (new, changed, removed,
   by whom), from the record, the same for people, agents, scripts and peers.
 - The agent's own answer (agents.md, agent-ux.md) is commentary on top, never the only way to
