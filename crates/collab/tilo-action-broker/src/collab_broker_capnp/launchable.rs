@@ -1447,16 +1447,17 @@ mod tests {
         );
     }
 
+    /// What the windowless instance of `APP` is handed, and each app and room the host was
+    /// asked to run without a window.
+    type Windowless = (
+        tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
+        Arc<Mutex<Vec<(String, String)>>>,
+    );
+
     /// The host runs `APP` with no window when asked: it comes up as
     /// `peer_id`, marked as having no window, publishes `surface(peer_id)`
     /// plus an `open`, and opens its invocation stream. Each ask is recorded.
-    fn app_runs_windowless(
-        state: &Arc<CapnpBrokerState>,
-        peer_id: u64,
-    ) -> (
-        tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
-        Arc<Mutex<Vec<(String, String)>>>,
-    ) {
+    fn app_runs_windowless(state: &Arc<CapnpBrokerState>, peer_id: u64) -> Windowless {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let asked = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&asked);
@@ -1473,7 +1474,8 @@ mod tests {
                     return Ok(false);
                 }
                 let state = weak.upgrade().ok_or("the broker is gone")?;
-                if let Some(tx) = stream.lock().expect("stream").take() {
+                let first = stream.lock().expect("stream").take();
+                if let Some(tx) = first {
                     state
                         .launchable
                         .windowless_peers
@@ -1516,10 +1518,7 @@ mod tests {
             launches.lock().expect("launches").is_empty(),
             "no window was launched"
         );
-        assert_eq!(
-            *asked.lock().expect("asked"),
-            [(APP.to_owned(), room.clone())]
-        );
+        assert_eq!(*asked.lock().expect("asked"), [(APP.to_owned(), room)]);
         let delivered = windowless
             .try_recv()
             .expect("the windowless instance took it");
