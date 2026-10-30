@@ -1145,6 +1145,13 @@ impl OnboardingView {
         (shows_secret && self.rect.area() > 0.0).then_some(self.rect)
     }
 
+    /// Where setup's control `id` is in the host's space, as its last frame
+    /// laid it out.
+    #[cfg(test)]
+    pub(crate) fn control_rect(&mut self, id: &str) -> Option<Rect> {
+        self.app.control_rect(id)
+    }
+
     /// Reopen an explicitly deferred, source-attested migration for the active identity.
     ///
     /// # Errors

@@ -178,6 +178,20 @@ impl Hosted {
             .downcast_mut::<ui::app::EmbeddedApp>()?
             .component_root_mut()
     }
+
+    /// Where the app's control `id` is in the host's space, as its last frame
+    /// laid it out: what a pointer presses to reach it.
+    #[cfg(test)]
+    pub(super) fn control_rect(&mut self, id: &str) -> Option<vello::kurbo::Rect> {
+        let app = self
+            .app
+            .as_mut()?
+            .as_any_mut()?
+            .downcast_mut::<ui::app::EmbeddedApp>()?;
+        let origin = Widget::get_rect(app).origin().to_vec2();
+        let control = ui::widget::find_test_id(app.component_root_mut()?, id)?;
+        Some(control.get_rect() + origin)
+    }
 }
 
 impl OnboardingView {

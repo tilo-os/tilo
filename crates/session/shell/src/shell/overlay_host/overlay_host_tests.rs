@@ -442,8 +442,19 @@ fn activity_refresh_skips_unchanged_frames() {
         });
     };
     paint_at(&mut h, at);
+    assert!(refreshes() >= 1, "the first frame refreshes the awareness");
+    // The first frame also publishes what Quick Settings offers in this
+    // device's catalogue, after Activity looked: a chrome change the next
+    // frame's refresh sees. Unchanged frames are those after a frame that
+    // changed nothing.
+    loop {
+        let before = h.chrome.borrow().revision;
+        paint_at(&mut h, at);
+        if h.chrome.borrow().revision == before {
+            break;
+        }
+    }
     let settled = refreshes();
-    assert!(settled >= 1, "the first frame refreshes the awareness");
 
     for _ in 0..10 {
         paint_at(&mut h, at);
@@ -748,14 +759,15 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
         let mut document = AutoCommit::new();
         host.sync(&document, &automerge::ROOT);
         let mut h = build_harness_with_host(host, chrome);
+        // The tour is the setup app the shell hosts: its controls are laid
+        // out by the app's own frame, inside the host's.
+        paint(&mut h);
 
         let next = h
-            .node_map
-            .values()
-            .find_map(|&pointer| unsafe {
-                ((*pointer).test_id() == Some("onboarding.tour.next.button"))
-                    .then(|| (*pointer).get_rect())
-            })
+            .host
+            .onboarding
+            .as_deref_mut()
+            .and_then(|view| view.control_rect("onboarding.tour.next.button"))
             .expect("contextual tour exposes its Continue button");
         assert!(next.area() > 0.0, "Continue must have clickable geometry");
 
@@ -846,14 +858,18 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
 
     fn accessibility_overlay_paths_share_the_published_coexistence_order() {
         let mut h = build_harness();
-        h.host
-            .workspace_settings_overlay
-            .open_remove_member_sheet("peer".to_string());
         {
             let mut chrome = h.chrome.borrow_mut();
             chrome.overlays.quick_settings = true;
             chrome.quick_settings.nav_stack = vec![tilo_quick_settings::QsLevel::Root];
         }
+        // Quick Settings is an app the shell hosts: it is named once it is
+        // up and has drawn, as the frame after opening it leaves it.
+        h.host.force_quick_settings_settled();
+        paint(&mut h);
+        h.host
+            .workspace_settings_overlay
+            .open_remove_member_sheet("peer".to_string());
 
         let semantics = h.host.accessibility().expect("shell semantics");
         assert_eq!(
