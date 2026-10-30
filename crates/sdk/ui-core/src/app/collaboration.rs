@@ -702,6 +702,14 @@ impl App {
         self.collaboration.manager.state()
     }
 
+    /// Whether the app offered its action directory on its route, and how
+    /// many of its offers the broker took and refused (`None` without a
+    /// transport): what a host waiting for the app's directory says when it
+    /// never arrives.
+    pub fn action_directory_observation(&self) -> (bool, Option<(u64, u64)>) {
+        self.collaboration.manager.action_directory_observation()
+    }
+
     /// What this device can do with the document's end-to-end encrypted
     /// channel: while it is waiting for access (a new device before its
     /// welcome arrives) or was removed, nothing is read or written and the

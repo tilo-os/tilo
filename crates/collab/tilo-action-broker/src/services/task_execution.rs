@@ -215,6 +215,18 @@ pub const TRACKER_APP: &str = "so.tilo.tasks";
 /// The tracker's own resource, where its verbs are invoked with the issue
 /// they act on.
 pub const TRACKER_RESOURCE: &str = "tasks.tracker";
+/// The tracker's record: the app's one record of a room, its package primary.
+pub const TRACKER_RECORD: &str = "";
+
+/// A write on `route` was admitted to this device's channels. Where it is a
+/// room's tracker, its readers (the broker's runs, the composer following
+/// one) are told to read it again, as the owner's publication tells them in
+/// a room it commits: a sealed room's tracker changes only here.
+pub fn tracker_written(route: &crate::route::CrdtRoute) {
+    if route.app_id == TRACKER_APP && route.record_id == TRACKER_RECORD {
+        tilo_identity_host::policy_change::announce();
+    }
+}
 
 #[must_use]
 pub fn is_tracker_issue(task_id: &str) -> bool {
@@ -346,9 +358,28 @@ pub struct TrackerRun {
     pub directions: Vec<TrackerDirection>,
     /// What the run asks or last asked its person.
     pub question: Option<TrackerQuestion>,
+    /// The task delegation the asking device signed for a task agent's run,
+    /// encoded (`TaskDelegation::encode`), or why what the run carries is
+    /// none; `None` for a collaborator's run, whose membership is its
+    /// certification. Read through [`Self::delegation`].
+    pub delegation: Option<Result<Vec<u8>, String>>,
 }
 
 impl TrackerRun {
+    /// The run's task delegation, encoded; `None` for a collaborator's run.
+    ///
+    /// # Errors
+    /// The run carries a delegation that does not decode, and why.
+    pub fn delegation(&self) -> Result<Option<&[u8]>, String> {
+        match &self.delegation {
+            None => Ok(None),
+            Some(Ok(encoded)) => Ok(Some(encoded)),
+            Some(Err(error)) => Err(format!(
+                "the run's task delegation does not decode: {error}"
+            )),
+        }
+    }
+
     /// How many of the run's messages its agent took in: messages are taken
     /// in in order, so this is the revision the agent's steering reached.
     #[must_use]
@@ -373,17 +404,27 @@ impl TrackerRun {
 /// run's agent.
 pub trait TrackerRuns: Send + Sync {
     fn requires_room(&self, room: &str) -> bool;
+    /// Whether an agent in `room` acts only through its run's admission,
+    /// never on a room grant alone. Every room whose tracker is kept here
+    /// unless the host says otherwise: the room's tracker serving runs
+    /// ([`Self::requires_room`]) and agents being confined to them are two
+    /// decisions.
+    fn confines_agents_to_tasks(&self, room: &str) -> bool {
+        self.requires_room(room)
+    }
     /// Every run the room's tracker holds, going or ended.
     ///
     /// # Errors
     /// The room's tracker cannot be read now.
     fn runs(&self, room: &str) -> Result<Vec<TrackerRun>, String>;
-    /// Whether `agent` is still admitted to `room`, as the room's owner
-    /// holds it now: a removed agent reads its run no more.
+    /// Whether `run`'s agent is still admitted to `room`, as the room's
+    /// owner holds it now: a collaborator by its membership, a task agent by
+    /// its run's task delegation. A removed agent, or a task agent whose
+    /// device was revoked, reads its run no more.
     ///
     /// # Errors
     /// The agent is no longer admitted, or the room cannot be read.
-    fn check_agent(&self, room: &str, agent: &str) -> Result<(), String>;
+    fn check_agent(&self, room: &str, run: &TrackerRun) -> Result<(), String>;
     /// Apply the room's grants for the run's agent, acting for the run's
     /// starter, to `requirement`, as [`NativeTaskActionRequirement::check_tracker`]
     /// does for a room task. Where any of them asks first, the error starts

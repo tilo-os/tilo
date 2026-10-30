@@ -256,15 +256,23 @@ impl<T> Transient<T> {
     }
 
     /// When the message leaves (progress: when it must next be renewed),
-    /// for a widget's `next_wake_deadline`; none once it has, so a widget
-    /// that has not yet [expired](Self::expire) it is not woken over and
-    /// over. Under the capture clock nothing leaves.
+    /// for a widget's `next_wake_deadline`. It stays due while the window's
+    /// bar still shows the message, so the frame that takes it down runs at
+    /// that time without further input; once a sync has [published](Self::publish)
+    /// its leaving there is none, so the widget is not woken over and over.
+    /// Under the capture clock nothing leaves.
     #[must_use]
     pub fn deadline(&self) -> Option<crate::time::Instant> {
         if crate::time::wall_frozen() {
             return None;
         }
-        self.since().map(|shown| shown + NOTICE_LIFETIME)
+        let shown = self.current.as_ref()?;
+        let in_the_bar = self
+            .published
+            .borrow()
+            .as_ref()
+            .is_some_and(|(number, _)| *number == shown.number);
+        (self.get().is_some() || in_the_bar).then(|| shown.since + NOTICE_LIFETIME)
     }
 }
 

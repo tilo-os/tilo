@@ -186,6 +186,49 @@ impl Rooms {
                 self.enter(&room, device).await?;
                 self.page_room(&room).await?
             }
+            request @ (RoomsRequest::Invite { .. }
+            | RoomsRequest::Cancel { .. }
+            | RoomsRequest::Pending { .. }
+            | RoomsRequest::Requests { .. }
+            | RoomsRequest::Admit { .. }
+            | RoomsRequest::Decline { .. }
+            | RoomsRequest::WaitList { .. }
+            | RoomsRequest::Unlist { .. }
+            | RoomsRequest::MailInvite { .. }) => {
+                self.page_invitations(device, request, now).await?
+            }
+            request @ (RoomsRequest::SetRole { .. }
+            | RoomsRequest::Remove { .. }
+            | RoomsRequest::Ban { .. }
+            | RoomsRequest::Unban { .. }) => self.page_membership(device, request).await?,
+            RoomsRequest::PreAdmit {
+                request_id,
+                grant,
+                inviter_name,
+            } => {
+                self.page_pre_admit(device, request_id, grant, inviter_name)
+                    .await?
+            }
+            RoomsRequest::Notices { room } => self.page_notices(&room, device, now).await?,
+            RoomsRequest::Permits { room, node } => {
+                RoomsReply::Permits(self.page_permits(&room, device, &node).await?)
+            }
+            request @ (RoomsRequest::Share { .. } | RoomsRequest::Unshare { .. }) => {
+                self.page_share(device, request).await?
+            }
+            RoomsRequest::Name { room, name } => self.name_self(&room, device, &name, now).await?,
+        })
+    }
+
+    /// A page's invitations to a room, its wait list and the requests to join it, and what
+    /// it does with them.
+    async fn page_invitations(
+        &self,
+        device: &DeviceCert,
+        request: RoomsRequest,
+        now: u64,
+    ) -> Result<RoomsReply, CollaborationError> {
+        Ok(match request {
             RoomsRequest::Invite {
                 room,
                 request_id,
@@ -249,26 +292,7 @@ impl Rooms {
                     .await?;
                 RoomsReply::WaitList(self.wait_list(&room, device, now).await?)
             }
-            request @ (RoomsRequest::SetRole { .. }
-            | RoomsRequest::Remove { .. }
-            | RoomsRequest::Ban { .. }
-            | RoomsRequest::Unban { .. }) => self.page_membership(device, request).await?,
-            RoomsRequest::PreAdmit {
-                request_id,
-                grant,
-                inviter_name,
-            } => {
-                self.page_pre_admit(device, request_id, grant, inviter_name)
-                    .await?
-            }
-            RoomsRequest::Notices { room } => self.page_notices(&room, device, now).await?,
-            RoomsRequest::Permits { room, node } => {
-                RoomsReply::Permits(self.page_permits(&room, device, &node).await?)
-            }
-            request @ (RoomsRequest::Share { .. } | RoomsRequest::Unshare { .. }) => {
-                self.page_share(device, request).await?
-            }
-            RoomsRequest::Name { room, name } => self.name_self(&room, device, &name, now).await?,
+            _ => return Err(CollaborationError::new("not an invitation")),
         })
     }
 

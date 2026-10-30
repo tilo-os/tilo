@@ -237,16 +237,26 @@ fn launch_search(arguments: &[String]) -> Option<String> {
     })
 }
 
+/// How the window `cx` shows browses: private, as a visitor (a window the
+/// desktop opened for an agent), or as the person.
+fn window_mode(cx: &ViewCx<Browser>) -> BrowsingMode {
+    BrowsingMode::of_launch(
+        cx.is_private(),
+        cx.launch_flag(ui::webview::VISITOR_WINDOW_FLAG),
+    )
+}
+
 /// Framework app: the browser window is a view of [`Browser`].
 pub struct BrowserShell;
 
 impl ResourceApp for BrowserShell {
     type Resource = Browser;
-    const ID: &'static str = "so.tilo.browser";
+    const ID: &'static str = ui::webview::BROWSER_APP_ID;
     const TITLE: &'static str = "Browser";
     const ICON: Option<&'static str> = Some("browser");
     const ARGUMENTS: usize = 1;
     const PRIVATE_WINDOWS: bool = true;
+    const FLAGS: &'static [&'static str] = &[ui::webview::VISITOR_WINDOW_FLAG];
 
     fn commands() -> &'static [Command] {
         &[
@@ -303,17 +313,13 @@ impl ResourceApp for BrowserShell {
         // Only a window someone uses reaches the web: a past version and a
         // screenshot show the deterministic page of the test engine.
         let live = cx.mode().is_live();
-        let mode = if cx.is_private() {
-            BrowsingMode::Private
-        } else {
-            BrowsingMode::Normal
-        };
+        let mode = window_mode(cx);
         let widget = if live {
             if let Err(error) = crate::storage::prepare_window(mode.is_private()) {
                 tracing::error!(%error, "Cannot prepare browser storage");
             }
             BrowserWidget::new_with_mode(mode).with_service_client(
-                if !mode.is_private()
+                if mode.holds_account_custody()
                     && cx
                         .me()
                         .and_then(crate::service_sessions::identity)
@@ -325,7 +331,7 @@ impl ResourceApp for BrowserShell {
                 },
             )
         } else {
-            BrowserWidget::new_headless()
+            BrowserWidget::new_headless_in(mode)
         };
         // One window, one page. A launch without a page to show starts in
         // the address field; other pages are other windows, in the
@@ -435,9 +441,16 @@ pub(crate) fn browser_view(cx: &ViewCx<Browser>, mut window: BrowserWindow) -> E
 /// content store, and in a live window the person's records, this device's
 /// settings and the engine's wakes.
 fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
+    // The person's account custody (their website accounts, saved
+    // addresses, the profile handed over from another device) is lent only
+    // to their own window: a window opened for an agent browses as a
+    // visitor.
+    let custody = window_mode(cx).holds_account_custody();
     window.attach_dispatcher(cx.dispatcher(), cx.actions());
     window.attach_services(
-        cx.me().and_then(crate::service_sessions::identity),
+        cx.me()
+            .and_then(crate::service_sessions::identity)
+            .filter(|_| custody),
         cx.waker(),
     );
     // A picture of the page is content: the store keeps its bytes, and the
@@ -454,7 +467,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     if !cx.mode().is_live() {
         return;
     }
-    if !cx.is_private()
+    if custody
         && cx
             .me()
             .and_then(crate::service_sessions::identity)
@@ -481,16 +494,12 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     {
         window.attach_history(history);
     }
-    if !cx.is_private()
-        && let Some(person) = cx.me()
-    {
+    if custody && let Some(person) = cx.me() {
         window
             .page_mut()
             .attach_continuity(person, cx.storage().files(), cx.waker());
     }
-    if !cx.is_private()
-        && let Some(book) = cx.person::<crate::autofill::AddressBook>()
-    {
+    if custody && let Some(book) = cx.person::<crate::autofill::AddressBook>() {
         window.attach_address_book(book);
     }
     // The engine publishes frames and navigation from its own
@@ -772,6 +781,184 @@ mod tests {
             app.settle();
             if *scenario == "library-bookmarks" {
                 assert_eq!(app.state().bookmarks.len(), 2);
+            }
+        }
+    }
+
+    /// The window the desktop opens for an agent is launched with the
+    /// visitor switch: its page actions are published for a visitor's
+    /// page, reading it takes no confirmation, and the person's website
+    /// accounts are not in it. A window launched without it is the
+    /// person's own, where reading asks first.
+    #[test]
+    fn a_window_launched_as_a_visitor_holds_none_of_the_persons_custody() {
+        use ui::permissions::policy::Answer::{Allow, Ask};
+        let answers = |arguments: &[&str]| {
+            let engine = ui::webview::test_engine::TestEngine::new();
+            crate::browser_widget::test_window_engine::install(engine);
+            let mut app = TestApp::<BrowserShell>::launched(arguments).expect("Browser opens");
+            app.settle();
+            let published = app.harness().resources();
+            let page = find(&published, "browser.page").expect("the page is published");
+            let answer = |id: &str| {
+                let action = page
+                    .actions
+                    .iter()
+                    .find(|action| action.id == id)
+                    .unwrap_or_else(|| panic!("{id} is published"));
+                ui::permissions::policy::agent_answers::default_answer(
+                    action.contract.need().kind,
+                    action.contract.requires_confirmation(),
+                )
+            };
+            let answers = ["read-page", "capture-page", "click-page"].map(answer);
+            let accounts = app.call_on(
+                "browser.service-sessions",
+                "list-service-sessions",
+                serde_json::json!({}),
+            );
+            (answers, accounts)
+        };
+        let url = "https://github.com/ada";
+        let (visitor, accounts) = answers(&[ui::webview::VISITOR_WINDOW_FLAG, url]);
+        assert_eq!(visitor, [Allow, Allow, Ask]);
+        let refused = accounts.expect_err("a visitor's window holds no accounts");
+        assert!(
+            refused.to_string().contains("without your sign-ins"),
+            "{refused}"
+        );
+        let (own, _) = answers(&[url]);
+        assert_eq!(own, [Ask, Ask, Ask]);
+    }
+
+    /// The person typing into a password field of a visitor's window signs
+    /// it in: from that key on, reading its page asks first. Typing into
+    /// any other field does not.
+    #[test]
+    fn typing_a_password_into_a_visitors_window_makes_its_reads_ask_first() {
+        use ui::permissions::policy::Answer::{Allow, Ask};
+        let read_page = |app: &mut TestApp<BrowserShell>| {
+            app.settle();
+            let published = app.harness().resources();
+            let page = find(&published, "browser.page").expect("the page is published");
+            let action = page
+                .actions
+                .iter()
+                .find(|action| action.id == "read-page")
+                .expect("read-page is published");
+            ui::permissions::policy::agent_answers::default_answer(
+                action.contract.need().kind,
+                action.contract.requires_confirmation(),
+            )
+        };
+        let field = |purpose| ui::webview::TextField {
+            purpose,
+            multiline: false,
+            bounds: None,
+            composition: None,
+        };
+        let engine = ui::webview::test_engine::TestEngine::new();
+        crate::browser_widget::test_window_engine::install(engine.clone());
+        let mut app = TestApp::<BrowserShell>::launched(&[
+            ui::webview::VISITOR_WINDOW_FLAG,
+            "https://github.com/login",
+        ])
+        .expect("Browser opens");
+        for _ in 0..3 {
+            app.harness().relayout();
+        }
+        app.harness()
+            .click_named("browser.surface")
+            .expect("the page");
+        app.harness().relayout();
+
+        engine.set_text_field(Some(field(ui::ime::InputPurpose::Email)));
+        app.harness().key("a");
+        assert_eq!(read_page(&mut app), Allow, "an email is no credential");
+
+        engine.set_text_field(Some(field(ui::ime::InputPurpose::Password)));
+        app.harness().key("Tab");
+        assert_eq!(
+            read_page(&mut app),
+            Allow,
+            "moving through it enters nothing"
+        );
+        app.harness().key("h");
+        assert_eq!(
+            read_page(&mut app),
+            Ask,
+            "a password typed: the page signs in"
+        );
+
+        engine.set_text_field(None);
+        app.harness().key("x");
+        assert_eq!(read_page(&mut app), Ask, "and stays signed in");
+    }
+
+    /// What an agent can reach of a Browser window with a loaded page: the
+    /// action directory the window publishes, walked as the broker lists it
+    /// to an agent. A resource disclosed through a private UI view (one that
+    /// only changes what its caller sees, and neither reads the document nor
+    /// is the caller's own view) is never listed to an agent, and nothing
+    /// below it is either; any other resource is listed, or its actions are
+    /// listed in its place.
+    fn reachable_by_an_agent(app: &mut TestApp<BrowserShell>) -> Vec<(String, String)> {
+        use ui::collaboration::action_directory::ActionDirectorySnapshot;
+        use ui::tilo_actions::OperationKind;
+        let resources = app.harness().resources();
+        let descriptors = ui::tilo_actions::door::survey(&resources);
+        let snapshot = ActionDirectorySnapshot::build(&resources, &descriptors, |_| None);
+        let mut reached = Vec::new();
+        let mut levels = vec![Browser::KIND.to_owned()];
+        while let Some(level) = levels.pop() {
+            for row in snapshot
+                .nodes
+                .get(&level)
+                .map_or(&[][..], |node| &node.rows)
+            {
+                match (&row.action, &row.visibility) {
+                    (Some(action), _) => reached.push((row.resource.clone(), action.clone())),
+                    (None, Some(visibility)) => {
+                        let private_view = visibility.governing_kind == Some(OperationKind::View)
+                            && !visibility.contract.is_participant_view()
+                            && !visibility.contract.reads_document();
+                        if !private_view {
+                            levels.push(row.resource.clone());
+                        }
+                    }
+                    (None, None) => {}
+                }
+            }
+        }
+        reached
+    }
+
+    /// A Browser window that has loaded its page offers an agent the page's
+    /// own actions, read-page among them: the window it opened as a visitor
+    /// and the person's own alike. The page used to be disclosed only
+    /// through Stop, a private view, which hid it and everything on it.
+    #[test]
+    fn a_window_with_a_loaded_page_offers_an_agent_read_page() {
+        let url = "https://github.com/ada";
+        for arguments in [&[ui::webview::VISITOR_WINDOW_FLAG, url][..], &[url][..]] {
+            let engine = ui::webview::test_engine::TestEngine::new();
+            crate::browser_widget::test_window_engine::install(engine.clone());
+            let mut app = TestApp::<BrowserShell>::launched(arguments).expect("Browser opens");
+            engine.push_event(ui::webview::WebViewEvent::LoadFinished);
+            app.settle();
+            let reached = reachable_by_an_agent(&mut app);
+            for action in [
+                "read-page",
+                "capture-page",
+                "find-page-element",
+                "click-page",
+            ] {
+                assert!(
+                    reached
+                        .iter()
+                        .any(|(resource, id)| resource == "browser.page" && id == action),
+                    "{arguments:?}: {action} on browser.page is not offered to an agent: {reached:?}"
+                );
             }
         }
     }

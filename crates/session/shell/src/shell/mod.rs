@@ -58,6 +58,8 @@ pub(crate) mod desktop_commands;
 #[cfg(target_os = "linux")]
 pub(crate) mod desktop_continuation;
 pub mod desktop_control;
+pub(crate) mod desktop_door;
+pub(crate) mod desktop_layout;
 pub(crate) mod device_certification;
 pub mod device_fabric_runtime;
 pub mod device_local_actions;
@@ -193,6 +195,7 @@ pub mod storage_notice;
 pub mod system_sounds;
 pub(crate) mod system_update;
 pub mod tab_binding;
+pub(crate) mod task_agents;
 pub(crate) mod task_programs;
 pub mod test_control;
 #[cfg(unix)]
@@ -208,6 +211,7 @@ pub mod window_appearance;
 pub mod window_menu;
 pub mod window_previews;
 pub mod window_transfer;
+pub(crate) mod windowless;
 #[cfg(target_os = "linux")]
 pub mod windows_compat;
 pub(crate) mod work_accounting;

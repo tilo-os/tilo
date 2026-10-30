@@ -430,7 +430,8 @@ fn validate_language_pack(m: &Manifest) -> Result<(), ManifestError> {
             "[providers]",
             !(m.providers.mime.is_empty()
                 && m.providers.ext.is_empty()
-                && m.providers.schemes.is_empty()),
+                && m.providers.schemes.is_empty()
+                && m.providers.resources.is_empty()),
         ),
     ];
     if let Some((block, _)) = present.iter().find(|(_, present)| *present) {
@@ -506,7 +507,8 @@ fn validate_image(m: &Manifest) -> Result<(), ManifestError> {
             "[providers]",
             !(m.providers.mime.is_empty()
                 && m.providers.ext.is_empty()
-                && m.providers.schemes.is_empty()),
+                && m.providers.schemes.is_empty()
+                && m.providers.resources.is_empty()),
         ),
     ];
     if let Some((block, _)) = launchable.iter().find(|(_, present)| *present) {
@@ -541,7 +543,7 @@ fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
             return Err(ManifestError::BadProviderScheme(scheme.clone()));
         }
     }
-    for kind in &m.resources.kinds {
+    for kind in m.resources.kinds.iter().chain(&m.providers.resources) {
         if !valid_resource_kind(kind) {
             return Err(ManifestError::BadResourceKind(kind.clone()));
         }

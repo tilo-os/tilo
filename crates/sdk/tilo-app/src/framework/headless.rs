@@ -1237,6 +1237,26 @@ impl<A: ResourceApp> HeadlessApp<A> {
             instance_id: self.instance,
             address: tilo_actions::ActionAddress::new(resource, id),
         };
+        // What the action declares it answers, checked as the broker checks
+        // it: an answer outside it fails here as it fails live.
+        let declared = self
+            .harness()
+            .resources()
+            .into_iter()
+            .find(|candidate| candidate.id.as_str() == resource)
+            .and_then(|found| found.actions.into_iter().find(|spec| spec.id == id))
+            .map(|spec| spec.contract.result.clone());
+        let within = move |output: tilo_actions::ActionOutput| match &declared {
+            Some(declared) => declared
+                .validate(&output)
+                .map(|()| output)
+                .map_err(|error| {
+                    tilo_actions::DoorError::Failed(format!(
+                        "`{id}` answered outside the result it declares: {error}"
+                    ))
+                }),
+            None => Ok(output),
+        };
         let (invocation, started) = self
             .harness()
             .start_bound_job_for(invoker, &address, arguments, confirmed)?;
@@ -1244,7 +1264,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let harness = self.harness();
         if let Some(output) = started.completed() {
             harness.relayout();
-            return Ok(output);
+            return within(output);
         }
         let finished = |harness: &FrameHarness| {
             harness
@@ -1257,7 +1277,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             finished(harness).is_some()
         });
         match finished(harness) {
-            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => within(output),
             Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
                 Err(tilo_actions::DoorError::Failed(error.message))
             }

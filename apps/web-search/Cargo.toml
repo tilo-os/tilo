@@ -41,5 +41,9 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 workspace-hack = { version = "0.1" }
 
+[dev-dependencies]
+tilo-web-search = { path = "../../crates/platform/tilo-web-search", features = ["fixture-servers"] }
+tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util"] }
+
 [lints]
 workspace = true

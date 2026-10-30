@@ -42,8 +42,12 @@ pub(crate) struct ResourceType {
     pub(crate) record_table: Option<&'static tilo_resource::table::ModelTable>,
     /// [`Resource::local_operations`].
     pub(crate) local_operations: fn() -> Vec<tilo_actions::ActionSpec>,
-    /// Whether a resource id names one of the resource's items.
+    /// Whether a resource id names one of the resource's items, or a part
+    /// beneath one: what the record's own actions answer for.
     pub(crate) item_of: fn(&str) -> bool,
+    /// Whether a resource id names an item itself, what the framework's
+    /// item `open` shows: never a part beneath one nor a derived place.
+    pub(crate) opens_as_item: fn(&str) -> bool,
     /// [`tilo_resource::items::for_each_item_child`].
     pub(crate) items: fn(&[ItemCollection], &[ItemAction], &mut ItemChildVisitor<'_>),
     /// [`tilo_resource::items::item_child_id`].
@@ -61,6 +65,16 @@ impl ResourceType {
             record_table: R::RECORD_TABLE,
             local_operations: R::local_operations,
             item_of: |id| tilo_resource::items::item_of_resource::<R>(id).is_some(),
+            // An item of one of the record's collections, an item inside an
+            // item included: never a part beneath one (an issue's body, a
+            // channel's call) nor a derived place (`<kind>/derived/...`).
+            // The record's table says which; a resource without one counts
+            // `<kind>/<field>/<item>`.
+            opens_as_item: |id| match R::RECORD_TABLE {
+                Some(table) => tilo_resource::table::names_item(table, R::KIND, id),
+                None => tilo_resource::items::item_of_resource::<R>(id)
+                    .is_some_and(|(_, item)| !item.as_str().contains('/')),
+            },
             items: tilo_resource::items::for_each_item_child::<R>,
             item_id: tilo_resource::items::item_child_id::<R>,
         }

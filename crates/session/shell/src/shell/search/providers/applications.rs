@@ -1561,6 +1561,7 @@ mod tests {
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
             opens_secondary: false,
+            opens_resource_kinds: Vec::new(),
             offers: Vec::new(),
         }
     }

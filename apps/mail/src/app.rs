@@ -409,9 +409,6 @@ pub struct MailApp {
     /// What search hits and agents asked to open, taken up on the next
     /// settle.
     opens: std::rc::Rc<std::cell::RefCell<Vec<crate::actions::MailTarget>>>,
-    /// An attachment handed to another app, until the host says whether it
-    /// opened.
-    attachment_opening: Option<(String, ui::portal::LaunchChannel)>,
     /// Accounts whose watched inbox changed: fetched once the engine's
     /// events are drained.
     pending_watch_fetches: Vec<AccountConfig>,
@@ -814,7 +811,6 @@ impl MailApp {
             compose_attachment_contents: None,
             opens: std::rc::Rc::default(),
             pending_watch_fetches: Vec::new(),
-            attachment_opening: None,
             has_older: HashMap::new(),
             older_pending: HashMap::new(),
             kept_registered: true,
@@ -955,7 +951,7 @@ impl MailApp {
             }
             "offline" => {
                 self.shared.borrow_mut().status =
-                    Some("You’re offline · Showing downloaded mail".into());
+                    Some("You’re offline, showing downloaded mail".into());
             }
             _ => {}
         }
@@ -1099,8 +1095,14 @@ impl Mailroom {
         } = &mut request
             && known.is_none()
         {
-            *known =
-                crate::sync::Window::of(&self.shared.borrow().mailbox, &account.email, *folder);
+            let st = self.shared.borrow();
+            let passed = st
+                .passed_over
+                .get(&(account.email.clone(), *folder))
+                .copied();
+            *known = crate::sync::Window::of(&st.mailbox, &account.email, *folder)
+                .map(|held| held.with(passed))
+                .or(passed);
         }
         let Some(engine) = &self.engine else {
             return None;
@@ -2401,17 +2403,6 @@ impl MailApp {
             self.shared.borrow_mut().mailbox.purge(*gone);
         }
         *projected = kept;
-        // A draft's copy on its server, fetched with Drafts, is the draft
-        // itself: it shows once, as the draft.
-        for copy in mail.draft_copy_ids() {
-            if let Ok(copy) = copy.parse::<MessageId>() {
-                let mut st = self.shared.borrow_mut();
-                if st.mailbox.get(copy).is_some() {
-                    st.mailbox.purge(copy);
-                    st.dirty = true;
-                }
-            }
-        }
     }
 
     /// Whether the app is at first run (no account configured and no mail
@@ -2653,8 +2644,15 @@ impl MailApp {
         request_id: EngineRequestId,
         account_id: &str,
         folder: Folder,
-        synced: crate::sync::Synced,
+        mut synced: crate::sync::Synced,
     ) {
+        pass_over_draft_copies(
+            st,
+            &read_mail(doc.doc()).unwrap_or_default(),
+            account_id,
+            folder,
+            &mut synced,
+        );
         let (gone, reflagged) = server_changes(&st.mailbox, account_id, folder, &synced);
         for id in &gone {
             st.mailbox.purge(*id);
@@ -2735,8 +2733,19 @@ impl MailApp {
             .map(|account| account.config.email.clone())
             .filter(|email| !email.is_empty() && !self.kept_loaded.contains(email))
             .collect();
+        // A draft's server copy kept here before it was known as one is
+        // the draft itself: it is not shown again.
+        let copies: HashSet<MessageId> = self
+            .live
+            .as_ref()
+            .map(|live| live.get().draft_copy_ids())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|id| id.parse().ok())
+            .collect();
         for email in accounts {
-            let kept = self.state().store.load(&email);
+            let mut kept = self.state().store.load(&email);
+            kept.retain(|message| !copies.contains(&message.id));
             self.kept_loaded.insert(email);
             if kept.is_empty() {
                 continue;
@@ -4201,7 +4210,6 @@ impl Widget for MailApp {
         // so attachment export never blocks the frame loop or claims success
         // before the chosen file is actually written.
         self.drain_compose_attachment();
-        self.drain_attachment_opening();
         self.state().post_server_search();
         if self.compose.wants_address_book() {
             let book = {
@@ -4699,8 +4707,7 @@ impl Widget for MailApp {
         let workers_wake = self.workers_wake();
         let pending = (!workers_wake && self.state().awaiting_engine)
             || self.compose_attachment_rx.is_some()
-            || self.compose_attachment_contents.is_some()
-            || self.attachment_opening.is_some();
+            || self.compose_attachment_contents.is_some();
         let background = pending.then(|| {
             let deadline = self
                 .background_poll_deadline
@@ -4802,7 +4809,6 @@ enum Reveal {
     Message(MessageId),
     Draft,
     DraftId(String),
-    Attachment(MessageId, usize),
     Invitation(Draft),
     Contact(Draft),
 }
@@ -4910,7 +4916,8 @@ impl Mailroom {
             | MailEffect::ExportContent { .. }
             | MailEffect::ReadMessage { .. }
             | MailEffect::DraftReply { .. }
-            | MailEffect::Content { .. } => {
+            | MailEffect::Content { .. }
+            | MailEffect::OpenAttachment { .. } => {
                 Err("messages are answered from what this device keeps and the mailbox".into())
             }
             effect @ (MailEffect::LoadRemoteContent { .. }
@@ -5011,13 +5018,6 @@ impl Mailroom {
             }
             MailTarget::Draft => self.reveals.push(Reveal::Draft),
             MailTarget::DraftId(id) => self.reveals.push(Reveal::DraftId(id)),
-            MailTarget::Attachment { message, index } => {
-                let id = message
-                    .parse::<MessageId>()
-                    .map_err(|_| "invalid message id")?;
-                self.attachment_to_save(&message, index)?;
-                self.reveals.push(Reveal::Attachment(id, index));
-            }
         }
         self.dirty = true;
         Ok(())
@@ -5229,14 +5229,36 @@ impl Mailroom {
 
 impl MailApp {
     /// What opens the place a search hit or an agent's `open` names: a
-    /// folder, a message the mailbox publishes or one the window loaded.
+    /// folder, a message the mailbox publishes or one the window loaded, or
+    /// a draft (`mail.draft:<id>`), in a composer bound to it.
     pub(crate) fn opener(
         &self,
     ) -> impl FnMut(&str) -> Result<(), ui::tilo_resource::Refusal> + 'static {
         use crate::actions::MailTarget;
         let opens = std::rc::Rc::clone(&self.opens);
         let shared = std::rc::Rc::clone(&self.shared);
+        let live = self.live.clone();
         move |anchor| {
+            let draft = anchor
+                .strip_prefix("mail.draft:")
+                .or_else(|| anchor.rsplit_once("/draft:").map(|(_, id)| id));
+            if let Some(draft) = draft {
+                let id = crate::resource::draft_named(draft);
+                let kept = live
+                    .as_ref()
+                    .is_some_and(|live| live.get().draft_at(Some(id)).is_some());
+                let target = if crate::resource::is_composer_draft(id) {
+                    MailTarget::Draft
+                } else if kept {
+                    MailTarget::DraftId(id.to_owned())
+                } else {
+                    return Err(ui::tilo_resource::Refusal::new(
+                        "there is no such draft: draft-reply answers the drafts it makes",
+                    ));
+                };
+                opens.borrow_mut().push(target);
+                return Ok(());
+            }
             let message = anchor
                 .strip_prefix("mail.message:")
                 .or_else(|| anchor.rsplit_once("/message:").map(|(_, id)| id));
@@ -5288,7 +5310,6 @@ impl MailApp {
                         self.shared.borrow_mut().status = Some("That draft is gone".into());
                     }
                 }
-                Reveal::Attachment(message, index) => self.open_attachment(message, index),
                 Reveal::Contact(draft) => {
                     self.shared.borrow_mut().save_draft(doc, &draft);
                     self.compose.open_with_draft(&draft);
@@ -5307,45 +5328,25 @@ impl MailApp {
         }
     }
 
-    /// Open attachment `index` of `message` in the app that shows its kind
-    /// (a picture in Photos, a PDF in the PDF viewer), handing it over as
-    /// a file of this app's own.
-    fn open_attachment(&mut self, message: MessageId, index: usize) {
-        let (name, bytes) = match self.state().attachment_to_save(&message.to_string(), index) {
-            Ok(found) => found,
-            Err(error) => {
-                self.shared.borrow_mut().status = Some(error);
-                return;
-            }
-        };
-        let opening = self.state().store.opening(&name);
-        let Some(path) = opening else {
-            // Nowhere to put it on this host: save it instead.
-            self.request_attachment_save(message, index);
-            return;
-        };
-        if let Err(error) = std::fs::write(&path, &bytes) {
-            self.shared.borrow_mut().status = Some(format!("Couldn’t open {name}: {error}"));
+    /// Open attachment `index` of `message` in the app registered for its
+    /// type, through its published `open-attachment`: the desktop opens it,
+    /// as it does for an agent.
+    fn open_attachment(&self, message: MessageId, index: usize) {
+        if let Err(error) = self.state().attachment_to_save(&message.to_string(), index) {
+            self.shared.borrow_mut().status = Some(error);
             return;
         }
-        self.attachment_opening = Some((name, ui::portal::LaunchRequest::open(path).send()));
-        self.dirty = true;
-    }
-
-    /// Say why an attachment did not open, once the host answers.
-    fn drain_attachment_opening(&mut self) {
-        let Some((name, channel)) = self.attachment_opening.as_ref() else {
-            return;
-        };
-        let failure = match channel.try_recv() {
-            Err(TryRecvError::Empty) => return,
-            Ok(ui::portal::LaunchOutcome::Failed(error)) => Some(error),
-            Ok(_) | Err(TryRecvError::Disconnected) => None,
-        };
-        if let Some(error) = failure {
-            self.shared.borrow_mut().status = Some(format!("Couldn’t open {name}: {error}"));
+        let dispatcher = self.shared.borrow().dispatcher.clone();
+        if let Some(dispatcher) = dispatcher {
+            dispatcher.effect_on(
+                &format!("mail.attachment:{message}:{index}"),
+                &crate::actions::MailEffect::OpenAttachment {
+                    message: message.to_string(),
+                    index,
+                    group: None,
+                },
+            );
         }
-        self.attachment_opening = None;
     }
 
     fn request_attachment_save(&self, message: MessageId, index: usize) {
@@ -5977,10 +5978,13 @@ impl MailApp {
 /// read or starred, as reported.
 #[path = "server_deltas.rs"]
 mod server_deltas;
-use server_deltas::{first_fetch, server_changes, take_found};
+use server_deltas::{first_fetch, pass_over_draft_copies, server_changes, take_found};
 
 #[cfg(test)]
 mod tests;
 
 mod view;
 pub(crate) use view::window;
+
+#[cfg(all(feature = "live", any(test, feature = "fake-servers")))]
+mod driven;

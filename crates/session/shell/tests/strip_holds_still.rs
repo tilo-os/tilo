@@ -436,7 +436,6 @@ fn focus_stepped_to_a_window_stays_framed_while_apps_act() {
 #[test]
 fn a_free_three_finger_pan_stays_where_the_fingers_left_it() {
     let mut h = Harness::with_windows();
-    let groups = h.groups();
     // Leave the strip between rest positions, with windows cut on both
     // edges: exactly the framing a geometry-driven correction would
     // "fix".
@@ -457,7 +456,6 @@ fn a_free_three_finger_pan_stays_where_the_fingers_left_it() {
 #[test]
 fn clicking_into_a_partly_visible_window_focuses_it_in_place() {
     let mut h = Harness::with_windows();
-    let groups = h.groups();
     let row = h.row_rect();
     let focused = h.active_group();
     let partly = (0..h.windows.len()).find(|&n| {

@@ -121,6 +121,8 @@ pub fn receive_attachment(door: &Descriptor) -> io::Result<Option<Descriptor>> {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    use std::io::{Read as _, Write as _};
+
     use super::*;
 
     #[test]
@@ -132,7 +134,6 @@ mod tests {
             .unwrap()
             .expect("an attachment");
         // What the instance writes, the connector reads.
-        use std::io::{Read as _, Write as _};
         let mut instance = std::os::unix::net::UnixStream::from(instance);
         let mut received = std::os::unix::net::UnixStream::from(received);
         instance.write_all(b"hello").unwrap();

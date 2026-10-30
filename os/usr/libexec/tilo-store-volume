@@ -299,13 +299,15 @@ is_store_mounted() {
 #
 #   1. the account named by owner= in store-volume.conf (the installer writes
 #      it; it is also what a person sets by hand);
-#   2. the account this device is bound to: the one whose Tilo identity
-#      registry (~/.config/tilo/identity/registry.json) holds the identity the
-#      device's certificate was issued by (/var/lib/tilo/user-identity);
+#   2. the account that proves it holds the key of the identity this device
+#      is bound to: its proof, signed by that key, names its uid
+#      (`tilo-identity local-person`). A claim without such a proof is
+#      ignored;
 #   3. the person signed in at the login screen (seat0's active session).
 #
 # Prints "name uid:gid". Without one, prints why on stderr and fails.
 IDENTITY_ROOT="${TILO_STORE_IDENTITY:-/var/lib/tilo}"
+IDENTITY_TOOL="${TILO_STORE_IDENTITY_TOOL:-/usr/libexec/tilo/tilo-identity}"
 LOGINCTL="${TILO_STORE_LOGINCTL:-loginctl}"
 
 # passwd entries, from TILO_STORE_PASSWD in tests.
@@ -323,23 +325,21 @@ person_entry() {
   passwd_entries | awk -F: -v n="$1" '$1 == n && $3 >= 1000 {print $1 " " $3 ":" $4; found=1} END {exit !found}'
 }
 
-# The device's identity, as the hex id identity registries key it by.
-device_identity() {
-  local key="$IDENTITY_ROOT/user-identity/pubkey.bin" hex
-  [ -f "$key" ] || return 1
-  hex="$(od -An -v -tx1 -N32 -- "$key" | tr -d ' \n')"
-  [[ "$hex" =~ ^[0-9a-f]{64}$ ]] && printf '%s\n' "$hex"
-}
-
-# The regular accounts whose identity registry holds identity $1.
-accounts_holding() {
-  local id="$1" name uid home registry
-  while IFS=: read -r name _ uid _ _ home _; do
-    is_uint "$uid" && [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ] || continue
-    registry="$home/.config/tilo/identity/registry.json"
-    [ -f "$registry" ] || continue
-    grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"$id\"" -- "$registry" && printf '%s\n' "$name"
-  done < <(passwd_entries)
+# The account proving it holds the device's identity: prints "name uid:gid"
+# (status 0), says that several do (status 2), or nothing proves it (1).
+proven_person() {
+  local out status
+  [ -x "$IDENTITY_TOOL" ] || return 1
+  out="$("$IDENTITY_TOOL" local-person --identity-root "$IDENTITY_ROOT" \
+    ${TILO_STORE_PASSWD:+--passwd "$TILO_STORE_PASSWD"} 2>&1)" && status=0 || status=$?
+  case "$status" in
+    0)
+      [[ "$out" =~ ^[a-z_][a-z0-9_-]*\ [0-9]+:[0-9]+$ ]] || return 1
+      printf '%s\n' "$out"
+      ;;
+    2) log "$out" >&2; return 2 ;;
+    *) log "$out" >&2; return 1 ;;
+  esac
 }
 
 signed_in_person() {
@@ -350,29 +350,26 @@ signed_in_person() {
 }
 
 local_person() {
-  local name id holders
+  local name person status
   name="$(conf_get owner)"
   if [ -n "$name" ]; then
     person_entry "$name" && return 0
     log "store-volume.conf names owner=$name, which is not a regular account here." >&2
     return 1
   fi
-  if id="$(device_identity)"; then
-    holders="$(accounts_holding "$id")"
-    case "$(printf '%s' "$holders" | grep -c .)" in
-      1) person_entry "$holders" && return 0 ;;
-      0) ;;
-      *)
-        log "Several accounts hold this device's identity ($(printf '%s' "$holders" | paste -sd, -)); name the one whose files these are with owner=<account> in $ETC/tilo/store-volume.conf." >&2
-        return 1
-        ;;
-    esac
-  fi
+  person="$(proven_person)" && status=0 || status=$?
+  case "$status" in
+    0) printf '%s\n' "$person"; return 0 ;;
+    2)
+      log "Name the one whose files these are with owner=<account> in $ETC/tilo/store-volume.conf." >&2
+      return 1
+      ;;
+  esac
   if name="$(signed_in_person)" && [ -n "$name" ]; then
     person_entry "$name" && return 0
   fi
-  log "No account here holds this device's identity${id:+ ($id)} and nobody is signed in." >&2
-  log "Name the account whose files the workspace holds with owner=<account> in $ETC/tilo/store-volume.conf, or sign in to that account and bind this device to its Tilo identity." >&2
+  log "No account here proves it holds this device's identity, and nobody is signed in." >&2
+  log "Name the account whose files the workspace holds with owner=<account> in $ETC/tilo/store-volume.conf, or sign in to that account: signing in proves it holds the device's identity." >&2
   return 1
 }
 

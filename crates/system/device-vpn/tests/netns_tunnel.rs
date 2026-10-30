@@ -247,32 +247,15 @@ async fn endpoint() -> Endpoint {
 
 /// What the test needs from the machine, or what is missing.
 fn machine_ready() -> Result<(), String> {
+    // The probe .config/nextest-capabilities.toml names for these tests.
+    tilo_test_env::network_tunnel().map_err(|error| error.to_string())?;
     let config = Config::default();
     for (name, path) in [("ip", &config.ip), ("nft", &config.nft)] {
         if !path.exists() {
             return Err(format!("no {name} at {}", path.display()));
         }
     }
-    if !Path::new("/dev/net/tun").exists() {
-        return Err("no /dev/net/tun".into());
-    }
-    // nftables over netlink is what sandboxes most often refuse, so ask for
-    // it in the very namespaces the roles run in.
-    let status = Command::new("unshare")
-        .args(["--user", "--map-root-user", "--net", "--"])
-        .arg(&config.nft)
-        .args(["list", "ruleset"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|error| format!("unshare: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "nft in a namespace of unshare --user --map-root-user --net: {status}"
-        ))
-    }
+    Ok(())
 }
 
 #[test]

@@ -6356,54 +6356,49 @@ pub(super) mod tests {
 
     #[test]
     fn xkb_left_shift_toggles_modifier_mask() {
-        fn xkb_left_shift_toggles_modifier_mask() {
-            let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
-                eprintln!("xkb keymap unavailable (no xkeyboard-config?); skipping");
-                return;
-            };
-            // evdev KEY_LEFTSHIFT (42) + 8 = xkb keycode 50.
-            let shift = xkb::Keycode::new(50);
-            let down = kbd.process(shift, true);
-            let m = down
-                .modifiers_changed
-                .expect("shift press should flip the modifier mask");
-            assert!(m.state().shift_key(), "left shift down -> shift active");
-            let WindowEvent::KeyboardInput { event, .. } = down.input.expect("modifier key input")
-            else {
-                panic!("expected keyboard input")
-            };
-            assert_eq!(event.logical_key, Key::Named(NamedKey::Shift));
-            assert_eq!(event.physical_key.to_scancode(), Some(42));
+        let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
+            eprintln!("xkb keymap unavailable (no xkeyboard-config?); skipping");
+            return;
+        };
+        // evdev KEY_LEFTSHIFT (42) + 8 = xkb keycode 50.
+        let shift = xkb::Keycode::new(50);
+        let down = kbd.process(shift, true);
+        let m = down
+            .modifiers_changed
+            .expect("shift press should flip the modifier mask");
+        assert!(m.state().shift_key(), "left shift down -> shift active");
+        let WindowEvent::KeyboardInput { event, .. } = down.input.expect("modifier key input")
+        else {
+            panic!("expected keyboard input")
+        };
+        assert_eq!(event.logical_key, Key::Named(NamedKey::Shift));
+        assert_eq!(event.physical_key.to_scancode(), Some(42));
 
-            let up = kbd.process(shift, false);
-            let m = up
-                .modifiers_changed
-                .expect("shift release should flip the modifier mask");
-            assert!(!m.state().shift_key(), "left shift up -> shift cleared");
-        }
+        let up = kbd.process(shift, false);
+        let m = up
+            .modifiers_changed
+            .expect("shift release should flip the modifier mask");
+        assert!(!m.state().shift_key(), "left shift up -> shift cleared");
     }
 
     #[test]
     fn xkb_shift_event_itself_is_named_and_following_text_is_shifted() {
-        fn xkb_shift_event_itself_is_named_and_following_text_is_shifted() {
-            let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
-                eprintln!("xkb keymap unavailable; skipping");
-                return;
-            };
-            let down = kbd.process(xkb::Keycode::new(50), true);
-            let WindowEvent::KeyboardInput { event, .. } = down.input.expect("shift input") else {
-                panic!("expected keyboard input")
-            };
-            assert_eq!(event.logical_key, Key::Named(NamedKey::Shift));
+        let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
+            eprintln!("xkb keymap unavailable; skipping");
+            return;
+        };
+        let down = kbd.process(xkb::Keycode::new(50), true);
+        let WindowEvent::KeyboardInput { event, .. } = down.input.expect("shift input") else {
+            panic!("expected keyboard input")
+        };
+        assert_eq!(event.logical_key, Key::Named(NamedKey::Shift));
 
-            let letter = kbd.process(xkb::Keycode::new(38), true);
-            let WindowEvent::KeyboardInput { event, .. } = letter.input.expect("letter input")
-            else {
-                panic!("expected keyboard input")
-            };
-            assert_eq!(event.logical_key, Key::Character("A".into()));
-            assert_eq!(event.text.as_deref(), Some("A"));
-        }
+        let letter = kbd.process(xkb::Keycode::new(38), true);
+        let WindowEvent::KeyboardInput { event, .. } = letter.input.expect("letter input") else {
+            panic!("expected keyboard input")
+        };
+        assert_eq!(event.logical_key, Key::Character("A".into()));
+        assert_eq!(event.text.as_deref(), Some("A"));
     }
 
     #[test]
@@ -8502,25 +8497,22 @@ pub(super) mod tests {
 
     #[test]
     fn drm_repeat_event_matches_winit_contract_without_repressing_xkb() {
-        fn drm_repeat_event_matches_winit_contract_without_repressing_xkb() {
-            let Some(mut keyboard) = KeyboardXkb::from_settings(&KeyboardSettings::default())
-            else {
-                return;
-            };
-            let key = xkb::Keycode::new(38); // evdev KEY_A + 8
-            assert!(keyboard.key_repeats(key));
-            let _ = keyboard.process(key, true);
-            let WindowEvent::KeyboardInput { event, .. } = keyboard.repeat_event(key) else {
-                panic!("repeat must use the keyboard-input wire")
-            };
-            assert_eq!(event.logical_key, Key::Character("a".into()));
-            assert_eq!(event.state, ElementState::Pressed);
-            assert!(
-                event.repeat,
-                "native widgets distinguish the synthetic edge"
-            );
-            let _ = keyboard.process(key, false);
-        }
+        let Some(mut keyboard) = KeyboardXkb::from_settings(&KeyboardSettings::default()) else {
+            return;
+        };
+        let key = xkb::Keycode::new(38); // evdev KEY_A + 8
+        assert!(keyboard.key_repeats(key));
+        let _ = keyboard.process(key, true);
+        let WindowEvent::KeyboardInput { event, .. } = keyboard.repeat_event(key) else {
+            panic!("repeat must use the keyboard-input wire")
+        };
+        assert_eq!(event.logical_key, Key::Character("a".into()));
+        assert_eq!(event.state, ElementState::Pressed);
+        assert!(
+            event.repeat,
+            "native widgets distinguish the synthetic edge"
+        );
+        let _ = keyboard.process(key, false);
     }
 
     #[test]

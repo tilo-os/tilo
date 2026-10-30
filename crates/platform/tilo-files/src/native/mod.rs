@@ -40,6 +40,8 @@ pub mod migration;
 pub mod nofollow;
 pub mod private;
 pub mod retained_home;
+#[cfg(unix)]
+pub mod socket;
 
 /// Whether the native path itself names a regular file, without following a symlink.
 ///

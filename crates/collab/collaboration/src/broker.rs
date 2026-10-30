@@ -37,6 +37,10 @@ use tilo_sort::CompactSort as _;
 mod audio_output;
 #[path = "broker_bytes.rs"]
 mod bytes;
+#[path = "refused_answer.rs"]
+mod refused_answer;
+#[path = "task_agent_route.rs"]
+mod task_agent_route;
 use bytes::{command_bytes, event_diagnostics, fit_catalogue, remote_action_round_trip};
 #[path = "change_waits.rs"]
 mod change_waits;
@@ -5743,9 +5747,7 @@ fn origin_claims(
     app_id: &str,
     mutation: &collab_types::DocumentMutation,
 ) -> Vec<collab_types::ChangeClaim> {
-    let claims = collab_types::mutation_claims(mutation, collab_types::record_unit)
-        .map(|claims| crate::app_surface::with_footprints(app_id, claims));
-    claims.unwrap_or_else(|error| {
+    crate::app_surface::claims_of(app_id, mutation).unwrap_or_else(|error| {
         #[cfg(debug_assertions)]
         if let collab_types::DocumentMutation::Incremental(bytes) = mutation
             && collab_types::parse_changes(bytes).is_ok()
@@ -6827,11 +6829,10 @@ async fn dispatch_sdk_request(
                     // bridge stays open; a lost terminal may follow an effect
                     // and still stops subsequent outbound work.
                     if refused_by_peer(&error) {
-                        tracing::warn!(
-                            %error,
-                            id,
-                            "collab: the broker refused this invocation update; the bridge stays open"
-                        );
+                        if let Some(failed) = refused_answer::failure(id, &update, &error) {
+                            let sent = route.channel.update_invocation(id, &failed).await;
+                            refused_answer::followed(id, sent);
+                        }
                     } else {
                         tracing::warn!(%error, id, "collab: updating action invocation failed");
                         if update.is_terminal() {
@@ -9579,17 +9580,29 @@ mod tests {
     fn a_refused_invocation_update_keeps_the_bridge() {
         let broker = FakeBroker::default();
         let (mut manager, captured, thread) = committed_route_over_fake_broker(broker);
-        captured.lock().unwrap().refuse_terminals = 1;
+        {
+            let mut captured = captured.lock().unwrap();
+            captured.refuse_terminals = 1;
+            captured.invocation_fixture_enabled = true;
+        }
+        let refused = tilo_actions::InvocationId::new();
         manager.send(CollabRequest::UpdateInvocation {
             id: 41,
             update: tilo_actions::InvocationUpdate::Succeeded {
-                invocation: tilo_actions::InvocationId::new(),
+                invocation: refused,
                 output: tilo_actions::ActionOutput::default(),
             },
         });
-        tilo_test_env::wait_until("the refused update to be answered", || {
-            captured.lock().unwrap().terminal_updates == 1
+        // The refused answer is followed by the invocation's failure, so its
+        // caller is not left waiting for an answer that will not come.
+        tilo_test_env::wait_until("the refused answer's failure to reach the broker", || {
+            captured.lock().unwrap().terminal_updates == 2
         });
+        assert!(matches!(
+            &captured.lock().unwrap().invocation_updates[1],
+            (41, tilo_actions::InvocationUpdate::Failed { invocation, error })
+                if *invocation == refused && error.code == "answer_refused"
+        ));
         // Give the shovel a turn to act on the answer the broker sent.
         thread::sleep(Duration::from_millis(50));
         assert!(
@@ -9605,7 +9618,7 @@ mod tests {
             },
         });
         tilo_test_env::wait_until("the later update to reach the broker", || {
-            captured.lock().unwrap().terminal_updates == 2
+            captured.lock().unwrap().terminal_updates == 3
         });
         assert!(manager.is_connected());
         drop(manager);

@@ -10,26 +10,35 @@ fn rendered_enabled(widget: &dyn ui::widget::Widget, id: &str) -> Option<bool> {
         .find_map(|child| rendered_enabled(child, id))
 }
 
+/// Narrow the catalogue to `query` through its filter and press the Add of
+/// preset `slug`, as a person does.
+macro_rules! add_from_catalogue {
+    ($app:ident, $query:expr, $slug:expr) => {
+        $app.harness()
+            .click_named("agent-models-add-provider")
+            .unwrap();
+        $app.harness().type_text($query);
+        $app.settle();
+
+        $app.harness()
+            .click_named(&format!("agent-models-preset-{}", $slug))
+            .unwrap();
+        $app.settle();
+    };
+}
+
 #[test]
 fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions() {
     let backend = Arc::new(FakeAdminBackend::default());
     let mut app = mount(backend.clone());
     app.harness().resize((1800, 6000)).unwrap();
     app.settle();
-    // The known providers are one chooser; typing narrows it.
-    app.harness()
-        .click_named("agent-models-add-provider")
-        .unwrap();
-    app.harness().type_text("Anthropic");
-    app.harness().key("Enter");
-    app.settle();
-    assert_eq!(config(&mut app).profiles.len(), 1);
-    assert_eq!(config(&mut app).profiles[0].label, "Anthropic");
-    assert_eq!(
-        config(&mut app).profiles[0].endpoint,
-        "https://api.anthropic.com"
-    );
-    let id = config(&mut app).profiles[0].id.clone();
+    // Choosing a provider adds it and opens its form, the endpoint to fill.
+    add_from_catalogue!(app, "Anthropic-compatible provider", "anthropic-compatible");
+    let [added] = config(&mut app).profiles.try_into().unwrap();
+    let expected = ("Anthropic-compatible provider", "https://api.example.com");
+    assert_eq!((added.label.as_str(), added.endpoint.as_str()), expected);
+    let id = added.id;
     let save = format!("agent-models-save-provider-{id}");
     assert_eq!(
         rendered_enabled(app.harness().root_widget(), &save),
@@ -80,7 +89,13 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
     for role in [ui::Role::Viewer, ui::Role::Commenter] {
         app.set_role(role);
         app.settle();
-        for control in ["agent-models-add-provider", &save, &key, &toggle, &remove] {
+        for control in [
+            "agent-models-preset-openai-compatible",
+            &save,
+            &key,
+            &toggle,
+            &remove,
+        ] {
             assert_eq!(
                 rendered_enabled(app.harness().root_widget(), control),
                 Some(false),
@@ -111,6 +126,34 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
     assert!(config(&mut app).profiles.is_empty());
     assert!(backend.state.lock_recover().config.profiles.is_empty());
     assert!(backend.state.lock_recover().keys.is_empty());
+}
+
+#[test]
+fn mounted_catalogue_filter_narrows_the_known_providers() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let mut app = mount(backend);
+    app.harness().resize((1800, 6000)).unwrap();
+    app.settle();
+    let shown = |tree: &str, slug: &str| tree.contains(&format!("agent-models-preset-{slug}\""));
+    let tree = app.harness().inspection_json().unwrap();
+    assert!(shown(&tree, "openai"));
+    app.harness()
+        .click_named("agent-models-add-provider")
+        .unwrap();
+    app.harness().type_text("Anthropic");
+    app.settle();
+    let tree = app.harness().inspection_json().unwrap();
+    // Anthropic's dialect from every provider that speaks it, and the
+    // generic entries, which stay whatever the filter says.
+    for slug in [
+        "anthropic",
+        "zai-anthropic",
+        "moonshot-anthropic",
+        "openai-compatible",
+    ] {
+        assert!(shown(&tree, slug), "{slug}");
+    }
+    assert!(!shown(&tree, "groq"), "narrowed away");
 }
 
 #[test]
@@ -673,10 +716,13 @@ fn mounted_test_connection_lists_models_to_choose_from_and_says_why_it_failed() 
     // Listing changes nothing until a model is chosen.
     assert_eq!(config(&mut app).profiles[0].default_model, None);
 
-    let choose = format!("agent-models-choose-{id}");
-    // The list opens on its first model.
-    app.harness().click_named(&choose).unwrap();
-    app.harness().key("Enter");
+    // Each listed model is a row; choosing one takes it.
+    app.harness()
+        .click_named(&format!(
+            "agent-models-model-{id}-{}-use",
+            hex::encode("listed-a")
+        ))
+        .unwrap();
     app.settle();
     let chosen = config(&mut app).profiles[0].clone();
     assert_eq!(chosen.default_model.as_deref(), Some("listed-a"));

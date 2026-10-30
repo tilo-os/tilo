@@ -222,6 +222,22 @@ impl Window {
         }
     }
 
+    /// The named key `key` pressed and released.
+    fn press_key(&mut self, key: ui::winit::keyboard::NamedKey) {
+        use ui::winit::event::ElementState;
+        use ui::winit::keyboard::Key;
+        match self {
+            Self::Harness(window) => window.key(&format!("{key:?}")),
+            Self::Live(app) => {
+                Self::live_input(app, ui::synthetic_input::named_key(key));
+                Self::live_input(
+                    app,
+                    ui::synthetic_input::key_input(&Key::Named(key), ElementState::Released),
+                );
+            }
+        }
+    }
+
     fn root(&mut self) -> &mut dyn Widget {
         match self {
             Self::Harness(window) => window.root_widget_mut(),
@@ -443,7 +459,8 @@ impl Session {
 
     /// The centre of the open note's body.
     fn body(&mut self) -> (f64, f64) {
-        let rect = widget_by_id(self.window.root(), "block_editor")
+        let body = self.field_key("Write something");
+        let rect = widget_by_id(self.window.root(), &body)
             .expect("the open note's body is laid out")
             .get_rect();
         (rect.center().x, rect.center().y)
@@ -815,5 +832,151 @@ fn a_bar_press_runs_between_the_keys_before_and_after_it_and_typing_after_it_whe
             .iter()
             .any(|text| text.contains("Body") || text.contains("Echo\n")),
         "the new note's body has none of the other's typing: {shown:?}"
+    );
+}
+
+/// The texts of the open note's title and body, as the window shows them.
+fn open_note(session: &mut Session) -> (String, String) {
+    let text = |value: Option<tilo_ui_host::Value>| match value {
+        Some(tilo_ui_host::Value::Text(text)) => text,
+        None => String::new(),
+        Some(other) => panic!("a text field: {other:?}"),
+    };
+    let title = text(session.field_value("Untitled"));
+    let body = text(session.field_value("Write something"));
+    (title, body)
+}
+
+/// With the keyboard in a note's body, "+" in the window's bar, run by the window before the
+/// next keys reach it, and the new note's title typed: the keys go to the new note's title,
+/// never its body, round after round.
+#[test]
+fn after_a_bar_press_the_window_ran_from_the_body_typing_goes_to_the_new_notes_title() {
+    ui::window_toolbar::set_hosted(true);
+    for notebook in 0..4 {
+        let mut session = Session::live_notes();
+        let mut bar = Bar::over(&mut session);
+        for round in 0..6 {
+            if round % 2 == 1 {
+                let body = session.body();
+                session.window.click_at(body.0, body.1);
+                session.settle();
+                session.window.type_text("Text");
+                session.settle();
+            }
+            bar.press(&mut session, "New note", input_after(0));
+            // The press reaches the host, which runs it and answers, before the window's next
+            // frame: the keys come first.
+            if round % 3 == 2 {
+                session.settle();
+            } else {
+                for _ in 0..20 {
+                    session.host.turn();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+            session.window.type_text("Note title");
+            session.settle();
+            assert_eq!(
+                open_note(&mut session),
+                ("Note title".to_owned(), String::new()),
+                "notebook {notebook}, round {round}: the typing is the new note's title"
+            );
+        }
+    }
+}
+
+/// "+", the title, Enter, the body: Enter in the title, which submits nothing, moves the
+/// keyboard to the body, as native Notes does.
+fn enter_in_a_new_notes_title_moves_to_its_body(mut session: Session) {
+    let plus = session.new_note_button();
+    session.window.click_at(plus.0, plus.1);
+    session.settle();
+    session.window.type_text("Groceries");
+    session.settle();
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
+    session.settle();
+    session.window.type_text("Milk");
+    session.settle();
+    let (title, body) = open_note(&mut session);
+    assert_eq!(title, "Groceries");
+    assert_eq!(body.trim_end(), "Milk");
+}
+
+#[test]
+fn enter_in_a_new_notes_title_moves_the_keyboard_to_its_body() {
+    enter_in_a_new_notes_title_moves_to_its_body(Session::notes());
+}
+
+#[test]
+fn enter_in_a_new_notes_title_moves_the_keyboard_to_its_body_in_the_live_window() {
+    enter_in_a_new_notes_title_moves_to_its_body(Session::live_notes());
+}
+
+/// The window is made by the component shown before its record and taken over by the one the
+/// record opens, which closes the first. What its instance sends from then on (a change another
+/// writer made at the record's origin, an undo) wakes the component running the window: the
+/// window shows it then, not whenever something else wakes it.
+#[test]
+fn what_the_instance_sends_wakes_the_component_that_took_the_window_over() {
+    use tilo_render_protocol::patch::Transport as _;
+    use ui::wake::WakeScope;
+
+    fn woken(scope: &mut WakeScope) -> std::sync::mpsc::Receiver<()> {
+        let (woke, woken) = std::sync::mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woke.send(());
+            })
+            .unwrap();
+        woken
+    }
+
+    let (ours, theirs) = Channel::pair().unwrap();
+    // The component shown before the record makes the window, its patch connection at hand.
+    let mut opening = WakeScope::new();
+    let _opening_woken = woken(&mut opening);
+    let mut window = {
+        let _entry = opening.enter();
+        HostedWindow::over(theirs)
+    };
+    // The record opened: the component it opens takes the window over and closes the first.
+    let mut running = WakeScope::new();
+    let running_woken = woken(&mut running);
+    drop(opening);
+    {
+        let _entry = running.enter();
+        Widget::update(&mut window, &(), &());
+    }
+    // The instance sends what changed; the window's component is woken to show it.
+    let mut instance = ChannelTransport::new(ours).unwrap();
+    let nothing: [tilo_render_protocol::patch::ToUi; 0] = [];
+    instance
+        .send(tilo_render_protocol::patch::encode_batch(&nothing).unwrap())
+        .unwrap();
+    assert!(
+        running_woken
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .is_ok(),
+        "what the instance sent did not wake the component running the window"
+    );
+    {
+        let _entry = running.enter();
+        assert!(
+            Widget::update(&mut window, &(), &()),
+            "the window took nothing in"
+        );
+    }
+    // Woken again for what it sends next: the watch waits again once the window took it.
+    instance
+        .send(tilo_render_protocol::patch::encode_batch(&nothing).unwrap())
+        .unwrap();
+    assert!(
+        running_woken
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .is_ok(),
+        "the next thing the instance sent did not wake the window"
     );
 }

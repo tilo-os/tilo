@@ -83,6 +83,8 @@ browser-more-commands = Weitere Befehle
 browser-private = Privat
 browser-private-window = Privates Fenster
 browser-private-tooltip = Browserdaten werden entfernt, wenn dieses Fenster geschlossen wird. Heruntergeladene Dateien bleiben.
+browser-visitor-window = Nicht angemeldet
+browser-visitor-open-signed-in = Mit Ihren Anmeldungen öffnen
 
 ## The More menu
 browser-menu-site-information = Website-Informationen

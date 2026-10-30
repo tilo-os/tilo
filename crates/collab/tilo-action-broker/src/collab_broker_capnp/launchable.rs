@@ -95,6 +95,12 @@ fn superseded_by(key: &SurfaceKey, retained: &SurfaceKey) -> bool {
 
 /// Starts `app_id` in a workspace in place of the host's launcher. Tests
 /// stand in for launching the installed app with one.
+/// Where an app runs with no window, standing in for the host's
+/// ([`crate::services::LauncherServices::windowless`]).
+pub(super) type WindowlessStarter = Arc<
+    dyn Fn(&str, &str) -> Result<Option<crate::services::WindowlessStart>, String> + Send + Sync,
+>;
+
 pub(super) type AppLauncher = Arc<
     dyn Fn(&str, &tilo_desktop_model::Workspace, Option<&str>, &LaunchPlace) -> Result<(), String>
         + Send
@@ -253,6 +259,10 @@ pub(super) struct LaunchableCatalogue {
     surfaces: Mutex<HashMap<SurfaceKey, PublishedSurface>>,
     store: Mutex<Option<CatalogueStore>>,
     launcher: Mutex<Option<AppLauncher>>,
+    windowless: Mutex<Option<WindowlessStarter>>,
+    /// The connected apps the host runs with no window, by peer id: they
+    /// take actions on their records, never an `open`.
+    pub(super) windowless_peers: Mutex<std::collections::HashSet<u64>>,
     delivery_timeout: Mutex<Duration>,
     views: Mutex<ActorViews>,
 }
@@ -263,6 +273,8 @@ impl LaunchableCatalogue {
             surfaces: Mutex::new(HashMap::new()),
             store: Mutex::new(None),
             launcher: Mutex::new(None),
+            windowless: Mutex::new(None),
+            windowless_peers: Mutex::new(std::collections::HashSet::new()),
             delivery_timeout: Mutex::new(DELIVERY_TIMEOUT),
             views: Mutex::new(ActorViews::default()),
         }
@@ -416,6 +428,17 @@ impl LaunchableCatalogue {
     /// The launcher standing in for the host's, if one was installed.
     pub(super) fn launcher(&self) -> Option<AppLauncher> {
         self.launcher.lock_recover().clone()
+    }
+
+    /// Where apps run with no window, standing in for the host's, if one
+    /// was installed.
+    pub(super) fn windowless(&self) -> Option<WindowlessStarter> {
+        self.windowless.lock_recover().clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn replace_windowless_for_test(&self, windowless: WindowlessStarter) {
+        *self.windowless.lock_recover() = Some(windowless);
     }
 
     pub(super) fn delivery_timeout(&self) -> Duration {
@@ -1424,6 +1447,321 @@ mod tests {
             stream.try_recv().expect("delivered again").action,
             "new-window"
         );
+    }
+
+    /// What the windowless instance of `APP` is handed, and each app and room the host was
+    /// asked to run without a window.
+    type Windowless = (
+        tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
+        Arc<Mutex<Vec<(String, String)>>>,
+    );
+
+    /// The host runs `APP` with no window when asked: it comes up as
+    /// `peer_id`, marked as having no window, publishes `surface(peer_id)`
+    /// plus an `open`, and opens its invocation stream. Each ask is recorded.
+    fn app_runs_windowless(state: &Arc<CapnpBrokerState>, peer_id: u64) -> Windowless {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&asked);
+        let weak: Weak<CapnpBrokerState> = Arc::downgrade(state);
+        let stream = Mutex::new(Some(tx));
+        state
+            .launchable
+            .replace_windowless_for_test(Arc::new(move |app_id, room| {
+                recorded
+                    .lock()
+                    .expect("asked")
+                    .push((app_id.to_owned(), room.to_owned()));
+                if app_id != APP {
+                    return Ok(None);
+                }
+                let state = weak.upgrade().ok_or("the broker is gone")?;
+                let first = stream.lock().expect("stream").take();
+                if let Some(tx) = first {
+                    state
+                        .launchable
+                        .windowless_peers
+                        .lock()
+                        .expect("windowless")
+                        .insert(peer_id);
+                    state
+                        .invocation_subscribers
+                        .lock()
+                        .expect("subscribers")
+                        .insert(peer_id, tx);
+                    let mut up = surface(peer_id, room);
+                    up.actions.push(action(
+                        tilo_actions::remote::APPLICATION_OPEN_ACTION,
+                        tilo_actions::ConfirmationPolicy::None,
+                    ));
+                    state.surfaces.lock().expect("surfaces").insert(peer_id, up);
+                }
+                Ok(Some(started(Ok(()))))
+            }));
+        (rx, asked)
+    }
+
+    /// An action of a closed app that shows nothing (Tasks taking an ask,
+    /// a run reporting to its issue) runs in an instance of the app with no
+    /// window: nothing is launched, the host is asked once, and the action
+    /// reaches that instance; while it runs, it takes the next one too.
+    #[test]
+    fn an_action_that_shows_nothing_runs_without_a_window() {
+        let (state, room) = broker(&workspace());
+        let launches = app_comes_up_later(&state);
+        let (mut windowless, asked) = app_runs_windowless(&state, 9);
+        let owner = Caller::local_person("owner").in_room(&room);
+        let target =
+            tilo_actions::remote::application_action_target(&room, APP, "files.app", "new-window");
+
+        invoke(&state, &owner, &target.provider, "new-window", None)
+            .expect("admitted where the app runs without a window");
+        assert!(
+            launches.lock().expect("launches").is_empty(),
+            "no window was launched"
+        );
+        assert_eq!(*asked.lock().expect("asked"), [(APP.to_owned(), room)]);
+        let delivered = windowless
+            .try_recv()
+            .expect("the windowless instance took it");
+        assert_eq!(delivered.action, "new-window");
+        assert_eq!(delivered.actor, "owner");
+
+        invoke(&state, &owner, &target.provider, "new-window", None)
+            .expect("the running instance takes it");
+        assert_eq!(asked.lock().expect("asked").len(), 1, "asked for once");
+        assert_eq!(
+            windowless.try_recv().expect("delivered again").action,
+            "new-window"
+        );
+    }
+
+    /// A view action (an issue's page, its chat) shows something too: an
+    /// instance with no window is no publisher of it, and no closed app is
+    /// run without a window for it.
+    #[test]
+    fn a_view_action_never_goes_to_an_instance_without_a_window() {
+        let (state, room) = broker(&workspace());
+        let (tx, _windowless) = tokio::sync::mpsc::unbounded_channel();
+        let mut up = surface(9, &room);
+        let mut page = action("show-page", tilo_actions::ConfirmationPolicy::None);
+        page.operation_kind = tilo_actions::OperationKind::View;
+        up.actions.push(page);
+        state
+            .launchable
+            .windowless_peers
+            .lock()
+            .expect("windowless")
+            .insert(9);
+        state
+            .invocation_subscribers
+            .lock()
+            .expect("subscribers")
+            .insert(9, tx);
+        state.surfaces.lock().expect("surfaces").insert(9, up);
+        let shows = tilo_actions::ActionAddress::new("files.app", "show-page");
+        assert!(state.action_shows(APP, &room, &shows));
+        assert_eq!(state.ready_publisher(APP, &room, None, &shows), None);
+        let changes = tilo_actions::ActionAddress::new("files.app", "new-window");
+        assert!(!state.action_shows(APP, &room, &changes));
+        assert_eq!(
+            state.ready_publisher(APP, &room, None, &changes),
+            Some(9),
+            "it takes what shows nothing"
+        );
+    }
+
+    /// A component surface publishes its resources under its instance's
+    /// alias (as the session's windowless Tasks does): an application target
+    /// written with the app's own resource id reaches it, handed over under
+    /// the alias it published, rather than waiting for a publisher of the
+    /// plain id that never comes.
+    #[test]
+    fn an_application_target_reaches_an_instance_publishing_an_alias() {
+        let (state, room) = broker(&workspace());
+        let launches = app_comes_up_later(&state);
+        let (mut windowless, _) = app_runs_windowless(&state, 9);
+        let alias = format!(
+            "{}5de7eba4-60d5-41f3-bd8a-2c4e5d8d9dd2:464da94a-e962-41ee-b1bf-498c32006984:{}",
+            tilo_actions::BOUND_RESOURCE_PREFIX,
+            hex::encode("files.app")
+        );
+        let owner = Caller::local_person("owner").in_room(&room);
+        let target =
+            tilo_actions::remote::application_action_target(&room, APP, "files.app", "new-window");
+        // The instance comes up on the first ask; from then on it publishes
+        // the alias only.
+        invoke(&state, &owner, &target.provider, "new-window", None).expect("admitted");
+        windowless
+            .try_recv()
+            .expect("the first ask came up the instance");
+        for action in &mut state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .get_mut(&9)
+            .expect("the windowless instance publishes")
+            .actions
+        {
+            action.resource.clone_from(&alias);
+        }
+
+        assert_eq!(
+            state.ready_delivery(
+                APP,
+                &room,
+                None,
+                &tilo_actions::ActionAddress::new("files.app", "new-window"),
+            ),
+            Some((9, tilo_actions::ActionAddress::new(&alias, "new-window"))),
+            "the instance publishing the alias is the one ready"
+        );
+        invoke(&state, &owner, &target.provider, "new-window", None)
+            .expect("the instance publishing the alias takes it");
+        let delivered = windowless.try_recv().expect("delivered");
+        assert_eq!(delivered.action, "new-window");
+        assert_eq!(delivered.resource, alias, "handed over as it was published");
+        assert!(launches.lock().expect("launches").is_empty());
+    }
+
+    /// Opening shows what it opens: an `open` never goes to an instance with
+    /// no window, even one that publishes it, and launches a window instead.
+    #[test]
+    fn an_open_launches_a_window_past_an_instance_without_one() {
+        let (state, room) = broker(&workspace());
+        let (mut windowless, _) = app_runs_windowless(&state, 9);
+        let owner = Caller::local_person("owner").in_room(&room);
+        let shows_nothing =
+            tilo_actions::remote::application_action_target(&room, APP, "files.app", "new-window");
+        invoke(&state, &owner, &shows_nothing.provider, "new-window", None)
+            .expect("the windowless instance runs");
+        windowless.try_recv().expect("delivered without a window");
+
+        let open = tilo_actions::remote::APPLICATION_OPEN_ACTION;
+        // A window of the app comes up as peer 8, offering `open` too.
+        let (stream, streams) = std::sync::mpsc::channel();
+        let launches = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&launches);
+        let weak: Weak<CapnpBrokerState> = Arc::downgrade(&state);
+        state.launchable.replace_launcher_for_test(
+            Arc::new(move |app_id, workspace, _, _| {
+                recorded.lock().expect("launches").push(app_id.to_string());
+                let state = weak.upgrade().ok_or("the broker is gone")?;
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                state
+                    .invocation_subscribers
+                    .lock()
+                    .expect("subscribers")
+                    .insert(8, tx);
+                let mut up = surface(8, &workspace.room().to_string());
+                up.actions
+                    .push(action(open, tilo_actions::ConfirmationPolicy::None));
+                state.surfaces.lock().expect("surfaces").insert(8, up);
+                stream.send(rx).map_err(|error| error.to_string())
+            }),
+            tilo_test_env::hang_bound(),
+        );
+        assert_eq!(
+            state.ready_publisher(
+                APP,
+                &room,
+                None,
+                &tilo_actions::ActionAddress::new("files.app", open),
+            ),
+            None,
+            "an instance with no window is no publisher of `open`"
+        );
+        let target = tilo_actions::remote::application_action_target(&room, APP, "files.app", open);
+        invoke(&state, &owner, &target.provider, open, None).expect("opened in a window");
+        assert_eq!(
+            *launches.lock().expect("launches"),
+            [APP],
+            "a window was launched"
+        );
+        let mut window = streams.try_recv().expect("the window came up");
+        assert_eq!(window.try_recv().expect("the window took it").action, open);
+        assert!(
+            windowless.try_recv().is_err(),
+            "the windowless instance took no open"
+        );
+    }
+
+    /// An app the host runs no windowless instance of launches as before.
+    #[test]
+    fn an_app_without_a_windowless_instance_launches_as_before() {
+        let (state, room) = broker(&workspace());
+        let (_, asked) = app_runs_windowless(&state, 9);
+        let (streams, launches) = app_comes_up_as(&state, 8);
+        state
+            .launchable
+            .replace_windowless_for_test(Arc::new(|_, _| Ok(None)));
+        let owner = Caller::local_person("owner").in_room(&room);
+        let target =
+            tilo_actions::remote::application_action_target(&room, APP, "files.app", "new-window");
+        invoke(&state, &owner, &target.provider, "new-window", None).expect("launched");
+        assert_eq!(*launches.lock().expect("launches"), [APP]);
+        assert!(asked.lock().expect("asked").is_empty());
+        let mut window = streams.try_recv().expect("came up");
+        assert_eq!(window.try_recv().expect("delivered").action, "new-window");
+    }
+
+    /// The host's failure to run an app without a window is the action's
+    /// refusal, with its reason, and launches no window in its place.
+    #[test]
+    fn a_windowless_instance_that_failed_refuses_with_its_reason() {
+        let (state, room) = broker(&workspace());
+        let launches = app_comes_up_later(&state);
+        state
+            .launchable
+            .replace_windowless_for_test(Arc::new(|_, _| Err("no broker".into())));
+        let owner = Caller::local_person("owner").in_room(&room);
+        let target =
+            tilo_actions::remote::application_action_target(&room, APP, "files.app", "new-window");
+        match invoke(&state, &owner, &target.provider, "new-window", None) {
+            Err(ActionHostError::Unavailable { reason }) => {
+                assert!(
+                    reason.contains("no broker") && reason.contains(APP),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected the failure's reason, got {other:?}"),
+        }
+        assert!(
+            launches.lock().expect("launches").is_empty(),
+            "no window instead"
+        );
+    }
+
+    /// A start that ended as `ended`.
+    fn started(ended: Result<(), String>) -> crate::services::WindowlessStart {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(ended).expect("the receiver is here");
+        rx
+    }
+
+    /// An instance with no window that fails to start after it was asked
+    /// for answers the action at once, with why, rather than leaving it to
+    /// wait out the delivery deadline for a publisher that never comes.
+    #[test]
+    fn a_windowless_start_that_fails_refuses_at_once_with_its_reason() {
+        let (state, room) = broker(&workspace());
+        let launches = app_comes_up_later(&state);
+        state
+            .launchable
+            .replace_windowless_for_test(Arc::new(|_, _| {
+                Ok(Some(started(Err("the record did not open".into()))))
+            }));
+        let owner = Caller::local_person("owner").in_room(&room);
+        let target =
+            tilo_actions::remote::application_action_target(&room, APP, "files.app", "new-window");
+        match invoke(&state, &owner, &target.provider, "new-window", None) {
+            Err(ActionHostError::Unavailable { reason }) => assert!(
+                reason.contains("the record did not open") && reason.contains(APP),
+                "{reason}"
+            ),
+            other => panic!("expected the start's failure, got {other:?}"),
+        }
+        assert!(launches.lock().expect("launches").is_empty());
     }
 
     /// What an installed app's signed manifest offers while it is closed.

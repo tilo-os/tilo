@@ -14,6 +14,14 @@ use ui::tilo_resource::{self, Atom, Counter, JsonSchema, Model, Refusal};
 pub const MAX_TURN_MS: u64 = 900_000;
 /// The longest run a budget admits: two hours.
 pub const MAX_TOTAL_MS: u64 = 7_200_000;
+/// The most model turns a budget admits for one run: the same the run's
+/// envelope admits (`collab_types::task_budget::MAX_RUN_TURNS`, held equal
+/// by the shell's tracker-runs test).
+pub const MAX_TURNS: u64 = 10_000;
+/// The model turns an agent chat's run may take ([`Budget::chat`]).
+pub const CHAT_TURNS: u64 = 300;
+/// The longest turn of an agent chat's run: three minutes.
+pub const CHAT_TURN_MS: u64 = 180_000;
 /// Most per-step receipts a run keeps: the rest of the run still counts
 /// towards its totals and its budget, only their receipts are not listed.
 pub const MAX_SPEND_STEPS: u64 = 64;
@@ -120,6 +128,9 @@ pub struct Budget {
     pub turn_ms: u64,
     /// The longest the whole run may take, in milliseconds.
     pub total_ms: u64,
+    /// The most model turns one run may take; None for a run bounded by
+    /// its time alone.
+    pub max_turns: Option<u64>,
     /// The most tokens the issue's runs may spend, input and output
     /// together, counting its sub-issues'. None for no limit.
     pub max_tokens: Option<u64>,
@@ -132,6 +143,26 @@ pub struct Budget {
 }
 
 impl Budget {
+    /// The budget an agent chat starts with: room for a long task of many
+    /// items (eight mails of about fifteen steps each, with reading on and
+    /// re-reading), as long as a run may take, and a turn long enough for a
+    /// reasoning model. It limits no spending: that is the person's to set.
+    #[must_use]
+    pub fn chat() -> Self {
+        Self {
+            turn_ms: CHAT_TURN_MS,
+            total_ms: MAX_TOTAL_MS,
+            max_turns: Some(CHAT_TURNS),
+            ..Self::default()
+        }
+    }
+
+    /// Whether a turn ceiling is one a run may have.
+    #[must_use]
+    pub fn admits_turns(max_turns: Option<u64>) -> bool {
+        max_turns.is_none_or(|turns| (1..=MAX_TURNS).contains(&turns))
+    }
+
     /// Whether a budget of these ceilings is one a run may have: each within
     /// its range, a turn no longer than the run.
     #[must_use]
@@ -474,6 +505,10 @@ pub struct Run {
     pub agent: Atom,
     /// The person who approved it: the agent acts for them.
     pub starter: String,
+    /// The task delegation the starter's device signed for the task agent
+    /// made for this run, hex: its authority, verified by the broker. `None`
+    /// for a collaborator's run.
+    pub delegation: Option<String>,
     /// Where it stopped, when a person paused it: the phase it goes on in
     /// and the message boundary it reached. A paused run takes no new step,
     /// and resuming it continues from there, so what it already did is never

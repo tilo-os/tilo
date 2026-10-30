@@ -49,7 +49,7 @@
 "crates/browser/tilo-browser-runtime/src/browser.rs" = 3500
 "crates/collab/collaboration/src/broker.rs" = 13500
 "crates/collab/tilo-action-broker/src/channel_encryption.rs" = 3500
-"crates/collab/tilo-action-broker/src/collab_broker_capnp.rs" = 21500
+"crates/collab/tilo-action-broker/src/collab_broker_capnp.rs" = 20500
 "crates/collab/tilo-action-broker/src/collab_broker_capnp/action_host.rs" = 4000
 "crates/collab/tilo-peer-state/src/state.rs" = 4000
 "crates/dev/tilo-app-cli/src/lib.rs" = 10500
@@ -123,7 +123,7 @@
 "crates/session/shell/src/shell/chrome_state.rs" = 4500
 "crates/session/shell/src/shell/device_fabric_runtime/mod.rs" = 11000
 "crates/session/shell/src/shell/foreign.rs" = 8500
-"crates/session/shell/src/shell/frame.rs" = 10500
+"crates/session/shell/src/shell/frame.rs" = 9746
 "crates/session/shell/src/shell/frame_retained_tests.rs" = 4000
 "crates/session/shell/src/shell/launcher.rs" = 7000
 "crates/session/shell/src/shell/network.rs" = 13000

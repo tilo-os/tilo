@@ -10,10 +10,11 @@
 use ui::prelude::*;
 use ui::tilo_resource::NonBlank;
 
-use crate::model::{Status, Tracker, tracker};
+use crate::model::{AgentRequest, Question, RunPhase, Status, StepSpend, Tracker, tracker};
 use crate::{Filter, Nav, Place};
 
-pub(crate) const SCENARIOS: &[&str] = &["issues", "board", "issue", "mine", "thread", "todo"];
+pub(crate) const SCENARIOS: &[&str] =
+    &["issues", "board", "issue", "mine", "thread", "todo", "chat"];
 
 /// One issue of the scene: its title, where it stands, whose it is, and its
 /// label.
@@ -131,7 +132,151 @@ pub(crate) fn tracker(person: &str) -> Tracker {
         replica.set_now_ms(at);
         let _ = replica.apply(Tracker::ADD_LABEL.with(tracker::AddLabel { issue: id, label }));
     }
+    chat(&mut replica, person, at);
     replica.state().unwrap_or_default()
+}
+
+/// The issue the chat scenario shows: an agent going through three job
+/// applications, telling its progress per application, the person steering
+/// it on the way, and the run waiting for the person's answer before it
+/// sends a message.
+const CHAT_ISSUE: &str = "chat-applications";
+/// The agent the chat is with, as the room names it.
+const CHAT_AGENT: &str = "agent:Claude";
+
+/// One step the agent spent, on a hosted model.
+fn step(step: u64, cost_micros: u64) -> StepSpend {
+    StepSpend {
+        step,
+        model: "Claude Sonnet 4.6".into(),
+        device: "Ada's laptop".into(),
+        input_tokens: 5_200,
+        output_tokens: 900,
+        priced_calls: 0,
+        cost_micros,
+        currency: "EUR".into(),
+    }
+}
+
+/// The chat's conversation, made through the tracker's own actions: the
+/// person's on `person`'s replica, the agent's on a replica of the agent
+/// working for them.
+fn chat(replica: &mut Replica<Tracker>, person: &str, mut at: i64) {
+    let issue = Id::from_raw(CHAT_ISSUE);
+    replica.set_now_ms(at);
+    let asked = replica.apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
+        ask: AgentRequest {
+            id: issue.clone(),
+            title: "Review the three job applications in my inbox".into(),
+            body: Some(
+                "Review the three applications for the frontend role in my inbox: read each CV \
+                 and portfolio, and tell me who to invite."
+                    .into(),
+            ),
+            agent: CHAT_AGENT.into(),
+            ..AgentRequest::default()
+        },
+    }));
+    if asked.is_err() {
+        return;
+    }
+    let mut agent = replica.fork().as_agent_for(CHAT_AGENT, person);
+    let said = |agent: &mut Replica<Tracker>, at: &mut i64, text: &str| {
+        *at = at.saturating_add(20_000);
+        agent.set_now_ms(*at);
+        if let Some(text) = NonBlank::parse(text) {
+            let _ = agent.apply(Tracker::REPORT_RUN.with(tracker::ReportRun {
+                issue: issue.clone(),
+                phase: RunPhase::Executing,
+                text: Some(text),
+            }));
+        }
+    };
+    said(
+        &mut agent,
+        &mut at,
+        "Found 3 applications for the frontend role: Jane Doe, Omar Haddad and Lena Fischer.",
+    );
+    at = at.saturating_add(5_000);
+    agent.set_now_ms(at);
+    let _ = agent.apply(Tracker::RECORD_READ.with(tracker::RecordRead {
+        issue: issue.clone(),
+        resource: ui::tilo_reference::ResourceAt {
+            app: "so.tilo.files".into(),
+            record: None,
+            reference: ui::tilo_reference::ResourceRef::whole(
+                "files.entry",
+                "Documents/Applications/Jane Doe CV.pdf",
+                "Jane Doe CV.pdf",
+            ),
+        },
+    }));
+    let _ = agent.apply(Tracker::SETTLE_SPEND.with(tracker::SettleSpend {
+        issue: issue.clone(),
+        step: step(1, 31_000),
+    }));
+    said(
+        &mut agent,
+        &mut at,
+        "1 of 3: reviewed Jane Doe. Six years of React, led the accessibility work on a \
+         shipped design system; her portfolio shows two products in use.",
+    );
+    // The person steers it while it works; it takes the message in.
+    let _ = replica.sync_with(&mut agent);
+    at = at.saturating_add(15_000);
+    replica.set_now_ms(at);
+    if let Some(text) = NonBlank::parse(
+        "Invite Jane for an interview next week. Only draft replies to the others for now.",
+    ) {
+        let _ = replica.apply(Tracker::TELL_AGENT.with(tracker::TellAgent {
+            issue: issue.clone(),
+            text,
+        }));
+    }
+    let _ = agent.sync_with(replica);
+    let _ = agent.apply(Tracker::INCORPORATE.with(tracker::Incorporate {
+        issue: issue.clone(),
+        through: 1,
+    }));
+    said(
+        &mut agent,
+        &mut at,
+        "2 of 3: reviewed Omar Haddad. Strong on performance work, little product design; \
+         drafted a reply that keeps him in mind for the platform role.",
+    );
+    let _ = agent.apply(Tracker::SETTLE_SPEND.with(tracker::SettleSpend {
+        issue: issue.clone(),
+        step: step(2, 27_000),
+    }));
+    said(
+        &mut agent,
+        &mut at,
+        "3 of 3: reviewed Lena Fischer. Recent graduate with a careful portfolio; drafted a \
+         friendly no with feedback on her case study.",
+    );
+    ask_to_send(&mut agent, &issue, at.saturating_add(10_000));
+    let _ = replica.sync_with(&mut agent);
+}
+
+/// The run asks before it sends the invitation: an action that asks first.
+fn ask_to_send(agent: &mut Replica<Tracker>, issue: &Id, at: i64) {
+    agent.set_now_ms(at);
+    let _ = agent.apply(Tracker::ASK_CONFIRMATION.with(tracker::AskConfirmation {
+        issue: issue.clone(),
+        question: Question {
+            id: "invite-jane".into(),
+            app: "so.tilo.mail".into(),
+            action: "send".into(),
+            resource: "mail.account".into(),
+            arguments_digest: "sample".into(),
+            draft: ui::serde_json::json!({
+                "action_label": "Send message",
+                "resource_label": "Mail",
+                "fields": [],
+            }),
+            preview: None,
+        },
+    }));
 }
 
 /// The issue `title` names, as the replica has it now.
@@ -160,6 +305,7 @@ pub(crate) fn stage(scenario: Option<&str>, nav: &Nav, tracker: &Tracker) {
             }
         }
         Some("thread") => nav.place.set(Place::Thread),
+        Some("chat") => nav.chat.set(Some(Id::from_raw(CHAT_ISSUE))),
         Some("todo") => {
             nav.place.set(Place::List);
             nav.filter.set(Some(Filter::Todo.key()));

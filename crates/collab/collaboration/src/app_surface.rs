@@ -226,6 +226,102 @@ pub fn with_footprints(
     claims
 }
 
+/// The claims of the changes `mutation` carries, a change this process made to
+/// a record of `app_id`, each naming as units what its action may write
+/// ([`with_footprints`]): what the op that carries it is signed with.
+///
+/// A change names what it is in its message. One store wrote a record's
+/// first change with none: its schema stamp, a root change with no deps that
+/// only sets [`app_state::SCHEMA_VERSION_KEY`]. That change is the record's
+/// creation by what it is, so it is claimed as one
+/// ([`collab_types::FrameworkChange::Genesis`]), as a store now names it when
+/// it writes it: a record whose first change is such a stamp is handed to a
+/// sealed room whole, with no change rewritten and no id changed.
+///
+/// # Errors
+/// A change that names nothing and is no such stamp, or bytes that are no
+/// changes.
+pub fn claims_of(
+    app_id: &str,
+    mutation: &collab_types::DocumentMutation,
+) -> Result<Vec<collab_types::ChangeClaim>, collab_types::ClaimError> {
+    let changes = match mutation {
+        collab_types::DocumentMutation::Snapshot(_) => return Ok(Vec::new()),
+        collab_types::DocumentMutation::Incremental(bytes) => {
+            collab_types::claim::parse_changes(bytes)?
+        }
+    };
+    let claims = changes
+        .iter()
+        .map(|change| {
+            if change.message().is_none() && is_schema_stamp(change) {
+                return Ok(collab_types::ChangeClaim {
+                    change: change.hash().0,
+                    action: collab_types::ClaimedAction::Framework(
+                        collab_types::FrameworkChange::Genesis,
+                    ),
+                    units: collab_types::record_unit(change),
+                });
+            }
+            collab_types::claim::claims_of(std::slice::from_ref(change), collab_types::record_unit)
+                .map(|mut one| one.remove(0))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(with_footprints(app_id, claims))
+}
+
+/// Whether `change` is a store's schema stamp as it was written before a
+/// record's first change named itself: no deps, and every op a put of
+/// [`app_state::SCHEMA_VERSION_KEY`] on the document's root.
+fn is_schema_stamp(change: &automerge::Change) -> bool {
+    use automerge::legacy::{Key, ObjectId};
+    if !change.deps().is_empty() {
+        return false;
+    }
+    let expanded = change.decode();
+    !expanded.operations.is_empty()
+        && expanded.operations.iter().all(|op| {
+            op.obj == ObjectId::Root
+                && !op.insert
+                && matches!(&op.key, Key::Map(key) if key.as_str() == app_state::SCHEMA_VERSION_KEY)
+                && matches!(op.action, automerge::legacy::OpType::Put(_))
+        })
+}
+
+/// Why a room refuses `mutation`, a change this process made to `record` of
+/// `app_id`, by what the app's surface publishes, if it does: the check every
+/// receiver runs on its claims ([`collab_types::check_claims_by_kind`]), the
+/// grants aside, which the broker decides. `None` when this process holds no
+/// surface for the app: its receivers then hold the change until one arrives.
+#[must_use]
+pub fn refusal(
+    record: &collab_types::Record<'_>,
+    mutation: &collab_types::DocumentMutation,
+) -> Option<String> {
+    let claims = match claims_of(record.app, mutation) {
+        Ok(claims) => claims,
+        Err(error) => return Some(error.to_string()),
+    };
+    // optional-decode: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
+    let file = bytes_of(record.app)
+        .and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())?;
+    let surface_for = |kind: Option<&str>| {
+        file.resource(kind).map(|resource| {
+            std::sync::Arc::new(collab_types::surface::KindSurface(resource.clone()))
+                as std::sync::Arc<dyn collab_types::ReceiptSurface>
+        })
+    };
+    match collab_types::check_claims_by_kind(&claims, record, None, &surface_for, &|_, _| true) {
+        Ok(collab_types::Receipt::Admit) => None,
+        // The surface is here: what holds is a resource kind it does not publish, which no
+        // receiver holding it admits.
+        Ok(collab_types::Receipt::Hold) => {
+            Some("the record's app publishes no resource the change names".to_owned())
+        }
+        Err(refusal) => Some(refusal.to_string()),
+    }
+}
+
 /// Parse a lowercase hex hash, as [`SURFACE_HASH_ENV`] carries it.
 #[must_use]
 pub fn parse_hash(hex: &str) -> Option<[u8; 32]> {
@@ -237,6 +333,43 @@ pub fn parse_hash(hex: &str) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a store's old schema stamp is claimed by what it is: a root change with no deps
+    /// that only sets the schema version. Any other change that names nothing stays unclaimed.
+    #[test]
+    fn an_unnamed_schema_stamp_is_claimed_as_the_records_genesis_and_nothing_else_is() {
+        use automerge::transaction::Transactable as _;
+        let claimed = |doc: &mut automerge::AutoCommit, after: &[automerge::ChangeHash]| {
+            claims_of(
+                "test.stamps",
+                &collab_types::DocumentMutation::Incremental(doc.save_after(after)),
+            )
+        };
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, app_state::SCHEMA_VERSION_KEY, 1_u64)
+            .unwrap();
+        let stamp = doc.commit().unwrap();
+        let claims = claimed(&mut doc, &[]).unwrap();
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].change, stamp.0);
+        assert_eq!(
+            claims[0].action,
+            collab_types::ClaimedAction::Framework(collab_types::FrameworkChange::Genesis)
+        );
+        // The same write on top of the record is no creation of it.
+        doc.put(automerge::ROOT, app_state::SCHEMA_VERSION_KEY, 2_u64)
+            .unwrap();
+        doc.commit();
+        assert!(claimed(&mut doc, &[stamp]).is_err());
+        // Nor is a first change that writes anything else.
+        let mut other = automerge::AutoCommit::new();
+        other
+            .put(automerge::ROOT, app_state::SCHEMA_VERSION_KEY, 1_u64)
+            .unwrap();
+        other.put(automerge::ROOT, "title", "x").unwrap();
+        other.commit();
+        assert!(claimed(&mut other, &[]).is_err());
+    }
 
     #[test]
     fn only_the_kinds_a_surface_marks_are_the_persons() {

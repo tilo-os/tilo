@@ -206,7 +206,9 @@ impl Contacts {
     }
 
     /// The favorites, every group and the likely duplicates (a bounded
-    /// number), as places that reveal them.
+    /// number), as places that reveal them. A duplicate's read is what
+    /// discloses it, so merging the two is offered to whoever may read it,
+    /// an agent too, where its review is this window's own view.
     fn places(&self) -> Vec<Derived<Self>> {
         let favorites = Derived::new("Favorites")
             .of_kind("favorites")
@@ -231,6 +233,10 @@ impl Contacts {
                     ))
                     .of_kind("duplicate")
                     .identified(duplicate_place(survivor.id, source.id))
+                    .with_effect(&ContactsEffect::ReadDuplicate {
+                        survivor: survivor.id,
+                        source: source.id,
+                    })
                     .with_effect(&ContactsEffect::OpenReview {
                         survivor: survivor.id,
                         source: source.id,
@@ -548,3 +554,55 @@ impl ContactsApp {
 mod tests;
 
 ui::reach_tests!(ContactsShell);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    use ui::framework::ResourceApp;
+    use ui::framework::testing::TestApp;
+    use ui::tilo_actions::ResourceSpec;
+
+    /// The document read of the first resource of `kind` any scenario
+    /// publishes, invoked as `tilo_read` on it does.
+    fn read_first(kind: &str) -> ui::serde_json::Value {
+        for scenario in <super::ContactsShell as ResourceApp>::scenarios() {
+            let mut app = TestApp::<super::ContactsShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            app.settle();
+            let resources = app.harness().resources();
+            if let Some((resource, read)) = document_read(&resources, kind) {
+                return app
+                    .call_on(&resource, &read, ui::serde_json::json!({}))
+                    .unwrap_or_else(|error| panic!("{kind} in {scenario}: {error}"))
+                    .unwrap_or_else(|| panic!("the read of {kind} answers"));
+            }
+        }
+        panic!("no scenario publishes a {kind} with a document read");
+    }
+
+    fn document_read(resources: &[ResourceSpec], kind: &str) -> Option<(String, String)> {
+        resources.iter().find_map(|resource| {
+            resource
+                .actions
+                .iter()
+                .find(|action| resource.kind == kind && action.contract.reads_document())
+                .map(|read| (resource.id.as_str().to_owned(), read.id.clone()))
+                .or_else(|| document_read(&resource.children, kind))
+        })
+    }
+
+    #[test]
+    fn a_possible_duplicate_is_read_through_its_document_read() {
+        let answer = read_first("contacts.book.duplicate");
+        assert!(answer["survivor"]["item"].is_string(), "{answer}");
+        assert!(answer["shared"][0].is_string(), "{answer}");
+    }
+
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<super::ContactsShell>()
+        {
+            panic!("{failures}");
+        }
+    }
+}

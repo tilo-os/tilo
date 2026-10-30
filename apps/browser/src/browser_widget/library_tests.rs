@@ -312,12 +312,7 @@ fn downloads_cancel_reject_and_keep_stable_actions() {
                 .iter()
                 .map(|action| action.id.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "show-download",
-                "read-download",
-                "open-download",
-                "reveal-download"
-            ]
+            vec!["read-download", "open-download", "reveal-download"]
         );
         for action in &resource.actions {
             assert_eq!(action.locus, ui::tilo_actions::ExecutionLocus::ClientLocal);

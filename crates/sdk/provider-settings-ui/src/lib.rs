@@ -5,18 +5,18 @@ use crate::widgets::{
     value_row,
 };
 use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
-use agent_provider_config::presets::{Authentication, Preset};
+use agent_provider_config::presets::Preset;
 use agent_provider_config::protocol::{ErrorKind, ModelError};
 use agent_provider_config::{
-    AgentModel, EndpointLocation, Interaction, ModelDescriptor, ModelRequestLimits, ProviderConfig,
-    ProviderProfile, ProviderProtocol,
+    AgentModel, CapabilitySource, EndpointLocation, Interaction, ModelDescriptor,
+    ModelRequestLimits, ProviderConfig, ProviderProfile, ProviderProtocol,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use ui::framework::{ActionControl, LiveRow};
 use ui::lock::MutexRecover as _;
 use ui::tilo_resource::{self, ActionRef, Binds, Effect};
-use ui::widget::{Button, Dropdown, Row, Text, TextInput};
+use ui::widget::{Button, DisclosureGroup, DisclosureRow, Dropdown, Row, Text, TextInput, Toggle};
 use zeroize::Zeroize;
 mod admin;
 use admin::AdminRead;
@@ -24,6 +24,7 @@ mod app;
 #[cfg(test)]
 mod app_tests;
 pub mod bound;
+mod catalogue;
 pub mod i18n;
 pub mod widgets;
 pub use app::{ProviderSettingsApp, definition};
@@ -108,19 +109,24 @@ pub enum ProviderEffect {
     /// Reload the authoritative profiles and credential status.
     #[effect(job, label = "Refresh providers")]
     RefreshProviders,
-    /// Add a provider from a known one, which fills its name, endpoint and
-    /// protocol; its model is chosen afterwards.
+    /// The providers that can be added, each with its `preset` name, what
+    /// it is, how it signs in, its protocol, endpoint and documentation.
+    #[effect(returns, kind = "read", label = "List providers to add")]
+    ListPresets,
+    /// Add a provider from a known one, which fills its name, endpoint,
+    /// protocol and key header; its key and model are set afterwards. Add
+    /// the same one again for a second account.
     #[effect(job, label = "Add provider")]
     AddProvider {
         #[param(
-            "`openai`, `anthropic`, `gemini`, `mistral`, `openrouter`, `groq`, `xai`, `deepseek`, `together`, `fireworks`, `huggingface`, `ollama`, `lm-studio`, or `openai-compatible` for any other"
+            "A `preset` name from list-presets: `openrouter`, `anthropic`, `openai-compatible` or `anthropic-compatible` for any other"
         )]
         preset: String,
     },
     /// Ask the provider which models it offers, with its stored key or
-    /// sign-in: shows whether the connection works, and the models to
-    /// choose from.
-    #[effect(job, row, label = "Test connection")]
+    /// sign-in: shows whether the connection works, and answers the models
+    /// to choose from with what each can do.
+    #[effect(job, row, returns, label = "Test connection")]
     ListProviderModels {
         #[param("The provider's id")]
         provider: String,
@@ -173,6 +179,20 @@ pub enum ProviderEffect {
     /// Read source context and this model's configured deployment limits.
     #[effect(row, returns, kind = "read")]
     InspectModelRequestLimits { provider: String, model: String },
+    /// Say what one model can do, over what its provider's list or Tilo's
+    /// table of model families says; omit both to let them decide again.
+    /// An agent plans only with a model that calls tools.
+    #[effect(job, row, idempotent, label = "Set model capabilities")]
+    SetModelCapabilities {
+        #[param("The provider's id")]
+        provider: String,
+        #[param("The model's id")]
+        model: String,
+        #[param("Whether it sees images")]
+        vision: Option<bool>,
+        #[param("Whether it calls tools")]
+        tool_calling: Option<bool>,
+    },
     /// Make a provider the one agents use unless told otherwise.
     #[effect(job, row, idempotent, label = "Use by default")]
     SetDefaultProvider {
@@ -334,8 +354,19 @@ fn provider_row(profile: &ProviderProfile) -> LiveRow {
                 protocol: protocol_slug(profile.protocol).into(),
             }
             .bound_asking(&["protocol"]),
+        )
+        .operation(
+            ProviderEffect::SetModelCapabilities {
+                provider: id.clone(),
+                model: profile.default_model.clone().unwrap_or_default(),
+                vision: None,
+                tool_calling: None,
+            }
+            .bound_asking(&["model", "vision", "tool_calling"]),
         );
-    if profile.location == EndpointLocation::Hosted && profile.sign_in.is_none() {
+    // A provider with a key in this device's vault offers its key's
+    // actions: a hosted one, or a server the person gave a key.
+    if profile.credential.is_some() && profile.sign_in.is_none() {
         row.operation(
             ProviderEffect::SaveProviderKey {
                 provider: id,
@@ -389,6 +420,9 @@ pub struct ProviderPanel<H: PanelBindings> {
     admin_reply: Option<ui::framework::EffectReply>,
     saved_key: Option<(Arc<Mutex<String>>, zeroize::Zeroizing<String>)>,
     limits_ack: Option<admin::LimitAck>,
+    /// Which provider's form is open: one at a time, the one just added
+    /// first.
+    open_profile: DisclosureGroup,
 }
 impl<H: PanelBindings> ProviderPanel<H> {
     pub fn new(
@@ -414,6 +448,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
             admin_reply: None,
             saved_key: None,
             limits_ack: None,
+            open_profile: DisclosureGroup::new(),
         };
         panel.read_keys();
         panel
@@ -540,6 +575,9 @@ impl<H: PanelBindings> ProviderPanel<H> {
             sections.push(section(&t("agent-notice-title"), rows(vec![note(notice)])));
         }
         sections.push(self.hosted_profiles_with_sign_in(include_sign_in));
+        if self.provider_admin.is_available() || self.cx.offline_metadata() {
+            sections.push(self.add_provider_card());
+        }
         if let Some(agents) = self.agent_models_card() {
             sections.push(agents);
         }
@@ -630,6 +668,9 @@ impl<H: PanelBindings> ProviderPanel<H> {
             self.admin_snapshot = None;
         }
         self.keys = read.keys;
+        if let Some((provider, models)) = read.cached {
+            self.listed_models.insert(provider, Ok(models));
+        }
         let mut value = None;
         let mut listing_failed = None;
         // Which provider the answer is about, as the profile names it: the
@@ -705,10 +746,10 @@ impl<H: PanelBindings> ProviderPanel<H> {
         self.changed = true;
     }
 
-    /// Whether `profile` is hosted and this device's vault has no key for
+    /// Whether `profile` takes a key and this device's vault has none for
     /// it: one that roamed here from another device needs its own.
     pub fn needs_key(&self, profile: &ProviderProfile) -> bool {
-        profile.location == EndpointLocation::Hosted
+        profile.credential.is_some()
             && profile.sign_in.is_none()
             && matches!(
                 self.keys.get(&profile.id),
@@ -741,9 +782,21 @@ impl<H: PanelBindings> ProviderPanel<H> {
             }
             ProviderEffect::AddProvider { preset } => {
                 let preset = Preset::from_slug(&preset)
-                    .filter(|preset| !matches!(preset.authentication(), Authentication::SignIn(_)))
+                    .filter(|preset| !preset.signs_in_only())
                     .ok_or_else(|| t("agent-preset-unknown"))?;
-                config.upsert(preset.profile());
+                let profile = preset.profile();
+                // Its form opens once it is there.
+                self.open_profile.open(&profile.id);
+                config.upsert(profile);
+            }
+            ProviderEffect::SetModelCapabilities {
+                provider,
+                model,
+                vision,
+                tool_calling,
+            } => {
+                self.take_listed(&mut config, &provider, &model)?;
+                set_model_capabilities(&mut config, &provider, &model, vision, tool_calling)?;
             }
             ProviderEffect::SetProviderModel { provider, model } => {
                 self.choose_default_model(&mut config, &provider, &model)?;
@@ -771,20 +824,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 label,
                 endpoint,
                 model,
-            } => {
-                if label.trim().is_empty() || endpoint.trim().is_empty() {
-                    return Err(t("agent-provider-details-required"));
-                }
-                let profile = find(&mut config, &provider)?;
-                profile.label = label;
-                profile.endpoint = endpoint;
-                if let Some(model) = model.filter(|model| !model.trim().is_empty()) {
-                    if !profile.models.iter().any(|candidate| candidate.id == model) {
-                        profile.models.push(ModelDescriptor::new(model.clone()));
-                    }
-                    profile.default_model = Some(model);
-                }
-            }
+            } => set_details(find(&mut config, &provider)?, label, endpoint, model)?,
             ProviderEffect::RemoveProvider { provider } => {
                 if config.remove(&provider).is_none() {
                     return Err(t("agent-provider-gone"));
@@ -796,9 +836,13 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 model,
             } => {
                 let chosen = chosen_model(provider, model)?;
-                config
-                    .set_agent_model(&agent, chosen)
-                    .map_err(|_| t("agent-model-gone"))?;
+                config.set_agent_model(&agent, chosen).map_err(|error| {
+                    t(if error == agent_provider_config::NO_TOOL_CALLING {
+                        "agent-model-no-tools"
+                    } else {
+                        "agent-model-gone"
+                    })
+                })?;
             }
             ProviderEffect::SetInteractionModel {
                 kind,
@@ -818,24 +862,35 @@ impl<H: PanelBindings> ProviderPanel<H> {
         provider: &str,
         model: &str,
     ) -> Result<(), String> {
-        let model = model.trim();
-        if model.is_empty() || model.len() > 256 || model.contains(char::is_control) {
-            return Err(t("agent-model-invalid"));
+        let listed = self.listed_model(provider, model.trim());
+        take_model(config, provider, model, listed)
+    }
+
+    /// Take `model` of `provider` as its list described it, when the person
+    /// has not taken it yet: a listed model whose capabilities they set.
+    fn take_listed(
+        &self,
+        config: &mut ProviderConfig,
+        provider: &str,
+        model: &str,
+    ) -> Result<(), String> {
+        if let Some(listed) = self.listed_model(provider, model) {
+            let profile = find(config, provider)?;
+            if !profile.models.iter().any(|known| known.id == model) {
+                profile.models.push(listed);
+            }
         }
-        let listed = self
-            .listed_models
+        Ok(())
+    }
+
+    /// The model `model` of `provider` as its last list described it, when
+    /// it listed one.
+    fn listed_model(&self, provider: &str, model: &str) -> Option<ModelDescriptor> {
+        self.listed_models
             .get(provider)
             .and_then(|listed| listed.as_ref().ok())
             .and_then(|models| models.iter().find(|listed| listed.id == model))
-            .cloned();
-        let profile = find(config, provider)?;
-        if !profile.models.iter().any(|known| known.id == model) {
-            profile
-                .models
-                .push(listed.unwrap_or_else(|| ModelDescriptor::new(model.to_owned())));
-        }
-        profile.default_model = Some(model.to_owned());
-        Ok(())
+            .cloned()
     }
 
     pub fn provider_notice(&mut self, outcome: Result<String, &String>) {
@@ -854,19 +909,44 @@ impl<H: PanelBindings> ProviderPanel<H> {
             .clone()
     }
 
+    /// The draft fields of `profile`'s form. Each follows the profile as it
+    /// changes (a model chosen with Use, a rename an agent made) unless the
+    /// person has edited it since it last did: their draft stays theirs.
     pub fn field_buffers(&self, profile: &ProviderProfile) -> HostedFieldBuffers {
+        let stored = [
+            profile.label.clone(),
+            profile.endpoint.clone(),
+            profile.default_model.clone().unwrap_or_default(),
+        ];
         let mut buffers = self.provider_field_buffers.lock_recover();
-        buffers
+        let fields = buffers
             .entry(profile.id.clone())
             .or_insert_with(|| HostedFieldBuffers {
                 original_endpoint: Arc::new(Mutex::new(String::new())),
-                label: Arc::new(Mutex::new(profile.label.clone())),
-                endpoint: Arc::new(Mutex::new(profile.endpoint.clone())),
-                model: Arc::new(Mutex::new(
-                    profile.default_model.clone().unwrap_or_default(),
-                )),
+                label: Arc::new(Mutex::new(stored[0].clone())),
+                endpoint: Arc::new(Mutex::new(stored[1].clone())),
+                model: Arc::new(Mutex::new(stored[2].clone())),
+                followed: Arc::new(Mutex::new(stored.clone())),
             })
-            .clone()
+            .clone();
+        drop(buffers);
+        let mut followed = fields.followed.lock_recover();
+        for ((field, last), now) in [&fields.label, &fields.endpoint, &fields.model]
+            .into_iter()
+            .zip(followed.iter_mut())
+            .zip(stored)
+        {
+            if *last != now {
+                let mut draft = field.lock_recover();
+                if *draft == *last {
+                    draft.clone_from(&now);
+                }
+                drop(draft);
+            }
+            *last = now;
+        }
+        drop(followed);
+        fields
     }
 
     pub fn hosted_profiles(&self) -> SettingsSection {
@@ -907,12 +987,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 ),
             )));
         }
-        if self.provider_admin.is_available() || self.cx.offline_metadata() {
-            body.push(field_row(
-                &t("agent-add-provider"),
-                Box::new(self.add_provider_control()),
-            ));
-        }
         for profile in config
             .profiles
             .iter()
@@ -923,7 +997,22 @@ impl<H: PanelBindings> ProviderPanel<H> {
             })
             .filter(|profile| include_sign_in || profile.sign_in.is_none())
         {
-            self.profile_body(&mut body, profile, can_admin);
+            let mut form = Vec::new();
+            self.profile_body(&mut form, profile, can_admin);
+            let about = Preset::matching(profile).map_or_else(
+                || location_shown(profile.location),
+                |preset| preset.description().to_owned(),
+            );
+            body.push(row(Box::new(
+                DisclosureRow::keyed(
+                    profile.display_label(),
+                    widgets::untitled(rows(form)).into_element(),
+                    &self.open_profile,
+                    &profile.id,
+                )
+                .with_id(format!("agent-models-provider-{}", profile.id))
+                .secondary(about),
+            )));
         }
         for issue in config.validation_errors() {
             body.push(note(&t_args(
@@ -934,23 +1023,17 @@ impl<H: PanelBindings> ProviderPanel<H> {
         section(&t("agent-hosted-title"), rows(body))
     }
 
-    /// The known providers to add, each filling its own details. Those that
-    /// sign in are offered where the sign-in runs (the native host).
-    fn add_provider_control(&self) -> Dropdown {
-        let mut chooser = Dropdown::from_state(Vec::new(), &ui::LocalState::new(String::new()))
-            .with_id("agent-models-add-provider")
-            .with_accessible_name(t("agent-add-provider"))
-            .with_placeholder(&t("agent-add-provider-placeholder"));
-        chooser.set_value_options(
-            Preset::ALL
-                .into_iter()
-                .filter(|preset| !matches!(preset.authentication(), Authentication::SignIn(_)))
-                .map(|preset| (preset.slug().to_owned(), preset.label().to_owned()))
-                .collect(),
-        );
-        let chooser = chooser.with_enabled(self.admits());
-        self.cx
-            .bind(chooser, identity(ProviderEffect::ADD_PROVIDER))
+    /// The known providers to add, each filling its own details, in a list
+    /// the person narrows and scrolls. Those that sign in are offered where
+    /// the sign-in runs (the native host).
+    fn add_provider_card(&self) -> SettingsSection {
+        section(
+            &t("agent-add-provider"),
+            rows(vec![
+                note(&t("agent-add-provider-caption")),
+                widgets::block(catalogue::presets(&self.cx, self.admits())),
+            ]),
+        )
     }
 
     /// Test the connection, and choose the model from what the provider
@@ -976,25 +1059,70 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 body.push(note(&t("agent-test-no-models")));
             }
             Some(Ok(models)) => {
-                let selected = profile.default_model.clone().unwrap_or_default();
-                let mut chooser = Dropdown::from_state(Vec::new(), &ui::LocalState::new(selected))
-                    .with_id(&format!("agent-models-choose-{profile_id}"))
-                    .with_accessible_name(t("agent-choose-model"))
-                    .with_placeholder(&t("agent-choose-model-placeholder"));
-                chooser.set_value_options(
-                    models
-                        .iter()
-                        .map(|model| (model.id.clone(), model.display_label().to_owned()))
-                        .collect(),
-                );
                 let provider = profile_id.clone();
-                body.push(field_row(
-                    &t("agent-choose-model"),
+                let published = provider_row(profile);
+                body.push(widgets::block(catalogue::models(
+                    profile,
+                    models,
+                    move |button, model| {
+                        let provider = provider.clone();
+                        Self::bind_row_control(
+                            button.with_enabled(can_admin),
+                            published.clone(),
+                            identity(ProviderEffect::SET_PROVIDER_MODEL)
+                                .map(move |()| (provider.clone(), model.clone())),
+                        )
+                    },
+                )));
+            }
+        }
+        Self::profile_capabilities(body, profile, can_admin);
+    }
+
+    /// The models the person took from `profile`, each with what it can do
+    /// and the switches that say otherwise.
+    fn profile_capabilities(body: &mut Vec<Item>, profile: &ProviderProfile, can_admin: bool) {
+        if profile.models.is_empty() {
+            return;
+        }
+        for model in &profile.models {
+            let widget_id = format!("{}-{}", hex::encode(&profile.id), hex::encode(&model.id));
+            let mut row = catalogue::model_row(
+                format!("agent-models-taken-{widget_id}"),
+                model,
+                profile.default_model.as_deref() == Some(model.id.as_str()),
+            );
+            if model.capabilities_set_by_person() {
+                row = row.meta(t("agent-model-capabilities-yours"));
+            }
+            body.push(row_item(row));
+            for (name, label, on, vision) in [
+                ("vision", "agent-model-sees-images", model.vision, true),
+                (
+                    "tools",
+                    "agent-model-calls-tools",
+                    model.tool_calling,
+                    false,
+                ),
+            ] {
+                let (provider, id) = (profile.id.clone(), model.id.clone());
+                let toggle = Toggle::from_state(&ui::LocalState::new(on))
+                    .with_id(&format!("agent-model-{name}-{widget_id}"))
+                    .with_accessible_name(&t(label))
+                    .with_enabled(can_admin);
+                body.push(widgets::setting_row(
+                    &t(label),
                     Box::new(Self::bind_row_control(
-                        chooser.with_enabled(can_admin),
+                        toggle,
                         provider_row(profile),
-                        identity(ProviderEffect::SET_PROVIDER_MODEL)
-                            .map(move |model: String| (provider.clone(), model)),
+                        identity(ProviderEffect::SET_MODEL_CAPABILITIES).map(move |on: bool| {
+                            let (vision, tools) = if vision {
+                                (Some(on), None)
+                            } else {
+                                (None, Some(on))
+                            };
+                            (provider.clone(), id.clone(), vision, tools)
+                        }),
                     )),
                 ));
             }
@@ -1003,7 +1131,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
 
     fn profile_fields(&self, body: &mut Vec<Item>, profile: &ProviderProfile) {
         let location = location_shown(profile.location);
-        body.push(value_row(profile.display_label(), &location));
+        body.push(value_row(&t("agent-provider-where"), &location));
         let profile_id = profile.id.clone();
         let fields = self.field_buffers(profile);
         let label = fields
@@ -1031,16 +1159,28 @@ impl<H: PanelBindings> ProviderPanel<H> {
                     .with_placeholder(t("agent-placeholder-name")),
             ),
         ));
-        body.push(field_row(
-            &t("agent-placeholder-url"),
-            Box::new(
-                TextInput::local()
-                    .with_id(&format!("agent-models-url-{profile_id}"))
-                    .with_external_buffer(Arc::clone(&fields.endpoint))
-                    .with_initial_value(&endpoint)
-                    .with_placeholder(t("agent-placeholder-url")),
-            ),
-        ));
+        // A provider's own endpoint is not the person's to type; one they
+        // complete (their Azure resource) or run is.
+        if Preset::matching(profile).is_none_or(Preset::endpoint_editable) {
+            body.push(field_row(
+                &t("agent-placeholder-url"),
+                Box::new(
+                    TextInput::local()
+                        .with_id(&format!("agent-models-url-{profile_id}"))
+                        .with_external_buffer(Arc::clone(&fields.endpoint))
+                        .with_initial_value(&endpoint)
+                        .with_placeholder(t("agent-placeholder-url")),
+                ),
+            ));
+            if let Some(what) =
+                Preset::matching(profile).and_then(|preset| preset.fill_in_for(profile))
+            {
+                body.push(row(widgets::caption(&t_args(
+                    "agent-endpoint-fill-in",
+                    &[("what", what.into())],
+                ))));
+            }
+        }
         body.push(field_row(
             &t("agent-placeholder-model"),
             Box::new(
@@ -1069,25 +1209,25 @@ impl<H: PanelBindings> ProviderPanel<H> {
         let read = |field: &Arc<Mutex<String>>| {
             field.lock().map(|value| value.clone()).unwrap_or_default()
         };
+        // The details' own button stands under their fields.
+        body.push(row(Box::new(self.bind_row(
+            Button::new(
+                &format!("agent-models-save-provider-{profile_id}"),
+                &t("agent-save-details"),
+            ),
+            provider_row(profile),
+            identity(ProviderEffect::SET_PROVIDER_DETAILS).map(move |()| {
+                let model = read(&save_fields.model);
+                (
+                    save_id.clone(),
+                    read(&save_fields.label),
+                    read(&save_fields.endpoint),
+                    (!model.trim().is_empty()).then_some(model),
+                )
+            }),
+        ))));
         body.push(row(Box::new(
             Row::new()
-                .push(Box::new(self.bind_row(
-                    Button::new(
-                        &format!("agent-models-save-provider-{profile_id}"),
-                        &t("agent-save-details"),
-                    ),
-                    provider_row(profile),
-                    identity(ProviderEffect::SET_PROVIDER_DETAILS).map(move |()| {
-                        let model = read(&save_fields.model);
-                        (
-                            save_id.clone(),
-                            read(&save_fields.label),
-                            read(&save_fields.endpoint),
-                            (!model.trim().is_empty()).then_some(model),
-                        )
-                    }),
-                )))
-                .push(widgets::gap(ui::tokens::SpacingStep::S2))
                 .push(Box::new(self.bind_invocation(
                     Button::new(
                         &format!("agent-models-protocol-{profile_id}"),
@@ -1217,6 +1357,9 @@ impl<H: PanelBindings> ProviderPanel<H> {
                         .with_placeholder(t("agent-placeholder-key")),
                 ),
             ));
+            if sends_key_unencrypted(profile) {
+                body.push(row(widgets::caption(&t("agent-key-unencrypted"))));
+            }
             body.push(row(Box::new(
                 Row::new()
                     .push(Box::new(
@@ -1262,15 +1405,25 @@ impl<H: PanelBindings> ProviderPanel<H> {
 
     fn profile_body(&self, body: &mut Vec<Item>, profile: &ProviderProfile, can_admin: bool) {
         let profile_id = profile.id.clone();
-        self.profile_fields(body, profile);
-        self.profile_actions(body, profile);
-        let protocol = t("agent-protocol");
-        body.push(value_row(&protocol, profile.protocol.label()));
-        // Only a hosted provider keeps a key in this device's vault.
-        if profile.location == EndpointLocation::Hosted || profile.sign_in.is_some() {
+        // What it needs first: its key, then its details, then its models;
+        // what changes the provider as a whole comes last.
+        // A provider with a key keeps it in this device's vault: a hosted
+        // one, or a server the person runs with a key they gave it.
+        if profile.credential.is_some() || profile.sign_in.is_some() {
             self.profile_credentials(body, profile, can_admin);
         }
+        let mut details = Vec::new();
+        self.profile_fields(&mut details, profile);
+        let mut actions = Vec::new();
+        self.profile_actions(&mut actions, profile);
+        // The details' save button heads the actions; it stays with them.
+        let mut actions = actions.into_iter();
+        details.extend(actions.next());
+        body.extend(details);
+        let protocol = t("agent-protocol");
+        body.push(value_row(&protocol, profile.protocol.label()));
         self.profile_models(body, profile, can_admin);
+        body.extend(actions);
         if profile.default_model.is_some() {
             body.push(row(Box::new(self.bind_invocation(
                 Button::new(
@@ -1533,6 +1686,148 @@ pub fn set_model_limits(
     Ok(())
 }
 
+/// Make `model` the default of `provider`, which offers it afterwards even
+/// if it was written by hand rather than listed. `listed` is what the
+/// provider's list says of it; without it, a model the profile does not
+/// have yet gets what its family is known to do.
+///
+/// # Errors
+/// An invalid model id, or a provider that is gone.
+pub(crate) fn take_model(
+    config: &mut ProviderConfig,
+    provider: &str,
+    model: &str,
+    listed: Option<ModelDescriptor>,
+) -> Result<(), String> {
+    let model = model.trim();
+    if model.is_empty() || model.len() > 256 || model.contains(char::is_control) {
+        return Err(t("agent-model-invalid"));
+    }
+    let profile = find(config, provider)?;
+    match profile.models.iter_mut().find(|known| known.id == model) {
+        // What the provider now says about a model the person already has;
+        // their own answer stays.
+        Some(known) => {
+            if let Some(listed) = &listed {
+                agent_provider_config::capabilities::refresh(known, listed);
+            }
+        }
+        None => profile
+            .models
+            .push(listed.unwrap_or_else(|| ModelDescriptor::named(model.to_owned()))),
+    }
+    profile.default_model = Some(model.to_owned());
+    Ok(())
+}
+
+/// Set what `model` of `provider` can do. Either flag given makes both the
+/// person's, the other kept as it reads now; neither gives them back to the
+/// family table.
+///
+/// # Errors
+/// Returns an error for a missing provider or model.
+pub fn set_model_capabilities(
+    config: &mut ProviderConfig,
+    provider: &str,
+    model: &str,
+    vision: Option<bool>,
+    tool_calling: Option<bool>,
+) -> Result<(), String> {
+    // An agent plans by calling tools: the model of one cannot be said to
+    // call none until the agent plans with another.
+    if tool_calling == Some(false) {
+        let agents: Vec<_> = config.agents_planning_with(provider, model).collect();
+        if !agents.is_empty() {
+            return Err(t_args(
+                "agent-model-tools-in-use",
+                &[("agents", agents.join(", ").into())],
+            ));
+        }
+    }
+    let selected = find(config, provider)?
+        .models
+        .iter_mut()
+        .find(|item| item.id == model)
+        .ok_or_else(|| t("agent-model-gone"))?;
+    if vision.is_none() && tool_calling.is_none() {
+        selected.capabilities_from = CapabilitySource::Unknown;
+        agent_provider_config::capabilities::apply_family(selected);
+        return Ok(());
+    }
+    selected.vision = vision.unwrap_or(selected.vision);
+    selected.tool_calling = tool_calling.unwrap_or(selected.tool_calling);
+    selected.capabilities_from = CapabilitySource::Person;
+    Ok(())
+}
+
+/// The catalogue as an action answers it: every preset this host can add.
+#[must_use]
+pub fn presets_listing(include_sign_in: bool) -> serde_json::Value {
+    let presets: Vec<_> = Preset::ALL
+        .iter()
+        .copied()
+        .filter(|preset| include_sign_in || !preset.signs_in_only())
+        .map(|preset| {
+            serde_json::json!({
+                "preset": preset.slug(),
+                "name": preset.label(),
+                "description": preset.description(),
+                "authentication": preset.authentication().slug(),
+                "protocol": protocol_slug(preset.protocol()),
+                "endpoint": preset.endpoint(),
+                "endpoint_editable": preset.endpoint_editable(),
+                "lists_models": preset.models_path().is_some(),
+                "docs": preset.docs(),
+            })
+        })
+        .collect();
+    serde_json::json!({ "presets": presets })
+}
+
+/// Name `profile`, say where it is and the model agents use from it.
+fn set_details(
+    profile: &mut ProviderProfile,
+    label: String,
+    endpoint: String,
+    model: Option<String>,
+) -> Result<(), String> {
+    if label.trim().is_empty() || endpoint.trim().is_empty() {
+        return Err(t("agent-provider-details-required"));
+    }
+    profile.label = label;
+    // A provider the person reaches over their own network or this device
+    // is not a hosted one: its address decides.
+    if let Some(location) = EndpointLocation::of_endpoint(&endpoint) {
+        profile.location = location;
+    }
+    profile.endpoint = endpoint;
+    if let Some(model) = model.filter(|model| !model.trim().is_empty()) {
+        if !profile.models.iter().any(|candidate| candidate.id == model) {
+            profile.models.push(ModelDescriptor::named(model.clone()));
+        }
+        profile.default_model = Some(model);
+    }
+    Ok(())
+}
+
+/// Whether `profile`'s key leaves this device without TLS: a server on the
+/// person's network reached over plain http. A loopback endpoint never
+/// leaves the device, and a hosted one is refused without TLS.
+fn sends_key_unencrypted(profile: &ProviderProfile) -> bool {
+    profile.credential.is_some()
+        && profile.location == EndpointLocation::PrivateNetwork
+        && profile
+            .endpoint
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("http://")
+}
+
+/// `row` as one entry of a group.
+fn row_item(row: ui::widget::ListRow) -> Item {
+    widgets::row(Box::new(row))
+}
+
 /// What a person can do about a failed model list.
 fn listing_error(error: &ModelError) -> String {
     match error.kind {
@@ -1568,6 +1863,9 @@ pub struct HostedFieldBuffers {
     pub label: Arc<Mutex<String>>,
     pub endpoint: Arc<Mutex<String>>,
     pub model: Arc<Mutex<String>>,
+    /// The label, endpoint and model as the drafts last took them from the
+    /// profile: a draft still equal to it is not the person's edit.
+    followed: Arc<Mutex<[String; 3]>>,
 }
 
 #[derive(Clone)]

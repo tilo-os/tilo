@@ -180,12 +180,12 @@ impl PopulatedShellFixture {
         panic!("the populated desktop's apps kept writing their records");
     }
 
-    /// Acknowledge the startup writes of the fixture's `surfaces` Notes
-    /// windows and present that. Startup creates real records, and the
+    /// Acknowledge the startup writes of the fixture's `records` Notes
+    /// records and present that on the `surfaces` Notes windows shown. Startup creates real records, and the
     /// writer otherwise acknowledges them on its own thread whenever it gets
     /// to them, flipping each window from Saving to Saved between two frames
     /// a test compares.
-    pub(crate) fn acknowledge_notes_startup_writes(&mut self, surfaces: usize) {
+    pub(crate) fn acknowledge_notes_startup_writes(&mut self, (records, surfaces): (usize, usize)) {
         let (apps, room) = {
             let chrome = self.chrome();
             let room = chrome
@@ -202,16 +202,23 @@ impl PopulatedShellFixture {
                 .clone();
             (apps, room)
         };
-        assert_eq!(
-            apps.borrow_mut()
-                .flush_fixture_records(notes::definition().app_id(), &room)
-                .expect("actual Notes startup writes acknowledged"),
-            surfaces
-        );
+        let open = apps
+            .borrow_mut()
+            .flush_fixture_records(notes::definition().app_id(), &room)
+            .expect("actual Notes startup writes acknowledged");
+        assert_eq!(open.len(), records, "the Notes records open: {open:?}");
         // Durability is sampled after sync; the next sync presents that sample.
-        assert_eq!(self.wake_mounted_components(), surfaces);
+        // Every mounted component wakes, the chrome's own apps among them;
+        // the Notes windows are the ones counted.
+        let notes = |root: &mut dyn ui::Widget| {
+            tilo_app::framework::testing::surface_in_root::<notes::NotesShell, notes::NotesApp>(
+                root,
+            )
+            .is_some()
+        };
+        assert_eq!(self.wake_mounted_components_where(notes), surfaces);
         let _ = self.paint_with_damage();
-        assert_eq!(self.wake_mounted_components(), surfaces);
+        assert_eq!(self.wake_mounted_components_where(notes), surfaces);
         let _ = self.paint_with_damage();
     }
 }

@@ -99,6 +99,14 @@ fn answer(store: &Shared, effect: CameraEffect, cx: &mut EffectCx<Record>) -> Ef
         CameraEffect::UseMode { .. } if store.borrow().shown.recording => {
             return Err("Stop recording to switch modes".into());
         }
+        // The crop frame opens over the selected page, as the document
+        // scanner's page effects act on it: refused as they are.
+        CameraEffect::CropPage if store.borrow().shown.document_busy => {
+            return Err("Wait for the current document task".into());
+        }
+        CameraEffect::CropPage if store.borrow().shown.document_pages == 0 => {
+            return Err("Capture and select a page first".into());
+        }
         CameraEffect::ImportImage => {
             return import_image(store, cx);
         }

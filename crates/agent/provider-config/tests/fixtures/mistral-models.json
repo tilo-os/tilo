@@ -1,0 +1,21 @@
+{
+ "object": "list",
+ "data": [
+  {
+   "id": "pixtral-large-latest",
+   "object": "model",
+   "owned_by": "mistralai",
+   "name": "pixtral-large-2411",
+   "max_context_length": 131072,
+   "capabilities": {"completion_chat": true, "completion_fim": false, "function_calling": true, "fine_tuning": false, "vision": true, "classification": false}
+  },
+  {
+   "id": "mistral-embed",
+   "object": "model",
+   "owned_by": "mistralai",
+   "name": "mistral-embed",
+   "max_context_length": 8192,
+   "capabilities": {"completion_chat": false, "completion_fim": false, "function_calling": false, "fine_tuning": false, "vision": false, "classification": false}
+  }
+ ]
+}

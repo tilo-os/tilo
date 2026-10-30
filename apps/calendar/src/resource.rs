@@ -95,6 +95,7 @@ pub(crate) fn fingerprint(event: &Event) -> String {
     params = calendar,
     search = Calendar::search_entries,
     read_content = Calendar::read_items,
+    document_child = Calendar::reads_child,
     scopes = Calendar::scopes,
     load = Calendar::load_notes,
     queue = Calendar::queue,
@@ -534,10 +535,74 @@ const SETTLED_KEPT: usize = 64;
 const MOST_READ_ITEMS: usize = 500;
 
 impl Calendar {
+    /// Whether the published child `id` is one [`Self::read_items`]
+    /// answers: an event, one of its attendees, a task or a project of the
+    /// calendar. Each is
+    /// document state, disclosed by its document read, where its `open`
+    /// would move the person's window.
+    fn reads_child(&self, id: &str) -> bool {
+        let Some(rest) = id
+            .strip_prefix(<Self as tilo_resource::Resource>::KIND)
+            .and_then(|rest| rest.strip_prefix('/'))
+        else {
+            return false;
+        };
+        let Some((field, item)) = rest.split_once('/') else {
+            return false;
+        };
+        if let Some((event, attendee)) = item.split_once("/attendees/") {
+            return field == "events"
+                && Uuid::parse_str(event)
+                    .ok()
+                    .and_then(|event| self.event(event))
+                    .zip(Uuid::parse_str(attendee).ok())
+                    .is_some_and(|(event, attendee)| {
+                        event.attendees.iter().any(|invited| invited.id == attendee)
+                    });
+        }
+        let Ok(id) = Uuid::parse_str(item) else {
+            return false;
+        };
+        match field {
+            "events" => self.event(id).is_some(),
+            "tasks" => self.task(id).is_some(),
+            "projects" => self.project(id).is_some(),
+            _ => false,
+        }
+    }
+
+    /// The attendee the published id `item` names: who they are and
+    /// whether they come.
+    fn read_attendee(&self, item: &str) -> Result<serde_json::Value, String> {
+        let unlisted = || format!("`{item}` is no attendee of an event this calendar lists");
+        let (event, attendee) = item.split_once("/attendees/").ok_or_else(unlisted)?;
+        let event = Uuid::parse_str(event.rsplit('/').next().unwrap_or_default())
+            .ok()
+            .and_then(|event| self.event(event))
+            .ok_or_else(unlisted)?;
+        let attendee = Uuid::parse_str(attendee)
+            .ok()
+            .and_then(|attendee| {
+                event
+                    .attendees
+                    .iter()
+                    .find(|invited| invited.id == attendee)
+            })
+            .ok_or_else(unlisted)?;
+        Ok(serde_json::json!({
+            "item": item,
+            "event": crate::actions::event_resource_id(event.id),
+            "name": attendee.name,
+            "email": attendee.email,
+            "status": format!("{:?}", attendee.status),
+        }))
+    }
+
     /// What the calendar holds, for a caller with no screen. With no item,
     /// its events by start (the next first, then the past) and its tasks;
     /// with an event's or task's id, that one in full: who is invited and
-    /// its notes.
+    /// its notes; with an attendee's, who they are and whether they come;
+    /// with a project's, its name and its tasks.
     fn read_items(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let event_line = |event: &Event| {
             serde_json::json!({
@@ -579,9 +644,13 @@ impl Calendar {
                 "tasks": self.tasks.iter().take(MOST_READ_ITEMS).map(task_line).collect::<Vec<_>>(),
             }));
         };
+        if item.as_str().contains("/attendees/") {
+            return self.read_attendee(item.as_str());
+        }
         let raw = item.as_str().rsplit('/').next().unwrap_or_default();
-        let id = Uuid::parse_str(raw)
-            .map_err(|_| format!("`{item}` is not an event or task this calendar lists"))?;
+        let id = Uuid::parse_str(raw).map_err(|_| {
+            format!("`{item}` is not an event, task or project this calendar lists")
+        })?;
         let notes = self.notes_text(id);
         if let Some(event) = self.events.iter().find(|event| event.id == id) {
             let mut read = event_line(event);
@@ -606,11 +675,27 @@ impl Calendar {
             }
             return Ok(read);
         }
+        if let Some(project) = self.project(id) {
+            return Ok(serde_json::json!({
+                "item": crate::actions::project_resource_id(project.id),
+                "name": project.name,
+                "color": project.color.name(),
+                "tasks": self
+                    .tasks
+                    .iter()
+                    .filter(|task| task.project == Some(project.id))
+                    .take(MOST_READ_ITEMS)
+                    .map(task_line)
+                    .collect::<Vec<_>>(),
+            }));
+        }
         let task = self
             .tasks
             .iter()
             .find(|task| task.id == id)
-            .ok_or_else(|| format!("`{item}` is not an event or task this calendar lists"))?;
+            .ok_or_else(|| {
+                format!("`{item}` is not an event, task or project this calendar lists")
+            })?;
         let mut read = task_line(task);
         if let Some(map) = read.as_object_mut() {
             map.insert("notes".into(), notes.into());
@@ -890,6 +975,17 @@ pub enum CalendarEffect {
         id: String,
         #[param("indigo, emerald, amber, red, blue, violet or slate")]
         color: String,
+    },
+    /// Read calendar
+    ///
+    /// Answers what one calendar is: its name, whether its events are
+    /// shown, its colour and how many events it holds. It is the calendar
+    /// row's read: what discloses the row, so showing, hiding and
+    /// recolouring it are offered to whoever may read it, an agent too.
+    #[effect(view, row, returns, idempotent, label = "Read calendar")]
+    ReadCalendar {
+        #[param("Calendar id")]
+        id: String,
     },
     /// Show or hide a calendar
     ///
@@ -1318,3 +1414,15 @@ impl calendar::NewEvent {
 mod tests;
 
 ui::reach_tests!(CalendarShell);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<super::CalendarShell>()
+        {
+            panic!("{failures}");
+        }
+    }
+}

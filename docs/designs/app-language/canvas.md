@@ -66,8 +66,11 @@ typing a sentence, it becomes an ask to the agent with that context. So "rename"
   keeps its canvas size and is drawn scaled when zoomed. Pan and zoom are each person's lens, kept
   on their device.
 - **Pointing and answers** are the shell's canvas layer (`overlay_host/canvas.rs`). Every ask goes
-  through the existing composer's agent path as a Tasks issue the agent works on, and its page
-  opens as a window at the anchor. `CanvasAnswers` pairs an answer's window with its anchor; an
-  answer that is a view window places itself through the same pairing.
+  through the existing composer's agent path as a Tasks issue the agent works on, made with no
+  window (Tasks runs windowless for actions that show nothing, `shell/windowless.rs`). The caret
+  where it was asked follows the issue's run and says how it goes, then what the agent said; a
+  new agent that cannot be asked (no model, no agent runtime, offline) is said there as the
+  composer says it, and no issue is made. The view the run answers with opens as a window at the
+  anchor: `CanvasAnswers` pairs an answer's window with its anchor.
 - Shown with the actions "Show the canvas" and "Show the strips" (`workspace.show-canvas`,
   `workspace.show-strips`).

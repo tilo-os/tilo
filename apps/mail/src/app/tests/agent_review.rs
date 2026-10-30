@@ -2,126 +2,19 @@
 //! SMTP server: eight applications with a PDF CV each are fetched into
 //! Mail; a Mail opened afresh, with no server reached, finds them by search
 //! and reads each from what this device keeps; a reply drafted to each is a
-//! draft of its own; each CV becomes workspace content the PDF viewer reads;
-//! and nothing reaches the SMTP server.
+//! draft of its own; each CV becomes workspace content the PDF viewer reads,
+//! and opens through the desktop's `open` as a tab of the window the agent
+//! names; each message and each draft opens in a Mail window of its own,
+//! the draft's composer editing that draft; and nothing reaches the SMTP
+//! server.
 
 use std::sync::Arc;
 
 use ui::framework::testing::TestApp;
 
 use crate::actions::MailEffect;
-use crate::fake_servers::{FakeImap, FakeSmtp, Layout, accepting_client_config, server_tls_config};
-use crate::model::{AccountConfig, AuthMethod};
 use crate::resource::MailShell;
-
-const ME: &str = "hiring@studio.example";
-
-/// The candidates: name, address, and the line their CV opens with.
-const CANDIDATES: [(&str, &str); 8] = [
-    ("Ada Lovelace", "ada@lovelace.example"),
-    ("Grace Hopper", "grace@hopper.example"),
-    ("Alan Turing", "alan@turing.example"),
-    ("Edsger Dijkstra", "edsger@dijkstra.example"),
-    ("Barbara Liskov", "barbara@liskov.example"),
-    ("Donald Knuth", "don@knuth.example"),
-    ("Frances Allen", "fran@allen.example"),
-    ("Ken Thompson", "ken@thompson.example"),
-];
-
-/// A one-page PDF whose text is `line`.
-fn cv_pdf(line: &str) -> Vec<u8> {
-    use std::fmt::Write as _;
-    let content = format!("BT /F1 14 Tf 56 740 Td ({line}) Tj ET\n");
-    let objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        "<< /Type /Pages /Kids [4 0 R] /Count 1 >>".to_owned(),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
-         /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>"
-            .to_owned(),
-        format!(
-            "<< /Length {} >>\nstream\n{content}endstream",
-            content.len()
-        ),
-    ];
-    let mut out = String::from("%PDF-1.4\n");
-    let mut offsets = Vec::new();
-    for (i, object) in objects.iter().enumerate() {
-        offsets.push(out.len());
-        let _ = write!(out, "{} 0 obj\n{object}\nendobj\n", i + 1);
-    }
-    let xref = out.len();
-    let _ = write!(out, "xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
-    for offset in offsets {
-        let _ = writeln!(out, "{offset:010} 00000 n ");
-    }
-    let _ = write!(
-        out,
-        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
-        objects.len() + 1
-    );
-    out.into_bytes()
-}
-
-/// The CV line of `name`.
-fn cv_line(name: &str) -> String {
-    format!("Curriculum vitae of {name}")
-}
-
-/// `name`'s application, as the server holds it: a text part with links,
-/// and the CV attached.
-fn application(index: usize, name: &str, address: &str) -> String {
-    let handle = address.split('@').next().unwrap_or(address);
-    mail_builder::MessageBuilder::new()
-        .from((name, address))
-        .to(ME)
-        .subject(format!("Application: product engineer ({name})"))
-        .message_id(format!("application-{index}@{handle}.example"))
-        .date(1_793_260_800_i64 + i64::try_from(index).unwrap() * 600)
-        .text_body(format!(
-            "Hello,\n\nI'd like to apply for the product engineer role. My CV is attached.\n\
-             GitHub: https://github.com/{handle}\nPortfolio: https://{handle}.example/\n\n{name}\n"
-        ))
-        .attachment(
-            "application/pdf",
-            format!("{handle}-cv.pdf"),
-            cv_pdf(&cv_line(name)),
-        )
-        .write_to_string()
-        .unwrap()
-}
-
-/// The test servers and the account that reaches them.
-fn servers() -> (FakeImap, FakeSmtp, AccountConfig) {
-    let rt = ui::rt::app();
-    let imap = rt
-        .block_on(FakeImap::start(Layout::Gmail, server_tls_config()))
-        .unwrap();
-    let smtp = rt.block_on(FakeSmtp::start(server_tls_config())).unwrap();
-    for (index, (name, address)) in CANDIDATES.iter().enumerate() {
-        imap.append("INBOX", &application(index, name, address), &[]);
-    }
-    imap.append(
-        "INBOX",
-        "From: Billing <billing@vendor.example>\r\nTo: hiring@studio.example\r\n\
-Subject: Invoice 4411\r\nMessage-ID: <invoice-4411@vendor.example>\r\n\
-Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nYour invoice.\r\n",
-        &[],
-    );
-    let account = AccountConfig {
-        display_name: "Studio hiring".into(),
-        email: ME.into(),
-        username: ME.into(),
-        password: "app-password".into(),
-        imap_host: "127.0.0.1".into(),
-        imap_port: imap.port,
-        smtp_host: "127.0.0.1".into(),
-        smtp_port: smtp.port,
-        auth: AuthMethod::Password,
-        ..Default::default()
-    };
-    (imap, smtp, account)
-}
+use crate::review_fixture::{CANDIDATES, ME, cv_line, cv_pdf};
 
 /// The value an answer carries.
 fn value(output: tilo_actions::ActionOutput) -> serde_json::Value {
@@ -134,49 +27,12 @@ fn value(output: tilo_actions::ActionOutput) -> serde_json::Value {
     reason = "one workflow, each step building on the last"
 )]
 fn eight_applications_are_found_read_drafted_and_handed_to_the_pdf_viewer() {
-    let (imap, smtp, account) = servers();
+    // A window reaches the server once, and keeps what it fetched; Mail
+    // opened afresh reaches no server, and answers from what this device
+    // keeps.
     let profile = tempfile::tempdir().unwrap();
-    crate::account::AccountStore::single(account)
-        .persist_in(profile.path())
-        .unwrap();
-
-    // A window reaches the server once, and keeps what it fetched.
-    let mut app = TestApp::<MailShell>::open_data_dir(profile.path()).unwrap();
-    app.with_surface(|mail: &mut super::MailApp| {
-        let engine = crate::engine::live::LiveEngine::trusting(
-            tilo_content::ContentStore::memory(),
-            Arc::new(|| {}),
-            accepting_client_config(),
-        )
-        .unwrap();
-        let (tx, rx) = crate::engine::spawn_with(Box::new(engine));
-        mail.state().engine = Some(super::EngineHandle { tx, rx });
-    })
-    .unwrap();
-    app.effect(&MailEffect::Refresh)
-        .expect("the inbox is fetched");
-    app.settle();
-    let kept = app
-        .with_surface(|mail: &mut super::MailApp| mail.shared.borrow().mailbox.messages.len())
-        .unwrap();
-    assert_eq!(kept, CANDIDATES.len() + 1, "every message is fetched");
-    let deadline = tilo_test_env::hang_deadline();
-    while app
-        .with_surface(|mail: &mut super::MailApp| mail.state().store.load(ME).len())
-        .unwrap()
-        < kept
-    {
-        assert!(ui::time::now() < deadline, "the fetched mail is kept");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    drop(app);
-
-    // Mail opened afresh reaches no server: what it answers comes from the
-    // mail this device keeps.
-    let mut app = TestApp::<MailShell>::open_data_dir(profile.path()).unwrap();
-    app.with_surface(|mail: &mut super::MailApp| mail.state().engine = None)
-        .unwrap();
-    app.settle();
+    let (imap, smtp) = crate::review_fixture::fetched_into(profile.path());
+    let mut app = crate::review_fixture::offline_window(profile.path());
 
     let found = value(
         app.effect(&MailEffect::SearchMessages {
@@ -311,6 +167,18 @@ fn eight_applications_are_found_read_drafted_and_handed_to_the_pdf_viewer() {
         "nothing is queued to send"
     );
     assert!(smtp.sent().is_empty(), "nothing reached the SMTP server");
+
+    // Each CV opens through the desktop's `open`, as content, as a tab of
+    // the window the agent names; each draft and each message opens in a
+    // Mail window of its own, the draft's composer editing that draft.
+    let opened = cvs_open_through_the_desktop(&mut app, &messages, &handed_over);
+    assert_eq!(opened, CANDIDATES.len());
+    drop(app);
+    for (listed, draft) in messages.iter().zip(&drafted) {
+        let message = listed["id"].as_str().unwrap();
+        each_opens_in_a_window_of_its_own(profile.path(), message, draft);
+    }
+    drafts_reach_the_server_and_come_back_as_nothing(profile.path(), &imap);
     drop(imap);
 
     // The PDF viewer reads each CV from the content Mail handed over, as
@@ -338,5 +206,247 @@ fn eight_applications_are_found_read_drafted_and_handed_to_the_pdf_viewer() {
                 .expect("the CV reads"),
         );
         assert!(text.to_string().contains(&cv_line(name)), "{text}");
+    }
+}
+
+/// Open every application's CV through its attachment's `open`, as the
+/// agent, as a tab of the window group `4242`: Mail hands it over as
+/// content and asks the desktop's `open` for it, which a stand-in desktop
+/// answers. How many opened.
+fn cvs_open_through_the_desktop(
+    app: &mut TestApp<MailShell>,
+    messages: &[serde_json::Value],
+    handed_over: &[(&str, Vec<u8>)],
+) -> usize {
+    use tilo_desktop_model::commands::{RESOURCE, layout};
+    let desktop = Arc::new(tilo_actions::remote::TestHost::new().completing(|_| {
+        tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({
+                "window": "11", "group": "4242", "strip": "7", "app": "so.tilo.pdf-viewer",
+            })),
+            resources: Vec::new(),
+        }
+    }));
+    let _desktop = ui::remote_actions::RemoteActions::enter(
+        Arc::clone(&desktop) as Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
+        tilo_actions::remote::Caller::local_agent("planner"),
+    );
+    let mut opened = 0;
+    for (listed, (_, bytes)) in messages.iter().zip(handed_over) {
+        let id = listed["id"].as_str().unwrap();
+        let answer = app
+            .call_by(
+                tilo_actions::ActionInvoker::actor("agent:planner"),
+                &format!("mail.attachment:{id}:0"),
+                "open-attachment",
+                serde_json::json!({ "group": "4242" }),
+            )
+            .expect("the CV opens through the desktop");
+        let asked = desktop.take_asked();
+        assert_eq!(asked.len(), 1, "one desktop open per CV: {asked:?}");
+        let request = &asked[0];
+        assert_eq!(request.target.provider, layout::PROVIDER);
+        assert_eq!(request.target.address.resource.as_str(), RESOURCE);
+        assert_eq!(request.target.address.action, layout::OPEN);
+        let tilo_actions::remote::InvokeArgument::Json(arguments) = &request.argument else {
+            panic!("the desktop's open takes typed arguments: {request:?}");
+        };
+        let hash = tilo_content::hash_bytes(bytes);
+        assert_eq!(
+            arguments["target"],
+            tilo_actions::content_resource(&hash).unwrap(),
+            "the CV's own content: {arguments:?}"
+        );
+        assert_eq!(arguments["place"], "tab-of");
+        assert_eq!(arguments["group"], "4242");
+        let value = answer.value.unwrap();
+        assert_eq!(value["window"], "11", "the desktop's answer: {value}");
+        assert_eq!(value["media_type"], "application/pdf", "{value}");
+        opened += 1;
+    }
+    opened
+}
+
+/// A Mail window opened afresh at `message` shows it; one opened at
+/// `draft` edits that draft; a draft that is not there is refused.
+fn each_opens_in_a_window_of_its_own(profile: &std::path::Path, message: &str, draft: &str) {
+    let mut window = crate::review_fixture::offline_window(profile);
+    window
+        .call(
+            "open",
+            serde_json::json!({ "anchor": format!("mail.message:{message}") }),
+        )
+        .expect("the message opens");
+    window.settle();
+    let shown = window
+        .with_surface(|mail: &mut super::MailApp| mail.shown_message())
+        .unwrap();
+    assert_eq!(shown.as_deref(), Some(message));
+
+    let mut window = crate::review_fixture::offline_window(profile);
+    window
+        .call(
+            "open",
+            serde_json::json!({ "anchor": format!("mail.draft:{draft}") }),
+        )
+        .expect("the draft opens");
+    window.settle();
+    let (editing, subject) = window
+        .with_surface(|mail: &mut super::MailApp| {
+            (mail.composing_draft(), mail.compose.subject_text())
+        })
+        .unwrap();
+    assert_eq!(
+        editing.as_deref(),
+        Some(draft),
+        "its composer edits that draft"
+    );
+    let kept = window
+        .state()
+        .draft_at(Some(draft))
+        .unwrap()
+        .subject
+        .clone();
+    assert_eq!(subject, kept);
+    assert!(
+        window
+            .call(
+                "open",
+                serde_json::json!({ "anchor": "mail.draft:no-such-draft" })
+            )
+            .is_err(),
+        "a draft that is not there is refused"
+    );
+}
+
+/// Each draft is published as the item its verbs answer
+/// (`mail.draft:<id>`, of kind `mail.draft`), so the desktop finds the app
+/// that opens it; it goes when the draft does.
+#[test]
+fn each_draft_is_published_as_the_item_its_verbs_name() {
+    let profile = tempfile::tempdir().unwrap();
+    let mut app = TestApp::<MailShell>::open_data_dir(profile.path()).unwrap();
+    app.settle();
+    let made = app
+        .call(
+            "draft-message",
+            serde_json::json!({ "to": "ada@lovelace.example", "subject": "Hi", "body": "Hello" }),
+        )
+        .unwrap()
+        .unwrap();
+    let item = made["draft"]["item"].as_str().unwrap().to_owned();
+    app.settle();
+    let published = |app: &mut TestApp<MailShell>| {
+        app.actions()
+            .unwrap()
+            .into_iter()
+            .filter(|action| action.address.resource.as_str() == item)
+            .map(|action| (action.resource_kind, action.address.action))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        published(&mut app),
+        [("mail.draft".to_owned(), "open".to_owned())],
+        "{item}"
+    );
+    app.call_confirmed("discard-draft", serde_json::json!({ "draft": item }))
+        .expect("the draft is discarded");
+    app.settle();
+    assert!(
+        published(&mut app).is_empty(),
+        "a discarded draft is not published"
+    );
+}
+
+/// The drafts made in a window that reached no server are kept in the
+/// server's Drafts folder by the first window that reaches it, marked as
+/// drafts and without their notes. Fetched back with Drafts, each copy is
+/// the draft itself: it becomes no message, no entry in the record and
+/// nothing kept on the device. And the window fetches when asked once its
+/// first sync is over.
+fn drafts_reach_the_server_and_come_back_as_nothing(
+    profile: &std::path::Path,
+    imap: &crate::fake_servers::FakeImap,
+) {
+    const DRAFTS: &str = "[Gmail]/Drafts";
+    let mut app = TestApp::<MailShell>::open_data_dir(profile).unwrap();
+    app.with_surface(super::MailApp::reach_test_servers)
+        .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    while imap.messages(DRAFTS).len() < CANDIDATES.len() {
+        assert!(ui::time::now() < deadline, "the drafts reach the server");
+        app.settle();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let copies = imap.messages(DRAFTS);
+    assert_eq!(copies.len(), CANDIDATES.len(), "one copy of each draft");
+    for copy in &copies {
+        let raw = String::from_utf8_lossy(&copy.raw).to_string();
+        assert!(
+            copy.flags.iter().any(|flag| flag == "\\Draft"),
+            "{:?}",
+            copy.flags
+        );
+        assert!(raw.contains("Re: Application"), "{raw}");
+        assert!(
+            !raw.contains("Review of"),
+            "the notes are never in the copy: {raw}"
+        );
+    }
+    while app
+        .with_surface(|mail: &mut super::MailApp| mail.awaiting_server())
+        .unwrap()
+    {
+        assert!(ui::time::now() < deadline, "the window's first sync ends");
+        app.settle();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let counts = |app: &mut TestApp<MailShell>| {
+        app.with_surface(|mail: &mut super::MailApp| (mail.held(), mail.kept_on_device(ME)))
+            .unwrap()
+    };
+    let before = counts(&mut app);
+    app.call(
+        "open",
+        serde_json::json!({ "anchor": crate::resource::folder_resource("drafts") }),
+    )
+    .expect("Drafts opens");
+    app.settle();
+    while app
+        .with_surface(|mail: &mut super::MailApp| mail.awaiting_server())
+        .unwrap()
+    {
+        assert!(ui::time::now() < deadline, "opening Drafts ends");
+        app.settle();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    app.effect(&MailEffect::Refresh)
+        .expect("a window that reaches its server fetches when asked");
+    app.settle();
+    assert!(
+        app.with_surface(|mail: &mut super::MailApp| {
+            mail.shared
+                .borrow()
+                .passed_over
+                .contains_key(&(ME.to_owned(), crate::model::Folder::Drafts))
+        })
+        .unwrap(),
+        "Drafts was fetched with the copies in it"
+    );
+    assert_eq!(
+        counts(&mut app),
+        before,
+        "the copies fetched back are no messages, and nothing is kept of them"
+    );
+    let mail = app.state();
+    let ids = mail.draft_copy_ids();
+    assert!(ids.len() >= CANDIDATES.len(), "{ids:?}");
+    for copy in ids {
+        assert!(
+            mail.messages
+                .get(&ui::tilo_resource::Id::from_raw(copy.as_str()))
+                .is_none(),
+            "no entry in the record for the copy {copy}"
+        );
     }
 }

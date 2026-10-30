@@ -32,6 +32,8 @@ pub mod enrollment;
 #[cfg(unix)]
 pub mod join_proof;
 #[cfg(unix)]
+pub mod local_person;
+#[cfg(unix)]
 pub mod person_files;
 pub mod policy_change;
 #[cfg(unix)]

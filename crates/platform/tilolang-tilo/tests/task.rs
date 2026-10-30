@@ -264,3 +264,65 @@ fn a_resource_argument_is_the_catalogues_reference() {
     );
     assert_eq!(task.said("tasks.tasks.items.len()"), "1");
 }
+
+const CHAT: (&str, &str) = (
+    include_str!("../../../../apps/tl/chat/app.tl"),
+    include_str!("../../../../apps/tl/chat/app.ids"),
+);
+
+/// Every argument travels in the shape the action's published parameter declares, which the
+/// broker binds before it delivers, and arrives as the value the program gave: a resource of a
+/// union (a channel or a thread) by a reference naming which it is, an optional resource, rich
+/// text, a plain enum's case.
+#[test]
+fn each_argument_is_sent_as_its_published_parameter_takes_it() {
+    let door = Rc::new(Apps::new(&[&[CHAT], &[TODO]]));
+    let task = Task {
+        session: door.task(),
+        door,
+    };
+    let answer = task.run(
+        "let ch = chat.new_channel(chat.channels, \"launch\")\n\
+         let first = chat.send(ch, RichText(\"The launch video is ready for review\"))\n\
+         chat.send(ch, RichText(\"Watching it now\"), first)",
+        true,
+    );
+    assert_eq!(answer["state"], "done", "{answer:#}");
+    let send = task.door.invoked.borrow().last().cloned().unwrap();
+    assert_eq!(
+        send["arguments"]["to"]["kind"],
+        json!("tl.so.tilo.lang.chat.TextChannel"),
+        "the union's member it is: {send:#}"
+    );
+    assert_eq!(
+        send["arguments"]["reply_to"]["kind"],
+        json!("tl.so.tilo.lang.chat.Message"),
+        "{send:#}"
+    );
+    assert_eq!(
+        send["arguments"]["body"],
+        json!("Watching it now"),
+        "{send:#}"
+    );
+    assert_eq!(
+        task.said(
+            "print(ch.messages.len(), ch.messages.filter(m -> m.reply_to == .some(first)).len())"
+        ),
+        "2 1"
+    );
+    let answer = task.run(
+        "let t = tasks.add(tasks.tasks, \"Check the launch video\")\ntasks.prioritize(t, .high)",
+        true,
+    );
+    assert_eq!(answer["state"], "done", "{answer:#}");
+    let prioritize = task.door.invoked.borrow().last().cloned().unwrap();
+    assert_eq!(
+        prioritize["arguments"]["priority"],
+        json!("high"),
+        "{prioritize:#}"
+    );
+    assert_eq!(
+        task.said("print(tasks.tasks.items.filter(t -> t.priority == .high).len())"),
+        "1"
+    );
+}

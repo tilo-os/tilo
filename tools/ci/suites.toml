@@ -50,6 +50,12 @@ by = "os/tests/test_image_size_budget.py"
 suite = "tools/test-assets.py"
 by = "tools/tests/test_test_assets.py"
 
+# Not a suite: the developer entry point that execs local_affected.py --changed,
+# whose command line and runs its test covers.
+[[covered]]
+suite = "tools/ci/test-changed.sh"
+by = "tools/tests/test_local_affected.py"
+
 [[covered]]
 suite = "tools/test-env-setup.sh"
 by = "tools/tests/test_test_environment.py"
@@ -819,6 +825,12 @@ package = "onboarding-walk"
 # The names test reads the setup app whose controls it walks.
 inputs = ["crates/session/onboarding/src/"]
 readers = ["crates/session/onboarding-walk/tests/names.rs"]
+
+[[cargo]]
+package = "provider-settings-ui"
+# The provider screenshots list the models of the provider config's recorded OpenRouter answer.
+inputs = ["crates/agent/provider-config/tests/fixtures/openrouter-models.json"]
+readers = ["crates/sdk/provider-settings-ui/src/app_tests.rs"]
 
 [[cargo]]
 package = "mail"

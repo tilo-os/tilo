@@ -347,12 +347,64 @@ impl Issue {
         }
     }
 
+    /// The conversation before run `epoch`, oldest first, as a follow-up run
+    /// is told it: what people said (to a run or about the issue), what the
+    /// agent answered and reported, and a line for each resource it read, each
+    /// step it took and each answer it kept. Read off the thread alone; the
+    /// messages to run `epoch` itself are its directions, not part of this.
+    #[must_use]
+    pub fn conversation_before(&self, epoch: u64) -> Vec<Said> {
+        self.comments
+            .values()
+            .filter(|message| message.kind == MessageKind::Comment || message.run < epoch)
+            .filter_map(|message| {
+                let text = match message.kind {
+                    MessageKind::Comment | MessageKind::ToRun | MessageKind::FromRun => {
+                        message.text.trim().to_owned()
+                    }
+                    MessageKind::Lookup => format!("(read {})", looked_up_label(&message.lookup)),
+                    MessageKind::Step => {
+                        let first = message.text.lines().next().unwrap_or_default().trim();
+                        format!("(ran a step: {first})")
+                    }
+                    MessageKind::Answer => format!("(answered with {})", message.text.trim()),
+                };
+                (!text.is_empty()).then_some(Said {
+                    agent: message.by_agent,
+                    text,
+                })
+            })
+            .collect()
+    }
+
     /// The messages to run `epoch` its agent has not taken in yet.
     pub fn messages_for_run(&self, epoch: u64) -> impl Iterator<Item = (&Id, &Message)> {
         self.comments.iter().filter(move |(_, message)| {
             message.kind == MessageKind::ToRun && message.run == epoch && !message.incorporated
         })
     }
+}
+
+/// One message of an issue's earlier conversation, as a follow-up run reads
+/// it ([`Issue::conversation_before`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Said {
+    /// Whether the agent said it, rather than a person.
+    pub agent: bool,
+    pub text: String,
+}
+
+/// The label of the resource a lookup names (a `ResourceAt` as JSON), else
+/// its address as written.
+fn looked_up_label(lookup: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(lookup)
+        .ok()
+        .and_then(|at| {
+            at.pointer("/reference/label")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| lookup.to_owned())
 }
 
 const PERSON_PREFIX: &str = "person:";
@@ -407,6 +459,17 @@ pub struct AgentRequest {
     /// what came back.
     #[serde(default)]
     pub quick: bool,
+    /// Whether it is asked in an agent chat: its runs then get the chat's
+    /// budget ([`crate::model::Budget::chat`]), sized for a long task of
+    /// many items, instead of the runner's default.
+    #[serde(default)]
+    pub chat: bool,
+    /// The task delegation the asking device signed for a task agent made
+    /// for this issue, hex (`TaskDelegation::to_hex`). It rides on the run
+    /// beside its starter; the broker verifies it. `None` when a
+    /// collaborator is asked.
+    #[serde(default)]
+    pub delegation: Option<String>,
 }
 
 /// A task kept in the workspace's room before the tracker, as the import

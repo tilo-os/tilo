@@ -15,6 +15,7 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::publish::{PlanRequest, edit_action, resource_id};
 use tilolang_tilo::task::{Answered, TaskDoor, TaskSession};
+use tilolang_tilo::task_records::{RecordReads, RecordSource};
 
 use crate::fixtures::Replica;
 
@@ -29,6 +30,11 @@ pub struct Apps {
     pub refused: Vec<&'static str>,
     /// Apps the door cannot reach (not open), and why.
     pub unreachable: Vec<(&'static str, &'static str)>,
+    /// The apps whose record a task fetched, in order.
+    pub fetched: RefCell<Vec<String>>,
+    /// The copy of an app's record the door hands over while it lags the app's host: the
+    /// record as it was when [`Self::lag`] froze it.
+    lagging: RefCell<HashMap<String, Vec<u8>>>,
 }
 
 impl Apps {
@@ -72,12 +78,44 @@ impl Apps {
             invoked: RefCell::default(),
             refused: Vec::new(),
             unreachable: Vec::new(),
+            fetched: RefCell::default(),
+            lagging: RefCell::default(),
         }
+    }
+
+    /// From now on the door hands over `app`'s record as it is now, whatever its host applies
+    /// later: the room's copy lagging the record's origin.
+    pub fn lag(&self, app: &str) {
+        let copy = self.replica(app).doc.save();
+        self.lagging.borrow_mut().insert(app.to_owned(), copy);
     }
 
     /// The host of `app`.
     pub fn replica(&self, app: &str) -> RefMut<'_, Replica> {
         self.replicas[self.by_app[app]].borrow_mut()
+    }
+
+    /// A task of these apps acting for ada, reading their records itself as the session's
+    /// door hands them over ([`RecordReads`]): no app's host answers its reads, only its
+    /// invocations.
+    pub fn record_task(self: &Rc<Self>) -> (TaskSession, Rc<RecordsDoor>) {
+        let door = Rc::new(RecordsDoor {
+            apps: Rc::clone(self),
+            reads: RecordReads::new(
+                &self.bundles,
+                std::collections::BTreeMap::new(),
+                Some("ada"),
+                Rc::clone(self) as Rc<dyn RecordSource>,
+            ),
+        });
+        let task = TaskSession::new(
+            "task-1",
+            Some("ada"),
+            &(Rc::clone(&door) as Rc<dyn TaskDoor>),
+            &self.bundles,
+        )
+        .unwrap();
+        (task, door)
     }
 
     /// A task of these apps, acting for ada.
@@ -89,6 +127,61 @@ impl Apps {
             &self.bundles,
         )
         .unwrap()
+    }
+}
+
+impl RecordSource for Apps {
+    fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
+        if !record.is_empty() {
+            return Err(format!(
+                "the test's apps keep their records in the room's record, not in {record}"
+            ));
+        }
+        if let Some((_, why)) = self.unreachable.iter().find(|(gone, _)| *gone == app) {
+            return Err((*why).to_owned());
+        }
+        self.fetched.borrow_mut().push(app.to_owned());
+        if let Some(copy) = self.lagging.borrow().get(app) {
+            return Ok(Some(copy.clone()));
+        }
+        let index = *self.by_app.get(app).ok_or("no such app")?;
+        Ok(Some(self.replicas[index].borrow_mut().doc.save()))
+    }
+}
+
+/// A task's door that reads records itself: what [`Apps::record_task`] runs over.
+pub struct RecordsDoor {
+    apps: Rc<Apps>,
+    pub reads: RecordReads,
+}
+
+impl TaskDoor for RecordsDoor {
+    fn read(&self, app: &str, item: &str) -> Result<Json, String> {
+        self.reads.read(app, item)
+    }
+
+    fn query(&self, app: &str, request: &Json) -> Result<Json, String> {
+        self.reads.query(app, request)
+    }
+
+    fn begin_program(&self) {
+        self.reads.forget();
+    }
+
+    fn invoke(&self, call: &Json) -> Answered {
+        let app = call["app"].as_str().unwrap();
+        let before = self.apps.replica(app).doc.get_heads();
+        let answered = self.apps.invoke(call);
+        // The record's origin says what it wrote, which the task's reads take in, as the
+        // session's task host does.
+        let wrote = self.apps.replica(app).doc.save_after(&before);
+        if let Err(why) = (!wrote.is_empty())
+            .then(|| self.reads.take_in(app, &wrote))
+            .transpose()
+        {
+            panic!("what the origin wrote applies to the record the task read: {why}");
+        }
+        answered
     }
 }
 
@@ -131,6 +224,19 @@ impl TaskDoor for Apps {
         let prefix = resource_id(app, "");
         let resource = call["resource"].as_str().unwrap().strip_prefix(&prefix);
         let arguments = call["arguments"].as_object().unwrap();
+        // The broker binds the arguments to the action's published parameters before it
+        // delivers: what does not bind never reaches the app.
+        if let Some(package) = replica.host.package(app)
+            && let Some(declared) = package.meta.actions.iter().find(|a| a.id == action)
+        {
+            let params: Vec<_> = tilolang_tilo::surface::arguments(&package.meta, &declared.params)
+                .iter()
+                .map(|param| tilolang_tilo::surface::published_param(&package.meta, param))
+                .collect();
+            if let Err(error) = tilo_actions::ActionArgs::bind_json(&params, arguments) {
+                return Answered::Failed(format!("invoke: {action}: {error}"));
+            }
+        }
         let planned = if action == "edit-text" || action == "edit-flag" {
             let package = replica.host.package(app).unwrap();
             let id = resource.unwrap();

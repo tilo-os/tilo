@@ -2,9 +2,9 @@
 use std::{future::Future, pin::Pin};
 
 use super::{
-    CredentialStatus, EndpointLocation, ErrorKind, HashMap, LimitFieldBuffers, ModelDescriptor,
-    ModelError, PanelBindings, ProviderAdmin, ProviderConfig, ProviderEffect, ProviderPanel,
-    ProviderSnapshot, t,
+    CredentialStatus, ErrorKind, HashMap, LimitFieldBuffers, ModelDescriptor, ModelError,
+    PanelBindings, ProviderAdmin, ProviderConfig, ProviderEffect, ProviderPanel, ProviderSnapshot,
+    t,
 };
 use ui::lock::MutexRecover as _;
 use zeroize::Zeroize;
@@ -18,6 +18,9 @@ pub struct AdminRead {
     pub acknowledged: bool,
     /// A provider's model list, when that was what was asked.
     pub listed: Option<(String, Result<Vec<ModelDescriptor>, ModelError>)>,
+    /// A provider's list read on the way to another change, kept without
+    /// being the answer.
+    pub cached: Option<(String, Vec<ModelDescriptor>)>,
 }
 
 impl AdminRead {
@@ -29,7 +32,9 @@ impl AdminRead {
     ) -> Self {
         let mut keys = HashMap::new();
         for profile in &snapshot.config.profiles {
-            if profile.location == EndpointLocation::Hosted {
+            // Every provider with a key in this device's vault: a hosted
+            // one, or a server the person gave a key.
+            if profile.credential.is_some() {
                 keys.insert(
                     profile.id.clone(),
                     admin
@@ -45,6 +50,7 @@ impl AdminRead {
             outcome,
             acknowledged,
             listed: None,
+            cached: None,
         }
     }
 
@@ -69,6 +75,7 @@ impl AdminRead {
                 outcome: outcome.and(Err(error)),
                 acknowledged,
                 listed: None,
+                cached: None,
             },
         }
     }
@@ -201,6 +208,11 @@ impl<H: PanelBindings> ProviderPanel<H> {
             }));
         } else if let ProviderEffect::ListProviderModels { provider } = effect {
             self.admin_pending = Some(self.list_models(admin, provider)?);
+        } else if let ProviderEffect::SetProviderModel { provider, model } = &effect
+            && !self.listed_models.contains_key(provider)
+        {
+            self.admin_pending =
+                Some(self.take_from_listing(admin, provider.clone(), model.clone())?);
         } else {
             let snapshot = self
                 .admin_snapshot
@@ -289,6 +301,48 @@ impl<H: PanelBindings> ProviderPanel<H> {
 }
 
 impl<H: PanelBindings> ProviderPanel<H> {
+    /// Make `model`, named by id, the default of `provider`, which this
+    /// window has not asked for its models: ask it first, so the model
+    /// comes with what the provider's list says it can do, and keep the
+    /// list for the next. A provider that lists none, or not this model,
+    /// leaves it to the family table.
+    fn take_from_listing(
+        &self,
+        admin: std::sync::Arc<dyn ProviderAdmin>,
+        provider: String,
+        model: String,
+    ) -> Result<PendingAdmin, String> {
+        let snapshot = self
+            .admin_snapshot
+            .clone()
+            .ok_or_else(|| t("agent-provider-refresh-required"))?;
+        let reader = std::sync::Arc::clone(&admin);
+        Ok(Box::pin(async move {
+            let listed = admin.list_models(provider.clone()).await;
+            let found = listed
+                .as_ref()
+                .ok()
+                .and_then(|models| models.iter().find(|known| known.id == model.trim()))
+                .cloned();
+            let mut config = snapshot.config.clone();
+            let outcome = match crate::take_model(&mut config, &provider, &model, found) {
+                Ok(()) => admin
+                    .set_config(snapshot.revision.clone(), config.sanitised())
+                    .await
+                    .map(Some),
+                Err(message) => Err(ModelError {
+                    kind: ErrorKind::InvalidRequest,
+                    message,
+                }),
+            };
+            let mut read = AdminRead::after(reader.as_ref(), outcome).await;
+            // Kept for the window's next choice, not this answer: what it
+            // answers is the change.
+            read.cached = listed.ok().map(|models| (provider, models));
+            read
+        }))
+    }
+
     /// Ask `provider` for its models. A read: the configuration and key
     /// statuses stay as they are.
     fn list_models(
@@ -317,6 +371,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 outcome: listed.as_ref().map(|_| ()).map_err(Clone::clone),
                 acknowledged: false,
                 listed: Some((provider, listed)),
+                cached: None,
             }
         }))
     }

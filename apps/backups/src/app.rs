@@ -504,6 +504,28 @@ impl Store {
                 self.ui.view = View::Destinations;
                 Ok(Effected::done())
             }
+            BackupsEffect::ReadSnapshot { snapshot_id } => {
+                let snapshot = self
+                    .catalog
+                    .snapshots
+                    .iter()
+                    .find(|snapshot| snapshot.id == snapshot_id)
+                    .ok_or("That snapshot is unavailable in this local repository.")?;
+                Ok(Effected::value(serde_json::json!({
+                    "id": snapshot.id,
+                    "source": snapshot.source_id,
+                    "destination": snapshot.dest_id,
+                    "taken": snapshot.taken.to_string(),
+                    "label": snapshot.label,
+                    "kind": snapshot.kind.label(),
+                    "size_bytes": snapshot.size_bytes,
+                    "delta_bytes": snapshot.delta_bytes,
+                    "files_changed": snapshot.files_changed,
+                    "status": format!("{:?}", snapshot.status),
+                    "failure": snapshot.failure,
+                    "files": snapshot.files.len(),
+                })))
+            }
             BackupsEffect::ShowSnapshot { snapshot_id } => {
                 if !self.has_snapshot(&snapshot_id) {
                     return Err("That snapshot is unavailable in this local repository.".into());
@@ -2132,7 +2154,7 @@ mod tests {
                 .iter()
                 .map(|a| a.id.as_str())
                 .collect::<Vec<_>>(),
-            ["open", "verify", "restore"]
+            ["read", "open", "verify", "restore"]
         );
         assert!(
             snapshot

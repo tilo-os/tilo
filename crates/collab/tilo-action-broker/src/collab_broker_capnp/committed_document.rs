@@ -43,6 +43,22 @@ mod initialization_tests;
 #[path = "committed_document/service_session_tests.rs"]
 mod service_session_tests;
 impl NativeDocumentReadContext {
+    /// A read of `route` by an agent task acting for the person whose device certificate is
+    /// `certificate` (`record_read`): no launcher custody and no creation, only `revalidate`,
+    /// which decides the task's read of the record again. Only the broker can make one.
+    pub(super) fn for_task(
+        route: CrdtRoute,
+        certificate: tilo_user_identity::DeviceCert,
+        revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    ) -> Self {
+        Self {
+            route,
+            certificate,
+            record_kind: None,
+            creation: None,
+            revalidate,
+        }
+    }
     /// Bind a read to a source record while retaining the original channel's
     /// launcher custody and live admission check. Only the broker can do so.
     pub(super) fn for_source(mut self, app: &str, record: &str) -> Self {
@@ -159,6 +175,13 @@ pub trait NativeDocumentReads: Send + Sync {
         } else {
             RecordRead::Own
         }
+    }
+    /// Whether this device holds anything of `app`'s `record` in `room`: what its owner commits
+    /// or holds, or sealed writes of it. A sealed room's record it holds nothing of is new to
+    /// this device: the room has none yet, once its host's replay landed
+    /// ([`Self::await_sealed_history`]).
+    fn holds_record(&self, room: &str, app: &str, record: &str) -> bool {
+        self.record_read(room, app, record) != RecordRead::Own
     }
     /// Prepare only a missing record for a live, original-package-attested
     /// person launch. This is not a read/capture fallback or a wire capability.

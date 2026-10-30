@@ -63,6 +63,24 @@ class CurrentSourceMetadataTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "clean worktree"):
             module.validate(self.root, bundle)
 
+    def test_snapshot_binds_uncommitted_sources_and_fails_once_they_change(self):
+        self.assertEqual(module.snapshot(self.root),
+                         subprocess.check_output(["git", "-C", str(self.root), "rev-parse", "HEAD"], text=True).strip())
+        (self.root / "Cargo.toml").write_text((self.root / "Cargo.toml").read_text() + "\n")
+        (self.root / "src/untracked.rs").write_text("// being edited\n")
+        status = subprocess.check_output(["git", "-C", str(self.root), "status", "--porcelain"])
+        commit = module.snapshot(self.root)
+        # Neither the index nor HEAD moved.
+        self.assertEqual(subprocess.check_output(["git", "-C", str(self.root), "status", "--porcelain"]), status)
+        bundle = module.seal(self.root, self.metadata, commit)
+        self.assertEqual(bundle["source"]["commit"], commit)
+        self.assertEqual(module.validate(self.root, bundle, commit), self.metadata)
+        with self.assertRaisesRegex(ValueError, "clean worktree"):
+            module.validate(self.root, bundle)
+        (self.root / "src/untracked.rs").write_text("// edited again\n")
+        with self.assertRaisesRegex(ValueError, "differs from its snapshot"):
+            module.validate(self.root, bundle, commit)
+
     def test_forged_identity_and_external_targets_fail_closed(self):
         bundle = module.seal(self.root, self.metadata)
         bundle["source"]["manifests"]["Cargo.lock"] = "0" * 64

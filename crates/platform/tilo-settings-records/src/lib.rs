@@ -98,13 +98,6 @@ impl Records {
         Hold::Unlockable
     }
 
-    /// Take the profile once the process holding it lets it go.
-    #[cfg(target_arch = "wasm32")]
-    #[must_use]
-    pub fn wait_to_hold(&self) -> Hold {
-        Hold::Unlockable
-    }
-
     /// Take the profile if no other process holds it.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
@@ -122,18 +115,6 @@ impl Records {
                 }
             }
             None => Hold::Unlockable,
-        }
-    }
-
-    /// Take the profile once the process holding it lets it go.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[must_use]
-    pub fn wait_to_hold(&self) -> Hold {
-        match tilo_files::file_at(&self.dir.join(LOCK_FILE)).and_then(|(dir, name)| {
-            tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive)
-        }) {
-            Ok(lock) => Hold::Held(Holding { _lock: lock }),
-            Err(_) => Hold::Busy,
         }
     }
 
@@ -197,11 +178,15 @@ impl Records {
 
     /// Open the holder's door: each request another process sends is
     /// answered with what `answer` makes of it, on a thread of the door's
-    /// own. `None` where there is no door to open.
+    /// own. However deep the profile lives, its door opens.
+    ///
+    /// # Errors
+    /// The door cannot be opened (`Unsupported` on a target without one):
+    /// no other process can hand this one its writes.
     pub fn open_door(
         &self,
         answer: impl Fn(&[u8]) -> Vec<u8> + Send + Sync + 'static,
-    ) -> Option<Door> {
+    ) -> std::io::Result<Door> {
         door::open(&self.dir.join(DOOR_FILE), Box::new(answer))
     }
 
@@ -227,7 +212,7 @@ type Answer = Box<dyn Fn(&[u8]) -> Vec<u8> + Send + Sync>;
 #[cfg(unix)]
 mod door {
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
-    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::os::unix::net::UnixStream;
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -237,15 +222,13 @@ mod door {
     /// The largest request or answer that crosses the door: settings are small.
     const MAX_MESSAGE: u64 = 4 * 1024 * 1024;
 
-    pub(super) fn open(socket: &Path, answer: Answer) -> Option<Door> {
-        let _ = std::fs::remove_file(socket);
-        let listener = match UnixListener::bind(socket) {
-            Ok(listener) => listener,
-            Err(error) => {
-                tracing::warn!(socket = %socket.display(), %error, "settings take no writes from other processes");
-                return None;
-            }
-        };
+    pub(super) fn open(socket: &Path, answer: Answer) -> std::io::Result<Door> {
+        // The door of a holder that ended without closing it.
+        match std::fs::remove_file(socket) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+        let listener = tilo_files::native::socket::bind(socket)?;
         let closed = Arc::new(AtomicBool::new(false));
         let watching = Arc::clone(&closed);
         tilo_rt::spawn_thread("tilo-settings-door", move || {
@@ -257,9 +240,8 @@ mod door {
                     serve(&stream, &answer);
                 }
             }
-        })
-        .ok()?;
-        Some(Door {
+        })?;
+        Ok(Door {
             socket: socket.to_path_buf(),
             closed,
         })
@@ -279,7 +261,7 @@ mod door {
     }
 
     pub(super) fn knock(socket: &Path, request: &[u8]) -> std::io::Result<Vec<u8>> {
-        let stream = UnixStream::connect(socket)?;
+        let stream = tilo_files::native::socket::connect(socket)?;
         let mut body = request.to_vec();
         body.push(b'\n');
         (&stream).write_all(&body)?;
@@ -296,7 +278,7 @@ mod door {
 
     /// Wake the door's thread, which finds it closed and ends.
     pub(super) fn close(socket: &Path) {
-        drop(UnixStream::connect(socket));
+        drop(tilo_files::native::socket::connect(socket));
         let _ = std::fs::remove_file(socket);
     }
 }
@@ -307,8 +289,11 @@ mod door {
 
     use super::{Answer, Door};
 
-    pub(super) fn open(_socket: &Path, _answer: Answer) -> Option<Door> {
-        None
+    pub(super) fn open(_socket: &Path, _answer: Answer) -> std::io::Result<Door> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "no door to another process's settings here",
+        ))
     }
 
     pub(super) fn knock(_socket: &Path, _request: &[u8]) -> std::io::Result<Vec<u8>> {
@@ -348,7 +333,21 @@ mod tests {
     #[test]
     fn the_door_answers_a_knock_and_closes_when_dropped() {
         let root = tempfile::tempdir().unwrap();
-        let records = Records::of(root.path());
+        door_answers_and_closes(&Records::of(root.path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_profile_deeper_than_a_socket_path_still_has_a_door() {
+        let root = tempfile::tempdir().unwrap();
+        let records = Records::of(&root.path().join("a".repeat(60)).join("b".repeat(60)));
+        let [_, door] = records.runtime_files();
+        assert!(door.as_os_str().len() > 108, "{}", door.display());
+        door_answers_and_closes(&records);
+    }
+
+    #[cfg(unix)]
+    fn door_answers_and_closes(records: &Records) {
         std::fs::create_dir_all(records.dir()).unwrap();
         let door = records
             .open_door(|request| [b"seen ", request].concat())

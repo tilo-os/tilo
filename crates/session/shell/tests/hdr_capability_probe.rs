@@ -76,7 +76,6 @@ fn the_driven_hdr_output_reports_the_edid_peak() {
 
 #[test]
 fn an_sdr_sink_never_claims_pq() {
-    let hdr = parse_hdr_display_info(&hdr_monitor_edid(true));
     let sdr = parse_hdr_display_info(&hdr_monitor_edid(false));
     assert_eq!(
         DisplayCapabilities::from_edid(&sdr, true),
@@ -86,7 +85,6 @@ fn an_sdr_sink_never_claims_pq() {
 
 #[test]
 fn garbage_edid_is_sdr() {
-    let hdr = parse_hdr_display_info(&hdr_monitor_edid(true));
     assert_eq!(
         DisplayCapabilities::from_edid(&parse_hdr_display_info(&[0xAB; 40]), true),
         DisplayCapabilities::sdr_default()

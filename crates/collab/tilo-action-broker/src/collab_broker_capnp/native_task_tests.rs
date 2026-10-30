@@ -21,6 +21,8 @@ mod confirmation;
 mod cross_app;
 #[path = "native_store_witness_tests.rs"]
 mod store_witness;
+#[path = "native_task_agent_tests.rs"]
+mod task_agents;
 
 struct Native {
     owner: tilo_joined_room::NativeWorkspaceOwner,
@@ -37,6 +39,9 @@ struct Native {
     /// The room's governor records no effect receipt: one it is asked for
     /// is refused, as a governor out of reach refuses it.
     receipts_refused: std::sync::atomic::AtomicBool,
+    /// The owner is still opening, as a session's is at its start: health
+    /// says so until it is open.
+    opening: std::sync::atomic::AtomicBool,
 }
 
 /// The issue the fixture's agent runs.
@@ -122,6 +127,9 @@ impl OwnerCommitService for Native {
         requested == room().to_string()
     }
     fn health(&self) -> Result<(), String> {
+        if self.opening.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("the native owner is still opening; try again in a moment".into());
+        }
         self.owner.health()
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
@@ -141,6 +149,12 @@ impl OwnerCommitService for Native {
                 CommitOperation::EffectReceipt { .. } => {
                     owner.commit_effect_receipt(&request, &key, std::time::SystemTime::now())
                 }
+                CommitOperation::WorkspaceMembershipCommand { .. } => owner
+                    .commit_workspace_membership_command(
+                        request.clone(),
+                        &key,
+                        std::time::SystemTime::now(),
+                    ),
                 _ => Err("unsupported fixture owner operation".into()),
             }?;
             receipt.validate_for(&request)?;
@@ -201,14 +215,16 @@ impl TrackerRuns for Native {
         }
         Ok(self.runs.lock().unwrap().clone())
     }
-    fn check_agent(&self, requested: &str, agent: &str) -> Result<(), String> {
+    fn check_agent(&self, requested: &str, run: &TrackerRun) -> Result<(), String> {
         if !OwnerCommitService::requires_room(self, requested) {
             return Err("foreign tracker room".into());
         }
         self.owner.with_current(room(), |view| {
-            view.peer()
-                .workspace()
-                .check_admitted_agent(agent, std::time::SystemTime::now())
+            view.peer().workspace().check_admitted_agent(
+                &run.agent,
+                run.delegation()?,
+                std::time::SystemTime::now(),
+            )
         })
     }
     fn authorize_action(
@@ -224,7 +240,7 @@ impl TrackerRuns for Native {
             let now = std::time::SystemTime::now();
             view.peer()
                 .workspace()
-                .check_admitted_agent(&run.agent, now)?;
+                .check_admitted_agent(&run.agent, run.delegation()?, now)?;
             requirement.check_tracker(view.peer(), requested, run, now)
         })
     }
@@ -283,6 +299,7 @@ impl Fixture {
             runs: Mutex::new(Vec::new()),
             granted: Mutex::new(None),
             receipts_refused: std::sync::atomic::AtomicBool::new(false),
+            opening: std::sync::atomic::AtomicBool::new(false),
         });
         let membership = OwnerCommitRequest {
             room: room().to_string(),
@@ -430,6 +447,7 @@ impl Fixture {
                 model: None,
                 directions: Vec::new(),
                 question: None,
+                delegation: None,
             });
         }
         self.state.refresh_native_task_delivery();
@@ -1032,6 +1050,7 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
             let budget = collab_types::task_budget::TaskExecutionBudget {
                 turn_ms: 5000,
                 total_ms: 20000,
+                max_turns: None,
             };
             f.approve();
             f.on_run(|run| run.budget = Some(budget));
@@ -1439,10 +1458,10 @@ async fn a_held_native_reask_ends_when_the_run_is_cancelled() {
 
 /// A membership change whose outcome the broker cannot record (its effect
 /// receipt is refused) does not leave whoever asked for it waiting, as an
-/// opening app's authorship was left: the room's membership service stops,
-/// and the asker hears at once that no outcome comes from it. The receipt
-/// prepared for the change admits only the owner's own terminal, so the
-/// journal keeps the change for recovery to answer.
+/// opening app's authorship was left: the asker hears at once that no
+/// outcome was recorded, and the room's membership service goes on serving.
+/// The receipt prepared for the change admits only the owner's own
+/// terminal, so the journal keeps the change for recovery to answer.
 #[tokio::test(flavor = "current_thread")]
 async fn a_membership_change_whose_receipt_is_refused_does_not_leave_its_asker_waiting() {
     tokio::task::LocalSet::new()
@@ -1485,7 +1504,95 @@ async fn a_membership_change_whose_receipt_is_refused_does_not_leave_its_asker_w
                     "a change whose outcome was not recorded never reads as done"
                 );
             }
+            tokio::task::yield_now().await;
+            assert!(
+                f.state.membership_published(&room),
+                "one change's unrecorded outcome does not take the room's membership service away"
+            );
             drop(f);
         })
         .await;
+}
+
+/// Apps opened together at a session's start each ask that they may author
+/// the room, and their grants queue on the room's membership service. The
+/// first grant's outcome cannot be recorded while the native owner is still
+/// opening; that grant is told why, and every grant behind it still
+/// completes on the same service: none hears that its outcome is unknown
+/// because the service went away, which left the apps' windows refused
+/// ("This workspace's host did not let you add ...") on their first open.
+#[tokio::test(flavor = "current_thread")]
+async fn grants_in_flight_survive_an_unrecorded_one_while_the_owner_opens() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            let room = room().to_string();
+            f.state.refresh_workspace_membership_services().unwrap();
+            assert!(f.state.membership_published(&room));
+            let grant = |app: &str| {
+                f.state
+                    .invoke_workspace_membership(
+                        &room,
+                        &WorkspaceMembershipCommand::GrantAppAuthorship { app: app.into() },
+                        &f.native.certificate,
+                    )
+                    .unwrap()
+            };
+            f.native
+                .opening
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let first = grant("so.tilo.lang.notes");
+            let first = answer_of(&first).await;
+            f.native
+                .opening
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            let queued = [
+                "so.tilo.lang.tasks",
+                "so.tilo.lang.chat",
+                "so.tilo.lang.board",
+            ]
+            .map(grant);
+            for job in &queued {
+                let answer = answer_of(job).await;
+                assert!(
+                    answer.code.is_empty(),
+                    "a grant behind an unrecorded one completes: {} {}",
+                    answer.code,
+                    answer.message
+                );
+            }
+            assert!(
+                !first.message.contains("disconnect"),
+                "the unrecorded grant is told why, not that its service went away: {}",
+                first.message
+            );
+            assert!(
+                first.code.is_empty() || first.message.contains("still opening"),
+                "the unrecorded grant hears the owner's own reason: {} {}",
+                first.code,
+                first.message
+            );
+            assert!(f.state.membership_published(&room));
+            drop(f);
+        })
+        .await;
+}
+
+/// The answer `job` hears, waited for while the broker's loop runs.
+async fn answer_of(job: &crate::collab_broker_capnp::InvocationJob) -> InvocationCompletion {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        match job.completion.try_recv() {
+            Ok(answer) => return answer,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("an asker was left without an answer")
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "an asker was left waiting on the room's membership service"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }

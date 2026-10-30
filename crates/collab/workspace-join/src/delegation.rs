@@ -103,6 +103,10 @@ pub enum DelegationError {
     /// The signature does not verify.
     #[error("the delegation signature does not verify")]
     Signature,
+    /// The signing device's certificate does not verify now, or the
+    /// delegation was signed outside the certificate's window.
+    #[error("the delegating device is not certified")]
+    Uncertified,
     /// Outside its validity window.
     #[error("the delegation has expired")]
     Expired,

@@ -21,7 +21,7 @@
 //! Every call is bounded by a timeout; a slow, failed or malformed answer is
 //! reported as such rather than guessed at.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use ui::time::Duration;
@@ -98,6 +98,34 @@ impl Chooser {
         ))
     }
 
+    /// Why a run cannot carry out a task with this chooser's model, naming
+    /// the model: it declares no tool calling (`ModelDescriptor::tool_calling`),
+    /// so it could never invoke an operation. `None` for a model that calls
+    /// tools, and for no model at all, which the loop reports on its own.
+    pub fn refuses_tasks(&self) -> Option<String> {
+        let selection = self.selection()?;
+        (!selection.model.tool_calling).then(|| {
+            format!(
+                "{} from {} cannot call tools, so it cannot carry out tasks. Choose a model \
+                 with tool calling for this agent or this task.",
+                selection.model.display_label(),
+                selection.profile_label
+            )
+        })
+    }
+
+    /// How many tokens the model this chooser asks reads at once, when its
+    /// descriptor knows: the deployment's runtime context first, else the
+    /// model's own.
+    pub fn context_tokens(&self) -> Option<u32> {
+        let model = &self.selection()?.model;
+        model
+            .request_limits
+            .as_ref()
+            .and_then(|limits| limits.runtime_context_tokens)
+            .or(model.context_window)
+    }
+
     /// Whether the model this chooser asks sees pictures.
     pub fn sees(&self) -> bool {
         self.selection()
@@ -158,6 +186,26 @@ impl Chooser {
             turns: Some(turns),
             marks: Arc::default(),
         }
+    }
+
+    /// A neutral scripted chooser over `model`, whose descriptor says what
+    /// the model declares (its context, tool calling).
+    #[cfg(test)]
+    pub(crate) fn scripted_model(
+        timeout: Duration,
+        model: agent_provider_config::ModelDescriptor,
+        turns: Arc<dyn TurnTransport>,
+    ) -> Self {
+        let mut profile = agent_provider_config::ProviderProfile::hosted(
+            agent_provider_config::ProviderProtocol::OpenAiCompatible,
+        );
+        profile.label = "Scripted".into();
+        profile.models.push(model.clone());
+        let mut chooser = Self::scripted_neutral(timeout, turns);
+        chooser.provider = Some(ProviderConnection {
+            selection: ProviderSelection::from_profile(&profile, model),
+        });
+        chooser
     }
 
     #[cfg(test)]
@@ -1171,6 +1219,9 @@ impl TurnTransport for GatewayTurns {
     }
 }
 
+mod conversation_view;
+pub use conversation_view::Answered;
+
 /// Provider-neutral history for the discover → invoke → observe loop.
 #[derive(Clone, Debug)]
 pub struct Conversation {
@@ -1179,6 +1230,16 @@ pub struct Conversation {
     /// history message at each index.
     directions: Vec<(usize, agent_provider_config::protocol::Message)>,
     first: Option<FirstTurn>,
+    /// Tool results put aside to keep the conversation within its model's
+    /// context: what each call's result is sent as instead, by call id.
+    /// The history keeps every result as it was, so call ids still validate
+    /// and nothing the run did is forgotten; only what the model is sent
+    /// is shorter.
+    compacted: HashMap<String, String>,
+    /// The history's turns before this message index folded into a note
+    /// closing the first user message: a long run's oldest turns, each
+    /// result kept for reading again ([`Self::fold`]).
+    folded: Option<(usize, String)>,
     #[cfg(test)]
     legacy: Option<LegacyConversation>,
 }
@@ -1213,6 +1274,8 @@ impl Conversation {
             history: agent_provider_config::protocol::Conversation::new(system, user_turn),
             directions: Vec::new(),
             first: None,
+            compacted: HashMap::new(),
+            folded: None,
             #[cfg(test)]
             legacy: None,
         }
@@ -1227,18 +1290,105 @@ impl Conversation {
     }
 
     pub fn body(&self, tools: &[agent_provider_config::protocol::ToolDefinition]) -> Value {
+        use agent_provider_config::protocol::Content;
         #[cfg(test)]
         if let Some(legacy) = &self.legacy {
-            return legacy.body(tools);
+            return legacy.body(tools, &self.compacted);
         }
         let mut request = self.history.request(tools.to_vec(), 4096);
         if let Some(first) = &self.first {
             first.apply_to(&mut request);
         }
-        for (offset, (index, message)) in self.directions.iter().enumerate() {
-            request.messages.insert(index + offset, message.clone());
+        for content in request
+            .messages
+            .iter_mut()
+            .flat_map(|message| message.content.iter_mut())
+        {
+            if let Content::ToolResult(result) = content
+                && let Some(aside) = self.compacted.get(&result.call_id)
+            {
+                result.content.clone_from(aside);
+            }
+        }
+        let Some((through, note)) = &self.folded else {
+            for (offset, (index, message)) in self.directions.iter().enumerate() {
+                request.messages.insert(index + offset, message.clone());
+            }
+            return serde_json::json!(request);
+        };
+        // The folded turns give way to their note, and the person's words
+        // said among them follow it; pictures shown among them are not sent
+        // again.
+        let folded = |index: usize| (2..*through).contains(&index);
+        let history = std::mem::take(&mut request.messages);
+        let count = history.len();
+        let mut directions = self.directions.iter().peekable();
+        let mut said = Vec::new();
+        let mut place =
+            |index: usize,
+             message: &agent_provider_config::protocol::Message,
+             out: &mut Vec<agent_provider_config::protocol::Message>| {
+                if !folded(index) {
+                    out.push(message.clone());
+                    return;
+                }
+                said.extend(message.content.iter().filter_map(|content| match content {
+                    Content::Text { text } => Some(text.clone()),
+                    _ => None,
+                }));
+            };
+        for (index, message) in history.into_iter().enumerate() {
+            while let Some((at, direction)) = directions.next_if(|(at, _)| *at == index) {
+                place(*at, direction, &mut request.messages);
+            }
+            if !folded(index) {
+                request.messages.push(message);
+            }
+        }
+        for (at, direction) in directions {
+            place((*at).min(count), direction, &mut request.messages);
+        }
+        if let Some(first) = request.messages.get_mut(1) {
+            first.content.push(Content::Text { text: note.clone() });
+            if !said.is_empty() {
+                first.content.push(Content::Text {
+                    text: format!(
+                        "What the person said during those earlier steps:\n{}",
+                        said.join("\n")
+                    ),
+                });
+            }
         }
         serde_json::json!(request)
+    }
+
+    /// The history index of each turn's assistant message after the first
+    /// user message, oldest first: where a fold may end.
+    pub fn turn_starts(&self) -> Vec<usize> {
+        #[cfg(test)]
+        if self.legacy.is_some() {
+            return Vec::new();
+        }
+        self.history
+            .messages()
+            .iter()
+            .enumerate()
+            .skip(2)
+            .filter(|(_, message)| message.role == agent_provider_config::protocol::Role::Assistant)
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// Send the history's turns before message `through` (a turn start) as
+    /// `note` instead, at the close of the first user message. The history
+    /// itself keeps them.
+    pub fn fold(&mut self, through: usize, note: String) {
+        self.folded = Some((through, note));
+    }
+
+    /// Where the fold ends: history messages before it are folded.
+    pub fn folded_through(&self) -> usize {
+        self.folded.as_ref().map_or(2, |(through, _)| *through)
     }
 
     /// Validate the complete response before any tools may execute.
@@ -1389,21 +1539,49 @@ impl LegacyConversation {
     }
 
     /// The request for the next turn, offering `tools` (Anthropic-shaped
-    /// definitions, re-enveloped for the `OpenAI` dialect).
-    pub fn body(&self, tools: &[agent_provider_config::protocol::ToolDefinition]) -> Value {
+    /// definitions, re-enveloped for the `OpenAI` dialect), each result in
+    /// `compacted` sent as what it maps to.
+    pub fn body(
+        &self,
+        tools: &[agent_provider_config::protocol::ToolDefinition],
+        compacted: &HashMap<String, String>,
+    ) -> Value {
         let tools = serde_json::json!(tools);
+        let mut messages = self.messages.clone();
+        let put_aside = |result: &mut Value| {
+            let id = result
+                .get("tool_call_id")
+                .or_else(|| result.get("tool_use_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if let Some(aside) = id.and_then(|id| compacted.get(&id))
+                && let Some(object) = result.as_object_mut()
+            {
+                object.insert("content".into(), Value::String(aside.clone()));
+            }
+        };
+        for message in &mut messages {
+            if message.get("tool_call_id").is_some() {
+                put_aside(message);
+            } else if let Some(Value::Array(blocks)) = message.get_mut("content") {
+                for block in blocks.iter_mut() {
+                    put_aside(block);
+                }
+            }
+        }
+        let messages = &messages;
         match self.dialect {
             Dialect::Anthropic => serde_json::json!({
                 "model": self.model,
                 "max_tokens": 4096,
                 "system": self.system,
                 "tools": tools,
-                "messages": self.messages,
+                "messages": messages,
             }),
             Dialect::OpenAi => serde_json::json!({
                 "model": self.model,
                 "max_completion_tokens": 4096,
-                "messages": self.messages,
+                "messages": messages,
                 "tools": openai_tools(&tools),
                 "tool_choice": "required",
             }),
@@ -2480,16 +2658,39 @@ pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, St
     let object = value
         .as_object()
         .ok_or("managed provider must be an object")?;
-    let vision = match object.get("vision") {
-        None => false,
-        Some(Value::Bool(vision)) => *vision,
+    let flag = |name: &str, absent: bool| match object.get(name) {
+        None => Ok(absent),
+        Some(Value::Bool(flag)) => Ok(*flag),
+        Some(_) => Err("invalid managed provider field".to_string()),
+    };
+    let vision = flag("vision", false)?;
+    // Said only of a model that calls no tools, so a run refuses it by name.
+    let tool_calling = flag("tool_calling", true)?;
+    let context_window = match object.get("context_window") {
+        None => None,
+        Some(Value::Number(tokens)) => Some(
+            tokens
+                .as_u64()
+                .and_then(|tokens| u32::try_from(tokens).ok())
+                .filter(|tokens| *tokens > 0)
+                .ok_or("invalid managed provider field")?,
+        ),
         Some(_) => return Err("invalid managed provider field".into()),
     };
-    if object.len() != 3 + usize::from(object.contains_key("vision"))
+    let optional = ["vision", "tool_calling", "context_window"]
+        .iter()
+        .filter(|key| object.contains_key(**key))
+        .count();
+    if object.len() != 3 + optional
         || !object.keys().all(|key| {
             matches!(
                 key.as_str(),
-                "profile_id" | "model_id" | "protocol" | "vision"
+                "profile_id"
+                    | "model_id"
+                    | "protocol"
+                    | "vision"
+                    | "tool_calling"
+                    | "context_window"
             )
         })
     {
@@ -2518,6 +2719,8 @@ pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, St
         protocol,
         model: agent_provider_config::ModelDescriptor {
             vision,
+            tool_calling,
+            context_window,
             ..agent_provider_config::ModelDescriptor::new(field("model_id")?)
         },
         credential: None,
@@ -2549,6 +2752,39 @@ mod managed_tests {
         let mut missing = value;
         missing.as_object_mut().unwrap().remove("model_id");
         assert!(managed_provider_selection(&missing).is_err());
+    }
+
+    /// The desktop says when a model calls no tools and how much it reads at
+    /// once; a run reads both off the selection it was handed.
+    #[test]
+    fn managed_selection_carries_tool_calling_and_context() {
+        let value =
+            serde_json::json!({"profile_id":"p","model_id":"m","protocol":"open_ai_compatible"});
+        let plain = managed_provider_selection(&value).unwrap();
+        assert!(
+            plain.model.tool_calling,
+            "a model calls tools unless said otherwise"
+        );
+        assert_eq!(plain.model.context_window, None);
+        let mut said = value.clone();
+        said["tool_calling"] = serde_json::json!(false);
+        said["context_window"] = serde_json::json!(32_768);
+        let said = managed_provider_selection(&said).unwrap();
+        assert!(!said.model.tool_calling);
+        assert_eq!(said.model.context_window, Some(32_768));
+        for bad in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!("big"),
+        ] {
+            let mut wrong = value.clone();
+            wrong["context_window"] = bad;
+            assert!(managed_provider_selection(&wrong).is_err());
+        }
+        let chooser = Chooser::with_provider(true, Duration::from_secs(1), said);
+        let refusal = chooser.refuses_tasks().expect("refused");
+        assert!(refusal.contains("m from p cannot call tools"), "{refusal}");
+        assert_eq!(chooser.context_tokens(), Some(32_768));
     }
 }
 

@@ -20,10 +20,10 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "host-backend")]
 #[path = "host_backend.rs"]
 pub mod host_backend;
-#[path = "rig_adapter.rs"]
-mod rig_adapter;
 #[path = "profile_cache.rs"]
 mod profile_cache;
+#[path = "rig_adapter.rs"]
+mod rig_adapter;
 use profile_cache::{PLAN_PROFILES, PROFILE_REUSE, ProfileSources};
 
 use crate::{
@@ -70,7 +70,32 @@ enum Action {
         #[arg(long)]
         profile: String,
     },
+    /// Give this configuration's person a provider, as Settings' "Add
+    /// provider", "Use model", "Set default provider" and "Save API key" do:
+    /// the profile into their provider settings, the key (read from stdin,
+    /// never an argument) into the gateway's own credential custody. For a
+    /// scripted session; `provision::Record` on stdin with `--record`.
+    #[command(hide = true)]
+    ProvisionProvider {
+        /// A preset slug (`anthropic`, `openai`, `gemini`, ...).
+        #[arg(long, required_unless_present = "record")]
+        preset: Option<String>,
+        /// The model agents use from it.
+        #[arg(long, required_unless_present = "record")]
+        model: Option<String>,
+        /// Read a whole record (`export-provider`'s output) from stdin
+        /// instead of a bare key.
+        #[arg(long)]
+        record: bool,
+    },
+    /// Write this configuration's default provider and its stored key to
+    /// stdout, for `provision-provider --record` in another configuration.
+    #[command(hide = true)]
+    ExportProvider,
 }
+
+#[path = "provision.rs"]
+mod provision;
 
 /// The launcher's handoff: a little-endian `u32` length, then JSON.
 const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(4096);
@@ -117,7 +142,15 @@ struct Handoff {
 
 pub fn main() {
     let cli = Cli::parse();
-    crate::follow_session_settings();
+    // The service follows the settings its session holds. Provisioning
+    // writes them as any program of the person does, before a session holds
+    // them or through the one that does, as Settings' own writes land.
+    if !matches!(
+        cli.action,
+        Action::ProvisionProvider { .. } | Action::ExportProvider
+    ) {
+        crate::follow_session_settings();
+    }
     let result = match cli.action {
         Action::Serve { socket } => serve(&socket),
         Action::SecretStatus { profile } => control(Request::SecretStatus {
@@ -126,6 +159,12 @@ pub fn main() {
         Action::RemoveApiKey { profile } => control(Request::RemoveApiKey {
             profile_id: profile,
         }),
+        Action::ProvisionProvider {
+            preset,
+            model,
+            record,
+        } => provision::provision(preset.as_deref(), model.as_deref(), record),
+        Action::ExportProvider => provision::export(),
     };
     if let Err(error) = result {
         // Never interpolate a request or provider response here; either could
@@ -757,13 +796,13 @@ async fn list_models(
         Ok((profile, secret))
     })
     .await?;
+    let url = provider_transform::models_url(&profile)
+        .ok_or_else(|| ModelError::new(ErrorKind::Unsupported))?;
     let headers =
         provider_transform::profile_headers(&profile, secret.as_ref().map(|key| key.as_str()))
             .map_err(|_| ModelError::new(ErrorKind::Authentication))?;
     drop(secret);
-    let mut request = http
-        .get(provider_transform::models_url(&profile))
-        .timeout(MODEL_LIST_TIMEOUT);
+    let mut request = http.get(url).timeout(MODEL_LIST_TIMEOUT);
     for header in headers {
         let mut value = reqwest::header::HeaderValue::from_str(header.value.as_str())
             .map_err(|_| ModelError::new(ErrorKind::Authentication))?;
@@ -3815,7 +3854,6 @@ mod selection_tests;
 #[cfg(test)]
 #[path = "cancellation_tests.rs"]
 mod cancellation_tests;
-
 
 #[cfg(test)]
 #[path = "administration_tests.rs"]

@@ -44,6 +44,12 @@ const ALLOWED: &[(&str, &str)] = &[
         "shell/launcher.rs",
         "selected open cannot borrow a host path or URI",
     ),
+    // A launch context the desktop only builds for one web address: a
+    // caller's broken invariant, refused before anything starts.
+    (
+        "shell/launcher.rs",
+        "a visitor window opens one web address",
+    ),
     (
         "shell/doc_open.rs",
         "this device's identity cannot vouch for the document's read",
@@ -83,4 +89,67 @@ fn copy_builders_take_catalogue_strings_not_english_literals() {
         ])
         .min_files(100)
         .check();
+}
+
+/// A message that interpolates a variable is never resolved with `t`, which
+/// passes none: it would show its `{ $… }` placeable to the person. Such
+/// messages go through `t_args` (or a typed builder that always passes them).
+#[test]
+fn messages_with_variables_are_never_resolved_without_arguments() {
+    let catalogue = include_str!("../../locales/en-US.ftl");
+    let mut needs_arguments = std::collections::HashSet::new();
+    let mut current: Option<&str> = None;
+    for line in catalogue.lines() {
+        if line.starts_with(char::is_whitespace) {
+            if let Some(key) = current
+                && line.contains('$')
+            {
+                needs_arguments.insert(key);
+            }
+            continue;
+        }
+        current = line
+            .split_once('=')
+            .map(|(key, _)| key.trim())
+            .filter(|key| {
+                !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+            });
+        if let (Some(key), Some((_, value))) = (current, line.split_once('='))
+            && value.contains('$')
+        {
+            needs_arguments.insert(key);
+        }
+    }
+    assert!(needs_arguments.contains("launch-error-app-authorship-refused"));
+    let source = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+    let mut offenders = Vec::new();
+    for entry in walkdir::WalkDir::new(source) {
+        let entry = entry.expect("the shell's sources are readable");
+        if entry.path().extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(entry.path()).expect("a source file reads");
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("t(\"") {
+            let before = rest[..at].chars().next_back();
+            let after = &rest[at + 3..];
+            rest = after;
+            if before.is_some_and(|ch| ch.is_alphanumeric() || ch == '_') {
+                continue;
+            }
+            let Some((key, tail)) = after.split_once('"') else {
+                continue;
+            };
+            if tail.trim_start().starts_with(')') && needs_arguments.contains(key) {
+                offenders.push(format!("{}: {key}", entry.path().display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "messages with variables resolved without them: {offenders:#?}"
+    );
 }

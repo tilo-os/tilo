@@ -330,3 +330,31 @@ fn sample_number(schema: &serde_json::Value) -> serde_json::Value {
         0.0
     })
 }
+
+/// Drive every scenario `A` stages and name the actions each publishes that
+/// an agent is never shown ([`tilo_actions::hidden_from_agents`]).
+///
+/// # Errors
+/// Each scenario that did not open, or that publishes such actions, with
+/// them.
+pub fn check_agents_are_shown_every_action<A: ResourceApp>() -> Result<(), String> {
+    let mut failures = Vec::new();
+    for scenario in A::scenarios() {
+        match HeadlessApp::<A>::drive(scenario) {
+            Ok(mut app) => {
+                let hidden = tilo_actions::hidden_from_agents(&app.harness().resources());
+                if !hidden.is_empty() {
+                    failures.push(format!(
+                        "{scenario}: published actions an agent is never shown: {hidden:#?}"
+                    ));
+                }
+            }
+            Err(error) => failures.push(format!("{scenario}: {error}")),
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n"))
+    }
+}

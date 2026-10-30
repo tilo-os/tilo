@@ -2477,49 +2477,49 @@ impl UpdatesModel {
 #[effect(operation = "settings.effect")]
 pub enum UpdatesEffect {
     /// Check for a new system image now.
-    #[effect(job)]
+    #[effect(job, returns)]
     CheckForUpdates,
     /// Restart into the staged system image.
-    #[effect(job, destructive)]
+    #[effect(job, destructive, returns)]
     RestartToUpdate,
     /// Show what rolling back to the previous system image does not undo.
-    #[effect(job)]
+    #[effect(job, returns)]
     ReviewRollback,
     /// Boot the previous system image next time.
-    #[effect(job, destructive)]
+    #[effect(job, destructive, returns)]
     RollBack,
     /// Ask the firmware service for new firmware.
-    #[effect(job)]
+    #[effect(job, returns)]
     RefreshFirmware,
     /// Install the available firmware upgrades.
-    #[effect(job, destructive)]
+    #[effect(job, destructive, returns)]
     InstallFirmware,
     /// Play more video and audio formats: download the media codecs to this device.
-    #[effect(job)]
+    #[effect(job, returns)]
     InstallCodecs,
     /// Remove the downloaded media codecs.
-    #[effect(job, destructive)]
+    #[effect(job, destructive, returns)]
     RemoveCodecs,
     /// Check again for hardware H.264/HEVC support.
-    #[effect(job)]
+    #[effect(job, returns)]
     RefreshCodecs,
     /// Run Windows apps: download Windows support to this device.
-    #[effect(job)]
+    #[effect(job, returns)]
     InstallWindowsSupport,
     /// Remove the downloaded Windows support.
-    #[effect(job, destructive)]
+    #[effect(job, destructive, returns)]
     RemoveWindowsSupport,
     /// Update the system automatically, or only when asked.
-    #[effect(job, idempotent)]
+    #[effect(job, idempotent, returns)]
     SetAutomaticUpdates { on: bool },
     /// Set when updates download.
-    #[effect(job, idempotent)]
+    #[effect(job, idempotent, returns)]
     SetUpdateSchedule {
         #[param("When", choices = UPDATE_SCHEDULES.iter().copied())]
         schedule: String,
     },
     /// Download updates on metered networks, or wait for another network.
-    #[effect(job, idempotent)]
+    #[effect(job, idempotent, returns)]
     SetMeteredUpdates { allowed: bool },
 }
 

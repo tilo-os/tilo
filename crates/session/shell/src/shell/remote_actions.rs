@@ -357,6 +357,14 @@ impl ActionHost for BrokerActionHost {
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.broker.state().content_puts()
     }
+
+    fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
+        self.broker.state().record_reads()
+    }
+
+    fn record_changes(&self) -> Option<Arc<dyn tilo_actions::remote::RecordChanges>> {
+        self.broker.state().record_changes()
+    }
 }
 
 #[cfg(test)]

@@ -37,6 +37,17 @@ pub use page::{
 pub mod profile;
 pub mod test_engine;
 
+/// The Browser's app id: the app the desktop opens a web address in when
+/// nothing else is chosen for it.
+pub const BROWSER_APP_ID: &str = "so.tilo.browser";
+
+/// The switch a Browser window is launched with when it is opened for an
+/// agent: it browses as any visitor would, on a fresh profile of its own
+/// that is thrown away with it, without the person's cookies, sign-ins or
+/// saved passwords. Reading such a page takes no authority beyond a
+/// visitor's.
+pub const VISITOR_WINDOW_FLAG: &str = "--visitor";
+
 #[cfg(feature = "webview-adblock")]
 pub mod adblock;
 

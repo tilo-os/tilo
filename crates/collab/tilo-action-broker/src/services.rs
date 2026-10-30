@@ -7,8 +7,9 @@ pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use room_nodes::{RoomNodeActions, RoomNodeAsk, RoomNodeOutcome};
 pub use task_execution::{
     NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
-    TRACKER_ISSUE_PREFIX, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection, TrackerQuestion,
-    TrackerRun, TrackerRuns, confirmation_preview, is_tracker_issue,
+    TRACKER_ISSUE_PREFIX, TRACKER_RECORD, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection,
+    TrackerQuestion, TrackerRun, TrackerRuns, confirmation_preview, is_tracker_issue,
+    tracker_written,
 };
 
 use std::sync::Arc;
@@ -27,6 +28,22 @@ pub trait LocalPersonServices: Send + Sync {
         room: &str,
         person: &str,
     ) -> Result<tilo_user_identity::DeviceCert, String>;
+}
+
+/// The origin of a room's records on this device: it applies an agent task's change the broker
+/// admitted, running the action against the record as it is then.
+pub trait RecordChangeServices: Send + Sync {
+    /// Apply `change` in `room` as `invoker`'s step: the origin's answer.
+    ///
+    /// # Errors
+    ///
+    /// The origin cannot be reached or did not answer.
+    fn apply(
+        &self,
+        room: &str,
+        change: &tilo_actions::remote::RecordChange,
+        invoker: &tilo_actions::ActionInvoker,
+    ) -> Result<serde_json::Value, String>;
 }
 
 /// The normal desktop opening deadline, shared with placement retirement.
@@ -473,6 +490,20 @@ impl LaunchReadiness {
         self
     }
 
+    /// How the startup ended, once it has, without waiting: `None` while it
+    /// runs. Asked again after it answered, it answers that the observer
+    /// stopped.
+    pub fn try_settled(&mut self) -> Option<Result<(), LaunchReadinessError>> {
+        match self.receiver.try_recv() {
+            Ok(Ok(())) => Some(Ok(())),
+            Ok(Err(detail)) => Some(Err(LaunchReadinessError::Failed(detail))),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                Some(Err(LaunchReadinessError::ObserverStopped))
+            }
+        }
+    }
+
     /// Wait for an adopted window or a terminal startup failure.
     pub async fn wait(self) -> Result<(), String> {
         self.wait_with_adoption()
@@ -606,6 +637,10 @@ pub struct AuthenticatedApplicationLaunch {
     /// launch that started this process ([`Launched::Started`]), read from
     /// the host's own launch record. Correlation only, never authority.
     pub launch_ticket: Option<u64>,
+    /// The host made this connection for an instance of the app with no
+    /// window ([`LauncherServices::windowless`]): it takes the app's actions
+    /// on its records, and never an `open`, which shows something.
+    pub windowless: bool,
 }
 
 /// What [`LauncherServices::launch_content`] started.
@@ -634,6 +669,11 @@ pub enum ExecutingBindingPhase {
     /// answer, not for a clock, so this is how an unanswered binding ends.
     Abandoned,
 }
+
+/// How the start of an instance of an app with no window ends
+/// ([`LauncherServices::windowless`]): `Ok` once it runs, why it could not
+/// otherwise. Its sender dropped unsent is a host that stopped starting it.
+pub type WindowlessStart = tokio::sync::oneshot::Receiver<Result<(), String>>;
 
 pub trait LauncherServices: Send + Sync {
     /// Bind an optional diagnostic observation to the host's current exact
@@ -739,6 +779,20 @@ pub trait LauncherServices: Send + Sync {
         }
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
+    /// Have an instance of `app` with no window run in `room`, started now
+    /// unless one runs there already, to take an invocation of the app's
+    /// actions on its records: what a closed app gets in place of a window
+    /// for an action that shows nothing. `Some` when this host runs one
+    /// there: how its start ends, which the action waits on with its
+    /// delivery; `None` when it runs none of `app` (its actions then launch
+    /// it as before). It ends with the session.
+    ///
+    /// # Errors
+    /// Why the instance this host runs of `app` there failed.
+    fn windowless(&self, app: &str, room: &str) -> Result<Option<WindowlessStart>, String> {
+        let _ = (app, room);
+        Ok(None)
+    }
     /// Snapshot the original launch facts while admitting this connection.
     /// Unsupported launchers retain no private window-instance authority.
     /// `window_instance` is the window the connection says it was made for:
@@ -762,6 +816,7 @@ pub trait LauncherServices: Send + Sync {
             creation: self.application_creation_evidence(pid, app, room)?,
             continuation_instance: None,
             launch_ticket: None,
+            windowless: false,
         }))
     }
 
@@ -1749,6 +1804,7 @@ pub struct HostServices {
     pub person_chat: Option<person_chat::PersonChatService>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
+    pub record_changes: Option<Arc<dyn RecordChangeServices>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
     pub launcher: Option<Arc<dyn LauncherServices>>,
     pub workspace_governance: Option<Arc<dyn WorkspaceGovernanceServices>>,

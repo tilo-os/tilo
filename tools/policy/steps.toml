@@ -8,6 +8,7 @@
 #   run      the command, from the top of the tree
 #   tests    a test of the suite's own tools, run after the checks of the tree: its fixtures
 #            write beside the sources
+#   node_tests  test files of a tests step that run Node.js scripts (see the unit step)
 
 [[step]]
 name = "source-content"
@@ -98,6 +99,11 @@ run = "python3 tools/policy/check_primitives.py"
 name = "breakpoints"
 label = "Surfaces take their breakpoint from the rect they are laid out in"
 run = "python3 tools/policy/check_breakpoints.py"
+
+[[step]]
+name = "socket-paths"
+label = "Local sockets bind and connect at any path length"
+run = "python3 tools/policy/check_socket_paths.py"
 
 [[step]]
 name = "swallowed-decodes"
@@ -271,6 +277,16 @@ name = "unit"
 label = "Repository policy unit tests"
 run = "python3 tools/policy/run_unit_tests.py tools/tests"
 tests = true
+# Test files that run Node.js scripts, and read no Git checkout. CI's image has both; where no
+# machine has (the batch check's laptop has the checkout, its builder Node.js),
+# tools/policy/run.sh --no-node runs the suite without them and run.sh --node just them
+# (tools/ci/local_affected.py, the policy stage). tools/tests/test_policy_steps.py checks this
+# list against the files that start `node`.
+node_tests = [
+  "tools/tests/test_accounts_web_storage.py", "tools/tests/test_chrome_process_cleanup.py",
+  "tools/tests/test_suites_run.py",
+  "tools/tests/test_web_example_shared_assets.py",
+]
 
 [[step]]
 name = "sccache"

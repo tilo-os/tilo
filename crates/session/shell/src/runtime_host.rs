@@ -44,6 +44,9 @@ pub struct Session {
     // Fields retire in declaration order: stop all save producers and release
     // membership before flushing, while the profile lock still excludes restart.
     _final_saves: FinalSessionSaves,
+    // After the final saves, the state writer closes and lets go of its
+    // lease, before the profile lock: the next session takes both.
+    _writer: ClosedAtEnd,
     _lock: advisory_lock::FileLock,
 }
 
@@ -78,28 +81,7 @@ impl Session {
         }
         stage("locking the profile");
         let lock = tilo_runtime::profile::lock(root)?;
-        stage("provisioning the collaboration identity");
-        let identity_dir = runtime_identity::identity_dir_from_env()?;
-        let identity_paths = crate::firstboot::collaboration_identity_paths();
-        if admission_owner.is_some() {
-            stage("verifying the existing collaboration identity");
-            crate::firstboot::verify_collaboration_identity(
-                &identity_dir,
-                &identity_paths,
-                tilo_clock::unix_now_ns(),
-            )?;
-            if !tilo_identity_host::provisioning::active_identity_owns_device(
-                &identity_dir,
-                &identity_paths,
-            )? {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "native admission identity does not own this device",
-                ));
-            }
-        } else {
-            crate::firstboot::ensure_collaboration_identity(&identity_dir, &identity_paths)?;
-        }
+        provision_identity(stage, admission_owner.is_some())?;
         stage("loading the workspace");
         let path = root.join("workspace.json");
         let mut tree = match persist::load_tree_from(&path) {
@@ -166,6 +148,7 @@ impl Session {
             tilo_runtime::offload::action_offload(&[room_id.as_str()], media.store()),
         )?;
         channel_keys.set(broker.channel_encryption());
+        let writer = tree.read().native_runtime.clone();
         Ok(Self {
             broker,
             _peer_sync: peer_sync,
@@ -175,6 +158,7 @@ impl Session {
             identity_socket,
             blob_socket,
             _media: media,
+            _writer: ClosedAtEnd(writer),
             _membership: tree,
             _final_saves: FinalSessionSaves,
             _lock: lock,
@@ -417,6 +401,35 @@ impl PeerSync {
     }
 }
 
+/// Provision this device's collaboration identity, naming each step to `stage`. Native admission
+/// (`admitting`) creates nothing: the existing identity must verify and own this device.
+fn provision_identity(stage: &mut dyn FnMut(&str), admitting: bool) -> io::Result<()> {
+    stage("provisioning the collaboration identity");
+    let identity_dir = runtime_identity::identity_dir_from_env()?;
+    let identity_paths = crate::firstboot::collaboration_identity_paths();
+    if !admitting {
+        crate::firstboot::ensure_collaboration_identity(&identity_dir, &identity_paths)?;
+        return Ok(());
+    }
+    stage("verifying the existing collaboration identity");
+    crate::firstboot::verify_collaboration_identity(
+        &identity_dir,
+        &identity_paths,
+        tilo_clock::unix_now_ns(),
+    )?;
+    if tilo_identity_host::provisioning::active_identity_owns_device(
+        &identity_dir,
+        &identity_paths,
+    )? {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "native admission identity does not own this device",
+        ))
+    }
+}
+
 /// How long a starting session waits for its workspace to be served by this
 /// device's host before it reports where it stopped.
 fn hosting_bound() -> Duration {
@@ -436,6 +449,16 @@ impl Drop for Session {
         // fields retire. BrokerHandle's close is idempotent; the final-save
         // guard drains any shutdown work after those producers have stopped.
         self.broker.local_session_lifecycle().close();
+    }
+}
+
+/// The session's state writer, closed when the session ends: its lease
+/// belongs to the session, not to the last holder of the tree.
+struct ClosedAtEnd(crate::shell::native_workspace_owner::NativeStateRuntime);
+
+impl Drop for ClosedAtEnd {
+    fn drop(&mut self) {
+        self.0.close();
     }
 }
 
