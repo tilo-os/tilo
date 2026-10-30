@@ -711,7 +711,7 @@ impl EditForm {
             details = details.content(Box::new(
                 DatePicker::new(initial)
                     .with_accessible_name("Birthday calendar")
-                    .on_change(move |date| {
+                    .on_view("contacts.birthday-picker", move |date| {
                         picker_shared
                             .borrow_mut()
                             .push(Request::PickDate(date.to_string()));

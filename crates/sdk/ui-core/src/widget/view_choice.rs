@@ -57,6 +57,11 @@ impl ViewChoice {
         }
     }
 
+    /// The control's id.
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
     /// The control as published now, offering `entries` (key, label).
     pub(crate) fn resource(&self, entries: Vec<(String, String)>) -> tilo_actions::ResourceSpec {
         Self::resource_of(&self.id, self.label, Some(Choices::Labelled(entries)))

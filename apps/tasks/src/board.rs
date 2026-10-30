@@ -64,17 +64,20 @@ fn lanes(cx: &ViewCx<Tracker>, tracker: &Tracker, filter: &Filter, me: Option<&s
         .with_role(TextRole::Subheading);
         board = board.lane(status.label_key(), Box::new(header), cards);
     }
-    let dispatcher = cx.dispatcher();
-    Box::new(board.on_drop(move |BoardDrop { card, lane, before }| {
-        let Some(status) = status_of(&lane) else {
-            return;
-        };
-        dispatcher.submit(Tracker::PLACE.with(tracker::Place {
-            issue: Id::from_raw(card),
-            status,
-            before: before.map(Id::from_raw),
-        }));
-    }))
+    // A drop is the `place` action: one gesture, one undo step, confirmed
+    // and permitted like the same move made anywhere else.
+    let place = Tracker::PLACE.try_map(move |drop: BoardDrop| {
+        Some(tracker::Place {
+            issue: Id::from_raw(drop.card),
+            status: status_of(&drop.lane)?,
+            before: drop.before.map(Id::from_raw),
+        })
+    });
+    let board = match cx.actions().binding(place) {
+        Some(binding) => board.on_drop_binding(binding),
+        None => board,
+    };
+    Box::new(board)
 }
 
 /// What the room calls the agent `agent` (`agent:<id>`), whichever way its
