@@ -1158,8 +1158,7 @@ impl tilo_session::Service for Audio {
 fn a_session_without_an_audio_service_offers_no_sound_to_change() {
     use std::sync::Arc;
     let _settled = ui::motion::testing::settled();
-    let machine = Machine::laptop();
-    let reads = machine.clone();
+    let reads = Machine::laptop();
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
