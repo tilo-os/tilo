@@ -282,8 +282,19 @@ pub fn check_claims(
             })
         };
         let read = written.map(|written| written(&claim.change));
+        // A history step or a framework change may touch any unit, and its
+        // claim says so rather than naming the entries it queued: what it
+        // really queued is left to the devices that open it, as for a
+        // sealed op.
+        let claims_any_unit = claim.action.members().into_iter().all(|member| {
+            matches!(
+                member,
+                ClaimedAction::History(_) | ClaimedAction::Framework(_)
+            )
+        });
         let queues = match &read {
             Some(read) => in_outbox(&read.added),
+            None if claims_any_unit => false,
             None => in_outbox(&claim.units),
         };
         let queued_nothing = !queues && !outboxes.is_empty();

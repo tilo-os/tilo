@@ -276,6 +276,16 @@ pub fn retained_documents(bodies: impl IntoIterator<Item = ([u8; 32], Vec<u8>)>)
     (readable, sealed)
 }
 
+/// [`retained_documents`] over what members wrote, leaving out the host's
+/// own documents: a governed room's host writes the first state of each
+/// record itself, which is the host's, not something reaching it.
+pub fn member_documents(
+    bodies: impl IntoIterator<Item = ([u8; 32], Vec<u8>)>,
+    host: &[u8; 32],
+) -> (usize, usize) {
+    retained_documents(bodies.into_iter().filter(|(author, _)| author != host))
+}
+
 /// A PDF of one page per line in `pages`, set in Helvetica.
 #[allow(
     clippy::arithmetic_side_effects,

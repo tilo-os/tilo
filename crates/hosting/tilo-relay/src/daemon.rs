@@ -235,6 +235,36 @@ pub struct RelayHandle {
     compute_ready: Arc<AtomicBool>,
 }
 
+/// Verify `cert`'s device's delegation against the relay's user `own_user`
+/// and put it in the relay's agent register, replacing an earlier one: what
+/// confines an agent to its delegated rooms from its next envelope on. Both
+/// doors that tell a relay about an agent come here
+/// ([`Relay::register_agent`], `RelayAgentLink::register`), so neither can
+/// register one the other leaves unconfined.
+///
+/// # Errors
+///
+/// The delegation is not `own_user`'s, or names another device.
+pub(crate) fn register_agent_in(
+    agents: &crate::peer::AgentRegistry,
+    own_user: &[u8; 32],
+    cert: &tilo_user_identity::DeviceCert,
+    delegation: &tilo_relay_protocol::delegation::Delegation,
+) -> Result<(), String> {
+    delegation
+        .verify(own_user, tilo_clock::unix_now_ns())
+        .map_err(|error| error.to_string())?;
+    if cert.device_public_key != delegation.device_public_key {
+        return Err("the delegation names another device".into());
+    }
+    agents
+        .write_recover()
+        .insert(delegation.device_public_key, Some(delegation.clone()));
+    // A replacement may narrow an earlier delegation's rooms.
+    crate::authority_epoch::bump();
+    Ok(())
+}
+
 impl Relay {
     /// Start on an explicitly selected packet relay without public address lookup.
     ///
@@ -667,25 +697,34 @@ impl Relay {
         }
     }
 
-    /// Tell the host that a device is an agent: verify its root-signed
-    /// delegation against this relay's user and confine the device to the
-    /// delegated rooms from its next envelope on. Replaces an earlier
-    /// delegation of the same device.
-    pub fn register_agent(
+    /// Tell the host that `cert`'s device is an agent: verify its root-signed
+    /// delegation against this relay's user, confine the device to the
+    /// delegated rooms from its next envelope on, and put it on the roster of
+    /// every governed room the delegation names, as the supervisor does when
+    /// a person approves one ([`crate::agents::RelayAgentLink`]). Replaces an
+    /// earlier delegation of the same device.
+    ///
+    /// # Errors
+    ///
+    /// The delegation is not this relay's user's, or names another device.
+    pub async fn register_agent(
         &self,
+        cert: &tilo_user_identity::DeviceCert,
         delegation: tilo_relay_protocol::delegation::Delegation,
-    ) -> Result<(), tilo_relay_protocol::delegation::DelegationError> {
-        delegation.verify(
+    ) -> Result<(), String> {
+        register_agent_in(
+            &self.web.relay.agents,
             &self.web.relay.identity.user_public_key,
-            tilo_clock::unix_now_ns(),
+            cert,
+            &delegation,
         )?;
-        self.web
-            .relay
-            .agents
-            .write_recover()
-            .insert(delegation.device_public_key, Some(delegation));
-        // A replacement may narrow an earlier delegation's rooms.
-        crate::authority_epoch::bump();
+        // The governed rooms it names put it on their rosters.
+        #[cfg(feature = "agents")]
+        if let Some(rooms) = self.rooms() {
+            rooms
+                .reconcile_agent(cert.device_public_key, Some(cert))
+                .await;
+        }
         Ok(())
     }
 

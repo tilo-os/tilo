@@ -402,7 +402,10 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay.register_agent(delegation.clone()).unwrap();
+    host.relay
+        .register_agent(&agent_cert, delegation.clone())
+        .await
+        .unwrap();
     supervisor.add_grant(AgentIdentity {
         key: agent_key,
         cert: agent_cert.clone(),
@@ -419,7 +422,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         browser_device.key.clone(),
     );
     let browser_events = browser.events();
-    browser.join(workspace()).unwrap();
+    browser.join_placed(ROOM, "Workspace").unwrap();
     ready(&[&browser]).await;
     let catalogue = catalogue();
     let mut page = Replica::open(
@@ -969,10 +972,11 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         .retained(workspace())
         .await
         .unwrap();
-    let (readable, sealed) = common::retained_documents(
+    let (readable, sealed) = common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
+        &host_key,
     );
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     assert!(sealed > 0);

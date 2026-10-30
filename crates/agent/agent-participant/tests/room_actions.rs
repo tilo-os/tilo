@@ -605,7 +605,11 @@ impl Browser {
             device.key.clone(),
         );
         let events = peer.events();
-        if room != ROOM {
+        if room == ROOM {
+            // The page asks its host to govern its person's workspace and
+            // admit it, as every page does before joining one.
+            peer.join_placed(room, "Workspace").unwrap();
+        } else {
             ready(&[&peer]).await;
             let (reply, answer) = tokio::sync::oneshot::channel();
             peer.rooms_then(
@@ -622,8 +626,8 @@ impl Browser {
                     .unwrap(),
                 tilo_relay_protocol::rooms::RoomsReply::Room(_)
             ));
+            peer.join(workspace).unwrap();
         }
-        peer.join(workspace).unwrap();
         ready(&[&peer]).await;
         Self {
             peer,
@@ -1063,6 +1067,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     let hosted = start(&root, &host, state.path()).await;
     let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let host_key = host.cert.device_public_key;
     let themes = browser.create("so.tilo.themes");
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let provider = record_provider(&themes);
@@ -1133,10 +1138,11 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         .retained(support::workspace())
         .await
         .unwrap();
-    let (readable, _) = common::retained_documents(
+    let (readable, _) = common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
+        &host_key,
     );
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     drop(hosted.web);
@@ -1412,10 +1418,11 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         .retained(support::workspace())
         .await
         .unwrap();
-    let (readable, _) = common::retained_documents(
+    let (readable, _) = common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
+        &host_key,
     );
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     drop(hosted.web);

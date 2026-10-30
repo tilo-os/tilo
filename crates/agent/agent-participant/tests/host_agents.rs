@@ -81,6 +81,8 @@ struct Hosted {
     relay: Relay,
     web: WebHandle,
     agents: AgentHost,
+    /// The host's device, whose own documents the room holds too.
+    device: [u8; 32],
 }
 
 async fn start(root: &SigningKey, host: &Device, state: &Path) -> Hosted {
@@ -127,7 +129,12 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
         })
         .await
         .unwrap();
-    Hosted { relay, web, agents }
+    Hosted {
+        relay,
+        web,
+        agents,
+        device: host.cert.device_public_key,
+    }
 }
 
 impl Hosted {
@@ -139,10 +146,11 @@ impl Hosted {
             .retained(workspace())
             .await
             .unwrap();
-        let (readable, _) = common::retained_documents(
+        let (readable, _) = common::member_documents(
             retained
                 .into_iter()
                 .map(|retained| (retained.author, retained.body)),
+            &self.device,
         );
         assert_eq!(readable, 0, "nothing reaches the host in the clear");
         drop(self.web);
@@ -237,7 +245,7 @@ impl Browser {
             device.key.clone(),
         );
         let events = peer.events();
-        peer.join(workspace()).unwrap();
+        peer.join_placed(ROOM, "Workspace").unwrap();
         ready(&[&peer]).await;
         Self {
             peer,

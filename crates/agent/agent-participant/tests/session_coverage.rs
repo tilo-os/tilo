@@ -222,7 +222,10 @@ async fn every_web_app_over_the_session() {
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay.register_agent(delegation.clone()).unwrap();
+    host.relay
+        .register_agent(&agent_device.cert, delegation.clone())
+        .await
+        .unwrap();
     let agent_key = agent_device.cert.device_public_key;
     let control = AgentControl::new(delegation.clone());
     let mut agent = AgentParticipant::start(
@@ -252,7 +255,7 @@ async fn every_web_app_over_the_session() {
         browser_device.key.clone(),
     );
     let browser_events = browser.events();
-    browser.join(workspace()).unwrap();
+    browser.join_placed(ROOM, "Workspace").unwrap();
     ready(&[&browser]).await;
     wait_for("the agent to be admitted", || {
         agent.pump();
@@ -312,7 +315,11 @@ async fn every_web_app_over_the_session() {
             agent.pump();
             for event in browser_events.drain() {
                 if let PeerEvent::Document(document) = event {
-                    assert_eq!(document.author, agent_key, "only the agent edits here");
+                    // The host writes the first state of each record itself
+                    // before anyone opens it; the rest is the agent's.
+                    if document.author != host_device.cert.device_public_key {
+                        assert_eq!(document.author, agent_key, "only the agent edits here");
+                    }
                     if let Some(
                         collab_types::DocumentMutation::Snapshot(bytes)
                         | collab_types::DocumentMutation::Incremental(bytes),
@@ -656,10 +663,11 @@ async fn every_web_app_over_the_session() {
         .retained(workspace())
         .await
         .unwrap();
-    let (readable, _) = common::retained_documents(
+    let (readable, _) = common::member_documents(
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
+        &host_device.cert.device_public_key,
     );
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     host.relay.shutdown().await;
@@ -729,7 +737,10 @@ async fn planning_agent_labelled(
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay.register_agent(delegation.clone()).unwrap();
+    host.relay
+        .register_agent(&agent_device.cert, delegation.clone())
+        .await
+        .unwrap();
     let control = AgentControl::new(delegation.clone());
     let mut agent = AgentParticipant::start(
         ParticipantConfig {
