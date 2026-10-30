@@ -25,6 +25,7 @@
 pub mod backdrop;
 pub mod backend;
 pub mod capture;
+pub mod clipboard_history;
 pub mod config;
 mod cursor;
 pub mod dim;
@@ -614,6 +615,17 @@ impl Compositor {
             .map_err(|error| Error::Io(std::io::Error::other(error)))?;
         self.display.flush_clients()?;
         Ok(reader)
+    }
+
+    /// [`Compositor::receive_selection`] for the loop: the read never blocks,
+    /// the bytes are taken as the owner writes them ([`clipboard_history::Pull`]).
+    pub fn pull_selection(
+        &mut self,
+        selection: Selection,
+        mime: &str,
+    ) -> Result<clipboard_history::Pull, Error> {
+        let reader = self.receive_selection(selection, mime)?;
+        clipboard_history::Pull::new(reader, mime).map_err(Error::Io)
     }
 
     /// The executables of display tools the person trusts: their risky

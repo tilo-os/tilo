@@ -15332,6 +15332,7 @@ dependencies = [
 name = "settings-store"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "hex",
  "serde",
  "serde_json",
@@ -18257,6 +18258,7 @@ dependencies = [
 name = "tilo-compositor"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "qcms",
  "rustix 1.1.4",
  "settings-store",
