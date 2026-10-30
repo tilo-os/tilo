@@ -47,6 +47,9 @@ app-cli = { path = "../../packaging/app-cli" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-paths.workspace = true
+# The person's accessibility settings: the assists, the colour filter and
+# the magnifier the compositor applies.
+tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-quick-settings = { path = "../quick-settings" }

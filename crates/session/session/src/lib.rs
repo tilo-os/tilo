@@ -25,6 +25,7 @@
 
 #![cfg(target_os = "linux")]
 
+mod a11y_settings;
 mod app_icons;
 pub mod capture;
 mod chrome;
