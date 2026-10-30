@@ -13,7 +13,7 @@ After=tilo-firstboot-user.service
 Type=oneshot
 # `--firstboot-only` must exit after setup. `--firstboot` intentionally falls
 # through into a compositor for the host-package session wrapper.
-ExecStart=/usr/bin/shell --firstboot-only
+ExecStart=/usr/bin/tilo-session --firstboot-only
 ExecStartPost=/usr/bin/touch /etc/tilo/.firstboot-done
 RemainAfterExit=yes
 

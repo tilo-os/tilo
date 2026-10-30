@@ -37,7 +37,7 @@ pub mod displays;
 mod env;
 mod keys;
 mod lists;
-mod mount;
+pub mod mount;
 mod notifications;
 mod panels;
 pub mod portal_link;

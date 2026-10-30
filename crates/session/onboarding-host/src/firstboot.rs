@@ -1,5 +1,5 @@
-//! First-boot setup, invoked by `shell-firstboot.service` as
-//! `/usr/bin/shell --firstboot-only`.
+//! First-boot setup, run by `shell-firstboot.service` as
+//! `tilo-session --firstboot-only`.
 //!
 //! The systemd unit guards re-runs with a `ConditionPathExists` on
 //! `/etc/tilo/.firstboot-done`, so this module is a one-shot "make sure the

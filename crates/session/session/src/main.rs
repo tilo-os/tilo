@@ -1,5 +1,5 @@
 //! The native session: `tilo-session [--backend drm|headless] [--size WxH]
-//! [--host-desktop] [--no-x11] [--session-bus ADDRESS|none] [--system-bus
+//! [--host-desktop] [--firstboot|--firstboot-only] [--no-x11] [--session-bus ADDRESS|none] [--system-bus
 //! ADDRESS|none] [-- command args...]`. Listens on a fresh `wayland-N`
 //! socket, starts Xwayland for X11 clients (unless `--no-x11`), prints both
 //! displays and starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set
@@ -23,6 +23,34 @@ fn main() -> std::process::ExitCode {
         ),
         None => (args.as_slice(), &[][..]),
     };
+    // The machine's first boot: setup runs and the process stops there,
+    // before any GPU, font or session state is opened. `--firstboot` is the
+    // host package's wrapper hook, which goes on to the session it was
+    // starting.
+    let host_desktop = ours.iter().any(|arg| arg == "--host-desktop");
+    match tilo_session::mount::firstboot::one_shot(ours) {
+        Ok(Some(tilo_session::mount::firstboot::OneShot::SetupOnly)) => {
+            return match tilo_session::mount::firstboot::run_setup(host_desktop) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("tilo-session: first boot setup failed: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Ok(Some(tilo_session::mount::firstboot::OneShot::SetupThenSession)) => {
+            if let Err(error) = tilo_session::mount::firstboot::run_setup(host_desktop) {
+                // A machine that cannot be prepared still boots: the person
+                // sees what is missing rather than a login that never comes.
+                eprintln!("tilo-session: first boot setup failed: {error}; starting anyway");
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("tilo-session: {error}");
+            return ExitCode::from(2);
+        }
+    }
     let value = |flag: &str| {
         ours.iter()
             .position(|arg| arg == flag)
@@ -72,7 +100,7 @@ fn main() -> std::process::ExitCode {
     let options = Options {
         services,
         wake,
-        setup: setup(ours.iter().any(|arg| arg == "--host-desktop")),
+        setup: setup(host_desktop),
         captures: Some(captures),
         desktop,
         portal,
