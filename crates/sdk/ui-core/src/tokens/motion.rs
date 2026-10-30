@@ -184,6 +184,50 @@ pub struct Motion {
     pub springs: SpringPresets,
     pub durations: Durations,
     pub gesture: Gesture,
+    /// The theme asks for no motion at all (`MotionCurve::None`): nothing
+    /// moves and nothing fades, every change lands at once. Unlike reduced
+    /// motion it keeps no fade, because nobody asked for the change to be
+    /// softened, only for the interface to hold still.
+    pub still: bool,
+}
+
+impl Motion {
+    /// These tokens with every spring critically damped: an eased curve
+    /// with no overshoot at each spring's own speed.
+    #[must_use]
+    pub fn eased(mut self) -> Self {
+        let critical = |spring: SpringParams| SpringParams {
+            damping: 2.0 * (spring.stiffness * spring.mass).sqrt(),
+            ..spring
+        };
+        let s = &mut self.springs;
+        s.subtle = critical(s.subtle);
+        s.snappy = critical(s.snappy);
+        s.bouncy = critical(s.bouncy);
+        s.heavy = critical(s.heavy);
+        s.tracking = critical(s.tracking);
+        self
+    }
+
+    /// These tokens with every timed duration scaled by `factor`.
+    #[must_use]
+    pub fn with_duration_scale(mut self, factor: f32) -> Self {
+        let scale = |ms: u32| {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a duration of a few hundred ms times a factor of at most 2, rounded"
+            )]
+            let scaled = (f64::from(ms) * f64::from(factor)).round().max(0.0) as u32;
+            scaled
+        };
+        self.durations = Durations {
+            fast_ms: scale(self.durations.fast_ms),
+            base_ms: scale(self.durations.base_ms),
+            slow_ms: scale(self.durations.slow_ms),
+        };
+        self
+    }
 }
 
 /// What started a transition. Motion follows the input: a shortcut is a
@@ -276,29 +320,36 @@ impl EffectiveMotion {
         Self { tokens, reduced }
     }
 
-    /// Whether the person asked for reduced motion.
+    /// Whether movement is off: the person asked for reduced motion, or
+    /// the theme holds still ([`Motion::still`]).
     #[must_use]
     pub const fn reduced(self) -> bool {
-        self.reduced
+        self.reduced || self.tokens.still
+    }
+
+    /// Whether the theme holds still: no movement and no fade.
+    #[must_use]
+    pub const fn still(self) -> bool {
+        self.tokens.still
     }
 
     /// Whether anything may move: false under reduced motion.
     #[must_use]
     pub const fn moves(self) -> bool {
-        !self.reduced
+        !self.reduced()
     }
 
     /// Whether a looping indicator animates; under reduced motion it draws
     /// its resting mark.
     #[must_use]
     pub const fn loops(self) -> bool {
-        !self.reduced
+        !self.reduced()
     }
 
     /// How long a movement lasts: `nominal`, or nothing under reduced motion.
     #[must_use]
     pub fn movement(self, nominal: Duration) -> Duration {
-        if self.reduced {
+        if self.reduced() {
             Duration::ZERO
         } else {
             nominal
@@ -309,7 +360,9 @@ impl EffectiveMotion {
     /// reduced motion, where it stands in for the movement it replaces.
     #[must_use]
     pub fn fade(self, nominal: Duration) -> Duration {
-        if self.reduced {
+        if self.tokens.still {
+            Duration::ZERO
+        } else if self.reduced {
             nominal.min(self.tokens.durations.fast())
         } else {
             nominal
@@ -321,7 +374,9 @@ impl EffectiveMotion {
     /// shows the change).
     #[must_use]
     pub fn replacement_fade(self) -> Duration {
-        if self.reduced {
+        if self.tokens.still {
+            Duration::ZERO
+        } else if self.reduced {
             self.tokens.durations.fast()
         } else {
             Duration::ZERO
@@ -399,6 +454,30 @@ mod tests {
             Duration::from_millis(50)
         );
         assert_eq!(reduced.replacement_fade(), fast);
+    }
+
+    #[test]
+    fn a_still_theme_neither_moves_nor_fades_and_eased_never_overshoots() {
+        let still = EffectiveMotion::new(
+            Motion {
+                still: true,
+                ..Motion::default()
+            },
+            false,
+        );
+        let base = Motion::default().durations.base();
+        assert!(!still.moves() && !still.loops() && still.reduced() && still.still());
+        assert_eq!(still.movement(base), Duration::ZERO);
+        assert_eq!(still.fade(base), Duration::ZERO);
+        assert_eq!(still.replacement_fade(), Duration::ZERO);
+
+        let eased = Motion::default().eased();
+        for spring in [eased.springs.snappy, eased.springs.bouncy] {
+            let zeta = spring.damping / (2.0 * (spring.stiffness * spring.mass).sqrt());
+            assert!((zeta - 1.0).abs() < 1e-4, "ζ = {zeta}");
+        }
+        let slow = Motion::default().with_duration_scale(2.0);
+        assert_eq!(slow.durations.base_ms, 420);
     }
 
     #[test]

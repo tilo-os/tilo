@@ -39,12 +39,13 @@
 
 use std::cell::RefCell;
 
-use vello::kurbo::{Affine, Rect, Shape};
+use vello::kurbo::{Affine, Rect, RoundedRect, Shape};
 use vello::peniko::{Color, Extend, Fill, ImageBrush, ImageData, ImageQuality};
 use vello::{AaConfig, RenderParams, Renderer, Scene, wgpu};
 
 use crate::floating_surface::Material;
 use crate::theme::Theme;
+use crate::tokens::{Finish, SurfaceRole};
 
 /// Most surfaces one frame blurs behind. Later ones in the same frame are
 /// opaque: each region costs one extra render of everything below it.
@@ -76,10 +77,147 @@ const MAX_KERNEL_RADIUS: i32 = 16;
 /// forced colours and a theme that declares no blur (the high-contrast
 /// track) keep every surface opaque.
 pub(crate) fn blurs(material: Material, theme: &Theme) -> bool {
-    matches!(material, Material::Floating)
-        && !theme.reduce_transparency
-        && !theme.forced_colors
-        && theme.tokens.colors.surfaces.material_blur_px > 0.0
+    matches!(material, Material::Floating) && samples(theme.finish(SurfaceRole::Floating))
+}
+
+/// Whether a surface of `finish` shows a blurred backdrop: a translucent or
+/// glass finish with a blur. Unblurred translucency is never drawn over a
+/// backdrop pass (`docs/design-language.md`, "Material and
+/// transparency"); such a finish is its tint over the ground it knows.
+fn samples(finish: Finish) -> bool {
+    finish.translucent() && finish.blur() > 0.0
+}
+
+/// Fill `shape` as a surface of `role` stands: its finish
+/// ([`Theme::finish`]) over `ground`. A floating or bar surface under an
+/// active [`BackdropRecording`] shows what lies below it, held in the
+/// material's band, bent and lit as its painter set says; every other
+/// surface, and any without a backdrop pass, is its opaque ground with the
+/// light its finish catches.
+pub fn fill_role(
+    scene: &mut Scene,
+    transform: Affine,
+    shape: &RoundedRect,
+    role: SurfaceRole,
+    theme: &Theme,
+    ground: Color,
+) {
+    let finish = theme.finish(role);
+    let sampled = matches!(role, SurfaceRole::Floating | SurfaceRole::Bar);
+    fill_finish(scene, transform, shape, finish, sampled, theme, ground);
+}
+
+/// [`fill_role`] for a finish already resolved. `sampled`: whether this
+/// surface may take a blurred backdrop at all (the window ground and
+/// controls never do: what is below a window is the compositor's, and a
+/// control stands on a ground it knows).
+fn fill_finish(
+    scene: &mut Scene,
+    transform: Affine,
+    shape: &impl Shape,
+    finish: Finish,
+    sampled: bool,
+    theme: &Theme,
+    ground: Color,
+) {
+    let optics = finish.optics();
+    let body = shape.as_rounded_rect();
+    if sampled
+        && samples(finish)
+        && let Some((image, brush_transform)) =
+            record(scene, transform, shape, finish.blur(), ground)
+    {
+        let brush = ImageBrush::new(image)
+            .with_extend(Extend::Pad)
+            .with_quality(ImageQuality::Medium);
+        match body {
+            Some(body) if optics.refraction > 0.0 => {
+                refract(
+                    scene,
+                    transform,
+                    &body,
+                    &brush,
+                    brush_transform,
+                    optics.refraction,
+                );
+            }
+            _ => scene.fill(
+                Fill::NonZero,
+                transform,
+                &brush,
+                Some(brush_transform),
+                shape,
+            ),
+        }
+        if let Some(body) = body {
+            crate::surface::sheen(scene, transform, &body, optics.specular);
+        }
+        settle(scene, transform, shape, theme, ground);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ground.with_alpha(finish.tint()),
+            None,
+            shape,
+        );
+        if let Some(body) = body {
+            crate::surface::rim_light(scene, transform, &body, optics.edge_highlight);
+        }
+        return;
+    }
+    scene.fill(Fill::NonZero, transform, ground, None, shape);
+    if let Some(body) = body {
+        crate::surface::sheen(scene, transform, &body, optics.specular);
+        crate::surface::rim_light(scene, transform, &body, optics.edge_highlight);
+    }
+}
+
+/// Draw the blurred backdrop `brush` in `body` as a thick lens bends it:
+/// rings toward the rim show what is under them magnified about the body's
+/// centre, the outermost by `refraction` logical pixels, easing to none a
+/// rim's width in. Each ring is the body inset concentrically, drawn outer
+/// first, so every pixel takes exactly one ring's sample.
+fn refract(
+    scene: &mut Scene,
+    transform: Affine,
+    body: &RoundedRect,
+    brush: &ImageBrush,
+    brush_transform: Affine,
+    refraction: f32,
+) {
+    /// Rings across the rim: enough that the steps read as one bend once
+    /// blurred, few enough to stay a handful of fills.
+    const RINGS: u32 = 4;
+    let rect = body.rect();
+    let radius = body.radii().top_left;
+    let rim = (f64::from(refraction) * 2.5).min(rect.width().min(rect.height()) / 3.0);
+    let centre = rect.center();
+    for ring in 0..=RINGS {
+        let inset = rim * f64::from(ring) / f64::from(RINGS);
+        let shape = RoundedRect::from_rect(rect.inset(-inset), (radius - inset).max(0.0));
+        if shape.rect().width() <= 0.0 || shape.rect().height() <= 0.0 {
+            break;
+        }
+        // Displacement at this ring: the full refraction at the rim, easing
+        // quadratically to nothing at the rim's inner edge.
+        let t = 1.0 - f64::from(ring) / f64::from(RINGS);
+        let shift = f64::from(refraction) * t * t;
+        let scale_x = 1.0 - 2.0 * shift / rect.width().max(1.0);
+        let scale_y = 1.0 - 2.0 * shift / rect.height().max(1.0);
+        // A point `p` of the ring shows the backdrop at `centre + (p -
+        // centre) * scale`: the image is magnified about the centre by the
+        // inverse.
+        let lens = Affine::translate(centre.to_vec2())
+            * Affine::scale_non_uniform(1.0 / scale_x.max(0.1), 1.0 / scale_y.max(0.1))
+            * Affine::translate(-centre.to_vec2());
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            brush,
+            Some(lens * brush_transform),
+            &shape,
+        );
+    }
 }
 
 /// Fill `shape` with `material`: under an active [`BackdropRecording`] the
@@ -120,7 +258,13 @@ pub(crate) fn fill_with_ground(
         let tint = see_through_fill(theme, ground);
         if blurs(Material::Floating, theme)
             && tint.components[3] < 1.0
-            && let Some((image, brush_transform)) = record(scene, transform, shape, theme, ground)
+            && let Some((image, brush_transform)) = record(
+                scene,
+                transform,
+                shape,
+                theme.tokens.colors.surfaces.material_blur_px,
+                ground,
+            )
         {
             let brush = ImageBrush::new(image)
                 .with_extend(Extend::Pad)
@@ -136,73 +280,21 @@ pub(crate) fn fill_with_ground(
         scene.fill(Fill::NonZero, transform, tint, None, shape);
         return;
     }
-    if blurs(material, theme)
-        && let Some((image, brush_transform)) = record(scene, transform, shape, theme, ground)
-    {
-        let brush = ImageBrush::new(image)
-            .with_extend(Extend::Pad)
-            .with_quality(ImageQuality::Medium);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            &brush,
-            Some(brush_transform),
-            shape,
-        );
-        settle(scene, transform, shape, theme, ground);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ground.with_alpha(theme.tokens.colors.surfaces.material_opacity),
-            None,
-            shape,
-        );
-        return;
-    }
-    scene.fill(Fill::NonZero, transform, ground, None, shape);
+    let finish = match material {
+        Material::Floating => theme.finish(SurfaceRole::Floating),
+        Material::Opaque | Material::SeeThrough => Finish::Solid,
+    };
+    fill_finish(scene, transform, shape, finish, true, theme, ground);
 }
 
-/// How far, as a contrast ratio, the floating material may stand off its
-/// ground anywhere, whatever is behind it. Every ink a panel draws is
-/// chosen to clear [`SMALL_TEXT_MIN_CONTRAST`] on the opaque ground (a
-/// disabled row's dim ink included), so on the material it still clears
-/// 7 / 1.5 ≈ 4.7:1, above body text's 4.5:1 with room for 8-bit rounding.
-///
-/// [`SMALL_TEXT_MIN_CONTRAST`]: crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST
-pub const MATERIAL_SPREAD: f64 = 1.5;
+pub use crate::tokens::finish::MATERIAL_SPREAD;
 
 /// The darkest and the lightest colour the floating material shows over
 /// `ground`: the ground stepped toward each end of the theme's neutral ramp
 /// until it stands [`MATERIAL_SPREAD`] off it (or reaches the end).
 #[must_use]
 pub fn material_band(theme: &Theme, ground: Color) -> (Color, Color) {
-    let toward = |end: Color| {
-        let at = |t: f32| {
-            let [r, g, b, _] = ground.components;
-            let [er, eg, eb, _] = end.components;
-            Color::new([r + (er - r) * t, g + (eg - g) * t, b + (eb - b) * t, 1.0])
-        };
-        if crate::color::contrast_ratio(at(1.0), ground) <= MATERIAL_SPREAD {
-            return at(1.0);
-        }
-        let (mut within, mut beyond) = (0.0_f32, 1.0_f32);
-        for _ in 0..24 {
-            let mid = (within + beyond) / 2.0;
-            if crate::color::contrast_ratio(at(mid), ground) <= MATERIAL_SPREAD {
-                within = mid;
-            } else {
-                beyond = mid;
-            }
-        }
-        at(within)
-    };
-    let stops = &theme.tokens.colors.neutral.stops;
-    let (first, last) = (toward(stops[0]), toward(stops[10]));
-    if crate::color::relative_luminance(first) <= crate::color::relative_luminance(last) {
-        (first, last)
-    } else {
-        (last, first)
-    }
+    crate::tokens::finish::material_band(&theme.tokens.colors, ground)
 }
 
 /// Hold the blurred backdrop just drawn in `shape` inside the material's
@@ -496,7 +588,7 @@ fn record(
     scene: &Scene,
     transform: Affine,
     shape: &impl Shape,
-    theme: &Theme,
+    blur_px: f32,
     ground: Color,
 ) -> Option<(ImageData, Affine)> {
     RECORDING.with(|slot| {
@@ -540,8 +632,7 @@ fn record(
             bounds,
             // The theme's radius is logical; a host drawing through a device
             // scale records in device pixels.
-            blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px)
-                * transform.determinant().abs().sqrt(),
+            blur_px: f64::from(blur_px) * transform.determinant().abs().sqrt(),
             layer: layer.unwrap_or_default(),
             below: {
                 let mut below = scene.clone();
