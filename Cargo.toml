@@ -404,6 +404,7 @@ members = [
     "crates/session/surface-host",
     "crates/session/session",
     "crates/session/console-control",
+    "crates/session/crash-records",
     "crates/session/onboarding-walk",
     "crates/session/control-cli",
     "crates/session/desktop-model",

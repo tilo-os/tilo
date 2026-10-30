@@ -18407,6 +18407,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-crash-records"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bounded-command",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-files",
+ "tilo-paths",
+ "tilo-service",
+ "tilo-test-env",
+ "tilo-ui",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-crypto"
 version = "0.1.0"
 dependencies = [
@@ -21513,6 +21533,8 @@ dependencies = [
  "tilo-bluez",
  "tilo-compositor",
  "tilo-connectivity-service",
+ "tilo-copy-lint",
+ "tilo-crash-records",
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
@@ -21523,6 +21545,7 @@ dependencies = [
  "tilo-files",
  "tilo-identity-host",
  "tilo-installed-apps",
+ "tilo-liveness",
  "tilo-lock",
  "tilo-media",
  "tilo-network-actor",

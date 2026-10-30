@@ -1,0 +1,36 @@
+[package]
+name = "tilo-crash-records"
+description = "What ended this computer's session: a private record for each panic and each main loop the watchdog judged hung, the kernel's record of the computer itself stopping, and the records listed and read through the host's door."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# A record's file name starts with its local time, and a list sorts by it.
+chrono = { workspace = true, features = ["clock", "std"] }
+# The records are private files of this user's, created and read as such.
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-paths.workspace = true
+# `journalctl` for the records the kernel kept across a reset.
+bounded-command = { path = "../../system/bounded-command" }
+# The fact shape Settings, an agent and a script read a record as.
+tilo-actions = { path = "../../collab/actions" }
+# The records a session service publishes.
+tilo-service = { path = "../service" }
+# A record's time reads in the person's own date style.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+# A kept stop is known by the digest of its log, so reading the same ones at
+# every start keeps each once.
+blake3.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

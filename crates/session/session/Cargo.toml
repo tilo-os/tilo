@@ -62,6 +62,12 @@ tilo-service = { path = "../service" }
 # over logind that acts on it.
 tilo-session-power = { path = "../power-service" }
 tilo-power-mgmt = { path = "../../system/power" }
+# The records of a session that stopped, and the news of one that did.
+tilo-crash-records = { path = "../crash-records" }
+# The watchdog that ends a session whose main loop stopped for good.
+tilo-liveness = { path = "../liveness" }
+# The room left on the person's filesystems, for the storage notice.
+rustix = { workspace = true, features = ["fs"] }
 tilo-connectivity-service = { path = "../connectivity-service" }
 tilo-system-service = { path = "../system-service" }
 tilo-settings-service = { path = "../settings-service" }
@@ -111,9 +117,9 @@ tilo-test-env = { path = "../../dev/test-env" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 futures-util.workspace = true
 tempfile.workspace = true
+tilo-copy-lint = { path = "../../dev/copy-lint" }
 url.workspace = true
 tilo-audio-service = { path = "../audio-service" }
-rustix = { workspace = true, features = ["fs"] }
 tilo-onboarding = { path = "../onboarding" }
 # The prepared-setup and journal fixtures: what a device holds before setup runs.
 tilo-onboarding-host = { path = "../onboarding-host", features = ["test-support"] }
