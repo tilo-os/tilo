@@ -49,6 +49,7 @@ mod protocols;
 pub mod render;
 mod requests;
 pub mod selection;
+mod snapshot;
 mod state;
 mod tablet;
 mod text_input;

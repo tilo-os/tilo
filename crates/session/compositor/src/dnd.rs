@@ -939,29 +939,39 @@ impl State {
         proxy
     }
 
-    /// Whether an X11 window has the pointer's press (Xwayland runs any
-    /// X11 drag under it).
-    fn x11_press(&self) -> bool {
-        let Some(pointer) = self.seat.get_pointer() else {
-            return false;
+    /// Whether an X11 window holds the pointer's press or a finger
+    /// (Xwayland runs any X11 drag under either).
+    fn x11_held(&self) -> bool {
+        let is_x11 = |surface: &WlSurface| {
+            self.space
+                .elements()
+                .any(|window| crate::xwayland::x11_wl_surface(window).as_ref() == Some(surface))
         };
-        let Some((surface, _)) = pointer.grab_start_data().and_then(|start| start.focus) else {
-            return false;
-        };
-        self.space
-            .elements()
-            .any(|window| crate::xwayland::x11_wl_surface(window).as_ref() == Some(&surface))
+        let pressed = self
+            .seat
+            .get_pointer()
+            .and_then(|pointer| pointer.grab_start_data())
+            .and_then(|start| start.focus)
+            .is_some_and(|(surface, _)| is_x11(&surface));
+        pressed
+            || self
+                .touch
+                .clients
+                .iter()
+                .filter_map(|finger| finger.focus.as_ref())
+                .any(|(surface, _)| is_x11(surface))
     }
 
-    /// Raise the proxy while an X11 client may be dragging over something
-    /// that is not an X11 window; take it down otherwise.
+    /// Raise the proxy while an X11 client may be dragging — under the
+    /// pointer or a finger — over something that is not an X11 window;
+    /// take it down otherwise.
     pub(crate) fn x11_drag_motion(&mut self, at: Point<f64, Logical>) {
         let Some(bridge) = &self.dnd.bridge else {
             return;
         };
         let wanted = bridge.x11_may_drag()
             && self.dnd.drag.is_none()
-            && self.x11_press()
+            && self.x11_held()
             && !matches!(self.drag_under(at, false), Under::X11(_));
         // A compositor drag that took an X11 drag over needs the proxy to
         // end it.

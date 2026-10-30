@@ -300,16 +300,13 @@ impl Raster {
                 };
                 let edge_alpha = match (edge_colour, edge) {
                     (Some(colour), Some((thickness, _))) => {
-                        // Full across the stroke just outside the outline, one
-                        // pixel of falloff either side of it.
-                        let outside = if inside < 0.0 {
-                            -inside
-                        } else if inside > thickness {
-                            inside - thickness
-                        } else {
-                            0.0
-                        };
-                        (0.5 - outside).clamp(0.0, 1.0) * colour[3]
+                        // The stroke lies outside the outline, never over
+                        // the window's own pixels: the band from the
+                        // outline out to `thickness`, as much of a pixel
+                        // as it covers.
+                        let covered =
+                            (inside + 0.5).min(thickness).max(0.0) - (inside - 0.5).max(0.0);
+                        covered.clamp(0.0, 1.0) * colour[3]
                     }
                     _ => 0.0,
                 };
@@ -644,5 +641,69 @@ mod tests {
                 .is_none()
         );
         assert!(images.image(&frame, (0.0, 100.0), 1.0).is_none());
+    }
+
+    #[test]
+    fn the_default_frame_falls_off_as_a_gaussian_and_strokes_one_pixel_outside() {
+        // A 200 x 100 window with the window tile's frame: the numbers below
+        // are that tile's, worked out by hand from the design tokens — a
+        // shadow of black at 71 / 255 offset 2 down and blurred by 16 (a
+        // Gaussian of 8 as its deviation), and a 1 px white hairline at
+        // 36 / 255 from the outline out.
+        let frame = WindowFrame::default();
+        let signature = Signature {
+            size: (sixtyfourths(200.0), sixtyfourths(100.0)),
+            radius: sixtyfourths(frame.radius),
+            shadow: Some((sixtyfourths(2.0), sixtyfourths(16.0), [0, 0, 0, 71])),
+            edge: Some((sixtyfourths(1.0), [255, 255, 255, 36])),
+        };
+        let image = Raster::of(&signature).expect("an image");
+        let pixel = |image: &Raster, x: u32, y: u32| -> [u8; 4] {
+            let at = ((y * image.texels.0 + x) * 4) as usize;
+            let slice = image.rgba.get(at..at + 4).expect("a pixel");
+            [slice[0], slice[1], slice[2], slice[3]]
+        };
+        let left = u32_from(-image.origin.0);
+        let top = u32_from(-image.origin.1);
+        // The hairline, on its own: full strength on the first pixel outside
+        // the window, nothing one pixel further out, and nothing over the
+        // window.
+        let hairline = Raster::of(&Signature {
+            edge: signature.edge,
+            shadow: None,
+            ..signature
+        })
+        .expect("an image");
+        let (edge_left, edge_top) = (u32_from(-hairline.origin.0), u32_from(-hairline.origin.1));
+        let edge = pixel(&hairline, edge_left - 1, edge_top + 50);
+        assert_eq!(edge, [36, 36, 36, 36], "the hairline: {edge:?}");
+        assert_eq!(
+            pixel(&hairline, edge_left - 2, edge_top + 50)[3],
+            0,
+            "one pixel wide"
+        );
+        assert_eq!(
+            pixel(&hairline, edge_left + 50, edge_top + 50)[3],
+            0,
+            "not over the window"
+        );
+        // The shadow below: half its strength where it meets the window's
+        // own silhouette (2 px down), and 0.5 · erfc(d / (8√2)) of it at
+        // `d` px below that, times the token's 71.
+        for (below, alpha) in [(0.5, 34), (4.5, 20), (8.5, 10), (12.5, 4), (16.5, 1)] {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a row of this image, counted up from the window's top"
+            )]
+            let row = top + 102 + (below - 0.5) as u32;
+            let shadow = pixel(&image, left + 100, row);
+            assert_eq!(shadow[0], 0, "black: {shadow:?}");
+            assert!(
+                shadow[3].abs_diff(alpha) <= 1,
+                "{below} px below the silhouette: {} is not {alpha}",
+                shadow[3]
+            );
+        }
     }
 }

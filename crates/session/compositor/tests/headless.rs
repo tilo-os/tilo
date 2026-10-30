@@ -22,8 +22,8 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
-    Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostKey, HostLayer,
-    InputEvent, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch, TabletEvent,
+    Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostKey,
+    HostLayer, InputEvent, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch, TabletEvent,
     TabletPadEvent, TabletPhase, WindowEffect, WindowFrame, WindowInfo, WindowPicture,
     WindowPolicy,
 };
@@ -269,6 +269,52 @@ fn a_window_is_composited_where_the_policy_places_it() {
     pump(&mut compositor, &mut [&mut client], |_, clients| {
         clients[0].seen.frames_done > 0
     });
+}
+
+#[test]
+fn a_window_opens_from_its_first_buffer() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = TestClient::connect(&mut compositor);
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.wm_base.is_some() && clients[0].seen.seat.is_some()
+    });
+    client.open_window("opening");
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.configured
+    });
+    // Committed without a buffer, it is not on the desktop yet: nothing
+    // stands there to be animated open.
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    assert!(compositor.windows().is_empty());
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(frame.pixel(320, 240), Some(BACKGROUND));
+
+    // Its first buffer is what it opens from: the desktop animates the
+    // window it can already see.
+    client.show(200, 100, [255, 0, 0, 255]);
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        !compositor.windows().is_empty()
+    });
+    let (info, rect) = compositor.windows()[0].clone();
+    assert_eq!(rect, (220, 190, 200, 100));
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(frame.pixel(320, 240), Some([255, 0, 0, 255]));
+
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            opacity: 0.5,
+            scale: 0.9,
+            ..WindowEffect::default()
+        }),
+    );
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let opening = frame.pixel(320, 240).expect("a pixel");
+    assert_ne!(opening, [255, 0, 0, 255], "opening faded");
+    assert_ne!(opening, BACKGROUND, "from its first buffer");
 }
 
 #[test]
@@ -843,6 +889,67 @@ fn touches_reach_the_window_under_them_and_hosted_surfaces_as_presses() {
     assert_eq!(log.borrow().buttons, [(BTN_LEFT, true), (BTN_LEFT, false)]);
     assert_eq!(log.borrow().left, 1);
     assert_eq!(client.seen.touches.len(), 6, "the window saw none of it");
+}
+
+#[test]
+fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    compositor.add_host(Box::new(Square::new(
+        (0, 0, 40, 40),
+        [0, 255, 0, 255],
+        Rc::clone(&log),
+    )));
+    let shown = |compositor: &mut Compositor, x, y| {
+        compositor.render().unwrap();
+        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
+    };
+    assert_eq!(shown(&mut compositor, 10, 10), Some([0, 255, 0, 255]));
+
+    // A 20x20 icon, its hotspot two pixels in from its top left.
+    let bytes = [0, 255, 255, 255].repeat(20 * 20);
+    let icon = MemoryRenderBuffer::from_slice(
+        &bytes,
+        Fourcc::Argb8888,
+        (20, 20),
+        1,
+        Transform::Normal,
+        None,
+    );
+    compositor
+        .input(InputEvent::PointerMotion { x: 5.0, y: 5.0 })
+        .unwrap();
+    assert!(
+        compositor
+            .start_host_drag(HostDrag {
+                offer: vec![("text/plain".into(), b"dragged".to_vec())],
+                icon: Some((icon, Point::from((2, 2)))),
+            })
+            .unwrap(),
+        "the hosted app's drag starts"
+    );
+    assert_eq!(
+        shown(&mut compositor, 10, 10),
+        Some([255, 255, 0, 255]),
+        "the icon hangs off the pointer at its hotspot"
+    );
+    assert_eq!(shown(&mut compositor, 2, 2), Some([0, 255, 0, 255]));
+
+    // It follows the pointer.
+    compositor
+        .input(InputEvent::PointerMotion { x: 100.0, y: 100.0 })
+        .unwrap();
+    assert_eq!(shown(&mut compositor, 110, 110), Some([255, 255, 0, 255]));
+    assert_eq!(shown(&mut compositor, 10, 10), Some([0, 255, 0, 255]));
+
+    // The drop ends it, icon and all.
+    compositor
+        .input(InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: false,
+        })
+        .unwrap();
+    assert_eq!(shown(&mut compositor, 110, 110), Some(BACKGROUND));
 }
 
 /// Floating windows; takes touchpad gestures when `claims`, and records
@@ -1677,7 +1784,13 @@ fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
     };
     assert_eq!(shown(&mut compositor, 320, 240), Some([255, 0, 0, 255]));
 
+    // The frame kept is the one the window drew last.
+    client.show(200, 100, [0, 255, 0, 255]);
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    assert_eq!(shown(&mut compositor, 320, 240), Some([0, 255, 0, 255]));
+
     client.toplevel.as_ref().unwrap().destroy();
+    client.surface.as_ref().unwrap().destroy();
     pump(&mut compositor, &mut [&mut client], |compositor, _| {
         compositor.windows().is_empty()
     });
@@ -1690,12 +1803,12 @@ fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
     assert_eq!(closing[0].1, rect, "where it stood");
     assert_eq!(
         shown(&mut compositor, 320, 240),
-        Some([255, 0, 0, 255]),
+        Some([0, 255, 0, 255]),
         "its last buffer is still drawn"
     );
     assert_ne!(
         shown(&mut compositor, 221, 191).unwrap(),
-        [255, 0, 0, 255],
+        [0, 255, 0, 255],
         "and still framed"
     );
 
@@ -1709,12 +1822,12 @@ fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
     );
     assert_eq!(
         shown(&mut compositor, 320, 240),
-        Some([255, 0, 0, 255]),
+        Some([0, 255, 0, 255]),
         "the centre stays"
     );
     assert_ne!(
         shown(&mut compositor, 221, 191).unwrap(),
-        [255, 0, 0, 255],
+        [0, 255, 0, 255],
         "it shrinks in"
     );
     compositor.set_window_effect(
@@ -1735,6 +1848,38 @@ fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
     assert!(compositor.closing_windows().is_empty());
     assert_eq!(shown(&mut compositor, 320, 240), Some(BACKGROUND));
     assert_eq!(shown(&mut compositor, 220, 190), Some(BACKGROUND));
+}
+
+#[test]
+fn a_closed_window_is_drawn_where_and_as_big_as_it_stood() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).unwrap();
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 1280, 960).with_scale(2.0))
+        .unwrap();
+    let mut client = mapped_client(&mut compositor, "blue", (200, 100), [0, 0, 255, 255]);
+    let (info, _) = compositor.windows()[0].clone();
+    let shown = |compositor: &mut Compositor, x, y| {
+        compositor.render().unwrap();
+        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
+    };
+    assert_eq!(shown(&mut compositor, 640, 480), Some([0, 0, 255, 255]));
+
+    client.toplevel.as_ref().unwrap().destroy();
+    client.surface.as_ref().unwrap().destroy();
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.windows().is_empty()
+    });
+    assert_eq!(compositor.closing_windows().len(), 1);
+    assert_eq!(shown(&mut compositor, 640, 480), Some([0, 0, 255, 255]));
+    assert_eq!(shown(&mut compositor, 460, 400), Some([0, 0, 255, 255]));
+    assert_eq!(shown(&mut compositor, 820, 560), Some([0, 0, 255, 255]));
+    assert_eq!(
+        shown(&mut compositor, 844, 584),
+        Some(BACKGROUND),
+        "it is no bigger than it stood"
+    );
+    compositor.release_snapshot(info.id);
+    assert_eq!(shown(&mut compositor, 640, 480), Some(BACKGROUND));
 }
 
 /// A hosted surface that pictures one window.
@@ -1788,6 +1933,53 @@ fn a_hosted_surface_pictures_a_window_live_in_a_rect_of_its_own() {
     compositor.render().unwrap();
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(frame.pixel(60, 60), Some([0, 255, 0, 255]));
+}
+
+#[test]
+fn a_picture_of_a_window_carries_its_corners_and_its_lift() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, _) = compositor.windows()[0].clone();
+    compositor.add_host(Box::new(Pictures(WindowPicture {
+        window: info.id,
+        rect: (10.0, 10.0, 100.0, 100.0),
+        opacity: 1.0,
+        clip: None,
+    })));
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let pixel = |x, y| frame.pixel(x, y).expect("on the output");
+    // Half size in a 100 x 100 rect: 100 x 50 at (10, 35), corners cut by 7.
+    assert_eq!(pixel(60, 60), [255, 0, 0, 255], "the picture");
+    assert_ne!(pixel(11, 36), [255, 0, 0, 255], "its corner is cut");
+    assert_eq!(pixel(30, 60), [255, 0, 0, 255], "past the cut");
+    assert!(
+        luma(pixel(60, 88)) < luma(BACKGROUND),
+        "and it casts the window's lift below: {:?}",
+        pixel(60, 88)
+    );
+
+    // The picture is a view of its own: the window's effect moves the
+    // window, not the picture.
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            offset: (-200.0, 0.0),
+            ..WindowEffect::default()
+        }),
+    );
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        frame.pixel(60, 60),
+        Some([255, 0, 0, 255]),
+        "the picture stays"
+    );
+    assert_eq!(
+        frame.pixel(320, 240),
+        Some(BACKGROUND),
+        "the window moved away"
+    );
 }
 
 /// A hosted surface of translucent material over (200, 180, 80, 40),
@@ -1866,6 +2058,44 @@ fn translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes()
     compositor.render().unwrap();
     let again = handed.borrow_mut().pop().flatten().expect("a new backdrop");
     assert!(at(&again, 35, 15)[2] > 200, "now blue");
+}
+
+#[test]
+fn a_backdrop_follows_the_effects_the_windows_are_drawn_with() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let handed = Rc::new(RefCell::new(Vec::new()));
+    compositor.add_host(Box::new(Frosted(Rc::clone(&handed))));
+    compositor.render().unwrap();
+    handed.borrow_mut().clear();
+
+    // The desktop slides the window 200 px left: it now covers the left of
+    // the hosted surface's region, where nothing stood before.
+    let (info, _) = compositor.windows()[0].clone();
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            offset: (-200.0, 0.0),
+            ..WindowEffect::default()
+        }),
+    );
+    compositor.render().unwrap();
+    let moved = handed
+        .borrow_mut()
+        .pop()
+        .flatten()
+        .expect("a backdrop drawn again");
+    let at = |x: usize, y: usize| {
+        let i = (y * 40 + x) * 4;
+        [moved.rgba[i], moved.rgba[i + 1], moved.rgba[i + 2]]
+    };
+    let inside = at(2, 10);
+    let outside = at(35, 10);
+    assert!(
+        inside[0] > 200 && inside[1] < 60,
+        "the moved window lies below the left of it: {inside:?}"
+    );
+    assert!(outside[0] < 60, "and it left the right of it: {outside:?}");
 }
 
 #[test]

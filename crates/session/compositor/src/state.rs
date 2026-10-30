@@ -72,8 +72,9 @@ const MOST_CLOSING: usize = 16;
 pub(crate) struct Closing {
     /// What the desktop knew it as.
     pub(crate) info: WindowInfo,
-    /// The window as it was; its last buffer is still what it shows.
-    pub(crate) window: Window,
+    /// The last frame it drew, kept before its surface went; what is
+    /// drawn in its place until the desktop lets it go.
+    pub(crate) snapshot: Option<crate::snapshot::Snapshot>,
     /// Where it stood, logical.
     pub(crate) rect: Rectangle<i32, Logical>,
     /// Its place in the stack, bottom first.
@@ -142,6 +143,8 @@ pub struct State {
     pub(crate) frame_images: crate::window_frame::FrameImages,
     /// The windows that closed, kept so the desktop can animate them away.
     pub(crate) closing: Vec<Closing>,
+    /// The frames the windows last drew, by id.
+    pub(crate) snapshots: crate::snapshot::Snapshots,
     pub(crate) capture: crate::capture::Capture,
     /// Outputs turned off by a display configuration: known, not shown.
     pub(crate) disabled_outputs: Vec<Output>,
@@ -214,6 +217,7 @@ impl State {
             window_frames: std::collections::HashMap::new(),
             frame_images: crate::window_frame::FrameImages::default(),
             closing: Vec::new(),
+            snapshots: crate::snapshot::Snapshots::default(),
             capture: crate::capture::Capture::new(display),
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
@@ -336,9 +340,10 @@ impl State {
             self.closing.remove(0);
         }
         self.closing.retain(|closing| closing.info.id != info.id);
+        let snapshot = self.snapshots.take(info.id);
         self.closing.push(Closing {
             info,
-            window: window.clone(),
+            snapshot,
             rect: Rectangle::new(location, window.geometry().size),
             index,
             frame: self.framing(window).frame,
@@ -361,6 +366,17 @@ impl State {
         self.effects.remove(&id);
     }
 
+    /// Keep what `window` just drew under `renderer`, for its close.
+    pub(crate) fn record_snapshot<R>(&self, renderer: &R, window: &Window)
+    where
+        R: smithay::backend::renderer::Renderer,
+        R::TextureId: Clone + 'static,
+    {
+        if let Some(id) = describe(window).map(|info| info.id) {
+            self.snapshots.record(id, renderer, window);
+        }
+    }
+
     /// How `window` is drawn this frame: its effect, or as it stands.
     pub(crate) fn effect_of(&self, window: &Window) -> crate::effects::WindowEffect {
         describe(window)
@@ -377,6 +393,7 @@ impl State {
                 .copied()
                 .unwrap_or(self.frame),
             images: &self.frame_images,
+            snapshots: &self.snapshots,
         }
     }
 
@@ -760,6 +777,7 @@ impl State {
         };
         // It came back before the desktop was done with its close.
         self.closing.retain(|closing| closing.info.id != info.id);
+        self.snapshots.forget(info.id);
         let outputs = self.output_geometries();
         let size = window.geometry().size;
         let location = self.policy.place(&info, (size.w, size.h), &outputs);
@@ -897,6 +915,11 @@ static NEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// Where X11 window ids start in the [`WindowInfo`] id space, apart from
 /// Wayland toplevels' counter.
 const X11_IDS: u64 = 1 << 40;
+
+/// The id of `window`, when it has one.
+pub(crate) fn window_id(window: &Window) -> Option<u64> {
+    describe(window).map(|info| info.id)
+}
 
 /// What a policy learns about a window, Wayland or X11; `None` for
 /// override-redirect X11 windows, which place themselves.
