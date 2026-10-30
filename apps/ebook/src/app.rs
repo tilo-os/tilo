@@ -5481,6 +5481,14 @@ impl BooksApp {
             BooksEffect::OpenBook | BooksEffect::OpenStored { .. } => {
                 return Err("opening a book is the view's".into());
             }
+            BooksEffect::ReadSettings
+            | BooksEffect::ReadFont { .. }
+            | BooksEffect::ReadScheme { .. }
+            | BooksEffect::ReadBook { .. }
+            | BooksEffect::ReadHighlight { .. }
+            | BooksEffect::ReadAnnotation { .. } => {
+                return Err("a read answers from the library record, which the view has".into());
+            }
         }
         self.record_progress();
         Ok(ui::framework::Effected::done())

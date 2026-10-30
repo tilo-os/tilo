@@ -75,8 +75,9 @@ pub(super) struct Adds {
     /// Document actions queued as jobs, for an app that drains effects
     /// causally.
     jobs: bool,
-    /// The document read of each item, for a resource that answers no reads
-    /// of its own: an item is document state, disclosed by its read.
+    /// The document read of each item that has none yet (one the app's own
+    /// projection names already has its read): an item is document state,
+    /// disclosed by its read.
     reads: bool,
 }
 
@@ -479,7 +480,7 @@ impl ResourceRoot {
                         .into_iter()
                         .map(|mut record| {
                             if opens {
-                                offer_item_open(self.resource.item_of, &mut record);
+                                offer_item_open(self.resource.opens_as_item, &mut record);
                             }
                             SharedResource::from_resource(record)
                         }),
@@ -648,7 +649,7 @@ impl ResourceRoot {
         Adds {
             open: opens,
             jobs: self.typed.has_causal_drains(),
-            reads: !self.resource.readable && self.resource.record_table.is_some(),
+            reads: self.resource.record_table.is_some(),
         }
     }
 
@@ -660,7 +661,7 @@ impl ResourceRoot {
             mark_document_jobs(resource);
         }
         if adds.open {
-            offer_item_open(self.resource.item_of, resource);
+            offer_item_open(self.resource.opens_as_item, resource);
         }
         if adds.reads
             && let Some(table) = self.resource.record_table

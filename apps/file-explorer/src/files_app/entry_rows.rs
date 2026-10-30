@@ -216,6 +216,17 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
         },
         entry.name.clone(),
     );
+    // The entry's read discloses its row: a view of the window there
+    // (open, reveal) would be a private disclosure that keeps every action
+    // on the row from agents.
+    resource.actions.push(
+        row_action(
+            &FilesEffect::ReadEntry { entry: id() },
+            "read",
+            t("files-action-read"),
+        )
+        .reads_document(),
+    );
     if let Some(removal) = facts.app_removal {
         return app_row(resource, &resource_id, removal);
     }

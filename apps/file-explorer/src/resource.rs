@@ -1549,3 +1549,15 @@ fn host_person_only(effect: &FilesEffect) -> bool {
 mod tests;
 
 ui::reach_tests!(FileExplorerShell, shares: [share_0, share_1, share_2, share_3]);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) = ui::framework::testing::check_agents_are_shown_every_action::<
+            super::FileExplorerShell,
+        >() {
+            panic!("{failures}");
+        }
+    }
+}

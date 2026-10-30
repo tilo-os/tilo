@@ -54,6 +54,26 @@ pub enum PhotosEffect {
     /// Open People: the People collection and this device's review.
     #[effect(view, row)]
     ViewPeople,
+    /// Read people
+    ///
+    /// Answers who is named in the library and on how many photographs
+    /// each, and whether this device recognises faces. Suggestions this
+    /// device has not had approved stay on it. It is the People place's
+    /// read: what discloses it, so recognition, a scan and each person's
+    /// verbs are offered to whoever may read it, an agent too.
+    #[effect(view, row, returns, idempotent, label = "Read people", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    ReadPeople,
+    /// Read person
+    ///
+    /// Answers the person's name and the photographs they are named on. It
+    /// is the person's read: what discloses them, so renaming them, naming
+    /// them on a photograph and taking them off every one are offered to
+    /// whoever may read it, an agent too.
+    #[effect(view, row, returns, idempotent, label = "Read person", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    ReadPerson {
+        #[param("The person's name")]
+        person: String,
+    },
     /// Manage local recognition model: the signed face model, in Settings.
     #[effect(view, row)]
     ManagePeopleRecognition,
@@ -70,6 +90,17 @@ pub enum PhotosEffect {
     /// progress and failures.
     #[effect(view, row)]
     ViewLibraryAnalysis,
+    /// Read photo analysis
+    ///
+    /// Answers where this device's analysis of the library stands: whether
+    /// it is running, paused or complete, with which model, how many
+    /// photographs it has done, how many succeeded, failed or could not be
+    /// analysed, how many remain, and the failures it reported. It is the
+    /// analysis place's read: what discloses it, so starting, pausing,
+    /// resuming and retrying it are offered to whoever may read it, an
+    /// agent too.
+    #[effect(view, row, returns, idempotent, label = "Read photo analysis", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    ReadLibraryAnalysis,
     /// Analyze unprocessed photographs on this device. Pixels stay local;
     /// each bounded result is shared with `SetImageAnalysis`.
     #[effect(row, job, cancellable, sensitive)]
