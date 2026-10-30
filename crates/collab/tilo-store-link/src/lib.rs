@@ -141,8 +141,9 @@ impl StoreSession {
     ///
     /// [`StoreLinkError::Store`] when the session broke, and
     /// [`StoreLinkError::Replica`] when the owner refuses a frame: the
-    /// caller keeps the session and carries on, since the frames after a
-    /// refused one may still land.
+    /// catch-up stops there, and the caller's cursors still stand where
+    /// they did, so the next call asks for the refused frame again once
+    /// what it needs has arrived.
     pub async fn catch_up_room(
         &mut self,
         owner: &NativeWorkspaceOwner,
@@ -183,8 +184,9 @@ impl StoreSession {
     ///
     /// [`StoreLinkError::Store`] when the session broke, and
     /// [`StoreLinkError::Replica`] when the replica refuses a frame: the
-    /// caller keeps the session and carries on, since the frames after a
-    /// refused one may still land.
+    /// catch-up stops there, and the caller's cursors still stand where
+    /// they did, so the next call asks for the refused frame again once
+    /// what it needs has arrived.
     pub async fn catch_up(&mut self, sync: &DirectSync) -> Result<usize, StoreLinkError> {
         let mut standing = cursors(sync);
         let mut admitted = 0;
