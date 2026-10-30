@@ -1,0 +1,108 @@
+# Crates whose use is a layer boundary, with the packages that may depend on
+# them and why (tools/policy/check_crate_layers.py, docs/policies.md,
+# "Architecture boundaries").
+#
+# A package not listed in a rule's `allow` may not depend on its crate; normal,
+# build and dev dependencies all count, optional ones included. An allowance
+# marked `tests` may declare the crate in its dev-dependencies only: a
+# production edge is a finding. An allowance with `paths` may name the crate
+# only in those directories of its package, each written from the package root
+# and ending in "/". Every allowance says, in `why`, what the package does with
+# the crate; a rule and its reasons change in review, like the code.
+
+[[rule]]
+crate = "tilo-cpu-raster"
+reason = "it is the toolkit's CPU fallback renderer, and a UI draws through ui-core, which owns it"
+
+  [[rule.allow]]
+  package = "tilo-ui"
+  why = "the toolkit's own renderer rasterizes a surface's scene where no GPU can run vello's compute pipeline"
+
+  [[rule.allow]]
+  package = "tilo-ui-kms"
+  why = "the toolkit's KMS host keeps one rasterizer across frames and copies only the damaged regions into dumb buffers, which ui-core's offscreen renderer does not expose"
+
+  [[rule.allow]]
+  package = "shell"
+  why = "the compositor's DRM backend presents the desktop on the CPU for devices whose GPU cannot run vello, and the compositor is what draws there, not a UI"
+  paths = ["src/compositor/"]
+
+  [[rule.allow]]
+  package = "ebook"
+  tests = true
+  why = "its scroll tests read back the pixels of the frames the CPU renderer draws"
+
+  [[rule.allow]]
+  package = "pdf-viewer"
+  tests = true
+  why = "its zoom and selection tests read back the pixels of the frames the CPU renderer draws"
+
+[[rule]]
+crate = "smithay"
+reason = "it is the Wayland protocol and buffer stack, and everything else talks to the compositor through tilo-compositor's API"
+
+  [[rule.allow]]
+  package = "tilo-compositor"
+  why = "the compositor is the one crate that speaks Wayland protocol and buffer types"
+
+  [[rule.allow]]
+  package = "shell"
+  why = "the compositor's code still lives in the shell crate until it is extracted, and it moves with the compositor"
+  paths = ["src/compositor/", "examples/"]
+
+  [[rule.allow]]
+  package = "tilo-wayland-ext"
+  why = "it implements Wayland protocol handlers, written against smithay's wayland dispatch traits and surface data map, with no renderer or backend"
+
+  [[rule.allow]]
+  package = "tilo-window-share"
+  why = "a shared window's client dmabuf is staged for the encoder as smithay's buffer type without a copy; it uses smithay's allocator types, no renderer or backend"
+
+[[rule]]
+crate = "tilo-peer-state"
+reason = "it is the sync engine, and everyone else acts on the workspace through published actions, never by holding engine state"
+
+  [[rule.allow]]
+  package = "shell"
+  why = "the session runs the person's local engine: its network host, broker services and native workspace owner hold the workspace and publish actions into it"
+
+  [[rule.allow]]
+  package = "tilo-runtime"
+  why = "the shared runtime runs the engine for the apps attached to a participant"
+
+  [[rule.allow]]
+  package = "tilo-action-broker"
+  why = "the broker admits the actions apps publish against the engine's workspace"
+
+  [[rule.allow]]
+  package = "tilo-room-host"
+  why = "the room host is the store node: it holds and governs a room's retained state"
+
+  [[rule.allow]]
+  package = "tilo-relay"
+  why = "the relay embeds the room host and keeps rooms for offline peers, the store node's network side"
+
+  [[rule.allow]]
+  package = "tilo-relay-shell"
+  why = "the seam a workspace host reads the engine's peer-sync vocabulary through"
+
+  [[rule.allow]]
+  package = "tilo-joined-room"
+  why = "a device's enrolled replicas of rooms a remote host governs: it runs the join and admission"
+
+  [[rule.allow]]
+  package = "tilo-governor"
+  why = "it answers the workspace-join exchange out of the store its rooms live in"
+
+  [[rule.allow]]
+  package = "tilo-owner-commit"
+  why = "the request and receipt vocabulary hosts ask a room's owner to commit with, over the engine's policy basis"
+
+  [[rule.allow]]
+  package = "tilo-browser-peer"
+  why = "the browser peer runs the same admission as a native device: it is the engine's browser glue"
+
+  [[rule.allow]]
+  package = "tilo-delivery-protocol"
+  tests = true
+  why = "its descriptor tests seed a real room to sign a transport descriptor against; the wire contract itself carries no engine state"

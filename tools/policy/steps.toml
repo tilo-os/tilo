@@ -210,6 +210,11 @@ label = "Shell service modules stay below the compositor"
 run = "python3 tools/policy/check_shell_layers.py"
 
 [[step]]
+name = "crate-layers"
+label = "Crates reach only the layers their rules allow"
+run = "python3 tools/policy/check_crate_layers.py"
+
+[[step]]
 name = "runtime-dylib-surface"
 label = "Shared app runtime carries no OS internals or dead weight"
 run = "python3 tools/policy/check_runtime_dylib_surface.py"

@@ -1,0 +1,85 @@
+# Edges and `use` paths that break a rule in crate_layers.toml and are still
+# there, each with the work that removes it. The list only shrinks: an entry
+# the code no longer needs fails as stale, and anything it does not record
+# fails. `check_crate_layers.py --write-baseline` drops stale entries; it
+# never records a new one.
+
+# The surface host draws the shell's surface apps itself: it rasterizes their
+# frames on the CPU and hands the compositor smithay memory render buffers,
+# where a surface app presents through ui-core and the compositor's API like
+# every app. Both edges go with the work that draws a surface in its own
+# process, through the compositor's API.
+[[violation]]
+rule = "tilo-cpu-raster"
+package = "tilo-surface-host"
+path = "Cargo.toml"
+
+[[violation]]
+rule = "smithay"
+package = "tilo-surface-host"
+path = "Cargo.toml"
+
+# The session's network, portal and chrome modules name the compositor's
+# smithay types: buffers and client ids, allocator formats, or an event loop
+# taken from smithay's reexport. Each goes when tilo-compositor's API hands
+# over a type of its own, takes calloop from calloop, or the module moves with
+# the compositor's code. (Network and portal modules are already the service
+# modules the shell-layers check keeps off the compositor's own code.)
+[[violation]]
+rule = "smithay"
+package = "shell"
+path = "src/network/surface_tracker.rs"
+
+# The pointer-lock capture path opens its event loop from smithay's reexport.
+[[violation]]
+rule = "smithay"
+package = "shell"
+path = "src/portal/input_capture.rs"
+
+# Remote desktop and remote typing open their event loops from smithay's
+# reexport.
+[[violation]]
+rule = "smithay"
+package = "shell"
+path = "src/portal/remote_desktop.rs"
+
+# Floating windows name the compositor's client id.
+[[violation]]
+rule = "smithay"
+package = "shell"
+path = "src/shell/floating.rs"
+
+# Frames of a foreign (BSD, Xwayland-less) client are staged as the
+# compositor's dmabuf and allocator types.
+[[violation]]
+rule = "smithay"
+package = "shell"
+path = "src/shell/foreign.rs"
+
+# GPU frames are imported in the compositor's allocator formats.
+[[violation]]
+rule = "smithay"
+package = "shell"
+path = "src/shell/gpu_frames.rs"
+
+# The frame module asks the CPU rasterizer whether a scene reads its backdrop,
+# to decide how many DRM layers the present path may separate. That is the
+# compositor's present path, and the decision goes with it.
+[[violation]]
+rule = "tilo-cpu-raster"
+package = "shell"
+path = "src/shell/frame.rs"
+
+# The desktop's transport carries the join contract's `TransportHint`, which
+# the engine happens to re-export. It goes when the transport names the
+# contract from tilo-workspace-join, which owns it.
+[[violation]]
+rule = "tilo-peer-state"
+package = "tilo-network-actor"
+path = "Cargo.toml"
+
+# An agent crate's tests name the join contract's `MemberRole` through the
+# engine; they go when they read it from tilo-workspace-join, which owns it.
+[[violation]]
+rule = "tilo-peer-state"
+package = "tilo-agent-participant"

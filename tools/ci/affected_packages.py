@@ -116,6 +116,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_app_content_store.py": "tools/tests/test_app_content_store.py",
     "tools/policy/check_document_engine_boundary.py": "tools/tests/test_document_engine_boundary.py",
     "tools/policy/check_shell_layers.py": "tools/tests/test_check_shell_layers.py",
+    "tools/policy/check_crate_layers.py": "tools/tests/test_check_crate_layers.py",
     "tools/policy/check_media_stack.py": "tools/tests/test_media_stack_policy.py",
 }
 # Control-plane files are validated by tests that read or execute the production
@@ -126,6 +127,15 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     "tools/policy/shell_layers_baseline.toml": (
         "tools/policy/check_shell_layers.py",
         "tools/tests/test_check_shell_layers.py",
+    ),
+    # Read only by the crate-layers policy check, which run.sh executes.
+    "tools/policy/crate_layers.toml": (
+        "tools/policy/check_crate_layers.py",
+        "tools/tests/test_check_crate_layers.py",
+    ),
+    "tools/policy/crate_layers_baseline.toml": (
+        "tools/policy/check_crate_layers.py",
+        "tools/tests/test_check_crate_layers.py",
     ),
     "os/dev/ci-native-podman-store.sh": (
         "tools/tests/test_ci_native_podman_store.py",
