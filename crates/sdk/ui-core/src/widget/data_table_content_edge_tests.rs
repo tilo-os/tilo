@@ -557,6 +557,7 @@ fn a_plain_press_on_a_selection_drags_it_whole_and_a_still_press_clicks() {
         true,
     );
     assert_eq!(table.selected_rows(), [1, 2, 3]);
+    answer_row_actions(&mut table);
     clicks.borrow_mut().clear();
     // A plain press on row 2 that drags: the three go.
     let y = row(&table, 2);
@@ -583,6 +584,7 @@ fn a_plain_press_on_a_selection_drags_it_whole_and_a_still_press_clicks() {
         false,
     );
     assert_eq!(table.selected_rows(), [1, 2, 3]);
+    answer_row_actions(&mut table);
     assert!(clicks.borrow().is_empty(), "a drag is no click");
     // A plain press that does not move is a click on its row.
     send(&mut table, &tree, node, &at(60.0, y), false);
