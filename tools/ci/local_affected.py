@@ -7,8 +7,10 @@
 local-affected.sh checks a branch's commits as the batch check does: base defaults to
 the merge-base with origin/main and the worktree must be clean. test-changed.sh is the
 same run for a change still being edited: base defaults to the merge-base with
-`integration` (origin/main without it), uncommitted and untracked files count, and the
-stages are clippy and test.
+`integration` (origin/main without it), uncommitted and untracked files count, the
+stages are clippy and test, and clippy covers the changed packages and their direct
+dependants (the planner's `near`; `--closure` for the whole reverse-dependency closure
+the batch check lints).
 
 Selection is the planner's (tools/ci/affected_packages.py): the packages a change
 affects, their checks and tests, the same filters CI uses. What differs from CI is only
@@ -25,9 +27,9 @@ how they run:
   tools/ci/t-nextest.sh) inside the builder's container, so helper binaries the tests
   need are built there and no test binary or artifact is fetched to this machine.
   Without rcargo the same commands run here.
-- The tests that failed in the last run against the same base run first, alone, so a
-  fix is confirmed (or not) within the time of its own tests; the rest follow without
-  them. The record is per worktree and base (`<git-dir>/local-affected/`).
+- The tests that failed in the last run against the same base run as a job of their
+  own beside the rest, so a fix is confirmed (or not) within the time of its own tests
+  and the rest is not held up by them. The record is per worktree and base (`<git-dir>/local-affected/`).
 - A big test set is split by package between the x86 and the arm builder
   (`--split auto`, the default): the arm builder takes a quarter of the work (compile
   cost and recorded test time), each builder compiles and runs only its share.
@@ -188,7 +190,8 @@ class Job:
         self.ran_to_end = True
         self.started = time.monotonic()
         self.ended = self.started
-        self.log.write_text("")
+        if not self.dry_run:  # a dry run beside a real one leaves its logs alone
+            self.log.write_text("")
 
     def ok(self) -> bool:
         return all(code == 0 for _, code, _ in self.steps)
@@ -332,6 +335,9 @@ def main() -> int:
     parser.add_argument("--stage", help=f"comma list of stages (default: {DEFAULT_STAGES}; "
                                         f"with --changed: {CHANGED_STAGES}); also tapps")
     parser.add_argument("--tapps", action="store_true", help="also package and size-check the affected tapps")
+    parser.add_argument("--closure", action="store_true",
+                        help="with --changed: lint the whole reverse-dependency closure, as the batch "
+                             "check does (default: the changed packages and their direct dependants)")
     parser.add_argument("--fail-fast", action="store_true",
                         help="stop the other jobs once one fails (the default runs every job to its end)")
     parser.add_argument("--keep-going", action="store_true", help=argparse.SUPPRESS)  # the default now
@@ -365,8 +371,9 @@ def main() -> int:
             say(f"select failed: {error}" + ("" if args.changed else
                 "; a change still being edited is tested with tools/ci/test-changed.sh"))
             return 1
+    linted = len(plan["near"]) if args.changed and not args.closure else plan["selected_count"]
     say(f"==> select: base {base} ({base_commit[:12]}), {plan['selected_count']} of {plan['workspace_count']} "
-        f"packages selected ({plan['reason']}), {len(plan['tested'])} tested, "
+        f"packages selected ({plan['reason']}), {linted} linted, {len(plan['tested'])} tested, "
         f"{time.monotonic() - started:.0f} s")
 
     filters = nextest_filters.filters()
@@ -378,6 +385,11 @@ def main() -> int:
     tail = ["--", *args.names] if args.names else []
 
     clippy = ordered_union(plan["clippy_matrix"]["include"], "packages")
+    if args.changed and not args.closure:
+        # A change being edited: lint what is one edge from it (the planner's `near`); the
+        # batch check lints the whole closure.
+        near = set(plan["near"])
+        clippy = [name for name in clippy if name in near]
     checks = [row for row in plan["check_matrix"]["include"]]
     rows = plan["matrix"]["include"]
     tests = ordered_union(rows, "test_packages")
@@ -467,18 +479,20 @@ def main() -> int:
     if want("test") and tests:
         failing_first = {test for test in previous if package_of(test[0]) in set(tests)}
 
+        def failed_first(builder: Builder, packages: list[str], first: set[tuple[str, str]]):
+            def body(job: Job) -> None:
+                # Over the same packages as the full run, so both resolve features alike: the one
+                # that takes cargo's build lock second finds every test binary built.
+                job.run(f"{len(first)} test(s) that failed last time", builder,
+                        nextest(packages, f"({pull_filter}) and ({filterset_of(first)})", ["--no-tests=pass"]))
+            return body
+
         def test_share(builder: Builder, packages: list[str], first: set[tuple[str, str]]):
             def body(job: Job) -> None:
                 remaining = pull_filter
                 if first:
-                    # Over the same packages as the full run, so both resolve features alike and
-                    # the full run finds every test binary already built.
-                    job.run(f"{len(first)} test(s) that failed last time", builder,
-                            nextest(packages, f"({pull_filter}) and ({filterset_of(first)})", ["--no-tests=pass"]))
                     remaining = f"({pull_filter}) and not ({filterset_of(first)})"
-                if stop.is_set():
-                    return
-                # A package whose only selected tests ran first has nothing left: pass.
+                # A package whose only selected tests run first has nothing left: pass.
                 job.run(f"nextest ({len(packages)} packages)", builder,
                         nextest(packages, remaining, ["--no-tests=pass"] if first else []))
                 if want("goldens") and GOLDEN_PACKAGES & set(packages) and not stop.is_set():
@@ -488,7 +502,12 @@ def main() -> int:
 
         for index, (builder, packages) in enumerate(shares):
             mine = {test for test in failing_first if package_of(test[0]) in set(packages)}
-            spawn("test" if len(shares) == 1 else f"test-{builder.name}", test_share(builder, packages, mine))
+            label = "test" if len(shares) == 1 else f"test-{builder.name}"
+            # The tests that failed last time run beside the rest, not before them: they report
+            # within the time of their own tests, and the rest is not held up by them.
+            if mine:
+                spawn(f"{label}-failed", failed_first(builder, packages, mine))
+            spawn(label, test_share(builder, packages, mine))
 
     for thread in threads:
         thread.join()
@@ -516,7 +535,7 @@ def main() -> int:
 
     # The record: what failed now; a run that ended early keeps what it could not rerun.
     test_jobs = [job for job in jobs if job.label.startswith("test")]
-    if test_jobs:
+    if test_jobs and not args.dry_run:
         failed = set().union(*(job.failed_tests for job in test_jobs))
         if not all(job.ran_to_end for job in test_jobs):
             failed |= previous
