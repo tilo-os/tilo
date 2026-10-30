@@ -42,11 +42,9 @@ pub mod test_engine;
 pub const BROWSER_APP_ID: &str = "so.tilo.browser";
 
 /// The switch a Browser window is launched with when it is opened for an
-/// agent: it browses as any visitor would, on a fresh profile of its own
-/// that is thrown away with it, without the person's cookies, sign-ins or
-/// saved passwords. Reading such a page takes no authority beyond a
-/// visitor's.
-pub const VISITOR_WINDOW_FLAG: &str = "--visitor";
+/// agent ([`runtime_portal::windows::VISITOR_WINDOW_FLAG`]). Reading such a
+/// page takes no authority beyond a visitor's.
+pub const VISITOR_WINDOW_FLAG: &str = runtime_portal::windows::VISITOR_WINDOW_FLAG;
 
 #[cfg(feature = "webview-adblock")]
 pub mod adblock;

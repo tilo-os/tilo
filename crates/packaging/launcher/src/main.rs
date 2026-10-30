@@ -145,6 +145,11 @@ enum Cmd {
         /// argv value; it is never parsed as a command line.
         #[arg(long, conflicts_with = "open")]
         open_uri: Option<String>,
+        /// Open `--open-uri` in a window that browses as a visitor, without
+        /// the person's sign-ins: the app is handed
+        /// `runtime_portal::windows::VISITOR_WINDOW_FLAG` after the address.
+        #[arg(long, requires = "open_uri")]
+        open_as_visitor: bool,
         /// Standard console in a private namespace for this shell instance.
         #[arg(long, conflicts_with_all = ["service", "wayland_socket"])]
         headless_console: Option<u64>,
@@ -555,6 +560,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         render_node,
         open,
         open_uri,
+        open_as_visitor,
         headless_console,
         service,
         tilolang_hosted,
@@ -586,6 +592,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         render_node,
         open,
         open_uri,
+        open_as_visitor,
         headless_console,
         service,
         tilolang_hosted,
@@ -860,6 +867,7 @@ struct RunCliArgs {
     render_node: Option<PathBuf>,
     open: Option<PathBuf>,
     open_uri: Option<String>,
+    open_as_visitor: bool,
     headless_console: Option<u64>,
     service: bool,
     tilolang_hosted: bool,
@@ -909,6 +917,7 @@ fn run_gui_command(
         render_node: args.render_node,
         open_document: args.open,
         open_uri: args.open_uri,
+        open_as_visitor: args.open_as_visitor,
         headless_console: args.headless_console,
         tilolang_hosted: args.tilolang_hosted,
         tilolang_connector: args.tilolang_connector,
@@ -1577,6 +1586,7 @@ fn run_installed(
         // `LaunchMode::Cli`; no document to open on its behalf.
         open_document: None,
         open_uri: None,
+        open_as_visitor: false,
         headless_console: None,
         tilolang_hosted: false,
         tilolang_connector: None,

@@ -1,6 +1,8 @@
 //! The window door: where the shell opens another window of an app that is
 //! already running.
 //!
+//! Also the one switch a launch hands a window it opens: [`VISITOR_WINDOW_FLAG`].
+//!
 //! One process serves every window of an app in a room. The shell hands each
 //! app it starts one end of a socket pair, through the launcher, as
 //! `TILO_SVC_WINDOWS_FD`, and keeps the other. When the person opens another
@@ -13,6 +15,13 @@
 //! `ui::window_door::WindowRequest`, JSON), with the descriptors the request
 //! names. Only the Linux shell opens windows this way; elsewhere there is no
 //! door and every call says so.
+
+/// The switch a Browser window is launched with when it is opened for an
+/// agent: it browses as any visitor would, on a fresh profile of its own that
+/// is thrown away with it, without the person's cookies, sign-ins or saved
+/// passwords. The shell asks the launcher for it (`--open-as-visitor`), and
+/// the launcher hands it to the app after the address it opens.
+pub const VISITOR_WINDOW_FLAG: &str = "--visitor";
 
 use std::io;
 
