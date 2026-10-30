@@ -1177,12 +1177,12 @@ fn a_brightness_key_on_the_focused_display_shows_one_readout_there() {
 
 /// How many live regions under `node` announce `caption`.
 fn announcing(node: &ui::a11y::AccessNode, caption: &str) -> usize {
-    usize::from(node.live.is_some() && node.value.as_deref() == Some(caption))
-        + node
-            .children
+    usize::from(node.live.is_some() && node.value.as_deref() == Some(caption)).saturating_add(
+        node.children
             .iter()
             .map(|child| announcing(child, caption))
-            .sum::<usize>()
+            .sum::<usize>(),
+    )
 }
 
 #[test]

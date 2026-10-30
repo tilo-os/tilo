@@ -56,21 +56,30 @@ pub(super) fn connection(app: &InstalledApp, room: RoomId) -> std::io::Result<Op
 fn attach(app: &InstalledApp, room: RoomId, origin: &str) -> std::io::Result<OwnedFd> {
     let (instance, theirs) = origin_connector::connection()?;
     let key = (app.package_id.clone(), origin.to_owned(), room.to_string());
-    let mut connectors = super::lock(&CONNECTORS);
-    let connectors = connectors.get_or_insert_with(HashMap::new);
-    if let Some(running) = connectors.get(&key) {
-        match origin_connector::send_attachment(&running.door, &theirs) {
+    // The door is taken under the lock and used after it: answering a
+    // connection sends on a socket, which is not done holding the registry.
+    let door = super::lock(&CONNECTORS)
+        .get_or_insert_with(HashMap::new)
+        .get(&key)
+        .map(|running| running.door.try_clone())
+        .transpose()?;
+    if let Some(door) = door {
+        match origin_connector::send_attachment(&door, &theirs) {
             Ok(()) => return Ok(instance),
             // It ended: start another.
             Err(error) => {
                 tracing::info!(%error, package_id = %app.package_id, origin, "an origin connector's door is closed");
-                connectors.remove(&key);
+                super::lock(&CONNECTORS)
+                    .get_or_insert_with(HashMap::new)
+                    .remove(&key);
             }
         }
     }
     let running = start(app, room, origin, key.clone())?;
     origin_connector::send_attachment(&running.door, &theirs)?;
-    connectors.insert(key, running);
+    super::lock(&CONNECTORS)
+        .get_or_insert_with(HashMap::new)
+        .insert(key, running);
     Ok(instance)
 }
 

@@ -125,6 +125,7 @@ mod tests {
 
     #[test]
     fn an_attachment_reaches_the_connector_with_its_connection() {
+        use std::io::{Read as _, Write as _};
         let (session, connector) = pair().unwrap();
         let (instance, theirs) = connection().unwrap();
         send_attachment(&session, &theirs).unwrap();
@@ -132,7 +133,6 @@ mod tests {
             .unwrap()
             .expect("an attachment");
         // What the instance writes, the connector reads.
-        use std::io::{Read as _, Write as _};
         let mut instance = std::os::unix::net::UnixStream::from(instance);
         let mut received = std::os::unix::net::UnixStream::from(received);
         instance.write_all(b"hello").unwrap();

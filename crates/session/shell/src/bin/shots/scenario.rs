@@ -245,8 +245,6 @@ pub enum Action {
         surface_id: u64,
         rgba: [u8; 4],
     },
-    /// The text the active field holds, as the person typing it left it.
-    Typed(&'static str),
     /// Seed real collaborative room changes, a second person's among them.
     SeedRoomHistory,
     /// Add two present collaborators and representative shares to the active
@@ -601,10 +599,6 @@ pub enum OwnApp {
     Notes,
     /// Files at the shell's starting place, with a few files in it.
     Files,
-    /// The workspace's activity: what changed since this device last
-    /// looked, as the workspace's own history records it.
-    #[cfg(feature = "test-support")]
-    Activity,
 }
 
 /// What starts the motion a [`Action::MotionFrames`] captures. Only a build
@@ -745,9 +739,6 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_open_window(driver, action);
     apply_add_hosted_tab(driver, action);
     apply_hosted_window(driver, action);
-    if let Action::Typed(text) = action {
-        driver.type_str(text);
-    }
     apply_reveal_samples(driver, action, sink);
     apply_make_space_sample_and_widths(driver, action, sink);
     apply_seed_status_and_file_picker(driver, action);
@@ -776,15 +767,6 @@ const OWN_FILES: BarTab = BarTab {
     slots: None,
 };
 
-/// The window [`Action::OwnProcessWindow`] opens for Activity.
-#[cfg(feature = "test-support")]
-const OWN_ACTIVITY: BarTab = BarTab {
-    app_id: "so.tilo.activity",
-    title: "Activity",
-    surface_id: 9_303,
-    slots: None,
-};
-
 /// `Action::OwnProcessWindow` — split out of [`apply`] to keep that
 /// dispatcher short.
 fn apply_own_process_window(driver: &mut ShellDriver, action: &Action) {
@@ -794,8 +776,6 @@ fn apply_own_process_window(driver: &mut ShellDriver, action: &Action) {
     let window: &'static [BarTab] = match app {
         OwnApp::Notes => &[OWN_NOTES],
         OwnApp::Files => &[OWN_FILES],
-        #[cfg(feature = "test-support")]
-        OwnApp::Activity => &[OWN_ACTIVITY],
     };
     // The window is placed and adopted as a client's toplevel is.
     apply_seed_window_bar(

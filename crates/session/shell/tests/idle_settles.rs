@@ -158,6 +158,7 @@ fn every_chrome_overlay_idles_open_and_closed() {
             "{what}'s opening animation went unobserved"
         );
     }
+    drop(desk);
 }
 
 #[test]
@@ -172,6 +173,7 @@ fn search_idles_open_and_closed() {
         |d| d.fb.host_mut().set_palette_visible(false),
     );
     assert!(opening, "Search's opening animation went unobserved");
+    drop(desk);
 }
 
 /// An OSD holds without animating, fades, then must leave nothing behind.
