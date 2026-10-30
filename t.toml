@@ -224,6 +224,10 @@ when = { step = "format-migrations" }
 git = true
 
 [[check.matrix.set]]
+when = { step = "image-builder-inputs" }
+git = true
+
+[[check.matrix.set]]
 when = { step = "image-interpreters" }
 git = true
 
@@ -276,6 +280,58 @@ run = "python3 tools/policy/run_unit_tests.py tools/tests/test_{test}.py"
 [check.matrix]
 test = { from = "tools/tests/test_*.py" }
 
+# The tests that ask Git about the tree they run in: the tracked files (`ls-files`), the commit
+# (`rev-parse`) or the log, also through the scripts they run (`tools/ci/build-os.sh`,
+# `tools/ci/suites.py`). The rest of the suite makes its own repositories in temporary
+# directories and needs no `.git` here, so only these are keyed by the commit.
+[[check.matrix.set]]
+when = { test = "browser_runtime_release" }
+git = true
+
+[[check.matrix.set]]
+when = { test = "build_os" }
+git = true
+
+[[check.matrix.set]]
+when = { test = "check_image_interpreters" }
+git = true
+
+[[check.matrix.set]]
+when = { test = "check_seeded_state_history" }
+git = true
+
+[[check.matrix.set]]
+when = { test = "ci_select" }
+git = true
+
+[[check.matrix.set]]
+when = { test = "image_builder_inputs" }
+git = true
+
+[[check.matrix.set]]
+when = { test = "macos_collection" }
+git = true
+
+[[check.matrix.set]]
+when = { test = "signal_provider_release" }
+git = true
+
+[[check.matrix.set]]
+when = { test = "signal_runtime_staging" }
+git = true
+
+[[check.matrix.set]]
+when = { test = "suites" }
+git = true
+
+[[check.matrix.set]]
+when = { test = "test_environment" }
+git = true
+
+[[check.matrix.set]]
+when = { test = "workflow_package_paths" }
+git = true
+
 # Test suites outside Cargo, one check per group of `tools/ci/suites.toml`: `suite-<group>` runs
 # the group's suites in the ci-fast image, which is what `file`-shaped tests need. The group list
 # is the file's, so a group added there is a check here. A group runs on every head of main; the
@@ -299,13 +355,17 @@ env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin
 on = ["stable", "dispatch", "idle"]
 heavy = true
 
+# The live transport suites load the MoQ library built from `scripts/moq-browser`, which needs
+# npm as a layer over the image.
 [[check.matrix.set]]
 when = { group = "browser-compute-web" }
-run = "command -v npm >/dev/null || dnf install -y --setopt=install_weak_deps=False npm\nnpm ci --prefix scripts/moq-browser --no-audit --no-fund --loglevel=error\nnode scripts/moq-browser/build.mjs\npython3 tools/ci/suites.py run --jobs 8 --group browser-compute-web"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False npm" }
+run = "npm ci --prefix scripts/moq-browser --no-audit --no-fund --loglevel=error\nnode scripts/moq-browser/build.mjs\npython3 tools/ci/suites.py run --jobs 8 --group browser-compute-web"
 
 [[check.matrix.set]]
 when = { group = "browser-runtime-web" }
-run = "command -v npm >/dev/null || dnf install -y --setopt=install_weak_deps=False npm\nnpm ci --prefix scripts/moq-browser --no-audit --no-fund --loglevel=error\nnode scripts/moq-browser/build.mjs\npython3 tools/ci/suites.py run --jobs 8 --group browser-runtime-web"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False npm" }
+run = "npm ci --prefix scripts/moq-browser --no-audit --no-fund --loglevel=error\nnode scripts/moq-browser/build.mjs\npython3 tools/ci/suites.py run --jobs 8 --group browser-runtime-web"
 
 # ---- Per-area checks -------------------------------------------------------------
 #
@@ -1789,6 +1849,8 @@ run = "mkdir -p $TMPDIR/empty\nbash tools/ci/publish/oci-build.sh $TMPDIR/empty 
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
+# The image is dated by its commit's time, which `oci-build.sh` reads from the log.
+git = true
 outputs = ["/target/publish/ci-fast/image.oci.tar", "/target/publish/ci-fast/digest"]
 default = false
 
@@ -1807,6 +1869,7 @@ run = "mkdir -p $TMPDIR/empty\nbash tools/ci/publish/oci-build.sh $TMPDIR/empty 
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}"]
 isolation = "vm"
+git = true
 outputs = ["/target/publish/release-tools/{arch}/image.oci.tar", "/target/publish/release-tools/{arch}/digest"]
 default = false
 [check.matrix]
@@ -1835,6 +1898,8 @@ needs = ["os-assets"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}"]
 isolation = "vm"
+# The image is dated by its commit's time, which `oci-build.sh` reads from the log.
+git = true
 outputs = ["/target/publish/ci-builder/{arch}/image.oci.tar", "/target/publish/ci-builder/{arch}/digest"]
 timeout_secs = 14400
 default = false
@@ -1990,6 +2055,8 @@ run = "bash tools/release/local-model-runtime.sh build llama-cpp-{backend}-{arch
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}"]
 isolation = "vm"
+# The runtime image is dated by its commit's time, which `oci-build.sh` reads from the log.
+git = true
 outputs = ["/target/local-model-runtimes/llama-cpp-{backend}-{arch}/*"]
 timeout_secs = 7200
 on = ["stable", "dispatch"]
@@ -2004,6 +2071,7 @@ run = "bash tools/release/local-model-runtime.sh build llama-cpp-cuda-x86_64 /ta
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
+git = true
 outputs = ["/target/local-model-runtimes/llama-cpp-cuda-x86_64/*"]
 timeout_secs = 10800
 on = ["stable", "dispatch"]
@@ -2539,6 +2607,9 @@ optional_needs = ["mirror-base"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
+# `oci-build.sh` dates the image by its commit's time, read from the log before it takes a
+# `--timestamp` of its own.
+git = true
 outputs = ["/target/publish/rpms/{arch}/image.oci.tar", "/target/publish/rpms/{arch}/digest", "/target/publish/rpms/{arch}/epoch"]
 timeout_secs = 10800
 default = false
@@ -4021,7 +4092,9 @@ default = false
 name = "extension-manifests-{arch}"
 run = "bash tools/ci/publish/extension-manifests.sh resolve {arch} /target/extension-manifests/{arch}"
 needs = ["signing-tools"]
-requires = ["disk-100g"]
+# The extensions resolve with the native package manager, so each architecture's manifests are
+# resolved on a node of that architecture.
+requires = ["disk-100g", "arch={arch}"]
 isolation = "vm"
 outputs = ["/target/extension-manifests/{arch}/**"]
 cache = false
@@ -4191,6 +4264,8 @@ needs = ["image-room-service-context"]
 outputs = ["/target/publish/room-service/image.oci.tar", "/target/publish/room-service/digest"]
 requires = ["arch=x86_64"]
 isolation = "nested"
+# The image is dated by its commit's time, which `oci-build.sh` reads from the log.
+git = true
 default = false
 
 [[check]]
@@ -4233,6 +4308,7 @@ needs = ["image-web-entry-context"]
 outputs = ["/target/publish/web-entry/image.oci.tar", "/target/publish/web-entry/digest"]
 requires = ["arch=x86_64"]
 isolation = "nested"
+git = true
 default = false
 
 [[check]]
