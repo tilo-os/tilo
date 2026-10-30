@@ -593,7 +593,7 @@ impl Widget for Window {
                 instance::HistoryAsk::UndoStep(_) | instance::HistoryAsk::UndoRun(_) => {
                     tracing::warn!(?asked, "an undo named from a view needs the tilolang host");
                     self.instance
-                        .history_refused(crate::i18n::t("tilolang-undo-unavailable"));
+                        .history_failed(crate::i18n::t("tilolang-undo-unavailable"));
                 }
             }
         }
