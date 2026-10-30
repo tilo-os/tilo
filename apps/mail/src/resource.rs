@@ -321,6 +321,7 @@ impl DraftState {
     scopes = Mail::scopes,
     queue = Mail::queue,
     read_content = Mail::read_held,
+    document_child = Mail::document_projection_child,
     answer = crate::held::answer,
 )]
 impl Mail {
@@ -1755,6 +1756,73 @@ mod tests {
     use tilo_actions::OperationKind;
     use ui::tilo_resource::Replica;
     use ui::widget::Widget;
+
+    /// The resource published as the place `id` (the last part of its
+    /// published id), at any depth.
+    fn published_resource(
+        resources: &[ui::tilo_actions::ResourceSpec],
+        id: &str,
+    ) -> Option<ui::tilo_actions::ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str().rsplit('/').next() == Some(id) {
+                Some(resource.clone())
+            } else {
+                published_resource(&resource.children, id)
+            }
+        })
+    }
+
+    /// A draft is document state: an agent reads what it holds through the
+    /// draft's own document read, as `tilo_read` on it does, and the draft
+    /// is disclosed by that read rather than hidden behind its `open`.
+    #[test]
+    fn an_agent_reads_a_draft_through_its_document_read() {
+        let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
+        let id = "6a0d7c1e-7d3b-4c55-9a1e-2f4b8c9d0e1f";
+        app.call(
+            "create-draft",
+            serde_json::json!({
+                "id": id,
+                "message": {
+                    "to": "ada@example.org", "cc": "", "bcc": "",
+                    "subject": "Your portfolio", "body": "Thanks for applying.",
+                    "html_body": null,
+                },
+            }),
+        )
+        .unwrap();
+        app.settle();
+        let place = draft_place_id(id);
+        let published = published_resource(&app.harness().resources(), &place)
+            .unwrap_or_else(|| panic!("the draft's place {place} is published"));
+        let draft = published.id.as_str().to_owned();
+        let read = published
+            .actions
+            .iter()
+            .find(|action| action.id == "read")
+            .expect("the draft offers its document read");
+        assert!(read.contract.reads_document());
+        let content = app
+            .call_on(&draft, "read", serde_json::json!({}))
+            .unwrap()
+            .expect("the read answers");
+        assert_eq!(content["draft"]["subject"], "Your portfolio", "{content}");
+        assert_eq!(content["draft"]["to"], "ada@example.org", "{content}");
+        assert_eq!(
+            tilo_actions::hidden_from_agents(&app.harness().resources()),
+            [],
+            "nothing of the mailbox is kept from an agent"
+        );
+    }
+
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<MailShell>()
+        {
+            panic!("{failures}");
+        }
+    }
 
     /// A file another step handed over attaches to the draft by its
     /// content address: staged and verified where it is attached, carried as

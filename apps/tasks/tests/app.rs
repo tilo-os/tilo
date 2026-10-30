@@ -1268,3 +1268,28 @@ fn an_issue_opens_as_a_chat_of_its_own_where_the_agent_is_told_more() {
         .collect();
     assert_eq!(directions, ["Now draft the replies"]);
 }
+
+/// An issue is document state: an agent reads what it holds through the
+/// issue's own document read, as `tilo_read` on it does, and the issue is
+/// disclosed by that read rather than hidden behind its `open`.
+#[test]
+fn an_agent_reads_an_issue_through_its_document_read() {
+    let mut app = open();
+    app.call(
+        "create",
+        json!({ "title": "Review Ada's portfolio", "body": "Look at her GitHub." }),
+    )
+    .expect("create");
+    app.settle();
+    let issue = issue_resource(&only(&app));
+    let content = app
+        .call_on(&issue, "read", json!({}))
+        .expect("the issue offers its document read")
+        .expect("the read answers");
+    assert_eq!(content["title"], "Review Ada's portfolio", "{content}");
+    assert_eq!(
+        ui::tilo_actions::hidden_from_agents(&app.harness().resources()),
+        [],
+        "nothing of the tracker is kept from an agent"
+    );
+}
