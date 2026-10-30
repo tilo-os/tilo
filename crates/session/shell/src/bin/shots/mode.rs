@@ -12,7 +12,7 @@ use vello::peniko::Color;
 
 use ui::offscreen::OffscreenRenderer;
 
-use super::driver::ShellDriver;
+use super::driver::{LockVisualState, ShellDriver};
 use super::scenario::{self, JsonDirSink, NullSink, Scenario, SnapshotSink};
 
 /// Round a logical-pixel viewport dimension (from [`ShellDriver::viewport`]) to the
@@ -52,7 +52,8 @@ fn frames_per_step_for(fps: u32, step_duration_secs: f32) -> u32 {
 
 pub mod offscreen {
     use super::{
-        Color, OffscreenRenderer, Path, Scenario, ShellDriver, SnapshotSink, dim_to_u32, scenario,
+        Color, LockVisualState, OffscreenRenderer, Path, Scenario, ShellDriver, SnapshotSink,
+        dim_to_u32, scenario,
     };
 
     /// `SnapshotSink` that renders into a PNG file per snapshot under
@@ -185,13 +186,27 @@ pub mod offscreen {
         );
         let mut first_paint_seen = false;
         for name in scenes {
-            let mut driver = ShellDriver::for_scene(name, viewport);
+            // `empty-desk` is the tree a real boot reaches (no windows yet);
+            // `lock` is the session's own lock screen, which no demo scene
+            // shows. Everything else is a `scene_setup` row.
+            let mut driver = if name == "empty-desk" {
+                ShellDriver::with_tree(
+                    shell::shell::state::WorkspaceTree::bootstrap_default(),
+                    viewport,
+                )
+            } else {
+                ShellDriver::for_scene(name, viewport)
+            };
             if let Some(outputs) = outputs {
                 driver.set_outputs(outputs);
             }
-            driver
-                .scene_setup(name)
-                .map_err(|e| format!("scene_setup({name}) failed: {e}"))?;
+            if name == "lock" {
+                driver.set_lock_visual_state(LockVisualState::Default);
+            } else if name != "empty-desk" {
+                driver
+                    .scene_setup(name)
+                    .map_err(|e| format!("scene_setup({name}) failed: {e}"))?;
+            }
             let scene = driver.paint_settled();
             let path = dir.join(format!("{name}.png"));
             renderer.set_backdrop(driver.take_backdrop());

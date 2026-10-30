@@ -357,8 +357,11 @@ impl Shared {
         self.follow_asks();
     }
 
-    /// Give search its kept history and what the session publishes.
+    /// Host the desktop's search, with its kept history and what the
+    /// session publishes.
     fn start_search(&self) {
+        self.handle
+            .set_search_host(Rc::clone(&self.search) as Rc<dyn tilo_desktop_surface::SearchHost>);
         if let Some(kept) = self.services.borrow().read(search::HISTORY) {
             self.search.restore(&kept);
         }
@@ -1180,7 +1183,6 @@ impl Session {
         let services = mount_services(&mut doors, std::mem::take(&mut options.services));
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
-        handle.set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
         let shared = Shared {
             handle,
             desktop,
