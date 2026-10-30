@@ -200,6 +200,16 @@ impl Host {
                         return Err(format!("the block does not compile:\n{}", lines.join("\n")));
                     }
                     AgentBlock::View(tree) => json!({"kind": "view", "tree": tree_json(&tree)}),
+                    // A written view: a view, with what it is.
+                    AgentBlock::Definition { info, tree } => json!({
+                        "kind": "view",
+                        "definition": {
+                            "name": info.name,
+                            "shows": info.shows,
+                            "params": info.params.iter().map(|p| json!({"name": p.name, "type": p.ty})).collect::<Vec<_>>(),
+                        },
+                        "tree": tree.as_deref().map(tree_json),
+                    }),
                     AgentBlock::Data(value) => json!({"kind": "data", "value": value}),
                     AgentBlock::Invocation { record, resource } => json!({
                         "kind": "invocation",

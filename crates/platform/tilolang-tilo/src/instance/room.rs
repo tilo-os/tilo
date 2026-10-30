@@ -197,7 +197,8 @@ impl RoomRecord {
     ) -> Result<Self, RoomError> {
         use collaboration::native_initial::{self, NativeConstruction};
         use collaboration::record::save::{
-            open_stored, open_with_committed_read, record_document, room_document,
+            open_stored, open_stored_adopting, open_with_committed_read, record_document,
+            room_document,
         };
         let route = manager
             .primary_route()
@@ -230,7 +231,14 @@ impl RoomRecord {
         let handed_nothing = primary.is_none();
         let opened = match primary {
             Some(read) => read.and_then(|(_, read)| open_with_committed_read(store, &read)),
-            None => Ok(open_stored(store)),
+            // A member's own record of an app that kept the workspace's record before starts
+            // from what that record held on this device (`open_stored_adopting`).
+            None => Ok(match route.record.as_deref() {
+                Some(record) if tilo_action_policy::member_record(record).is_some() => {
+                    open_stored_adopting(store, room_document(documents, &route.app_id, &room).ok())
+                }
+                _ => open_stored(store),
+            }),
         };
         let (doc, writer) = match opened {
             Ok(opened) => opened,

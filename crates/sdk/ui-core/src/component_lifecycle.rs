@@ -185,3 +185,18 @@ pub fn take_window_activation_intent(widget: &(impl Widget + ?Sized)) -> bool {
     capability::<dyn WindowActivation>(widget)
         .is_some_and(WindowActivation::take_window_activation_intent)
 }
+
+/// A presentation whose app runs elsewhere (a tilolang host's instance) can ask the shell for
+/// what only it does, as an app's own surface asks ([`crate::widget::AppHostIntent`]): show a
+/// task run's log when a change mark is activated.
+pub trait HostIntents {
+    /// Consume one request for the shell.
+    fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent>;
+}
+
+/// Consume one request `widget` holds for the shell, through its capability door.
+pub fn take_host_intent(
+    widget: &mut (impl Widget + ?Sized),
+) -> Option<crate::widget::AppHostIntent> {
+    capability_mut::<dyn HostIntents>(widget).and_then(HostIntents::take_host_intent)
+}

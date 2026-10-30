@@ -22,6 +22,10 @@ pub const OPEN_ACTION: &str = "$open";
 /// The action of `a.then(b)`: its arguments are `a` and `b`, run in turn.
 pub const THEN_ACTION: &str = "$then";
 
+/// The action of a change mark (`ui.ChangeMark`, and those the host places): show what the
+/// task run that made the change did. Its arguments are the run (its group) and the resource.
+pub const REVIEW_ACTION: &str = "$review";
+
 impl Core {
     fn with_view<R>(&self, f: impl FnOnce(&mut ViewState) -> Result<R, String>) -> HResult<R> {
         let mut frames = self.frames.borrow_mut();

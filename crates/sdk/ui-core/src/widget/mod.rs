@@ -3616,6 +3616,8 @@ pub mod chip;
 mod chip_component;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle, REFERENCE_LEAD};
 pub use chip_component::ChipProps;
+pub mod change_mark;
+pub use change_mark::ChangeMarkProps;
 pub mod conversation;
 pub use conversation::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,

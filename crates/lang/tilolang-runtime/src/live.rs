@@ -466,6 +466,11 @@ impl Live {
     /// built again by their boundary.
     fn reached(&self, core: &Core, change: &ChangeSummary) -> Reach {
         let mut reach = Reach::default();
+        // A window's change mark counts every version in its document: any change there is a
+        // new one.
+        reach
+            .hit
+            .extend(self.index.readers(&change.doc, crate::marks::DOC_VERSIONS));
         if change.fields.is_empty() {
             if let Some(set) = self.index.docs.get(&change.doc) {
                 reach.hit.extend(set.iter().copied());

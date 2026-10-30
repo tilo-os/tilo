@@ -137,6 +137,9 @@ pub struct AppWindow {
     composing: bool,
     /// How often the app asked for the window to come forward since the window last did.
     activations: u32,
+    /// The task runs a change mark asked to show ([`ToUi::ShowRun`]), until the window's
+    /// host takes them ([`Self::take_shown_runs`]).
+    shown_runs: Vec<String>,
     /// How many presses the window sent the app (`ToApp::Fire`), and how many of them the app
     /// said it ran (`ToUi::Took`).
     fired: u64,
@@ -244,6 +247,7 @@ impl AppWindow {
             focus: None,
             composing: false,
             activations: 0,
+            shown_runs: Vec::new(),
             fired: 0,
             took: 0,
             typed: std::collections::VecDeque::new(),
@@ -268,6 +272,12 @@ impl AppWindow {
     /// ([`ToUi::Activate`]).
     pub fn take_activation(&mut self) -> bool {
         std::mem::take(&mut self.activations) > 0
+    }
+
+    /// The first task run a change mark in the window asked to show and the window's host has
+    /// not taken yet ([`ToUi::ShowRun`]): the host shows it where the system keeps its log.
+    pub fn take_shown_run(&mut self) -> Option<String> {
+        (!self.shown_runs.is_empty()).then(|| self.shown_runs.remove(0))
     }
 
     // ----- what the app sends --------------------------------------------------------------
@@ -344,6 +354,7 @@ impl AppWindow {
             match message {
                 ToUi::Loading => self.show_loading(),
                 ToUi::Activate => self.activations = self.activations.saturating_add(1),
+                ToUi::ShowRun { run } => self.shown_runs.push(run),
                 ToUi::Open {
                     lane,
                     target,
