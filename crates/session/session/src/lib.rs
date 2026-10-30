@@ -380,6 +380,9 @@ struct Shared {
     /// The copies the person can paste again, and what the Clipboard section
     /// was last fed of them.
     clipboard: mount::clipboard::Clipboard,
+    /// Where a question goes: the display the focused window is on, which
+    /// the session settles before the shared state follows its sheets.
+    place: std::cell::Cell<Option<questions::PromptPlace>>,
 }
 
 /// The app a window shows, by its id.
@@ -847,7 +850,7 @@ impl Shared {
                 }
             }
         }
-        self.asker.follow();
+        self.asker.follow(self.place.get());
     }
 
     fn show_quick_settings(&self) {
@@ -1276,6 +1279,7 @@ impl Session {
             }),
             portal.clone(),
             file_picker.clone(),
+            Rc::clone(&services),
         );
         let shared = Shared {
             handle,
@@ -1319,6 +1323,7 @@ impl Session {
                 notice_signals,
             )),
             asker,
+            place: std::cell::Cell::new(None),
             notice_view: RefCell::new(None),
             sync,
             clipboard: mount::clipboard::Clipboard::new(),
@@ -1659,6 +1664,7 @@ impl Session {
         // What the apps copied since the last pass joins the history; a copy
         // chosen in it is pasted once the panel let the keyboard go.
         self.shared.clipboard.follow(&mut self.compositor);
+        self.shared.place.set(self.question_place());
         // Each round can ask for another (a key's shortcut the chrome
         // leaves to the session); a few rounds settle any chain.
         for _ in 0..4 {
@@ -1704,6 +1710,33 @@ impl Session {
         };
         self.shared.handle.read(|tree| sync.follow_desktop(tree));
         sync.follow();
+    }
+
+    /// Where a question goes: the display the focused window is on, so a
+    /// prompt appears in front of what it is about; `None` when no window
+    /// has focus, which puts it where sheets go by default.
+    fn question_place(&self) -> Option<questions::PromptPlace> {
+        let focused = self.compositor.focused_window()?;
+        let windows = self.compositor.windows();
+        let (.., (x, y, w, h)) = windows.iter().find(|(info, _)| info.id == focused.id)?;
+        let centre = (x.saturating_add(w / 2), y.saturating_add(h / 2));
+        let outputs = self.compositor.outputs();
+        let (ox, oy, ow, oh) = outputs
+            .iter()
+            .filter(|output| output.enabled)
+            .filter_map(|output| output.rect)
+            .find(|(ox, oy, ow, oh)| {
+                centre.0 >= *ox
+                    && centre.0 < ox.saturating_add(*ow)
+                    && centre.1 >= *oy
+                    && centre.1 < oy.saturating_add(*oh)
+            })?;
+        Some((
+            ox,
+            oy,
+            u32::try_from(ow.max(1)).unwrap_or(1),
+            u32::try_from(oh.max(1)).unwrap_or(1),
+        ))
     }
 
     /// Tell the portal what it asks of the session about its apps: which

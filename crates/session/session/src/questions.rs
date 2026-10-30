@@ -9,8 +9,15 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use serde_json::Value;
+use tilo_actions::ResourceSpec;
+use tilo_bluetooth_agent::{Method as PairingMethod, PairingDetails};
+use tilo_network_secret_agent::questions::{
+    CANNOT_JOIN_KIND, CannotJoinDetails, FieldRule, KIND as NETWORK_KIND, SecretsDetails,
+    SimUnlockStep, Text as Words,
+};
 use tilo_polkit_agent::questions::{AuthenticateDetails, Notice};
 use tilo_portal::account::AccountQuestion;
 use tilo_portal::app_chooser::AppChooserQuestion;
@@ -27,13 +34,17 @@ use tilo_portal::streams::SourceKind;
 use tilo_portal::trigger::Trigger;
 use tilo_portal::usb::UsbQuestion;
 use tilo_portal::wallpaper::WallpaperQuestion;
-use tilo_service::{Answer, Question, Questions};
+use tilo_service::{Answer, Question, Questions, Services};
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerSeat, FileRequest, FileType};
 use tilo_sheets::portal::{
     Body, Device, Dialog, DraftRow, DraftValue, Field, PortalEffect, PortalSeat, Prompt,
-    PromptField, Remember, Shortcut,
+    PromptField, PromptKind, Remember, Shortcut,
 };
 use tilo_sheets::{Seat as _, word, words};
+
+/// A display's rectangle, in logical pixels: where a sheet that follows the
+/// person goes.
+pub(crate) type PromptPlace = (i32, i32, u32, u32);
 
 /// The sheet that asked the person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,8 +87,22 @@ enum Plan {
     Launcher { name: bool, icons: usize },
     /// Red, green and blue, typed in.
     Color,
+    /// Confirming agrees, as choice 0.
+    Agree,
+    /// What was typed into the sheet is the answer, agreeing with it.
+    Entry,
     /// A password, for the identity the question asked it for.
     Password { identity: usize },
+    /// The secrets typed into the sheet, and whether to keep them.
+    Secrets { remember: Option<bool> },
+    /// The sheet asks nothing this can answer: a code on show.
+    Nothing,
+    /// Taking back the allowance the person just gave.
+    Revoke {
+        app_id: String,
+        app_label: String,
+        capability: String,
+    },
 }
 
 /// One row of a global-shortcut question.
@@ -91,9 +116,20 @@ struct Binding {
     changed: bool,
 }
 
+/// An allowance a question leaves behind, which the sheet shows at once so
+/// the person can take it back.
+#[derive(Clone)]
+struct Grant {
+    app_id: String,
+    app_label: String,
+    capability: String,
+}
+
 /// The question that is up, as the person left it.
 struct Shown {
-    handle: String,
+    /// The question it answers; `None` for what the sheet says after
+    /// answering one, which asks nothing.
+    handle: Option<String>,
     /// The details it was shown from: the service may change them.
     details: Value,
     sheet: Sheet,
@@ -101,6 +137,8 @@ struct Shown {
     plan: Plan,
     /// The person asked for their answer to be remembered.
     remember: bool,
+    /// The allowance the question leaves, when it may leave one.
+    grant: Option<Grant>,
 }
 
 /// The services' questions on the sheets.
@@ -108,38 +146,56 @@ pub(crate) struct Asker {
     questions: Option<Questions>,
     portal: Option<PortalSeat>,
     picker: Option<FilePickerSeat>,
+    /// What the session publishes, to take an allowance back through the
+    /// portal's own action.
+    services: Rc<RefCell<Services>>,
     shown: RefCell<Option<Shown>>,
 }
 
 impl Asker {
-    /// An asker showing its questions on `portal` and `picker`.
+    /// An asker showing its questions on `portal` and `picker`, taking
+    /// allowances back through `services`.
     pub(crate) const fn new(
         questions: Option<Questions>,
         portal: Option<PortalSeat>,
         picker: Option<FilePickerSeat>,
+        services: Rc<RefCell<Services>>,
     ) -> Self {
         Self {
             questions,
             portal,
             picker,
+            services,
             shown: RefCell::new(None),
         }
     }
 
     /// Take what the person decided since the last pass, and put up the
-    /// oldest question nothing shows yet.
-    pub(crate) fn follow(&self) {
+    /// oldest question nothing shows yet at `place`.
+    pub(crate) fn follow(&self, place: Option<PromptPlace>) {
         let Some(questions) = &self.questions else {
             return;
         };
         self.settle(questions);
-        self.retire(questions);
+        self.retire(questions, place);
+        // The sheet saying what was granted makes way for a question that
+        // arrived meanwhile.
+        if self.shown.borrow().is_some() && !questions.pending().is_empty() {
+            let standing = self
+                .shown
+                .borrow()
+                .as_ref()
+                .is_some_and(|shown| shown.handle.is_none());
+            if standing {
+                self.dismiss();
+            }
+        }
         if self.shown.borrow().is_some() {
             return;
         }
         let showing = questions.pending().into_iter().find_map(|question| {
             let kind = question.kind.clone();
-            self.show(question).then_some(kind)
+            self.show(question, place).then_some(kind)
         });
         if let Some(kind) = showing {
             tracing::debug!(kind, "a question is up on its sheet");
@@ -205,22 +261,136 @@ impl Asker {
         let Some(shown) = self.shown.borrow_mut().take() else {
             return;
         };
-        match decision {
-            Decision::Answer(answer) => {
-                questions.answer(&shown.handle, answer);
+        match (&shown.plan, decision) {
+            (Plan::Revoke { .. }, Decision::Answer(_)) => {
+                if let Plan::Revoke {
+                    app_id,
+                    app_label,
+                    capability,
+                } = &shown.plan
+                {
+                    self.revoke(app_id, app_label, capability);
+                }
+                self.take_down(shown.sheet);
             }
-            Decision::Decline => {
-                questions.decline(&shown.handle);
+            (_, _) if shown.handle.is_none() => self.take_down(shown.sheet),
+            (_, Decision::Answer(answer)) => {
+                let grant = shown
+                    .grant
+                    .clone()
+                    .filter(|_| keeps_answer(&shown, &answer));
+                if let Some(handle) = &shown.handle {
+                    questions.answer(handle, answer);
+                }
+                match grant {
+                    Some(grant) => self.show_grant(shown.sheet, grant),
+                    None => self.take_down(shown.sheet),
+                }
+            }
+            (_, Decision::Decline) => {
+                if let Some(handle) = &shown.handle {
+                    questions.decline(handle);
+                }
+                self.take_down(shown.sheet);
             }
         }
-        self.take_down(shown.sheet);
+    }
+
+    /// Put up `grant` as the sheet's own word on what the person just
+    /// allowed, with the press that takes it back.
+    fn show_grant(&self, sheet: Sheet, grant: Grant) {
+        let Sheet::Portal = sheet else {
+            self.take_down(sheet);
+            return;
+        };
+        let Some(portal) = &self.portal else {
+            return;
+        };
+        let dialog = Dialog {
+            handle: format!("portal-grant:{}:{}", grant.app_id, grant.capability),
+            title: word("portal-allowed-title"),
+            heading: grant.app_label.clone(),
+            detail: words(
+                "portal-allowed-detail",
+                &[
+                    ("app", &grant.app_label),
+                    ("what", &what(&grant.capability)),
+                ],
+            ),
+            confirm_label: word("portal-revoke"),
+            cancel_label: word("portal-keep"),
+            ..Dialog::default()
+        };
+        let plan = Plan::Revoke {
+            app_id: grant.app_id,
+            app_label: grant.app_label,
+            capability: grant.capability,
+        };
+        portal.show(Some(dialog.clone()));
+        self.shown.replace(Some(Shown {
+            handle: None,
+            details: Value::Null,
+            sheet: Sheet::Portal,
+            dialog,
+            plan,
+            remember: false,
+            grant: None,
+        }));
+    }
+
+    /// Take the allowance `app_label` gave `capability` back, through the
+    /// action the portal publishes for it.
+    fn revoke(&self, app_id: &str, app_label: &str, capability: &str) {
+        fn standing<'a>(
+            resources: &'a [ResourceSpec],
+            app_id: &str,
+            app_label: &str,
+            capability: &str,
+        ) -> Option<&'a ResourceSpec> {
+            resources.iter().find_map(|resource| {
+                let allowed = resource.kind == "portal.consent"
+                    && (resource.label == app_id || resource.label == app_label)
+                    && resource
+                        .presentation
+                        .as_ref()
+                        .and_then(|presentation| presentation.detail.as_deref())
+                        == Some(capability);
+                allowed
+                    .then_some(resource)
+                    .or_else(|| standing(&resource.children, app_id, app_label, capability))
+            })
+        }
+        let published = self.services.borrow().resources();
+        let Some((resource, action)) = standing(&published, app_id, app_label, capability)
+            .and_then(|resource| {
+                resource
+                    .actions
+                    .first()
+                    .map(|action| (resource.id.clone(), action.id.clone()))
+            })
+        else {
+            tracing::warn!(app_id, capability, "no allowance to take back");
+            return;
+        };
+        match self
+            .services
+            .borrow_mut()
+            .invoke(resource.as_str(), &action, &serde_json::Map::new())
+        {
+            Some(Ok(_)) => tracing::debug!(app_id, capability, "allowance taken back"),
+            Some(Err(error)) => tracing::warn!(%error, "the allowance was not taken back"),
+            None => tracing::warn!(app_id, "the portal did not answer"),
+        }
     }
 
     /// Take the sheet down when its question is gone from under it, or
     /// show it again when its service changed what it asks.
-    fn retire(&self, questions: &Questions) {
+    fn retire(&self, questions: &Questions, place: Option<PromptPlace>) {
         let current = self.shown.borrow().as_ref().map(Shown::state);
         let Some((handle, sheet, details)) = current else {
+            return;
+        };
+        let Some(handle) = handle else {
             return;
         };
         let Some(question) = questions.question(&handle) else {
@@ -230,11 +400,19 @@ impl Asker {
         };
         if question.details != details {
             self.shown.borrow_mut().take();
-            self.show(question);
+            self.show(question, place);
         }
     }
 
-    /// The sheet is done with its question.
+    /// The sheet goes away alone.
+    fn dismiss(&self) {
+        let Some(shown) = self.shown.borrow_mut().take() else {
+            return;
+        };
+        self.take_down(shown.sheet);
+    }
+
+    /// The sheet is done with what it showed.
     fn take_down(&self, sheet: Sheet) {
         match sheet {
             Sheet::Portal => {
@@ -242,6 +420,7 @@ impl Asker {
                     portal.show(None);
                     portal.presentation().close();
                     portal.presentation().gone();
+                    portal.presentation().place_at(None);
                 }
             }
             Sheet::Files => {
@@ -249,13 +428,15 @@ impl Asker {
                     picker.ask(None);
                     picker.presentation().close();
                     picker.presentation().gone();
+                    picker.presentation().place_at(None);
                 }
             }
         }
     }
 
-    /// Show `question`, unless nothing shows its kind: whether it is up.
-    fn show(&self, question: Question) -> bool {
+    /// Show `question` at `place`, unless nothing shows its kind: whether
+    /// it is up.
+    fn show(&self, question: Question, place: Option<PromptPlace>) -> bool {
         if question.kind == tilo_portal::file_chooser::FILE_CHOOSER_QUESTION {
             let Ok(asked) = serde_json::from_value::<FileChooserQuestion>(question.details.clone())
             else {
@@ -267,17 +448,19 @@ impl Asker {
             let request = request(&question, &asked);
             self.shown.replace(Some(Shown {
                 details: question.details,
-                handle: question.handle,
+                handle: Some(question.handle),
                 sheet: Sheet::Files,
                 dialog: Dialog::default(),
                 plan: Plan::Confirm,
                 remember: false,
+                grant: None,
             }));
             picker.ask(Some(request));
+            picker.presentation().place_at(place);
             picker.presentation().open(false);
             return true;
         }
-        let Some((dialog, plan)) = compose(&question) else {
+        let Some(composed) = compose(&question) else {
             tracing::debug!(kind = question.kind, "no sheet shows this question");
             return false;
         };
@@ -286,13 +469,15 @@ impl Asker {
         };
         self.shown.replace(Some(Shown {
             details: question.details,
-            handle: question.handle,
+            handle: Some(question.handle),
             sheet: Sheet::Portal,
-            dialog: dialog.clone(),
-            plan,
+            dialog: composed.dialog.clone(),
+            plan: composed.plan,
             remember: false,
+            grant: composed.grant,
         }));
-        portal.show(Some(dialog));
+        portal.show(Some(composed.dialog));
+        portal.presentation().place_at(place);
         portal.presentation().open(false);
         true
     }
@@ -300,7 +485,7 @@ impl Asker {
 
 impl Shown {
     /// What it holds, for the question that is now pending.
-    fn state(&self) -> (String, Sheet, Value) {
+    fn state(&self) -> (Option<String>, Sheet, Value) {
         (self.handle.clone(), self.sheet, self.details.clone())
     }
 
@@ -343,6 +528,18 @@ impl Shown {
                     };
                     Step::Decide(Decision::Answer(Answer {
                         choice: Some(answer.choice.unwrap_or(identity)),
+                        values: answer.values,
+                        ..Answer::default()
+                    }))
+                }
+                Plan::Secrets { remember } => {
+                    let Some(answer) = seat.take_answer() else {
+                        return Step::Nothing;
+                    };
+                    let remembered =
+                        remember.is_some_and(|default| seat.option().unwrap_or(default));
+                    Step::Decide(Decision::Answer(Answer {
+                        remember: remembered,
                         values: answer.values,
                         ..Answer::default()
                     }))
@@ -424,7 +621,23 @@ impl Shown {
                 choice: choices.get(dialog.selected).copied(),
                 ..Answer::default()
             }),
-            Plan::Confirm | Plan::Password { .. } => Ok(Answer::default()),
+            Plan::Confirm | Plan::Password { .. } | Plan::Secrets { .. } => Ok(Answer::default()),
+            Plan::Agree => Ok(Answer {
+                choice: Some(0),
+                ..Answer::default()
+            }),
+            Plan::Entry => {
+                let typed = seat.text(Field::Answer);
+                let entry = typed.trim();
+                if entry.is_empty() {
+                    return Err(word("portal-secret-incomplete"));
+                }
+                Ok(Answer {
+                    choice: Some(0),
+                    values: vec![zeroize::Zeroizing::new(entry.to_owned())],
+                    ..Answer::default()
+                })
+            }
             Plan::Rows { names, remember } => {
                 let Body::Devices(devices) = &dialog.body else {
                     return Err(word("portal-no-such-field"));
@@ -456,6 +669,7 @@ impl Shown {
                     ..Answer::default()
                 })
             }
+            Plan::Revoke { .. } | Plan::Nothing => Ok(Answer::default()),
             Plan::Color => {
                 let values: Vec<_> = (0..3).map(|at| seat.text(Field::Draft(at))).collect();
                 if !values.iter().all(|value| channel(value)) {
@@ -510,11 +724,20 @@ fn bindings_answer(bindings: &[Binding]) -> Answer {
     }
 }
 
+/// A question's sheet: what it shows, what its answer means, and the
+/// allowance it leaves when it may leave one.
+struct Composed {
+    dialog: Dialog,
+    plan: Plan,
+    grant: Option<Grant>,
+}
+
 /// The sheet's dialog for `question`, and what its answer means.
-fn compose(question: &Question) -> Option<(Dialog, Plan)> {
+fn compose(question: &Question) -> Option<Composed> {
     let who = who(question);
     let details = question.details.clone();
-    let dialog = match question.kind.as_str() {
+    let grant = grant_of(question);
+    let (dialog, plan) = match question.kind.as_str() {
         tilo_portal::consent::ACCESS_QUESTION => access(&question.handle, &who, details)?,
         tilo_portal::account::ACCOUNT_QUESTION => account(&question.handle, &who, details)?,
         tilo_portal::email::EMAIL_QUESTION => email(&question.handle, &who, details)?,
@@ -540,9 +763,41 @@ fn compose(question: &Question) -> Option<(Dialog, Plan)> {
             share(&question.handle, &who, details, true)?
         }
         tilo_polkit_agent::questions::KIND => authentication(&question.handle, details)?,
+        NETWORK_KIND => network_secrets(&question.handle, details)?,
+        CANNOT_JOIN_KIND => cannot_join(&question.handle, details)?,
+        tilo_bluetooth_agent::KIND => pairing(&question.handle, details)?,
         _ => return None,
     };
-    Some(dialog)
+    Some(Composed {
+        dialog,
+        plan,
+        grant,
+    })
+}
+
+/// The allowance `question` leaves when the person may remember their
+/// answer: what the sheet shows at once so it can be taken back.
+fn grant_of(question: &Question) -> Option<Grant> {
+    if question.kind != tilo_portal::consent::ACCESS_QUESTION {
+        return None;
+    }
+    let asked: AccessQuestion = serde_json::from_value(question.details.clone()).ok()?;
+    asked.may_remember.then(|| Grant {
+        app_id: question.app_id.clone().unwrap_or_default(),
+        app_label: who(question),
+        capability: asked.capability.clone(),
+    })
+}
+
+/// Whether `answer` leaves an allowance that `shown` may leave.
+fn keeps_answer(shown: &Shown, answer: &Answer) -> bool {
+    shown.grant.is_some()
+        && (answer.remember
+            || shown.remember
+            || matches!(
+                &shown.plan,
+                Plan::Choose(choices) if choices.get(shown.dialog.selected) == Some(&ALLOW_ALWAYS)
+            ))
 }
 
 /// Who asks, as the person reads it: the app's own name where it has one.
@@ -577,13 +832,7 @@ fn review(handle: &str, title: String, who: String, detail: String) -> Dialog {
 /// The access question: what `capability` asks for, in the person's words.
 fn access(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: AccessQuestion = serde_json::from_value(details).ok()?;
-    let what = match access_key(&asked.capability) {
-        "generic" => words(
-            "portal-access-generic",
-            &[("capability", &asked.capability)],
-        ),
-        key => word(&format!("portal-access-{key}")),
-    };
+    let what = what(&asked.capability);
     let (title, heading, detail) = if let Some(text) = &asked.text {
         (text.title.clone(), text.subtitle.clone(), text.body.clone())
     } else {
@@ -606,6 +855,14 @@ fn access(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let mut dialog = review(handle, title, heading, detail);
     dialog.body = Body::Choices(labels);
     Some((dialog, Plan::Choose(allowances)))
+}
+
+/// What `capability` is, in the person's words.
+fn what(capability: &str) -> String {
+    match access_key(capability) {
+        "generic" => words("portal-access-generic", &[("capability", capability)]),
+        key => word(&format!("portal-access-{key}")),
+    }
 }
 
 /// The capability the sheet has words for.
@@ -1017,6 +1274,253 @@ fn authentication(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
             identity: asked.identity,
         },
     ))
+}
+
+/// What a service says, in the person's words.
+fn say(text: &Words) -> String {
+    match text {
+        Words::Message { key, args } => {
+            let resolved: Vec<(String, String)> = args
+                .iter()
+                .map(|(name, value)| (name.clone(), say(value)))
+                .collect();
+            let borrowed: Vec<(&str, &str)> = resolved
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str()))
+                .collect();
+            words(key, &borrowed)
+        }
+        Words::Verbatim(text) => text.clone(),
+    }
+}
+
+/// The network secrets sheet: the fields the network asks for, typed into
+/// the sheet and answered through the question, never through an effect.
+fn network_secrets(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: SecretsDetails = serde_json::from_value(details).ok()?;
+    let retry = word("portal-network-retry");
+    let mut retried = false;
+    let resource = asked
+        .detail
+        .iter()
+        .map(say)
+        .filter(|line| {
+            let is_retry = *line == retry;
+            retried |= is_retry;
+            !is_retry
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let wifi = asked.fields.iter().any(|field| {
+        field.rule == FieldRule::WpaPassphrase
+            || field.key == "psk"
+            || field.key.starts_with("wep-key")
+    });
+    let (kind, fields, primary, error) = match &asked.sim {
+        Some(sim) => {
+            let (kind, fields) = match sim.step {
+                SimUnlockStep::Pin => (
+                    PromptKind::SimPin {
+                        attempts_left: sim.attempts_left,
+                    },
+                    vec![PromptField {
+                        label: asked
+                            .fields
+                            .first()
+                            .map(|field| say(&field.label))
+                            .unwrap_or_default(),
+                        masked: true,
+                        required: true,
+                        initial: String::new(),
+                    }],
+                ),
+                SimUnlockStep::Puk => (
+                    PromptKind::SimPuk {
+                        attempts_left: sim.attempts_left,
+                    },
+                    vec![PromptField::default(); 2],
+                ),
+            };
+            let error = asked
+                .refusal
+                .as_ref()
+                .map(|refusal| (refusal.field, word(&refusal.key)))
+                .or_else(|| {
+                    (retried && sim.step == SimUnlockStep::Pin)
+                        .then(|| (0, word("portal-sim-pin-wrong")))
+                });
+            (kind, fields, word("portal-sim-unlock"), error)
+        }
+        None => {
+            let fields = asked
+                .fields
+                .iter()
+                .map(|field| PromptField {
+                    label: say(&field.label),
+                    masked: field.masked,
+                    required: field.required,
+                    initial: field.initial.clone(),
+                })
+                .collect();
+            let error = asked
+                .refusal
+                .as_ref()
+                .map(|refusal| (refusal.field, word(&refusal.key)))
+                .or_else(|| {
+                    retried.then(|| {
+                        let at = asked
+                            .fields
+                            .iter()
+                            .position(|field| field.masked)
+                            .unwrap_or(0);
+                        (at, retry.clone())
+                    })
+                });
+            (PromptKind::Fields, fields, word("portal-connect"), error)
+        }
+    };
+    let prompt = Prompt {
+        kind,
+        icon: Some(if asked.sim.is_some() || !wifi {
+            ui::icons::Icon::Lock
+        } else {
+            ui::icons::Icon::Wifi
+        }),
+        resource,
+        fields,
+        choices: None,
+        option: if asked.sim.is_some() {
+            None
+        } else {
+            asked
+                .remember
+                .map(|remember| (word("portal-remember-device"), remember))
+        },
+        primary_label: primary,
+        error,
+        busy: None,
+    };
+    let dialog = Dialog {
+        handle: handle.to_owned(),
+        title: say(&asked.title),
+        body: Body::Secret(prompt),
+        confirm_label: word("portal-connect"),
+        cancel_label: word("portal-cancel"),
+        ..Dialog::default()
+    };
+    let plan = Plan::Secrets {
+        remember: asked.remember,
+    };
+    Some((dialog, plan))
+}
+
+/// A network the person may join, which asks for its password next.
+fn cannot_join(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: CannotJoinDetails = serde_json::from_value(details).ok()?;
+    let join = say(&asked.join);
+    let dialog = Dialog {
+        handle: handle.to_owned(),
+        title: say(&asked.title),
+        heading: asked.network.clone(),
+        detail: say(&asked.body),
+        body: Body::Choices(vec![join.clone()]),
+        confirm_label: join,
+        cancel_label: word("portal-cancel"),
+        ..Dialog::default()
+    };
+    Some((dialog, Plan::Choose(vec![0])))
+}
+
+/// A device pairing, as the device's method asks it.
+fn pairing(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: PairingDetails = serde_json::from_value(details).ok()?;
+    let device = asked.device.clone();
+    let service = asked
+        .service_key
+        .as_deref()
+        .map(|key| word(key))
+        .or_else(|| asked.service.clone());
+    let explain = |key: &str| words(key, &[("device", &device)]);
+    let mut dialog = Dialog {
+        handle: handle.to_owned(),
+        heading: String::new(),
+        cancel_label: word("bluetooth-prompt-reject"),
+        ..Dialog::default()
+    };
+    let plan = match asked.method {
+        PairingMethod::ConfirmPasskey => {
+            dialog.title = words(
+                "bluetooth-prompt-title-confirm-passkey",
+                &[("device", &device)],
+            );
+            dialog.detail = explain("bluetooth-prompt-explain-confirm-passkey");
+            dialog.code = asked.code.clone();
+            dialog.confirm_label = word("bluetooth-prompt-accept-match");
+            Plan::Agree
+        }
+        PairingMethod::ConfirmPairing => {
+            dialog.title = words(
+                "bluetooth-prompt-title-confirm-pairing",
+                &[("device", &device)],
+            );
+            dialog.detail = explain("bluetooth-prompt-explain-confirm-pairing");
+            dialog.confirm_label = word("bluetooth-prompt-accept-pair");
+            Plan::Agree
+        }
+        PairingMethod::AuthorizeService => {
+            dialog.title = words(
+                "bluetooth-prompt-title-authorize-service",
+                &[("device", &device)],
+            );
+            let mut detail = explain("bluetooth-prompt-explain-authorize-service");
+            if let Some(service) = &service {
+                detail.push('\n');
+                detail.push_str(&words("bluetooth-prompt-service", &[("service", service)]));
+            }
+            dialog.detail = detail;
+            dialog.confirm_label = word("bluetooth-prompt-accept-allow");
+            Plan::Agree
+        }
+        PairingMethod::EnterPasskey | PairingMethod::EnterPin => {
+            let (title, masked) = if asked.method == PairingMethod::EnterPasskey {
+                ("bluetooth-prompt-title-request-passkey", false)
+            } else {
+                ("bluetooth-prompt-title-request-pin", true)
+            };
+            dialog.title = words(title, &[("device", &device)]);
+            dialog.detail = explain("bluetooth-prompt-explain-request");
+            dialog.body = Body::Entry {
+                masked,
+                required: true,
+                choices: Vec::new(),
+            };
+            dialog.confirm_label = word("bluetooth-prompt-accept-pair");
+            Plan::Entry
+        }
+        PairingMethod::DisplayPasskey | PairingMethod::DisplayPin => {
+            dialog.title = words("bluetooth-prompt-title-display", &[("device", &device)]);
+            let mut detail = explain("bluetooth-prompt-explain-display");
+            if let Some(entered) = asked.entered {
+                detail.push('\n');
+                detail.push_str(&words(
+                    "bluetooth-prompt-digits-entered",
+                    &[("entered", &entered.to_string())],
+                ));
+            }
+            dialog.detail = detail;
+            dialog.code = asked.code.clone();
+            // A code on show has nothing to agree to: the sheet says it
+            // and offers only the press that stops the pairing.
+            dialog.body = Body::Answers {
+                choices: Vec::new(),
+                suggested: 0,
+                remember: None,
+            };
+            dialog.cancel_label = word("bluetooth-prompt-cancel");
+            Plan::Nothing
+        }
+    };
+    Some((dialog, plan))
 }
 
 /// The chooser's request for the portal's question `question`.

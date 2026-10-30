@@ -1,6 +1,6 @@
 //! The sheets the session shows over the desktop (the power menu, the
 //! questions it asks for an app or a service, workspace settings), each an
-//! app of [`tilo_sheets`] on a layer of its own over the first output, up
+//! app of [`tilo_sheets`] on a layer of its own covering a display, up
 //! while its seat's presentation says so. The seat is how the session and
 //! the services behind it talk to the sheet: what it shows in, what the
 //! person chose out. Its actions are published through its door while it
@@ -20,6 +20,8 @@ pub(crate) struct Sheet<S: Seat> {
     seat: S,
     /// The lock screen: drawn while the session is locked, and only then.
     lock_screen: bool,
+    /// The displays as the compositor last said they are.
+    outputs: Vec<(i32, i32, i32, i32)>,
 }
 
 impl<S: Seat> Sheet<S> {
@@ -46,6 +48,7 @@ impl<S: Seat> Sheet<S> {
             host: AppHost::new(app, placement),
             seat,
             lock_screen: false,
+            outputs: Vec::new(),
         })
     }
 
@@ -66,6 +69,27 @@ impl<S: Seat> Sheet<S> {
 
     fn drawn(&self) -> bool {
         self.seat.presentation().is_drawn()
+    }
+
+    /// The sheet covers the display the shell placed it on, or the first
+    /// one while it named none.
+    fn follow_place(&mut self) {
+        let named = self.seat.presentation().place().and_then(|(x, y, w, h)| {
+            let (w, h) = (i32::try_from(w).ok()?, i32::try_from(h).ok()?);
+            self.outputs.contains(&(x, y, w, h)).then_some((x, y, w, h))
+        });
+        let Some((x, y, w, h)) = named.or_else(|| self.outputs.first().copied()) else {
+            return;
+        };
+        let scale = self.host.placement().scale;
+        self.host.set_placement(Placement {
+            origin: (x, y),
+            size: (
+                u32::try_from(w.max(1)).unwrap_or(1),
+                u32::try_from(h.max(1)).unwrap_or(1),
+            ),
+            scale,
+        });
     }
 }
 
@@ -152,6 +176,7 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
     }
 
     fn prepare_frame(&mut self) -> bool {
+        self.follow_place();
         self.drawn() && self.host.prepare_frame()
     }
 
@@ -168,17 +193,7 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
-        let Some(&(x, y, w, h)) = outputs.first() else {
-            return;
-        };
-        let scale = self.host.placement().scale;
-        self.host.set_placement(Placement {
-            origin: (x, y),
-            size: (
-                u32::try_from(w.max(1)).unwrap_or(1),
-                u32::try_from(h.max(1)).unwrap_or(1),
-            ),
-            scale,
-        });
+        self.outputs = outputs.to_vec();
+        self.follow_place();
     }
 }

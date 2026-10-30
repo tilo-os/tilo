@@ -22,6 +22,7 @@ use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig};
 use tilo_desktop::desktop_actions::{DESK_RESOURCE, DISPLAY_KIND, WINDOW_KIND};
 use tilo_session::{Options, Session};
+use tilo_sheets::Seat as _;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_registry, wl_registry::WlRegistry, wl_shm,
     wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
@@ -138,6 +139,7 @@ impl TestClient {
 }
 
 /// Let the session and `client` talk until `done` holds.
+#[track_caller]
 fn pump(
     session: &mut Session,
     client: &mut TestClient,
@@ -488,6 +490,78 @@ fn a_fixed_size_window_floats_on_the_display_with_focus() {
         "centred on the focused display"
     );
     assert!(window_tabs(&session).is_empty(), "no tab for a dialog");
+}
+
+#[test]
+fn a_question_opens_on_the_display_of_the_window_in_focus() {
+    let _settled = ui::motion::testing::settled();
+    let questions = tilo_service::Questions::new();
+    let outputs = [
+        OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT),
+        OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT).at(WIDTH, 0),
+    ];
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            questions: Some(questions.clone()),
+            ..Options::default()
+        },
+        &outputs,
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut client = client(&mut session);
+    tab(&mut session, &mut client, "org.example.Left");
+    focus_display(&mut session, &mut client, 1);
+    tab(&mut session, &mut client, "org.example.Right");
+    pump(&mut session, &mut client, |session, _| {
+        focused(session).as_deref() == Some("org.example.Right")
+    });
+
+    // Held for the whole test: dropping it withdraws the question.
+    let _asked = questions.ask(tilo_service::Question {
+        handle: "display-test:/access".to_owned(),
+        kind: "portal.access".to_owned(),
+        app_id: Some("org.example.Counter".to_owned()),
+        label: "org.example.Counter".to_owned(),
+        details: serde_json::json!({
+            "capability": "screencast",
+            "reason": null,
+            "may_remember": false,
+            "text": null,
+        }),
+    });
+    let right = (
+        WIDTH,
+        0,
+        u32::try_from(WIDTH).unwrap(),
+        u32::try_from(HEIGHT).unwrap(),
+    );
+    pump(&mut session, &mut client, |session, _| {
+        session
+            .portal()
+            .expect("portal sheet")
+            .presentation()
+            .place()
+            .is_some()
+    });
+    assert_eq!(
+        session
+            .portal()
+            .expect("portal sheet")
+            .presentation()
+            .place(),
+        Some(right),
+        "the sheet covers the display of the window in focus"
+    );
+    assert!(
+        session
+            .portal()
+            .expect("portal sheet")
+            .presentation()
+            .is_open(),
+        "and is up for the person"
+    );
 }
 
 impl Dispatch<WlRegistry, ()> for Seen {

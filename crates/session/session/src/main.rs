@@ -120,6 +120,7 @@ fn main() -> std::process::ExitCode {
         wake,
         setup: setup(host_desktop),
         captures: Some(captures),
+        questions: desktop.as_ref().map(|desktop| desktop.questions().clone()),
         apps: Some(std::rc::Rc::clone(&launch) as std::rc::Rc<dyn tilo_session::AppActions>),
         launch: Some(std::rc::Rc::clone(&launch)),
         desktop,
@@ -137,7 +138,7 @@ fn main() -> std::process::ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let session = match started {
+    let mut session = match started {
         Ok(session) => session,
         Err(error) => {
             eprintln!("tilo-session: {error}");

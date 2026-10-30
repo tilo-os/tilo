@@ -372,6 +372,26 @@ impl State {
         });
     }
 
+    /// Ask the window `id` to close, as its own close button would: the
+    /// client decides what closing means, and does it.
+    pub(crate) fn close_window(&mut self, id: u64) {
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|window| describe(&self.display, window).is_some_and(|info| info.id == id))
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.send_close();
+        } else if let Some(x11) = window.x11_surface()
+            && let Err(error) = x11.close()
+        {
+            tracing::warn!(?error, "X11 window: close not sent");
+        }
+    }
+
     /// The windows that closed and are still drawn, front first, with the
     /// place each one stands at.
     pub(crate) fn closing_windows(&self) -> Vec<(WindowInfo, Rectangle<i32, Logical>)> {

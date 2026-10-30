@@ -1042,7 +1042,9 @@ impl Compositor {
             .state
             .space
             .elements()
-            .find(|window| state::describe(window).is_some_and(|info| info.id == id))?;
+            .find(|window| {
+                state::describe(&self.data.state.display, window).is_some_and(|info| info.id == id)
+            })?;
         x11.identity(window.x11_surface()?.window_id())
     }
 
