@@ -60,16 +60,16 @@ done
 # shellcheck disable=SC1091
 source "$REPO_ROOT/os/dev/_common.sh"
 
-SNAP="$OUT_DIR/snapshot.qcow2"
 CONSOLE="$OUT_DIR/boot.console.log"
 # The VM's runtime directory holds its monitor socket, and AF_UNIX socket
 # paths are capped at 108 bytes; a deep $OUT_DIR overflows that. Keep it
 # under a short fixed prefix regardless of $OUT_DIR.
 SHORT_RUN="${SHORT_RUN:-/tmp/tilo-vb-$$}"
-MON="$SHORT_RUN/mon.sock"
-PID="$SHORT_RUN/qemu.pid"
 LOG="$OUT_DIR/verify.log"
 JSON="$OUT_DIR/result.json"
+# What `tilo-vm qemu run` measured: its state, the line it matched, and the
+# boot time (the kernel's own clock at that line, else wall clock).
+BOOT_JSON="$OUT_DIR/boot.json"
 
 mkdir -p "$OUT_DIR" "$SHORT_RUN"
 : > "$LOG"
@@ -82,14 +82,8 @@ BOOT_SIGNAL=""
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOG"; }
 
 cleanup() {
-  qemu_pid="$(cat "$PID" 2>/dev/null || true)"
-  if [[ "$qemu_pid" =~ ^[0-9]+$ ]]; then
-    inenv "kill '$qemu_pid' 2>/dev/null || true"
-    sleep 1
-    inenv "kill -9 '$qemu_pid' 2>/dev/null || true"
-    rm -f "$PID"
-  fi
-  rm -f "$SNAP" "$OUT_DIR/full.img" "$OUT_DIR/esp.img"
+  tilo_vm qemu stop --run "$SHORT_RUN" >/dev/null 2>&1 || true
+  rm -f "$OUT_DIR/full.img" "$OUT_DIR/esp.img"
   rm -rf "$SHORT_RUN"
 }
 trap cleanup EXIT
@@ -192,66 +186,44 @@ rm -f "$ESP_RAW"
 if [ "$SB_PRESENT" != "true" ] || [ "$LOADER_CONF_PRESENT" != "true" ] || [ "$GRUB_PRESENT" = "true" ]; then
   emit_json "inspect" false "ESP layout does not match systemd-boot"; exit 6
 fi
+# --- Phase 2: boot the disk and measure ------------------------------------
+# The input qcow2 is never modified: `qemu run --overlay` boots a throwaway
+# child of it, and the run powers the guest off when it is done.
+log "phase 2: boot $DISK under OVMF, wait for multi-user.target or a login prompt"
+rm -f "$CONSOLE" "$BOOT_JSON"
 
-# --- Phase 2: boot the snapshot and measure --------------------------------
-log "phase 2: boot snapshot=$SNAP under OVMF, wait for multi-user.target"
-BOOT_START="$(date +%s)"
-rm -f "$MON" "$CONSOLE"
+# Release images do not necessarily mirror systemd target milestones to the
+# serial journal, so a getty's login prompt is an equally strong downstream
+# signal: systemd cannot start it before the boot reached its configured
+# multi-user target. The kernel's timestamp on whichever line matched is the
+# boot time, in the same terms `qemu run --kernel-time` reports.
+TARGET='Reached target [^-]*(multi-user\.target|graphical\.target)'
+GETTY='(^|[[:space:]])[^[:space:]]+[[:space:]]+login:[[:space:]]*$'
+boot_ok=true
+tilo_vm qemu run --run "$SHORT_RUN" --name tilo-systemd-boot-verify \
+  --disk "$DISK" --overlay --accel kvm --memory 4096 --smp 2 \
+  --display 2d --input none --serial-log "$CONSOLE" --timeout "$BOOT_TIMEOUT" \
+  --ready "$TARGET" --ready "$GETTY" \
+  --fail 'Kernel panic|Failed to load kernel|Boot failed' \
+  --report "$BOOT_JSON" >>"$LOG" 2>&1 || boot_ok=false
 
-# A backing-file snapshot (created by tilo-vm) keeps the input qcow2
-# byte-for-byte identical; the firmware's pristine variable store is seeded
-# in the run directory.
-rm -f "$SNAP"
-tilo_vm qemu boot --run "$SHORT_RUN" --name tilo-systemd-boot-verify \
-  --disk "$SNAP,backing=$DISK" --accel kvm --memory 4096 --smp 2 \
-  --display 2d --input none --serial-log "$CONSOLE" >>"$LOG" 2>&1 \
-  || { emit_json "boot" false "qemu did not start"; exit 8; }
-
-DEADLINE=$(( BOOT_START + BOOT_TIMEOUT ))
-BOOT_STATE="unknown"
-BOOT_SIGNAL=""
-while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  # Accept a bare or ANSI-coloured systemd target milestone.
-  if [ -f "$CONSOLE" ] && sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" 2>/dev/null | \
-      grep -qE "Reached target [^-]*(multi-user\.target|graphical\.target)"; then
-    BOOT_STATE="reached"; BOOT_SIGNAL="systemd-target"; break
-  fi
-  # Release images do not necessarily mirror systemd target milestones to the
-  # serial journal. A real getty login prompt is an equally strong downstream
-  # signal: systemd cannot start it before the boot reaches its configured
-  # multi-user target.
-  if [ -f "$CONSOLE" ] && tr -d '\000\r' < "$CONSOLE" 2>/dev/null \
-      | grep -qE '(^|[[:space:]])[^[:space:]]+[[:space:]]+login:[[:space:]]*$'; then
-    BOOT_STATE="reached"; BOOT_SIGNAL="serial-getty"; break
-  fi
-  if grep -qE "Kernel panic|Failed to load kernel|Boot failed" "$CONSOLE" 2>/dev/null; then
-    BOOT_STATE="panic"; break
-  fi
-  if ! inenv "kill -0 \$(cat '$PID') 2>/dev/null"; then
-    BOOT_STATE="qemu-exited"; break
-  fi
-  sleep 2
-done
-
-# The kernel-log timestamp on the `Reached target multi-user.target` line
-# is the wall-clock since boot in seconds, the same measurement
-# `tilo-vm qemu run --kernel-time` reports, so the numbers are
-# apples-to-apples with the prior GRUB baseline.
-if [ "$BOOT_SIGNAL" = "systemd-target" ]; then
-  BOOT_MS="$(sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" 2>/dev/null | \
-    awk '
-      match($0, /\[[[:space:]]*([0-9]+\.[0-9]+)\]/, m) { last_ts=m[1] }
-      /Reached target [^-]*(multi-user\.target|graphical\.target)/ {
-        printf "%d", last_ts * 1000
-        exit
-      }
-    ' || true)"
-  [ -n "$BOOT_MS" ] || BOOT_MS=$(( ($(date +%s) - BOOT_START) * 1000 ))
+BOOT_STATE=unknown
+BOOT_SIGNAL=none
+if [ -s "$BOOT_JSON" ]; then
+  read -r BOOT_STATE BOOT_MS BOOT_SIGNAL <<<"$(python3 - "$BOOT_JSON" <<'PY'
+import json, sys
+report = json.load(open(sys.argv[1]))
+pattern = report.get("pattern") or ""
+signal = "systemd-target" if "target" in pattern else "serial-getty" if pattern else "none"
+timing = report.get("kernel_ms") or report.get("elapsed_ms") or 0
+print(report.get("state", "unknown"), int(timing), signal)
+PY
+)"
+  [ "$BOOT_STATE" = ready ] && BOOT_STATE=reached
 else
-  # Getty has no kernel timestamp on its prompt, so report honest wall-clock
-  # elapsed time rather than manufacturing a zero-duration boot.
-  BOOT_MS=$(( ($(date +%s) - BOOT_START) * 1000 ))
+  emit_json "boot" false "qemu did not start"; exit 8
 fi
+[ "$boot_ok" = true ] || log "phase 2: the boot did not pass; see $LOG"
 
 # Look for the systemd-boot marker in the serial log ("Loading Boot Loader
 # Menu" won't appear on a single-entry silent boot, but the systemd-boot
@@ -265,19 +237,7 @@ fi
 
 log "phase 2: state=$BOOT_STATE signal=$BOOT_SIGNAL boot_ms=$BOOT_MS"
 
-# ACPI-shutdown so the run leaves no orphan process behind.
-qemu_pid="$(cat "$PID" 2>/dev/null || true)"
-if [[ "$qemu_pid" =~ ^[0-9]+$ ]] && inenv "kill -0 '$qemu_pid' 2>/dev/null"; then
-  inenv "printf 'system_powerdown\n' | socat - 'unix:$MON'" >/dev/null 2>&1 || true
-  for _ in $(seq 1 30); do
-    inenv "kill -0 '$qemu_pid' 2>/dev/null" || break
-    sleep 1
-  done
-  inenv "kill -9 '$qemu_pid' 2>/dev/null || true"
-fi
-rm -f "$PID"
-
-if [ "$BOOT_STATE" = "reached" ]; then
+if [ "$BOOT_STATE" = reached ]; then
   emit_json "verified" true "systemd-boot on ESP + boot reached $BOOT_SIGNAL in ${BOOT_MS}ms"
   exit 0
 fi
