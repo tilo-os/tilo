@@ -152,7 +152,7 @@ class NextestPolicyTests(unittest.TestCase):
         consumers = [
             REPO / ".forgejo" / "workflows" / "check.yml",
             REPO / ".forgejo" / "workflows" / "ci-nightly.yml",
-            REPO / "tools" / "ci" / "local-affected.sh",
+            REPO / "tools" / "ci" / "local_affected.py",
         ]
         referenced: set[str] = set()
         for path in consumers:

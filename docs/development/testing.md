@@ -1,69 +1,62 @@
 # Test a change
 
-Start with the behavior you changed, not the whole workspace. If your package
-builds on your host, you can use ordinary Cargo without a build-service account.
-For example, a change to the clock library can be checked with:
+Start with the behavior you changed, not the whole workspace.
+
+## Test what you changed
+
+From your worktree, with your edits committed or not:
 
 ```sh
-cargo test --locked -p tilo-clock
+tools/ci/test-changed.sh
 ```
 
-Choose your own package and test filter. For Linux services, boot tests or a
-prepared remote environment, [t](../t.md) can check working-tree edits without
-building locally. Hosted access currently requires a maintainer-issued token.
+It plans what your change affects against the merge-base with `integration`
+(`origin/main` where there is no `integration` branch; `--base REF` for
+another), with uncommitted and untracked files included, and runs Clippy over
+those packages and the tests of the packages whose behavior can change, with
+the filters, features and test environment CI uses. Clippy and the tests run at
+the same time on the builders the `cargo` shim forwards to (rcargo; tests and
+lints go to the x86 builder): each job runs inside the builder's container, so
+the binaries the tests need are built there and nothing is fetched to your
+machine. Tests that failed in your last run against the same base run first,
+alone, so a fix is confirmed within the time of its own tests. A big test set
+is shared between the x86 and arm builders.
 
-## With hosted t: choose the scope
-
-From the checkout:
+Narrow it while you iterate:
 
 ```sh
-t scope
-t suggest
+tools/ci/test-changed.sh -- overview_add_workspace::  # tests whose names match
+tools/ci/test-changed.sh -E 'package(shell) and binary(it)'
+tools/ci/test-changed.sh --stage test                  # no Clippy
 ```
 
-`t scope` names affected default checks. `t suggest` also identifies relevant
-opt-in checks; choose those that can observe the change. Neither command runs
-checks. Name the selected checks explicitly with `t test`; the
-[testing tools](tools/testing.md) page explains discovery and selection.
+The terminal shows failures as they happen and a summary of each job's wall
+time; each job's whole output is in `target/local-affected/<job>.log`. A
+failing job's diagnostics are printed at the end.
 
-For example, while changing the shell's workspace overview:
+For one test target, plain cargo is still the fastest loop:
 
 ```sh
-t test test-x86_64/shell --test 'concept_parity_spec::overview_add_workspace::'
-t test clippy-x86_64/shell clippy-aarch64/shell
-t cargo check --locked -p shell --tests
+cargo nextest run --profile ci -p tilo-clock
+cargo test --locked -p shell --test it MODULE::
 ```
 
-The first command runs one module, not the package's full test coverage. The
-shell's code differs between x86_64 and aarch64, so its checks run on each
-(`test-<arch>`, `clippy-<arch>`); a package whose code is the same on both has
-one `test/<package>` and one `clippy/<package>`. Follow
-focused feedback with the affected package/integration checks. The last command
-checks test compilation but does not execute tests; on a non-Linux builder it
-cannot check Linux-only compositor code.
+Without the builders, both commands run on your machine; `--local` makes
+`test-changed.sh` do so explicitly.
 
-For browser-built crates, use `check/<package>` or `clippy/<package>`: their
-wrapper checks the library for `wasm32-unknown-unknown` as well as natively.
-Native tests alone cannot compile wasm-only code. Select `wasm` when the
-complete linked web runtime needs checking; see
-[t's check model](../t.md#adding-a-check).
+## Check a batch of commits
 
-## Run only what needs rerunning
+`tools/ci/local-affected.sh --base REF` is the same run for committed work:
+the selection is HEAD's against the merge-base with REF (`origin/main` by
+default), the worktree must be clean, and every stage runs (Clippy, tests,
+visual goldens, certification, example scenarios and scoped reader tests;
+`--tapps` adds the size-budgeted app packages). It is what a batch is checked
+with before it is promoted to main. `--stage` narrows it; `--fail-fast` stops
+the remaining jobs at the first failure.
 
-```sh
-t log test-x86_64/shell
-t test
-```
-
-The log gives the failure's output; bare `t test` reruns what failed for you
-last time, not a default suite. Use `--test` with the failing test's name for a
-narrower rerun. A pass after a retry does not explain a race.
-
-Use `t test --rev HEAD <check>` when you need evidence for the committed
-snapshot rather than the current working tree. Keep those results distinct. The
-push gate checks the pushed commit and deliberately does not run the test
-suites. Delivery and failure ownership are covered in [t's workflow](../t.md),
-not by a second checklist here.
+What both commands run is
+[tools/ci/local_affected.py](../../tools/ci/local_affected.py)'s; the package
+selection is the planner's, [tools/ci/affected_packages.py](../../tools/ci/affected_packages.py).
 
 ## Choose evidence that can see the behavior
 
@@ -73,8 +66,8 @@ not by a second checklist here.
   [contract checks](tools/testing.md#check-installer-or-packaging-contracts).
 - Compositor/UI: use the [headless guide](../headless-testing.md) for semantic
   driving and disposable captures. Check visual changes in multiple themes.
-  Rendering goldens have their own `goldens/<package>` checks; discover the
-  current selection with `t suggest`, rather than copying a filter expression.
+  Rendering goldens run in the `goldens` stage of the commands above, alone,
+  after the package's other tests.
 - Kernel, device, installation or session behavior: use a qualified environment.
   `tilo device guide scenarios` covers device scenarios. A headless run or a
   contract fixture is not evidence of hardware behavior.

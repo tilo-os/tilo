@@ -3,7 +3,7 @@ use super::{ProviderEffect, ProviderPanel, definition, widgets};
 use agent_provider_config::management::AdminFuture;
 use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
 use agent_provider_config::protocol::{ErrorKind, ModelError};
-use agent_provider_config::{Interaction, ProviderConfig, ProviderProfile};
+use agent_provider_config::{EndpointLocation, Interaction, ProviderConfig, ProviderProfile};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -204,6 +204,57 @@ fn agents_list_presets_and_add_providers_through_actions() {
         )
         .is_err()
     );
+}
+
+/// A generic provider pointed at a server on this device or the person's
+/// network is that, not a hosted provider held to TLS; an internet host
+/// stays hosted.
+#[test]
+fn a_typed_endpoint_takes_the_location_its_address_has() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let mut app = mount(backend.clone());
+    run(
+        &mut app,
+        ProviderEffect::AddProvider {
+            preset: "anthropic-compatible".into(),
+        },
+    );
+    app.settle();
+    let id = config(&mut app).profiles[0].id.clone();
+    for (endpoint, location) in [
+        (
+            "http://127.0.0.1:8443/anthropic",
+            EndpointLocation::ThisDevice,
+        ),
+        ("http://192.168.1.20:8000", EndpointLocation::PrivateNetwork),
+        ("https://api.z.ai/api/anthropic", EndpointLocation::Hosted),
+    ] {
+        run(
+            &mut app,
+            ProviderEffect::SetProviderDetails {
+                provider: id.clone(),
+                label: "Mine".into(),
+                endpoint: endpoint.into(),
+                model: None,
+            },
+        );
+        app.settle();
+        let profile = backend.state.lock_recover().config.profiles[0].clone();
+        assert_eq!(
+            (profile.endpoint.as_str(), profile.location),
+            (endpoint, location)
+        );
+        // A key sent over plain http on the person's network is said to be.
+        let warned = with_panel(&mut app, |panel| {
+            widgets::announced_text(widgets::page(panel.sections()).as_ref())
+                .contains(&crate::i18n::t("agent-key-unencrypted"))
+        });
+        assert_eq!(
+            warned,
+            location == EndpointLocation::PrivateNetwork,
+            "{endpoint}"
+        );
+    }
 }
 
 /// An agent says what a model can do, through the action on its provider,

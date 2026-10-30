@@ -39,13 +39,20 @@ set -- "$@" "${features[@]}"
 # clippy-driver records in its dep-info. A lint failure is never cached.
 export RUSTC="${RUSTC:-rustc}"
 
-messages="$root/target/ci/clippy-head.json"
-stderr_log="$root/target/ci/clippy-head.stderr"
-mkdir -p "$root/target/ci" || exit 2
+# Beside the build it reports on: lints of other target directories may run at once.
+reports="${CARGO_TARGET_DIR:-$root/target}/ci"
+messages="$reports/clippy-head.json"
+stderr_log="$reports/clippy-head.stderr"
+mkdir -p "$reports" || exit 2
 
 run_clippy() {
     local source_commit result receipt_name
-    source_commit=$(git rev-parse HEAD) || exit 2
+    # A builder's copy of the worktree (rcargo exec, tools/ci/lint-affected.sh) has no git
+    # metadata: there the receipt below is not written, the diagnostics are the verdict.
+    source_commit=
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        source_commit=$(git rev-parse HEAD) || exit 2
+    fi
     # Report independent packages' failures together instead of requiring
     # another CI iteration for each package left unexamined after an error.
     cargo clippy --locked --all-targets --keep-going "$@" \
@@ -56,8 +63,9 @@ run_clippy() {
         receipt_name=clippy-head-retry-inputs.json
     fi
     # Observe while the checkout and its dep-info still exist.
+    [ -n "$source_commit" ] || return "$result"
     python3 "$root/tools/ci/compiler_inputs.py" \
-        --output "$root/target/ci/$receipt_name" --from-messages "$messages" \
+        --output "$reports/$receipt_name" --from-messages "$messages" \
         --cargo-exit-code "$result" --expected-commit "$source_commit" -- \
         clippy --locked --all-targets --keep-going "$@" -- -D warnings || true
     return "$result"
@@ -127,6 +135,9 @@ gate() {
 
 status=0
 gate "$@" || status=1
+# tools/ci/lint-affected.sh runs each default build beside this one, in a target
+# directory of its own, and sets CLIPPY_CHECK_DEFAULT_BUILDS=0 here.
+[ "${CLIPPY_CHECK_DEFAULT_BUILDS:-1}" = 1 ] || default_builds=()
 for package in "${default_builds[@]}"; do
     echo "Clippy over $package's default build:" >&2
     gate -p "$package" || status=1

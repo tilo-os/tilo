@@ -364,7 +364,9 @@ fn provider_row(profile: &ProviderProfile) -> LiveRow {
             }
             .bound_asking(&["model", "vision", "tool_calling"]),
         );
-    if profile.location == EndpointLocation::Hosted && profile.sign_in.is_none() {
+    // A provider with a key in this device's vault offers its key's
+    // actions: a hosted one, or a server the person gave a key.
+    if profile.credential.is_some() && profile.sign_in.is_none() {
         row.operation(
             ProviderEffect::SaveProviderKey {
                 provider: id,
@@ -819,20 +821,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 label,
                 endpoint,
                 model,
-            } => {
-                if label.trim().is_empty() || endpoint.trim().is_empty() {
-                    return Err(t("agent-provider-details-required"));
-                }
-                let profile = find(&mut config, &provider)?;
-                profile.label = label;
-                profile.endpoint = endpoint;
-                if let Some(model) = model.filter(|model| !model.trim().is_empty()) {
-                    if !profile.models.iter().any(|candidate| candidate.id == model) {
-                        profile.models.push(ModelDescriptor::named(model.clone()));
-                    }
-                    profile.default_model = Some(model);
-                }
-            }
+            } => set_details(find(&mut config, &provider)?, label, endpoint, model)?,
             ProviderEffect::RemoveProvider { provider } => {
                 if config.remove(&provider).is_none() {
                     return Err(t("agent-provider-gone"));
@@ -1032,13 +1021,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
             &t("agent-add-provider"),
             rows(vec![
                 note(&t("agent-add-provider-caption")),
-                // A filter starts empty with the page it stands in: its
-                // field and its list are built together.
-                widgets::block(catalogue::presets(
-                    &self.cx,
-                    self.admits(),
-                    &ui::LocalState::new(String::new()),
-                )),
+                widgets::block(catalogue::presets(&self.cx, self.admits())),
             ]),
         )
     }
@@ -1071,7 +1054,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 body.push(widgets::block(catalogue::models(
                     profile,
                     models,
-                    &ui::LocalState::new(String::new()),
                     move |button, model| {
                         let provider = provider.clone();
                         Self::bind_row_control(
@@ -1365,6 +1347,9 @@ impl<H: PanelBindings> ProviderPanel<H> {
                         .with_placeholder(t("agent-placeholder-key")),
                 ),
             ));
+            if sends_key_unencrypted(profile) {
+                body.push(row(widgets::caption(&t("agent-key-unencrypted"))));
+            }
             body.push(row(Box::new(
                 Row::new()
                     .push(Box::new(
@@ -1742,6 +1727,45 @@ pub fn presets_listing(include_sign_in: bool) -> serde_json::Value {
         })
         .collect();
     serde_json::json!({ "presets": presets })
+}
+
+/// Name `profile`, say where it is and the model agents use from it.
+fn set_details(
+    profile: &mut ProviderProfile,
+    label: String,
+    endpoint: String,
+    model: Option<String>,
+) -> Result<(), String> {
+    if label.trim().is_empty() || endpoint.trim().is_empty() {
+        return Err(t("agent-provider-details-required"));
+    }
+    profile.label = label;
+    // A provider the person reaches over their own network or this device
+    // is not a hosted one: its address decides.
+    if let Some(location) = EndpointLocation::of_endpoint(&endpoint) {
+        profile.location = location;
+    }
+    profile.endpoint = endpoint;
+    if let Some(model) = model.filter(|model| !model.trim().is_empty()) {
+        if !profile.models.iter().any(|candidate| candidate.id == model) {
+            profile.models.push(ModelDescriptor::named(model.clone()));
+        }
+        profile.default_model = Some(model);
+    }
+    Ok(())
+}
+
+/// Whether `profile`'s key leaves this device without TLS: a server on the
+/// person's network reached over plain http. A loopback endpoint never
+/// leaves the device, and a hosted one is refused without TLS.
+fn sends_key_unencrypted(profile: &ProviderProfile) -> bool {
+    profile.credential.is_some()
+        && profile.location == EndpointLocation::PrivateNetwork
+        && profile
+            .endpoint
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("http://")
 }
 
 /// `row` as one entry of a group.

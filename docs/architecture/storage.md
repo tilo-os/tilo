@@ -311,10 +311,14 @@ may read ([§14](#14-permissions)). The separate FUSE recipient mount
     comes from the device's identity, never from the greeter's configuration
     or how many accounts there are: `owner=` in
     `/etc/tilo/store-volume.conf` (the installer's account), else the account
-    whose Tilo identity registry holds the identity the device is bound to
-    (`/var/lib/tilo/user-identity`), else the person signed in at the login
-    screen. Without one, or with two accounts holding the identity, the unit
-    fails, says to set `owner=`, and FUSE serves the files as root's.
+    that proves it holds the key of the identity the device is bound to
+    (`/var/lib/tilo/user-identity`): the session signs a local person proof
+    naming the account's uid and the device's key with that identity
+    (`~/.config/tilo/identity/local-person.sig`, `tilo-identity
+    local-person` verifies it), so an account that only names the identity
+    is ignored; else the person signed in at the login screen. Without one,
+    or with two accounts proving the key, the unit fails, says to set
+    `owner=`, and FUSE serves the files as root's.
   - The store is mounted with `context=…:fusefs_t:s0`, the label files under
     `/var/workspace` had on the FUSE mount, so every domain keeps exactly the
     access it had until `tilo_fs_t`'s enforcing policy defines a store type.
