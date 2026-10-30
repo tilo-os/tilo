@@ -375,7 +375,7 @@ fn its_author_edits_a_message_in_place_and_anyone_pins_it() {
     post(&mut ada, &ada_design, "The bulid is on the test machines.");
 
     // Edit on Ada's message puts an editor holding what it says in its place; Save keeps the
-    // new text, which both see.
+    // new text, which both see, marked as edited.
     let row = rows(&mut ada_design).remove(0);
     let edit = button(&row, "Edit").expect("Edit on a message");
     ada_design.press(&edit).unwrap();
@@ -403,6 +403,11 @@ fn its_author_edits_a_message_in_place_and_anyone_pins_it() {
         assert_eq!(said(view), ["The build is on the test machines."]);
         let row = rows(view).remove(0);
         assert!(find(&row, "ui.RichInput").is_none(), "the editor is gone");
+        assert!(
+            shown_in(&row).contains(&"edited".to_owned()),
+            "marked as edited: {:?}",
+            shown_in(&row)
+        );
     }
 
     // Only its author edits a message: Ben has no Edit on Ada's, and editing it as Ben is
@@ -447,6 +452,10 @@ fn its_author_edits_a_message_in_place_and_anyone_pins_it() {
             shown_in(&row).contains(&"Pinned".to_owned()),
             "{:?}",
             shown_in(&row)
+        );
+        assert!(
+            shown_in(&row).contains(&"edited".to_owned()),
+            "a pin after the edit keeps it marked as edited"
         );
         let mut labels = Vec::new();
         find_all(&row, "ui.Button", &mut labels);

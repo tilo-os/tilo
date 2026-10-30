@@ -319,11 +319,15 @@ impl Core {
     }
 
     /// A version as the language holds it: who, when, by which action.
+    /// A `host.Version`: its fields, then the id of the action that made it, which
+    /// `v.is(edit)` compares (`tilolang::host::action_id_at`).
     fn version_value(&self, v: crate::store::Version) -> Value {
+        let label = self.action_label(&v.action);
         Value::Tuple(vec![
             Value::Principal(Principal(v.who)),
             Value::Text(v.at),
-            Value::Text(self.action_label(&v.action)),
+            Value::Text(label),
+            Value::Text(v.action),
         ])
     }
 
@@ -590,6 +594,9 @@ impl Core {
                 args: shown.args.clone(),
                 author,
             }),
+            // After its fields, the action's id, which `a.is(edit)` compares
+            // (`tilolang::host::action_id_at`).
+            Value::Text(action.id.clone()),
         ])))
     }
 

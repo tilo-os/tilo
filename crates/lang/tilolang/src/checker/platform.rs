@@ -7,6 +7,7 @@ use crate::abi::Imp;
 use crate::ast;
 use crate::diag::Span;
 use crate::ir::{Ek, Stmt};
+use crate::resolve::CKind;
 use crate::types::{Ty, TypeKey};
 
 /// A value type of the host: `host.Action`.
@@ -324,6 +325,42 @@ impl Checker<'_> {
         }
         let call = Ex::host(Imp::Phrase, vec![id, Ex::local(list, list_ty)], Ty::Text);
         Ex::new(Ek::Seq(stmts, Box::new(call)), Ty::Text)
+    }
+
+    /// `v.is(edit)` of a `host.Version` or a `host.Action`: whether the action it names is the
+    /// declared action `edit`, named by the compiler, so a renamed or relabelled action is still
+    /// found and a misspelt one is an error.
+    pub(super) fn names_action(&mut self, r: Ex, ty: &str, args: &[ast::Arg], span: Span) -> Ex {
+        let named = match args {
+            [a] if a.name.is_none() => match &a.value.kind {
+                ast::ExprKind::Ident(name) if self.lookup(name).is_none() => self
+                    .own_callable(name)
+                    .filter(|c| matches!(c.kind, CKind::Action | CKind::Flow))
+                    .map(|c| c.id.clone()),
+                ast::ExprKind::Field { base, name } if self.names_import(base) => {
+                    super::expr::dotted(base).and_then(|path| {
+                        let import = self.env.find_import(&path.join("."))?;
+                        self.env
+                            .foreign_callable(&import.app, &name.name)
+                            .filter(|c| matches!(c.kind, CKind::Action | CKind::Flow))
+                            .map(|c| c.id.clone())
+                    })
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let (Some(id), Some(at)) = (named, crate::host::action_id_at(ty)) else {
+            self.err(
+                "E022",
+                span,
+                format!("`.is` takes one of the app's actions by its name: `history(m).any(v -> v.is(edit))`; a `host.{ty}` names the action, not its label"),
+            );
+            return Ex::error();
+        };
+        let at = Ex::new(Ek::I32(i32::try_from(at).unwrap_or(0)), Ty::Bool);
+        let held = Ex::host(Imp::TupleGetH, vec![r, at], Ty::Text);
+        Ex::host(Imp::StrEq, vec![held, Ex::str(&id)], Ty::Bool)
     }
 
     /// A field of a value of a host value type (`a.label` of a `host.Action`): read from the

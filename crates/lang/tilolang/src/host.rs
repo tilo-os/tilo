@@ -272,6 +272,20 @@ pub fn value_field(ty: &str, field: &str) -> Option<usize> {
         .position(|(name, ..)| *name == field)
 }
 
+/// The value types that name an action, `Version` (the one that made it) and `Action` (the
+/// one offered), which `v.is(edit)` asks about by the action itself rather than its label.
+pub const NAMES_AN_ACTION: &[&str] = &["Version", "Action"];
+
+/// Where the tuple of the value type `ty` holds the id of the action it names: after its
+/// fields, which code reads by name, so the id is compared only through `.is(action)`.
+#[must_use]
+pub fn action_id_at(ty: &str) -> Option<usize> {
+    NAMES_AN_ACTION
+        .contains(&ty)
+        .then(|| value_type(ty).map(|t| t.fields.len()))
+        .flatten()
+}
+
 fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {
     FieldMeta {
         id: format!("inv-{name}"),
