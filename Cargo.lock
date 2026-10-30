@@ -21831,6 +21831,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "tilo-compositor",
+ "tilo-cpu-raster",
  "tilo-desktop-policy",
  "tilo-desktop-surface",
  "tilo-topbar",

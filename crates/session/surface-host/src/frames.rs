@@ -2,10 +2,12 @@
 //!
 //! A surface app's scene is drawn the way every toolkit app's frame is: by
 //! the toolkit's own renderer ([`ui::offscreen::OffscreenRenderer`]), on
-//! whatever adapter it picks. Only what changed is drawn, so a moved cursor,
-//! a new time or a resized panel costs what it changed rather than the whole
-//! surface.
+//! whatever adapter it picks; where the machine has no GPU adapter to draw
+//! on, by the toolkit's CPU rasterizer, exactly as it draws a normal app's
+//! frame there. Only what changed is drawn, so a moved cursor, a new time or
+//! a resized panel costs what it changed rather than the whole surface.
 
+use crate::canvas::{Canvas, RASTER_THREADS};
 use tilo_compositor::{HostFrame, Region};
 use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
@@ -19,7 +21,7 @@ const TRANSPARENT: Color = Color::TRANSPARENT;
 /// One hosted surface's frames: what it drew last, and what draws its next.
 pub(crate) struct Frames {
     size: (u32, u32),
-    target: Option<Gpu>,
+    target: Target,
     /// What the compositor draws: the surface's pixels, changed where it
     /// changed.
     frame: HostFrame,
@@ -31,7 +33,7 @@ impl Frames {
     pub(crate) fn new(size: (u32, u32)) -> Self {
         Self {
             size,
-            target: Gpu::new(size),
+            target: Target::new(size),
             frame: HostFrame::new(size),
         }
     }
@@ -43,7 +45,7 @@ impl Frames {
             return;
         }
         self.size = size;
-        self.target = Gpu::new(size);
+        self.target = Target::new(size);
         self.frame = HostFrame::new(size);
     }
 
@@ -58,21 +60,57 @@ impl Frames {
 
     /// The alpha of one pixel of the last frame drawn, if it lies inside.
     pub(crate) fn alpha(&self, x: u32, y: u32) -> Option<u8> {
-        let pixels = self.target.as_ref()?.pixels.as_slice();
-        alpha_of(pixels, self.size, x, y)
+        alpha_of(self.target.pixels(), self.size, x, y)
     }
 
     /// Draw `scene` (physical pixels) where `damage` says it changed (`None`:
     /// all of it) and copy what was drawn into the frame, telling it what
     /// changed.
     pub(crate) fn present(&mut self, scene: &Scene, damage: Option<&[Rect]>) {
-        let Some(target) = self.target.as_mut() else {
+        let Some(drawn) = self.target.draw(scene, damage) else {
             return;
         };
-        let Some(drawn) = target.draw(scene, damage) else {
-            return;
-        };
-        self.frame.set_pixels(&target.pixels, &drawn);
+        self.frame.set_pixels(self.target.pixels(), &drawn);
+    }
+}
+
+/// Where a surface's frames are drawn: on the GPU, or on the toolkit's CPU
+/// rasterizer where the machine has no GPU to draw them on.
+enum Target {
+    Gpu(Box<Gpu>),
+    Cpu(Box<Canvas>),
+}
+
+impl Target {
+    /// The drawing `size` frames, on the GPU where this machine has one and
+    /// on the CPU where the toolkit draws every frame there.
+    fn new(size: (u32, u32)) -> Self {
+        if let Some(gpu) = Gpu::new(size) {
+            return Self::Gpu(Box::new(gpu));
+        }
+        tracing::info!("surface apps' frames are drawn on the CPU: no GPU to draw them on");
+        Self::Cpu(Box::new(Canvas::new(size, RASTER_THREADS)))
+    }
+
+    /// The last frame drawn, premultiplied RGBA, `width * 4` bytes a row:
+    /// what the surface covers, for the pointer.
+    fn pixels(&self) -> &[u8] {
+        match self {
+            Self::Gpu(gpu) => &gpu.pixels,
+            Self::Cpu(canvas) => canvas.pixels(),
+        }
+    }
+
+    /// Draw `scene` where `damage` says it changed, keeping the drawn frame.
+    /// The regions drawn, or `None` where nothing changed.
+    fn draw(&mut self, scene: &Scene, damage: Option<&[Rect]>) -> Option<Vec<Region>> {
+        match self {
+            Self::Gpu(gpu) => gpu.draw(scene, damage),
+            Self::Cpu(canvas) => {
+                let changed = canvas.draw(scene, damage);
+                (!changed.is_empty()).then_some(changed)
+            }
+        }
     }
 }
 
@@ -85,7 +123,8 @@ struct Gpu {
 
 impl Gpu {
     /// The renderer for a surface of `size` physical pixels, if the toolkit
-    /// has an adapter to draw it on.
+    /// has an adapter to draw it on: an emulated adapter is no GPU, and the
+    /// toolkit rasterizes on the CPU there too.
     fn new(size: (u32, u32)) -> Option<Self> {
         if size.0 == 0 || size.1 == 0 {
             return None;
@@ -97,6 +136,12 @@ impl Gpu {
                 return None;
             }
         };
+        if renderer
+            .adapter_info()
+            .is_none_or(|info| ui::render_thread::rasterizes_on_cpu(&info))
+        {
+            return None;
+        }
         Some(Self {
             pixels: vec![0; length(size)],
             renderer,
