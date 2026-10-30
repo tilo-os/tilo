@@ -44,7 +44,15 @@ dev-session = []
 # the user. It exists only so dev VM images can run release-speed binaries
 # that harnesses can still drive. `tools/policy/check_dev_overrides_contract.py`
 # fails the policy suite if a production image build enables it.
-dev-overrides = ["tilo-identity-host/throwaway-test-identity"]
+#
+# The shell reads the session's runtimes, trust and installed packages through
+# package-store (and the launcher crate over it): a shell with the overrides
+# reads them with the overrides too, however the feature was named.
+dev-overrides = [
+    "tilo-identity-host/throwaway-test-identity",
+    "package-store/dev-overrides",
+    "launcher/dev-overrides",
+]
 # Honour `TILO_AGENT_CONTROL` on the headless backend: a socket serving the
 # input, clipboard and screenshot subset of the control protocol, for a hosted
 # machine an agent drives (no local person, no lock screen). Non-default and
