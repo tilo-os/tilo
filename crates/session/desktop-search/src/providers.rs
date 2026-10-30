@@ -13,6 +13,7 @@ pub mod people;
 pub mod places;
 #[cfg(feature = "settings")]
 pub mod settings;
+pub mod waiting;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
