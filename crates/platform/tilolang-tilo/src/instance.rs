@@ -879,7 +879,9 @@ impl Instance {
             Ok(view) => {
                 let mut view = Shown::new(target.clone(), self.spaced(Lane::Detail, view));
                 view.with = with.map(str::to_owned);
-                self.detail = Some(view);
+                if let Some(shown) = self.detail.replace(view) {
+                    self.seen_in_window(&shown.target);
+                }
                 self.lenses_changed = true;
                 self.send_open(Lane::Detail, front);
                 self.commit_planned();
@@ -903,9 +905,24 @@ impl Instance {
 
     /// Close the detail view: Back.
     pub fn close_detail(&mut self) {
-        if self.detail.take().is_some() {
+        if let Some(shown) = self.detail.take() {
+            self.seen_in_window(&shown.target);
             self.lenses_changed = true;
             self.out.push(ToUi::Close);
+        }
+    }
+
+    /// The person had `target` open in a window of its own, and goes elsewhere: what it showed
+    /// is seen (task-legibility §4). While the window is open its marks stay, so the person
+    /// sees what changed where it changed.
+    fn seen_in_window(&mut self, target: &ResourceRef) {
+        let Some(host) = self.host() else {
+            return;
+        };
+        let person = host.viewer().0.clone();
+        if let Err(error) = host.runtime().mark_seen(&person, target) {
+            tracing::warn!(%error, "what a window showed could not be marked seen");
+            self.notice(Words::phrase("tilolang-seen-failed"), ui::NoticeKind::Error);
         }
     }
 
@@ -1076,6 +1093,8 @@ impl Instance {
                     let front = front.then_some(ui::Front::Input);
                     self.open_detail(&target, view.as_deref(), front);
                 }
+                // The run's log is the system's: the window's host shows it.
+                ViewEvent::Review { run, .. } => self.out.push(ToUi::ShowRun { run }),
             }
         }
     }
@@ -2122,6 +2141,35 @@ impl Instance {
         );
         self.members_from = Some((standing.person, standing.policy, self.people.clone()));
         true
+    }
+
+    /// What the person has seen, as the system keeps it in their own record (task-legibility
+    /// §2): per resource the newest version they saw (`None` takes a mark back), and the task
+    /// runs they reviewed. What `unseen(r)` and the marks the host draws read; each view that
+    /// read one runs again.
+    pub fn set_seen(
+        &mut self,
+        marks: impl IntoIterator<Item = (String, Option<crate::runtime::seen::SeenMark>)>,
+        runs: &[String],
+    ) {
+        let Some(host) = self.host() else {
+            return;
+        };
+        let person = host.viewer().0.clone();
+        let runtime = host.runtime();
+        for (resource, mark) in marks {
+            runtime.set_seen(&person, &resource, mark);
+        }
+        runtime.set_seen_runs(&person, runs);
+    }
+
+    /// What the person marked seen in this window since last asked (opening, reviewing,
+    /// a mark's Mark seen), for the host to keep in their own record with the system's
+    /// `mark seen` action.
+    pub fn take_seen(&mut self) -> Vec<crate::runtime::seen::SeenWrite> {
+        self.host()
+            .map(|host| host.runtime().take_seen())
+            .unwrap_or_default()
     }
 
     /// Which person each participant presence reports is a device of, `(participant,

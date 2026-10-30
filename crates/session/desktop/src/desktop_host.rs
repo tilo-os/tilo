@@ -614,7 +614,9 @@ impl OverviewHost for PlainOverview {
 /// the overview panel and the menus the bar opens; and the desktop's
 /// chords.
 pub struct DesktopChrome {
-    bar: TopBarChrome,
+    /// The top bar, when the chrome draws it; `None` under a shell that draws its own bar in
+    /// the band the chrome leaves it ([`Self::under_shell_bar`]).
+    bar: Option<TopBarChrome>,
     overview: OverviewPanel,
     tilo_menu: TiloMenu,
     workspace_menu: WorkspaceMenu,
@@ -666,7 +668,7 @@ impl DesktopChrome {
         mac: bool,
     ) -> Self {
         Self {
-            bar,
+            bar: Some(bar),
             overview: OverviewPanel::new(),
             tilo_menu,
             workspace_menu: WorkspaceMenu::new(),
@@ -689,6 +691,64 @@ impl DesktopChrome {
         }
     }
 
+    /// The chrome over the desktop `handle` drives, under a top bar a shell draws itself in
+    /// the band this chrome leaves at the top: the overview, the strips' navigator, the Tilo
+    /// menu (anchored at the band's leading corner, where the shell's bar leads with the
+    /// mark) and the desktop's chords, without a bar of its own.
+    #[must_use]
+    pub fn under_shell_bar(
+        handle: DesktopHandle,
+        generation: String,
+        rules: Rc<dyn DesktopRules>,
+        tilo_menu: TiloMenu,
+        mac: bool,
+    ) -> Self {
+        let mut chrome = Self::new(
+            handle,
+            generation,
+            rules,
+            TopBarChrome::from_tree(&DesktopTree::default()),
+            tilo_menu,
+            mac,
+        );
+        chrome.bar = None;
+        chrome
+    }
+
+    /// Where the Tilo menu opens from: under the bar's mark, or the band's leading corner
+    /// under a shell's bar.
+    fn tilo_menu_anchor(&self) -> Rect {
+        self.bar.as_ref().map_or_else(
+            || {
+                let side = f64::from(TOPBAR_HEIGHT_PX);
+                Rect::new(
+                    self.rect.x0,
+                    self.rect.y0,
+                    self.rect.x0 + side,
+                    self.rect.y0 + side,
+                )
+            },
+            TopBarChrome::tilo_mark_rect,
+        )
+    }
+
+    /// Where the workspace menu opens from: under the bar's workspace name, or the band's
+    /// leading corner under a shell's bar.
+    fn workspace_menu_anchor(&self) -> Rect {
+        self.bar.as_ref().map_or_else(
+            || {
+                let side = f64::from(TOPBAR_HEIGHT_PX);
+                Rect::new(
+                    self.rect.x0,
+                    self.rect.y0,
+                    self.rect.x0 + side,
+                    self.rect.y0 + side,
+                )
+            },
+            TopBarChrome::workspace_menu_rect,
+        )
+    }
+
     /// Set while keys should come to the chrome rather than the window in
     /// front ([`Self::wants_keyboard`]), for a host routing keys.
     #[must_use]
@@ -701,15 +761,15 @@ impl DesktopChrome {
         self.shortcuts = shortcuts;
     }
 
-    /// The top bar.
+    /// The top bar, when the chrome draws it.
     #[must_use]
-    pub const fn bar(&self) -> &TopBarChrome {
-        &self.bar
+    pub const fn bar(&self) -> Option<&TopBarChrome> {
+        self.bar.as_ref()
     }
 
-    /// The top bar, to open what it anchors.
-    pub fn bar_mut(&mut self) -> &mut TopBarChrome {
-        &mut self.bar
+    /// The top bar, to open what it anchors, when the chrome draws it.
+    pub fn bar_mut(&mut self) -> Option<&mut TopBarChrome> {
+        self.bar.as_mut()
     }
 
     /// The Tilo menu behind the bar's mark.
@@ -837,13 +897,13 @@ impl DesktopChrome {
                 }
                 let model = self.workspace_menu_model();
                 self.workspace_menu
-                    .toggle(&model, self.bar.workspace_menu_rect(), self.rect);
+                    .toggle(&model, self.workspace_menu_anchor(), self.rect);
             }
             ChromeIntent::ToggleOverview => self.toggle_overview(),
             ChromeIntent::RenameWorkspace { name } => self.rename_workspace(name),
             ChromeIntent::ToggleTiloMenu => {
                 self.workspace_menu.close();
-                self.tilo_menu.toggle(self.bar.tilo_mark_rect(), self.rect);
+                self.tilo_menu.toggle(self.tilo_menu_anchor(), self.rect);
             }
             // The strip's name in the bar opens the strip switcher, as a
             // menu on the shown strip.
@@ -953,7 +1013,11 @@ impl DesktopChrome {
                     self.apply_navigation(navigation);
                 }
             }
-            WorkspaceMenuChoice::Rename => self.bar.begin_workspace_rename(),
+            WorkspaceMenuChoice::Rename => {
+                if let Some(bar) = self.bar.as_mut() {
+                    bar.begin_workspace_rename();
+                }
+            }
         }
     }
 
@@ -1592,14 +1656,7 @@ impl DesktopChrome {
     /// Whether anything of the chrome is due a redraw.
     fn chrome_needs_redraw(&self) -> bool {
         self.navigator.needs_animation_frame(ui::time::now())
-            || [
-                &self.bar as &dyn Widget,
-                &self.overview,
-                &self.tilo_menu,
-                &self.workspace_menu,
-            ]
-            .iter()
-            .any(|child| child.needs_redraw())
+            || self.children().iter().any(|child| child.needs_redraw())
     }
 }
 
@@ -1789,10 +1846,14 @@ impl Widget for DesktopChrome {
         }
         let menu_open = self.tilo_menu.is_menu_open();
         if self.menu_shown.replace(menu_open) != menu_open {
-            self.bar.set_tilo_menu_open(menu_open);
+            if let Some(bar) = self.bar.as_mut() {
+                bar.set_tilo_menu_open(menu_open);
+            }
             changed = true;
         }
-        changed |= self.bar.update(state, path);
+        if let Some(bar) = self.bar.as_mut() {
+            changed |= bar.update(state, path);
+        }
         self.observe_navigation();
         self.keyboard.set(self.wants_keyboard());
         changed | !self.asks.borrow().is_empty()
@@ -1811,7 +1872,23 @@ impl Widget for DesktopChrome {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         use taffy::{LengthPercentageAuto, Position, Size};
-        let bar = self.bar.build_layout(taffy, theme, map);
+        let bar = match self.bar.as_mut() {
+            Some(bar) => bar.build_layout(taffy, theme, map),
+            // The band a shell's bar stands in: as high as the bar, empty.
+            None => taffy
+                .new_leaf(Style {
+                    size: taffy::Size {
+                        width: taffy::Dimension::percent(1.0),
+                        height: taffy::Dimension::length(crate::topbar::topbar_height(theme)),
+                    },
+                    flex_shrink: 0.0,
+                    ..Style::default()
+                })
+                .unwrap_or_else(|error| {
+                    tracing::error!(%error, "the shell bar's band was not laid out");
+                    taffy::NodeId::new(0)
+                }),
+        };
         let content = taffy.new_leaf(Style::default()).unwrap_or(bar);
         grow(taffy, content);
         // Over the area under the bar, which stays usable while it is open.
@@ -1844,7 +1921,9 @@ impl Widget for DesktopChrome {
         if let [bar, content, overview, tilo_menu, workspace_menu] =
             taffy.children(node).unwrap_or_default()[..]
         {
-            self.bar.apply_layout(taffy, bar, inner);
+            if let Some(shown) = self.bar.as_mut() {
+                shown.apply_layout(taffy, bar, inner);
+            }
             self.content = ui::widget::layout_rect(taffy, content, inner);
             self.overview.apply_layout(taffy, overview, inner);
             self.tilo_menu.apply_layout(taffy, tilo_menu, inner);
@@ -1871,7 +1950,9 @@ impl Widget for DesktopChrome {
         );
         self.overview.draw(scene, transform, text, theme, presence);
         // Last, so what the bar opens below its band stays above the rest.
-        self.bar.draw(scene, transform, text, theme, presence);
+        if let Some(bar) = self.bar.as_mut() {
+            bar.draw(scene, transform, text, theme, presence);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -1922,29 +2003,36 @@ impl Widget for DesktopChrome {
             self.overview
                 .handle_event(event, &mut ctx.reborrow(ctx.path, overview));
         }
-        if !*ctx.handled {
-            self.bar
-                .handle_event(event, &mut ctx.reborrow(ctx.path, bar));
+        if !*ctx.handled
+            && let Some(shown) = self.bar.as_mut()
+        {
+            shown.handle_event(event, &mut ctx.reborrow(ctx.path, bar));
         }
         self.keyboard.set(self.wants_keyboard());
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![
-            &self.bar,
-            &self.overview,
+        let mut children: Vec<&dyn Widget> = Vec::with_capacity(4);
+        if let Some(bar) = &self.bar {
+            children.push(bar);
+        }
+        children.extend([
+            &self.overview as &dyn Widget,
             &self.tilo_menu,
             &self.workspace_menu,
-        ]
+        ]);
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![
-            &mut self.bar,
-            &mut self.overview,
-            &mut self.tilo_menu,
-            &mut self.workspace_menu,
-        ]
+        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(4);
+        if let Some(bar) = &mut self.bar {
+            children.push(bar);
+        }
+        children.push(&mut self.overview);
+        children.push(&mut self.tilo_menu);
+        children.push(&mut self.workspace_menu);
+        children
     }
 
     fn visit_retained_components(
@@ -1979,21 +2067,19 @@ impl Widget for DesktopChrome {
 
     fn needs_animation_frame(&self) -> bool {
         self.navigator.needs_animation_frame(ui::time::now())
-            || [
-                &self.bar as &dyn Widget,
-                &self.overview,
-                &self.tilo_menu,
-                &self.workspace_menu,
-            ]
-            .iter()
-            .any(|child| child.needs_animation_frame())
+            || self
+                .children()
+                .iter()
+                .any(|child| child.needs_animation_frame())
     }
 
     /// The bar's own deadline turns its clock over on the minute.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        [&self.bar as &dyn Widget, &self.overview, &self.tilo_menu]
+        self.bar
             .iter()
-            .filter_map(|child| child.next_wake_deadline())
+            .map(|bar| bar as &dyn Widget)
+            .chain([&self.overview as &dyn Widget, &self.tilo_menu])
+            .filter_map(Widget::next_wake_deadline)
             .chain(
                 self.navigator
                     .next_wake_deadline(&self.navigator_frame, ui::time::now()),

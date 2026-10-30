@@ -9,7 +9,9 @@
     reason = "test assertions"
 )]
 
+mod change_marks;
 mod door;
+mod marks;
 mod narrow;
 mod opening;
 mod rooms;

@@ -1048,6 +1048,20 @@ pub trait Store {
         })
     }
 
+    /// Every resource of the document `doc` (it and its items) with its versions, oldest
+    /// first: what a window's mark counts the unseen changes of.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::versions`].
+    fn versions_within(
+        &self,
+        doc: &DocId,
+    ) -> Result<std::collections::BTreeMap<String, Vec<Version>>, StoreError> {
+        let root = ResourceRef::root(doc.clone(), String::new());
+        Ok(std::iter::once((doc.clone(), self.versions(&root)?)).collect())
+    }
+
     /// Every version the task run `run` (its group) made, of every resource, oldest first:
     /// what `changes(of: run)` reads.
     ///

@@ -519,6 +519,12 @@ impl ResourceSurface<Room> for Window {
     fn stage(&mut self, scenario: Option<&str>) {
         self.instance.stage(scenario);
     }
+
+    /// A change mark in the window asks the shell to show the task run that made the change.
+    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+        let run = self.view.take_shown_run()?;
+        Some(ui::widget::AppHostIntent::ShowTaskRun { group: run })
+    }
 }
 
 impl Widget for Window {

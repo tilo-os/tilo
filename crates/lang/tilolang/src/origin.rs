@@ -61,10 +61,121 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
         "Sends a message from a mail account of the workspace's settings: (account, to, cc, \
          subject, body, the Message-ID it answers, the References it continues).",
     ),
+    (
+        "session.switch_workspace",
+        "Brings a workspace of this device's desk to the front: the `key` of its \
+         `session.workspace`.",
+    ),
+    (
+        "session.act",
+        "Asks the session for one of the desktop's own actions that take nothing (the \
+         `desktop:chrome` resource's: `toggle-tilo-menu`, `toggle-quick-settings`, \
+         `show-strips`, `toggle-overview`, `new-workspace`, `join-workspace`, \
+         `workspace-settings`), by its id.",
+    ),
 ];
 
 /// Every kind of every origin the platform has.
 pub const KINDS: &[OriginKind] = &[
+    OriginKind {
+        name: "session.desk",
+        doc: "This device's desk as the session holds it, for the person at it: the time in their \
+              style, who they are, their notifications, the workspaces on this device and the \
+              tasks running for them. A shell's bar reads it; the session writes it.",
+        fields: &[
+            field(
+                "person",
+                "Text",
+                "The person at this device, by their name.",
+            ),
+            field(
+                "clock",
+                "Text",
+                "The time of day in the person's style, to the minute.",
+            ),
+            field(
+                "weekday",
+                "Text",
+                "Today's weekday, short, in the person's language.",
+            ),
+            field(
+                "date",
+                "Text",
+                "Today's month and day, in the person's language.",
+            ),
+            field(
+                "unread",
+                "Int",
+                "How many of the person's notifications are unread.",
+            ),
+            field(
+                "quiet",
+                "Bool",
+                "Whether new notifications are held back (Do Not Disturb, presenting).",
+            ),
+            field(
+                "status_panel",
+                "Bool",
+                "Whether the device has quick settings; without them its status is its \
+                 notifications.",
+            ),
+            field("workspace", "Text", "The name of the workspace in front."),
+            field(
+                "strip",
+                "Text",
+                "The name of the strip in front in that workspace; empty without strips.",
+            ),
+            field(
+                "workspaces",
+                "Collection<session.workspace>",
+                "The workspaces on this device, in the desk's order.",
+            ),
+            field(
+                "tasks",
+                "Collection<session.task>",
+                "The tasks running for the person now (an agent's, a script's).",
+            ),
+            field(
+                "people",
+                "Collection<session.person>",
+                "The others here in the workspace in front.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.workspace",
+        doc: "A workspace on this device's desk.",
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The workspace's id, as switching to it names it.",
+            ),
+            field("name", "Text", "Its name."),
+            field("current", "Bool", "Whether it is the one in front."),
+        ],
+    },
+    OriginKind {
+        name: "session.person",
+        doc: "Someone else here in the workspace in front: a person or an agent.",
+        fields: &[
+            field("key", "Text", "Who they are, by their live presence's id."),
+            field("name", "Text", "Their name here."),
+        ],
+    },
+    OriginKind {
+        name: "session.task",
+        doc: "A task running for the person: an agent's or a script's.",
+        fields: &[
+            field("key", "Text", "The task's id."),
+            field("title", "Text", "What it is doing, in a few words."),
+            field(
+                "state",
+                "Text",
+                "`running`, `waiting` (for the person) or `done`.",
+            ),
+        ],
+    },
     OriginKind {
         name: "imap.account",
         doc: "What the IMAP server of one of the workspace's mail accounts holds. The account itself \

@@ -89,26 +89,6 @@ struct TxnState {
     listings: Vec<ListingChange>,
 }
 
-/// Add the versions each of `changes` made to `index`, by the resources it changed: who made
-/// it, when (the time its action recorded, else the change's), and by which action.
-fn note_versions<'c>(
-    index: &mut HashMap<String, Vec<Version>>,
-    changes: impl IntoIterator<Item = &'c automerge::Change>,
-) {
-    for change in changes {
-        for version in idx::reflect::versions_of(change) {
-            index
-                .entry(version.resource.clone())
-                .or_default()
-                .push(version);
-        }
-    }
-}
-
-/// The versions of no resource: what a store holds before it has any.
-static NO_VERSIONS: std::sync::LazyLock<HashMap<String, Vec<Version>>> =
-    std::sync::LazyLock::new(HashMap::new);
-
 /// What the record moved on from, when known: its heads before, and the versions its new
 /// changes made.
 type Since<'a> = Option<(&'a [ChangeHash], &'a Ends)>;
@@ -309,6 +289,8 @@ impl ListedOnce {
 }
 
 mod plan;
+mod versions;
+use versions::{NO_VERSIONS, note_versions};
 
 /// Gives the store the room record when it opened without it: for a write, or a field no index
 /// holds. `None` when the record cannot be had.
@@ -1097,11 +1079,17 @@ impl TiloStore {
     /// record the first time they are asked for, and kept up as it moves.
     fn built_versions(&self) -> std::cell::Ref<'_, HashMap<String, Vec<Version>>> {
         {
-            let mut inner = self.inner.borrow_mut();
+            let mut held = self.inner.borrow_mut();
+            let inner = &mut *held;
             if inner.versions.is_none() {
                 let mut built = HashMap::new();
                 if let Some(mirror) = inner.mirror.as_deref() {
-                    note_versions(&mut built, &mirror.committed_document().get_changes(&[]));
+                    note_versions(
+                        &mut built,
+                        &mirror.committed_document().get_changes(&[]),
+                        mirror,
+                        &inner.index,
+                    );
                 }
                 inner.versions = Some(built);
             }
@@ -1872,15 +1860,17 @@ impl Inner {
             return (None, Ends::new());
         }
         let changes = record.committed_document().get_changes(&self.seen);
-        if let Some(versions) = self.versions.as_mut() {
-            note_versions(versions, &changes);
-        }
         let ends = idx::reflect::ends_of(&changes);
         let applied = self.mirror_mut().map(|mirror| {
             let applied = mirror.apply_incoming(changes.iter().cloned());
             write_as_a_known_actor(mirror);
             applied
         });
+        // Once the mirror holds them: a change that is no action of a package (an undo) is
+        // read for what it wrote.
+        if let (Some(versions), Some(mirror)) = (self.versions.as_mut(), self.mirror.as_deref()) {
+            note_versions(versions, &changes, mirror, before);
+        }
         let what = match (applied, self.mirror.as_deref()) {
             (Some(Ok(())), Some(mirror)) => Some(changed_by(&changes, mirror, before)),
             _ => None,
@@ -2744,6 +2734,16 @@ impl Store for TiloStore {
             .get(&at.id_string())
             .cloned()
             .unwrap_or_default())
+    }
+
+    fn versions_within(&self, doc: &DocId) -> Result<BTreeMap<String, Vec<Version>>, StoreError> {
+        let prefix = format!("{doc}/");
+        Ok(self
+            .built_versions()
+            .iter()
+            .filter(|(resource, _)| *resource == doc || resource.starts_with(&prefix))
+            .map(|(resource, versions)| (resource.clone(), versions.clone()))
+            .collect())
     }
 
     fn run_changes(&self, run: &str) -> Result<Vec<Version>, StoreError> {

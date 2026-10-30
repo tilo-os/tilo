@@ -587,13 +587,15 @@ fn measure_one(
             },
             text,
         );
+        // The narrowest the text can be laid out at: a word longer than its line breaks
+        // anywhere, so only text that cannot break (one line) needs more than a glyph.
         let narrowest = widget.measure(
             Size {
                 width: None,
                 height: None,
             },
             Size {
-                width: AvailableSpace::MinContent,
+                width: AvailableSpace::Definite(1.0),
                 height: AvailableSpace::MaxContent,
             },
             text,
@@ -610,7 +612,7 @@ fn measure_one(
             ))
         } else if f64::from(narrowest.width) > own.width() + EPSILON {
             Some(format!(
-                "a word needs {:.0} wide, has {} ({shown:?})",
+                "needs {:.0} wide at the narrowest, has {} ({shown:?})",
                 narrowest.width,
                 size(own)
             ))
@@ -714,6 +716,30 @@ mod tests {
         };
         assert_eq!(small(Some(48.0)), [Some("small".to_owned())]);
         assert!(small(None).is_empty());
+    }
+
+    /// A long word in a column narrower than it: text that wraps breaks it anywhere and shows
+    /// all of it; text that keeps its words whole (source code's soft wrap) is clipped, and
+    /// caught.
+    #[test]
+    fn text_that_cannot_break_a_word_wider_than_its_column_is_caught() {
+        use ui::widget::arrange::{Length, Slot, Stack};
+        let clipped = |mode: ui::text_render::TextWrapMode| {
+            let text =
+                ui::widget::Text::new("Donaudampfschifffahrtsgesellschaft").with_wrap_mode(mode);
+            let mut column = Slot::new(Box::new(Stack::stack().push(Box::new(text))));
+            column.fit.width.max = Some(Length::Rem(6.0));
+            let mut h = ui::headless::FrameHarness::for_root(
+                ui::State::new(),
+                Stack::stack().push_slot(column),
+                (320, 200),
+                ui::Theme::light(),
+            );
+            let mut renderer = ui::TextRenderer::new();
+            clipped_text(h.root_widget_mut(), &mut renderer, (320, 200)).len()
+        };
+        assert_eq!(clipped(ui::text_render::TextWrapMode::Wrap), 0);
+        assert_eq!(clipped(ui::text_render::TextWrapMode::Indented), 1);
     }
 
     /// A header action the shell holds in a frame of its own is the control it frames.

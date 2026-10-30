@@ -16,6 +16,10 @@ image = { workspace = true, features = ["png"] }
 # An application's themed icon is an SVG as often as a PNG.
 resvg = { version = "0.47", default-features = false }
 tilo-surface-host = { path = "../surface-host" }
+# The shell's package (`apps/tl/shell`), compiled as the session starts, and the desk's
+# action vocabulary.
+tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-desktop = { path = "../desktop" }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface" }

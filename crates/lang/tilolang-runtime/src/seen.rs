@@ -43,13 +43,19 @@ impl SeenMark {
     }
 }
 
-/// A seen mark the person set, for the host to keep in their own record.
+/// What the person marked seen, for the host to keep in their own record: the system's one
+/// `mark seen` action, of resources or of a whole run.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SeenWrite {
-    pub person: String,
-    /// The resource, as [`crate::value::ResourceRef::id_string`] writes it.
-    pub resource: String,
-    pub mark: SeenMark,
+pub enum SeenWrite {
+    /// `person` has seen `resource` (as [`crate::value::ResourceRef::id_string`] writes it) up
+    /// to `mark`.
+    Resource {
+        person: String,
+        resource: String,
+        mark: SeenMark,
+    },
+    /// `person` reviewed the task run `run` (its group): every version it made is seen.
+    Run { person: String, run: String },
 }
 
 /// The slot holding `person`'s seen mark of `resource`.
@@ -62,6 +68,12 @@ pub fn seen_key(person: &str, resource: &str) -> StateKey {
     }
 }
 
+/// The slot holding the task runs `person` reviewed: the state no resource id names.
+#[must_use]
+pub fn runs_key(person: &str) -> StateKey {
+    seen_key(person, "$runs")
+}
+
 /// Whether `version` is one the host marks for `person`: made in a task run or by an agent,
 /// and not by `person`.
 #[must_use]
@@ -70,9 +82,15 @@ pub fn is_marked(version: &Version, person: &str) -> bool {
 }
 
 /// Which of `versions` (oldest first) `person` has not seen, oldest first: those after their
-/// mark and after their own newest version, which are marked ([`is_marked`]).
+/// mark and after their own newest version, which are marked ([`is_marked`]) and not of a run
+/// they reviewed (`runs`).
 #[must_use]
-pub fn unseen(versions: &[Version], person: &str, mark: Option<&SeenMark>) -> Vec<Version> {
+pub fn unseen(
+    versions: &[Version],
+    person: &str,
+    mark: Option<&SeenMark>,
+    runs: &[String],
+) -> Vec<Version> {
     let mut from = 0;
     if let Some(mark) = mark {
         from = match versions.iter().rposition(|v| v.change == mark.change) {
@@ -91,6 +109,7 @@ pub fn unseen(versions: &[Version], person: &str, mark: Option<&SeenMark>) -> Ve
         .unwrap_or_default()
         .iter()
         .filter(|v| is_marked(v, person))
+        .filter(|v| !v.task.as_ref().is_some_and(|task| runs.contains(&task.id)))
         .cloned()
         .collect()
 }
@@ -126,17 +145,19 @@ mod tests {
         ];
         let changes = |list: Vec<Version>| list.into_iter().map(|v| v.change).collect::<Vec<_>>();
         // Nothing seen: both of the agent's; Ben's change is a person's, not marked.
-        assert_eq!(changes(unseen(&versions, "ada", None)), ["c2", "c4"]);
+        assert_eq!(changes(unseen(&versions, "ada", None, &[])), ["c2", "c4"]);
         // Seen up to c2.
         let mark = SeenMark::of(&versions[1]);
-        assert_eq!(changes(unseen(&versions, "ada", Some(&mark))), ["c4"]);
+        assert_eq!(changes(unseen(&versions, "ada", Some(&mark), &[])), ["c4"]);
         // Ben edited after c2: what he saw is seen for him, what came after is not.
-        assert_eq!(changes(unseen(&versions, "ben", None)), ["c4"]);
+        assert_eq!(changes(unseen(&versions, "ben", None, &[])), ["c4"]);
         // A mark whose change the log no longer names stands by its time.
         let gone = SeenMark {
             change: "compacted".to_owned(),
             at: "2026-10-30T09:03:00Z".to_owned(),
         };
-        assert!(unseen(&versions, "ada", Some(&gone)).is_empty());
+        assert!(unseen(&versions, "ada", Some(&gone), &[]).is_empty());
+        // A reviewed run's versions are seen, whatever the marks.
+        assert!(unseen(&versions, "ada", None, &["t1@1".to_owned()]).is_empty());
     }
 }

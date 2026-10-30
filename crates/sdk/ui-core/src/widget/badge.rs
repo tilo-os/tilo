@@ -235,6 +235,7 @@ fn badge_pill(
     PillPaint {
         rect,
         label,
+        face: "",
         lead: ChipLead::None,
         style,
         selected: false,
@@ -261,6 +262,7 @@ fn paint_badge_pill(
         &PillPaint {
             rect,
             label,
+            face: "",
             lead: ChipLead::None,
             style,
             selected: false,

@@ -14,6 +14,9 @@
 mod app_glyph;
 mod app_image;
 mod service_mark;
+mod tilo_mark;
+
+pub use tilo_mark::paint_tilo_mark;
 
 pub use app_glyph::app_glyph;
 pub use service_mark::{ServiceMark, service_mark};
@@ -314,6 +317,9 @@ icons! {
     /// Discord's mark, for linking a Discord account. Not Lucide: drawn
     /// filled ([`Icon::is_brand`]), its eyes left open.
     Discord => "discord",
+    /// The Tilo mark, which leads the system's own menu. Not Lucide: drawn in the brand's
+    /// colours, whatever the ink ([`paint_tilo_mark`]).
+    Tilo => "tilo",
     /// A rectangle of an area being selected. Lucide `square-dashed`.
     SquareDashed => "square-dashed",
     /// An ellipse of an area being selected. Lucide `circle-dashed`.
@@ -1736,6 +1742,7 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M7 11V7a5 5 0 0 1 9.9-1"),
         ],
         Icon::Discord => vec![discord_mark()],
+        Icon::Tilo => tilo_mark::subpaths(),
         Icon::Unlink => vec![
             path_from_d(
                 "m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71",
@@ -1951,6 +1958,10 @@ impl Icon {
         reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
     )]
     pub fn draw_filled(self, scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
+        if self == Self::Tilo {
+            tilo_mark::paint_tilo_mark(scene, transform, rect, tilo_mark::on_dark(color));
+            return;
+        }
         let size = rect.size();
         let min = size.width.min(size.height);
         if min <= 0.0 {
@@ -2008,6 +2019,11 @@ pub fn draw_icon(
     color: Color,
     stroke_px: f64,
 ) {
+    if icon == Icon::Tilo {
+        // The brand's own colours: the mark is never an ink's outline.
+        tilo_mark::paint_tilo_mark(scene, transform, rect, tilo_mark::on_dark(color));
+        return;
+    }
     let size = rect.size();
     let min = size.width.min(size.height);
     if min <= 0.0 {
