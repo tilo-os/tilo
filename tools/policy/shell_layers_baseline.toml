@@ -61,14 +61,12 @@ grandfathered = [
     "base64",
     "blake3",
     "bounded-command",
-    "browser",
     "bytes",
     "capnp",
     "capnp-rpc",
     "channel-crypto",
     "chat",
     "chrono",
-    "code-editor",
     "collab-types",
     "compat-service",
     "console-control",
@@ -89,14 +87,11 @@ grandfathered = [
     "launcher",
     "legacy-agent-protocol",
     "libc",
-    "messages",
     "mime_guess",
     "neighbour-wire",
-    "notes",
     "os-actions",
     "package-store",
     "parking_lot",
-    "passwords",
     "percent-encoding",
     "pipewire",
     "pollster",
@@ -124,7 +119,6 @@ grandfathered = [
     "taffy",
     "tar",
     "tempfile",
-    "terminal",
     "thiserror",
     "threshold-identity",
     "tilo-accessibility-settings",
@@ -205,7 +199,6 @@ grandfathered = [
     "wayland-scanner",
     "windows-vm",
     "wire-frame",
-    "word-processor",
     "x11rb",
     "xattr",
     "xkeysym",
@@ -245,7 +238,6 @@ grandfathered = [
 "tilo-render-service" = "The per-room render service runs as a mode of the session binary (linux_main dispatches it) and the compositor's broker starts it, so the binary links the service"
 "tilo-system-stats" = "The typed system information service the session serves to apps, and the readings its own System monitor desk widget shows"
 "host-fs" = "Uninstalling an app (shell::app_list) moves its program file and a Flatpak's data to the Trash, never deleting them; host-fs is the one Trash implementation, which Files and Backups already use, and brings only the trash crate and tilo-paths with it"
-"osk" = "The on-screen keyboard's own widget, which an offscreen capture draws in place of the keyboard client's surface it has no client for (shell::shots_keyboard): the layouts, key geometry and paint stay the keyboard app's, and the shell adds no code but the panel it docks it in, so a shot and a touch screen place the keyboard by one rule; it brings ui, taffy and vello, which the shell already depends on"
 "tilo-winit-x11" = "The hosted backend's winit with X11 turned on, split out so hakari keeps X11 out of the shared app runtime; it adds no code beyond winit, which the shell already depends on as tilo-winit"
 "tilo-wayland-ext" = "The color-management-v1 handlers and the EDID parsing, carved out of the shell so the compositor does not rebuild them; it brings neighbour-wire and smithay, which the shell already depends on"
 "tilo-quick-settings" = "The Quick Settings panel, its sections and state, and the status line the top bar shares, carved out of the shell so a chrome or compositor change does not rebuild them; it brings tilo-ui, tilo-desktop, os-actions, settings-store and tilo-power-mgmt, which the shell already depends on"
@@ -254,8 +246,7 @@ grandfathered = [
 "tilo-liveness" = "The liveness socket's heartbeats, thread dumps and main-thread file audit, carved out of the compositor so a compositor change does not rebuild them; it brings backtrace, calloop, durable-store, libc, parking_lot and serde, which the shell already depends on"
 "tilo-color-pipeline" = "The compositor's colour maths (HDR output encode, tone mapping, the HDR surface composite and its shaders, display capabilities, software dimming), carved out of the shell so a compositor change does not rebuild it; it brings neighbour-wire, settings-store, tilo-wayland-ext and vello, which the shell already depends on"
 "tilo-output-passes" = "The GPU passes that put a frame on an output (orientation, ICC calibration, HDR encode and composite, XRGB damage history, shader warm-up, software GPU memory return), carved out of the shell so a compositor change does not rebuild them; it brings qcms, ash, sysinfo, settings-store, tilo-advisory-lock, tilo-color-pipeline and vello, which the shell already depends on"
-"tilo-room-host" = "Every device hosts the rooms placed on it with the same host a relay embeds: the room governance, member sessions and retained store live in tilo-room-host, built without its agents or web features, and the shell keeps only what ties it to this device, its router's deferred handlers (network::local_host) and placing its own workspaces on the host (shell::network::embedded_host), which reads the shell's workspace tree and network and so cannot move below it; a crate between the two would add a hop and leave the shell's graph the same"
-"activity" = "The Activity app's record, read for the runs and progress the shell shows in its own surfaces (as it already reads the Notes, Code, Word and Tasks records); the app crate brings the record's model, which the shell renders, and adds nothing the shell does not already link"
+"tilo-room-host" = "Every device hosts the rooms placed on it with the same host a relay embeds (docs/architecture/hosting.md): the room governance, member sessions and retained store live in tilo-room-host, built without its agents or web features, and the shell keeps only what ties it to this device, its router's deferred handlers (network::local_host) and placing its own workspaces on the host (shell::network::embedded_host), which reads the shell's workspace tree and network and so cannot move below it; a crate between the two would add a hop and leave the shell's graph the same"
 "tilo-auth" = "The login screens' comforts go to tilo-authd over its own socket protocol, built with default features off; it is the one client of that protocol, and brings only the wire types the shell sends, not the daemon"
 "pprof-alloc" = "Optional, behind the hosted-test-control feature: the sampling heap profiler installed as the global allocator in shell::heap_profile, idle unless PPROF_ALLOC_SAMPLE_RATE is set, so the idle-memory test and an on-demand profile can attribute live heap to a call site"
 "prost" = "Optional, behind the hosted-test-control feature: decodes the gzipped pprof profile that pprof-alloc records, in shell::heap_profile only"
