@@ -53,11 +53,16 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
     // yet — whoever made it — goes to the server from a live window on a
     // device with the account, and the engine's acknowledgement records it
     // as applied.
+    // A window that reaches no server (a past version, one opened offline)
+    // takes none of it: refused there, it would be settled as failed and no
+    // window that can reach the server would carry it out.
     let outbox = window.server_outbox();
-    let shared = Rc::clone(&window.shared);
+    let (shared, carrier) = (Rc::clone(&window.shared), window.room());
     let projection = cx.outbox(
         Mail::paths().server,
-        move |_, update: &ServerUpdate| holds_account(&shared.borrow(), update.account()),
+        move |_, update: &ServerUpdate| {
+            carrier.borrow().reaches_servers() && holds_account(&shared.borrow(), update.account())
+        },
         move |_, update: ServerUpdate, cx| {
             let reply = cx.reply();
             outbox.borrow_mut().push(
@@ -71,10 +76,12 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
     );
     window.follow_projection(projection);
     let outbox = window.server_outbox();
-    let shared = Rc::clone(&window.shared);
+    let (shared, carrier) = (Rc::clone(&window.shared), window.room());
     let delivery = cx.outbox(
         Mail::paths().outbox,
-        move |_, outgoing: &Outgoing| holds_account(&shared.borrow(), &outgoing.account),
+        move |_, outgoing: &Outgoing| {
+            carrier.borrow().reaches_servers() && holds_account(&shared.borrow(), &outgoing.account)
+        },
         move |_, outgoing: Outgoing, cx| {
             let reply = cx.reply();
             outbox.borrow_mut().deliver(
@@ -338,6 +345,12 @@ fn draft_reply(
 }
 
 impl Mailroom {
+    /// Whether this window reaches mail servers: it runs the engine that
+    /// carries out what the document asks of them.
+    pub(crate) const fn reaches_servers(&self) -> bool {
+        self.engine.is_some()
+    }
+
     /// The message `item` names, fetched or held: the record's held mail
     /// first, then what this device keeps of its servers. `None` once it
     /// was deleted for good.
