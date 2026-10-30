@@ -1107,22 +1107,27 @@ fn resolve_operation(
     }
 }
 
-/// Open `issue` (its address) as a chat: Tasks' published `open-chat`,
-/// which a press in Tasks, the palette and an agent invoke alike. The host
-/// launches Tasks when no window shows the tracker; Tasks opens the chat in
-/// a window of its own.
+/// Open `issue` (its address) as a chat: the desktop's `open` of the chat's
+/// address (`tilo-tasks:chat/<issue>`, which Tasks claims), in a window of its
+/// own. One window opens whether or not Tasks was running, and an agent opens
+/// a chat the same way.
 fn chat_operation(issue: &str) -> Option<Operation> {
+    use tilo_desktop_model::commands::{RESOURCE, layout};
     let id = issue.strip_prefix(tilo_action_broker::services::TRACKER_ISSUE_PREFIX)?;
-    let effect = tasks::TasksEffect::OpenChat {
-        issue: tilo_resource::Id::from_raw(id),
-    };
+    let uri = tasks::chat_uri(&tilo_resource::Id::from_raw(id));
     Some(Operation {
-        resource: TRACKER.into(),
-        action: tilo_resource::Effect::id(&effect).into(),
-        arguments: Map::from_iter([("issue".into(), id.into())]),
+        resource: RESOURCE.into(),
+        action: layout::OPEN.into(),
+        arguments: Map::from_iter([
+            ("target".into(), uri.into()),
+            ("place".into(), "new-window".into()),
+        ]),
         purpose: Purpose::Show,
-        app: TRACKER_APP.into(),
-        target: None,
+        app: tilo_desktop_model::commands::APP_ID.into(),
+        target: Some(tilo_actions::remote::RemoteActionTarget {
+            provider: layout::PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new(RESOURCE, layout::OPEN),
+        }),
         confirmation: None,
     })
 }
@@ -2349,9 +2354,9 @@ mod tests {
     }
 
     /// "Open as chat" asks what the person typed as a task for a chat and
-    /// opens its issue through Tasks' published `open-chat`, once asked;
-    /// with a run followed, it opens that run's issue the same way and asks
-    /// nothing.
+    /// opens its issue's chat through the desktop's `open` of the chat's
+    /// address, in a window of its own, once asked; with a run followed, it
+    /// opens that run's issue the same way and asks nothing.
     #[test]
     fn open_as_chat_asks_the_typed_request_as_a_chat_and_opens_its_issue_as_one() {
         let room = Room::new(None);
@@ -2372,18 +2377,16 @@ mod tests {
         assert_eq!(asked["title"], "Review the applications in my inbox");
         assert_eq!(asked.get("chat").and_then(Value::as_bool), Some(true));
         let id = asked["id"].as_str().unwrap().to_owned();
-        let open_chat = tilo_resource::Effect::id(&tasks::TasksEffect::OpenChat {
-            issue: tilo_resource::Id::from_raw(&id),
-        });
+        let open = tilo_desktop_model::commands::layout::OPEN;
+        let desktop_open = format!("{}#{open}", tilo_desktop_model::commands::RESOURCE);
+        let chat = tasks::chat_uri(&tilo_resource::Id::from_raw(&id));
         assert_eq!(
             room.invoked(),
-            [
-                format!("{TRACKER}#ask-agent"),
-                format!("{TRACKER}#{open_chat}")
-            ],
+            [format!("{TRACKER}#ask-agent"), desktop_open.clone()],
             "asked as work, never as a quick answer, then opened as a chat"
         );
-        assert_eq!(room.arguments(open_chat)["issue"], id.as_str());
+        assert_eq!(room.arguments(open)["target"], chat.as_str());
+        assert_eq!(room.arguments(open)["place"], "new-window");
         assert!(!composer.is_open(), "the conversation goes on in the chat");
 
         // The run it follows opens as a chat as it is.
@@ -2400,8 +2403,8 @@ mod tests {
             &ui::a11y::Action::Activate,
         );
         settle(&mut actions, &mut composer, &tracker);
-        assert_eq!(room.invoked(), [format!("{TRACKER}#{open_chat}")]);
-        assert_eq!(room.arguments(open_chat)["issue"], id.as_str());
+        assert_eq!(room.invoked(), [desktop_open]);
+        assert_eq!(room.arguments(open)["target"], chat.as_str());
     }
 
     #[test]
