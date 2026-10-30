@@ -8,7 +8,7 @@
 # The disk is this tree's dev image as os-dev-disk-ARCH installed it, never booted itself: the VM
 # runs on a throwaway overlay of it, so nothing it does outlives the job. QEMU runs it through
 # os/dev/vm.sh, the same harness the gates boot with, serving its serial console and its display
-# (VNC) on sockets (through a QEMU wrapper) and its SSH on a forwarded port inside the job; t's attach agent (served by
+# (VNC) on sockets and its SSH on a forwarded port inside the job; t's attach agent (served by
 # the t server that ran the job, so it speaks its protocol) registers those three channels and
 # relays each connection the session makes. Nothing listens on the node's network. As root in a
 # micro-VM step with a /dev/kvm of its own; nothing here holds a secret or publishes.
@@ -47,31 +47,13 @@ revision=$(cat "$disk_dir/revision")
 export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo TILO_MEM=10240
 export TILO_RUN=/var/tmp/tilo-os-vm-$arch TILO_SSH_PORT=2222
 export TILO_DISK=$TILO_RUN/disk.qcow2
+# The serial console and the display are served on sockets in the run directory, so the agent
+# can relay both; vm.sh hands both to tilo-vm, which keeps logging the serial line to the file
+# `vm.sh wait` reads.
 export TILO_SERIAL_SOCKET=$TILO_RUN/serial.sock TILO_VNC_SOCKET=$TILO_RUN/vnc.sock
 rm -rf -- "$TILO_RUN"
 install -d -m 0700 "$TILO_RUN"
 os/dev/vm.sh tool qemu-img create -q -f qcow2 -F qcow2 -b "$disk_dir/disk.qcow2" "$TILO_DISK"
-
-# vm.sh starts QEMU as $TILO_QEMU_SYSTEM: this wrapper serves the serial console on a socket
-# (still logging to the file `vm.sh wait` reads) and the display as VNC on another, so the
-# agent can relay both, without changing how the harness boots every other VM.
-export TILO_QEMU_SYSTEM=$scratch/qemu-system-attachable
-cat > "$TILO_QEMU_SYSTEM" <<EOF
-#!/usr/bin/env bash
-args=()
-while ((\$#)); do
-  if [[ \$1 == -serial && \$2 == file:* ]]; then
-    args+=(-chardev "socket,id=tiloserial,path=$TILO_SERIAL_SOCKET,server=on,wait=off,logfile=\${2#file:}"
-      -serial chardev:tiloserial)
-    shift 2
-    continue
-  fi
-  args+=("\$1")
-  shift
-done
-exec qemu-system-$arch "\${args[@]}" -vnc unix:$TILO_VNC_SOCKET
-EOF
-chmod 0755 "$TILO_QEMU_SYSTEM"
 
 # What the agent runs for the VM's lifetime: boot it, wait for its greeter, then stay while
 # QEMU runs. The agent stops this when the lifetime ends or the session stops the VM; the trap

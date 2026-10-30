@@ -564,6 +564,10 @@ pub struct MachineArgs {
     /// Write the serial log here instead of <run>/serial.log.
     #[arg(long)]
     pub serial_log: Option<PathBuf>,
+    /// Serve the display as VNC on this unix socket as well, so a remote
+    /// client can watch the guest without a window on this host.
+    #[arg(long)]
+    pub vnc: Option<PathBuf>,
 }
 
 /// A validated machine.
@@ -600,6 +604,7 @@ pub struct Machine {
     pub root_key: Option<PathBuf>,
     pub serial_socket: bool,
     pub serial_log: Option<PathBuf>,
+    pub vnc: Option<PathBuf>,
 }
 
 impl TryFrom<&MachineArgs> for Machine {
@@ -698,6 +703,7 @@ impl TryFrom<&MachineArgs> for Machine {
             root_key: args.root_key.clone(),
             serial_socket: args.serial_socket,
             serial_log: args.serial_log.clone(),
+            vnc: args.vnc.clone(),
         })
     }
 }
@@ -867,6 +873,12 @@ impl Machine {
             args.extend(disk.args());
         }
         args.extend(self.display_args(resolved.rendernode));
+        if let Some(vnc) = &self.vnc {
+            // Beside whatever the display does locally: the guest renders
+            // once, and the VNC server serves those same frames on a socket
+            // this host's network never sees.
+            args.extend(["-vnc".into(), format!("unix:{}", path(vnc))]);
+        }
         args.extend(self.net_args());
         args.extend(self.input_args(run));
         if let Some(wav) = &self.audio_wav {
@@ -1854,6 +1866,16 @@ mod tests {
             text.contains("-serial chardev:tiloserial -pidfile"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn vnc_serves_the_local_display_on_a_socket() {
+        let text = line(&machine(&["--vnc", "/run/t/vnc.sock"]), false, None);
+        assert!(
+            text.contains("-display none -vnc unix:/run/t/vnc.sock"),
+            "the guest renders once, the VNC server serves those frames: {text}"
+        );
+        assert!(!line(&machine(&[]), false, None).contains("-vnc"));
     }
 
     #[test]

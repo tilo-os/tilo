@@ -375,6 +375,12 @@ TILO_QMP="$TILO_RUN/qmp.sock"
 # TILO_VM_AUDIO_WAV=PATH gives the guest a sound card whose output QEMU writes
 # to PATH as a WAV file, so a check can hear what the guest said.
 TILO_VM_AUDIO_WAV="${TILO_VM_AUDIO_WAV:-}"
+# TILO_SERIAL_SOCKET=PATH also serves the serial line on a socket, so a
+# process on this host can type into the guest; TILO_VNC_SOCKET=PATH serves the
+# display as VNC on a socket, so one can watch it. Both stay unix sockets in
+# the run directory: nothing here listens on the host's network.
+TILO_SERIAL_SOCKET="${TILO_SERIAL_SOCKET:-}"
+TILO_VNC_SOCKET="${TILO_VNC_SOCKET:-}"
 
 # The `tilo-vm qemu` flags for these settings, in the array QEMU_FLAGS.
 qemu_flags() {
@@ -386,6 +392,8 @@ qemu_flags() {
   [ "$TILO_TPM" != 1 ] || QEMU_FLAGS+=(--tpm)
   [ "$TILO_SECBOOT" != 1 ] || QEMU_FLAGS+=(--secboot)
   [ "$TILO_VM_S3" != 1 ] || QEMU_FLAGS+=(--s3)
+  [ -z "$TILO_SERIAL_SOCKET" ] || QEMU_FLAGS+=(--serial-socket)
+  [ -z "$TILO_VNC_SOCKET" ] || QEMU_FLAGS+=(--vnc "$TILO_VNC_SOCKET")
   # A named installation cycle keeps its firmware state from the installer
   # boot to the target boot.
   [ -z "$TILO_VM_CYCLE" ] || QEMU_FLAGS+=(--keep-vars)
