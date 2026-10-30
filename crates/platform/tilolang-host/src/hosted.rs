@@ -40,7 +40,7 @@ use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::room::{RoomError, RoomRecord};
-use tilolang_tilo::instance::{Config, Instance, Mode, Platform, Publication};
+use tilolang_tilo::instance::{Config, HistoryAsk, Instance, Mode, Platform, Publication};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::package_resource_id;
@@ -420,17 +420,22 @@ impl Hosted {
             .receive_and(&mut self.instance, |event| events.push(event));
         self.instance.sync(Some(self.record.doc()));
         changed |= self.instance.update();
-        if self.instance.take_undo() {
+        changed |= self.commit();
+        // After what the person did before asking is committed: an undo takes back their last
+        // step, typing they did just before it included.
+        for asked in self.instance.take_history() {
             let (resource, kind) = &self.resource;
-            match self.record.undo(&mut self.instance, resource, kind) {
-                Ok(undone) => changed |= undone,
-                Err(error) => tracing::warn!(%error, "the undo did not reach the room"),
-            }
-        }
-        match self.record.commit(&mut self.instance) {
-            Ok(committed) => changed |= !committed.is_empty(),
-            Err(error) => {
-                tracing::warn!(app = self.spec.app, %error, "a change did not reach the room");
+            let done = match asked {
+                HistoryAsk::Undo => self.record.undo(&mut self.instance, resource, kind),
+                HistoryAsk::Redo => self.record.redo(&mut self.instance, resource, kind),
+            };
+            match done {
+                Ok(done) => changed |= done,
+                Err(error) => {
+                    tracing::warn!(app = self.spec.app, ?asked, %error, "an undo was refused");
+                    self.instance.history_refused(error.to_string());
+                    changed = true;
+                }
             }
         }
         for event in events {
@@ -439,6 +444,17 @@ impl Hosted {
         self.publish();
         self.answer_directory();
         changed
+    }
+
+    /// Commit what the runtime planned and send it on the route. Whether anything was.
+    fn commit(&mut self) -> bool {
+        match self.record.commit(&mut self.instance) {
+            Ok(committed) => !committed.is_empty(),
+            Err(error) => {
+                tracing::warn!(app = self.spec.app, %error, "a change did not reach the room");
+                false
+            }
+        }
     }
 
     /// Offer the instance's action directory on its connection, once it is connected, and

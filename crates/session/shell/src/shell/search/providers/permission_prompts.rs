@@ -48,7 +48,7 @@ pub(crate) fn answer_pending_prompt_as(
 }
 
 /// A decision's parameters: always the confirmation; for an agent door
-/// client also which agent it is admitted as, and a new agent's preset.
+/// client also the name it works under.
 fn prompt_params(agent_admission: bool) -> Vec<ActionParam> {
     let mut params = vec![ActionParam::required_owned(
         "confirm",
@@ -61,30 +61,15 @@ fn prompt_params(agent_admission: bool) -> Vec<ActionParam> {
             ParamType::Text,
             t("agent-door-param-agent"),
         ));
-        params.push(ActionParam::optional_owned(
-            "preset",
-            ParamType::Text,
-            t("agent-door-param-preset"),
-        ));
     }
     params
 }
 
-/// The agent the person named, if they named one.
-fn member_choice(
-    args: &crate::shell::search::action_api::ActionArgs,
-) -> Result<Option<MemberChoice>, ActionError> {
-    let preset = args
-        .text("preset")
-        .map(|value| {
-            tilo_action_policy::roles::AgentPreset::parse(value)
-                .ok_or_else(|| ActionError::Explained(t("agent-door-preset-invalid")))
-        })
-        .transpose()?;
-    Ok(args.text("agent").map(|agent| MemberChoice {
+/// The name the person gave the client, if they gave one.
+fn member_choice(args: &crate::shell::search::action_api::ActionArgs) -> Option<MemberChoice> {
+    args.text("agent").map(|agent| MemberChoice {
         agent: agent.to_owned(),
-        preset,
-    }))
+    })
 }
 
 /// The address word of one answer.
@@ -170,7 +155,7 @@ impl SearchProvider for PermissionPromptsProvider {
                             "permission-request-owner-required",
                         )));
                     }
-                    let member = member_choice(args)?;
+                    let member = member_choice(args);
                     answer_pending_prompt_as(&mut state, prompt_id, choice, member)
                 }),
                 on_invoke: None,

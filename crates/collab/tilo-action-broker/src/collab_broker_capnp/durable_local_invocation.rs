@@ -26,18 +26,33 @@ impl LocalCaller {
         (self.route.cluster_id.clone(), self.admitted.clone())
     }
     pub(super) fn capture(channel: &CapnpChannelHandle) -> Result<Self, String> {
-        let time = channel
-            .state
+        Self::admitted_on(
+            &channel.state,
+            channel.peer_id,
+            channel.route(),
+            &channel.verified_identity,
+        )
+    }
+    /// The caller `admitted` on connection `peer` of `route`, now: what
+    /// [`Self::capture`] takes from a channel, for a connection the broker
+    /// serves in this process (the desktop's agent door).
+    pub(super) fn admitted_on(
+        state: &CapnpBrokerState,
+        peer: u64,
+        route: CrdtRoute,
+        admitted: &AdmittedJoinIdentity,
+    ) -> Result<Self, String> {
+        let time = state
             .registered_policy_time()?
             .ok_or("durable local caller needs original policy time")?;
         let caller = Self {
-            peer: channel.peer_id,
-            route: channel.route(),
-            owner: Self::owner_of(&channel.verified_identity)?,
-            admitted: channel.verified_identity.clone(),
+            peer,
+            route,
+            owner: Self::owner_of(admitted)?,
+            admitted: admitted.clone(),
             time,
         };
-        caller.current(&channel.state)?;
+        caller.current(state)?;
         Ok(caller)
     }
     fn owner_of(admitted: &AdmittedJoinIdentity) -> Result<InvocationOwner, String> {
