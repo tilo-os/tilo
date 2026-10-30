@@ -66,6 +66,12 @@ pub enum BackupsEffect {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,
     },
+    /// List the snapshots newest or oldest first.
+    #[effect(view, idempotent, label = "Order snapshots")]
+    OrderSnapshots {
+        #[param("How to list them", choices = ORDERS.iter().copied())]
+        order: String,
+    },
     /// Show the retention policy a source's snapshots follow.
     #[effect(view, label = "Show global retention policy")]
     ShowSchedule {
@@ -73,6 +79,10 @@ pub enum BackupsEffect {
         source_id: String,
     },
 }
+
+/// The orders the timeline lists snapshots in, as the order picker names
+/// them: newest first, then oldest first.
+pub const ORDERS: [&str; 2] = ["Newest first", "Oldest first"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Blocked {

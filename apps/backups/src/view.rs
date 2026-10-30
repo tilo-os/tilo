@@ -15,6 +15,7 @@ use ui::LocalState;
 use ui::fact::{Measure, Measured};
 use ui::icons::Icon;
 use ui::text_render::TextKind;
+use ui::tilo_actions::ActionBinding;
 use ui::tokens::TextRole;
 use ui::widget::{
     Banner, Button, ChipStyle, Column, Container, ControlSize, Dropdown, Element, EmptyState,
@@ -94,7 +95,6 @@ pub enum Intent {
     CloseRestore,
     Setup,
     DismissFailure,
-    SetOrder(Order),
 }
 
 /// The queue controls write to and the app drains.
@@ -106,6 +106,25 @@ pub enum Order {
     #[default]
     NewestFirst,
     OldestFirst,
+}
+
+impl Order {
+    /// The order the picker names `label`, newest first for any other.
+    pub fn of(label: &str) -> Self {
+        if label == crate::actions::ORDERS[1] {
+            Self::OldestFirst
+        } else {
+            Self::NewestFirst
+        }
+    }
+
+    /// What the order picker calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NewestFirst => crate::actions::ORDERS[0],
+            Self::OldestFirst => crate::actions::ORDERS[1],
+        }
+    }
 }
 
 /// What a running job is doing.
@@ -161,6 +180,8 @@ pub struct Model<'a> {
     pub selected: Option<&'a str>,
     pub now: NaiveDateTime,
     pub order: Order,
+    /// What the order picker runs: the window's `order-snapshots` effect.
+    pub order_binding: Option<&'a ActionBinding<String>>,
     pub job: Option<&'a Job>,
     /// The last operation failed: what, and what to do.
     pub failure: Option<(&'a str, &'a str)>,
@@ -400,8 +421,14 @@ pub fn page_title(catalog: &Catalog, page: &Page) -> String {
 }
 
 /// The timeline's heading, with its order beside it.
-fn timeline_heading(current: Order, intents: &Intents) -> Row {
-    let order = intents.clone();
+fn timeline_heading(current: Order, order: Option<&ActionBinding<String>>) -> Row {
+    let picker = Dropdown::from_state(
+        crate::actions::ORDERS.map(str::to_owned).to_vec(),
+        &LocalState::new(current.label().to_owned()),
+    )
+    .with_id("backups-order")
+    .with_accessible_name("Order of snapshots")
+    .control_size(ControlSize::Small);
     Row::new()
         .no_wrap()
         .push(Box::new(
@@ -410,28 +437,10 @@ fn timeline_heading(current: Order, intents: &Intents) -> Row {
                 .with_heading_level(2),
         ))
         .push(Box::new(Spacer::new()))
-        .push(Box::new(
-            Dropdown::from_state(
-                vec!["Newest first".to_owned(), "Oldest first".to_owned()],
-                &LocalState::new(
-                    match current {
-                        Order::NewestFirst => "Newest first",
-                        Order::OldestFirst => "Oldest first",
-                    }
-                    .to_owned(),
-                ),
-            )
-            .with_id("backups-order")
-            .with_accessible_name("Order of snapshots")
-            .control_size(ControlSize::Small)
-            .on_change(move |choice| {
-                order.push(Intent::SetOrder(if choice == "Oldest first" {
-                    Order::OldestFirst
-                } else {
-                    Order::NewestFirst
-                }));
-            }),
-        ))
+        .push(Box::new(match order {
+            Some(order) => picker.on_action(order.clone()),
+            None => picker.with_enabled(false),
+        }))
 }
 
 pub fn content(
@@ -723,7 +732,7 @@ fn snapshot_list(model: &Model<'_>, intents: &Intents) -> Element {
     }
     let show_source = !matches!(model.page, Page::Source(_));
     let today = model.now.date();
-    let mut days: Vec<Element> = vec![Box::new(timeline_heading(model.order, intents))];
+    let mut days: Vec<Element> = vec![Box::new(timeline_heading(model.order, model.order_binding))];
     let mut day_rows: Vec<Element> = Vec::new();
     let mut current: Option<NaiveDate> = None;
     let flush = |day: NaiveDate, rows: &mut Vec<Element>, days: &mut Vec<Element>| {

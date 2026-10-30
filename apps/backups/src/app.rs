@@ -101,6 +101,9 @@ pub(crate) struct Store {
     destination_path: Option<PathBuf>,
     repository_error: Option<String>,
     dispatcher: Option<Dispatcher<Backups>>,
+    /// What the order picker runs, once the window takes part in the
+    /// resource.
+    order_binding: Option<ui::tilo_actions::ActionBinding<String>>,
     location: Option<Setting<BackupLocation>>,
     loaded: BackupLocation,
     work: Work,
@@ -224,6 +227,7 @@ impl Store {
             catalog_rev: 0,
             catalog_key: String::new(),
             dispatcher: None,
+            order_binding: None,
             location: None,
             loaded: BackupLocation::default(),
             work: Work::Idle,
@@ -268,6 +272,7 @@ impl Store {
     /// window) or the scenario's (a capture).
     fn attach(&mut self, cx: &ViewCx<Backups>) {
         self.dispatcher = Some(cx.dispatcher());
+        self.order_binding = cx.actions().effect_binding(BackupsEffect::ORDER_SNAPSHOTS);
         if let Some(demo) = cx.fixture::<DemoRepository>() {
             self.catalog = demo.catalog.clone();
 
@@ -505,6 +510,11 @@ impl Store {
                 }
                 self.ui.sel_snapshot = Some(snapshot_id);
                 self.ui.view = View::Timeline;
+                Ok(Effected::done())
+            }
+            BackupsEffect::OrderSnapshots { order } => {
+                self.order = Order::of(&order);
+                self.dirty = true;
                 Ok(Effected::done())
             }
             BackupsEffect::ShowSchedule { source_id } => {
@@ -980,6 +990,10 @@ impl Store {
         me: &Shared,
         cx: &mut EffectCx<Backups>,
     ) -> EffectAnswer {
+        // The order is the window's alone: it shows the page it showed.
+        if matches!(effect, BackupsEffect::OrderSnapshots { .. }) {
+            return self.answer_backend(effect, me, cx);
+        }
         self.job_kind = match &effect {
             BackupsEffect::BackupNow => Some(JobKind::Backup),
             BackupsEffect::Verify { .. } => Some(JobKind::Verify),
@@ -1295,7 +1309,6 @@ impl BackupsWindow {
                 }
                 Intent::Setup => repo.invoke(&BackupsEffect::Setup),
                 Intent::DismissFailure => repo.failure = None,
-                Intent::SetOrder(order) => repo.order = order,
             }
         }
         for ((field, current), retained) in [
@@ -1364,6 +1377,7 @@ impl BackupsWindow {
             selected: repo.selected.as_deref(),
             now,
             order: repo.order,
+            order_binding: repo.order_binding.as_ref(),
             job: repo.job_status.as_ref(),
             failure: repo
                 .failure
