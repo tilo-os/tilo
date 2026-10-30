@@ -633,6 +633,7 @@ impl Button {
 /// | `Destructive` | deletes, removes or revokes something | the secondary face lettered in danger ink; filled only inside the confirmation step |
 /// | `Plain` | inline text actions, toolbar glyphs, close buttons | nothing at rest, a lift of its ground under the pointer; a labelled one's ink sits on its layout edge and its lift and hit area reach outward |
 /// | `Key` | a keypad or keyboard key (a calculator digit, an on-screen key, a one-letter toggle) | a faint lift of its ground at rest, its label in `Title` |
+/// | `Bar` | a control of the desktop's top bar or a window's bar | the bar control ([`crate::widget::BarControlFace`]): nothing at rest, half a lift under the pointer, a whole lift while pressed or on, its icon in secondary ink until then |
 ///
 /// Every role has the control radius (`radii.control`): buttons are not
 /// pills.
@@ -645,6 +646,9 @@ pub enum ButtonRole {
     Plain,
     /// A key of a keypad or an on-screen keyboard.
     Key,
+    /// A control of the desktop's top bar or a window's bar: the bar
+    /// control's face and lifts ([`crate::widget::BarControlFace`]).
+    Bar,
 }
 
 impl ButtonRole {
@@ -726,7 +730,7 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: ButtonInteract) ->
             colors.text_primary,
             ON_FILL_MIN_CONTRAST,
         );
-        return if role == ButtonRole::Plain {
+        return if matches!(role, ButtonRole::Plain | ButtonRole::Bar) {
             (Color::TRANSPARENT, None, ink)
         } else if role == ButtonRole::Key {
             (colors.lift_on(colors.surfaces.content, 0.5), None, ink)
@@ -798,6 +802,26 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: ButtonInteract) ->
             };
             let ink = colors.ink_on_any(
                 &[rest, hover, pressed],
+                colors.text_primary,
+                ON_FILL_MIN_CONTRAST,
+            );
+            (fill, None, ink)
+        }
+        ButtonRole::Bar => {
+            // The bar has no surface of its own: its controls stand on the
+            // ground and lift off it, half under the pointer, whole while
+            // pressed (`BarControlFace::fill`).
+            let ground = colors.surfaces.content;
+            let (hover, pressed) = (colors.lift_on(ground, 0.5), colors.lift_on(ground, 1.0));
+            let fill = if interact.pressed {
+                pressed
+            } else if interact.hovered {
+                hover
+            } else {
+                Color::TRANSPARENT
+            };
+            let ink = colors.ink_on_any(
+                &[ground, hover, pressed],
                 colors.text_primary,
                 ON_FILL_MIN_CONTRAST,
             );
@@ -891,6 +915,16 @@ impl FaceMetrics {
         if role == ButtonRole::Key {
             metrics.label_style = theme.text(crate::tokens::TextRole::Title);
             metrics.icon = f64::from(metrics.label_style.size).round();
+        }
+        if role == ButtonRole::Bar {
+            // The top bar's control: a label line with air above and below
+            // (the bar control less one `s1`), and the bar control's inset,
+            // whatever size is asked.
+            let tokens = &theme.tokens;
+            metrics.height = f64::from(tokens.metrics.bar_control_height - tokens.spacing.s1);
+            metrics.pad_x = f64::from(tokens.spacing.rhythm.related);
+            metrics.icon = f64::from(tokens.metrics.icon_control);
+            metrics.label_style = theme.text(crate::tokens::TextRole::Label);
         }
         metrics
     }
@@ -1160,7 +1194,11 @@ fn hint_ink(
 ) -> vello::peniko::Color {
     match role {
         ButtonRole::Primary => ink,
-        ButtonRole::Secondary | ButtonRole::Destructive | ButtonRole::Plain | ButtonRole::Key => {
+        ButtonRole::Secondary
+        | ButtonRole::Destructive
+        | ButtonRole::Plain
+        | ButtonRole::Key
+        | ButtonRole::Bar => {
             let ground = if fill.components[3] > 0.0 {
                 fill
             } else {
@@ -1598,6 +1636,23 @@ impl Button {
         taffy.set_style(node, style).is_ok()
     }
 
+    /// The face's height on the node, as the input asks for it now: a button made before the
+    /// window told it a finger reaches it grows to the finger's target when it is laid out
+    /// again, not only when its node is built anew.
+    fn pin_face_height(&self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let height = f32_of_f64(self.face_height());
+        if style.size.height == Dimension::length(height) {
+            return false;
+        }
+        let mut style = style.clone();
+        style.size.height = Dimension::length(height);
+        style.min_size = Size::from_lengths(height, height);
+        taffy.set_style(node, style).is_ok()
+    }
+
     /// Run the native handler for a `tilo.ui.control.invoke` addressed to
     /// this button. `Ok(false)` when the operation is not this button's.
     fn invoke_native_control(
@@ -1639,6 +1694,8 @@ impl Widget for Button {
         if self.interaction != environment {
             self.interaction = environment;
             self.is_hovered &= environment.supports_hover();
+            // An icon's square and a label's padding follow the face's height.
+            self.measured_width = None;
             self.layout_dirty = true;
             self.dirty = true;
         }
@@ -1726,13 +1783,14 @@ impl Widget for Button {
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
+        let tall = self.pin_face_height(taffy, node);
         if self.fill_width {
-            return false;
+            return tall;
         }
         if self.measured_width.is_none() {
             self.measured_width = Some(self.intrinsic_width(text));
         }
-        self.pin_measured_width(taffy, node)
+        self.pin_measured_width(taffy, node) | tall
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -3959,3 +4017,7 @@ mod tests {
 
 mod component;
 pub use component::ButtonProps;
+
+#[cfg(test)]
+#[path = "button_touch_tests.rs"]
+mod touch_tests;

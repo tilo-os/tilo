@@ -1071,8 +1071,11 @@ impl BrowserShell {
                 let anchor = self
                     .top
                     .bar()
-                    .face_rect(&id)
-                    .unwrap_or_else(|| self.top.bar().collaborators_rect());
+                    .and_then(|bar| {
+                        bar.face_rect(&id)
+                            .or_else(|| Some(bar.collaborators_rect()))
+                    })
+                    .unwrap_or(Rect::ZERO);
                 self.show_person(&id, None, anchor);
             }
             ChromeIntent::OpenAvatarAsk => {
@@ -1421,8 +1424,13 @@ impl BrowserShell {
             let _ = self.profile.take_choice();
         }
         let model = self.profile_model();
-        self.profile
-            .toggle(&model, self.top.bar().own_avatar_rect(), self.rect);
+        self.profile.toggle(
+            &model,
+            self.top
+                .bar()
+                .map_or(Rect::ZERO, TopBarChrome::own_avatar_rect),
+            self.rect,
+        );
     }
 
     /// The page arrived with an account to link (`#?link=`): once the bar
@@ -1433,7 +1441,9 @@ impl BrowserShell {
         // drew it, and asks in the person's name, once the room knows it.
         if !link_offer_ready(
             self.rect,
-            self.top.bar().own_avatar_rect(),
+            self.top
+                .bar()
+                .map_or(Rect::ZERO, TopBarChrome::own_avatar_rect),
             self.chrome.here.borrow().own_label(),
         ) {
             return false;
@@ -1483,9 +1493,12 @@ impl BrowserShell {
         // A waiting offer draws again until the bar is there to open it.
         let mut offered = self.take_link_offer() || self.offers.link_offer.is_some();
         if self.profile_of.is_none() {
-            offered |= self
-                .profile
-                .follow_anchor(self.top.bar().own_avatar_rect(), self.rect);
+            offered |= self.profile.follow_anchor(
+                self.top
+                    .bar()
+                    .map_or(Rect::ZERO, TopBarChrome::own_avatar_rect),
+                self.rect,
+            );
         }
         // Before the requests are taken, so the asks it makes go out now.
         // Only the person's own card shows their linked accounts.

@@ -110,7 +110,13 @@ impl Stamp {
         // An index written before versions named their run holds none.
         let task = match json.get("task") {
             None => None,
-            Some(task) => Some(serde_json::from_value(task.clone()).ok()?),
+            Some(task) => match serde_json::from_value(task.clone()) {
+                Ok(task) => Some(task),
+                Err(error) => {
+                    tracing::warn!(%error, "the index holds a version whose run does not decode");
+                    return None;
+                }
+            },
         };
         let change = text("change").unwrap_or_default();
         Some(Self {

@@ -88,6 +88,15 @@ fn by_input() -> MotionSource {
     ui::motion::recent_input(ui::time::now()).unwrap_or(MotionSource::Action)
 }
 
+/// What the window is to whoever shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    /// An app's window: its views composed into the one shell.
+    Window,
+    /// A part of a shell ([`AppWindow::part`]): the root view as it is.
+    Part,
+}
+
 /// See the module docs.
 pub struct AppWindow {
     transport: Box<dyn Transport>,
@@ -152,9 +161,36 @@ pub struct AppWindow {
     /// The space last told the app each lane's view has, in rem.
     root_space: Option<(f32, f32)>,
     detail_space: Option<(f32, f32)>,
+    /// A part of a shell rather than a window ([`Self::part`]): the root view shown as it is,
+    /// with no window shell around it.
+    shape: Shape,
+    /// What the app said a part has no window to show, until its embedder takes it.
+    notices: Vec<(wire::NoticeKind, String)>,
 }
 
 impl AppWindow {
+    /// A part of a shell (its top bar, a dock) receiving its views over `transport`: the root
+    /// view's tree shown as it is, at the top of the area the part is given, with no window
+    /// shell, header or ground of its own. What the area holds beyond the view stays clear, so
+    /// what lies under the part shows through, and what the view opens (a menu) has room.
+    #[must_use]
+    pub fn part(transport: Box<dyn Transport>) -> Self {
+        let mut window = Self::new(transport, Vec::new());
+        window.shape = Shape::Part;
+        window.body = Box::new(
+            Stack::stack()
+                .fill_width()
+                .fill_height()
+                .push_slot(slot(
+                    Box::new(Pane::new(Box::new(Absent::new()))),
+                    Fit::hug(),
+                ))
+                .push_slot(slot(Box::new(Absent::new()), Fit::hug()))
+                .push_slot(slot(Box::new(Absent::new()), Fit::hug())),
+        );
+        window
+    }
+
     /// A window receiving its app's views over `transport`, showing `beside` after its shell
     /// and Ask bar (an embedder's endpoints, which take no room).
     #[must_use]
@@ -221,7 +257,15 @@ impl AppWindow {
             rem: 16.0,
             root_space: None,
             detail_space: None,
+            shape: Shape::Window,
+            notices: Vec::new(),
         }
+    }
+
+    /// What the app said (a refusal, a done action) since this was last asked, where the
+    /// window is a part with no shell to toast in.
+    pub fn take_notices(&mut self) -> Vec<(wire::NoticeKind, String)> {
+        std::mem::take(&mut self.notices)
     }
 
     /// Whether the app asked for the window to come forward since this was last asked
@@ -542,6 +586,12 @@ impl AppWindow {
 
     fn notice(&mut self, words: &Words, kind: wire::NoticeKind, undo: bool) {
         let text = say(words);
+        if self.shape == Shape::Part {
+            // A part has no window to toast in: its embedder says it where the shell says
+            // things ([`Self::take_notices`]).
+            self.notices.push((kind, text));
+            return;
+        }
         let Some(shell) = self.shell() else {
             return;
         };
@@ -600,6 +650,14 @@ impl AppWindow {
             return;
         };
         let root_tree = crate::reconcile::normalize(&root.tree);
+        if self.shape == Shape::Part {
+            // A shell's part is its view, with no window shell composed around it.
+            let composed = crate::shell::without_rows(&root_tree);
+            self.reconcile_into_pane(&composed);
+            self.built = Some(composed);
+            self.refresh_bound();
+            return;
+        }
         let root_shell = crate::shell::as_shell(&crate::shell::without_rows(&root_tree));
         let detail_shell = self.detail.as_ref().map(|detail| {
             let tree = crate::reconcile::normalize(&detail.tree);
@@ -610,23 +668,29 @@ impl AppWindow {
         });
         let composed = crate::shell::compose(&root_shell, detail_shell.as_ref());
         let composed = crate::shell::header_rules(composed);
+        self.reconcile_into_pane(&composed);
+        self.built = Some(composed);
+        self.select_shown();
+        self.refresh_bound();
+    }
+
+    /// Bring the pane's widgets up to date with `composed`, reconciled into what they were
+    /// built from, or built anew.
+    fn reconcile_into_pane(&mut self, composed: &UiNode) {
         let old = self.built.take();
         let reconciler = Rc::clone(&self.reconciler);
         if let Some(pane) = self.shell_pane() {
             let mut reconciler = reconciler.borrow_mut();
             match &old {
                 Some(old) if old.key == composed.key && old.kind == composed.kind => {
-                    if let Some(replaced) = reconciler.update_in(pane.content_mut(), old, &composed)
+                    if let Some(replaced) = reconciler.update_in(pane.content_mut(), old, composed)
                     {
                         pane.set(replaced);
                     }
                 }
-                _ => pane.set(reconciler.build(&composed)),
+                _ => pane.set(reconciler.build(composed)),
             }
         }
-        self.built = Some(composed);
-        self.select_shown();
-        self.refresh_bound();
     }
 
     /// Select, in each list of the overview, the row of the view shown after it: the app keeps

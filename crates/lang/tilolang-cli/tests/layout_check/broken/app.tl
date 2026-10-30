@@ -34,7 +34,8 @@ view overflowing(s: Sample) {
     }
 }
 
-/// A word wider than the column it is in.
+/// A word wider than the column it is in: it breaks anywhere rather than running past the
+/// column, so it is laid out right.
 view clipped(s: Sample) {
     stack(max: 6rem) {
         text("Donaudampfschifffahrtsgesellschaft")

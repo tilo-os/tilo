@@ -298,6 +298,11 @@ impl Staged {
 
     /// Run the toolkit's clock until nothing in the window moves.
     fn settle(&mut self) -> Result<(), String> {
+        // A widget that took a layout switch after its parts were placed asks for the frame
+        // that lays them out again, as a live window draws it.
+        if self.harness.root_widget_mut().is_layout_dirty() {
+            self.harness.relayout();
+        }
         if self.harness.frame_schedule().needs_animation_frame
             && !self
                 .harness

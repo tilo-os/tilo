@@ -1287,3 +1287,51 @@ fn rows_the_person_moves_glide_and_a_sync_lands_at_once() {
     );
     assert!(!list.row_motion.has_pending(), "a shortcut's result lands");
 }
+
+/// A list among a page's other content stands as tall as its rows: every row shows, and what
+/// follows it stands after its last row, never over it.
+#[test]
+fn a_list_fitting_its_rows_is_as_tall_as_they_are() {
+    fn find<'a>(
+        node: &'a crate::headless::InspectionNode,
+        widget: &str,
+    ) -> Option<&'a crate::headless::InspectionNode> {
+        if node.widget == widget {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, widget))
+    }
+    let list = VirtualList::new(HugeList { count: 5 }, 24.0, |_, _, key| {
+        Box::new(crate::widget::Button::new(&key.to_string(), "Step"))
+    })
+    .fitting_rows();
+    let page = crate::widget::Column::new()
+        .push(Box::new(list))
+        .push(Box::new(crate::widget::Text::new("Notes after the steps")));
+    let mut h = crate::headless::FrameHarness::for_root(
+        crate::State::new(),
+        page,
+        (300, 800),
+        crate::theme::Theme::light(),
+    );
+    // The frames a live window draws while the rows settle their heights.
+    for _ in 0..crate::widget::SETTLE_FRAMES {
+        h.relayout();
+    }
+    let inspection = h.inspection();
+    let list = find(&inspection.root, "VirtualList").expect("the list");
+    let row_height = list.children.first().expect("a row").rect[3];
+    assert_eq!(list.children.len(), 5, "every row shows");
+    assert!(
+        (list.rect[3] - 5.0 * row_height).abs() < 1.0,
+        "the list is as tall as its five rows: {:?}",
+        list.rect
+    );
+    let after = find(&inspection.root, "Text").expect("the text after it");
+    assert!(
+        after.rect[1] >= list.rect[1] + list.rect[3] - 0.5,
+        "what follows stands after the last row: list {:?}, text {:?}",
+        list.rect,
+        after.rect
+    );
+}
