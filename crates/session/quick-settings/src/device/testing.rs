@@ -261,7 +261,7 @@ impl os_actions::Dispatcher for Machine {
     fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
         self.change(format!("disconnect:{address}"), "disconnect")?;
         for accessory in &mut self.0.lock().unwrap().accessories {
-            if accessory.address == address {
+            if accessory.mac == address {
                 accessory.connected = false;
             }
         }
