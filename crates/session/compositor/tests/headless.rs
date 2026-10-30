@@ -22,9 +22,9 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
-    Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostKey,
-    HostLayer, InputEvent, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch, TabletEvent,
-    TabletPadEvent, TabletPhase, WindowEffect, WindowFrame, WindowInfo, WindowPicture,
+    Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostFrame,
+    HostKey, HostLayer, InputEvent, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch,
+    TabletEvent, TabletPadEvent, TabletPhase, WindowEffect, WindowFrame, WindowInfo, WindowPicture,
     WindowPolicy,
 };
 use wayland_client::protocol::{
@@ -688,7 +688,13 @@ impl SurfaceHost for Square {
         vec![HostLayer {
             location: (self.rect.0, self.rect.1),
             size: (self.rect.2, self.rect.3),
-            buffer: self.buffer.clone(),
+            frame: HostFrame::from_buffer(
+                self.buffer.clone(),
+                (
+                    u32::try_from(self.rect.2).expect("a whole number of pixels"),
+                    u32::try_from(self.rect.3).expect("a whole number of pixels"),
+                ),
+            ),
         }]
     }
 
@@ -908,13 +914,16 @@ fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
 
     // A 20x20 icon, its hotspot two pixels in from its top left.
     let bytes = [0, 255, 255, 255].repeat(20 * 20);
-    let icon = MemoryRenderBuffer::from_slice(
-        &bytes,
-        Fourcc::Argb8888,
+    let icon = HostFrame::from_buffer(
+        MemoryRenderBuffer::from_slice(
+            &bytes,
+            Fourcc::Argb8888,
+            (20, 20),
+            1,
+            Transform::Normal,
+            None,
+        ),
         (20, 20),
-        1,
-        Transform::Normal,
-        None,
     );
     compositor
         .input(InputEvent::PointerMotion { x: 5.0, y: 5.0 })

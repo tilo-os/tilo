@@ -11,11 +11,9 @@ tilo-compositor = { path = "../compositor" }
 tilo-desktop-policy = { path = "../desktop-policy" }
 tilo-desktop-surface = { path = "../desktop-surface" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
-tilo-cpu-raster = { version = "0.1.0", path = "../../sdk/tilo-cpu-raster" }
 vello.workspace = true
 winit.workspace = true
 # The buffers the compositor shows (memory render buffers).
-smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "renderer_pixman"] }
 serde_json.workspace = true
 tracing.workspace = true
 # Files dropped on an app arrive as `file:` URIs.

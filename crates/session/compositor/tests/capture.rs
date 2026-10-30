@@ -23,7 +23,7 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::Transform;
 use tilo_compositor::{
-    Compositor, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost,
+    Compositor, HostFrame, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost,
 };
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_output::WlOutput, wl_pointer::WlPointer,
@@ -226,7 +226,13 @@ impl SurfaceHost for Square {
         vec![HostLayer {
             location: (self.rect.0, self.rect.1),
             size: (self.rect.2, self.rect.3),
-            buffer: self.buffer.clone(),
+            frame: HostFrame::from_buffer(
+                self.buffer.clone(),
+                (
+                    u32::try_from(self.rect.2).expect("a whole number of pixels"),
+                    u32::try_from(self.rect.3).expect("a whole number of pixels"),
+                ),
+            ),
         }]
     }
 

@@ -8,11 +8,126 @@
 //! buffers; nothing here knows how the pixels were made.
 
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
+use smithay::utils::{Buffer, Rectangle};
 
 pub use smithay::input::pointer::CursorIcon;
 
 use crate::input::HostKey;
 use crate::keys::KeyClaim;
+
+/// A whole-pixel rectangle of a surface: what one draw changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Region {
+    /// Its left edge, in pixels.
+    pub x: u32,
+    /// Its top edge, in pixels.
+    pub y: u32,
+    /// How wide it is, in pixels.
+    pub width: u32,
+    /// How tall it is, in pixels.
+    pub height: u32,
+}
+
+impl Region {
+    /// The rectangle at `(x, y)` of `width` by `height` pixels.
+    #[must_use]
+    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+}
+
+/// The pixels a hosted surface shows: premultiplied RGBA, kept as the buffer
+/// the compositor draws, so a host only hands over what changed.
+#[derive(Clone, Debug)]
+pub struct HostFrame {
+    buffer: MemoryRenderBuffer,
+    size: (u32, u32),
+}
+
+impl HostFrame {
+    /// An empty frame of `size` physical pixels.
+    #[must_use]
+    pub fn new(size: (u32, u32)) -> Self {
+        Self {
+            buffer: MemoryRenderBuffer::new(
+                smithay::backend::allocator::Fourcc::Abgr8888,
+                (
+                    i32::try_from(size.0).unwrap_or(i32::MAX),
+                    i32::try_from(size.1).unwrap_or(i32::MAX),
+                ),
+                1,
+                smithay::utils::Transform::Normal,
+                None,
+            ),
+            size,
+        }
+    }
+
+    /// The frame as the compositor draws it.
+    #[must_use]
+    pub const fn buffer(&self) -> &MemoryRenderBuffer {
+        &self.buffer
+    }
+
+    /// A frame showing `buffer`, a surface of `size` physical pixels: for a
+    /// host that made its own.
+    #[must_use]
+    pub const fn from_buffer(buffer: MemoryRenderBuffer, size: (u32, u32)) -> Self {
+        Self { buffer, size }
+    }
+
+    /// The size of the surface in physical pixels.
+    #[must_use]
+    pub const fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// Copy the `regions` of `pixels` (premultiplied RGBA, `width * 4` bytes
+    /// a row of this frame's surface) into the frame, telling it what
+    /// changed.
+    pub fn set_pixels(&mut self, pixels: &[u8], regions: &[Region]) {
+        let width = self.size.0 as usize;
+        let drawn = self.buffer.render().draw(|memory: &mut [u8]| {
+            for region in regions {
+                for row in region.y..region.y.saturating_add(region.height) {
+                    let start = (row as usize)
+                        .saturating_mul(width)
+                        .saturating_add(region.x as usize)
+                        .saturating_mul(4);
+                    let end = start.saturating_add((region.width as usize).saturating_mul(4));
+                    if let (Some(to), Some(from)) =
+                        (memory.get_mut(start..end), pixels.get(start..end))
+                    {
+                        to.copy_from_slice(from);
+                    }
+                }
+            }
+            Ok::<_, std::convert::Infallible>(
+                regions
+                    .iter()
+                    .filter_map(|region| {
+                        Some(Rectangle::<i32, Buffer>::new(
+                            (i32::try_from(region.x).ok()?, i32::try_from(region.y).ok()?).into(),
+                            (
+                                i32::try_from(region.width).ok()?,
+                                i32::try_from(region.height).ok()?,
+                            )
+                                .into(),
+                        ))
+                    })
+                    .collect(),
+            )
+        });
+        if let Err(never) = drawn {
+            match never {}
+        }
+    }
+}
 
 /// One buffer a hosted surface shows, at a position in the logical layout.
 #[derive(Debug, Clone)]
@@ -23,7 +138,7 @@ pub struct HostLayer {
     /// fit, so a host draws at the output's (possibly fractional) scale.
     pub size: (i32, i32),
     /// The pixels; the buffer's own render context records what changed.
-    pub buffer: MemoryRenderBuffer,
+    pub frame: HostFrame,
 }
 
 /// A drag a hosted app starts: bytes per format (files as
@@ -33,7 +148,7 @@ pub struct HostLayer {
 pub struct HostDrag {
     pub offer: Vec<(String, Vec<u8>)>,
     pub icon: Option<(
-        MemoryRenderBuffer,
+        HostFrame,
         smithay::utils::Point<i32, smithay::utils::Logical>,
     )>,
 }

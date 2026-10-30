@@ -10,12 +10,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use smithay::utils::{Logical, Point, Rectangle};
 use tilo_compositor::gestures::{
     GestureAction, GestureConfig, GestureTracker, SWIPE_THRESHOLD, claims,
 };
 use tilo_compositor::{
-    Arrangement, GestureEvent, HostLayer, SurfaceHost, WindowInfo, WindowPolicy,
+    Arrangement, GestureEvent, HostLayer, LayoutPoint, LayoutRect, SurfaceHost, WindowInfo,
+    WindowPolicy,
 };
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::floating::centred;
@@ -52,13 +52,13 @@ struct Desk {
     /// the clients.
     gesture_config: Option<GestureConfig>,
     /// The monitor on each output, as the compositor knows it.
-    monitors: Vec<(Rectangle<i32, Logical>, String)>,
+    monitors: Vec<(LayoutRect, String)>,
 }
 
 impl Desk {
     /// Cover `outputs`' bounding box, the surface laid out against it.
-    fn cover(&mut self, outputs: &[Rectangle<i32, Logical>]) {
-        let Some(bounds) = outputs.iter().copied().reduce(Rectangle::merge) else {
+    fn cover(&mut self, outputs: &[LayoutRect]) {
+        let Some(bounds) = outputs.iter().copied().reduce(LayoutRect::merge) else {
             return;
         };
         let (Ok(width), Ok(height)) = (u32::try_from(bounds.size.w), u32::try_from(bounds.size.h))
@@ -107,7 +107,7 @@ impl Desk {
     /// Where a dialog of `size` floats: centred over its parent, or the
     /// display the person works on, in the logical layout. `None` while it
     /// is hidden with its parent.
-    fn floating(&self, window: u64, size: (i32, i32)) -> Option<Point<i32, Logical>> {
+    fn floating(&self, window: u64, size: (i32, i32)) -> Option<LayoutPoint> {
         let (ox, oy) = self.host.placement().origin;
         let (_, area) = self
             .policy
@@ -116,14 +116,14 @@ impl Desk {
             .into_iter()
             .find(|(id, _)| *id == window)?;
         let at = centred(area, (f64::from(size.0), f64::from(size.1)));
-        Some(Point::from((
+        Some(LayoutPoint::from((
             ox.saturating_add(round(at.x)),
             oy.saturating_add(round(at.y)),
         )))
     }
 
     /// Where `window`'s content is in the logical layout, as last laid out.
-    fn shown(&self, window: u64) -> Option<Rectangle<i32, Logical>> {
+    fn shown(&self, window: u64) -> Option<LayoutRect> {
         let (ox, oy) = self.host.placement().origin;
         self.policy
             .layout()
@@ -131,8 +131,8 @@ impl Desk {
             .into_iter()
             .find(|(id, _)| *id == window)
             .map(|(_, rect)| {
-                Rectangle::new(
-                    Point::from((
+                LayoutRect::new(
+                    LayoutPoint::from((
                         ox.saturating_add(round(rect.x0)),
                         oy.saturating_add(round(rect.y0)),
                     )),
@@ -306,7 +306,7 @@ impl SurfaceHost for DesktopHost {
 impl StripPolicy {
     /// Give `window` its tab, once, and lay the desktop out so its place
     /// is known.
-    fn map(&mut self, window: &WindowInfo, outputs: &[Rectangle<i32, Logical>]) {
+    fn map(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) {
         let mut desk = self.desk.borrow_mut();
         desk.cover(outputs);
         if self.mapped.contains(&window.id) {
@@ -355,15 +355,11 @@ impl WindowPolicy for StripPolicy {
         }
     }
 
-    fn monitors(&mut self, monitors: &[(Rectangle<i32, Logical>, String)]) {
+    fn monitors(&mut self, monitors: &[(LayoutRect, String)]) {
         monitors.clone_into(&mut self.desk.borrow_mut().monitors);
     }
 
-    fn initial_size(
-        &mut self,
-        window: &WindowInfo,
-        outputs: &[Rectangle<i32, Logical>],
-    ) -> Option<(i32, i32)> {
+    fn initial_size(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) -> Option<(i32, i32)> {
         self.map(window, outputs);
         if !self.pending.contains(&window.id) {
             self.pending.push(window.id);
@@ -377,21 +373,21 @@ impl WindowPolicy for StripPolicy {
         &mut self,
         window: &WindowInfo,
         size: (i32, i32),
-        outputs: &[Rectangle<i32, Logical>],
-    ) -> Point<i32, Logical> {
+        outputs: &[LayoutRect],
+    ) -> LayoutPoint {
         self.map(window, outputs);
         self.pending.retain(|id| *id != window.id);
         let desk = self.desk.borrow();
         desk.shown(window.id)
             .map(|rect| rect.loc)
             .or_else(|| desk.floating(window.id, size))
-            .unwrap_or_else(|| Point::from((OFFSTAGE, 0)))
+            .unwrap_or_else(|| LayoutPoint::from((OFFSTAGE, 0)))
     }
 
     fn arrange(
         &mut self,
-        windows: &[(WindowInfo, Rectangle<i32, Logical>)],
-        outputs: &[Rectangle<i32, Logical>],
+        windows: &[(WindowInfo, LayoutRect)],
+        outputs: &[LayoutRect],
     ) -> Option<Vec<Arrangement>> {
         // A window the compositor lists has shown its buffer.
         self.pending
@@ -440,7 +436,7 @@ impl WindowPolicy for StripPolicy {
                         id: window.id,
                         location: desk
                             .floating(window.id, size)
-                            .unwrap_or_else(|| Point::from((OFFSTAGE, 0))),
+                            .unwrap_or_else(|| LayoutPoint::from((OFFSTAGE, 0))),
                         size: None,
                     }
                 })

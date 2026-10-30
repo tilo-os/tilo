@@ -81,7 +81,7 @@ pub use config::{Hdr, KeyboardLayout, Settings};
 pub use dim::Backlight;
 pub use display_change::{CONFIRM_FOR, DisplayEvent};
 pub use effects::{WindowEffect, WindowPicture};
-pub use host::{CursorIcon, HostDrag, HostLayer, SurfaceHost};
+pub use host::{CursorIcon, HostDrag, HostFrame, HostLayer, Region, SurfaceHost};
 pub use idle::{IdleConfig, SessionTransition};
 pub use input::{
     GestureEvent, HostKey, InputEvent, KeyModifiers, ObservedInput, PadAction, Switch, TabletEvent,

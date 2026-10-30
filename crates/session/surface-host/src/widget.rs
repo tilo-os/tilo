@@ -1,12 +1,13 @@
 //! A toolkit widget shown on a rectangle of the desktop: a surface that is
 //! a widget tree of its own rather than an app (the desktop's strips and
-//! window bars). The toolkit's portable host runs it (input in, frames
-//! out) and the frame is rasterized on the CPU as an app's is.
+//! window bars). The toolkit's portable host runs it (input in, frames out)
+//! and the frame is drawn as an app's is.
 
-use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use tilo_compositor::{HostLayer, SurfaceHost};
 use ui::headless::FrameHarness;
+use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use vello::kurbo::Affine;
+use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
 
@@ -17,15 +18,22 @@ use tilo_compositor::HostKey;
 use winit::event::Modifiers;
 use winit::keyboard::ModifiersState;
 
-use crate::canvas::Canvas;
-use crate::{Placement, RASTER_THREADS, buffer_for, key_event, modifiers_state, mouse_input};
+use crate::frames::Frames;
+use crate::{Placement, key_event, modifiers_state, mouse_input};
+
+/// The colour a widget tree draws on: nothing, so the desktop shows through
+/// wherever it painted nothing.
+const TRANSPARENT: Color = Color::new([0.0, 0.0, 0.0, 0.0]);
 
 /// One widget tree shown on a rectangle of the desktop.
 pub struct WidgetHost {
     host: FrameHarness,
     placement: Placement,
-    canvas: Canvas,
-    buffer: MemoryRenderBuffer,
+    frames: Frames,
+    /// The frame the layer shows, to know what of the next one changed.
+    retained: RetainedFrames,
+    /// Moves whenever the layer may show pixels of another frame entirely.
+    generation: u64,
     scene: vello::Scene,
     below: bool,
     /// Set by the tree while keys should come to it rather than to the
@@ -61,13 +69,17 @@ impl WidgetHost {
             ui::permissions::UserId(String::new()),
         );
         host.set_caller_palette_enabled(false);
+        // Each frame is compared with the one the layer shows, so only what
+        // changed is drawn again.
+        host.track_scene_parts(true);
         let _ = host.set_input_scale(placement.scale);
         let size = placement.physical_size();
         Self {
             host,
             placement,
-            canvas: Canvas::new(size, RASTER_THREADS),
-            buffer: buffer_for(size),
+            frames: Frames::new(size),
+            retained: RetainedFrames::default(),
+            generation: 0,
             scene: vello::Scene::new(),
             below,
             keyboard: None,
@@ -122,8 +134,10 @@ impl WidgetHost {
         let _ = self.host.set_input_scale(placement.scale);
         let size = placement.physical_size();
         if size != self.placement.physical_size() {
-            self.canvas = Canvas::new(size, RASTER_THREADS);
-            self.buffer = buffer_for(size);
+            self.frames.resize(size);
+            // What the tree drew for the old size says nothing of this one.
+            self.generation = self.generation.wrapping_add(1);
+            self.retained.forget();
         }
         self.placement = placement;
         self.owed = true;
@@ -199,7 +213,7 @@ impl SurfaceHost for WidgetHost {
                 i32::try_from(self.placement.size.0).unwrap_or(i32::MAX),
                 i32::try_from(self.placement.size.1).unwrap_or(i32::MAX),
             ),
-            buffer: self.buffer.clone(),
+            frame: self.frames.frame(),
         }]
     }
 
@@ -215,7 +229,7 @@ impl SurfaceHost for WidgetHost {
         if self.below {
             // The desktop under the windows takes the pointer wherever the
             // compositor offers it: there is nothing beneath it.
-            let (width, height) = self.canvas.size();
+            let (width, height) = self.frames.size();
             return lx < f64::from(width) && ly < f64::from(height);
         }
         #[allow(
@@ -224,7 +238,7 @@ impl SurfaceHost for WidgetHost {
             reason = "a non-negative point inside a surface on a screen"
         )]
         let (px, py) = (lx as u32, ly as u32);
-        self.canvas.alpha(px, py).is_some_and(|alpha| alpha > 0)
+        self.frames.alpha(px, py).is_some_and(|alpha| alpha > 0)
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
@@ -294,15 +308,33 @@ impl SurfaceHost for WidgetHost {
         self.input(&key_event(key));
     }
 
-    fn prepare_frame(&mut self) {
+    fn prepare_frame(&mut self) -> bool {
         let drew = self.host.poll_frame().unwrap_or(false);
         if !(drew || std::mem::take(&mut self.owed)) {
-            return;
+            return false;
         }
         self.revision = self.revision.wrapping_add(1);
+        let scale = self.placement.scale;
         self.scene.reset();
         self.scene
-            .append(self.host.scene(), Some(Affine::scale(self.placement.scale)));
-        self.canvas.present(&self.scene, None, &mut self.buffer);
+            .append(self.host.scene(), Some(Affine::scale(scale)));
+        let size = self.frames.size();
+        let key = TargetKey {
+            width: size.0,
+            height: size.1,
+            to_device: Affine::scale(scale),
+            base_color: TRANSPARENT,
+            generation: self.generation,
+        };
+        let parts = self.host.scene_parts();
+        let damage = match self.retained.repaint(&self.scene, parts, key) {
+            // Nothing of what it shows changed: there is nothing to draw.
+            Repaint::Regions(changed) if changed.is_empty() => return false,
+            Repaint::Regions(changed) => Some(changed),
+            Repaint::Full(_) => None,
+        };
+        self.retained.presented(&self.scene, parts, key);
+        self.frames.present(&self.scene, damage.as_deref());
+        true
     }
 }

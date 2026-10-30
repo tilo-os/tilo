@@ -34,9 +34,7 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::sync::Arc;
 
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::element::memory::{
-    MemoryRenderBuffer, MemoryRenderBufferRenderElement,
-};
+use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::input::Seat;
@@ -107,7 +105,7 @@ pub(crate) enum DragIcon {
     },
     /// A hosted app's image, its hotspot (logical) on the drag's point.
     Image {
-        buffer: MemoryRenderBuffer,
+        frame: crate::HostFrame,
         hotspot: Point<i32, Logical>,
     },
 }
@@ -229,7 +227,7 @@ impl State {
     pub(crate) fn start_host_drag(
         &mut self,
         offer: Vec<(String, Vec<u8>)>,
-        icon: Option<(MemoryRenderBuffer, Point<i32, Logical>)>,
+        icon: Option<(crate::HostFrame, Point<i32, Logical>)>,
     ) -> bool {
         let Some(values) = host_offer(offer) else {
             return false;
@@ -261,7 +259,7 @@ impl State {
             outcome: None,
             chosen: Action::Copy,
         });
-        self.dnd.icon = icon.map(|(buffer, hotspot)| DragIcon::Image { buffer, hotspot });
+        self.dnd.icon = icon.map(|(frame, hotspot)| DragIcon::Image { frame, hotspot });
         let metadata = SourceMetadata {
             mime_types: mimes,
             dnd_action: DndAction::Copy,
@@ -398,12 +396,12 @@ impl State {
                     Kind::Unspecified,
                 )
             }
-            DragIcon::Image { buffer, hotspot } => {
+            DragIcon::Image { frame, hotspot } => {
                 let origin: Point<f64, Physical> = (at - hotspot.to_f64()).to_physical(scale);
                 match MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
                     origin,
-                    buffer,
+                    frame.buffer(),
                     None,
                     None,
                     None,

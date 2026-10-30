@@ -2,16 +2,16 @@
 //!
 //! The top bar, the launcher and the panels are ordinary toolkit apps. An
 //! [`AppHost`] shows one of them on a rectangle of the desktop: it drives the
-//! app as any host does (input in, frames out), rasterizes each frame on the
-//! CPU where it changed, and hands the compositor the buffer as a
-//! [`SurfaceHost`] layer. The compositor knows nothing of the app; the app
-//! knows nothing of the compositor.
+//! app as any host does (input in, frames out), has each frame drawn where it
+//! changed the way the app's own frames are, and hands the compositor the
+//! buffer as a [`SurfaceHost`] layer. The compositor knows nothing of the app;
+//! the app knows nothing of the compositor.
 
 #![cfg(target_os = "linux")]
 
-mod canvas;
 mod desktop;
 mod door;
+mod frames;
 mod widget;
 
 pub use desktop::{DeskGesture, DesktopHost, StripPolicy, desktop, desktop_with};
@@ -20,9 +20,6 @@ pub use widget::WidgetHost;
 
 use std::cell::Cell;
 
-use smithay::backend::allocator::Fourcc;
-use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::utils::Transform;
 use tilo_compositor::{
     BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostKey, HostLayer, KeyModifiers,
     SurfaceHost,
@@ -38,10 +35,7 @@ use winit::event::{
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
-use canvas::Canvas;
-
-/// Cores the rasterizer uses for a large damaged region.
-const RASTER_THREADS: u16 = 2;
+use frames::Frames;
 
 /// The format files are dragged in.
 const URI_LIST: &str = "text/uri-list";
@@ -122,8 +116,7 @@ pub struct AppHost {
     app: App,
     placement: Placement,
     surface: Surface,
-    canvas: Canvas,
-    buffer: MemoryRenderBuffer,
+    frames: Frames,
     scene: vello::Scene,
     damage: SurfaceDamage,
     /// The app asked for another frame when it drew the last.
@@ -163,8 +156,7 @@ impl AppHost {
                 redraw: Cell::new(true),
                 cursor: Cell::new(CursorIcon::Default),
             },
-            canvas: Canvas::new((width, height), RASTER_THREADS),
-            buffer: buffer_for((width, height)),
+            frames: Frames::new((width, height)),
             scene: vello::Scene::new(),
             damage: SurfaceDamage::default(),
             wants: true,
@@ -221,14 +213,15 @@ impl AppHost {
         {
             self.surface.size = PhysicalSize::new(size.0, size.1);
             self.surface.scale = placement.scale;
-            self.canvas = Canvas::new(size, RASTER_THREADS);
-            self.buffer = buffer_for(size);
+            self.frames.resize(size);
             self.app.surface_input(
                 &self.surface,
                 WindowEvent::Resized(self.surface.size),
                 false,
             );
             self.surface.redraw.set(true);
+            // What the app draws now is not a change of what it drew before.
+            self.full = true;
         }
         self.placement = placement;
     }
@@ -302,7 +295,7 @@ impl SurfaceHost for AppHost {
         vec![HostLayer {
             location: self.placement.origin,
             size,
-            buffer: self.buffer.clone(),
+            frame: self.frames.frame(),
         }]
     }
 
@@ -318,7 +311,7 @@ impl SurfaceHost for AppHost {
             reason = "a non-negative point inside a surface on a screen"
         )]
         let (px, py) = (lx as u32, ly as u32);
-        self.canvas.alpha(px, py).is_some_and(|alpha| alpha > 0)
+        self.frames.alpha(px, py).is_some_and(|alpha| alpha > 0)
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
@@ -440,14 +433,14 @@ impl SurfaceHost for AppHost {
         self.pointer_leave();
     }
 
-    fn prepare_frame(&mut self) {
+    fn prepare_frame(&mut self) -> bool {
         if self.door.has_queued() {
             self.serve_door();
         }
         let now = ui::time::now();
         let due = self.app.surface_next_frame().is_some_and(|at| at <= now);
         if !(self.wants || self.surface.redraw.replace(false) || self.app.wake_pending() || due) {
-            return;
+            return false;
         }
         self.revision = self.revision.wrapping_add(1);
         self.app.surface_accessibility();
@@ -485,26 +478,11 @@ impl SurfaceHost for AppHost {
         } else {
             changed
         };
-        self.canvas
-            .present(&self.scene, changed.as_deref(), &mut self.buffer);
+        self.frames.present(&self.scene, changed.as_deref());
         self.door
             .publish_resources(Some(self.app.collect_resources()));
+        true
     }
-}
-
-/// An empty (transparent) buffer of `size` physical pixels; the layer's
-/// logical size scales it onto the output.
-pub(crate) fn buffer_for(size: (u32, u32)) -> MemoryRenderBuffer {
-    let width = i32::try_from(size.0).unwrap_or(i32::MAX);
-    let height = i32::try_from(size.1).unwrap_or(i32::MAX);
-    // ABGR8888 is R, G, B, A in memory: the rasterizer's premultiplied RGBA.
-    MemoryRenderBuffer::new(
-        Fourcc::Abgr8888,
-        (width, height),
-        1,
-        Transform::Normal,
-        None,
-    )
 }
 
 /// The toolkit's event for a pointer button (evdev code) changing state.

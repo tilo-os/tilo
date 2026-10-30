@@ -130,7 +130,7 @@ where
             match MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 location,
-                &layer.buffer,
+                &layer.frame.buffer(),
                 None,
                 None,
                 Some(Size::from(layer.size)),
@@ -309,7 +309,7 @@ where
                 match MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
                     location.to_f64(),
-                    &layer.buffer,
+                    &layer.frame.buffer(),
                     None,
                     None,
                     Some(Size::from(layer.size)),
