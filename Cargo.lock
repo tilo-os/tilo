@@ -18180,6 +18180,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-capture-studio"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "tilo-callstream",
+ "tilo-media",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-chromium-blocker"
 version = "0.1.0"
 dependencies = [

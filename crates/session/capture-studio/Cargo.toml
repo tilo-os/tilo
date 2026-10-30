@@ -1,0 +1,24 @@
+[package]
+name = "tilo-capture-studio"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Recording the screen into a file, and the replay buffer that keeps the last half minute encoded and ready to clip."
+
+[lib]
+name = "tilo_capture_studio"
+path = "src/lib.rs"
+
+[dependencies]
+# The encoder and the muxer are the shared media stack's: a recording is the
+# same encode a share stream uses, written to a file instead of a peer.
+tilo-callstream = { path = "../../collab/tilo-callstream", features = ["recording"] }
+media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
