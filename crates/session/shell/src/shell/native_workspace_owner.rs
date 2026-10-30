@@ -43,6 +43,23 @@ pub(crate) fn owner_file(state: &Path) -> PathBuf {
     tilo_peer_state::owner::owner_file_of(state)
 }
 
+/// Which of `tree`'s workspaces this device holds, as the state dump reports
+/// them: one `{"workspace": id, "room": room}` row per workspace whose room's
+/// replica the owner has installed here. An enrollment still in flight is not
+/// held yet, so its workspace is not in the list.
+pub(crate) fn held_workspaces(tree: &super::state::WorkspaceTree) -> serde_json::Value {
+    serde_json::Value::Array(
+        tree.desktop
+            .workspaces
+            .iter()
+            .filter(|workspace| tree.native_authority.holds(workspace.room()))
+            .map(|workspace| {
+                serde_json::json!({ "workspace": workspace.id.raw(), "room": workspace.room() })
+            })
+            .collect(),
+    )
+}
+
 /// The tree following the owner's publications.
 struct TreeHost {
     tree: WorkspaceTreeHandle,

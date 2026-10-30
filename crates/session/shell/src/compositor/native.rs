@@ -3607,6 +3607,11 @@ impl ControlState for FrameBuilderControlState<'_> {
         }
     }
 
+    /// The workspaces held here, off the owner record the tree projects.
+    fn held_workspaces_json(&self) -> serde_json::Value {
+        crate::shell::native_workspace_owner::held_workspaces(&self.fb.chrome().tree())
+    }
+
     fn windows_json(&self) -> Result<serde_json::Value, String> {
         let chrome = self.fb.chrome();
         let tree = chrome.tree();
@@ -19994,19 +19999,15 @@ mod tests {
             assert!(actions.is_empty());
             let test_control::Response::State {
                 workspace_tree,
+                held_workspaces,
                 chrome,
-                peers: _,
-                sharing: _,
+                ..
             } = resp
             else {
                 panic!("expected Response::State; got something else");
             };
-            // Sanity: both blobs are non-null and shaped like objects.
-            assert!(
-                workspace_tree.to_value().is_object(),
-                "workspace_tree should be an object"
-            );
-            assert!(chrome.is_object(), "chrome should be an object");
+            assert!(workspace_tree.to_value().is_object() && chrome.is_object());
+            assert!(held_workspaces.is_array(), "{held_workspaces:#}");
         }
     }
 

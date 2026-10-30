@@ -282,7 +282,7 @@ registered announces a change; when one of those cannot be followed it re-checks
 Every new workspace is placed on this device's own host, which governs its room: the native
 owner enrolls with that host as a member and the apps' records are sealed with the content
 keys its steward hands the broker. R09 makes one with `workspace.create` and waits until the
-state dump's `native_authority` holds its room.
+state dump's `held_workspaces` names it.
 
 The room has no other member device, so R09 does not cover what a second member's presence
 brings (announcements arriving from another device, the host serving a live peer). On one VM

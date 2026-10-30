@@ -1568,7 +1568,7 @@ def sign_in_to_desktop(ctx, res):
 # Every new workspace is placed on this device's own host, which governs its room: the
 # native owner enrolls with that host as a member and the apps' records are sealed with the
 # content keys its steward hands the broker. R09 makes one with `workspace.create`, waits
-# until the room is held here, and measures it idle. The room has no other member device:
+# until the workspace is held here, and measures it idle. The room has no other member device:
 # the one way to add one on a single VM, having the person's home relay host the workspace
 # too (Settings, Devices & Sync), is a switch bound to its row that the action catalogue
 # does not offer, and its `tilo.hosting` step answers only callers confined to a room.
@@ -1596,23 +1596,22 @@ def _select_workspace(ctx, wid) -> None:
         ctx.wait_state(lambda s: s["workspace_tree"]["active"] == wid, 8, f"workspace {wid} active")
 
 
-def held_here(state: dict, room) -> bool:
-    """Whether this device holds `room`'s replica: its enrollment with the host it was
-    placed on is installed, not merely in flight."""
-    rooms = (state["workspace_tree"].get("native_authority") or {}).get("rooms") or {}
-    return str(room) in rooms
+def held_here(state: dict, workspace) -> bool:
+    """Whether this device holds `workspace`: the replica of its room is installed here,
+    not merely in flight (the dump's `held_workspaces`)."""
+    held = {row["workspace"] for row in state.get("held_workspaces") or []}
+    return workspace["id"] in held
 
 
 def new_hosted_workspace(ctx) -> dict:
-    """Create a workspace, make it active and return it once this device's host holds its
-    room."""
+    """Create a workspace, make it active and return it once this device holds it."""
     before = {w["id"] for w in ctx.state()["workspace_tree"]["workspaces"]}
     ctx.vm.invoke("actions", "workspace.create", {"name": SHARED_WORKSPACE})
     st = ctx.wait_state(lambda s: [w for w in s["workspace_tree"]["workspaces"] if w["id"] not in before],
                         8, "a new workspace")
     made = next(w for w in st["workspace_tree"]["workspaces"] if w["id"] not in before)
     _select_workspace(ctx, made["id"])
-    ctx.wait_state(lambda s: held_here(s, made["room"]), 30, "the new workspace's room held here")
+    ctx.wait_state(lambda s: held_here(s, made), 30, "the new workspace held here")
     return made
 
 

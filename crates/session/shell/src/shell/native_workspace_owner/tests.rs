@@ -81,6 +81,46 @@ fn publications_and_encodes<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
     )
 }
 
+/// The state dump's view of what is held: one row per workspace whose room's
+/// replica is installed, by the workspace's id and its room.
+#[test]
+fn held_workspaces_names_each_held_workspace_and_its_room() {
+    let (_directory, owner, room, _now, _key) = test_enrolled_owner();
+    let tree = tree_of(&owner);
+    let held = held_workspaces(&tree.read());
+    let rows = held.as_array().expect("held workspaces are a list");
+    assert_eq!(rows.len(), 1, "the enrolled fixture holds one room: {held}");
+    let workspace = rows[0]["workspace"].as_u64().expect("a workspace id");
+    assert_eq!(rows[0]["room"], serde_json::json!(room.to_string()));
+    let stored_room = tree
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|stored| stored.id.raw() == workspace)
+        .expect("the held workspace is one of the desktop's")
+        .room();
+    assert_eq!(stored_room, room, "it is the workspace for that room");
+}
+
+/// A workspace whose enrollment is still in flight is not held yet: the dump
+/// names it once the record has its replica installed.
+#[test]
+fn held_workspaces_leaves_out_a_workspace_whose_enrollment_is_in_flight() {
+    let (_directory, owner, room, commit) = test_owner_before_enrollment();
+    let tree = tree_of(&owner);
+    assert_eq!(
+        held_workspaces(&tree.read()),
+        serde_json::json!([]),
+        "an enrollment in flight is not a held workspace"
+    );
+    commit();
+    let held = held_workspaces(&tree.read());
+    let rows = held.as_array().expect("held workspaces are a list");
+    assert_eq!(rows.len(), 1, "the installed room is held: {held}");
+    assert_eq!(rows[0]["room"], serde_json::json!(room.to_string()));
+}
+
 #[test]
 fn native_owner_publication_writes_only_its_own_file_and_keeps_the_live_document() {
     let directory = tempfile::tempdir().unwrap();
