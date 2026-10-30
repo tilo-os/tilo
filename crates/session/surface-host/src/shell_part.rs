@@ -387,6 +387,59 @@ fn sync_items<T: Clone + PartialEq>(
     writes
 }
 
+impl SessionOrigin {
+    /// Keep where the items a write inserted (`inserted`, by type and key) were made
+    /// (`made`, in the writes' order), so the next reading sets or removes them there.
+    fn keep_inserted(
+        &mut self,
+        reading: &DeskReading,
+        types: &[OriginType],
+        inserted: Vec<(String, String)>,
+        made: Vec<Option<ResourceRef>>,
+    ) {
+        let mut made = made.into_iter().flatten();
+        for (ty, key) in inserted {
+            let Some(at) = made.next() else { break };
+            let is = |name: &str| {
+                types
+                    .iter()
+                    .any(|t| t.ty == ty && t.kind == format!("{ORIGIN}.{name}"))
+            };
+            if is("workspace")
+                && let Some(was) = reading.workspaces.iter().find(|w| w.key == key)
+            {
+                self.workspaces.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
+            } else if is("task")
+                && let Some(was) = reading.tasks.iter().find(|t| t.key == key)
+            {
+                self.tasks.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
+            } else if is("person")
+                && let Some(was) = reading.people.iter().find(|p| p.key == key)
+            {
+                self.people.insert(
+                    key,
+                    Kept {
+                        at,
+                        was: was.clone(),
+                    },
+                );
+            }
+        }
+    }
+}
+
 impl Origin for SessionOrigin {
     fn name(&self) -> &str {
         ORIGIN
@@ -456,46 +509,7 @@ impl Origin for SessionOrigin {
             .apply_origin(ORIGIN, writes, Some(cx.now.clone()))
         {
             Ok(made) => {
-                let mut made = made.into_iter().flatten();
-                for (ty, key) in inserted {
-                    let Some(at) = made.next() else { break };
-                    let is = |name: &str| {
-                        types
-                            .iter()
-                            .any(|t| t.ty == ty && t.kind == format!("{ORIGIN}.{name}"))
-                    };
-                    if is("workspace")
-                        && let Some(was) = reading.workspaces.iter().find(|w| w.key == key)
-                    {
-                        self.workspaces.insert(
-                            key,
-                            Kept {
-                                at,
-                                was: was.clone(),
-                            },
-                        );
-                    } else if is("task")
-                        && let Some(was) = reading.tasks.iter().find(|t| t.key == key)
-                    {
-                        self.tasks.insert(
-                            key,
-                            Kept {
-                                at,
-                                was: was.clone(),
-                            },
-                        );
-                    } else if is("person")
-                        && let Some(was) = reading.people.iter().find(|p| p.key == key)
-                    {
-                        self.people.insert(
-                            key,
-                            Kept {
-                                at,
-                                was: was.clone(),
-                            },
-                        );
-                    }
-                }
+                self.keep_inserted(&reading, &types, inserted, made);
                 self.written = Some(reading);
                 polled.wrote = true;
             }
