@@ -340,7 +340,9 @@ version = "0.31.6"
 optional = true
 
 [dependencies.winit]
-version = "0.30.0"
+package = "tilo-winit"
+version = "0.30.13"
+path = "../winit"
 features = [
     "wayland",
     "wayland-dlopen",
