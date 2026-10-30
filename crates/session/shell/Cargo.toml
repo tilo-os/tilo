@@ -459,6 +459,9 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-onboarding-host = { path = "../onboarding-host", features = ["test-support"] }
+# The state writer's per-thread submit count, which the quiet upkeep test
+# reads to tell a call that queued a write from one that found nothing to do.
+tilo-durable-writer = { path = "../../platform/tilo-durable-writer", features = ["test-support"] }
 # The hooks the network tests reach the actor through.
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 # The calibrated test panels the presenter tests render through.
