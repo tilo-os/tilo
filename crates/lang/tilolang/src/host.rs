@@ -113,6 +113,55 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "The fields it changed, by name; empty for one that made or removed the resource.",
             ),
             ("of", "Resource", "The resource it is a version of."),
+            (
+                "description",
+                "Text",
+                "What the action that made it does, as its declaration describes it: `Renames a note.`; empty for one that describes nothing.",
+            ),
+            (
+                "icon",
+                "Option<Text>",
+                "The icon of the action that made it, when it declares one.",
+            ),
+            (
+                "changes",
+                "List<Change>",
+                "Each field it changed, with what the field held before and after, read from the change itself; empty for one that made or removed the resource.",
+            ),
+        ],
+    },
+    ValueType {
+        name: "Step",
+        id: "host-step",
+        doc: "A step of a resource's history as people read it: consecutive versions by the same person, or by the same task run, folded into one.",
+        fields: &[
+            ("who", "Principal", "Who made it: a person, or an agent."),
+            ("at", "Time", "When its last version was made."),
+            (
+                "task",
+                "Option<TaskRun>",
+                "The task run that made it; `.none` for changes made outside a run.",
+            ),
+            ("versions", "List<Version>", "Its versions, oldest first."),
+        ],
+    },
+    ValueType {
+        name: "Change",
+        id: "host-change",
+        doc: "A field a version changed: which, and what it held before and after, each shown as the field's type shows it.",
+        fields: &[
+            ("field", "Text", "The field, by its name in the source."),
+            ("label", "Text", "The field, in words: `Due` for `due`."),
+            (
+                "before",
+                "View",
+                "What the field held before the change, shown as its type shows it: a day as a day, a person as a person.",
+            ),
+            (
+                "after",
+                "View",
+                "What the field holds after the change, shown as its type shows it.",
+            ),
         ],
     },
     ValueType {

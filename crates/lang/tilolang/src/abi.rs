@@ -164,6 +164,8 @@ imports! {
     ActSet = "act_set" ([I32, H, H] -> [H]);
     ActThen = "act_then" ([H, H] -> [H]);
     ActOpen = "act_open" ([H, H, I32] -> [H]);
+    ActUndo = "act_undo" ([H, I32] -> [H]);
+    ChangeView = "change_view" ([H, I32, H] -> [H]);
     EventValue = "event_value" ([] -> [H]);
     StateAt = "state_at" ([I32, H, I32] -> [H]);
     ArgAt = "arg_at" ([H, H, I32] -> [H]);
@@ -178,6 +180,7 @@ imports! {
     VersionEnd = "version_end" ([H, I32] -> [H]);
     RunChanges = "run_changes" ([H] -> [H]);
     Unseen = "unseen" ([H] -> [H]);
+    Steps = "steps" ([H] -> [H]);
     CollOrdered = "coll_ordered" ([H, H] -> [H]);
     CollWhereWith = "coll_where_with" ([H, H, H] -> [H]);
     CollMoveTo = "coll_move_to" ([H, H, H, I64] -> []);
