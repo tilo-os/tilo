@@ -1538,6 +1538,35 @@ impl FrameBuilder {
         count
     }
 
+    /// [`Self::wake_mounted_components`], counting only the components
+    /// whose root `of` recognises: the windows of one app among the chrome
+    /// apps the session also mounts.
+    #[cfg(test)]
+    pub(crate) fn wake_mounted_components_where(
+        &mut self,
+        of: impl Fn(&mut dyn Widget) -> bool,
+    ) -> usize {
+        let mut count = 0_usize;
+        for pointer in self.node_map.values_mut() {
+            // SAFETY: node_map pointers are owned by the live widget tree and
+            // remain valid for the exclusive borrow of this frame.
+            let widget = unsafe { &mut **pointer };
+            if let Some(app) = widget
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<ui::app::EmbeddedApp>())
+            {
+                {
+                    let _entry = app.app().enter_wake_scope();
+                    ui::wake::WakeHandle::new().wake();
+                }
+                if app.component_root_mut().is_some_and(&of) {
+                    count = count.saturating_add(1);
+                }
+            }
+        }
+        count
+    }
+
     /// The first widget in the live layout `find` recognises: an app a tab
     /// mounted, for a test that drives it.
     #[cfg(test)]

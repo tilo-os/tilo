@@ -17,9 +17,11 @@
 //! - **Drag to select:** a band over windows selects them; typing then asks
 //!   about the selection.
 //!
-//! Every ask becomes a Tasks issue the agent works on, and its page opens as
-//! a window placed at the place it was asked, or beside the thing it is
-//! about, in free space: nothing already there moves. That pairing (the
+//! Every ask becomes a Tasks issue the agent works on, made with no window
+//! ([`crate::shell::windowless`]). The caret where it was asked follows the
+//! issue's run and says how it goes, then what the agent said; the view the
+//! run answers with opens as a window placed there, or beside the thing it
+//! is about, in free space: nothing already there moves. That pairing (the
 //! window an answer opens and the anchor it belongs at) is
 //! [`CanvasAnswers`], the one interface answers are placed through.
 
@@ -124,15 +126,17 @@ impl CanvasAnswers {
 }
 
 /// Why what was typed on the canvas did not reach an agent. Every ask
-/// either opens its answer's window or comes back as one of these, which
-/// the caret says where the person typed ([`Caret::refused`]): nothing
-/// typed on the canvas goes unanswered.
+/// either is followed where it was asked or comes back as one of these,
+/// which the caret says where the person typed ([`Caret::refused`]):
+/// nothing typed on the canvas goes unanswered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CanvasRefusal {
+    /// A new agent made for the task cannot be asked here: no agent
+    /// runtime, no model, or a model on the internet while offline. Said as
+    /// the composer says it.
+    Blocked(crate::shell::agent_quick_composer::AskBlocker),
     /// Enter with nothing typed.
     NothingTyped,
-    /// The workspace has no agent to ask.
-    NoAgent,
     /// The workspace's agent, or the door to it, is not reachable yet: no
     /// action broker, no identity for the room, no workspace on screen.
     AgentUnreachable,
@@ -143,8 +147,8 @@ pub(crate) enum CanvasRefusal {
 impl CanvasRefusal {
     fn message_key(self) -> &'static str {
         match self {
+            Self::Blocked(blocker) => blocker.message_key(),
             Self::NothingTyped => "canvas-ask-nothing-typed",
-            Self::NoAgent => "canvas-ask-no-agent",
             Self::AgentUnreachable => "canvas-ask-agent-unreachable",
             Self::NotHanded => "canvas-ask-not-handed",
         }
@@ -169,15 +173,30 @@ struct Caret {
     /// The ask Enter handed to the agent, until it is known how it ended:
     /// the caret says it is asking, and takes no typing meanwhile.
     asking: Option<AskTicket>,
+    /// The issue the asked question became, whose run the caret follows
+    /// until the person types again: what it says of the run is `said`.
+    follows: Option<String>,
+    /// How the followed run goes, or what its agent said last.
+    said: Option<String>,
 }
 
 /// A question handed to the agent from the canvas, until it is known how
-/// that ended ([`ShellOverlayHost::pump_canvas_asks`]): asked, its answer's
-/// window takes its place at the anchor; refused, the caret there says so.
+/// that ended ([`ShellOverlayHost::pump_canvas_asks`]): asked, it is
+/// followed ([`CanvasFollow`]); refused, the caret there says so.
 struct CanvasAsk {
     ticket: AskTicket,
+    owner: crate::shell::agent_quick_composer::ComposerOwner,
     anchor: CanvasAnchor,
     text: String,
+}
+
+/// An issue asked on the canvas whose run is followed until it ends
+/// ([`ShellOverlayHost::follow_canvas_runs`]): the view it answers with
+/// opens at `anchor`.
+struct CanvasFollow {
+    owner: crate::shell::agent_quick_composer::ComposerOwner,
+    issue: String,
+    anchor: CanvasAnchor,
 }
 
 impl Caret {
@@ -189,6 +208,8 @@ impl Caret {
             composition: QueryComposition::new(),
             refused: None,
             asking: None,
+            follows: None,
+            said: None,
         }
     }
 
@@ -233,6 +254,8 @@ pub(crate) struct CanvasLayer {
     pub(crate) answers: CanvasAnswers,
     /// Questions handed to the agent whose outcome is not known yet.
     asks: Vec<CanvasAsk>,
+    /// Asked questions whose runs go on.
+    follows: Vec<CanvasFollow>,
     /// The view the rows were given last.
     given: Option<CanvasView>,
     /// A pinch's scale at its last update, to zoom by what changed.
@@ -248,6 +271,36 @@ fn tile_app_id(tile: &TileContent) -> Option<&str> {
         | TileContent::HostedWindow { app_id, .. } => Some(app_id),
         TileContent::AppPlaceholder { .. } | TileContent::Stub { .. } => None,
     }
+}
+
+/// What a caret following `run` says: how it goes while it goes (what its
+/// current model turn streams, else what its agent said last), and once it
+/// ended, what its agent said last or how it ended. `streamed` reads what
+/// run `epoch` streams now.
+fn canvas_run_line(
+    run: Option<&crate::shell::broker_services::FollowedRun>,
+    streamed: impl FnOnce(u64) -> Option<String>,
+) -> Option<String> {
+    use tasks::model::RunPhase;
+    let Some(run) = run else {
+        return Some(crate::shell::i18n::t("canvas-ask-asking"));
+    };
+    let last = |text: Option<String>| {
+        text.map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty())
+    };
+    if run.phase.active() {
+        return last(streamed(run.epoch))
+            .or_else(|| last(run.said.clone()))
+            .or_else(|| Some(crate::shell::i18n::t("canvas-ask-working")));
+    }
+    last(run.said.clone()).or_else(|| {
+        Some(crate::shell::i18n::t(match run.phase {
+            RunPhase::Failed => "canvas-ask-failed",
+            RunPhase::Stopped => "canvas-ask-stopped",
+            _ => "canvas-ask-done",
+        }))
+    })
 }
 
 /// Where a caret for an ask at `anchor` stands: at the point, or under the
@@ -561,6 +614,12 @@ impl ShellOverlayHost {
             }
             arrangement.places.insert(*group, place);
             placed = true;
+            if anchor.is_none() && !self.on_screen_place(place) {
+                // A window the person opened is the one they look for:
+                // where the screen had no room for it, this device's lens
+                // takes in every window rather than leave it off screen.
+                self.fit_lens_to(arrangement, place);
+            }
         }
         placed
     }
@@ -608,7 +667,8 @@ impl ShellOverlayHost {
     }
 
     /// Where a window nobody placed goes: beside the window in front, else
-    /// centred in what is on screen.
+    /// centred in what is on screen, whichever is on screen; else beside
+    /// the others, for the lens to take in ([`Self::fit_lens_to`]).
     fn default_place(
         &self,
         chrome: &crate::shell::chrome_state::Chrome,
@@ -627,9 +687,6 @@ impl ShellOverlayHost {
                 })
                 .and_then(|group| arrangement.place_of(group))
         };
-        if let Some(front) = front {
-            return arrangement.free_place_beside(front, width, height, None);
-        }
         let middle = self
             .canvas_frame()
             .and_then(|frame| self.to_canvas(frame.center()))
@@ -638,7 +695,74 @@ impl ShellOverlayHost {
             middle.x - f64::from(width) / 2.0,
             middle.y - f64::from(height) / 2.0,
         );
-        arrangement.free_place_near(canvas_point(corner), width, height, None)
+        let centred = arrangement.free_place_near(canvas_point(corner), width, height, None);
+        let beside = front.map(|front| arrangement.free_place_beside(front, width, height, None));
+        // Beside the window in front while that is on screen; else the free
+        // place nearest the middle of what is on screen, when it is; else
+        // the free place nearest the middle of every window, so they stay
+        // together for the lens to take in.
+        if let Some(beside) = beside.filter(|place| self.on_screen_place(*place)) {
+            return beside;
+        }
+        if self.on_screen_place(centred) {
+            return centred;
+        }
+        let all: Vec<GroupId> = arrangement.places.keys().copied().collect();
+        arrangement.bounds_of(&all).map_or(centred, |bounds| {
+            let middle = place_rect(bounds).center();
+            let corner = Point::new(
+                middle.x - f64::from(width) / 2.0,
+                middle.y - f64::from(height) / 2.0,
+            );
+            arrangement.free_place_near(canvas_point(corner), width, height, None)
+        })
+    }
+
+    /// What of the canvas the deck shows, in canvas pixels.
+    fn visible_canvas(&self) -> Option<Rect> {
+        let frame = self.canvas_frame()?;
+        let view = self.canvas_lens().view(HashMap::new());
+        Some(view.rect_to_canvas(frame.origin(), frame))
+    }
+
+    /// Whether `place` is wholly on screen.
+    fn on_screen_place(&self, place: CanvasPlace) -> bool {
+        self.visible_canvas().is_some_and(|visible| {
+            let rect = place_rect(place);
+            rect.x0 >= visible.x0
+                && rect.y0 >= visible.y0
+                && rect.x1 <= visible.x1
+                && rect.y1 <= visible.y1
+        })
+    }
+
+    /// Bring this device's lens to every window on the canvas, `place`
+    /// among them: zoomed out only as far as they need (never in), down to
+    /// [`ui::widget::CANVAS_ZOOM_MIN`], and centred on them; where even
+    /// that cannot hold them all, centred on `place`.
+    fn fit_lens_to(&mut self, arrangement: &Arrangement, place: CanvasPlace) {
+        let (Some(workspace), Some(frame)) = (self.canvas.shown, self.canvas_frame()) else {
+            return;
+        };
+        let all: Vec<GroupId> = arrangement.places.keys().copied().collect();
+        let gap = f64::from(CANVAS_GAP);
+        let bounds = arrangement
+            .bounds_of(&all)
+            .map_or_else(|| place_rect(place), place_rect)
+            .inflate(gap, gap);
+        let lens = self.canvas.lenses.entry(workspace).or_default();
+        let fits = (frame.width() / bounds.width()).min(frame.height() / bounds.height());
+        lens.zoom = fits
+            .min(lens.zoom)
+            .clamp(ui::widget::CANVAS_ZOOM_MIN, ui::widget::CANVAS_ZOOM_MAX);
+        let (shown_w, shown_h) = (frame.width() / lens.zoom, frame.height() / lens.zoom);
+        let centre = if bounds.width() <= shown_w && bounds.height() <= shown_h {
+            bounds.center()
+        } else {
+            place_rect(place).center()
+        };
+        lens.origin = Point::new(centre.x - shown_w / 2.0, centre.y - shown_h / 2.0);
+        self.bump_chrome();
     }
 
     /// The windows the person carried to new places on the canvas, kept.
@@ -1062,6 +1186,8 @@ impl ShellOverlayHost {
         }
         // What the caret said about the last Enter was about other words.
         caret.refused = None;
+        caret.follows = None;
+        caret.said = None;
         self.bump_chrome();
         true
     }
@@ -1085,6 +1211,8 @@ impl ShellOverlayHost {
             Ok(ticket) => {
                 if let Some(caret) = self.canvas.caret.as_mut() {
                     caret.refused = None;
+                    caret.follows = None;
+                    caret.said = None;
                     caret.asking = Some(ticket);
                 }
             }
@@ -1291,11 +1419,14 @@ impl ShellOverlayHost {
         Some(CanvasAnchor::Beside(place_rect(place)))
     }
 
-    /// Hand `seed`'s question to the workspace's agent as a Tasks issue
-    /// whose page opens as a window at `anchor`, through the composer's
-    /// path. An agent not running is started; the issue waits for it.
-    /// When it could not be asked, why; else the ask, whose outcome
-    /// [`Self::pump_canvas_asks`] hears.
+    /// Hand `seed`'s question to an agent as a Tasks issue, through the
+    /// composer's path, as the composer asks: a new agent made for the task
+    /// by default, or the collaborator last asked here. The issue is made
+    /// with no window; the caret at `anchor` follows its run. When a new
+    /// agent cannot be asked here (no agent runtime, no model, offline),
+    /// why, said in place as the composer says it. When it could not be
+    /// asked, why; else the ask, whose outcome [`Self::pump_canvas_asks`]
+    /// hears.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the session source and the composer's actions are handed on at their last use; \
@@ -1308,6 +1439,7 @@ impl ShellOverlayHost {
         context: &str,
     ) -> Result<AskTicket, CanvasRefusal> {
         use crate::shell::state::WorkspaceAuthority as _;
+        use crate::shell::task_agents::NEW_TASK_AGENT;
         let Some(text) = seed.ask.clone().filter(|text| !text.trim().is_empty()) else {
             return Err(CanvasRefusal::NothingTyped);
         };
@@ -1332,14 +1464,21 @@ impl ShellOverlayHost {
             return Err(CanvasRefusal::AgentUnreachable);
         };
         let room = room_id.to_string();
-        let Some(agent) = self.selection_requests.choose_agent(&room, &members) else {
-            return Err(CanvasRefusal::NoAgent);
-        };
-        let Some(broker) = self.shortcut_triggers.broker() else {
+        let Some((source, collaborators)) = self.live_agents(&room, members) else {
             return Err(CanvasRefusal::AgentUnreachable);
         };
-        let live = super::ask_agent::askable(&broker, &room, &agent);
-        let source = crate::shell::certified_action_session::ActionSessionSource::new(broker);
+        let mut choices = vec![NEW_TASK_AGENT.to_owned()];
+        choices.extend(collaborators);
+        let agent = self
+            .selection_requests
+            .choose_agent(&room, &choices)
+            .unwrap_or_else(|| NEW_TASK_AGENT.to_owned());
+        if agent == NEW_TASK_AGENT
+            && let Some(blocker) =
+                crate::shell::search::providers::ask_agent::task_agent_blocker(&chrome.borrow())
+        {
+            return Err(CanvasRefusal::Blocked(blocker));
+        }
         let Some(identity_revision) = source.identity_revision(&room) else {
             return Err(CanvasRefusal::AgentUnreachable);
         };
@@ -1357,9 +1496,16 @@ impl ShellOverlayHost {
         );
         let (start, asked) = {
             let actions = self.agent_actions.entry(owner.clone()).or_default();
-            let start = !live && actions.start_once(Instant::now());
+            // A new agent made for the task is launched once its task
+            // exists; a collaborator not running is started here.
+            let start = agent != NEW_TASK_AGENT
+                && self
+                    .shortcut_triggers
+                    .broker()
+                    .is_some_and(|broker| !super::ask_agent::askable(&broker, &room, &agent))
+                && actions.start_once(Instant::now());
             let asked =
-                actions.open_and_ask(source, &owner, (&text, &body), Some(seed), true, true);
+                actions.open_and_ask(source, &owner, (&text, &body), Some(seed), false, true);
             (start, asked)
         };
         let Some(ticket) = asked else {
@@ -1369,6 +1515,7 @@ impl ShellOverlayHost {
         self.selection_requests.asked(&room, &agent);
         self.canvas.asks.push(CanvasAsk {
             ticket,
+            owner,
             anchor,
             text: text.clone(),
         });
@@ -1380,10 +1527,10 @@ impl ShellOverlayHost {
     }
 
     /// How the questions handed to agents ended, from every composer's
-    /// path: one asked from the canvas has its answer's window placed at its
-    /// anchor, or the caret there says why it was not asked. An ask from
-    /// elsewhere that did not end asked is said in the log. Whether what
-    /// the canvas shows changed.
+    /// path: one asked from the canvas is followed where it was asked, or
+    /// the caret there says why it was not asked. An ask from elsewhere
+    /// that did not end asked is said in the log. Whether what the canvas
+    /// shows changed.
     pub(super) fn pump_canvas_asks(&mut self) -> bool {
         let outcomes: Vec<(AskTicket, AskOutcome)> = self
             .agent_actions
@@ -1407,14 +1554,28 @@ impl ShellOverlayHost {
             match outcome {
                 AskOutcome::Asked { issue } => {
                     tracing::info!(%issue, "a question asked on the canvas is with the agent");
-                    self.canvas
-                        .answers
-                        .expect(tilo_action_broker::services::TRACKER_APP, ask.anchor);
-                    if caret_waits {
-                        self.canvas.caret = None;
+                    // The caret where it was asked follows its run.
+                    let follows = Some(issue.clone());
+                    match self.canvas.caret.as_mut().filter(|_| caret_waits) {
+                        Some(caret) => {
+                            caret.asking = None;
+                            caret.follows = follows;
+                        }
+                        None => {
+                            let mut caret = Caret::at(anchor_point(ask.anchor));
+                            caret.text.clone_from(&ask.text);
+                            caret.selection = Selection::collapsed(ask.text.len());
+                            caret.follows = follows;
+                            self.canvas.caret = Some(caret);
+                        }
                     }
+                    self.canvas.follows.push(CanvasFollow {
+                        owner: ask.owner,
+                        issue,
+                        anchor: ask.anchor,
+                    });
                 }
-                AskOutcome::Refused | AskOutcome::Unknown => {
+                AskOutcome::Refused(_) | AskOutcome::Unknown(_) => {
                     tracing::warn!(
                         ?outcome,
                         "a question asked on the canvas did not reach the agent"
@@ -1434,8 +1595,75 @@ impl ShellOverlayHost {
             }
             changed = true;
         }
+        changed |= self.follow_canvas_runs();
         if changed {
             self.bump_chrome();
+        }
+        changed
+    }
+
+    /// Read how each run asked on the canvas goes, from its room's tracker:
+    /// the caret following it says so, and once it ended, what its agent
+    /// said; the view it answered with opens where it was asked. Whether
+    /// what the canvas shows changed.
+    fn follow_canvas_runs(&mut self) -> bool {
+        if self.canvas.follows.is_empty() {
+            return false;
+        }
+        let Some(tracker) = self.tracker.clone() else {
+            return false;
+        };
+        let mut changed = false;
+        let mut ended = Vec::new();
+        for (index, follow) in self.canvas.follows.iter().enumerate() {
+            let runs = super::agent_actions::RunSource::runs(tracker.as_ref(), &follow.owner.room);
+            let run = runs.iter().find(|run| run.issue == follow.issue);
+            let said = canvas_run_line(run, |epoch| {
+                super::agent_actions::RunSource::streamed(
+                    tracker.as_ref(),
+                    &follow.owner.room,
+                    &follow.issue,
+                    epoch,
+                )
+            });
+            if let Some(caret) = self
+                .canvas
+                .caret
+                .as_mut()
+                .filter(|caret| caret.follows.as_deref() == Some(follow.issue.as_str()))
+                && caret.said != said
+            {
+                caret.said = said;
+                changed = true;
+            }
+            if let Some(run) = run.filter(|run| !run.phase.active()) {
+                ended.push((index, run.answer.clone()));
+            }
+        }
+        for (index, answer) in ended.into_iter().rev() {
+            let follow = self.canvas.follows.remove(index);
+            tracing::info!(issue = %follow.issue, "a run asked on the canvas ended");
+            let Some(answer) = answer else {
+                continue;
+            };
+            // The view it answered with is the answer: a window at the anchor,
+            // in place of the caret that followed it.
+            let opened = self
+                .agent_actions
+                .get_mut(&follow.owner)
+                .is_some_and(|actions| actions.open_resource(&answer));
+            if opened {
+                self.canvas.answers.expect(&answer.app, follow.anchor);
+                if self
+                    .canvas
+                    .caret
+                    .as_ref()
+                    .is_some_and(|caret| caret.follows.as_deref() == Some(follow.issue.as_str()))
+                {
+                    self.canvas.caret = None;
+                }
+                changed = true;
+            }
         }
         changed
     }
@@ -1496,9 +1724,12 @@ impl ShellOverlayHost {
         let Some(caret) = self.canvas.caret.as_mut() else {
             return;
         };
+        // Under the text: that it is asking, how the run it asked goes, or
+        // why the last Enter did not reach an agent.
         let refused = match (caret.asking, caret.refused) {
             (Some(_), _) => Some(crate::shell::i18n::t("canvas-ask-asking")),
-            (None, why) => why.map(CanvasRefusal::message),
+            (None, Some(why)) => Some(why.message()),
+            (None, None) => caret.follows.as_ref().and(caret.said.clone()),
         };
         let theme =
             if caret.text.is_empty() && !caret.composition.is_composing() && refused.is_none() {
@@ -1584,10 +1815,13 @@ impl ShellOverlayHost {
                 "text": caret.text,
                 "refused": caret.refused.map(CanvasRefusal::message_key),
                 "asking": caret.asking.is_some(),
+                "follows": caret.follows,
+                "said": caret.said,
             })),
             "selection": self.canvas.selection,
             "windows": windows,
             "answers_waiting": self.canvas.answers.waiting(),
+            "following": self.canvas.follows.iter().map(|follow| follow.issue.clone()).collect::<Vec<_>>(),
             // Whether the strips' ribbon and rail may show: never over a
             // canvas, which has no strip to be on.
             "strip_indicators": strip_indicators,
@@ -1599,6 +1833,81 @@ impl ShellOverlayHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run(
+        phase: tasks::model::RunPhase,
+        said: Option<&str>,
+    ) -> crate::shell::broker_services::FollowedRun {
+        crate::shell::broker_services::FollowedRun {
+            issue: "tasks.tracker/issues/one".into(),
+            title: "Summarize".into(),
+            agent: "agent:task".into(),
+            starter: "person".into(),
+            epoch: 1,
+            phase,
+            messages: 0,
+            incorporated: 0,
+            said: said.map(str::to_owned),
+            steps: Vec::new(),
+            programs: Vec::new(),
+            answer: None,
+        }
+    }
+
+    /// The caret following an ask says how its run goes where it was
+    /// asked: asking until the issue is there, what the run streams or its
+    /// agent said while it goes, and once it ended, what its agent said last
+    /// or how it ended.
+    #[test]
+    fn the_caret_says_how_the_asked_run_goes_and_how_it_ended() {
+        use tasks::model::RunPhase;
+        let t = crate::shell::i18n::t;
+        assert_eq!(
+            canvas_run_line(None, |_| None),
+            Some(t("canvas-ask-asking"))
+        );
+        let going = run(RunPhase::Planning, None);
+        assert_eq!(
+            canvas_run_line(Some(&going), |_| None),
+            Some(t("canvas-ask-working"))
+        );
+        assert_eq!(
+            canvas_run_line(Some(&going), |epoch| (epoch == 1)
+                .then(|| "Reading the notes".into())),
+            Some("Reading the notes".into())
+        );
+        let said = run(RunPhase::Executing, Some("Found three notes."));
+        assert_eq!(
+            canvas_run_line(Some(&said), |_| Some("  ".into())),
+            Some("Found three notes.".into())
+        );
+        let failed = run(RunPhase::Failed, None);
+        assert_eq!(
+            canvas_run_line(Some(&failed), |_| None),
+            Some(t("canvas-ask-failed"))
+        );
+        let answered = run(RunPhase::Done, Some("Three notes, one overdue."));
+        assert_eq!(
+            canvas_run_line(Some(&answered), |_| Some("stale stream".into())),
+            Some("Three notes, one overdue.".into())
+        );
+        assert_eq!(
+            canvas_run_line(Some(&run(RunPhase::Stopped, None)), |_| None),
+            Some(t("canvas-ask-stopped"))
+        );
+    }
+
+    /// No model is said at the caret as the composer says it.
+    #[test]
+    fn a_blocked_ask_is_said_as_the_composer_says_it() {
+        use crate::shell::agent_quick_composer::AskBlocker;
+        let why = CanvasRefusal::Blocked(AskBlocker::NoModel);
+        assert_eq!(why.message_key(), "agent-quick-blocked-no-model");
+        assert_eq!(
+            why.message(),
+            crate::shell::i18n::t("agent-quick-blocked-no-model")
+        );
+    }
 
     #[test]
     fn an_answer_takes_the_oldest_anchor_waiting_for_its_app() {

@@ -154,6 +154,16 @@ impl OpenDoor {
         }
     }
 
+    /// A door whose action sessions are the test broker's own fixture
+    /// sessions, as a test's desktop opens through.
+    #[cfg(test)]
+    pub(crate) fn fixture(broker: AppActionBroker) -> Self {
+        Self {
+            sessions: ActionSessionSource::fixture(broker.clone()),
+            broker,
+        }
+    }
+
     /// A value that changes whenever the windows publishing actions do.
     pub(crate) fn surfaces_generation(&self) -> u64 {
         self.broker.surfaces_generation()
@@ -167,7 +177,10 @@ impl OpenDoor {
 
     /// The app publishing `resource` in `room`, running or retained:
     /// the one naming it exactly, else one publishing its kind (the part
-    /// before its first `:`).
+    /// before its first `:`), else the one app whose kinds are in the
+    /// kind's namespace (the part before its first `.`): an app answers for
+    /// an item it shows on demand (Mail's `mail.message:<id>`, among the
+    /// `mail.mailbox` it publishes) without listing every one.
     pub(crate) fn publisher_of(&self, room: &str, resource: &str) -> Option<String> {
         let kind = resource.split_once(':').map_or(resource, |(kind, _)| kind);
         let surfaces: Vec<PublishedSurface> = self
@@ -184,6 +197,27 @@ impl OpenDoor {
         };
         publishes(&|action| action.resource == resource)
             .or_else(|| publishes(&|action| action.resource_kind == kind))
+            .or_else(|| {
+                let namespace = kind.split_once('.').map(|(namespace, _)| namespace)?;
+                let mut apps = surfaces
+                    .iter()
+                    .filter(|surface| {
+                        surface.actions.iter().any(|action| {
+                            action
+                                .resource_kind
+                                .split_once('.')
+                                .is_some_and(|(of, _)| of == namespace)
+                        })
+                    })
+                    .map(|surface| surface.app_id.as_str())
+                    .collect::<Vec<_>>();
+                apps.sort_unstable();
+                apps.dedup();
+                match apps.as_slice() {
+                    [app] => Some((*app).to_owned()),
+                    _ => None,
+                }
+            })
     }
 }
 

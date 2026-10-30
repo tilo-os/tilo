@@ -888,12 +888,17 @@ impl Mail {
     }
 
     /// The ids, as fetched messages, of the copies servers keep of drafts:
-    /// each draft shows as itself, not again as its copy.
+    /// the copy its server confirmed, and the one it is being sent now. A
+    /// copy is the draft itself, so a fetched one is kept as nothing.
     pub(crate) fn draft_copy_ids(&self) -> Vec<String> {
         self.drafts_listed()
             .into_iter()
-            .filter_map(|(_, draft)| draft.server.as_ref())
-            .map(|copy| crate::transport::stable_message_id(&copy.locator).to_string())
+            .flat_map(|(id, draft)| {
+                let confirmed = draft.server.as_ref().map(|copy| copy.locator.clone());
+                let wanted = draft.wanted_copy(&id).map(|(_, locator, _)| locator);
+                confirmed.into_iter().chain(wanted)
+            })
+            .map(|locator| crate::transport::stable_message_id(&locator).to_string())
             .collect()
     }
 

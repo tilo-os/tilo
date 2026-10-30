@@ -831,6 +831,70 @@ mod tests {
         assert_eq!(own, [Ask, Ask, Ask]);
     }
 
+    /// The person typing into a password field of a visitor's window signs
+    /// it in: from that key on, reading its page asks first. Typing into
+    /// any other field does not.
+    #[test]
+    fn typing_a_password_into_a_visitors_window_makes_its_reads_ask_first() {
+        use ui::permissions::policy::Answer::{Allow, Ask};
+        let read_page = |app: &mut TestApp<BrowserShell>| {
+            app.settle();
+            let published = app.harness().resources();
+            let page = find(&published, "browser.page").expect("the page is published");
+            let action = page
+                .actions
+                .iter()
+                .find(|action| action.id == "read-page")
+                .expect("read-page is published");
+            ui::permissions::policy::agent_answers::default_answer(
+                action.contract.need().kind,
+                action.contract.requires_confirmation(),
+            )
+        };
+        let field = |purpose| ui::webview::TextField {
+            purpose,
+            multiline: false,
+            bounds: None,
+            composition: None,
+        };
+        let engine = ui::webview::test_engine::TestEngine::new();
+        crate::browser_widget::test_window_engine::install(engine.clone());
+        let mut app = TestApp::<BrowserShell>::launched(&[
+            ui::webview::VISITOR_WINDOW_FLAG,
+            "https://github.com/login",
+        ])
+        .expect("Browser opens");
+        for _ in 0..3 {
+            app.harness().relayout();
+        }
+        app.harness()
+            .click_named("browser.surface")
+            .expect("the page");
+        app.harness().relayout();
+
+        engine.set_text_field(Some(field(ui::ime::InputPurpose::Email)));
+        app.harness().key("a");
+        assert_eq!(read_page(&mut app), Allow, "an email is no credential");
+
+        engine.set_text_field(Some(field(ui::ime::InputPurpose::Password)));
+        app.harness().key("Tab");
+        assert_eq!(
+            read_page(&mut app),
+            Allow,
+            "moving through it enters nothing"
+        );
+        app.harness().key("h");
+        assert_eq!(
+            read_page(&mut app),
+            Ask,
+            "a password typed: the page signs in"
+        );
+
+        engine.set_text_field(None);
+        app.harness().key("x");
+        assert_eq!(read_page(&mut app), Ask, "and stays signed in");
+    }
+
     #[test]
     fn a_new_browser_starts_with_the_default_preferences() {
         let state = ui::tilo_resource::Replica::<Browser>::new()

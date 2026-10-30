@@ -3706,8 +3706,17 @@ pub(crate) fn run_with_context(
             .take_for_launch(&binding, &manifest.sandbox.services)
             .map_err(RunError::InvalidServiceLaunch)?
     } else {
+        // A window whose instance a tilolang host runs holds none of the app's data: it gets no
+        // collaboration connection (the host's instance has the app's own). An origin connector
+        // holds none of the app's data either: its instances commit it. The connection is not
+        // opened at all: one opened and dropped is a launch handoff the broker starts to bind
+        // and then hears hang up.
+        let mut services = manifest.sandbox.services.clone();
+        if opts.tilolang_hosted || opts.tilolang_connector.is_some() {
+            services.remove(crate::services::COLLAB_SERVICE);
+        }
         let mut resolved = resolve_service_binds_for_launch(
-            &manifest.sandbox.services,
+            &services,
             opts.no_services,
             ServiceLaunchContext {
                 app_id: package_id,
@@ -3785,17 +3794,6 @@ pub(crate) fn run_with_context(
                 child_fd: runtime_portal::windows::CHILD_FD,
             });
         }
-        resolved
-    };
-    // A window whose instance a tilolang host runs holds none of the app's data: it gets no
-    // collaboration connection (the host's instance has the app's own), and says so.
-    // An origin connector holds none of the app's data either: its instances commit it.
-    let resolved: Vec<_> = if opts.tilolang_hosted || opts.tilolang_connector.is_some() {
-        resolved
-            .into_iter()
-            .filter(|service| service.name != crate::services::COLLAB_SERVICE)
-            .collect()
-    } else {
         resolved
     };
     let binds = to_service_binds(&resolved);

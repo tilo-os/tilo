@@ -7,6 +7,7 @@
 #   tools/ci/test-changed.sh -E 'package(shell)' # only tests in this nextest filterset
 #   tools/ci/test-changed.sh --stage test        # skip clippy
 #   tools/ci/test-changed.sh --base origin/main  # against another base than `integration`
+#   tools/ci/test-changed.sh --closure           # lint every reverse dependency, as the batch does
 #
 # Tests that failed last time against the same base run first. Run it directly (not
 # through tdev). tools/ci/local_affected.py describes what runs where;

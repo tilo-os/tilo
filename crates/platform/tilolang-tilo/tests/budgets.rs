@@ -12,7 +12,9 @@
 //! `cargo run --release -p tilolang-tilo --example bench -- apps/tl/<app> --sizes 1000,10000
 //! --budgets`.
 //!
-//! Its own test target: the allocation counts are those of this work alone.
+//! Its own test target: the allocation counts are those of this work alone (they are counted per
+//! thread, so the apps' tests may run side by side). The runs do the work the gate counts and
+//! nothing that is only timed ([`BenchConfig::timings`]).
 
 #![allow(clippy::panic, reason = "test assertions")]
 
@@ -60,6 +62,7 @@ fn bench(app: &str) -> Vec<Record> {
         memory: None,
         open_only: false,
         budgets: false,
+        timings: false,
         env: Env {
             commit: "test".into(),
             virtualization: "none".into(),
@@ -210,15 +213,33 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
     }
 }
 
-#[test]
-fn the_runtime_does_the_work_of_what_it_shows() {
+/// The runtime does the work of what `app` shows, whatever the size of its room.
+fn the_runtime_does_the_work_of_what_it_shows(app: &str) {
     let mut misses = Vec::new();
-    for app in ["notes", "tasks", "today", "chat"] {
-        gate(app, &bench(app), &mut misses);
-    }
+    gate(app, &bench(app), &mut misses);
     assert!(
         misses.is_empty(),
         "more work in a larger room:\n{}",
         misses.join("\n")
     );
+}
+
+#[test]
+fn notes_does_the_work_of_what_it_shows() {
+    the_runtime_does_the_work_of_what_it_shows("notes");
+}
+
+#[test]
+fn tasks_does_the_work_of_what_it_shows() {
+    the_runtime_does_the_work_of_what_it_shows("tasks");
+}
+
+#[test]
+fn today_does_the_work_of_what_it_shows() {
+    the_runtime_does_the_work_of_what_it_shows("today");
+}
+
+#[test]
+fn chat_does_the_work_of_what_it_shows() {
+    the_runtime_does_the_work_of_what_it_shows("chat");
 }

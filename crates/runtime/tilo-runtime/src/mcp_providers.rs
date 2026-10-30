@@ -22,9 +22,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     "app_id": provider.app_id,
                     "record_id": provider.record_id,
                 });
-                if let Some(peer) = peer {
-                    entry["peer_id"] = json!(peer);
-                    entry["uri"] = json!(format!("tilo://apps/{peer}"));
+                if let (Some(peer), Some(fields)) = (peer, entry.as_object_mut()) {
+                    fields.insert("peer_id".to_owned(), json!(peer));
+                    fields.insert("uri".to_owned(), json!(format!("tilo://apps/{peer}")));
                 }
                 (provider.provider, entry)
             })

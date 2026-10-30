@@ -1260,28 +1260,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             _ => (name, None),
         };
         let (_, running) = self.providers().await?;
-        let app_of = |entry: &Value| entry["app_id"].as_str().map(str::to_owned);
         if let Some(instance) = instance {
-            // One window, by the provider an `open` or `tilo_ls` named: the
-            // agent means that window, never another of the app's.
-            let (provider, entry) = running
-                .iter()
-                .find(|(provider, _)| provider == instance)
-                .ok_or_else(|| {
-                    format!("no running window {instance}; tilo_ls lists the running apps")
-                })?;
-            let app_id = app_of(entry).unwrap_or_default();
-            if page::app_named(name, &[app_id.as_str()]).is_err() {
-                return Err(format!(
-                    "window {instance} is {}, not {name}",
-                    app_names(std::slice::from_ref(&app_id)).join("")
-                ));
-            }
-            return Ok(AppRef::Running {
-                app_id,
-                provider: provider.clone(),
-                pinned: true,
-            });
+            return pinned_window(&running, name, instance);
         }
         let is_window = |provider: &str| provider.parse::<u64>().is_ok();
         let ids_where = |window: bool| {
@@ -1698,7 +1678,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .iter()
             .rev()
             .filter(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
-            .map(|(peer, _)| peer.to_string())
+            .map(|(peer, _)| peer.clone())
             .filter(|peer| *peer != newest)
             .collect();
         for provider in older {
@@ -2560,7 +2540,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .iter()
                 .rev()
                 .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
-                .map(|(peer, _)| peer.to_string())
+                .map(|(peer, _)| peer.clone())
             {
                 searched.push((name, provider));
             }
@@ -2803,6 +2783,34 @@ async fn join_all<F: std::future::Future>(futures: Vec<F>) -> Vec<F::Output> {
 struct Hit {
     tier: u8,
     line: String,
+}
+
+/// The one window `instance` (a provider an `open` or `tilo_ls` named) among `running`, which
+/// must be of the app `name`: the agent means that window, never another of the app's.
+fn pinned_window(
+    running: &[(String, Value)],
+    name: &str,
+    instance: &str,
+) -> Result<AppRef, String> {
+    let (provider, entry) = running
+        .iter()
+        .find(|(provider, _)| provider == instance)
+        .ok_or_else(|| format!("no running window {instance}; tilo_ls lists the running apps"))?;
+    let app_id = entry["app_id"]
+        .as_str()
+        .ok_or_else(|| format!("window {instance} names no app"))?
+        .to_owned();
+    if page::app_named(name, &[app_id.as_str()]).is_err() {
+        return Err(format!(
+            "window {instance} is {}, not {name}",
+            app_names(std::slice::from_ref(&app_id)).join("")
+        ));
+    }
+    Ok(AppRef::Running {
+        app_id,
+        provider: provider.clone(),
+        pinned: true,
+    })
 }
 
 #[cfg(test)]

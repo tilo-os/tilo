@@ -7,8 +7,10 @@
 local-affected.sh checks a branch's commits as the batch check does: base defaults to
 the merge-base with origin/main and the worktree must be clean. test-changed.sh is the
 same run for a change still being edited: base defaults to the merge-base with
-`integration` (origin/main without it), uncommitted and untracked files count, and the
-stages are clippy and test.
+`integration` (origin/main without it), uncommitted and untracked files count, the
+stages are clippy and test, and clippy covers the changed packages and their direct
+dependants (the planner's `near`; `--closure` for the whole reverse-dependency closure
+the batch check lints).
 
 Selection is the planner's (tools/ci/affected_packages.py): the packages a change
 affects, their checks and tests, the same filters CI uses. What differs from CI is only
@@ -21,13 +23,15 @@ how they run:
   the workspace compiles once and nextest's test groups and thread limits hold across
   all of it. Architectures that are only type-checked (`--full`) check on the arm
   builder at the same time.
-- Each job runs where it is compiled: through `rcargo exec` (tools/ci/lint-affected.sh,
-  tools/ci/t-nextest.sh) inside the builder's container, so helper binaries the tests
-  need are built there and no test binary or artifact is fetched to this machine.
-  Without rcargo the same commands run here.
-- The tests that failed in the last run against the same base run first, alone, so a
-  fix is confirmed (or not) within the time of its own tests; the rest follow without
-  them. The record is per worktree and base (`<git-dir>/local-affected/`).
+- Each job runs where it is compiled: through the command prefix in
+  $TILO_BUILDER_EXEC_X86_64 (and $TILO_BUILDER_EXEC_AARCH64 for the second builder), any
+  remote-exec tool that runs a command in a builder's copy of the worktree
+  (tools/ci/lint-affected.sh, tools/ci/t-nextest.sh), so helper binaries the tests need
+  are built there and no test binary or artifact is fetched to this machine. Without
+  them the same commands run here.
+- The tests that failed in the last run against the same base run as a job of their
+  own beside the rest, so a fix is confirmed (or not) within the time of its own tests
+  and the rest is not held up by them. The record is per worktree and base (`<git-dir>/local-affected/`).
 - A big test set is split by package between the x86 and the arm builder
   (`--split auto`, the default): the arm builder takes a quarter of the work (compile
   cost and recorded test time), each builder compiles and runs only its share.
@@ -53,10 +57,10 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
-from ci import nextest_filters  # noqa: E402
+from ci import capability_filter, nextest_filters  # noqa: E402
 from ci.affected_packages import package_cost, recorded_test_seconds  # noqa: E402
 
-DEFAULT_STAGES = "check,clippy,test,goldens,certify,scenarios,scoped"
+DEFAULT_STAGES = "check,clippy,test,policy,goldens,certify,scenarios,scoped"
 CHANGED_STAGES = "check,clippy,test"
 GOLDEN_PACKAGES = {"shell", "tilo-ui", "ebook"}
 # Above this much recorded test time (seconds, tools/ci/recorded_test_time.json) a
@@ -68,6 +72,12 @@ SECOND_SHARE = 0.25
 # The packages kept on x86_64 when a test set is split: their code or tests differ by
 # architecture and CI tests them on x86_64.
 X86_ONLY = {"shell"}
+# A change to what the session's real paths cross (the shell, collaboration, the tilolang host
+# and tilolang-tilo) also runs scripts/headless-examples/session-e2e.py: one headless nested
+# session of this tree, built on the arm builder and run here, since the builders' containers
+# cannot start Tilo's sandboxes.
+SESSION_E2E_PATHS = ("crates/session/shell/", "crates/collab/", "crates/platform/tilolang-host/",
+                     "crates/platform/tilolang-tilo/", "scripts/headless-examples/session-e2e.py")
 # nextest's status line for a test that did not pass, and the test it names.
 FAILED_LINE = re.compile(
     r"^\s*(?:TRY \d+ )?(FAIL|TIMEOUT|LEAK-FAIL|ABORT|SIG[A-Z]+)\s+\[[^\]]*\]\s+"
@@ -133,17 +143,18 @@ def ordered_union(rows: list[dict], key: str) -> list[str]:
 # --- builders ------------------------------------------------------------------------------
 
 class Builder:
-    """Where a job runs: an rcargo builder (`rcargo exec` in its build container), or here."""
+    """Where a job runs: a builder, through the command prefix that runs a command in the
+    builder's copy of this worktree (its build container), or here (no prefix)."""
 
-    def __init__(self, name: str, config: Path | None):
+    def __init__(self, name: str, prefix: list[str] | None):
         self.name = name
-        self.config = config
+        self.prefix = prefix
 
     def prepare(self) -> None:
         """Sync the worktree and ready the build container before the jobs start: jobs started
         together would otherwise queue on each other's sync and container preparation, and a
         session that planned its sync before another's landed compares every file again."""
-        if self.config is None or Job.dry_run:
+        if self.prefix is None or Job.dry_run:
             return
         command, env = self.command(["true"])
         start = time.monotonic()
@@ -155,24 +166,22 @@ class Builder:
         say(f"==> {self.name} builder: worktree synced, build container ready ({time.monotonic() - start:.0f} s)")
 
     def command(self, argv: list[str]) -> tuple[list[str], dict[str, str]]:
-        env = dict(os.environ)
-        if self.config is None:
-            return argv, env
-        env["RCARGO_CONFIG"] = str(self.config)
-        return ["rcargo", "exec", "--", *argv], env
+        return [*(self.prefix or []), *argv], dict(os.environ)
+
+
+# The command prefixes that run a command (the words after them) in an x86_64 or aarch64
+# builder's copy of this worktree, from wherever its compiler runs: any remote-exec tool.
+BUILDER_EXEC = {"x86": "TILO_BUILDER_EXEC_X86_64", "arm": "TILO_BUILDER_EXEC_AARCH64"}
 
 
 def builders(local: bool) -> tuple[Builder, Builder | None]:
-    """The test builder (the one `cargo test` goes to) and a second one to share a big test
-    set with. The cargo shim's: ~/.config/rcargo/x86.toml for tests, config.toml (arm)."""
-    if local or not shutil.which("rcargo"):
+    """The test builder (x86_64, as CI tests) and an aarch64 one to share a big test set
+    with, each named by its $TILO_BUILDER_EXEC_<ARCH> prefix; without the x86_64 one, here."""
+    prefixes = {name: shlex.split(os.environ.get(variable, "")) for name, variable in BUILDER_EXEC.items()}
+    if local or not prefixes["x86"]:
         return Builder("local", None), None
-    home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "rcargo"
-    first = Path(os.environ.get("LOCAL_AFFECTED_RCARGO_CONFIG", home / "x86.toml"))
-    second = Path(os.environ.get("LOCAL_AFFECTED_RCARGO_CONFIG_2", home / "config.toml"))
-    if not first.is_file():
-        return Builder("local", None), None
-    return Builder("x86", first), (Builder("arm", second) if second.is_file() and second != first else None)
+    second = Builder("arm", prefixes["arm"]) if prefixes["arm"] and prefixes["arm"] != prefixes["x86"] else None
+    return Builder("x86", prefixes["x86"]), second
 
 
 # --- jobs ----------------------------------------------------------------------------------
@@ -188,7 +197,8 @@ class Job:
         self.ran_to_end = True
         self.started = time.monotonic()
         self.ended = self.started
-        self.log.write_text("")
+        if not self.dry_run:  # a dry run beside a real one leaves its logs alone
+            self.log.write_text("")
 
     def ok(self) -> bool:
         return all(code == 0 for _, code, _ in self.steps)
@@ -332,6 +342,9 @@ def main() -> int:
     parser.add_argument("--stage", help=f"comma list of stages (default: {DEFAULT_STAGES}; "
                                         f"with --changed: {CHANGED_STAGES}); also tapps")
     parser.add_argument("--tapps", action="store_true", help="also package and size-check the affected tapps")
+    parser.add_argument("--closure", action="store_true",
+                        help="with --changed: lint the whole reverse-dependency closure, as the batch "
+                             "check does (default: the changed packages and their direct dependants)")
     parser.add_argument("--fail-fast", action="store_true",
                         help="stop the other jobs once one fails (the default runs every job to its end)")
     parser.add_argument("--keep-going", action="store_true", help=argparse.SUPPRESS)  # the default now
@@ -365,8 +378,9 @@ def main() -> int:
             say(f"select failed: {error}" + ("" if args.changed else
                 "; a change still being edited is tested with tools/ci/test-changed.sh"))
             return 1
+    linted = len(plan["near"]) if args.changed and not args.closure else plan["selected_count"]
     say(f"==> select: base {base} ({base_commit[:12]}), {plan['selected_count']} of {plan['workspace_count']} "
-        f"packages selected ({plan['reason']}), {len(plan['tested'])} tested, "
+        f"packages selected ({plan['reason']}), {linted} linted, {len(plan['tested'])} tested, "
         f"{time.monotonic() - started:.0f} s")
 
     filters = nextest_filters.filters()
@@ -378,6 +392,11 @@ def main() -> int:
     tail = ["--", *args.names] if args.names else []
 
     clippy = ordered_union(plan["clippy_matrix"]["include"], "packages")
+    if args.changed and not args.closure:
+        # A change being edited: lint what is one edge from it (the planner's `near`); the
+        # batch check lints the whole closure.
+        near = set(plan["near"])
+        clippy = [name for name in clippy if name in near]
     checks = [row for row in plan["check_matrix"]["include"]]
     rows = plan["matrix"]["include"]
     tests = ordered_union(rows, "test_packages")
@@ -449,6 +468,25 @@ def main() -> int:
                 f"clippy over the default builds of {' '.join(defaults)}", primary,
                 ["bash", "tools/ci/lint-affected.sh", "--default-builds", *defaults]))
 
+    # The repository policy suite (tools/policy/run.sh: the policy checks and every Python
+    # test under tools/tests and .codex/hooks), as CI's quality job runs it: here, beside the
+    # builder jobs, since its tests build Git repositories of their own from this checkout.
+    # Its tests of Node.js scripts (steps.toml `node_tests`) need Node.js, which the builder's
+    # container has and this machine may not, and no Git checkout, which the builder's copy of
+    # the worktree lacks: without Node.js here they run there, the rest here.
+    if want("policy"):
+        if shutil.which("node") or primary.prefix is None:
+            spawn("policy", lambda job: job.run("repository policy suite", Builder("local", None),
+                                                ["bash", "tools/policy/run.sh"]))
+        else:
+            spawn("policy", lambda job: job.run("repository policy suite without its Node.js tests",
+                                                Builder("local", None),
+                                                ["bash", "tools/policy/run.sh", "--no-node"]))
+            # No bytecode: the copy's __pycache__ would come back as conflicts with this one's.
+            spawn("policy-node", lambda job: job.run(
+                "repository policy tests of Node.js scripts", primary,
+                ["env", "PYTHONDONTWRITEBYTECODE=1", "bash", "tools/policy/run.sh", "--node"]))
+
     # Type-check only (other architectures, `--full`): on the arm builder when there is one.
     if want("check") and checks:
         def check(job: Job) -> None:
@@ -464,23 +502,51 @@ def main() -> int:
         return ["env", *filter_env, "bash", "tools/ci/t-nextest.sh", "cargo", "nextest", "run", "--locked",
                 "--profile", "ci", "--tests", *flags(packages), "-E", filterset, *(extra or []), *tail]
 
+    capability_filters: dict[str, str] = {}
+    capability_lock = threading.Lock()
+
+    def runnable_here(builder: Builder, filterset: str) -> str:
+        """`filterset` less the tests needing a capability `builder` lacks: the probe runs
+        there once (.config/nextest-capabilities.toml), and each group it leaves out is said
+        by capability, so the run counts those tests as not run rather than passed."""
+        with capability_lock:
+            if builder.name not in capability_filters:
+                left_out = ""
+                if not Job.dry_run:
+                    command, env = builder.command(capability_filter.PROBE)
+                    probed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True,
+                                            errors="replace")
+                    if probed.returncode != 0:
+                        raise RuntimeError(f"the capability probe failed on {builder.name}:\n"
+                                           f"{probed.stdout}{probed.stderr}")
+                    left_out, notes = capability_filter.exclusions(probed.stdout + probed.stderr)
+                    for note in notes:
+                        say(f"==> {builder.name}: {note}")
+                capability_filters[builder.name] = left_out
+            left_out = capability_filters[builder.name]
+        return f"({filterset}) and {left_out}" if left_out else filterset
+
     if want("test") and tests:
         failing_first = {test for test in previous if package_of(test[0]) in set(tests)}
+
+        def failed_first(builder: Builder, packages: list[str], first: set[tuple[str, str]]):
+            def body(job: Job) -> None:
+                # Over the same packages as the full run, so both resolve features alike: the one
+                # that takes cargo's build lock second finds every test binary built.
+                job.run(f"{len(first)} test(s) that failed last time", builder,
+                        nextest(packages, runnable_here(builder, f"({pull_filter}) and ({filterset_of(first)})"),
+                                ["--no-tests=pass"]))
+            return body
 
         def test_share(builder: Builder, packages: list[str], first: set[tuple[str, str]]):
             def body(job: Job) -> None:
                 remaining = pull_filter
                 if first:
-                    # Over the same packages as the full run, so both resolve features alike and
-                    # the full run finds every test binary already built.
-                    job.run(f"{len(first)} test(s) that failed last time", builder,
-                            nextest(packages, f"({pull_filter}) and ({filterset_of(first)})", ["--no-tests=pass"]))
                     remaining = f"({pull_filter}) and not ({filterset_of(first)})"
-                if stop.is_set():
-                    return
-                # A package whose only selected tests ran first has nothing left: pass.
+                # A package whose only selected tests run first has nothing left: pass.
                 job.run(f"nextest ({len(packages)} packages)", builder,
-                        nextest(packages, remaining, ["--no-tests=pass"] if first else []))
+                        nextest(packages, runnable_here(builder, remaining),
+                                ["--no-tests=pass"] if first else []))
                 if want("goldens") and GOLDEN_PACKAGES & set(packages) and not stop.is_set():
                     job.run("visual goldens", builder,
                             nextest(sorted(GOLDEN_PACKAGES & set(packages)), golden, ["--no-tests=pass"]))
@@ -488,7 +554,20 @@ def main() -> int:
 
         for index, (builder, packages) in enumerate(shares):
             mine = {test for test in failing_first if package_of(test[0]) in set(packages)}
-            spawn("test" if len(shares) == 1 else f"test-{builder.name}", test_share(builder, packages, mine))
+            label = "test" if len(shares) == 1 else f"test-{builder.name}"
+            # The tests that failed last time run beside the rest, not before them: they report
+            # within the time of their own tests, and the rest is not held up by them.
+            if mine:
+                spawn(f"{label}-failed", failed_first(builder, packages, mine))
+            spawn(label, test_share(builder, packages, mine))
+
+    # The session's real paths, end to end: built once on the arm builder, run on this machine.
+    changed_files = plan.get("changed_files", [])
+    if args.changed and want("test") and any(path.startswith(SESSION_E2E_PATHS) for path in changed_files):
+        spawn("session-e2e", lambda job: job.run(
+            "session e2e (scripts/headless-examples/session-e2e.py)", Builder("local", None),
+            [sys.executable, "scripts/headless-examples/session-e2e.py", "--build",
+             "--out", "target/session-e2e"]))
 
     for thread in threads:
         thread.join()
@@ -516,7 +595,7 @@ def main() -> int:
 
     # The record: what failed now; a run that ended early keeps what it could not rerun.
     test_jobs = [job for job in jobs if job.label.startswith("test")]
-    if test_jobs:
+    if test_jobs and not args.dry_run:
         failed = set().union(*(job.failed_tests for job in test_jobs))
         if not all(job.ran_to_end for job in test_jobs):
             failed |= previous

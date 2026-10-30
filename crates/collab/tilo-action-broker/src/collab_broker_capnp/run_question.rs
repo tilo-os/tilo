@@ -148,7 +148,11 @@ impl CapnpBrokerState {
                     room,
                     Subject::task(issue),
                     (
-                        &AnswerScope::action(&question.app, &action.resource_kind, &action.action),
+                        &issue_answer_scope(
+                            &question.app,
+                            (&action.resource_kind, &action.action),
+                            action.contract.asks_for_argument(None),
+                        ),
                         action.contract.need().kind,
                     ),
                     Answer::Allow,
@@ -478,4 +482,23 @@ fn send_reply(
         .map_err(|error| capnp::Error::failed(error.to_string()))?;
     results.get().set_frame(&bytes);
     Ok(())
+}
+
+/// Where "Allow for the issue" answers, given for an action `action` on a
+/// resource of `kind` in `app`: every action of its kind (reading, changes,
+/// outside effects) on that kind of resource in that app, for the issue's
+/// runs, so a run reading page after page is asked once. An action whose
+/// contract asks for confirmation is answered alone: only an answer for that
+/// very action lifts its confirmation (`agent_answers::held_to_contract`),
+/// so a wider one would leave it asking every time.
+pub(crate) fn issue_answer_scope(
+    app: &str,
+    (kind, action): (&str, &str),
+    consequential: bool,
+) -> AnswerScope {
+    if consequential {
+        AnswerScope::action(app, kind, action)
+    } else {
+        AnswerScope::kind(app, kind)
+    }
 }

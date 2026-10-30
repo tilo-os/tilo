@@ -182,7 +182,10 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay.register_agent(delegation.clone()).unwrap();
+    host.relay
+        .register_agent(&agent_device.cert, delegation.clone())
+        .await
+        .unwrap();
     let control = AgentControl::new(delegation.clone());
     let mut agent = AgentParticipant::start(
         ParticipantConfig {

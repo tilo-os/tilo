@@ -88,10 +88,10 @@ pub(crate) struct AskTicket(u64);
 pub(crate) enum AskOutcome {
     /// The agent has the work: the issue it is in.
     Asked { issue: String },
-    /// The room refused the ask.
-    Refused,
-    /// The ask may not have been made.
-    Unknown,
+    /// The room refused the ask, and why.
+    Refused(String),
+    /// The ask may not have been made, and why it is not known.
+    Unknown(String),
 }
 
 #[derive(Clone)]
@@ -102,8 +102,8 @@ enum Purpose {
     Queue {
         request: Option<ComposerRequest>,
         title: String,
-        /// Open the issue's page once it is asked.
-        show: bool,
+        /// What opens once it is asked.
+        opens: Opens,
         /// The agent made for the task, launched once its run carries the
         /// delegation; `None` when a collaborator is asked.
         task_agent: Option<Arc<crate::shell::task_agents::MintedTaskAgent>>,
@@ -119,6 +119,15 @@ enum Purpose {
     Undo,
     /// Confirm or decline what a step proposes.
     Resolve,
+}
+
+/// What opens once work is asked: nothing, its issue's page, or its issue
+/// as a chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Opens {
+    Nothing,
+    Page,
+    Chat,
 }
 
 #[derive(Clone)]
@@ -400,7 +409,11 @@ impl AgentActions {
         {
             let changed = self.session.is_some();
             for call in std::mem::take(&mut self.calls) {
-                self.refuse(&call.operation, composer, true);
+                self.refuse(
+                    &call.operation,
+                    composer,
+                    &Refusal::unknown("who you are in this workspace changed"),
+                );
             }
             self.followed = None;
             self.session = None;
@@ -420,8 +433,24 @@ impl AgentActions {
             changed = true;
         }
         for mut call in pending {
-            if Instant::now() >= call.deadline {
-                self.refuse(&call.operation, composer, true);
+            // While the host owes the invocation's receipt, its answer ends
+            // the wait: it takes the action, or says why not (an app that
+            // never offers it is its own delivery deadline's refusal). A
+            // question to the agent is the exception: the person waits in
+            // front of it, so it gives up at its own deadline and the
+            // request runs as work. Waiting on anything else, the call's own
+            // deadline ends it.
+            let host_answers = matches!(call.phase, Phase::Invoke { .. })
+                && !matches!(call.operation.purpose, Purpose::Respond(_));
+            if Instant::now() >= call.deadline && !host_answers {
+                self.refuse(
+                    &call.operation,
+                    composer,
+                    &Refusal::unknown(format!(
+                        "\"{}\" got no answer from {} in time",
+                        call.operation.action, call.operation.app
+                    )),
+                );
                 changed = true;
                 continue;
             }
@@ -461,6 +490,12 @@ impl AgentActions {
         }
         if let Some(issue) = composer.take_open_run() {
             self.begin(show_operation(&issue));
+            changed = true;
+        }
+        if let Some(issue) = composer.take_open_chat()
+            && let Some(operation) = chat_operation(&issue)
+        {
+            self.begin(operation);
             changed = true;
         }
         if let Some(choice) = composer.take_answer_use() {
@@ -544,13 +579,8 @@ impl AgentActions {
                 return None;
             }
         };
-        if let Purpose::Queue {
-            show: shown,
-            ticket,
-            ..
-        } = &mut operation.purpose
-        {
-            *shown = show;
+        if let Purpose::Queue { opens, ticket, .. } = &mut operation.purpose {
+            *opens = if show { Opens::Page } else { Opens::Nothing };
             *ticket = Some(issued);
         }
         // `open` left a session and an owner, so the ask starts, and its
@@ -609,7 +639,11 @@ impl AgentActions {
 
     fn advance(&mut self, call: &mut Call, composer: &mut AgentQuickComposer) -> bool {
         let Some(session) = self.session.as_ref() else {
-            self.refuse(&call.operation, composer, true);
+            self.refuse(
+                &call.operation,
+                composer,
+                &Refusal::unknown("the composer's connection to the room closed"),
+            );
             return false;
         };
         let step = match &mut call.phase {
@@ -638,8 +672,8 @@ impl AgentActions {
                 self.complete(&call.operation, value.as_ref(), composer);
                 false
             }
-            Step::Refused(unknown) => {
-                self.refuse(&call.operation, composer, unknown);
+            Step::Refused(refusal) => {
+                self.refuse(&call.operation, composer, &refusal);
                 false
             }
         }
@@ -670,7 +704,7 @@ impl AgentActions {
             Purpose::Queue {
                 request,
                 title,
-                show,
+                opens,
                 task_agent,
                 ticket,
             } => {
@@ -684,13 +718,20 @@ impl AgentActions {
                         .push((owner.room.clone(), Arc::clone(task_agent)));
                 }
                 if let Some(ticket) = ticket {
-                    let outcome = asked
-                        .clone()
-                        .map_or(AskOutcome::Unknown, |issue| AskOutcome::Asked { issue });
+                    let outcome = asked.clone().map_or_else(
+                        || AskOutcome::Unknown("the ask named no issue".into()),
+                        |issue| AskOutcome::Asked { issue },
+                    );
                     self.outcomes.push((*ticket, outcome));
                 }
-                if *show && let Some(issue) = &asked {
-                    self.begin(show_operation(issue));
+                match (opens, &asked) {
+                    (Opens::Page, Some(issue)) => self.begin(show_operation(issue)),
+                    (Opens::Chat, Some(issue)) => {
+                        if let Some(chat) = chat_operation(issue) {
+                            self.begin(chat);
+                        }
+                    }
+                    _ => {}
                 }
                 if let Some(issue) = &asked {
                     self.followed = Some(Followed {
@@ -742,7 +783,20 @@ impl AgentActions {
         }
     }
 
-    fn refuse(&mut self, operation: &Operation, composer: &mut AgentQuickComposer, unknown: bool) {
+    fn refuse(
+        &mut self,
+        operation: &Operation,
+        composer: &mut AgentQuickComposer,
+        refusal: &Refusal,
+    ) {
+        let unknown = refusal.unknown;
+        tracing::warn!(
+            app = %operation.app,
+            action = %operation.action,
+            unknown,
+            reason = %refusal.reason,
+            "the composer's action did not go through"
+        );
         if let Purpose::Queue {
             ticket: Some(ticket),
             ..
@@ -751,9 +805,9 @@ impl AgentActions {
             self.outcomes.push((
                 *ticket,
                 if unknown {
-                    AskOutcome::Unknown
+                    AskOutcome::Unknown(refusal.reason.clone())
                 } else {
-                    AskOutcome::Refused
+                    AskOutcome::Refused(refusal.reason.clone())
                 },
             ));
         }
@@ -793,6 +847,14 @@ impl AgentActions {
                         ComposerOutcome::Refused
                     },
                 });
+                composer.tell(crate::shell::i18n::t_args(
+                    if unknown {
+                        "agent-quick-outcome-unknown-because"
+                    } else {
+                        "agent-quick-refused-because"
+                    },
+                    &[("reason", refusal.reason.clone().into())],
+                ));
             }
             Purpose::Undo => composer.tell(crate::shell::i18n::t("agent-quick-undo-refused")),
             Purpose::Resolve => {
@@ -893,14 +955,23 @@ fn request_queue(request: &ComposerRequest, title: Option<String>) -> Result<Ope
         Some(about) => instruction(&about.instruction(&request.text), "", &request.conversation),
         None => instruction(&request.text, &request.context, &request.conversation),
     };
-    queue_operation(
+    let mut operation = queue_operation(
         &request.owner,
         Some(request.clone()),
         (&title, &instruction),
         request.about.as_ref(),
         request.model.as_ref(),
         false,
-    )
+    )?;
+    // Moved into a chat: the issue is asked as one (its default budget is
+    // sized for a conversation) and opens as a chat once asked.
+    if request.chat {
+        operation.arguments.insert("chat".into(), true.into());
+        if let Purpose::Queue { opens, .. } = &mut operation.purpose {
+            *opens = Opens::Chat;
+        }
+    }
+    Ok(operation)
 }
 
 /// The task the composer starts: the one place it does, so where tasks live
@@ -979,7 +1050,7 @@ fn queue_operation(
         purpose: Purpose::Queue {
             request,
             title,
-            show: false,
+            opens: Opens::Nothing,
             task_agent,
             ticket: None,
         },
@@ -1082,6 +1153,31 @@ fn resolve_operation(
     }
 }
 
+/// Open `issue` (its address) as a chat: the desktop's `open` of the chat's
+/// address (`tilo-tasks:chat/<issue>`, which Tasks claims), in a window of its
+/// own. One window opens whether or not Tasks was running, and an agent opens
+/// a chat the same way.
+fn chat_operation(issue: &str) -> Option<Operation> {
+    use tilo_desktop_model::commands::{RESOURCE, layout};
+    let id = issue.strip_prefix(tilo_action_broker::services::TRACKER_ISSUE_PREFIX)?;
+    let uri = tasks::chat_uri(&tilo_resource::Id::from_raw(id));
+    Some(Operation {
+        resource: RESOURCE.into(),
+        action: layout::OPEN.into(),
+        arguments: Map::from_iter([
+            ("target".into(), uri.into()),
+            ("place".into(), "new-window".into()),
+        ]),
+        purpose: Purpose::Show,
+        app: tilo_desktop_model::commands::APP_ID.into(),
+        target: Some(tilo_actions::remote::RemoteActionTarget {
+            provider: layout::PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new(RESOURCE, layout::OPEN),
+        }),
+        confirmation: None,
+    })
+}
+
 /// The issue an `ask-agent` operation makes, by its address.
 fn asked_issue(operation: &Operation) -> Option<String> {
     let id = operation.arguments.get("id")?.as_str()?;
@@ -1152,7 +1248,64 @@ enum Step {
     Waiting,
     Next(Phase),
     Complete(Option<Value>),
-    Refused(bool),
+    Refused(Refusal),
+}
+
+/// Why a call ended without its result, said to the person and logged: never
+/// a refusal nobody hears.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Refusal {
+    /// Whether the action may still have been made (it was handed over and
+    /// then failed or was lost), so asking again could make it twice.
+    unknown: bool,
+    reason: String,
+}
+
+impl Refusal {
+    fn refused(reason: impl Into<String>) -> Self {
+        Self {
+            unknown: false,
+            reason: reason.into(),
+        }
+    }
+
+    fn unknown(reason: impl Into<String>) -> Self {
+        Self {
+            unknown: true,
+            reason: reason.into(),
+        }
+    }
+}
+
+/// Step's refusal for a catalogue answer that is not a full page.
+fn page_refusal(page: &CataloguePage) -> Option<Refusal> {
+    if page.stale_cursor {
+        Some(Refusal::refused(
+            "the room's actions changed while they were read",
+        ))
+    } else if page.budget_exhausted {
+        Some(Refusal::refused(
+            "the room has more actions than one reading lists",
+        ))
+    } else {
+        None
+    }
+}
+
+/// Step's refusal for a catalogue question that got no answer.
+fn listing_refusal(
+    polled: PendingPoll<Result<CataloguePage, ActionHostError>>,
+) -> Result<CataloguePage, Step> {
+    match polled {
+        PendingPoll::Waiting => Err(Step::Waiting),
+        PendingPoll::Ready(Ok(page)) => Ok(page),
+        PendingPoll::Ready(Err(error)) => Err(Step::Refused(Refusal::refused(format!(
+            "the room's actions could not be listed: {error}"
+        )))),
+        PendingPoll::Abandoned => Err(Step::Refused(Refusal::refused(
+            "the action host stopped answering while the room's actions were listed",
+        ))),
+    }
 }
 
 fn provider_step(
@@ -1161,24 +1314,29 @@ fn provider_step(
     operation: &Operation,
     answer: &mut Pending<Result<CataloguePage, ActionHostError>>,
 ) -> Step {
-    let page = match poll(answer, &waker()) {
-        PendingPoll::Waiting => return Step::Waiting,
-        PendingPoll::Ready(Ok(page)) => page,
-        PendingPoll::Ready(Err(_)) | PendingPoll::Abandoned => return Step::Refused(false),
+    let page = match listing_refusal(poll(answer, &waker())) {
+        Ok(page) => page,
+        Err(step) => return step,
     };
     let Some(owner) = owner else {
-        return Step::Refused(false);
+        return Step::Refused(Refusal::refused("the composer has no workspace to ask in"));
     };
-    if !page.exhausted || page.stale_cursor || page.budget_exhausted {
-        return Step::Refused(false);
+    if let Some(refusal) = page_refusal(&page) {
+        return Step::Refused(refusal);
+    }
+    if !page.exhausted {
+        return Step::Refused(Refusal::refused(
+            "the room's actions were not listed in full",
+        ));
     }
     // An action named outright goes where it is named; the host admits it there.
     if let Some(target) = &operation.target {
         return invoke_operation(session, operation, target.clone(), None);
     }
     let app = operation.app.as_str();
-    // The tracker is reached whether or not Tasks runs: the host launches it
-    // to take the issue.
+    // The tracker is reached whether or not Tasks runs: with no Tasks window
+    // in the room, the host runs Tasks without one to take the issue
+    // (`crate::shell::windowless`); nothing is shown but where it was asked.
     if app == TRACKER_APP {
         return invoke_operation(
             session,
@@ -1198,7 +1356,10 @@ fn provider_step(
         .filter(|provider| provider.app_id == app && provider.room == owner.room)
         .collect();
     let [provider] = providers.as_slice() else {
-        return Step::Refused(false);
+        return Step::Refused(Refusal::refused(format!(
+            "{} apps in this room offer {app}, not one",
+            providers.len()
+        )));
     };
     let answer = watch(session.query(CatalogueQuery {
         provider: Some(provider.provider.clone()),
@@ -1226,13 +1387,12 @@ fn resolve_step(
     pages: &mut u8,
     matched: &mut Vec<tilo_actions::remote::CatalogueRow>,
 ) -> Step {
-    let page = match poll(answer, &waker()) {
-        PendingPoll::Waiting => return Step::Waiting,
-        PendingPoll::Ready(Ok(page)) => page,
-        PendingPoll::Ready(Err(_)) | PendingPoll::Abandoned => return Step::Refused(false),
+    let page = match listing_refusal(poll(answer, &waker())) {
+        Ok(page) => page,
+        Err(step) => return step,
     };
-    if page.stale_cursor || page.budget_exhausted {
-        return Step::Refused(false);
+    if let Some(refusal) = page_refusal(&page) {
+        return Step::Refused(refusal);
     }
     matched.extend(
         page.rows
@@ -1241,7 +1401,11 @@ fn resolve_step(
             .cloned(),
     );
     if matched.len() > 1 {
-        return Step::Refused(false);
+        return Step::Refused(Refusal::refused(format!(
+            "{} actions in this room are \"{}\", not one",
+            matched.len(),
+            operation.action
+        )));
     }
     if !page.exhausted && !page.next_cursor.is_empty() && *pages > 1 {
         *pages = pages.saturating_sub(1);
@@ -1256,13 +1420,21 @@ fn resolve_step(
         return Step::Waiting;
     }
     if !page.exhausted {
-        return Step::Refused(false);
+        return Step::Refused(Refusal::refused(
+            "the room's actions were not listed in full",
+        ));
     }
     let [row] = matched.as_slice() else {
-        return Step::Refused(false);
+        return Step::Refused(Refusal::refused(format!(
+            "no app in this room offers \"{}\"",
+            operation.action
+        )));
     };
     let Some(target) = row.target() else {
-        return Step::Refused(false);
+        return Step::Refused(Refusal::refused(format!(
+            "\"{}\" names no place to invoke it",
+            operation.action
+        )));
     };
     invoke_operation(session, operation, target, Some(page.revision))
 }
@@ -1302,7 +1474,20 @@ fn invoke_step(
     let receipt = match poll(answer, &waker()) {
         PendingPoll::Waiting => return Step::Waiting,
         PendingPoll::Ready(Ok(receipt)) if receipt.invocation == invocation => receipt,
-        _ => return Step::Refused(true),
+        PendingPoll::Ready(Ok(_)) => {
+            return Step::Refused(Refusal::unknown(
+                "the action host answered for another invocation",
+            ));
+        }
+        // The host's answer: it did not take the action, and says why.
+        PendingPoll::Ready(Err(error)) => {
+            return Step::Refused(Refusal::refused(error.to_string()));
+        }
+        PendingPoll::Abandoned => {
+            return Step::Refused(Refusal::unknown(
+                "the action host stopped answering before it took the action",
+            ));
+        }
     };
     match receipt.status {
         ReceiptStatus::Completed { output } => Step::Complete(output.value),
@@ -1310,8 +1495,11 @@ fn invoke_step(
             invocation,
             changed: session.next_change(&invocation).map(watch),
         }),
-        ReceiptStatus::Rejected { .. } => Step::Refused(false),
-        ReceiptStatus::Failed { .. } | ReceiptStatus::Cancelled { .. } => Step::Refused(true),
+        ReceiptStatus::Rejected { error } => Step::Refused(Refusal::refused(error.to_string())),
+        ReceiptStatus::Failed { error } => Step::Refused(Refusal::unknown(error.message)),
+        ReceiptStatus::Cancelled { message } => Step::Refused(Refusal::unknown(
+            message.unwrap_or_else(|| "the action was cancelled".into()),
+        )),
     }
 }
 
@@ -1326,14 +1514,19 @@ fn observe_step(
         return Step::Waiting;
     }
     let Some(observed) = session.observe(&invocation) else {
-        return Step::Refused(true);
+        return Step::Refused(Refusal::unknown(
+            "the action host no longer knows the action it took",
+        ));
     };
     match observed.update {
         InvocationUpdate::Succeeded {
             invocation: returned,
             output,
         } if returned == invocation => Step::Complete(output.value),
-        InvocationUpdate::Failed { .. } | InvocationUpdate::Cancelled { .. } => Step::Refused(true),
+        InvocationUpdate::Failed { error, .. } => Step::Refused(Refusal::unknown(error.message)),
+        InvocationUpdate::Cancelled { message, .. } => Step::Refused(Refusal::unknown(
+            message.unwrap_or_else(|| "the action was cancelled".into()),
+        )),
         _ => {
             *changed = session.next_change(&invocation).map(watch);
             Step::Waiting
@@ -1395,6 +1588,7 @@ mod tests {
             about: None,
             model: None,
             as_task: None,
+            chat: false,
         }
     }
 
@@ -1424,7 +1618,7 @@ mod tests {
         let undo = undo_operation(
             "tasks.tracker/issues/release",
             &StepChange {
-                resource: card.clone(),
+                resource: card,
                 action: "Moved to Review".into(),
             },
         );
@@ -1434,7 +1628,7 @@ mod tests {
             Some(tilo_actions::remote::Confirmation::Confirmed)
         );
         let query: activity::RecordQuery =
-            serde_json::from_value(Value::Object(undo.arguments.clone())).unwrap();
+            serde_json::from_value(Value::Object(undo.arguments)).unwrap();
         assert_eq!(
             query,
             activity::RecordQuery {
@@ -1744,6 +1938,8 @@ mod tests {
         id: String,
         respond: Mutex<Option<Value>>,
         invoked: Mutex<Invoked>,
+        /// The host's refusal of `ask-agent`, when it refuses it.
+        ask_refused: Mutex<Option<ActionHostError>>,
     }
 
     impl Room {
@@ -1752,6 +1948,7 @@ mod tests {
                 id: uuid::Uuid::new_v4().to_string(),
                 respond: Mutex::new(respond),
                 invoked: Mutex::default(),
+                ask_refused: Mutex::default(),
             })
         }
 
@@ -1857,6 +2054,11 @@ mod tests {
                 address.action.clone(),
                 arguments,
             ));
+            if address.action == "ask-agent"
+                && let Some(error) = self.ask_refused.lock().unwrap().clone()
+            {
+                return Pending::ready(Err(error));
+            }
             let respond = self.respond.lock().unwrap().clone();
             let value = match address.action.as_str() {
                 "respond" => match respond {
@@ -2032,6 +2234,34 @@ mod tests {
             composer.take_request(),
             None,
             "the answer settled the request"
+        );
+    }
+
+    /// The host's answer when it does not take the ask (Tasks never
+    /// offering it, say) is what the composer says, with its reason, and the
+    /// message can be sent again: never a silent "no reply yet".
+    #[test]
+    fn an_ask_the_host_refuses_says_why_and_can_be_sent_again() {
+        let room = Room::new(Some(serde_json::json!({"work": "Fix the link"})));
+        let reason = "so.tilo.tasks was launched but did not offer \"ask-agent\" within 30.0 s";
+        *room.ask_refused.lock().unwrap() = Some(ActionHostError::Unavailable {
+            reason: reason.into(),
+        });
+        let (mut actions, mut composer, _) = composer_in(&room);
+        let tracker = Tracker::default();
+        send(&mut composer, "Replace the parenthesis with the real link");
+        settle(&mut actions, &mut composer, &tracker);
+        assert!(room.invoked().contains(&format!("{TRACKER}#ask-agent")));
+        let notice = composer.notice().expect("the composer says what happened");
+        assert!(notice.contains(reason), "{notice}");
+        assert!(composer.followed().is_none());
+
+        *room.ask_refused.lock().unwrap() = None;
+        send(&mut composer, "Replace the parenthesis with the real link");
+        settle(&mut actions, &mut composer, &tracker);
+        assert!(
+            composer.followed().is_some(),
+            "sent again, the ask is made and its run followed"
         );
     }
 
@@ -2300,6 +2530,60 @@ mod tests {
                 "handing a query on asks for work, not a quick answer"
             );
         }
+    }
+
+    /// "Open as chat" asks what the person typed as a task for a chat and
+    /// opens its issue's chat through the desktop's `open` of the chat's
+    /// address, in a window of its own, once asked; with a run followed, it
+    /// opens that run's issue the same way and asks nothing.
+    #[test]
+    fn open_as_chat_asks_the_typed_request_as_a_chat_and_opens_its_issue_as_one() {
+        let room = Room::new(None);
+        let (mut actions, mut composer, _) = composer_in(&room);
+        let tracker = Tracker::default();
+        perform(
+            &mut composer,
+            "agent-quick-editor",
+            &ui::a11y::Action::SetValue("Review the applications in my inbox".into()),
+        );
+        perform(
+            &mut composer,
+            "agent-quick-open-chat",
+            &ui::a11y::Action::Activate,
+        );
+        settle(&mut actions, &mut composer, &tracker);
+        let asked = room.arguments("ask-agent");
+        assert_eq!(asked["title"], "Review the applications in my inbox");
+        assert_eq!(asked.get("chat").and_then(Value::as_bool), Some(true));
+        let id = asked["id"].as_str().unwrap().to_owned();
+        let open = tilo_desktop_model::commands::layout::OPEN;
+        let desktop_open = format!("{}#{open}", tilo_desktop_model::commands::RESOURCE);
+        let chat = tasks::chat_uri(&tilo_resource::Id::from_raw(&id));
+        assert_eq!(
+            room.invoked(),
+            [format!("{TRACKER}#ask-agent"), desktop_open.clone()],
+            "asked as work, never as a quick answer, then opened as a chat"
+        );
+        assert_eq!(room.arguments(open)["target"], chat.as_str());
+        assert_eq!(room.arguments(open)["place"], "new-window");
+        assert!(!composer.is_open(), "the conversation goes on in the chat");
+
+        // The run it follows opens as a chat as it is.
+        let issue = format!("{}{id}", tilo_action_broker::services::TRACKER_ISSUE_PREFIX);
+        let room = Room::new(None);
+        let (mut actions, mut composer, _) = composer_in(&room);
+        let tracker = Tracker::default();
+        tracker.holds(&actions, run_of(&issue, IssueRunPhase::Executing));
+        settle(&mut actions, &mut composer, &tracker);
+        assert!(composer.followed().is_some());
+        perform(
+            &mut composer,
+            "agent-quick-open-chat",
+            &ui::a11y::Action::Activate,
+        );
+        settle(&mut actions, &mut composer, &tracker);
+        assert_eq!(room.invoked(), [desktop_open]);
+        assert_eq!(room.arguments(open)["target"], chat.as_str());
     }
 
     #[test]

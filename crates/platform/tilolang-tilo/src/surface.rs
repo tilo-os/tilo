@@ -42,7 +42,7 @@ pub fn other_apps_record(meta: &Meta, ty: &str) -> Option<(String, String)> {
 }
 
 /// The resource kind of the record type `key`: `tl.<app>.<Type>`.
-fn record_kind(key: &tilolang_runtime::meta::TypeKey) -> String {
+pub(crate) fn record_kind(key: &tilolang_runtime::meta::TypeKey) -> String {
     format!("tl.{}.{}", key.app, key.name)
 }
 
@@ -270,6 +270,12 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
             None => built.with_schema(schema_of(meta, &Ty::Enum(key.clone()))),
         },
         Some(Ty::Principal) => built.with_schema(subject_schema()).picking(Pick::Subject),
+        // Rich text is given as its text, or encoded whole when it holds more than text
+        // (`host::argument_json`).
+        Some(Ty::RichText) => built.with_schema(json!({"oneOf": [
+            {"type": "string"},
+            {"type": "object", "required": ["rich"]},
+        ]})),
         Some(present) => built.with_schema(schema_of(meta, present)),
         None => built.with_schema(json!({})),
     }

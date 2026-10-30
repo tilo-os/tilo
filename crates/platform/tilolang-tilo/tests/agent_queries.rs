@@ -441,3 +441,22 @@ fn a_task_reads_each_record_anew_for_every_program_and_after_changing_it() {
     ));
     assert!(out.contains("Coffee order"), "{out}");
 }
+
+/// A task reads its own earlier changes in every program after them, while the copy of the
+/// record the door hands over still lags the record's origin.
+#[test]
+fn a_tasks_next_program_reads_what_its_earlier_ones_changed() {
+    let apps = Rc::new(Apps::new(&[&[app!("tasks")]]));
+    let (task, _door) = apps.record_task();
+    task.set_clock(tilolang_tilo::host::system_time);
+    apps.lag("so.tilo.lang.tasks");
+    let out = printed(&task.run(
+        "let t = tasks.add(tasks.tasks, \"Check the launch video\")",
+        true,
+    ));
+    assert!(!out.contains("error"), "{out}");
+    let found = printed(&task.run("grep(/launch/, in: tasks)", true));
+    assert!(found.contains("Check the launch video"), "{found}");
+    let found = printed(&task.run("find(Task)", true));
+    assert!(found.contains("Check the launch video"), "{found}");
+}

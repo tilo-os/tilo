@@ -1165,11 +1165,11 @@ impl CapnpBrokerState {
                 });
             }
             if caller.room() == Some(room.as_str()) {
-                for steps in host_steps.iter().filter(|steps| {
-                    scope.wants(steps.provider()) && scope.wants_app(steps.app_id())
-                }) {
+                for steps in &host_steps {
                     // The host's own services are publishers like an app's
-                    // window: listed, so a caller finds them by their app.
+                    // window: listed whatever rows were asked for (a query
+                    // asking only who publishes builds none), so a caller
+                    // finds them by their app.
                     providers.push(CatalogueProvider {
                         provider: steps.provider().to_owned(),
                         app_id: steps.app_id().to_owned(),
@@ -1177,7 +1177,9 @@ impl CapnpBrokerState {
                         record_id: String::new(),
                         browsable: true,
                     });
-                    Self::host_step_rows((&workspace, &policy, now), steps.as_ref(), &mut rows);
+                    if scope.wants(steps.provider()) && scope.wants_app(steps.app_id()) {
+                        Self::host_step_rows((&workspace, &policy, now), steps.as_ref(), &mut rows);
+                    }
                 }
             }
             let provider = workspace_provider(&room);
@@ -1928,7 +1930,7 @@ impl CapnpBrokerState {
                 // read-only authority while actual launches still require
                 // write, unless they only show what exists (`launch_kind`).
                 if self
-                    .ready_publisher(&app_id, &room, record.as_deref(), address)
+                    .ready_delivery(&app_id, &room, record.as_deref(), address)
                     .is_none()
                     && !policy.may_in(
                         workspace,
@@ -1996,6 +1998,25 @@ impl CapnpBrokerState {
             .map(|offer| offered_action(app, offer))
     }
 
+    /// Hand `request` to the publisher `peer_id` that offers it at `address` now: the native
+    /// task's own delivery, or a job on that connection.
+    async fn deliver_to(
+        self: &Arc<Self>,
+        peer_id: u64,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        (request, address): (&InvokeRequest, &tilo_actions::ActionAddress),
+        native: Option<&super::native_task_execution::NativeLaunch>,
+    ) -> Result<u64, ActionHostError> {
+        if let Some(native) = native {
+            return native.deliver(self, peer_id).await.map_err(refusal);
+        }
+        let mut delivered = request.clone();
+        delivered.target.provider = peer_id.to_string();
+        delivered.target.address = address.clone();
+        self.start_job(caller, origin, &delivered, request).await
+    }
+
     /// Launch `app_id` unless it already publishes the action, then deliver
     /// the invocation to the connection that does, through the same
     /// admission a live action takes.
@@ -2022,9 +2043,10 @@ impl CapnpBrokerState {
         let deadline = tokio::time::sleep(timeout);
         let expired = || ActionHostError::Unavailable {
             reason: format!(
-                "{app_id} was launched but did not offer \"{}\" within {:.1} s",
+                "{app_id} was launched but did not offer \"{}\" within {:.1} s ({})",
                 address.action,
-                timeout.as_secs_f32()
+                timeout.as_secs_f32(),
+                self.publishers_seen(app_id, &room, address),
             ),
         };
         let abandoned = completer.abandoned();
@@ -2045,59 +2067,63 @@ impl CapnpBrokerState {
                 return Err(expired());
             }
             let ready = match native {
-                Some(native) => native.ready(self),
-                None => self.ready_publisher(app_id, &room, destination.record.as_deref(), address),
+                Some(native) => native.ready(self).map(|peer_id| (peer_id, address.clone())),
+                None => self.ready_delivery(app_id, &room, destination.record.as_deref(), address),
             };
-            if let Some(peer_id) = ready {
-                let mut delivered = request.clone();
-                delivered.target.provider = peer_id.to_string();
-                delivered.target.address = address.clone();
-                if let Some(native) = native {
-                    return native.deliver(self, peer_id).await.map_err(refusal);
-                }
-                return self.start_job(caller, origin, &delivered, request).await;
+            if let Some((peer_id, published)) = ready {
+                return self
+                    .deliver_to(peer_id, caller, origin, (request, &published), native)
+                    .await;
+            }
+            // An action that shows nothing runs in an instance of the app
+            // with no window, where the host runs one: it publishes, and the
+            // wait below delivers to it. Only an `open` launches a window.
+            if !launched
+                && address.action != APPLICATION_OPEN_ACTION
+                && self.run_windowless(app_id, &room)?
+            {
+                launched = true;
+                continue;
             }
             if !launched {
-                {
-                    let mut permit = Some(tokio::select! {
-                        biased;
-                        () = &mut abandoned => return Err(stopped_waiting()),
-                        () = &mut deadline => return Err(expired()),
-                        seen = changes.changed() => {
-                            if seen.is_err() {
-                                return Err(ActionHostError::Unavailable { reason: "the broker stopped".into() });
-                            }
-                            continue;
+                let mut permit = Some(tokio::select! {
+                    biased;
+                    () = &mut abandoned => return Err(stopped_waiting()),
+                    () = &mut deadline => return Err(expired()),
+                    seen = changes.changed() => {
+                        if seen.is_err() {
+                            return Err(ActionHostError::Unavailable { reason: "the broker stopped".into() });
                         }
-                        () = tilo_rt::sleep(std::time::Duration::from_millis(50)), if native.is_some() => continue,
-                        permit = super::launchable::launch_permits().acquire_owned() => {
-                            permit.map_err(|_| ActionHostError::Unavailable { reason: "the launch queue stopped".into() })?
-                        }
-                    });
-                    // Re-read custody and launch policy after the queue wait.
-                    self.check_launch_origin(caller, origin, &room)?;
-                    let current = match native {
-                        Some(native) => native.destination(self).map_err(refusal)?,
-                        None => self.admit_launchable(caller, request)?,
-                    };
-                    if current.workspace.room() != destination.workspace.room()
-                        || current.app_id != *app_id
-                        || current.record != destination.record
-                    {
-                        return Err(ActionHostError::NotPermitted);
+                        continue;
                     }
-                    let launch = self.finish_retained_launch(
-                        completer,
-                        caller,
-                        (origin, request),
-                        current,
-                        native,
-                        permit.take().ok_or(ActionHostError::NotPermitted)?,
-                        (deadline.deadline(), &address.action),
-                    );
-                    drop(permit);
-                    launch.await?;
+                    () = tilo_rt::sleep(std::time::Duration::from_millis(50)), if native.is_some() => continue,
+                    permit = super::launchable::launch_permits().acquire_owned() => {
+                        permit.map_err(|_| ActionHostError::Unavailable { reason: "the launch queue stopped".into() })?
+                    }
+                });
+                // Re-read custody and launch policy after the queue wait.
+                self.check_launch_origin(caller, origin, &room)?;
+                let current = match native {
+                    Some(native) => native.destination(self).map_err(refusal)?,
+                    None => self.admit_launchable(caller, request)?,
+                };
+                if current.workspace.room() != destination.workspace.room()
+                    || current.app_id != *app_id
+                    || current.record != destination.record
+                {
+                    return Err(ActionHostError::NotPermitted);
                 }
+                let launch = self.finish_retained_launch(
+                    completer,
+                    caller,
+                    (origin, request),
+                    current,
+                    native,
+                    permit.take().ok_or(ActionHostError::NotPermitted)?,
+                    (deadline.deadline(), &address.action),
+                );
+                drop(permit);
+                launch.await?;
                 launched = true;
                 continue;
             }
@@ -2403,6 +2429,59 @@ impl CapnpBrokerState {
         }
     }
 
+    /// Have the host run `app_id` with no window in `room`, for an action
+    /// that shows nothing: whether it does.
+    fn run_windowless(&self, app_id: &str, room: &str) -> Result<bool, ActionHostError> {
+        let started = match (
+            self.launchable.windowless(),
+            self.services.launcher.as_ref(),
+        ) {
+            (Some(stand_in), _) => stand_in(app_id, room),
+            (None, Some(launcher)) => launcher.windowless(app_id, room),
+            (None, None) => Ok(false),
+        };
+        started.map_err(|why| ActionHostError::Unavailable {
+            reason: format!("{app_id} could not run without a window: {why}"),
+        })
+    }
+
+    /// Note whether peer `peer_id`, the connection of `local`, is an
+    /// instance of its app the host runs with no window.
+    pub(super) fn note_windowless(
+        &self,
+        peer_id: u64,
+        local: Option<&super::native_media::LocalAppConnection>,
+    ) {
+        if local.is_some_and(|local| local.windowless)
+            && let Ok(mut windowless) = self.launchable.windowless_peers.lock()
+        {
+            windowless.insert(peer_id);
+        }
+    }
+
+    /// Peer `peer_id` disconnected: forget the window it was for, and that
+    /// it had none.
+    pub(super) fn forget_windows_of(&self, peer_id: u64) {
+        if let Ok(mut windows) = self.window_instances.lock() {
+            windows.remove(&peer_id);
+        }
+        if let Ok(mut windowless) = self.launchable.windowless_peers.lock() {
+            windowless.remove(&peer_id);
+        }
+    }
+
+    /// Whether peer `peer_id` may take an invocation of `action`: an
+    /// instance with no window takes every action but `open`, which shows
+    /// what it opens and so goes to a window.
+    pub(super) fn shows(&self, peer_id: u64, action: &str) -> bool {
+        action != APPLICATION_OPEN_ACTION
+            || self
+                .launchable
+                .windowless_peers
+                .lock()
+                .is_ok_and(|windowless| !windowless.contains(&peer_id))
+    }
+
     /// The live connection of `app_id` in `room` that publishes `address`
     /// and can receive invocations.
     pub(super) fn ready_publisher(
@@ -2412,22 +2491,126 @@ impl CapnpBrokerState {
         record: Option<&str>,
         address: &tilo_actions::ActionAddress,
     ) -> Option<u64> {
+        self.publisher_of(app_id, room, record, address, false)
+            .map(|(peer_id, _)| peer_id)
+    }
+
+    /// [`Self::ready_publisher`] and the address that connection publishes
+    /// `address` under, which is what it is delivered as.
+    ///
+    /// An app names its resources by its own ids (`tasks.tracker`); a
+    /// component surface publishes each under its instance's alias
+    /// ([`tilo_actions::BOUND_RESOURCE_PREFIX`]), which only that instance
+    /// resolves. A target written with the app's id (an application target,
+    /// a run's report) reaches the instance publishing it under either name,
+    /// and is handed over under the one that instance published.
+    pub(super) fn ready_delivery(
+        &self,
+        app_id: &str,
+        room: &str,
+        record: Option<&str>,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<(u64, tilo_actions::ActionAddress)> {
+        self.publisher_of(app_id, room, record, address, true)
+    }
+
+    /// What `app_id`'s connections in `room` publish of `address`'s action
+    /// and why none is ready for it: said with a delivery that found none.
+    fn publishers_seen(
+        &self,
+        app_id: &str,
+        room: &str,
+        address: &tilo_actions::ActionAddress,
+    ) -> String {
+        let Ok(subscribers) = self.invocation_subscribers.lock() else {
+            return "the invocation streams are unavailable".into();
+        };
+        let Ok(surfaces) = self.surfaces.lock() else {
+            return "the published surfaces are unavailable".into();
+        };
+        let seen: Vec<String> = surfaces
+            .values()
+            .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == room)
+            .map(|surface| {
+                let resources: Vec<String> = surface
+                    .actions
+                    .iter()
+                    .filter(|action| action.action == address.action)
+                    .map(|action| {
+                        tilo_actions::selection::logical_resource_id(&action.resource).into_owned()
+                    })
+                    .collect();
+                format!(
+                    "connection {} on {}: {}{}{}publishes \"{}\" on [{}]",
+                    surface.peer_id,
+                    surface.route.record_id,
+                    if surface.live { "" } else { "closed, " },
+                    if subscribers.contains_key(&surface.peer_id) {
+                        ""
+                    } else {
+                        "takes no invocations, "
+                    },
+                    if self.shows(surface.peer_id, &address.action) {
+                        ""
+                    } else {
+                        "has no window for it, "
+                    },
+                    address.action,
+                    resources.join(", ")
+                )
+            })
+            .collect();
+        if seen.is_empty() {
+            format!("no connection of {app_id} published in this room")
+        } else {
+            seen.join("; ")
+        }
+    }
+
+    /// The ready publisher of `address` and the address it publishes it
+    /// under: the exact one, else (when `aliases`) one whose resource is a
+    /// bound alias of `address`'s resource.
+    fn publisher_of(
+        &self,
+        app_id: &str,
+        room: &str,
+        record: Option<&str>,
+        address: &tilo_actions::ActionAddress,
+        aliases: bool,
+    ) -> Option<(u64, tilo_actions::ActionAddress)> {
         let subscribers = self.invocation_subscribers.lock().ok()?;
         let surfaces = self.surfaces.lock().ok()?;
         surfaces
             .values()
             .filter(|surface| {
                 surface.live
+                    && self.shows(surface.peer_id, &address.action)
                     && surface.app_id == app_id
                     && surface.route.cluster_id == room
                     && record.is_none_or(|record| surface.route.record_id == record)
                     && subscribers.contains_key(&surface.peer_id)
-                    && surface.actions.iter().any(|action| {
-                        action.resource == address.resource && action.action == address.action
-                    })
             })
-            .map(|surface| surface.peer_id)
-            .min()
+            .filter_map(|surface| {
+                let published = surface
+                    .actions
+                    .iter()
+                    .find(|action| {
+                        action.action == address.action && action.resource == address.resource
+                    })
+                    .or_else(|| {
+                        surface.actions.iter().find(|action| {
+                            aliases
+                                && action.action == address.action
+                                && tilo_actions::selection::logical_resource_id(&action.resource)
+                                    == address.resource
+                        })
+                    })?;
+                Some((
+                    surface.peer_id,
+                    tilo_actions::ActionAddress::new(&published.resource, &published.action),
+                ))
+            })
+            .min_by_key(|(peer_id, _)| *peer_id)
     }
 
     pub(super) fn invoke_eager(

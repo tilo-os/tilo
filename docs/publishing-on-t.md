@@ -266,14 +266,14 @@ t's identity token, so a check that signs runs on t; where its outputs were made
 `--given CHECK` takes it as passed. A micro-VM step runs in a privileged container on the
 machine's own kernel, so os-dev-disk-<arch>, which installs onto a loop-mounted btrfs disk,
 needs a VM. So does dev-installer-medium-<arch> on a kernel without EROFS, btrfs or loop
-devices, such as an rcargo builder's: `tools/ci/medium-in-worker-vm.sh` runs its script in a
+devices, such as a remote build host's: `tools/ci/medium-in-worker-vm.sh` runs its script in a
 worker VM booted from main's published dev disk.
 
 The one-password sign-in end to end (signin-e2e-<arch>) runs this way on either architecture,
 image and medium included, from a committed checkout on the builder:
 
 ```sh
-bash tools/ci/signin-e2e-builder.sh --target /srv/rcargo/scratch/me/target --out /srv/rcargo/scratch/me/signin-e2e
+bash tools/ci/signin-e2e-builder.sh --target /srv/scratch/me/target --out /srv/scratch/me/signin-e2e
 bash tools/ci/signin-e2e-builder.sh --target ... --out ... --variant rollback --pre-pam-tilo-image old.ociarchive
 ```
 

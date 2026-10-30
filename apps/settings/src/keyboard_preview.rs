@@ -614,6 +614,11 @@ mod sandbox_tests {
             );
             return;
         }
+        tilo_test_env::require_capability!(
+            UserNamespace,
+            tilo_test_env::bubblewrap(),
+            "the preview's readonly sandbox profile"
+        );
         let temporary = tempfile::tempdir().unwrap();
         let private = temporary.path().join("private");
         std::fs::write(&private, b"owned fixture only").unwrap();

@@ -76,6 +76,9 @@ pub(super) struct BarInputs {
     navigation: ToolbarNavigation,
     /// Its buttons and menus, exactly as declared.
     actions: Vec<ToolbarAction>,
+    /// What it says after back and forward: whether the window browses as
+    /// a visitor, which changes once a credential is entered in it.
+    leading: Vec<ToolbarAction>,
     favicon: Option<Vec<u8>>,
     suggestions: Vec<LocationSuggestion>,
     /// The Library's place while it is shown: its name, then its section's,
@@ -159,6 +162,7 @@ impl BrowserWidget {
             uri: self.current_uri.clone(),
             navigation: self.bar_navigation(),
             actions: self.bar_actions(),
+            leading: self.custody_leading(),
             favicon: self.favicon_png.clone(),
             suggestions: self.bar_suggestions(),
             library: self.show_library.then(|| self.library_segments()),
@@ -365,9 +369,12 @@ impl BrowserWidget {
     /// for an agent and browses as a visitor, without the person's
     /// sign-ins: a button saying so, whose menu opens the page in a window
     /// of the person's own. Their own window says nothing: it is the
-    /// ordinary one.
-    fn custody_leading(&self) -> Vec<ToolbarAction> {
-        if self.browsing_mode != crate::browsing_mode::BrowsingMode::Visitor {
+    /// ordinary one; nor does a visitor's once a credential was entered in
+    /// it, since its page may then hold a sign-in.
+    pub(super) fn custody_leading(&self) -> Vec<ToolbarAction> {
+        if self.browsing_mode != crate::browsing_mode::BrowsingMode::Visitor
+            || self.page_holds_sign_in()
+        {
             return Vec::new();
         }
         let page = super::is_supported_web_url(&self.current_uri);

@@ -1293,6 +1293,18 @@ impl ProviderConfig {
         Ok(())
     }
 
+    /// The agents that plan with `model` of `profile`.
+    pub fn agents_planning_with<'a>(
+        &'a self,
+        profile: &'a str,
+        model: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        self.agent_models
+            .iter()
+            .filter(move |(_, chosen)| chosen.profile == profile && chosen.model == model)
+            .map(|(agent, _)| agent.as_str())
+    }
+
     /// Whether no profile offers the model `chosen` names.
     fn offers_nothing(&self, chosen: &AgentModel) -> bool {
         !self.profiles.iter().any(|profile| {
@@ -1308,21 +1320,6 @@ impl ProviderConfig {
                 issues.push(ProfileIssue::new(
                     &chosen.profile,
                     "A default model for a kind of interaction is not offered here.",
-                ));
-            }
-        }
-        for (agent, chosen) in &self.agent_models {
-            let calls_tools = self
-                .profiles
-                .iter()
-                .filter(|profile| profile.id == chosen.profile)
-                .flat_map(|profile| &profile.models)
-                .find(|model| model.id == chosen.model)
-                .is_none_or(|model| model.tool_calling);
-            if !calls_tools {
-                issues.push(ProfileIssue::new(
-                    &chosen.profile,
-                    &format!("The model chosen for {agent} does not call tools."),
                 ));
             }
         }

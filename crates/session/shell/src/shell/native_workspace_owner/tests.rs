@@ -117,6 +117,7 @@ fn native_owner_publication_writes_only_its_own_file_and_keeps_the_live_document
             .all(|head| { automerge::ReadDoc::get_change_by_hash(&tree.doc, head).is_some() }),
         "the installed tree carries the live document's history, not a fresh one"
     );
+    drop(tree);
 }
 
 /// The state file is exactly the tree pretty-printed, without the owner's

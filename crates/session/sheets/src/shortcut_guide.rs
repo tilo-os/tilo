@@ -12,7 +12,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
-use ui::input::{ControllerBinding, ControllerButton, InputBinding, KeyboardBinding, TouchGesture};
+use ui::input::{
+    ControllerBinding, ControllerButton, InputBinding, KeyLegend, KeyboardBinding, TouchGesture,
+};
 use ui::prelude::*;
 use ui::widget::{Column, Container, Element, InputHint, ModalDialog, Row, Scrollable, Text};
 
@@ -246,7 +248,7 @@ impl ResourceApp for ShortcutGuideApp {
 
 /// A keyboard guide as a fresh desktop has it, for captures.
 fn sample_keyboard_guide() -> Guide {
-    use ui::input::{KeyLegend, KeyboardModifier};
+    use ui::input::KeyboardModifier;
     let keys =
         |key: &str| KeyboardBinding::new([KeyboardModifier::System], KeyLegend::from_name(key));
     let shortcut = |action: &str, label: &str, key: &str| Shortcut {
@@ -318,6 +320,8 @@ fn body(guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>) -> Element {
         .with_gap(gap)
         .push(caption(&t("guide-reopen-hint")));
     if guide.modality == Modality::Keys {
+        // While a key listens, what to do next is one line and how to leave
+        // it is a key hint beside it, never a glyph-joined sentence.
         let feedback = match (&guide.listening, &guide.message) {
             (Some(action), message) => {
                 let label = guide
@@ -326,29 +330,40 @@ fn body(guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>) -> Element {
                     .flat_map(|pair| [&pair.previous, &pair.next])
                     .find(|shortcut| &shortcut.action == action)
                     .map_or_else(|| action.clone(), |shortcut| shortcut.label.clone());
-                Some(message.as_ref().map_or_else(
-                    || {
-                        crate::t_args(
-                            "guide-press-new-shortcut",
-                            &[("action", ui::i18n::ArgValue::Text(label))],
-                        )
-                    },
-                    |message| {
-                        crate::t_args(
-                            "guide-message-esc-cancels",
-                            &[("message", ui::i18n::ArgValue::Text(message.clone()))],
-                        )
-                    },
-                ))
+                let text = message.clone().unwrap_or_else(|| {
+                    crate::t_args(
+                        "guide-press-new-shortcut",
+                        &[("action", ui::i18n::ArgValue::Text(label))],
+                    )
+                });
+                Some((text, true))
             }
-            (None, message) => message.clone(),
+            (None, message) => message.clone().map(|text| (text, false)),
         };
-        if let Some(feedback) = feedback {
-            column = column.push(Box::new(
-                Text::new(&feedback)
+        if let Some((text, cancellable)) = feedback {
+            let line: Element = Box::new(
+                Text::new(&text)
                     .with_role(TextRole::Caption)
                     .with_id("guide-feedback"),
-            ));
+            );
+            column = column.push(if cancellable {
+                Box::new(
+                    Row::new()
+                        .with_gap(ui::tokens::Spacing::BASE.s4)
+                        .push(line)
+                        .push(Box::new(
+                            Row::new()
+                                .with_gap(ui::tokens::Spacing::BASE.s2)
+                                .push(hint(InputBinding::Keyboard(KeyboardBinding {
+                                    modifiers: Vec::new(),
+                                    key: KeyLegend::Escape,
+                                })))
+                                .push(caption(&t("guide-listening-cancel"))),
+                        )),
+                )
+            } else {
+                line
+            });
         }
     }
     let column = match guide.modality {

@@ -616,6 +616,7 @@ impl RoomRecord {
         }
         let author = invoker.actor.clone();
         let context = context.with_invoker(invoker);
+        let before = self.doc.get_heads();
         tilo_actions::apply_local_with_context(
             &mut self.doc,
             action,
@@ -627,7 +628,38 @@ impl RoomRecord {
         // The change is a step of whoever made it, by the invoker its entry names: their Undo
         // takes it back.
         self.doc.commit();
-        Ok(())
+        self.keep_only_if_the_room_takes(&before)
+    }
+
+    /// Keep what the record holds past `before` only if the room takes it, as every receiver
+    /// decides its claims against the app's surface ([`collaboration::app_surface::refusal`]):
+    /// a change the room refuses is taken out of the record again, with all of it, so it is
+    /// never kept here, built on and written to disk while the room holds none of it.
+    fn keep_only_if_the_room_takes(&mut self, before: &[ChangeHash]) -> Result<(), RoomError> {
+        let change = self.doc.save_after(before);
+        if change.is_empty() {
+            return Ok(());
+        }
+        let room = self.route.cluster_id.to_string();
+        let record = collab_types::Record {
+            room: &room,
+            app: &self.route.app_id,
+            record: self.route.record.as_deref().unwrap_or(""),
+        };
+        let Some(why) = collaboration::app_surface::refusal(
+            &record,
+            &collab_types::DocumentMutation::Incremental(change),
+        ) else {
+            return Ok(());
+        };
+        tracing::warn!(app = %self.route.app_id, %why, "room: a change the room refuses was not kept");
+        let actor = self.doc.get_actor().clone();
+        let mut kept = self.doc.fork_at(before).map_err(|error| {
+            RoomError::Refused(format!("{why}; and it could not be taken out: {error}"))
+        })?;
+        kept.set_actor(actor);
+        self.doc = kept;
+        Err(RoomError::Refused(format!("the room refuses it: {why}")))
     }
 
     /// Take in what the record's route brought and bring `instance` up to date with the

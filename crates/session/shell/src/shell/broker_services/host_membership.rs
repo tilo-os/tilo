@@ -24,12 +24,28 @@ pub(super) async fn commit_at_own_host(
         let host = network
             .room_host()
             .ok_or("this device's host is not open yet")?;
-        let (completion, added) = host
-            .rooms()
-            .commit_own_membership(&room.to_string(), caller, command.clone())
+        // The host commits on this network's runtime, never in the caller's
+        // future: that future is polled on the broker's loop, and the room
+        // stays locked until the commit is published. Whoever asks the host
+        // for the room's channel keys waits for that lock while holding the
+        // broker's channel keys, which the broker's loop takes too: the loop
+        // would stop with the room locked under it, and nothing would ever
+        // finish the commit or answer the keys. On the host's own runtime
+        // the commit runs to its end whatever the loop waits for.
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let (asked_room, asker, command) = (room.to_string(), caller.clone(), command.clone());
+        network.runtime_handle()?.spawn(async move {
+            let committed = host
+                .rooms()
+                .commit_own_membership(&asked_room, &asker, command)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = answer.send(committed);
+        });
+        // The task ends without answering only when the runtime shuts down.
+        let (completion, added) = answered
             .await
-            .map_err(|error| error.to_string())?;
-        drop(host);
+            .map_err(|_| "this device's network stopped before its host committed")??;
         tracing::debug!(%room, generation = completion.generation, "this device's host committed its membership change");
         // What the host wrote is taken into this device's replica in
         // process, as its publication would bring it: in force here now.
