@@ -2937,8 +2937,13 @@ impl TextRenderer {
         };
         let layout_width = max_width.map(|width| (width - hyphen_width).max(0.0));
         buffer.set_size(layout_width, None);
+        // A word longer than the line (an address, a link) breaks anywhere once it cannot fit
+        // whole, never runs past the line; laid out for its narrowest (a width of nothing),
+        // text keeps its words whole, so a container never shrinks below its longest word.
+        let breaks_words = layout_width.is_some_and(|width| width > 0.0);
         buffer.set_wrap(match style.wrap_mode {
             TextWrapMode::WordOrGlyph => Wrap::WordOrGlyph,
+            TextWrapMode::Wrap | TextWrapMode::Balance if breaks_words => Wrap::WordOrGlyph,
             TextWrapMode::Wrap | TextWrapMode::Balance | TextWrapMode::Indented => Wrap::Word,
         });
         buffer.shape_until_scroll(&mut self.font_system, false);

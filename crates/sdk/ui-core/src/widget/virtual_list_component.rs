@@ -734,11 +734,14 @@ impl Described for DescribedList {
         let mut list =
             VirtualList::with_selection_delegate(rows, ROW_ESTIMATE, |rows, _, key, _| {
                 row_of(rows, key)
-            })
-            .filling();
-        if in_column {
-            list = list.in_column();
-        }
+            });
+        // A column's one list takes the column's height and scrolls its rows; a list among a
+        // page's other content is as tall as its rows, and the page scrolls them with the rest.
+        list = if in_column {
+            list.filling().in_column()
+        } else {
+            list.fitting_rows()
+        };
         if selection_follows_focus {
             list = list.selection_follows_focus();
         }

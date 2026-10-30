@@ -1598,6 +1598,23 @@ impl Button {
         taffy.set_style(node, style).is_ok()
     }
 
+    /// The face's height on the node, as the input asks for it now: a button made before the
+    /// window told it a finger reaches it grows to the finger's target when it is laid out
+    /// again, not only when its node is built anew.
+    fn pin_face_height(&self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let height = f32_of_f64(self.face_height());
+        if style.size.height == Dimension::length(height) {
+            return false;
+        }
+        let mut style = style.clone();
+        style.size.height = Dimension::length(height);
+        style.min_size = Size::from_lengths(height, height);
+        taffy.set_style(node, style).is_ok()
+    }
+
     /// Run the native handler for a `tilo.ui.control.invoke` addressed to
     /// this button. `Ok(false)` when the operation is not this button's.
     fn invoke_native_control(
@@ -1639,6 +1656,8 @@ impl Widget for Button {
         if self.interaction != environment {
             self.interaction = environment;
             self.is_hovered &= environment.supports_hover();
+            // An icon's square and a label's padding follow the face's height.
+            self.measured_width = None;
             self.layout_dirty = true;
             self.dirty = true;
         }
@@ -1726,13 +1745,14 @@ impl Widget for Button {
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
+        let tall = self.pin_face_height(taffy, node);
         if self.fill_width {
-            return false;
+            return tall;
         }
         if self.measured_width.is_none() {
             self.measured_width = Some(self.intrinsic_width(text));
         }
-        self.pin_measured_width(taffy, node)
+        self.pin_measured_width(taffy, node) | tall
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -3959,3 +3979,7 @@ mod tests {
 
 mod component;
 pub use component::ButtonProps;
+
+#[cfg(test)]
+#[path = "button_touch_tests.rs"]
+mod touch_tests;
