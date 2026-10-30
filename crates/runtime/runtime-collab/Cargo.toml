@@ -41,7 +41,7 @@ registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 # never be unified into it.
 browser-continuity-core.workspace = true
 blake3.workspace = true
-zeroize.workspace = true
+zeroize = { workspace = true, features = ["serde"] }
 # Signed retained proofs use the current canonical personal/device identity.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 ed25519-dalek = { workspace = true, optional = true }

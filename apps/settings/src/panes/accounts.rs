@@ -48,6 +48,7 @@ use provider_settings_ui::widgets::{
     setting_row_described, thing_row, untitled, value_row,
 };
 
+mod add_email;
 mod browser_sessions;
 mod calendar_selection;
 mod cloud_control;
@@ -151,6 +152,28 @@ pub enum AccountsEffect {
     AddAccount {
         #[param("The kind of account, by its slug")]
         kind: String,
+    },
+    /// Add an email account with its password. The password is sealed by
+    /// the session's account custody and never shown or read back; Mail,
+    /// which keeps email accounts, is released it to sign in.
+    #[effect(job, returns, label = "Add email account")]
+    AddEmailAccount {
+        #[param("The name shown for it")]
+        display_name: String,
+        #[param("The email address")]
+        email: String,
+        #[param("The name it signs in with; the address when omitted")]
+        username: Option<String>,
+        #[param("The IMAP server's host")]
+        imap_host: String,
+        #[param("The IMAP server's port")]
+        imap_port: u16,
+        #[param("The SMTP server's host")]
+        smtp_host: String,
+        #[param("The SMTP server's port")]
+        smtp_port: u16,
+        #[param(secret, "The account's password or app password")]
+        password: String,
     },
     /// Edit an account's details.
     #[effect(view, row)]
@@ -294,6 +317,7 @@ pub(crate) fn answer(
             ));
             return Ok(Effected::Pending);
         }
+        add @ AccountsEffect::AddEmailAccount { .. } => return add_email::answer(app, add, cx),
         AccountsEffect::DiscoverThunderbirdAccounts { prefs } => {
             return thunderbird_import::discover(app, prefs, cx);
         }
@@ -349,7 +373,7 @@ fn answer_import(
     model: &mut AccountsPane,
     effect: AccountsEffect,
     cx: &mut EffectCx<Settings>,
-) -> Result<EffectAnswer, AccountsEffect> {
+) -> Result<EffectAnswer, Box<AccountsEffect>> {
     Ok(match effect {
         AccountsEffect::DiscoverThunderbirdAccounts { .. }
         | AccountsEffect::ChooseThunderbirdMetadata => Err(t("accounts-import-read-failed")),
@@ -375,7 +399,7 @@ fn answer_import(
             model.changed = true;
             Effected::done()
         }),
-        other => return Err(other),
+        other => return Err(Box::new(other)),
     })
 }
 
@@ -390,7 +414,7 @@ fn answer_model(
     let mut model = shared.borrow_mut();
     let effect = match answer_import(&mut model, effect, cx) {
         Ok(answer) => return answer,
-        Err(effect) => effect,
+        Err(effect) => *effect,
     };
     match effect {
         AccountsEffect::DiscoverThunderbirdAccounts { .. }
@@ -402,6 +426,7 @@ fn answer_model(
             return Err(t("accounts-import-read-failed"));
         }
         AccountsEffect::RemoveBrowserServiceSession { .. }
+        | AccountsEffect::AddEmailAccount { .. }
         | AccountsEffect::PublishBrowserIdentity { .. }
         | AccountsEffect::SetBrowserIdentityEnabled { .. }
         | AccountsEffect::RemoveBrowserIdentity { .. }
@@ -586,6 +611,10 @@ pub struct AccountsArea {
     linked: ui::linked_accounts::LinkedAccounts,
     pub(crate) remote: ui::RemoteActions,
     removal: std::cell::RefCell<Option<browser_sessions::Removal>>,
+    /// The session's account custody on this window's route; `None` outside a session.
+    custody: Option<ui::collaboration::browser_service_sessions::Client>,
+    /// An email account being added ([`add_email`]).
+    adding: std::cell::RefCell<Option<add_email::AddingEmail>>,
     model: std::cell::OnceCell<Rc<std::cell::RefCell<AccountsPane>>>,
     account_root: Option<AccountRoot>,
     /// The credential vault, its custody and the sync statuses, opened off
@@ -633,6 +662,8 @@ impl AccountsArea {
             linked: cx.linked.clone(),
             remote: ui::RemoteActions::current(),
             removal: std::cell::RefCell::default(),
+            custody: ui::collaboration::browser_service_sessions::Client::capture(),
+            adding: std::cell::RefCell::default(),
             model: std::cell::OnceCell::new(),
             account_root: None,
             read: crate::device_read::DeviceRead::default(),
@@ -715,6 +746,7 @@ impl AccountsArea {
     pub(crate) fn poll(&self) {
         self.remote.poll();
         self.follow_linked();
+        self.poll_adding();
         let finished = self
             .removal
             .borrow_mut()
@@ -738,9 +770,10 @@ impl AccountsArea {
     /// Whether a check, a sign-in or vault work is under way, so the window
     /// keeps polling for it.
     fn busy(&self) -> bool {
-        self.model
-            .get()
-            .is_some_and(|model| model.try_borrow().is_ok_and(|pane| pane.busy()))
+        let pane = |model: &Rc<std::cell::RefCell<AccountsPane>>| {
+            model.try_borrow().is_ok_and(|pane| pane.busy())
+        };
+        self.adding.borrow().is_some() || self.model.get().is_some_and(pane)
     }
 
     /// The person's accounts with the services the room is connected to.

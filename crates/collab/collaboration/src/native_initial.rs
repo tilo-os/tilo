@@ -554,14 +554,14 @@ pub fn service_capture_bridge() -> Option<InitialReadBridge> {
         .primary_route()?
         .route
         .clone();
-    if route.record.is_none()
-        || route.app_id != bridge.route.app_id
-        || route.cluster_id != bridge.route.cluster_id
-    {
+    if route.app_id != bridge.route.app_id || route.cluster_id != bridge.route.cluster_id {
         return None;
     }
+    // Any app's own route: the custodian authorizes each request for the
+    // app that sends it (Browser's sessions, Settings' sealing, the secret
+    // of an account of the type an app keeps).
     bridge
-        .check_scope("so.tilo.browser", Some(&route.cluster_id.to_string()))
+        .check_scope(&route.app_id, Some(&route.cluster_id.to_string()))
         .ok()?;
     if !bridge.publishable(&route.channel_id()) {
         return None;
@@ -611,7 +611,11 @@ impl InitialReadBridge {
         std::sync::mpsc::Receiver<Result<runtime_collab::BrowserServiceSessionReply, String>>,
         String,
     > {
-        self.check_scope("so.tilo.browser", None)?;
+        if command.browser_only() {
+            self.check_scope("so.tilo.browser", None)?;
+        } else {
+            self.check()?;
+        }
         if !command.valid() {
             return Err("This account could not be opened".into());
         }
