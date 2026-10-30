@@ -2080,6 +2080,35 @@ impl Instance {
         true
     }
 
+    /// What the person has seen, as the system keeps it in their own record (task-legibility
+    /// §2): per resource the newest version they saw (`None` takes a mark back), and the task
+    /// runs they reviewed. What `unseen(r)` and the marks the host draws read; each view that
+    /// read one runs again.
+    pub fn set_seen(
+        &mut self,
+        marks: impl IntoIterator<Item = (String, Option<crate::runtime::seen::SeenMark>)>,
+        runs: &[String],
+    ) {
+        let Some(host) = self.host() else {
+            return;
+        };
+        let person = host.viewer().0.clone();
+        let runtime = host.runtime();
+        for (resource, mark) in marks {
+            runtime.set_seen(&person, &resource, mark);
+        }
+        runtime.set_seen_runs(&person, runs);
+    }
+
+    /// What the person marked seen in this window since last asked (opening, reviewing,
+    /// a mark's Mark seen), for the host to keep in their own record with the system's
+    /// `mark seen` action.
+    pub fn take_seen(&mut self) -> Vec<crate::runtime::seen::SeenWrite> {
+        self.host()
+            .map(|host| host.runtime().take_seen())
+            .unwrap_or_default()
+    }
+
     /// Which person each participant presence reports is a device of, `(participant,
     /// person)`, where the room's host paired them: the policy's people are the runtime's
     /// principals by it.

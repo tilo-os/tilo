@@ -5,6 +5,7 @@
 //! what it changed, or mark it seen.
 
 use automerge::AutoCommit;
+use tilolang_runtime::seen::{SeenMark, SeenWrite};
 use tilolang_runtime::store::{Version, VersionKind};
 use tilolang_runtime::{InvokeOutcome, Principal, ResourceRef, Store as _, Value};
 
@@ -265,19 +266,6 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
         landlord,
         ..
     } = tidied;
-    let touched = {
-        let mut touched: Vec<String> = ada
-            .host
-            .store()
-            .run_changes(RUN)
-            .unwrap()
-            .into_iter()
-            .map(|v| v.resource)
-            .collect();
-        touched.sort();
-        touched.dedup();
-        touched
-    };
 
     // Everything the run did is unseen by Ada.
     let runtime = ada.host.runtime();
@@ -300,28 +288,29 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
     // Marking one seen moves its mark to its newest version, kept for her own record.
     assert!(runtime.mark_seen("ada", &landlord).unwrap());
     assert!(runtime.unseen("ada", &landlord).unwrap().is_empty());
-    let kept = runtime.take_seen();
-    assert_eq!(kept.len(), 1);
-    assert_eq!(kept[0].resource, landlord.id_string());
+    let newest = ada.host.store().versions(&landlord).unwrap();
     assert_eq!(
-        Some(kept[0].mark.change.as_str()),
-        ada.host
-            .store()
-            .versions(&landlord)
-            .unwrap()
-            .last()
-            .map(|v| v.change.clone())
-            .as_deref()
+        runtime.take_seen(),
+        [SeenWrite::Resource {
+            person: "ada".to_owned(),
+            resource: landlord.id_string(),
+            mark: SeenMark::of(newest.last().unwrap()),
+        }]
     );
-    // Mark all seen on the run: every resource it changed (the collections it changed
-    // included), but the one already seen.
-    assert_eq!(
-        runtime.mark_run_seen("ada", RUN).unwrap(),
-        touched.len() - 1
-    );
+    // Mark all seen on the run: every version it made, in both apps, in one step; kept for
+    // her own record as the run.
+    assert!(runtime.mark_run_seen("ada", RUN));
+    assert!(!runtime.mark_run_seen("ada", RUN), "reviewed once");
     for at in &all {
         assert!(runtime.unseen("ada", at).unwrap().is_empty(), "{at:?}");
     }
+    assert_eq!(
+        runtime.take_seen(),
+        [SeenWrite::Run {
+            person: "ada".to_owned(),
+            run: RUN.to_owned(),
+        }]
+    );
     // Someone else's seen marks are their own: Ben has seen nothing of the run.
     assert_eq!(runs(&runtime.unseen("ben", &made).unwrap()), [Some(RUN)]);
 
@@ -339,24 +328,24 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
         runs(&runtime.unseen("ada", &made).unwrap()),
         [Some(LATER_RUN)]
     );
-    // The host keeps the marks in the person's own record and gives them back on another
-    // device: a mark it sets is the one `unseen` reads.
-    let mark = runtime.seen("ada", &made.id_string()).unwrap();
+    // The host keeps what she saw in her own record and gives it back on another device: the
+    // runs and marks it sets are what `unseen` reads.
     let (mut other, _) = Replica::new(
         "ada",
         ada.doc.fork(),
         &[(NOTES, NOTES_IDS), (TASKS, TASKS_IDS)],
     );
     other.host.sync_from(&other.doc);
-    assert_eq!(other.host.runtime().unseen("ada", &made).unwrap().len(), 2);
-    other
-        .host
-        .runtime()
-        .set_seen("ada", &made.id_string(), Some(mark));
+    let elsewhere = other.host.runtime();
+    assert_eq!(elsewhere.unseen("ada", &made).unwrap().len(), 2);
+    elsewhere.set_seen_runs("ada", &[RUN.to_owned()]);
     assert_eq!(
-        runs(&other.host.runtime().unseen("ada", &made).unwrap()),
+        runs(&elsewhere.unseen("ada", &made).unwrap()),
         [Some(LATER_RUN)]
     );
+    let mark = SeenMark::of(ada.host.store().versions(&made).unwrap().last().unwrap());
+    elsewhere.set_seen("ada", &made.id_string(), Some(mark));
+    assert!(elsewhere.unseen("ada", &made).unwrap().is_empty());
     other.commit();
 }
 
@@ -451,6 +440,6 @@ fn code_reads_a_versions_run_kind_and_fields_and_what_is_unseen() {
         describe(&ada, &gone),
         "1 unseen; last removed - by Sort the shelf (issue-7); run made 3"
     );
-    ada.host.runtime().mark_run_seen("ada", RUN).unwrap();
+    assert!(ada.host.runtime().mark_run_seen("ada", RUN));
     assert!(describe(&ada, &book).starts_with("0 unseen"));
 }

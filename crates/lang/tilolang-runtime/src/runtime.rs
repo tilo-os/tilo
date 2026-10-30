@@ -658,27 +658,30 @@ impl Runtime {
         self.core.mark_seen(person, at)
     }
 
-    /// `person` reviewed the task run `run` (its group): every resource it changed is seen
-    /// up to its newest version (*Mark all seen*). How many marks moved.
-    ///
-    /// # Errors
-    ///
-    /// The store could not read the run's changes.
-    pub fn mark_run_seen(&self, person: &str, run: &str) -> Result<usize, StoreError> {
-        let changes = self.core.store.borrow().run_changes(run)?;
-        let mut resources: Vec<String> = changes.into_iter().map(|v| v.resource).collect();
-        resources.sort();
-        resources.dedup();
-        let mut moved: usize = 0;
-        for resource in resources {
-            let Some(at) = ResourceRef::parse_id(&resource, String::new()) else {
-                continue;
-            };
-            if self.core.mark_seen(person, &at)? {
-                moved = moved.saturating_add(1);
-            }
+    /// The task runs `person` reviewed, as their own record keeps them: every version of one is
+    /// seen. A view that read what is unseen runs again when they move.
+    pub fn set_seen_runs(&self, person: &str, runs: &[String]) {
+        self.core.set_seen_runs(person, runs);
+    }
+
+    /// `person` reviewed the task run `run` (its group, *Mark all seen*): every version it made
+    /// is seen, in every app, and the host is handed it to keep ([`Self::take_seen`]). Whether
+    /// it was not reviewed already.
+    pub fn mark_run_seen(&self, person: &str, run: &str) -> bool {
+        let mut runs = self.core.seen_runs(person);
+        if runs.iter().any(|seen| seen == run) {
+            return false;
         }
-        Ok(moved)
+        runs.push(run.to_owned());
+        self.core.set_seen_runs(person, &runs);
+        self.core
+            .seen_writes
+            .borrow_mut()
+            .push(crate::seen::SeenWrite::Run {
+                person: person.to_owned(),
+                run: run.to_owned(),
+            });
+        true
     }
 
     /// The seen marks set here since last asked, for the host to keep in the person's own
