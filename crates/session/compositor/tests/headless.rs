@@ -1629,6 +1629,53 @@ fn a_hosted_surface_pictures_a_window_live_in_a_rect_of_its_own() {
     assert_eq!(frame.pixel(60, 60), Some([0, 255, 0, 255]));
 }
 
+#[test]
+fn a_picture_of_a_window_carries_its_corners_and_its_lift() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, _) = compositor.windows()[0].clone();
+    compositor.add_host(Box::new(Pictures(WindowPicture {
+        window: info.id,
+        rect: (10.0, 10.0, 100.0, 100.0),
+        opacity: 1.0,
+        clip: None,
+    })));
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let pixel = |x, y| frame.pixel(x, y).expect("on the output");
+    // Half size in a 100 x 100 rect: 100 x 50 at (10, 35), corners cut by 7.
+    assert_eq!(pixel(60, 60), [255, 0, 0, 255], "the picture");
+    assert_ne!(pixel(11, 36), [255, 0, 0, 255], "its corner is cut");
+    assert_eq!(pixel(30, 60), [255, 0, 0, 255], "past the cut");
+    assert!(
+        luma(pixel(60, 88)) < luma(BACKGROUND),
+        "and it casts the window's lift below: {:?}",
+        pixel(60, 88)
+    );
+
+    // The picture is a view of its own: the window's effect moves the
+    // window, not the picture.
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            offset: (-200.0, 0.0),
+            ..WindowEffect::default()
+        }),
+    );
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        frame.pixel(60, 60),
+        Some([255, 0, 0, 255]),
+        "the picture stays"
+    );
+    assert_eq!(
+        frame.pixel(320, 240),
+        Some(BACKGROUND),
+        "the window moved away"
+    );
+}
+
 /// A hosted surface of translucent material over (200, 180, 80, 40),
 /// keeping the backdrops it is handed.
 struct Frosted(Rc<RefCell<Vec<Option<BackdropImage>>>>);
@@ -1705,6 +1752,44 @@ fn translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes()
     compositor.render().unwrap();
     let again = handed.borrow_mut().pop().flatten().expect("a new backdrop");
     assert!(at(&again, 35, 15)[2] > 200, "now blue");
+}
+
+#[test]
+fn a_backdrop_follows_the_effects_the_windows_are_drawn_with() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let handed = Rc::new(RefCell::new(Vec::new()));
+    compositor.add_host(Box::new(Frosted(Rc::clone(&handed))));
+    compositor.render().unwrap();
+    handed.borrow_mut().clear();
+
+    // The desktop slides the window 200 px left: it now covers the left of
+    // the hosted surface's region, where nothing stood before.
+    let (info, _) = compositor.windows()[0].clone();
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            offset: (-200.0, 0.0),
+            ..WindowEffect::default()
+        }),
+    );
+    compositor.render().unwrap();
+    let moved = handed
+        .borrow_mut()
+        .pop()
+        .flatten()
+        .expect("a backdrop drawn again");
+    let at = |x: usize, y: usize| {
+        let i = (y * 40 + x) * 4;
+        [moved.rgba[i], moved.rgba[i + 1], moved.rgba[i + 2]]
+    };
+    let inside = at(2, 10);
+    let outside = at(35, 10);
+    assert!(
+        inside[0] > 200 && inside[1] < 60,
+        "the moved window lies below the left of it: {inside:?}"
+    );
+    assert!(outside[0] < 60, "and it left the right of it: {outside:?}");
 }
 
 #[test]
