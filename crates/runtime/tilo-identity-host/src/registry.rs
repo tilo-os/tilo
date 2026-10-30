@@ -258,6 +258,18 @@ fn prompt_registry(dir: &Path) -> Option<PromptRegistry> {
         .map(|(_, registry)| registry.clone())
 }
 
+/// The registry a worker last reconciled, or an error while it has none (a
+/// directory whose first reconcile failed).
+fn watched_registry(registry: &PromptRegistry) -> io::Result<std::sync::Arc<IdentityRegistry>> {
+    let current = registry.get();
+    (*current).clone().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "the identity directory has not been read yet",
+        )
+    })
+}
+
 /// A registry this process saved is read back on the writer's thread, so
 /// the writer's next query never sees its own change late.
 fn refresh_prompt_registry(dir: &Path) {
@@ -398,15 +410,27 @@ impl IdentityRegistryStore {
     /// [`Self::load_reconciled`] for read-only queries that run on every
     /// painted frame and app launch (which identity a room presents). It
     /// never writes the identity directory: the reconciled registry is
-    /// returned, not saved. Every writer in the identity directory replaces
-    /// files by rename, so an unchanged directory (same inode and
-    /// modification time) holds the registry the last reconcile produced. A
-    /// directory changed within the last two seconds is reconciled again on
-    /// each call: a coarse filesystem clock can give a write that lands right
+    /// returned, not saved.
+    ///
+    /// A directory this process keeps current with a worker
+    /// ([`Self::load_reconciled_prompt`], which the session arms at startup)
+    /// answers from that worker's registry: no path is looked up, so a loop
+    /// may ask it. A worker that has not read the directory yet, and a
+    /// process that armed none, read the disk on the caller's thread as
+    /// before: every writer in the identity directory replaces files by
+    /// rename, so an unchanged directory (same inode and modification time)
+    /// holds the registry the last reconcile produced, and a directory
+    /// changed within the last two seconds is reconciled again on each call,
+    /// since a coarse filesystem clock can give a write that lands right
     /// after a reconcile the same time.
     pub fn load_reconciled_cached(&self) -> io::Result<IdentityRegistry> {
         static CACHE: std::sync::Mutex<Option<(PathBuf, DirStamp, IdentityRegistry)>> =
             std::sync::Mutex::new(None);
+        if let Some(watched) = prompt_registry(&self.identity_dir)
+            && let Ok(registry) = watched_registry(&watched)
+        {
+            return Ok((*registry).clone());
+        }
         let before = DirStamp::of(&self.identity_dir);
         if let Some(stamp) = before
             && let Ok(cache) = CACHE.lock()
@@ -446,13 +470,7 @@ impl IdentityRegistryStore {
             Some(registry) => registry,
             None => self.watch_prompt_registry()?,
         };
-        let current = registry.get();
-        (*current).clone().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "the identity directory has not been read yet",
-            )
-        })
+        watched_registry(&registry)
     }
 
     /// Start the watched registry of this directory: arm the watch, reconcile
@@ -712,6 +730,29 @@ mod tests {
         assert_eq!(entries(), before);
         assert!(!store.registry_path().exists());
         fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    /// The launch path's read answers from the worker a session armed at
+    /// startup, even while the directory cannot be looked at.
+    #[test]
+    fn a_watched_identity_directory_answers_the_cached_read_from_the_worker() {
+        let dir = temp_dir("watched-cached");
+        write_record(&dir.join("alice.json"), &record("Alice", 41));
+        let store = IdentityRegistryStore::at(&dir);
+        let reconciles = || RECONCILES_ON_THIS_THREAD.with(std::cell::Cell::get);
+        let armed = store.load_reconciled_prompt().expect("arm");
+        assert_eq!(armed.identities.len(), 1);
+        let after_arming = reconciles();
+        // The worker keeps the answer after the directory is gone; a read
+        // that looked at the disk itself would have to fail.
+        fs::remove_dir_all(&dir).expect("cleanup");
+        let cached = store.load_reconciled_cached().expect("from the worker");
+        assert_eq!(cached.identities.len(), 1);
+        assert_eq!(
+            reconciles(),
+            after_arming,
+            "the caller's thread never read the disk"
+        );
     }
 
     #[test]
