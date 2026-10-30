@@ -305,6 +305,29 @@ fn offer_document_reads(resource: &mut ResourceSpec, eligible: &dyn Fn(&str) -> 
     }
 }
 
+/// Bind the document read of an item to every item of a document collection
+/// under `resource` that the record's table `table` reads
+/// ([`tilo_resource::table::item_json`]), for a resource that answers no
+/// reads of its own. An item is document state: it is disclosed by this read,
+/// under the caller's ordinary read policy, and a caller reads what it holds
+/// through it, where the item's `open` would move the person's window.
+fn offer_item_reads(
+    resource: &mut ResourceSpec,
+    table: &'static tilo_resource::table::ModelTable,
+    kind: &str,
+) {
+    if tilo_resource::table::reads_item(table, kind, resource.id.as_str())
+        && !resource.actions.iter().any(|spec| spec.id == "read")
+    {
+        resource
+            .actions
+            .push(read_spec_for(Some(resource.id.as_str())));
+    }
+    for child in &mut resource.children {
+        offer_item_reads(child, table, kind);
+    }
+}
+
 fn read_spec_for(item: Option<&str>) -> tilo_actions::ActionSpec {
     tilo_resource::read::spec(item)
 }
@@ -313,6 +336,7 @@ fn read_spec_for(item: Option<&str>) -> tilo_actions::ActionSpec {
 /// `typed` reads, whose state is `state`.
 fn read(
     typed: &dyn TypedRoot,
+    resource: &ResourceType,
     state: &dyn std::any::Any,
     doc: &AutoCommit,
     payload: &[u8],
@@ -333,9 +357,14 @@ fn read(
             // The type's own adapter over the frozen version: its content,
             // or the exact bytes it holds. A version that does not read as
             // the type says which of the three ways it does not.
-            let content = typed
-                .historical_content(&frozen, item)
-                .map_err(|gap| gap.to_string())?;
+            let content = if resource.readable {
+                typed
+                    .historical_content(&frozen, item)
+                    .map_err(|gap| gap.to_string())?
+            } else {
+                let past = typed.read(&frozen).map_err(|error| error.to_string())?;
+                item_content(resource, &*past, item)?
+            };
 
             super::history::review::bounded(serde_json::json!({
                 "version": heads.iter().map(ToString::to_string).collect::<Vec<_>>().join("+"),
@@ -343,12 +372,27 @@ fn read(
                 "content": content,
             }))?
         }
-        None => typed.read_content(state, doc, item)?,
+        None if resource.readable => typed.read_content(state, doc, item)?,
+        None => item_content(resource, state, item)?,
     };
     Ok(tilo_actions::ActionOutput {
         value: Some(value),
         resources: Vec::new(),
     })
+}
+
+/// The document read of one item of a resource that answers no reads of its
+/// own: what the item holds, from the record's table.
+fn item_content(
+    resource: &ResourceType,
+    state: &dyn std::any::Any,
+    item: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let item = item.ok_or_else(|| format!("a {} answers reads of its items", resource.label))?;
+    let table = resource
+        .record_table
+        .ok_or_else(|| format!("a {} does not answer reads", resource.label))?;
+    tilo_resource::table::item_json(table, state, resource.kind, item)
 }
 
 /// The window's arrival: the app's view, shown once the room's holdings
@@ -1679,7 +1723,10 @@ impl RootModel for ResourceRoot {
         // Opening another app is routed by the host to the workspace
         // broker, whichever resource offers it.
         handlers.insert(tilo_actions::remote::ApplicationLaunch::TYPE.to_owned());
-        if self.resource.readable {
+        // A resource reads itself when it says it does, and its items from
+        // its record's table when it does not (`offer_item_reads`): the read
+        // it publishes is always one it answers.
+        if self.resource.readable || self.resource.record_table.is_some() {
             handlers.insert(READ_TYPE.to_owned());
         }
         if self.resource.facts {
@@ -1759,12 +1806,13 @@ impl RootModel for ResourceRoot {
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
         }
-        if self.resource.readable
+        if (self.resource.readable || self.resource.record_table.is_some())
             && let Some(request) = op.unscoped()
             && request.type_id == READ_TYPE
         {
             let output = read(
                 self.typed.as_ref(),
+                &self.resource,
                 &*self.typed.state(),
                 doc,
                 request.payload,
@@ -2179,6 +2227,11 @@ impl RootPublishes for ResourceRoot {
         }
         if self.stages.opens() {
             offer_item_open(self.resource.item_of, &mut resource);
+        }
+        if !self.resource.readable
+            && let Some(table) = self.resource.record_table
+        {
+            offer_item_reads(&mut resource, table, self.resource.kind);
         }
         let mut resources = vec![resource];
         resources.append(&mut extras);
