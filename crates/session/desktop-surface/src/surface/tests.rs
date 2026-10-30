@@ -583,13 +583,21 @@ fn an_edge_drag_sets_the_width_and_the_strip_keeps_it() {
     for _ in 0..4 {
         frame.relayout();
     }
-    let width = || handle.read(|tree| tree.workspaces[0].strips[0].window_groups[0].width);
-    let before = width();
-    let (x, y) = frame
+    let (window, x, y) = frame
         .widget_mut::<GroupRow>()
-        .and_then(|row| row.groups.first().map(Widget::get_rect))
-        .map(|rect| (rect.x1 - 3.0, rect.center().y))
+        .and_then(|row| row.groups.first().map(|group| (group.id, group.get_rect())))
+        .map(|(id, rect)| (id, rect.x1 - 3.0, rect.center().y))
         .expect("a window with a trailing edge to drag");
+    let width = || {
+        handle.read(|tree| {
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .find(|group| group.id == window)
+                .map(|group| group.width)
+        })
+    };
+    let before = width();
     let device_id = ui::winit::event::DeviceId::dummy();
     frame.send_host_event(&WindowEvent::CursorMoved {
         device_id,
@@ -612,8 +620,8 @@ fn an_edge_drag_sets_the_width_and_the_strip_keeps_it() {
     for _ in 0..4 {
         frame.relayout();
     }
-    let dragged = width();
-    assert_ne!(before, dragged, "the drag widens the window");
+    let dragged = width().expect("the dragged window is still in its strip");
+    assert_ne!(before, Some(dragged), "the drag widens the window");
     assert!(
         matches!(dragged, WindowWidth::Fraction(_)),
         "the strip keeps the width the person dragged, not a tier: {dragged:?}"
@@ -621,7 +629,11 @@ fn an_edge_drag_sets_the_width_and_the_strip_keeps_it() {
     for _ in 0..4 {
         frame.relayout();
     }
-    assert_eq!(width(), dragged, "and it stays over the frames that follow");
+    assert_eq!(
+        width(),
+        Some(dragged),
+        "and it stays over the frames that follow"
+    );
 }
 
 #[test]
