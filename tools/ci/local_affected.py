@@ -7,8 +7,10 @@
 local-affected.sh checks a branch's commits as the batch check does: base defaults to
 the merge-base with origin/main and the worktree must be clean. test-changed.sh is the
 same run for a change still being edited: base defaults to the merge-base with
-`integration` (origin/main without it), uncommitted and untracked files count, and the
-stages are clippy and test.
+`integration` (origin/main without it), uncommitted and untracked files count, the
+stages are clippy and test, and clippy covers the changed packages and their direct
+dependants (the planner's `near`; `--closure` for the whole reverse-dependency closure
+the batch check lints).
 
 Selection is the planner's (tools/ci/affected_packages.py): the packages a change
 affects, their checks and tests, the same filters CI uses. What differs from CI is only
@@ -188,7 +190,8 @@ class Job:
         self.ran_to_end = True
         self.started = time.monotonic()
         self.ended = self.started
-        self.log.write_text("")
+        if not self.dry_run:  # a dry run beside a real one leaves its logs alone
+            self.log.write_text("")
 
     def ok(self) -> bool:
         return all(code == 0 for _, code, _ in self.steps)
@@ -332,6 +335,9 @@ def main() -> int:
     parser.add_argument("--stage", help=f"comma list of stages (default: {DEFAULT_STAGES}; "
                                         f"with --changed: {CHANGED_STAGES}); also tapps")
     parser.add_argument("--tapps", action="store_true", help="also package and size-check the affected tapps")
+    parser.add_argument("--closure", action="store_true",
+                        help="with --changed: lint the whole reverse-dependency closure, as the batch "
+                             "check does (default: the changed packages and their direct dependants)")
     parser.add_argument("--fail-fast", action="store_true",
                         help="stop the other jobs once one fails (the default runs every job to its end)")
     parser.add_argument("--keep-going", action="store_true", help=argparse.SUPPRESS)  # the default now
@@ -365,8 +371,9 @@ def main() -> int:
             say(f"select failed: {error}" + ("" if args.changed else
                 "; a change still being edited is tested with tools/ci/test-changed.sh"))
             return 1
+    linted = len(plan["near"]) if args.changed and not args.closure else plan["selected_count"]
     say(f"==> select: base {base} ({base_commit[:12]}), {plan['selected_count']} of {plan['workspace_count']} "
-        f"packages selected ({plan['reason']}), {len(plan['tested'])} tested, "
+        f"packages selected ({plan['reason']}), {linted} linted, {len(plan['tested'])} tested, "
         f"{time.monotonic() - started:.0f} s")
 
     filters = nextest_filters.filters()
@@ -378,6 +385,11 @@ def main() -> int:
     tail = ["--", *args.names] if args.names else []
 
     clippy = ordered_union(plan["clippy_matrix"]["include"], "packages")
+    if args.changed and not args.closure:
+        # A change being edited: lint what is one edge from it (the planner's `near`); the
+        # batch check lints the whole closure.
+        near = set(plan["near"])
+        clippy = [name for name in clippy if name in near]
     checks = [row for row in plan["check_matrix"]["include"]]
     rows = plan["matrix"]["include"]
     tests = ordered_union(rows, "test_packages")
@@ -516,7 +528,7 @@ def main() -> int:
 
     # The record: what failed now; a run that ended early keeps what it could not rerun.
     test_jobs = [job for job in jobs if job.label.startswith("test")]
-    if test_jobs:
+    if test_jobs and not args.dry_run:
         failed = set().union(*(job.failed_tests for job in test_jobs))
         if not all(job.ran_to_end for job in test_jobs):
             failed |= previous
