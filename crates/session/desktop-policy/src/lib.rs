@@ -38,6 +38,9 @@ const GENERATION: &str = "window-policy";
 /// The launch id a window's tab is opened under.
 const LAUNCH_PREFIX: &str = "window:";
 
+/// The launch id a crashed app's notice tab is opened under.
+const CRASHED_PREFIX: &str = "crashed:";
+
 /// What the policy learns about a window.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Window {
@@ -72,31 +75,98 @@ pub struct Layout {
 /// Windows waiting for their tab, shared with the surface's tile source.
 type Arriving = Rc<RefCell<BTreeMap<u64, Window>>>;
 
+/// The launches the desktop asked for and no window is behind: the session
+/// starts each one ([`DesktopPolicy::take_launches`]).
+type Launches = Rc<RefCell<Vec<String>>>;
+
+/// The app each notice tab is about, by tab: the launch its Reopen asks for
+/// again. What the tile source draws in place of a window that is not
+/// coming.
+type Crashed = Rc<RefCell<BTreeMap<TabId, String>>>;
+
+/// The name each app is known by, for the notice it leaves when it stops.
+/// A launch id carries the app id alone, so its tab is named from here.
+type Titles = Rc<RefCell<BTreeMap<String, String>>>;
+
 /// The tile source behind the policy's surface: a window's tab is opened
 /// from the window waiting under its launch id, and its tile is the
-/// arriving placeholder, which the window's own buffer covers.
+/// arriving placeholder, which the window's own buffer covers. Every other
+/// launch is not this surface's to open — the session starts the app — so it
+/// is queued for the session and opens no tab here.
 struct Windows {
     arriving: Arriving,
+    launches: Launches,
+    /// The app each notice tab is about, which Reopen asks for again.
+    crashed: Crashed,
+    /// The name each app is known by, for its notice.
+    titles: Titles,
 }
 
 impl TileSource for Windows {
-    fn tile(&mut self, _: &Workspace, _: &Tab) -> TileHost {
-        TileHost::new(ui::widget::TileContent::Arriving)
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        let Some(app) = self.crashed.borrow().get(&tab.id).cloned() else {
+            return TileHost::new(ui::widget::TileContent::Arriving);
+        };
+        // The app is gone but its tab stays until the person decides what to
+        // do: a notice with the name it had, and Reopen to try again.
+        let title = self
+            .titles
+            .borrow()
+            .get(&app)
+            .cloned()
+            .unwrap_or_else(|| shown_name(&app));
+        let launches = Rc::clone(&self.launches);
+        let reopened = app.clone();
+        TileHost::new(ui::widget::TileContent::App(Box::new(
+            tilo_desktop_surface::crashed_app::CrashedApp::new(&title, move || {
+                launches.borrow_mut().push(reopened.clone());
+            }),
+        )))
     }
 
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
-        let window: u64 = app.strip_prefix(LAUNCH_PREFIX)?.parse().ok()?;
-        let window = self.arriving.borrow_mut().remove(&window)?;
-        let app_id = window.app_id.unwrap_or_default();
-        Some(Tab {
-            id,
-            title: window.title.unwrap_or_else(|| app_id.clone()),
-            tile: TileContent::Foreign {
-                app_id,
-                surface_id: window.id,
-            },
-            app_title: None,
-        })
+        if let Some(app) = app.strip_prefix(CRASHED_PREFIX) {
+            self.crashed.borrow_mut().insert(id, app.to_owned());
+            let title = self
+                .titles
+                .borrow()
+                .get(app)
+                .cloned()
+                .unwrap_or_else(|| shown_name(app));
+            return Some(Tab {
+                id,
+                title,
+                tile: TileContent::AppPlaceholder {
+                    kind: tilo_desktop_model::AppKind::Other(app.to_owned()),
+                    label: app.to_owned(),
+                },
+                app_title: None,
+            });
+        }
+        match app.strip_prefix(LAUNCH_PREFIX) {
+            Some(window_id) => {
+                let window = self
+                    .arriving
+                    .borrow_mut()
+                    .remove(&window_id.parse().ok()?)?;
+                let app_id = window.app_id.unwrap_or_default();
+                Some(Tab {
+                    id,
+                    title: window.title.unwrap_or_else(|| app_id.clone()),
+                    tile: TileContent::Foreign {
+                        app_id,
+                        surface_id: window.id,
+                    },
+                    app_title: None,
+                })
+            }
+            // A Tilo package or one of the machine's apps: the session starts
+            // it, and the window it opens takes its tab then.
+            None => {
+                self.launches.borrow_mut().push(app.to_owned());
+                None
+            }
+        }
     }
 }
 
@@ -104,6 +174,12 @@ impl TileSource for Windows {
 pub struct DesktopPolicy {
     handle: DesktopHandle,
     arriving: Arriving,
+    /// Launches the session has to start, oldest first.
+    launches: Launches,
+    /// The apps whose notice tabs are open, by tab.
+    crashed: Crashed,
+    /// The name each app is known by, for its notice.
+    titles: Titles,
     /// Windows the desktop has given a tab, so a tab gone without
     /// [`Self::unmap`] is one the person closed.
     placed: BTreeSet<u64>,
@@ -126,21 +202,58 @@ impl DesktopPolicy {
     #[must_use]
     pub fn with_tree(tree: DesktopTree, salt: u16) -> (Self, DesktopSurface) {
         let arriving = Arriving::default();
+        let launches = Launches::default();
+        let crashed = Crashed::default();
+        let titles = Titles::default();
         let (surface, handle) = DesktopSurface::new(
             tree,
             salt,
             Box::new(Windows {
                 arriving: Rc::clone(&arriving),
+                launches: Rc::clone(&launches),
+                crashed: Rc::clone(&crashed),
+                titles: Rc::clone(&titles),
             }),
         );
         let policy = Self {
             handle,
             arriving,
+            launches,
+            crashed,
+            titles,
             placed: BTreeSet::new(),
             floating: BTreeMap::new(),
             displays: Vec::new(),
         };
         (policy, surface)
+    }
+
+    /// The launches the person asked for that no window of theirs is behind,
+    /// oldest first: the session starts each. A window that already arrived
+    /// is not here ([`TileSource::launch`] takes it instead), and neither is
+    /// a repeated notice tab.
+    pub fn take_launches(&mut self) -> Vec<String> {
+        std::mem::take(&mut *self.launches.borrow_mut())
+    }
+
+    /// Show that the app `asked` names stopped working, in a tab of its own
+    /// with Reopen asking for `asked` again. The window it had is already
+    /// gone; this is what the person finds in its place, instead of nothing.
+    ///
+    /// # Errors
+    /// The desktop has no workspace or strip to open it in.
+    pub fn crashed(&mut self, asked: &str, title: &str) -> Result<(), String> {
+        self.titles
+            .borrow_mut()
+            .insert(asked.to_owned(), title.to_owned());
+        // The tab this opens is named by its launch id; the title it shows
+        // and the launch Reopen asks for come from the maps the tile source
+        // reads.
+        let launch = Command::Launch {
+            generation: GENERATION.into(),
+            app: format!("{CRASHED_PREFIX}{asked}"),
+        };
+        self.handle.dispatch(&launch, GENERATION)
     }
 
     /// The host's side of the surface, for everything else it shows.
@@ -390,12 +503,25 @@ impl DesktopPolicy {
     /// unmapped, so one that refuses to close keeps its place in the
     /// compositor until it goes.
     pub fn take_closed(&mut self) -> Vec<u64> {
-        let present: BTreeSet<u64> = self.handle.read(windows).into_iter().collect();
+        let tree = self.handle.read(Clone::clone);
+        let present: BTreeSet<u64> = windows(&tree).into_iter().collect();
         let closed: Vec<u64> = self.placed.difference(&present).copied().collect();
         for window in &closed {
             self.placed.remove(window);
         }
         self.placed.extend(present);
+        // A notice tab the person closed keeps no app behind it, and the
+        // name it showed goes with it.
+        let open: BTreeSet<TabId> = tabs(&tree).map(|tab| tab.id).collect();
+        let mut crashed = self.crashed.borrow_mut();
+        let mut titles = self.titles.borrow_mut();
+        crashed.retain(|tab, app| {
+            let kept = open.contains(tab);
+            if !kept {
+                titles.remove(app);
+            }
+            kept
+        });
         closed
     }
 }
@@ -403,6 +529,12 @@ impl DesktopPolicy {
 /// Every window the tree holds a tab of, in tree order.
 fn windows(tree: &DesktopTree) -> Vec<u64> {
     tabs(tree).filter_map(foreign).collect()
+}
+
+/// What a launch id is called when nothing named its app: a host app's id
+/// without the prefix that says it is one.
+fn shown_name(app: &str) -> String {
+    app.strip_prefix("host:").unwrap_or(app).to_owned()
 }
 
 fn tabs(tree: &DesktopTree) -> impl Iterator<Item = &Tab> {

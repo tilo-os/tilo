@@ -244,3 +244,64 @@ fn a_dialog_floats_over_its_parent_and_answers_for_it() {
     policy.unmap(2);
     assert!(policy.layout().floating.is_empty());
 }
+
+#[test]
+fn a_launch_with_no_window_behind_it_is_queued_for_the_session() {
+    let (mut driver, mut policy) = mount();
+    assert!(policy.take_launches().is_empty());
+
+    let launch: Command = serde_json::from_value(serde_json::json!({
+        "kind": "launch", "generation": "g", "app": "host:org.example.Probe.desktop"
+    }))
+    .unwrap();
+    policy.handle().dispatch(&launch, "g").unwrap();
+    settle(&mut driver);
+
+    assert_eq!(policy.take_launches(), ["host:org.example.Probe.desktop"]);
+    assert!(
+        policy.take_launches().is_empty(),
+        "a launch is handed over once"
+    );
+    assert_eq!(
+        policy.layout(),
+        Layout::default(),
+        "nothing appeared before the app did"
+    );
+}
+
+#[test]
+fn a_crashed_app_leaves_a_notice_that_asks_for_it_again() {
+    let (mut driver, mut policy) = mount();
+    let asked = "host:org.example.Probe.desktop";
+    policy.crashed(asked, "Probe").unwrap();
+    settle(&mut driver);
+    assert!(
+        policy.take_launches().is_empty(),
+        "the notice itself asks for nothing"
+    );
+
+    let texts = ui::a11y::texts(driver.root_widget());
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.starts_with("Probe stopped working")),
+        "{texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "Reopen"),
+        "the notice offers a way back: {texts:?}"
+    );
+
+    driver
+        .perform_named(
+            tilo_desktop_surface::crashed_app::REOPEN_ID,
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    settle(&mut driver);
+    assert_eq!(
+        policy.take_launches(),
+        [asked],
+        "Reopen asks for the same thing that was launched"
+    );
+}
