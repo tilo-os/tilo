@@ -1,6 +1,6 @@
 //! The session's system service.
 //!
-//! It publishes three resources, each a reading of the machine and the
+//! It publishes four resources, each a reading of the machine and the
 //! actions that change it:
 //!
 //! * `power`: the power mode, and the session's power actions (sleep,
@@ -11,7 +11,9 @@
 //!   network time. While it follows the device, the service looks where the
 //!   device is when that is turned on and every [`LOOK_AGAIN`] after, and
 //!   sets the zone of the nearest city; nothing is guessed without a
-//!   location.
+//!   location;
+//! * `device:keyboard-backlight`: the keyboard light's level, with the
+//!   steps its keys take.
 //!
 //! The machine's calls run on the service's worker; an action is pending
 //! in its reading until it lands, and why a change did not happen is the
@@ -32,14 +34,15 @@ use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
 use device::{Change, System, follow_once};
-use effects::{PowerAction, TimeAction, UpdateAction};
-use model::{Power, PowerMode, Time};
+use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
+use model::{KeyboardLight, Power, PowerMode, Time};
 use update::Update;
 
 /// The resources' ids.
 pub const POWER: &str = "power";
 pub const SYSTEM_UPDATE: &str = "system-update";
 pub const TIME_ZONE: &str = "time-zone";
+pub const KEYBOARD_BACKLIGHT: &str = "device:keyboard-backlight";
 
 /// How often a device whose zone follows it looks where it is again: often
 /// enough that a flight's arrival shows the local time within the hour.
@@ -51,6 +54,7 @@ enum Part {
     Power,
     Update,
     Time,
+    KeyboardLight,
 }
 
 /// What the machine reads now.
@@ -59,6 +63,7 @@ pub struct Readings {
     pub power: Power,
     pub update: Update,
     pub time: Time,
+    pub keyboard_light: KeyboardLight,
 }
 
 fn read(system: &dyn System) -> Readings {
@@ -66,6 +71,7 @@ fn read(system: &dyn System) -> Readings {
         power: system.power(),
         update: system.update(),
         time: system.time(),
+        keyboard_light: system.keyboard_light(),
     }
 }
 
@@ -142,6 +148,10 @@ impl SystemService {
             Part::Power => (&mut readings.power.pending, &mut readings.power.problem),
             Part::Update => (&mut readings.update.pending, &mut readings.update.problem),
             Part::Time => (&mut readings.time.pending, &mut readings.time.problem),
+            Part::KeyboardLight => (
+                &mut readings.keyboard_light.pending,
+                &mut readings.keyboard_light.problem,
+            ),
         }
     }
 
@@ -153,6 +163,8 @@ impl SystemService {
         readings.update.problem = old.update.problem.take();
         readings.time.pending = std::mem::take(&mut old.time.pending);
         readings.time.problem = old.time.problem.take();
+        readings.keyboard_light.pending = std::mem::take(&mut old.keyboard_light.pending);
+        readings.keyboard_light.problem = old.keyboard_light.problem.take();
         readings.update.updating = readings
             .update
             .pending
@@ -297,12 +309,34 @@ pub fn time_resource(time: &Time) -> ResourceSpec {
     resource
 }
 
+/// The `device:keyboard-backlight` resource reading `light`.
+#[must_use]
+pub fn keyboard_light_resource(light: &KeyboardLight) -> ResourceSpec {
+    let mut resource = offer::<KeyboardLightAction>(ResourceSpec::new(
+        KEYBOARD_BACKLIGHT,
+        "so.tilo.system.keyboard-backlight",
+        "Keyboard light",
+    ));
+    if light.level.is_none() {
+        for action in ["brighter", "dimmer", "toggle", "set-level"] {
+            unavailable(
+                &mut resource,
+                action,
+                "no_keyboard_light",
+                "This keyboard has no light",
+            );
+        }
+    }
+    resource
+}
+
 impl Service for SystemService {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
             power_resource(&self.readings.power),
             update_resource(&self.readings.update),
             time_resource(&self.readings.time),
+            keyboard_light_resource(&self.readings.keyboard_light),
         ]
     }
 
@@ -311,6 +345,7 @@ impl Service for SystemService {
             POWER => Some(reading(&self.readings.power)),
             SYSTEM_UPDATE => Some(reading(&self.readings.update)),
             TIME_ZONE => Some(reading(&self.readings.time)),
+            KEYBOARD_BACKLIGHT => Some(reading(&self.readings.keyboard_light)),
             _ => None,
         }
     }
@@ -369,6 +404,37 @@ impl Service for SystemService {
                     TimeAction::SetNetworkTime { on } => Change::NetworkTime(on),
                 };
                 Ok(self.start(Part::Time, id, change))
+            }
+            KEYBOARD_BACKLIGHT => {
+                let action =
+                    decode::<KeyboardLightAction>(&published, resource, action, arguments)?;
+                let id = action.id();
+                let Some(light) = self.readings.keyboard_light.light() else {
+                    return Err(DoorError::Unavailable {
+                        code: "no_keyboard_light".into(),
+                        reason: "This keyboard has no light".into(),
+                    });
+                };
+                let level = match action {
+                    KeyboardLightAction::Brighter => light.step(true),
+                    KeyboardLightAction::Dimmer => light.step(false),
+                    KeyboardLightAction::Toggle => light.toggled(),
+                    KeyboardLightAction::SetLevel { level } => {
+                        if !(0.0..=1.0).contains(&level) {
+                            return Err(DoorError::InvalidArguments(format!(
+                                "a level is from 0 to 1, not {level}"
+                            )));
+                        }
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "a fraction of the light's range is within it"
+                        )]
+                        let level = (level * f64::from(light.max)).round() as u32;
+                        level
+                    }
+                };
+                Ok(self.start(Part::KeyboardLight, id, Change::KeyboardLight(level)))
             }
             _ => Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
                 resource, action,

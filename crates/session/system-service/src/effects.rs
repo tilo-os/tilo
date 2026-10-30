@@ -107,3 +107,45 @@ pub enum TimeAction {
         on: bool,
     },
 }
+
+/// The `device:keyboard-backlight` resource's actions.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.system.keyboard-backlight")]
+pub enum KeyboardLightAction {
+    /// Light the keyboard a step brighter.
+    #[effect(
+        own_device,
+        label = "Brighter keyboard",
+        icon = "sun",
+        keywords = "keyboard light, backlight, tastaturbeleuchtung"
+    )]
+    Brighter,
+    /// Light the keyboard a step dimmer.
+    #[effect(
+        own_device,
+        label = "Dimmer keyboard",
+        icon = "sun-dim",
+        keywords = "keyboard light, backlight"
+    )]
+    Dimmer,
+    /// Turn the keyboard light off when lit, and full on when dark.
+    #[effect(
+        own_device,
+        label = "Keyboard light on or off",
+        icon = "keyboard",
+        keywords = "keyboard light, backlight"
+    )]
+    Toggle,
+    /// Set the keyboard light's level.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Keyboard light",
+        icon = "keyboard",
+        keywords = "keyboard light, backlight"
+    )]
+    SetLevel {
+        #[param("The level from 0 (off) to 1 (brightest)")]
+        level: f64,
+    },
+}
