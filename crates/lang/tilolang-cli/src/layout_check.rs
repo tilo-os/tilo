@@ -183,6 +183,20 @@ pub struct Options {
     /// Write the window at the `dump` size, at display and text scale 1, as each stage leaves
     /// it, in the light and the dark theme, to PNGs in this directory.
     pub shots: Option<PathBuf>,
+    /// The shipped themes `shots` are taken in, by name (`glass`, `block`), each in its light
+    /// and dark variant; none takes the stock light and dark.
+    pub themes: Vec<String>,
+}
+
+/// The light and the dark variant of the shipped theme `name`: `default` the stock pair,
+/// another name its preset and that preset's light sibling (`glass`, `glass light`).
+fn theme_pair(name: &str) -> Result<[(&'static str, ui::Theme); 2], String> {
+    if ui::theme::Preset::find(name) == Some(ui::theme::Preset::Dark) || name == "default" {
+        return Ok([("light", ui::Theme::light()), ("dark", ui::Theme::dark())]);
+    }
+    let dark = ui::Theme::named(name).ok_or_else(|| format!("--theme {name}: no such theme"))?;
+    let light = ui::Theme::named(&format!("{name} light")).unwrap_or_else(|| dark.clone());
+    Ok([("light", light), ("dark", dark)])
 }
 
 /// What a check found.
@@ -237,8 +251,13 @@ pub fn check(options: &Options) -> Result<Report, String> {
     let mut layouts_run: usize = 0;
     let mut unreached = Vec::new();
     for dir in &options.dirs {
-        let (app_findings, ran, app_unreached) =
-            check_app(dir, &options.search, options.dump, options.shots.as_deref())?;
+        let (app_findings, ran, app_unreached) = check_app(
+            dir,
+            &options.search,
+            options.dump,
+            options.shots.as_deref(),
+            &options.themes,
+        )?;
         findings.extend(app_findings);
         layouts_run = layouts_run.saturating_add(ran);
         unreached.extend(app_unreached);
@@ -270,6 +289,7 @@ fn check_app(
     search: &[PathBuf],
     dump: Option<(u32, u32)>,
     shots: Option<&Path>,
+    themes: &[String],
 ) -> Result<(Vec<Finding>, usize, Vec<String>), String> {
     let mut search = search.to_vec();
     search.extend(dir.parent().map(Path::to_path_buf));
@@ -288,6 +308,7 @@ fn check_app(
         sources,
         dump,
         shots,
+        themes,
         gathered: BTreeMap::new(),
         text: ui::TextRenderer::new(),
         ran: 0,
@@ -452,6 +473,7 @@ struct AppCheck<'a> {
     sources: source::SourceMap,
     dump: Option<(u32, u32)>,
     shots: Option<&'a Path>,
+    themes: &'a [String],
     gathered: BTreeMap<Identity, Finding>,
     /// Measures text as the window's pipeline does, for clipped text.
     text: ui::TextRenderer,
@@ -560,10 +582,27 @@ impl AppCheck<'_> {
             })
             .collect();
         let viewport = (layout.size.width, layout.size.height);
-        for (name, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
-            staged.lay_out(viewport, theme, layout.input(), 1.0)?;
-            let file = dir.join(format!("{}-{slug}-{name}.png", self.short));
-            staged.harness().render_png(&file);
+        let stock = [String::new()];
+        let themes = if self.themes.is_empty() {
+            &stock[..]
+        } else {
+            self.themes
+        };
+        for family in themes {
+            let pair = if family.is_empty() {
+                theme_pair("default")?
+            } else {
+                theme_pair(family)?
+            };
+            for (name, theme) in pair {
+                staged.lay_out(viewport, theme, layout.input(), 1.0)?;
+                let file = if family.is_empty() {
+                    dir.join(format!("{}-{slug}-{name}.png", self.short))
+                } else {
+                    dir.join(format!("{}-{slug}-{family}-{name}.png", self.short))
+                };
+                staged.harness().render_png(&file);
+            }
         }
         staged.lay_out(viewport, layout.theme(), layout.input(), 1.0)
     }

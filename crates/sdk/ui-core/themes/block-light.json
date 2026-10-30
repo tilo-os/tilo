@@ -1,0 +1,36 @@
+{
+  "schema_version": 8,
+  "id": "block-light",
+  "name": "Block light",
+  "palette": {
+    "dark": false,
+    "hue": 260.0,
+    "chroma": 0.006,
+    "surfaces": { "base": 0.90, "content": 0.995, "sidebar": 0.965, "inspector": 0.965, "raised": 0.95, "overlay": 1.0 },
+    "ink": { "primary": 0.18, "secondary": 0.43, "tertiary": 0.56 },
+    "status": {
+      "danger": { "lightness": 0.52, "chroma": 0.13 },
+      "warning": { "lightness": 0.56, "chroma": 0.12 },
+      "success": { "lightness": 0.52, "chroma": 0.12 },
+      "info": { "lightness": 0.52, "chroma": 0.11 }
+    }
+  },
+  "emphasis": { "kind": "you" },
+  "presence": { "lightness": 0.58, "chroma": 0.15 },
+  "shape": { "window_radius": 0.0, "border": { "width": 2.0, "ink": "strong" } },
+  "density": { "spacing": 1.0 },
+  "type": {
+    "face": "Default", "reading": "New Computer Modern", "base_size": 14.0,
+    "contrast": 1.0,
+    "weights": { "body": "regular", "label": "semibold", "heading": "bold" }
+  },
+  "motion": { "character": 1.0, "curve": "none", "duration_scale": 1.0 },
+  "material": {
+    "window": { "painter": "block" },
+    "control": { "painter": "block" },
+    "floating": { "painter": "block" },
+    "bar": { "painter": "block" },
+    "selector": { "strip": "opaque", "rim_span": 0.0, "rim_alpha": 0.0, "hover_alpha": 0.75 }
+  },
+  "depth": { "kind": "none" }
+}
