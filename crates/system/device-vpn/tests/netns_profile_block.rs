@@ -498,30 +498,15 @@ fn netns_profile_role() {
 
 /// What the tests need from the machine, or what is missing.
 fn machine_ready() -> Result<(), String> {
+    // The probe .config/nextest-capabilities.toml names for these tests.
+    tilo_test_env::network_tunnel().map_err(|error| error.to_string())?;
     let config = Config::default();
     for (name, path) in [("ip", &config.ip), ("nft", &config.nft)] {
         if !path.exists() {
             return Err(format!("no {name} at {}", path.display()));
         }
     }
-    if !Path::new("/dev/net/tun").exists() {
-        return Err("no /dev/net/tun".into());
-    }
-    let status = Command::new("unshare")
-        .args(["--user", "--map-root-user", "--net", "--"])
-        .arg(&config.nft)
-        .args(["list", "ruleset"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|error| format!("unshare: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "nft in a namespace of unshare --user --map-root-user --net: {status}"
-        ))
-    }
+    Ok(())
 }
 
 /// Run `role` in a fresh user and network namespace and require it passes.

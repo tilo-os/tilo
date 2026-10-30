@@ -20,7 +20,9 @@
 #          installed PDFium; and TILO_TEST_CACHE_DIR (default
 #          ${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env), so fixtures a test
 #          generates itself (the media decode clip) are made once and shared
-#          by every test process instead of once per process in its fresh HOME.
+#          by every test process instead of once per process in its fresh HOME;
+#          and TILO_REQUIRE_* of every capability .config/nextest-capabilities.toml
+#          maps, whose tests the CI step leaves out where it is missing.
 #          A TILO_REQUIRE_* or TILO_PDFIUM_LIB already set is kept, and a
 #          machine that sets TILO_REQUIRE_GPU=0 (it promises no GPU) runs
 #          without lavapipe rather than failing.
@@ -64,6 +66,13 @@ runtime() {
     fi
     provide TILO_REQUIRE_GPU "${TILO_REQUIRE_GPU:-1}"
     provide TILO_REQUIRE_MEDIA "${TILO_REQUIRE_MEDIA:-1}"
+    # Every capability .config/nextest-capabilities.toml maps is required: a
+    # test that needs one fails where it is missing, unless the CI step left
+    # it out after probing (tools/ci/capability_filter.py).
+    local required
+    while IFS='=' read -r required _; do
+        provide "$required" "${!required:-1}"
+    done < <(python3 "$repo/tools/ci/capability_filter.py" --require-variables)
     if [[ -n ${TILO_PDFIUM_LIB:-} ]]; then
         provide TILO_PDFIUM_LIB "$TILO_PDFIUM_LIB"
     elif [[ -r /usr/lib64/libpdfium.so ]]; then

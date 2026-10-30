@@ -96,6 +96,9 @@ pub struct Slot {
     pub reach: Rect,
     /// Whether it has anything to show (a player, someone else here).
     pub has_content: bool,
+    /// The display it stands on: what it paints at rest (its shadow
+    /// included) stays on that display, never on the one beside it.
+    pub area: Rect,
 }
 
 /// Everything besides the board's own history that decides the forms.
@@ -398,6 +401,7 @@ mod tests {
                 open: Rect::new(1268.0, 740.0, 1588.0, 888.0),
                 reach: Rect::new(1332.0, 828.0, 1600.0, 900.0),
                 has_content: true,
+                area: Rect::new(0.0, 0.0, 1600.0, 900.0),
             },
             Slot {
                 id: WidgetId::Team,
@@ -405,6 +409,7 @@ mod tests {
                 open: Rect::new(1268.0, 330.0, 1588.0, 570.0),
                 reach: Rect::new(1528.0, 376.0, 1600.0, 524.0),
                 has_content: true,
+                area: Rect::new(0.0, 0.0, 1600.0, 900.0),
             },
         ]
     }
