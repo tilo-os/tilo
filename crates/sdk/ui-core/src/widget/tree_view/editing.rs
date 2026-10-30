@@ -75,7 +75,8 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     }
 
     /// Make a double click on a row rename it instead of activating it, as
-    /// an outliner does. Requires [`Self::on_rename`].
+    /// an outliner does. Requires [`Self::on_rename`] or
+    /// [`Self::on_rename_action`].
     #[must_use]
     pub fn rename_on_double_click(mut self) -> Self {
         self.rename_on_double_click = true;
@@ -103,7 +104,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     /// Open the inline rename field on `id`. Returns `false` when rename is
     /// not enabled or the node is unknown.
     pub fn begin_rename(&mut self, id: NodeId) -> bool {
-        if self.on_rename.is_none() || !self.model.is_renamable(id) {
+        if !self.renames() || !self.model.is_renamable(id) {
             return false;
         }
         let Some(label) = self.model.label(id) else {
@@ -143,9 +144,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         if title.is_empty() {
             return;
         }
-        if let Some(callback) = &mut self.on_rename {
-            callback(field.id, title);
-        }
+        self.report_rename(field.id, title);
     }
 
     /// Close the rename field without reporting.

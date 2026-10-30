@@ -403,12 +403,9 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
                 });
             return self.open_row_menu(id, anchor);
         }
-        if let Some(callback) = &mut self.on_row_action {
-            callback(id, index);
-        }
+        self.report_row_action(id, index);
         true
     }
-
     /// Paint the heading action as the shared icon chip.
     pub(super) fn paint_heading_action(
         &self,

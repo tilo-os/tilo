@@ -85,6 +85,9 @@ mod editing;
 mod editing_tests;
 mod erased;
 mod nav;
+mod reporting;
+#[cfg(test)]
+mod reporting_tests;
 
 pub use affordances::{TreeHeadingAction, TreeRowAction};
 pub use editing::TreeMove;
@@ -960,16 +963,25 @@ pub struct TreeImpl<T, M = TreeNode<T>> {
     /// Gap between a row's label and its trailing content.
     row_gap: f64,
     on_rename: Option<Box<dyn FnMut(NodeId, String)>>,
+    /// A row renamed: its semantic key and the new title, where the app bound
+    /// the action ([`Self::on_rename_action`]).
+    rename_action: Option<crate::widget::ActionEmitter<(String, String)>>,
     rename_on_double_click: bool,
     rename: Option<Box<editing::RenameField>>,
     tab_indents: bool,
     on_delete: Option<Box<dyn FnMut(NodeId)>>,
+    /// Delete on a row: its semantic key, where the app bound the action.
+    delete_action: Option<crate::widget::ActionEmitter<String>>,
     context_menu_items: Option<TreeContextMenu<M>>,
     on_context_menu_item: Option<Box<dyn FnMut(Option<NodeId>, usize)>>,
     menu: Box<ContextMenu>,
     menu_target: Option<NodeId>,
     row_actions: Vec<TreeRowAction>,
     on_row_action: Option<Box<dyn FnMut(NodeId, usize)>>,
+    /// A row's button pressed, one binding per button of
+    /// [`Self::with_row_actions`], by the row's semantic key
+    /// ([`Self::on_row_actions_action`]).
+    row_action_actions: Vec<Option<crate::widget::ActionEmitter<String>>>,
     heading_action: Option<TreeHeadingAction>,
     on_heading_action: Option<Box<dyn FnMut()>>,
     row_hint: Option<String>,
@@ -1202,16 +1214,19 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             row_inset: DEFAULT_ROW_GAP,
             row_gap: DEFAULT_ROW_GAP,
             on_rename: None,
+            rename_action: None,
             rename_on_double_click: false,
             rename: None,
             tab_indents: false,
             on_delete: None,
+            delete_action: None,
             context_menu_items: None,
             on_context_menu_item: None,
             menu: Box::new(ContextMenu::new()),
             menu_target: None,
             row_actions: Vec::new(),
             on_row_action: None,
+            row_action_actions: Vec::new(),
             heading_action: None,
             on_heading_action: None,
             row_hint: None,
@@ -4451,11 +4466,11 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                 } else if menu_key && (self.context_menu_items.is_some() || self.nav_offers_menu())
                 {
                     *handled = self.open_menu_from_keyboard();
-                } else if *logical_key == Key::Named(NamedKey::F2) && self.on_rename.is_some() {
+                } else if *logical_key == Key::Named(NamedKey::F2) && self.renames() {
                     *handled = self.command_node().is_some_and(|id| self.begin_rename(id));
-                } else if *logical_key == Key::Named(NamedKey::Delete) && self.on_delete.is_some() {
-                    if let (Some(id), Some(callback)) = (self.command_node(), &mut self.on_delete) {
-                        callback(id);
+                } else if *logical_key == Key::Named(NamedKey::Delete) && self.deletes() {
+                    if let Some(id) = self.command_node() {
+                        self.report_delete(id);
                         *handled = true;
                     }
                 } else if let Some(movement) = self.key_move(logical_key, mods) {

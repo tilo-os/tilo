@@ -2,6 +2,7 @@
 //! ([`TreeImpl::on_view`]): what the host and agents reach of it.
 
 use super::{NodeId, TreeImpl, TreeModel, Widget};
+use crate::widget::ActionEmitter;
 
 /// A tree's published choice and the app's handler.
 pub(super) struct TreeChoice {
@@ -37,14 +38,16 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     }
 }
 
-impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
+impl<T, M: TreeModel> TreeImpl<T, M> {
     /// The key a node is chosen by: its durable semantic key, else its id.
-    fn entry_key(&self, id: NodeId) -> String {
+    pub(super) fn entry_key(&self, id: NodeId) -> String {
         self.model
             .semantic_key(id)
             .unwrap_or_else(|| id.to_string())
     }
+}
 
+impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
     /// Every resident selectable node under the root, by key. Keys alone:
     /// a renamed node leaves what the tree publishes as it was.
     fn entries(&self) -> Vec<String> {
@@ -164,6 +167,15 @@ impl<T: 'static, M: TreeModel + 'static> crate::widget::controls::ActionControls
         for view in self.view.iter_mut().chain(self.opens.iter_mut()) {
             view.choice.install_custody(domain, attachment);
         }
+        if let Some(emitter) = self.rename_action.as_mut() {
+            let _ = emitter.install_custody(domain, attachment);
+        }
+        if let Some(emitter) = self.delete_action.as_mut() {
+            let _ = emitter.install_custody(domain, attachment);
+        }
+        for emitter in self.row_action_actions.iter_mut().flatten() {
+            let _ = emitter.install_custody(domain, attachment);
+        }
         for child in Widget::children_mut(self) {
             crate::widget::controls::install_control_custody(child, domain, attachment);
         }
@@ -175,6 +187,20 @@ impl<T: 'static, M: TreeModel + 'static> crate::widget::controls::ActionControls
             .iter_mut()
             .chain(self.opens.iter_mut())
             .find_map(|view| view.choice.take())
+        {
+            return Some(invocation);
+        }
+        if let Some(invocation) = self.rename_action.as_mut().and_then(ActionEmitter::take) {
+            return Some(invocation);
+        }
+        if let Some(invocation) = self.delete_action.as_mut().and_then(ActionEmitter::take) {
+            return Some(invocation);
+        }
+        if let Some(invocation) = self
+            .row_action_actions
+            .iter_mut()
+            .flatten()
+            .find_map(ActionEmitter::take)
         {
             return Some(invocation);
         }
@@ -207,6 +233,15 @@ impl<T: 'static, M: TreeModel + 'static> crate::widget::controls::ActionControls
     ) {
         for view in self.view.iter_mut().chain(self.opens.iter_mut()) {
             view.choice.refresh_availability(allowed);
+        }
+        if let Some(emitter) = self.rename_action.as_mut() {
+            emitter.refresh_availability(allowed);
+        }
+        if let Some(emitter) = self.delete_action.as_mut() {
+            emitter.refresh_availability(allowed);
+        }
+        for emitter in self.row_action_actions.iter_mut().flatten() {
+            emitter.refresh_availability(allowed);
         }
         for child in Widget::children_mut(self) {
             crate::widget::controls::refresh_control_action_availability(child, allowed);

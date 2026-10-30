@@ -497,9 +497,14 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
         with_row_hint(hint: impl Into<String>);
         with_indent_guides();
         on_rename(f: impl FnMut(NodeId, String) + 'static);
+        on_rename_action(binding: tilo_actions::ActionBinding<(String, String)>);
         rename_on_double_click();
         tab_indents(enabled: bool);
         on_delete(f: impl FnMut(NodeId) + 'static);
+        on_delete_action(binding: tilo_actions::ActionBinding<String>);
+        on_row_actions_action(
+            bindings: impl IntoIterator<Item = (usize, tilo_actions::ActionBinding<String>)>
+        );
     }
 
     /// The model the view was built from.
