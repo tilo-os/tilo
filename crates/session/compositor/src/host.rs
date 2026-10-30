@@ -40,6 +40,13 @@ pub trait SurfaceHost {
         false
     }
 
+    /// Whether this surface is the lock screen: while the session is
+    /// locked only it (and a lock client's surfaces) is drawn and given
+    /// the pointer and the keyboard; until then it is never drawn.
+    fn lock_screen(&self) -> bool {
+        false
+    }
+
     /// Whether the pointer at this logical point belongs to this surface
     /// rather than to what lies beneath it.
     fn accepts_pointer(&self, x: f64, y: f64) -> bool;

@@ -108,22 +108,14 @@ where
         return Vec::new();
     };
     let dim = dim_element(state, output);
-    if state.locked() {
-        return dim
-            .into_iter()
-            .chain(state.lock_elements(renderer, output))
-            .collect();
-    }
     let scale = Scale::from(output.current_scale().fractional_scale());
+    let locked = state.locked();
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
-    elements.extend(state.input_popup_elements(renderer, output));
     let hosted = |renderer: &mut R, elements: &mut Vec<OutputRenderElement<R>>, below: bool| {
-        for host in state
-            .hosts
-            .iter()
-            .rev()
-            .filter(|host| host.below_windows() == below)
-        {
+        for host in state.hosts.iter().rev().filter(|host| {
+            // While locked only the lock screen shows; until then never.
+            host.lock_screen() == locked && host.below_windows() == below
+        }) {
             for layer in host.layers().into_iter().rev() {
                 let location: Point<i32, Physical> =
                     (Point::from(layer.location) - geometry.loc).to_physical_precise_round(scale);
@@ -142,6 +134,12 @@ where
             }
         }
     };
+    if locked {
+        hosted(renderer, &mut elements, false);
+        elements.extend(state.lock_elements(renderer, output));
+        return elements;
+    }
+    elements.extend(state.input_popup_elements(renderer, output));
     hosted(renderer, &mut elements, false);
     for window in state.space.elements_for_output(output).rev() {
         let Some(location) = state.space.element_location(window) else {

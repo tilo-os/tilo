@@ -340,11 +340,6 @@ impl ui::widget::Decorator for Answering {
         self.content.as_mut()
     }
 
-    /// The question walks its own answers: Tab is its, not the host's.
-    fn wants_tab_input(&self) -> bool {
-        true
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         use ui::winit::keyboard::{Key, NamedKey};
         if let WindowEvent::KeyboardInput { event: key, .. } = event

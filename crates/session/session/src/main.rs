@@ -1,20 +1,19 @@
 //! The native session: `tilo-session [--backend drm|headless] [--size WxH]
-//! [--host-desktop] [--session-bus ADDRESS|none] [--system-bus
+//! [--host-desktop] [--no-x11] [--session-bus ADDRESS|none] [--system-bus
 //! ADDRESS|none] [-- command args...]`. Listens on a fresh `wayland-N`
-//! socket, prints its name and starts `command` with `WAYLAND_DISPLAY` set
-//! to it; with a command, the session lasts as long as it does. The desktop
+//! socket, starts Xwayland for X11 clients (unless `--no-x11`), prints both
+//! displays and starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set
+//! to them; with a command, the session lasts as long as it does. The desktop
 //! services serve on the buses the environment names unless a flag names
 //! another (or none).
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
+    use std::sync::Arc;
     use tilo_compositor::{DisplayConfig, OutputConfig};
-    use tilo_quick_settings::device::PlayerLink;
-    use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
-    use tilo_session::{
-        DeviceHost, Options, QuickSettings, Session, SessionConfig, SessionEnvironment,
-    };
+    use tilo_session::desktop_services::{Bus, Buses};
+    use tilo_session::{Options, Session, SessionEnvironment};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (ours, command) = match args.iter().position(|arg| arg == "--") {
@@ -44,32 +43,17 @@ fn main() -> std::process::ExitCode {
         session: bus("--session-bus"),
         system: bus("--system-bus"),
     };
-    let (mut services, _following) = services();
-    let _desktop = match DesktopServices::start(&buses) {
-        Ok(desktop) => {
-            services.extend(desktop.services());
-            Some(desktop)
-        }
-        Err(error) => {
-            tracing::warn!(%error, "the desktop services did not start");
-            None
-        }
-    };
+    let wake = tilo_service::LoopWake::default();
+    let (mut services, _following) = services(&wake);
+    let (capture, captures) =
+        tilo_session::capture::channel_to(tilo_session::capture::directory(), wake.handle());
+    let _desktop = desktop_services(&buses, &wake, Arc::new(capture), &mut services);
     let options = Options {
-        config: SessionConfig::load(),
         services,
-        search: search_options(),
+        wake,
         setup: setup(ours.iter().any(|arg| arg == "--host-desktop")),
-        quick_settings: Some(QuickSettings::Device(Box::new(|wake| {
-            let device = DeviceHost::os(wake);
-            match PlayerLink::helper() {
-                Ok(players) => device.follow_players(players),
-                Err(error) => eprintln!("tilo-session: no media helper: {error}"),
-            }
-            device
-        }))),
-        session_actions: os_actions::perform_session_action,
-        ..Options::default()
+        captures: Some(captures),
+        ..device_options()
     };
     let started = match backend {
         "headless" => {
@@ -96,23 +80,20 @@ fn main() -> std::process::ExitCode {
         }
     };
     println!("WAYLAND_DISPLAY={socket}");
+    let x11_display = if ours.iter().any(|arg| arg == "--no-x11") {
+        None
+    } else {
+        start_x11(session.compositor())
+    };
     SessionEnvironment {
         wayland_display: socket.clone(),
-        x11_display: None,
+        x11_display: x11_display.clone(),
         x11_authority: None,
     }
     .export();
-    let mut child = None;
-    if let Some((program, rest)) = command.split_first() {
-        match std::process::Command::new(program)
-            .args(rest)
-            .env("WAYLAND_DISPLAY", &socket)
-            .spawn()
-        {
-            Ok(spawned) => child = Some(spawned),
-            Err(error) => eprintln!("tilo-session: {program}: {error}"),
-        }
-    }
+    let mut child = command
+        .split_first()
+        .and_then(|(program, rest)| start_command(program, rest, &socket, x11_display.as_deref()));
     let result = session.run(|_| {
         child
             .as_mut()
@@ -127,6 +108,90 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// The desktop services on `buses`, their resources added to `services`;
+/// what keeps them running.
+#[cfg(target_os = "linux")]
+fn desktop_services(
+    buses: &tilo_session::desktop_services::Buses,
+    wake: &tilo_service::LoopWake,
+    capture: std::sync::Arc<dyn tilo_portal::Capture>,
+    services: &mut Vec<Box<dyn tilo_session::Service>>,
+) -> Option<tilo_session::desktop_services::DesktopServices> {
+    match tilo_session::desktop_services::DesktopServices::start(buses, &wake.handle(), capture) {
+        Ok(desktop) => {
+            services.extend(desktop.services());
+            Some(desktop)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the desktop services did not start");
+            None
+        }
+    }
+}
+
+/// What the session reads of this device: its configuration, search, quick
+/// settings over its own backends and the players, its session actions and
+/// who unlocks it.
+#[cfg(target_os = "linux")]
+fn device_options() -> tilo_session::Options {
+    use tilo_quick_settings::device::PlayerLink;
+    use tilo_session::{DeviceHost, Options, QuickSettings, SessionConfig};
+    Options {
+        config: SessionConfig::load(),
+        search: search_options(),
+        quick_settings: Some(QuickSettings::Device(Box::new(|wake| {
+            let device = DeviceHost::os(wake);
+            match PlayerLink::helper() {
+                Ok(players) => device.follow_players(players),
+                Err(error) => eprintln!("tilo-session: no media helper: {error}"),
+            }
+            device
+        }))),
+        session_actions: os_actions::perform_session_action,
+        user: std::env::var("USER").unwrap_or_default(),
+        verifier: tilo_session::unlock::installed(),
+        ..Options::default()
+    }
+}
+
+/// Xwayland for X11 clients, its display printed. They connect as soon as
+/// its sockets are there, which they are once it is started; without it
+/// only Wayland is named.
+#[cfg(target_os = "linux")]
+fn start_x11(compositor: &mut tilo_compositor::Compositor) -> Option<String> {
+    match compositor.start_xwayland() {
+        Ok(display) => {
+            let display = format!(":{display}");
+            println!("DISPLAY={display}");
+            Some(display)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "Xwayland did not start: no X11 clients");
+            None
+        }
+    }
+}
+
+/// `program` started with `rest`, on the session's displays.
+#[cfg(target_os = "linux")]
+fn start_command(
+    program: &str,
+    rest: &[String],
+    wayland: &str,
+    x11: Option<&str>,
+) -> Option<std::process::Child> {
+    let mut started = std::process::Command::new(program);
+    started.args(rest).env("WAYLAND_DISPLAY", wayland);
+    match x11 {
+        Some(display) => started.env("DISPLAY", display),
+        None => started.env_remove("DISPLAY"),
+    };
+    started
+        .spawn()
+        .map_err(|error| eprintln!("tilo-session: {program}: {error}"))
+        .ok()
+}
+
 /// What keeps the services' readings following the device while it lives.
 #[cfg(target_os = "linux")]
 type Following = Vec<Box<dyn std::any::Any>>;
@@ -134,13 +199,13 @@ type Following = Vec<Box<dyn std::any::Any>>;
 /// The system services the session hosts, on this device's own daemons,
 /// and what keeps their readings following the device.
 #[cfg(target_os = "linux")]
-fn services() -> (Vec<Box<dyn tilo_session::Service>>, Following) {
+fn services(wake: &tilo_service::LoopWake) -> (Vec<Box<dyn tilo_session::Service>>, Following) {
     use std::sync::Arc;
     use tilo_connectivity_service::{Connectivity, device::OsDevice};
 
     let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
     let mut following: Following = Vec::new();
-    match Connectivity::new(Arc::new(OsDevice), None) {
+    match Connectivity::new(Arc::new(OsDevice), Some(wake.handle())) {
         Ok(connectivity) => {
             match connectivity.follow() {
                 Ok(follow) => following.push(Box::new(follow)),
@@ -152,7 +217,7 @@ fn services() -> (Vec<Box<dyn tilo_session::Service>>, Following) {
     }
     match tilo_system_service::SystemService::new(
         Arc::new(tilo_system_service::device::OsSystem),
-        None,
+        Some(wake.handle()),
     ) {
         Ok(mut system) => {
             if let Err(error) = system.follow_location() {
@@ -165,7 +230,11 @@ fn services() -> (Vec<Box<dyn tilo_session::Service>>, Following) {
     match audio_helper().map(|helper| {
         let mut command = std::process::Command::new(helper);
         command.arg("--serve");
-        tilo_service::lines::Process::spawn(command, tilo_audio_service::sound::publish, None)
+        tilo_service::lines::Process::spawn(
+            command,
+            tilo_audio_service::publish,
+            Some(wake.handle()),
+        )
     }) {
         Some(Ok(audio)) => services.push(Box::new(audio)),
         Some(Err(error)) => tracing::warn!(%error, "the audio service did not start"),
@@ -185,6 +254,7 @@ fn audio_helper() -> Option<std::path::PathBuf> {
         .into_iter()
         .chain([std::path::PathBuf::from("/usr/libexec/tilo-audio")])
         .find(|path| path.exists())
+}
 
 /// What search reads of this device: the Tilo apps installed here and the
 /// machine's own, the apps the person can get, what apps hold, the
@@ -241,17 +311,28 @@ fn search_options() -> tilo_session::SearchOptions {
             .map(Arc::new);
         (home.clone(), FileNames::scan(home), content)
     });
+    // What a reference written under an app's earlier id names, for search
+    // and for every decision this process makes.
+    let content = tilo_desktop_search::content_index::session();
+    match tilo_installed_apps::earlier_ids_from_env() {
+        Ok(earlier) => {
+            tilo_action_policy::earlier::register_all(&earlier);
+            content.set_earlier_ids(earlier);
+        }
+        Err(error) => eprintln!("tilo-session: earlier app ids: {error}"),
+    }
     tilo_session::SearchOptions {
         applications,
         host_apps,
         catalogue,
-        content: Some(tilo_desktop_search::content_index::session()),
+        content: Some(content),
         files,
         preferences: tilo_desktop_search::SearchPreferences::from_values(
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
     }
+}
 
 /// The setup this device needs before its desktop is used: the first use
 /// when it has no identity yet, the recovery of its identity when startup

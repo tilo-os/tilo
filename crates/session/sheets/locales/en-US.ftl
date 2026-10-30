@@ -148,3 +148,11 @@ file-chooser-not-a-folder = That is a file, not a folder.
 file-chooser-outside = That is outside the folders the file chooser may open.
 file-chooser-changed = The file chooser changed. Look at it again.
 file-chooser-unavailable = The file chooser can't do that now.
+
+## The lock screen.
+lock-title = Locked
+lock-unlock = Unlock
+lock-checking = Checking…
+lock-no-password = Type your password to unlock.
+lock-wrong-password = That password did not unlock. Try again.
+lock-unavailable = The password could not be checked. The screen stays locked.

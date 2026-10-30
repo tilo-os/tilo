@@ -148,3 +148,11 @@ file-chooser-not-a-folder = Das ist eine Datei, kein Ordner.
 file-chooser-outside = Das liegt außerhalb der Ordner, die die Dateiauswahl öffnen darf.
 file-chooser-changed = Die Dateiauswahl hat sich geändert. Sieh sie dir noch einmal an.
 file-chooser-unavailable = Das kann die Dateiauswahl gerade nicht.
+
+## The lock screen.
+lock-title = Gesperrt
+lock-unlock = Entsperren
+lock-checking = Wird geprüft …
+lock-no-password = Gib dein Passwort ein, um zu entsperren.
+lock-wrong-password = Mit diesem Passwort ließ sich nicht entsperren. Versuch es noch einmal.
+lock-unavailable = Das Passwort ließ sich nicht prüfen. Der Bildschirm bleibt gesperrt.

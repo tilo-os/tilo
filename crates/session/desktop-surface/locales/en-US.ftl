@@ -1282,6 +1282,10 @@ session-magnifier = Magnifier
 session-magnifier-toggle = Turn the magnifier on or off
 session-magnifier-zoom-in = Magnify more
 session-magnifier-zoom-out = Magnify less
+session-displays = Displays
+session-displays-next = Next display arrangement
+session-displays-set = Arrange the displays
+session-param-displays-mode = How the displays are used together: extend, mirror, built-in or external
 desktop-action-show-overview = Show the overview
 desktop-action-hide-overview = Hide the overview
 

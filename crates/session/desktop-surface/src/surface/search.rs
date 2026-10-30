@@ -864,10 +864,15 @@ impl DesktopSurface {
                 #[cfg(not(target_arch = "wasm32"))]
                 match fallback {
                     Some(fallback) => {
+                        // The opener is this thread's host's, on that
+                        // thread too.
+                        let host = ui::host::current();
                         std::thread::spawn(move || {
-                            if ui::widget::try_open_external_url(&uri).is_err() {
-                                ui::widget::open_external_url(&fallback);
-                            }
+                            ui::host::scoped(&host, || {
+                                if ui::widget::try_open_external_url(&uri).is_err() {
+                                    ui::widget::open_external_url(&fallback);
+                                }
+                            });
                         });
                     }
                     None => ui::widget::open_external_url(&uri),

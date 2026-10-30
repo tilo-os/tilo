@@ -9,6 +9,38 @@ use std::sync::{Arc, Condvar, Mutex};
 /// the session's loop to take it in.
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
+/// A wake for the session's loop before the loop exists: services are made
+/// first and handed [`LoopWake::handle`], and the session binds the loop's
+/// waker once it started. Until then a wake does nothing; the loop's first
+/// pass takes in whatever landed.
+#[derive(Clone, Default)]
+pub struct LoopWake(Arc<Mutex<Option<std::task::Waker>>>);
+
+impl LoopWake {
+    /// What a service calls when something landed.
+    #[must_use]
+    pub fn handle(&self) -> Wake {
+        let slot = Arc::clone(&self.0);
+        Arc::new(move || {
+            if let Some(waker) = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            {
+                waker.wake_by_ref();
+            }
+        })
+    }
+
+    /// Wake `waker`'s loop from now on.
+    pub fn bind(&self, waker: std::task::Waker) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(waker);
+    }
+}
+
 type Job<B, L> = Box<dyn FnOnce(&B) -> L + Send>;
 
 /// The jobs not yet landed, and a way to wait for there being none.

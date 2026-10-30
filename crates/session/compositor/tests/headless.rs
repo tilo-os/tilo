@@ -1280,8 +1280,6 @@ fn the_policy_moves_focus_and_closes_windows_through_its_own_controls() {
     assert!(!first.seen.closed);
 }
 
-delegate_noop!(Seen: ignore XdgToplevel);
-
 #[test]
 fn a_window_that_asks_to_be_maximized_covers_its_output_and_comes_back() {
     let mut compositor = headless(Box::new(StackPolicy));

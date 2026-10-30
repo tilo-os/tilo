@@ -70,16 +70,16 @@ pub type Invocations = Rc<RefCell<Vec<Invocation>>>;
 
 /// Quick settings' resource, whose effects the level and radio keys run.
 pub const QUICK_SETTINGS: &str = "quick-settings.panel";
-/// What plays: the media service's player.
-pub const MEDIA_PLAYER: &str = "media:player";
-/// The microphone, the audio service's.
-pub const MICROPHONE: &str = "audio:microphone";
+/// What plays: the audio service's player.
+pub const MEDIA_PLAYER: &str = tilo_audio_service::media::MEDIA_PLAYER;
+/// The microphone: the audio service's sound resource.
+pub const MICROPHONE: &str = tilo_audio_service::sound::SOUND;
 /// This device's input devices, the session's own.
 const TOUCHPAD: &str = crate::controls::INPUT_RESOURCE;
-/// The keyboard's backlight, the device service's.
-pub const KEYBOARD_BACKLIGHT: &str = "device:keyboard-backlight";
+/// The keyboard's backlight, the system service's.
+pub const KEYBOARD_BACKLIGHT: &str = tilo_system_service::KEYBOARD_BACKLIGHT;
 /// The display modes (mirror, extend, …), the session's own.
-pub const DISPLAYS: &str = "session:displays";
+const DISPLAYS: &str = crate::controls::DISPLAYS_RESOURCE;
 
 /// `XF86XK_RFKill`, which the keysym tables predate: laptops send it for
 /// the airplane-mode key; `XF86WLAN` is the older spelling.
@@ -142,7 +142,7 @@ fn classify(keysym: u32) -> Option<Hardware> {
                 .reads(OsdKind::AirplaneMode)
         }
         keysyms::XF86_AudioMicMute => {
-            hardware(MICROPHONE, "toggle-muted", false, true).reads(OsdKind::Microphone)
+            hardware(MICROPHONE, "toggle-input-muted", false, true).reads(OsdKind::Microphone)
         }
         keysyms::XF86_AudioPlay | keysyms::XF86_AudioPause => {
             hardware(MEDIA_PLAYER, "play-pause", false, true).reads(OsdKind::Play)

@@ -249,11 +249,7 @@ impl RoomPolicy {
     pub fn with_current_roles(mut self) -> Self {
         self.grants = roles::current_role_grants(std::mem::take(&mut self.grants));
         // A room written before the session's app was granted gains it.
-        if !self
-            .grants
-            .iter()
-            .any(|grant| grant.id.as_str() == "session-app")
-        {
+        if !self.grants.iter().any(roles::is_session_app) {
             let by = self
                 .owner
                 .clone()

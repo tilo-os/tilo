@@ -11,6 +11,7 @@ pub mod directory;
 pub mod display_confirm;
 pub mod displays;
 pub mod file_picker;
+pub mod lock;
 pub mod portal;
 pub mod power;
 mod presentation;
