@@ -162,6 +162,8 @@ imports! {
     (MetaOf, "meta_of", "i", "i"),
     (Versions, "versions", "i", "i"),
     (VersionEnd, "version_end", "ii", "i"),
+    (RunChanges, "run_changes", "i", "i"),
+    (Unseen, "unseen", "i", "i"),
     (CollOrdered, "coll_ordered", "ii", "i"),
     (CollWhereWith, "coll_where_with", "iii", "i"),
     (CollMoveTo, "coll_move_to", "iiil", ""),
