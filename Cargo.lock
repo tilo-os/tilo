@@ -19675,6 +19675,19 @@ name = "tilo-lock"
 version = "0.1.0"
 
 [[package]]
+name = "tilo-lock-screen"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "libc",
+ "tempfile",
+ "tilo-app",
+ "tilo-compositor",
+ "tilo-sheets",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-lockdown-policy"
 version = "0.1.0"
 dependencies = [

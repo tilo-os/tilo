@@ -69,6 +69,7 @@ members = [
     "crates/collab/tilo-action-broker",
     "crates/collab/tilo-identity-ceremony",
     "crates/session/desktop",
+    "crates/session/lock-screen",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
     "crates/browser/tilo-browser-compute",

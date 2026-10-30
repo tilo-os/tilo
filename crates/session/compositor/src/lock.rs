@@ -74,6 +74,9 @@ impl State {
     }
 
     /// The elements an output shows while locked: its lock surface only.
+    /// An output no lock surface was made for shows the first one's: a
+    /// client that locks with one window still covers every output, rather
+    /// than leaving one of them blank for whoever looks at it.
     pub(crate) fn lock_elements<R>(
         &self,
         renderer: &mut R,
@@ -84,11 +87,26 @@ impl State {
         R::TextureId: Clone + Send + 'static,
     {
         let scale = Scale::from(output.current_scale().fractional_scale());
-        self.lock
+        let own: Vec<&LockSurface> = self
+            .lock
             .surfaces
             .iter()
             .filter(|(of, _)| of == output)
-            .flat_map(|(_, surface)| {
+            .map(|(_, surface)| surface)
+            .collect();
+        let shown = if own.is_empty() {
+            self.lock
+                .surfaces
+                .first()
+                .map(|(_, surface)| surface)
+                .into_iter()
+                .collect()
+        } else {
+            own
+        };
+        shown
+            .into_iter()
+            .flat_map(|surface| {
                 render_elements_from_surface_tree(
                     renderer,
                     surface.wl_surface(),

@@ -718,6 +718,17 @@ fn layer_surface_from_env() -> Option<winit::platform::wayland::LayerSurfaceAttr
     })
 }
 
+/// Whether the session starts this process as its lock screen: while it
+/// runs, the window asks the compositor for the session's lock and draws on
+/// it instead of being a window the desktop places.
+#[cfg(target_os = "linux")]
+fn session_lock_from_env() -> bool {
+    std::env::var("TILO_SURFACE_LOCK").is_ok_and(|value| {
+        let value = value.trim();
+        value == "1" || value.eq_ignore_ascii_case("true")
+    })
+}
+
 /// How the primary window is made, whether by `resumed` or before the app
 /// is constructed (`startup`).
 fn primary_window_attributes(
@@ -753,14 +764,22 @@ fn primary_window_attributes(
     #[cfg(target_os = "linux")]
     let window_attributes = {
         use winit::platform::wayland::WindowAttributesExtWayland;
-        let window_attributes = match layer_surface_from_env() {
-            // A layer surface has no title bar of ours: it says where it
-            // goes by its anchors, and the compositor composites it like
-            // any other client's surface.
-            Some(placement) => window_attributes
+        let window_attributes = if session_lock_from_env() {
+            // The lock screen is the compositor's to size and give every
+            // input to; it has no title bar of ours.
+            window_attributes
                 .with_decorations(false)
-                .with_layer_surface(placement),
-            None => window_attributes,
+                .with_session_lock()
+        } else {
+            match layer_surface_from_env() {
+                // A layer surface has no title bar of ours: it says where it
+                // goes by its anchors, and the compositor composites it like
+                // any other client's surface.
+                Some(placement) => window_attributes
+                    .with_decorations(false)
+                    .with_layer_surface(placement),
+                None => window_attributes,
+            }
         };
         window_attributes.with_name(app_id, "")
     };
