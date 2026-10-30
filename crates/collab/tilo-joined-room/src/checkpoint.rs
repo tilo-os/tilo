@@ -4,12 +4,10 @@ use crate::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner, RoomId, Sto
 use automerge::{ROOT, ReadDoc};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::SystemTime,
-};
+use std::collections::{BTreeMap, BTreeSet};
 use tilo_owner_commit::{CommitBinding, CommitTarget};
 use tilo_user_identity::DeviceCert;
+use web_time::SystemTime;
 
 const MAX_ROUTES: usize = 32;
 const MAX_CHECKPOINTS: usize = 128;

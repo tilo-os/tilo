@@ -1,24 +1,23 @@
 //! Opening an app for the first time in a room a home relay governs, after
-//! the room lets the app author: a member's device asks the relay, as its own
-//! `tilo.member` action, for the app's record; the relay signs its empty
-//! genesis, and the app's first state reaches the record as the member's own
-//! change, which every replica admits.
-use super::governance_actions::{
-    admitted, ask, ask_host_of, host_operation, invocation, outcome, subscribed, try_ask,
-};
+//! the room lets the app author: a member's device signs the app's empty
+//! record itself, as every replica admits a member's record, and the app's
+//! first state reaches the record as the member's own change.
 use super::*;
-use tilo_actions::remote::ActionHostError;
-use tilo_relay::rooms::{GRANT_APP_AUTHORSHIP, PREPARE_APPLICATION_RECORD};
 
 const OPENED: &str = "so.tilo.notes";
 
-/// Asking for `app`'s primary record in `room`, as the member's own action.
-fn prepare(room: &str, app: &str) -> tilo_actions::remote::RemoteActionMessage {
-    invocation(
-        tilo_relay::rooms::MEMBER_ACTIONS_PROVIDER,
-        tilo_relay::rooms::member_resource(room),
-        PREPARE_APPLICATION_RECORD,
-        serde_json::json!({ "app": app }),
+/// `peer`'s empty record of `app`, signed with `key`, to publish.
+fn genesis(
+    peer: &mut StatePeer,
+    app: &str,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<NeighbourMsg, String> {
+    peer.publication_mut().publish_document(
+        app,
+        "",
+        AutoCommit::new().save(),
+        key,
+        SystemTime::now(),
     )
 }
 
@@ -72,16 +71,14 @@ async fn admit_viewer(relay: &Relay, host: &TestDevice, member: &TestDevice, roo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record() {
+async fn an_admitted_member_creates_an_authored_apps_empty_record() {
     let alice = TestUser::fresh("Fixture governor");
     let bob = TestUser::fresh("Fixture editor");
     let carol = TestUser::fresh("Fixture viewer");
-    let dave = TestUser::fresh("Fixture outsider");
     let host = alice.enrol("private-host", DeviceCapabilities::host());
     let laptop = alice.enrol("private-laptop", DeviceCapabilities::primary());
     let member = bob.enrol("private-member", DeviceCapabilities::member());
     let viewer = carol.enrol("private-viewer", DeviceCapabilities::member());
-    let outsider = dave.enrol("private-outsider", DeviceCapabilities::member());
     let scratch = tempfile::tempdir().unwrap();
     let relay = start(scratch.path(), &alice, &host).await;
     let room = create_and_enter(&relay, &laptop, "Private app records").await;
@@ -89,72 +86,7 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
     members::admit(&relay, &host, &member, &room.room).await;
     admit_viewer(&relay, &host, &viewer, &room.room).await;
 
-    let editor = subscribed(&relay, &member, workspace).await;
-    assert!(
-        matches!(
-            outcome(ask(&editor, &host, workspace, prepare(&room.room, OPENED)).await),
-            Err(ActionHostError::Refused { .. })
-        ),
-        "a record of an app the room does not let author is never created"
-    );
-    let owner = subscribed(&relay, &laptop, workspace).await;
-    outcome(
-        ask_host_of(
-            &owner,
-            host_operation(
-                GRANT_APP_AUTHORSHIP,
-                serde_json::json!({ "room": room.room, "app": OPENED }),
-            ),
-        )
-        .await,
-    )
-    .unwrap();
-    drop(owner);
-
-    assert!(
-        !admitted(&relay, &outsider, workspace).await,
-        "a device the room never admitted cannot reach the action"
-    );
-    // A viewer's session may not act in the workspace at all; were its
-    // action delivered, the room would refuse it as a change it may not make.
-    let reader = subscribed(&relay, &viewer, workspace).await;
-    let refused = match try_ask(&reader, &host, workspace, prepare(&room.room, OPENED)).await {
-        Err(reason) => reason.contains("may not act"),
-        Ok(answer) => matches!(outcome(answer), Err(ActionHostError::Refused { .. })),
-    };
-    assert!(
-        refused,
-        "a member who may not change the record creates nothing"
-    );
-    drop(reader);
-    assert!(
-        outcome(
-            ask(
-                &editor,
-                &host,
-                workspace,
-                prepare(&room.room, "so.tilo.notes\n")
-            )
-            .await
-        )
-        .is_err(),
-        "a malformed application id is refused"
-    );
-
-    let reply = outcome(ask(&editor, &host, workspace, prepare(&room.room, OPENED)).await).unwrap();
-    assert_eq!(reply["created"], serde_json::json!(true), "{reply}");
-    let generation = reply["generation"].as_u64().expect("a generation");
-    assert_eq!(
-        outcome(ask(&editor, &host, workspace, prepare(&room.room, OPENED)).await).unwrap(),
-        serde_json::json!({ "created": false, "generation": generation }),
-        "a retry finds the record and changes nothing"
-    );
-    // A device's newest session is its current one: the replicas' sessions
-    // below replace this one.
-    drop(editor);
-
     let member_session = session(&relay, &member, workspace).await;
-    let laptop_session = session(&relay, &laptop, workspace).await;
     let roster = vec![
         host.cert.clone(),
         laptop.cert.clone(),
@@ -175,22 +107,77 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
     };
     let mut member_peer = replica();
     let mut laptop_peer = replica();
+    let room_id = room.room.clone();
+    let authors = move |peer: &StatePeer| {
+        peer.admitted_room().is_some_and(|doc| {
+            tilo_desktop_model::projection::room_policy_of(doc, &room_id).app_authors(
+                OPENED,
+                &tilo_action_policy::Context::at_time(SystemTime::now()),
+            )
+        })
+    };
     receive_until(
-        "the member holds the relay's empty genesis",
+        "the member holds the room",
         &member_session,
         &mut member_peer,
+        &mut Vec::new(),
+        |peer, _| peer.admitted_room().is_some(),
+    )
+    .await;
+    assert!(
+        genesis(&mut member_peer.clone(), OPENED, &member.sk).is_err(),
+        "a record of an app the room does not let author is never created"
+    );
+
+    // The room lets the app author, as its host is configured to.
+    assert!(
+        relay
+            .rooms()
+            .unwrap()
+            .settle_app_authorship(
+                &room.room,
+                &host.cert,
+                &std::collections::BTreeSet::from([OPENED.to_owned()]),
+                &std::collections::BTreeSet::new(),
+            )
+            .await
+            .unwrap()
+    );
+    let laptop_session = session(&relay, &laptop, workspace).await;
+    receive_until(
+        "the member holds the app's authorship",
+        &member_session,
+        &mut member_peer,
+        &mut Vec::new(),
+        |peer, _| authors(peer),
+    )
+    .await;
+    assert!(
+        genesis(&mut member_peer.clone(), "so.tilo.notes\n", &member.sk).is_err(),
+        "a malformed application id is refused"
+    );
+    crate::common::wait_until_subscribed(&relay, workspace, &member.device_pubkey()).await;
+    let created = genesis(&mut member_peer, OPENED, &member.sk).unwrap();
+    publish(&member_session, &created);
+    receive_until(
+        "another member's replica holds the member's empty record",
+        &laptop_session,
+        &mut laptop_peer,
         &mut Vec::new(),
         |peer, _| peer.document(OPENED, "").is_some(),
     )
     .await;
-    let mut genesis = AutoCommit::load(&member_peer.document(OPENED, "").unwrap()).unwrap();
+    let mut held = AutoCommit::load(&laptop_peer.document(OPENED, "").unwrap()).unwrap();
     assert!(
-        genesis.get_heads().is_empty(),
-        "the relay signs an empty document and nothing else"
+        held.get_heads().is_empty(),
+        "a member creates an empty record and nothing else"
+    );
+    assert!(
+        genesis(&mut member_peer.clone(), OPENED, &member.sk).is_err(),
+        "a record the room holds is never created again"
     );
 
     // The app's first state is the member's own change onto the genesis.
-    crate::common::wait_until_subscribed(&relay, workspace, &member.device_pubkey()).await;
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "title", "First note").unwrap();
     doc.commit_edit("fixture", "title");
@@ -263,12 +250,5 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
     .await;
     viewer_session.close().await;
     member_session.close().await;
-    let editor = subscribed(&relay, &member, workspace).await;
-    let retry = outcome(ask(&editor, &host, workspace, prepare(&room.room, OPENED)).await).unwrap();
-    assert_eq!(
-        retry["created"],
-        serde_json::json!(false),
-        "a written record is never replaced: {retry}"
-    );
     relay.shutdown().await;
 }

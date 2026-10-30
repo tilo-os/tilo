@@ -24,25 +24,26 @@ use agent_provider_config::{EndpointLocation, ModelDescriptor, ProviderConfig, P
 #[cfg(test)]
 use agent_provider_config::{ModelRequestLimits, ProviderProtocol};
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
-use ui::tilo_resource::{self, Effect};
+use ui::framework::{ActionControl, Actions, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
+use ui::tilo_resource::{self, Binds, Effect};
 use ui::time::{Duration, Instant};
-use ui::widget::{Button, ProgressBar, Row, Widget};
+use ui::widget::{Button, Element, ProgressBar, Row};
 
+use crate::area::AreaContext;
 use crate::effects::SettingsEffect;
-use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::panes::accounts::{BrowserOpener, PortalOpener};
 use crate::panes::agent_sign_in::SignInSetup;
 use crate::panes::agent_vertex::{self, Polled, VertexFields, VertexSetup};
-use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
+use crate::sections::Sections;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, note, row, rows, section, section_with,
     semantic_status_pill, thing_row, value_row,
 };
 use ui::lock::MutexRecover as _;
+use ui::storage::SettingsCache;
 
 #[cfg(test)]
 mod admin_tests;
@@ -57,7 +58,7 @@ crate::effects::effect_family!(AgentModelsEffect => answer);
 crate::area::pane_area! {
     AgentModelsArea;
     fn poll(&self) {
-        self.poll_admin();
+        AgentModelsArea::poll(self);
     }
     // The window bar's search searches Hugging Face here.
     fn query(&self, category: crate::categories::Category) -> Option<&dyn crate::area::PaneQuery> {
@@ -65,7 +66,7 @@ crate::area::pane_area! {
             .then_some(self as &dyn crate::area::PaneQuery)
     }
     fn busy(&self) -> bool {
-        self.admin_busy()
+        AgentModelsArea::busy(self)
     }
 }
 
@@ -74,48 +75,165 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AgentModelsArea> 
     app.areas().find()
 }
 
+/// The Agent Models page as view code over the area's model: built again
+/// whenever what it shows changes ([`AgentModelsArea::poll`]). The model is
+/// polled for the page while the page is shown.
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
+    let held = area(app)?;
+    let model = Rc::clone(held.model());
+    let showing = held.showing();
+    // What changed while no page showed the model is taken in before the
+    // page is built.
+    let _ = model.borrow_mut().poll();
+    Some(cx.switch(&held.shown, move |cx, _| {
+        // The part keeps the model polled while it is shown.
+        let _showing = Rc::clone(&showing);
+        model.borrow().page(cx)
+    }))
+}
+
+/// `control` (a button), invoking `effect` through a page's `actions`.
+pub(crate) fn invoking<C: ActionControl<()>>(
+    actions: &Actions<Settings>,
+    control: C,
+    effect: impl Into<SettingsEffect>,
+) -> C {
+    actions.bind_effect_invocation(control, &effect.into())
+}
+
+/// The provider panel's controls bound through the actions of the Agent
+/// Models page that builds it, as Settings' own effects under their public
+/// ids. The page lends its actions while it builds the panel's sections
+/// ([`AgentModelsModel::page`]); outside that, the panel binds nothing.
+#[derive(Clone, Default)]
+pub struct PanelActions(Rc<std::cell::RefCell<Option<Actions<Settings>>>>);
+
+impl PanelActions {
+    /// What `build` makes with the panel's controls bound through `actions`.
+    fn lent<T>(&self, actions: Actions<Settings>, build: impl FnOnce() -> T) -> T {
+        *self.0.borrow_mut() = Some(actions);
+        let page = build();
+        *self.0.borrow_mut() = None;
+        page
+    }
+}
+
+/// A binding of the portable panel retyped as Settings' own, its public
+/// action id unchanged.
+struct ProviderBinding<B>(B);
+
+impl<I, B: Binds<ProviderEffect, I>> Binds<SettingsEffect, I> for ProviderBinding<B> {
+    fn action_id(&self) -> &'static str {
+        self.0.action_id()
+    }
+    fn arguments(&self, input: I) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        self.0.arguments(input)
+    }
+}
+
+impl provider_settings_ui::PanelBindings for PanelActions {
+    fn offline_metadata(&self) -> bool {
+        true
+    }
+    fn bind<I: 'static, C: ActionControl<I>>(
+        &self,
+        control: C,
+        binding: impl Binds<ProviderEffect, I>,
+    ) -> C {
+        match &*self.0.borrow() {
+            Some(actions) => actions.bind_effect(control, ProviderBinding(binding)),
+            None => control.unavailable(),
+        }
+    }
+    fn bind_invocation<C: ActionControl<()>>(&self, control: C, effect: ProviderEffect) -> C {
+        match (
+            &*self.0.borrow(),
+            SettingsEffect::decode(effect.id(), &effect.arguments()),
+        ) {
+            (Some(actions), Ok(effect)) => actions.bind_effect_invocation(control, &effect),
+            _ => control.unavailable(),
+        }
+    }
+}
+
 pub use crate::prefs::{AgentProviders, HostedAgentProviders};
 
 /// The agent providers as Settings follows them: this device's and the
-/// person's hosted ones, read and stored as one configuration.
+/// person's hosted ones, read as one configuration and changed through the
+/// sections' verbs.
 pub(crate) struct Providers {
-    device: Followed<AgentProviders>,
-    hosted: Followed<HostedAgentProviders>,
+    device: SettingsCache<AgentProviders>,
+    hosted: SettingsCache<HostedAgentProviders>,
+    /// What was last stored here, shown until the sections show a change.
+    stored: Option<ProviderConfig>,
 }
 
 impl Providers {
-    fn new(cx: &PaneCx) -> Self {
+    fn new(storage: &ui::storage::AppStorage) -> Self {
         Self {
-            device: cx.follow::<AgentProviders>(),
-            hosted: cx.follow::<HostedAgentProviders>(),
+            device: SettingsCache::new(storage.settings::<AgentProviders>()),
+            hosted: SettingsCache::new(storage.settings::<HostedAgentProviders>()),
+            stored: None,
         }
     }
 
     /// The whole configuration.
     pub(crate) fn config(&self) -> ProviderConfig {
-        settings_sections::providers::merged(self.device.get(), self.hosted.get())
+        self.stored.clone().unwrap_or_else(|| {
+            settings_sections::providers::merged(self.device.get(), self.hosted.get())
+        })
     }
 
-    /// Follow a change made elsewhere; whether there was one.
+    /// Follow a change made elsewhere, or a store landing; whether there
+    /// was one.
     fn refresh(&mut self) -> bool {
         let device = self.device.refresh();
         let hosted = self.hosted.refresh();
+        if device || hosted {
+            self.stored = None;
+        }
         device || hosted
     }
 
-    /// Store `config`: this device's providers in its section, the hosted
-    /// ones in the person's.
-    fn store(&mut self, config: ProviderConfig) -> std::io::Result<()> {
+    /// Store `config` through `sections`: this device's providers by its
+    /// section's verb, the hosted ones by the person's; each only where it
+    /// changed.
+    fn store(&mut self, sections: &Sections, config: ProviderConfig) -> Result<(), String> {
+        let (was_local, was_hosted) = self.config().stored();
         let (local, hosted) = config.stored();
-        self.device
-            .settings()
-            .update(|providers| providers.config = local)?;
-        self.hosted
-            .settings()
-            .update(|providers| providers.hosted = hosted)?;
-        self.refresh();
+        if local != was_local {
+            sections
+                .invoke::<AgentProviders>(AgentProviders::SET_PROVIDERS.with(as_json(&local)?))?;
+        }
+        if hosted != was_hosted {
+            sections.invoke::<HostedAgentProviders>(
+                HostedAgentProviders::SET_PROVIDERS.with(as_json(&hosted)?),
+            )?;
+        }
+        self.stored = Some(ProviderConfig::from_stored(local, hosted));
         Ok(())
     }
+
+    /// Keep the provider of the models this device runs as `profile`, as
+    /// its model manager serves them, through `sections`.
+    fn follow_local(
+        &mut self,
+        sections: &Sections,
+        profile: ProviderProfile,
+    ) -> Result<(), String> {
+        sections.invoke::<AgentProviders>(
+            AgentProviders::FOLLOW_LOCAL_MODELS.with(as_json(&profile)?),
+        )?;
+        let mut config = self.config();
+        config.upsert(profile);
+        self.stored = Some(config);
+        Ok(())
+    }
+}
+
+/// `value` as the JSON a verb takes.
+fn as_json(value: &impl serde::Serialize) -> Result<serde_json::Value, String> {
+    serde_json::to_value(value).map_err(|error| error.to_string())
 }
 
 /// Local models on this device and the person's model providers.
@@ -490,7 +608,7 @@ fn model_effect(model: &InstalledLocalModel, action: ModelAction) -> AgentModels
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AgentModelsEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let shared = crate::panes::agent_models::area(app)
         .ok_or_else(crate::area::missing)?
@@ -537,7 +655,7 @@ pub(crate) fn answer(
         | AgentModelsEffect::RemoveHubToken
         | AgentModelsEffect::SignInWithHuggingFace
         | AgentModelsEffect::SignInWithHuggingFaceCode
-        | AgentModelsEffect::CancelHuggingFaceSignIn) => hub::answer(model, effect, cx),
+        | AgentModelsEffect::CancelHuggingFaceSignIn) => hub::answer(app, model, effect, cx),
         AgentModelsEffect::SetUpAccelerator
         | AgentModelsEffect::InstallModel { .. }
         | AgentModelsEffect::StartModel { .. }
@@ -556,7 +674,7 @@ pub(crate) fn answer(
                 model.hub.reviewing = None;
             }
             drop(model);
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 // The manager is asked again on the job too: the answer
                 // carries what the change left, read off the UI thread.
@@ -564,9 +682,7 @@ pub(crate) fn answer(
                     let outcome = work.run(control.as_ref());
                     (outcome, control.snapshot())
                 },
-                |app: &mut SettingsApp,
-                 (outcome, snapshot): (Result<String, String>, Snapshot),
-                 _| {
+                |app: &SettingsApp, (outcome, snapshot): (Result<String, String>, Snapshot), _| {
                     let model = crate::panes::agent_models::area(app)
                         .ok_or_else(crate::area::missing)?
                         .model();
@@ -625,10 +741,10 @@ pub(crate) fn answer(
                     | AgentModelsEffect::SetGeminiProvider { .. }
             ) || matches!(&provider, AgentModelsEffect::RemoveProvider { provider }
                     if model.panel.provider_config().profiles.iter().any(|profile| profile.id == *provider && profile.sign_in.is_some()));
-            if vertex_change && model.cx.provider_admin.is_available() {
+            if vertex_change && model.provider_admin.is_available() {
                 model.submit_vertex_change(provider, cx.reply())?;
                 Ok(Effected::Pending)
-            } else if model.cx.provider_admin.is_available() {
+            } else if model.provider_admin.is_available() {
                 let provider = ProviderEffect::decode(provider.id(), &provider.arguments())?;
                 model.submit_provider(provider, cx.reply())?;
                 Ok(Effected::Pending)
@@ -812,11 +928,22 @@ impl ManagerWork {
 /// What the agent models area keeps for the window: the model, asked of
 /// the manager when first needed.
 pub struct AgentModelsArea {
-    cx: PaneCx,
-    model: std::cell::OnceCell<Shared<AgentModelsModel>>,
+    /// Whether it asks this device's model manager.
+    devices: bool,
+    /// The settings document the providers are read from.
+    storage: ui::storage::AppStorage,
+    /// The provider sections' actions.
+    sections: Sections,
+    /// The administration of the providers the launcher granted.
+    provider_admin: ui::models::ProviderAdministration,
+    model: std::cell::OnceCell<Rc<std::cell::RefCell<AgentModelsModel>>>,
     /// The manager's snapshot, asked off the UI thread after the first frame.
     /// Provider administration is separately polled as a portable future.
     read: crate::device_read::DeviceRead<AgentModelsRead>,
+    /// Moves whenever what the page shows of the model does.
+    shown: LocalState<u64>,
+    /// Held by each page showing the model ([`Self::showing`]).
+    showing: std::cell::RefCell<std::rc::Weak<()>>,
 }
 
 /// The model manager's device snapshot plus unavailable credential statuses
@@ -854,17 +981,63 @@ fn hosted_profiles(config: &ProviderConfig) -> Vec<String> {
 }
 
 impl AgentModelsArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            storage: cx.storage.clone(),
+            sections: cx.sections.clone(),
+            provider_admin: cx.provider_admin.clone(),
             model: std::cell::OnceCell::new(),
             read: crate::device_read::DeviceRead::default(),
+            shown: LocalState::new(0),
+            showing: std::cell::RefCell::new(std::rc::Weak::new()),
         }
+    }
+
+    /// What a page showing the model holds while it does: the model is
+    /// polled for it meanwhile. Pages share one.
+    fn showing(&self) -> Rc<()> {
+        crate::watch::shared(&mut self.showing.borrow_mut(), || ())
+    }
+
+    /// Whether a page shows the model.
+    fn is_shown(&self) -> bool {
+        self.showing.borrow().strong_count() > 0
+    }
+
+    /// Take in what provider administration answered; while a page shows
+    /// the model, also what the manager and the sign-ins reported, and move
+    /// what the page is keyed by when what it shows changed.
+    pub(crate) fn poll(&self) {
+        let Some(model) = self.model.get() else {
+            return;
+        };
+        let Ok(mut model) = model.try_borrow_mut() else {
+            return;
+        };
+        if !self.is_shown() {
+            model.poll_admin();
+            return;
+        }
+        if model.poll() {
+            self.shown.set(self.shown.get().wrapping_add(1));
+        }
+    }
+
+    /// Whether provider administration is under way, or work a shown page
+    /// waits for, so the window keeps polling for it.
+    fn busy(&self) -> bool {
+        self.admin_busy()
+            || (self.is_shown()
+                && self
+                    .model
+                    .get()
+                    .is_some_and(|model| model.try_borrow().is_ok_and(|model| model.busy())))
     }
 
     /// The model manager: this device's, or a sample one for a screenshot.
     fn control(&self) -> Arc<dyn LocalModelControl> {
-        if self.cx.reaches_devices() {
+        if self.devices {
             Arc::new(ModelManagerCli)
         } else {
             Arc::new(SampleManager)
@@ -872,12 +1045,15 @@ impl AgentModelsArea {
     }
 
     /// The model, using the device manager's read or a screenshot stand-in.
-    pub fn model(&self) -> &Shared<AgentModelsModel> {
+    pub fn model(&self) -> &Rc<std::cell::RefCell<AgentModelsModel>> {
         self.model.get_or_init(|| {
             let control = self.control();
+            let (sections, admin) = (self.sections.clone(), self.provider_admin.clone());
             let model = match self.read.take() {
-                Some(read) => AgentModelsModel::from_read(self.cx.clone(), control, read),
-                None => AgentModelsModel::new(self.cx.clone(), control),
+                Some(read) => {
+                    AgentModelsModel::from_read(&self.storage, sections, admin, control, read)
+                }
+                None => AgentModelsModel::new(&self.storage, sections, admin, control),
             };
             Rc::new(std::cell::RefCell::new(model))
         })
@@ -889,7 +1065,7 @@ impl AgentModelsArea {
             return false;
         }
         let control = self.control();
-        let hosted = hosted_profiles(&Providers::new(&self.cx).config());
+        let hosted = hosted_profiles(&Providers::new(&self.storage).config());
         self.read
             .start(move || AgentModelsRead::of(control.as_ref(), hosted))
     }
@@ -909,12 +1085,6 @@ impl AgentModelsArea {
     /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
-    }
-
-    pub(crate) fn poll_admin(&self) {
-        if let Some(model) = self.model.get() {
-            model.borrow_mut().poll_admin();
-        }
     }
 
     pub(crate) fn admin_busy(&self) -> bool {
@@ -999,7 +1169,11 @@ impl AgentModelsArea {
 }
 
 pub struct AgentModelsModel {
-    cx: PaneCx,
+    /// The provider sections' actions, and the dispatcher the model's own
+    /// follow-up effects run through.
+    sections: Sections,
+    /// The administration of the providers the launcher granted.
+    provider_admin: ui::models::ProviderAdministration,
     control: Arc<dyn LocalModelControl>,
     snapshot: LocalModelSnapshot,
     manager_available: bool,
@@ -1013,7 +1187,7 @@ pub struct AgentModelsModel {
     /// The in-process model a link asked to show; its card comes first.
     revealed: Option<String>,
     last_poll: Instant,
-    panel: ProviderPanel<PaneCx>,
+    panel: ProviderPanel<PanelActions>,
     /// Manager reads remain native and off the UI thread; providers use the shared panel.
     snapshot_reads: Rereads<Snapshot>,
     vertex: Option<VertexSetup>,
@@ -1035,7 +1209,7 @@ pub struct AgentModelsModel {
 }
 
 impl std::ops::Deref for AgentModelsModel {
-    type Target = ProviderPanel<PaneCx>;
+    type Target = ProviderPanel<PanelActions>;
     fn deref(&self) -> &Self::Target {
         &self.panel
     }
@@ -1047,15 +1221,26 @@ impl std::ops::DerefMut for AgentModelsModel {
 }
 impl AgentModelsModel {
     /// The model over `control`, starting the host's asynchronous provider read.
-    fn new(cx: PaneCx, control: Arc<dyn LocalModelControl>) -> Self {
-        let hosted = hosted_profiles(&Providers::new(&cx).config());
+    fn new(
+        storage: &ui::storage::AppStorage,
+        sections: Sections,
+        provider_admin: ui::models::ProviderAdministration,
+        control: Arc<dyn LocalModelControl>,
+    ) -> Self {
+        let hosted = hosted_profiles(&Providers::new(storage).config());
         let read = AgentModelsRead::of(control.as_ref(), hosted);
-        Self::from_read(cx, control, read)
+        Self::from_read(storage, sections, provider_admin, control, read)
     }
 
     /// Build from the device snapshot. No legacy local settings are treated
     /// as authoritative when this mount has a provider administration grant.
-    fn from_read(cx: PaneCx, control: Arc<dyn LocalModelControl>, read: AgentModelsRead) -> Self {
+    fn from_read(
+        storage: &ui::storage::AppStorage,
+        sections: Sections,
+        provider_admin: ui::models::ProviderAdministration,
+        control: Arc<dyn LocalModelControl>,
+        read: AgentModelsRead,
+    ) -> Self {
         let (snapshot, manager_available, notice) = match read.snapshot {
             Ok(snapshot) => (snapshot, true, None),
             Err(error) => (
@@ -1068,13 +1253,14 @@ impl AgentModelsModel {
             ),
         };
         let panel = ProviderPanel::new(
-            cx.clone(),
-            cx.provider_admin.clone(),
-            Providers::new(&cx).config(),
+            PanelActions::default(),
+            provider_admin.clone(),
+            Providers::new(storage).config(),
         );
         let mut model = Self {
-            providers: Providers::new(&cx),
-            cx,
+            providers: Providers::new(storage),
+            sections,
+            provider_admin,
             control,
             snapshot,
             manager_available,
@@ -1277,7 +1463,7 @@ impl AgentModelsModel {
 
     /// Keep the local provider profile on what the manager serves.
     fn sync_local_profile(&mut self) {
-        if self.cx.provider_admin.is_available() || !self.follow_local_profile {
+        if self.provider_admin.is_available() || !self.follow_local_profile {
             return;
         }
         let config = self.providers.config();
@@ -1289,11 +1475,14 @@ impl AgentModelsModel {
         let Some(profile) = synced_local_profile(existing.clone(), &self.snapshot.models) else {
             return;
         };
-        if existing.as_ref() != Some(&profile) {
-            let mut config = config;
-            config.upsert(profile);
-            let _ = self.providers.store(config);
-            self.panel.offline_config = self.providers.config();
+        if existing.as_ref() == Some(&profile) {
+            return;
+        }
+        match self.providers.follow_local(&self.sections, profile) {
+            Ok(()) => self.panel.offline_config = self.providers.config(),
+            Err(error) => {
+                tracing::warn!(target: "tilo::settings", %error, "the local provider does not follow the model manager");
+            }
         }
     }
 
@@ -1624,9 +1813,7 @@ impl AgentModelsModel {
                 self.proposed_config(effect)?
             }
         };
-        self.providers
-            .store(config)
-            .map_err(|error| error.to_string())?;
+        self.providers.store(&self.sections, config)?;
         self.panel.offline_config = self.providers.config();
         if let Some(id) = vertex_saved {
             self.vertex_saved(&id);
@@ -1638,19 +1825,18 @@ impl AgentModelsModel {
         Ok(())
     }
 
-    fn accelerator_card(&self) -> Option<SettingsSection> {
+    fn accelerator_card(&self, actions: &Actions<Settings>) -> Option<SettingsSection> {
         let setup = self.snapshot.accelerator_setup.as_ref()?;
         let match_label = t("agent-accel-match");
         let mut body = vec![value_row(&match_label, &setup.boot_pack_id)];
         let (status, tone) = match &setup.status {
             AcceleratorSetupState::Available => {
                 body.push(note(&t("agent-accel-available")));
-                body.push(row(Box::new(Row::new().push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new("agent-models-accelerator-setup", &t("agent-accel-setup")),
-                        AgentModelsEffect::SetUpAccelerator,
-                    ),
-                )))));
+                body.push(row(Box::new(Row::new().push(Box::new(invoking(
+                    actions,
+                    Button::new("agent-models-accelerator-setup", &t("agent-accel-setup")),
+                    AgentModelsEffect::SetUpAccelerator,
+                ))))));
                 (t("agent-accel-ready"), StatusTone::Neutral)
             }
             AcceleratorSetupState::Queued => {
@@ -1678,12 +1864,11 @@ impl AgentModelsModel {
             AcceleratorSetupState::Error { message } => {
                 body.push(note(message));
                 body.push(note(&t("agent-accel-error-retry")));
-                body.push(row(Box::new(Row::new().push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new("agent-models-accelerator-retry", &t("agent-accel-retry")),
-                        AgentModelsEffect::SetUpAccelerator,
-                    ),
-                )))));
+                body.push(row(Box::new(Row::new().push(Box::new(invoking(
+                    actions,
+                    Button::new("agent-models-accelerator-retry", &t("agent-accel-retry")),
+                    AgentModelsEffect::SetUpAccelerator,
+                ))))));
                 (t("agent-status-attention"), StatusTone::Warning)
             }
         };
@@ -1694,8 +1879,13 @@ impl AgentModelsModel {
         ))
     }
 
-    fn push_recommendation_confirm(&self, body: &mut Vec<Item>, package: &LocalModelPackage) {
-        self.push_confirm(
+    fn push_recommendation_confirm(
+        actions: &Actions<Settings>,
+        body: &mut Vec<Item>,
+        package: &LocalModelPackage,
+    ) {
+        Self::push_confirm(
+            actions,
             body,
             package,
             (
@@ -1710,7 +1900,7 @@ impl AgentModelsModel {
     /// with the accept and cancel controls (widget ids `controls`); cancel
     /// invokes `cancel`.
     fn push_confirm(
-        &self,
+        actions: &Actions<Settings>,
         body: &mut Vec<Item>,
         package: &LocalModelPackage,
         controls: (&str, &str),
@@ -1738,14 +1928,16 @@ impl AgentModelsModel {
             note(&accept),
             row(Box::new(
                 Row::new()
-                    .push(Box::new(self.cx.bind_invocation(
+                    .push(Box::new(invoking(
+                        actions,
                         Button::new(controls.0, &accept_btn),
                         AgentModelsEffect::InstallModel {
                             model: package.id.clone(),
                             revision: package.revision.clone(),
                         },
                     )))
-                    .push(Box::new(self.cx.bind_invocation(
+                    .push(Box::new(invoking(
+                        actions,
                         Button::new(controls.1, &cancel),
                         cancel_effect,
                     ))),
@@ -1753,7 +1945,7 @@ impl AgentModelsModel {
         ]);
     }
 
-    fn recommendation_card(&self) -> SettingsSection {
+    fn recommendation_card(&self, actions: &Actions<Settings>) -> SettingsSection {
         let hardware = &self.snapshot.hardware;
         let fit_label = fit_label(hardware.fit);
         let mem = gib(i64::from(hardware.memory_gib));
@@ -1795,7 +1987,7 @@ impl AgentModelsModel {
                 value_row(&t("agent-rec-model"), &package.name),
                 note(&package.description),
             ]);
-            self.push_recommendation_confirm(&mut body, package);
+            Self::push_recommendation_confirm(actions, &mut body, package);
         } else {
             // The model this device is suited for, and setting it up, on one
             // row.
@@ -1804,22 +1996,21 @@ impl AgentModelsModel {
                 "agent-models.recommended",
                 &package.name,
                 std::slice::from_ref(&package.description),
-                Some(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new("agent-models-setup-local", &setup)
-                            .role(ui::widget::ButtonRole::Primary)
-                            .with_enabled(
-                                self.manager_available
-                                    && hardware.fit != HardwareFit::Unsupported
-                                    && self
-                                        .snapshot
-                                        .accelerator_setup
-                                        .as_ref()
-                                        .is_none_or(|setup| !setup.status.blocks_model_setup()),
-                            ),
-                        AgentModelsEffect::ReviewModelDownload { show: true },
-                    ),
-                )),
+                Some(Box::new(invoking(
+                    actions,
+                    Button::new("agent-models-setup-local", &setup)
+                        .role(ui::widget::ButtonRole::Primary)
+                        .with_enabled(
+                            self.manager_available
+                                && hardware.fit != HardwareFit::Unsupported
+                                && self
+                                    .snapshot
+                                    .accelerator_setup
+                                    .as_ref()
+                                    .is_none_or(|setup| !setup.status.blocks_model_setup()),
+                        ),
+                    AgentModelsEffect::ReviewModelDownload { show: true },
+                ))),
             ))));
         }
         section_with(
@@ -1836,7 +2027,11 @@ impl AgentModelsModel {
         clippy::too_many_lines,
         reason = "every install phase of the card stays beside its controls"
     )]
-    fn in_process_card(&self, model: &InProcessLocalModel) -> SettingsSection {
+    fn in_process_card(
+        &self,
+        actions: &Actions<Settings>,
+        model: &InProcessLocalModel,
+    ) -> SettingsSection {
         let package = &model.package;
         let widget_token = token(&package.id);
         let mut body = vec![
@@ -1850,7 +2045,8 @@ impl AgentModelsModel {
         if confirming && model.installable() {
             let confirm_id = format!("agent-models-inprocess-confirm-{widget_token}");
             let cancel_id = format!("agent-models-inprocess-cancel-{widget_token}");
-            self.push_confirm(
+            Self::push_confirm(
+                actions,
                 &mut body,
                 package,
                 (&confirm_id, &cancel_id),
@@ -1914,22 +2110,22 @@ impl AgentModelsModel {
             let installable = model.installable();
             let removable = model.removable();
             if installable {
-                buttons = buttons.push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            &format!("agent-models-inprocess-setup-{widget_token}"),
-                            &t("agent-setup-device"),
-                        )
-                        .with_enabled(self.manager_available),
-                        AgentModelsEffect::ReviewLocalModel {
-                            model: package.id.clone(),
-                            show: true,
-                        },
-                    ),
-                ));
+                buttons = buttons.push(Box::new(invoking(
+                    actions,
+                    Button::new(
+                        &format!("agent-models-inprocess-setup-{widget_token}"),
+                        &t("agent-setup-device"),
+                    )
+                    .with_enabled(self.manager_available),
+                    AgentModelsEffect::ReviewLocalModel {
+                        model: package.id.clone(),
+                        show: true,
+                    },
+                )));
             }
             if removable {
-                buttons = buttons.push(Box::new(self.cx.bind_invocation(
+                buttons = buttons.push(Box::new(invoking(
+                    actions,
                     Button::new(
                         &format!("agent-models-inprocess-remove-{widget_token}"),
                         &action_label(ModelAction::Remove),
@@ -1955,7 +2151,7 @@ impl AgentModelsModel {
         )
     }
 
-    fn model_card(&self, model: &InstalledLocalModel) -> SettingsSection {
+    fn model_card(actions: &Actions<Settings>, model: &InstalledLocalModel) -> SettingsSection {
         let status = phase_status(&model.phase);
         let storage = byte_size(model.package.installed_bytes);
         let status_label = t("agent-model-status");
@@ -2012,11 +2208,12 @@ impl AgentModelsModel {
         if model.package.no_runtime {
             body.push(note(&t("agent-hub-no-runtime")));
         }
-        let actions = model_actions(model);
-        if !actions.is_empty() {
+        let lifecycle = model_actions(model);
+        if !lifecycle.is_empty() {
             let mut buttons = Row::new();
-            for action in actions {
-                buttons = buttons.push(Box::new(self.cx.bind_invocation(
+            for action in lifecycle {
+                buttons = buttons.push(Box::new(invoking(
+                    actions,
                     Button::new(
                         &format!(
                             "agent-models-{}-{}",
@@ -2039,12 +2236,13 @@ impl AgentModelsModel {
 
     /// The offer to make `profile` the default, when it has a model.
     fn default_button(
-        &self,
+        actions: &Actions<Settings>,
         profile: &ProviderProfile,
         default_profile: Option<&str>,
     ) -> Option<Item> {
         profile.default_model.as_ref()?;
-        Some(row(Box::new(self.cx.bind_invocation(
+        Some(row(Box::new(invoking(
+            actions,
             Button::new(
                 &format!("agent-models-default-{}", profile.id),
                 &if default_profile == Some(profile.id.as_str()) {
@@ -2059,7 +2257,18 @@ impl AgentModelsModel {
         ))))
     }
 
-    fn build_composition(&self) -> Box<dyn Widget> {
+    /// The page as the model shows the device's models and the person's
+    /// providers now, its controls and the provider panel's bound to `cx`'s
+    /// actions.
+    fn page(&self, cx: &ViewCx<Settings>) -> Element {
+        let actions = cx.actions();
+        self.panel.cx.lent(actions.clone(), || {
+            provider_settings_ui::widgets::page(self.cards(&actions))
+        })
+    }
+
+    /// The page's groups, in order.
+    fn cards(&self, actions: &Actions<Settings>) -> Vec<SettingsSection> {
         let private_title = t("agent-private-title");
         let local_inf = t("agent-local-inference");
         let local_gw = t("agent-local-gateway");
@@ -2078,10 +2287,10 @@ impl AgentModelsModel {
                 &t("agent-service-down-title"),
                 rows(vec![note(&t("agent-service-down-body"))]),
             ));
-            self.push_provider_cards(&mut cards);
-            return crate::widgets::page(cards);
+            self.push_provider_cards(actions, &mut cards);
+            return cards;
         }
-        if let Some(accelerator) = self.accelerator_card() {
+        if let Some(accelerator) = self.accelerator_card(actions) {
             cards.push(accelerator);
         }
         // A link to one in-process model puts its card first, where the
@@ -2091,15 +2300,15 @@ impl AgentModelsModel {
             .as_deref()
             .and_then(|id| self.snapshot.in_process_model(id));
         if let Some(model) = revealed {
-            cards.push(self.in_process_card(model));
+            cards.push(self.in_process_card(actions, model));
         }
-        cards.push(self.recommendation_card());
+        cards.push(self.recommendation_card(actions));
         for model in &self.snapshot.in_process {
             if revealed.is_none_or(|shown| shown.package.id != model.package.id) {
-                cards.push(self.in_process_card(model));
+                cards.push(self.in_process_card(actions, model));
             }
         }
-        cards.extend(self.hub.sections(&self.cx, self.manager_available));
+        cards.extend(self.hub.sections(actions, self.manager_available));
         if self.snapshot.models.is_empty() {
             cards.push(section(
                 &t("agent-models-empty-title"),
@@ -2107,11 +2316,11 @@ impl AgentModelsModel {
             ));
         } else {
             for model in &self.snapshot.models {
-                cards.push(self.model_card(model));
+                cards.push(Self::model_card(actions, model));
             }
         }
-        self.push_provider_cards(&mut cards);
-        crate::widgets::page(cards)
+        self.push_provider_cards(actions, &mut cards);
+        cards
     }
 }
 
@@ -2445,11 +2654,10 @@ fn synced_local_profile(
     Some(profile)
 }
 
-impl PaneModel for AgentModelsModel {
-    fn compose(&self) -> Box<dyn Widget> {
-        self.build_composition()
-    }
-
+impl AgentModelsModel {
+    /// Take in what the manager, provider administration, the sign-ins and
+    /// the Hub reported, asking the manager again while a model is busy;
+    /// whether what the page shows changed.
     fn poll(&mut self) -> bool {
         self.take_reads();
         let revision = self
@@ -2493,7 +2701,7 @@ impl PaneModel for AgentModelsModel {
                 self.read_vertex_keys();
             }
         }
-        if !self.cx.provider_admin.is_available() && self.providers.refresh() {
+        if !self.provider_admin.is_available() && self.providers.refresh() {
             self.panel.offline_config = self.providers.config();
             self.read_keys();
             self.read_vertex_keys();
@@ -2526,10 +2734,8 @@ impl PaneModel for AgentModelsModel {
         std::mem::take(&mut self.changed)
     }
 
-    fn name(&self) -> &'static str {
-        "AgentModelsPane"
-    }
-
+    /// Whether work the page waits for is under way, so the window keeps
+    /// polling for it.
     fn busy(&self) -> bool {
         self.admin_pending.is_some()
             || self.is_busy()

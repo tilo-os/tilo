@@ -210,8 +210,16 @@ fn source() -> HistorySource {
 fn content_rows(entries: &[HistoryEntry]) -> Vec<&HistoryEntry> {
     entries
         .iter()
-        .filter(|e| e.summary != NO_VISIBLE_CHANGE)
+        .filter(|e| {
+            e.text_delta
+                .is_some_and(|(added, removed)| added + removed > 0)
+        })
         .collect()
+}
+
+/// What a row reads for a change that names no action.
+fn unnamed() -> String {
+    sentence::sentence(&tilo_actions::ActionContext::default())
 }
 
 // 1. Three edits, two identities, attributed
@@ -249,19 +257,21 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         assert_eq!(rows[0].author.identity_short, "a11ce000");
         assert_eq!(rows[1].author.identity_short, "b0b00000");
     }
-    // phase: summaries_report_the_characters_actually_typed
-    // The summary is derived from what the change actually did, not from an op
-    // count. "hello" is five characters; " world" is six; "!" is one.
+    // phase: deltas_report_the_characters_actually_typed
+    // The delta is what the change actually did, not an op count. "hello" is
+    // five characters; " world" is six; "!" is one. Changes that name no
+    // action say so, never a guess from their content.
     {
         let (mut doc, _) = two_identity_document();
         let entries = source().entries(&mut doc);
         let rows = content_rows(&entries);
 
-        assert_eq!(rows[0].summary, "+5 -0 chars", "\"hello\"");
-        assert_eq!(rows[1].summary, "+6 -0 chars", "\" world\"");
-        assert_eq!(rows[2].summary, "+1 -0 chars", "\"!\"");
+        assert_eq!(rows[0].text_delta, Some((5, 0)), "\"hello\"");
+        assert_eq!(rows[1].text_delta, Some((6, 0)), "\" world\"");
+        assert_eq!(rows[2].text_delta, Some((1, 0)), "\"!\"");
         for r in &rows {
             assert_eq!(r.entry_kind, EntryKind::Text, "text edits are splices");
+            assert_eq!(r.summary, unnamed());
         }
     }
     // phase: deletions_are_counted_and_a_removed_block_is_a_tombstone
@@ -307,7 +317,8 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         let rows = content_rows(&entries);
         assert_eq!(rows.len(), 3, "three authored edits: {rows:?}");
         assert_eq!(
-            rows[1].summary, "+0 -5 chars",
+            rows[1].text_delta,
+            Some((0, 5)),
             "deleting \" this\" is five chars"
         );
         assert_eq!(rows[1].entry_kind, EntryKind::Text);
@@ -316,11 +327,10 @@ fn rows_attribute_and_summarise_what_actually_changed() {
             EntryKind::Delete,
             "a removed block is a delete"
         );
-        assert_eq!(rows[2].summary, "-1 block");
     }
-    // phase: a_plain_automerge_document_falls_back_to_patch_summaries
-    // A document with no tilo-doc schema still produces real rows via the patch
-    // fallback, which is what makes the producer usable over the compositor's
+    // phase: a_plain_automerge_document_is_read_through_its_patches
+    // A document with no tilo-doc schema still produces real rows via its
+    // patches, which is what makes the producer usable over the compositor's
     // chrome document, not just tilo-doc artifacts.
     {
         let mut doc = AutoCommit::new();
@@ -335,14 +345,11 @@ fn rows_attribute_and_summarise_what_actually_changed() {
 
         let entries = source().entries(&mut doc);
         assert_eq!(entries.len(), 3, "three commits, three rows");
-        assert_eq!(entries[0].summary, "+5 -0 chars");
-        assert_eq!(entries[1].summary, "+6 -0 chars");
+        assert_eq!(entries[0].text_delta, Some((5, 0)));
+        assert_eq!(entries[1].text_delta, Some((6, 0)));
         assert_eq!(entries[1].entry_kind, EntryKind::Text);
-        assert_eq!(
-            entries[2].summary, "Edited title",
-            "a map put names the field it edited"
-        );
         assert_eq!(entries[2].entry_kind, EntryKind::Details);
+        assert!(entries.iter().all(|e| e.summary == unnamed()));
         assert!(
             entries.iter().all(|e| e.author.name == "Alice"),
             "single-actor document, single author"
@@ -467,7 +474,8 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
             "the newest entry is genuinely new"
         );
         assert_eq!(
-            newest.summary, "+0 -7 chars",
+            newest.text_delta,
+            Some((0, 7)),
             "the restore removed \" world!\""
         );
         assert_eq!(
@@ -674,9 +682,9 @@ fn entries_are_stamped_capped_and_stably_addressed() {
                 .collect::<Vec<_>>(),
             "the cap takes the tail of history, not the head"
         );
-        // The first capped row still describes a delta, since the window opens
+        // The first capped row still carries a delta, since the window opens
         // against the snapshot just before it.
-        assert_eq!(capped[0].summary, "+1 -0 chars");
+        assert_eq!(capped[0].text_delta, Some((1, 0)));
     }
     // phase: entry_ids_are_stable_across_peers
     // Entry ids are the change's own content address, so two peers building a
@@ -716,85 +724,53 @@ fn entries_are_stamped_capped_and_stably_addressed() {
 }
 
 #[test]
-fn unschematised_changes_are_named_by_what_they_edited() {
-    fn summaries(edit: impl FnOnce(&mut AutoCommit)) -> Vec<String> {
-        let mut doc = AutoCommit::new();
-        let settings = doc.put_object(ROOT, "settings", ObjType::Map).unwrap();
-        doc.put(&settings, "theme", "dark").unwrap();
-        doc.put(ROOT, "title", "draft").unwrap();
-        doc.commit();
-        edit(&mut doc);
-        doc.commit();
-        HistorySource::new()
-            .entries(&mut doc)
-            .into_iter()
-            .map(|entry| entry.summary)
-            .collect()
-    }
-    let lookup = |key: &str, path: &str, more: usize| {
-        crate::i18n::I18nManager::format(key, &[("path", path.into()), ("more", more.into())])
-    };
-
-    let one = summaries(|doc| doc.put(ROOT, "title", "final").unwrap());
-    assert_eq!(
-        one.last(),
-        Some(&lookup("history-edited-field", "title", 0))
-    );
-    assert_eq!(one.last().map(String::as_str), Some("Edited title"));
-
-    let nested = summaries(|doc| {
-        let (_, settings) = doc.get(ROOT, "settings").unwrap().unwrap();
-        doc.put(&settings, "theme", "light").unwrap();
-    });
-    assert_eq!(
-        nested.last(),
-        Some(&lookup("history-edited-field", "settings.theme", 0))
-    );
-
-    let several = summaries(|doc| {
-        doc.put(ROOT, "title", "final").unwrap();
-        doc.put(ROOT, "subtitle", "new").unwrap();
-    });
-    let last = several.last().unwrap();
-    assert!(
-        *last == lookup("history-edited-field", "title", 1)
-            || *last == lookup("history-edited-field", "subtitle", 1),
-        "{last}"
-    );
-    assert!(last.ends_with("and 1 more"), "{last}");
-
-    let removed = summaries(|doc| doc.delete(ROOT, "title").unwrap());
-    assert_eq!(
-        removed.last(),
-        Some(&lookup("history-removed-field", "title", 0))
-    );
-}
-
-#[test]
-fn a_feed_counts_edited_fields_and_never_shows_their_keys() {
+fn a_change_naming_no_finer_action_says_so_in_the_frameworks_words() {
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "desktop_counter_v1", 1_u64).unwrap();
+    doc.put(ROOT, "title", "draft").unwrap();
     doc.commit();
-    doc.put(ROOT, "desktop_counter_v1", 2_u64).unwrap();
-    doc.put(ROOT, "contents_owners_v1", "peer").unwrap();
-    doc.commit();
-    doc.delete(ROOT, "contents_owners_v1").unwrap();
-    doc.commit();
+    // A window's direct edit names the whole record.
+    doc.put(ROOT, "title", "final").unwrap();
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+    );
+    // An entry naming its resource but no action names the resource.
+    doc.put(ROOT, "title", "shipped").unwrap();
+    let report = tilo_actions::ActionContext::for_resource("r", "doc", "Report");
+    doc.commit_with(CommitOptions::default().with_message(report.change_message().unwrap()));
+    // Moving the record between workspaces is a row of its own.
+    doc.put(ROOT, "room", "elsewhere").unwrap();
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
+    );
+    // A newer package naming the record's surface is nobody's doing.
+    doc.put(ROOT, "surface", "abc").unwrap();
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
+    );
     let summaries = HistorySource::new()
-        .without_field_paths()
         .entries(&mut doc)
         .into_iter()
         .map(|entry| entry.summary)
         .collect::<Vec<_>>();
     assert_eq!(
         summaries,
-        ["Edited 1 field", "Edited 2 fields", "Removed 1 field"]
+        [
+            unnamed(),
+            unnamed(),
+            sentence::sentence(&report),
+            crate::i18n::I18nManager::lookup_plain("history-moved"),
+        ]
     );
-    assert!(summaries.iter().all(|summary| !summary.contains("_v1")));
+    assert_eq!(summaries[0], "Changed the document");
+    assert_eq!(summaries[2], "Changed Report");
+    assert!(summaries.iter().all(|summary| !summary.contains("title")));
 }
 
 #[test]
-fn an_action_context_names_its_change_before_any_field_fallback() {
+fn an_action_context_names_its_change() {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "title", "draft").unwrap();
     doc.commit();

@@ -43,15 +43,6 @@ unless `--out` says otherwise. The exit status is 0 only when every check passes
 The runner refuses to start while another VM is running or when the host lacks the
 guest's memory plus 1 GiB of headroom, and always stops the VM it used.
 
-## Harness regression tests
-
-```bash
-python3 -m unittest discover -s scripts/vm-acceptance/tests -v
-```
-
-These host-only tests exercise check results, boot identity validation, service-query
-shell exit handling and app-workload prerequisites without starting a VM.
-
 ## Run it in CI
 
 t's `vm-acceptance` check (`tools/ci/vm-acceptance.sh`) runs the suite in micro-VMs with
@@ -158,9 +149,9 @@ its executable; it proves the device key on each bus connection instead
 (docs/identity-security.md). C01 (`checks/secrets.py`) judges that in the slot: its
 `/proc/<pid>/exe` is hidden from its own user, `tilo-secret-service apps list` names
 `binary:/usr/bin/shell` with the MLS key it keeps, the sealed MLS state sits in an
-owner-only directory with no custody warning in the session log, and Notes' portal secret
-(`org.freedesktop.portal.Secret`, asked from an `app-tilo-so.tilo.notes-<n>.scope` as a
-host-launched app asks) comes from the store, and comes back the same after
+owner-only directory with no custody warning in the session log, and Passwords' portal
+secret (`org.freedesktop.portal.Secret`, asked on the app's own `xdg-dbus-proxy` socket, the
+bus its sandbox has) comes from the store, and comes back the same after
 `tilo-secret-service` restarts under the running compositor. C02 takes the dev account
 R08 signed in at seat0 through first use on its own control socket's `onboarding` actions:
 its identity must name `secret_ref.backend = secret-service-v1` with no key file beside it,
@@ -461,7 +452,7 @@ session locked") and the slot's session is restarted (`tilo device slot restart`
 one; the report's `session_recovered_after` lists those checks. W21, the one check that locks
 on purpose, unlocks in a `finally` the way a person would (the passcode on the real
 keyboard), falls back to the restart, and records the route in its `unlock_recovery` metric.
-Nothing goes around the lock. The guard is unit-tested in `test_lock_guard.py`.
+Nothing goes around the lock.
 
 For the same reason no check may leave a modal, overlay, prompt or dialog open: each takes
 the keyboard from the window behind it, and the next check's typing lands in it (run 89618's
@@ -475,7 +466,7 @@ fails ("left a dialog open (…)"), and the harness closes it the way a person c
 then a slot session restart if Escape does not do it. Nothing is ever confirmed to clean up. The
 report's `dialog_recovered_after` lists each such check, what was open and how it was closed.
 `ctx.reset()` dismisses the same surfaces. A touch that is not itself under test lands where it
-activates nothing (W20 picks a point on no launchpad card). Unit-tested in `test_dialog_guard.py`.
+activates nothing (W20 picks a point on no launchpad card).
 
 Budgets live in `run.py` (`BUDGETS`). The German pass (U03, U04, S03) runs after the
 English one: the shell takes its language from the session's environment, so the run
@@ -489,8 +480,7 @@ in it) and the launcher's `app-tilo-<id>-<pid>.scope`. Session services the app 
 — D-Bus-activated portals, socket-activated Tilo services, the workspace's Xwayland — are
 children of the user manager or the compositor and never count as leftovers. A first
 frame is sampled for up to 5 s until it is not a flat fill, so a clear presented before
-the client's first real buffer does not fail it; a client that stays blank does. The pure
-parts are unit-tested: `python3 -m unittest discover -s scripts/vm-acceptance -p 'test_*.py'`.
+the client's first real buffer does not fail it; a client that stays blank does.
 
 Frame checks (R04, W16) read the session's frame trace, one row per compositor loop
 tick. The recorder writes its buffered rows out about once a second, on a tick, so every
@@ -510,7 +500,7 @@ are always recorded, and judged only when frames reach real display hardware (th
 `display` fact, from the DRM drivers). In a VM, QEMU retires frames on its own display
 timer (tens of milliseconds, seconds once it has idled), so those intervals say little
 about Tilo. A virtual display that takes no frame of a transition for 20 s makes it
-unobservable, not passed. The trace reading is unit-tested beside the app checks (`test_frames.py`).
+unobservable, not passed.
 
 Touchpad gestures (W15) are driven through the control socket's `swipe` and `pinch`, which
 feed the shell's gesture tracker; libinput's own touchpad decoding needs a uinput touchpad

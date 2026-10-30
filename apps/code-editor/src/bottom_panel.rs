@@ -131,6 +131,10 @@ pub struct BottomPanel {
     /// none.
     list: Option<Scrollable>,
     list_node: Option<NodeId>,
+    /// Whether `list` still shows older problems or search hits. The rows
+    /// are built when the panel is next laid out: a hidden panel builds
+    /// none, however often the problems change while typing.
+    list_stale: bool,
     /// The body's empty state when the tab showing has nothing else, and
     /// what it says.
     empty: Option<((ui::icons::Icon, String), EmptyState)>,
@@ -161,6 +165,7 @@ impl BottomPanel {
             analysis: None,
             list: None,
             list_node: None,
+            list_stale: false,
             empty: None,
             list_offset: Rc::new(Cell::new((0.0, 0.0))),
             activated: Rc::new(Cell::new(None)),
@@ -222,16 +227,20 @@ impl BottomPanel {
     pub fn set_problems(&mut self, problems: Vec<Diagnostic>) {
         if self.problems != problems {
             self.problems = problems;
-            self.rebuild_list();
+            self.invalidate_list();
             self.refresh_tab_titles();
             self.dirty = true;
         }
     }
 
+    fn invalidate_list(&mut self) {
+        self.list_stale = true;
+        self.list_node = None;
+    }
+
     /// One retained row per diagnostic, in a scroll view that keeps its
     /// position across rebuilds.
     fn rebuild_list(&mut self) {
-        self.list_node = None;
         if self.tab == PanelTab::Search {
             let rows: Vec<Element> = self
                 .search
@@ -374,7 +383,7 @@ impl BottomPanel {
             self.tab = tab;
             self.tabs.set_active(tab.id());
             self.activated.set(None);
-            self.rebuild_list();
+            self.invalidate_list();
             self.dirty = true;
         }
     }
@@ -397,7 +406,7 @@ impl BottomPanel {
     /// What the body says when the tab showing has nothing else to show.
     fn body_empty(&self) -> Option<(ui::icons::Icon, String)> {
         match self.tab {
-            PanelTab::Problems | PanelTab::Search if self.list.is_none() => {
+            PanelTab::Problems if self.problems.is_empty() => {
                 // An empty list means two different things, and the panel
                 // must not state the wrong one. While a language server is
                 // still working nothing has been analysed yet; only once it
@@ -452,6 +461,9 @@ impl Widget for BottomPanel {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        if std::mem::take(&mut self.list_stale) {
+            self.rebuild_list();
+        }
         self.height = Self::wanted_height(theme);
         self.strip_height = ui::widget::tabs::TAB_BAR_HEIGHT;
         let tabs_node = self.tabs.build_layout(taffy, theme, node_map);
@@ -652,7 +664,7 @@ impl BottomPanel {
         if self.search != search {
             self.search = search;
             if self.tab == PanelTab::Search {
-                self.rebuild_list();
+                self.invalidate_list();
             }
             self.dirty = true;
         }
@@ -773,12 +785,18 @@ mod tests {
             diagnostic(Severity::Error, 3),
             diagnostic(Severity::Warning, 9),
         ]);
+        assert!(
+            panel.list.is_none(),
+            "rows wait until the panel is laid out"
+        );
+        panel.build_layout(&mut TaffyTree::new(), &Theme::dark(), &mut HashMap::new());
         assert!(panel.list.is_some());
         assert_eq!(panel.take_jump(), None);
         panel.activated.set(Some(1));
         assert_eq!(panel.take_jump(), Some((9, 1)));
         assert_eq!(panel.take_jump(), None, "cleared on read");
         panel.set_problems(Vec::new());
+        panel.build_layout(&mut TaffyTree::new(), &Theme::dark(), &mut HashMap::new());
         assert!(panel.list.is_none());
     }
 

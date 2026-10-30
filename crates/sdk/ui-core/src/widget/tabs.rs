@@ -519,7 +519,7 @@ pub struct TabBar {
     location_images: HashMap<u64, icons::AppImage>,
     /// The active tab's slots: in the title's row while the window shows
     /// one tab, in a row of their own under the tabs while it shows several.
-    toolbar_row: super::window_toolbar_row::ToolbarRow,
+    toolbar_row: Box<super::window_toolbar_row::ToolbarRow>,
     /// The motion the person allows, from the last layout's theme.
     motion: EffectiveMotion,
     /// A tab being named in place ([`TabBar::begin_rename`]).
@@ -684,7 +684,7 @@ impl TabBar {
             tabbed_changed_at: None,
             toolbars: HashMap::new(),
             location_images: HashMap::new(),
-            toolbar_row: super::window_toolbar_row::ToolbarRow::new(),
+            toolbar_row: Box::new(super::window_toolbar_row::ToolbarRow::new()),
             motion: EffectiveMotion::default(),
             rename: None,
             pending_rename: None,
@@ -4187,7 +4187,7 @@ impl Widget for TabBar {
         let control = self.controls.hit(point)?;
         let (rect, key) = match control {
             super::window_controls::WindowControl::History => {
-                (self.controls.history, "standalone-history-title")
+                (self.controls.history, "history-mode-title")
             }
             super::window_controls::WindowControl::Maximize => (
                 self.controls.maximize,
@@ -4359,9 +4359,7 @@ impl Widget for TabBar {
                 if let Some(control) = self.history.get(&t.id).filter(|_| chips) {
                     node.children.push(
                         drawn(&self.history_rects, AccessNode::new(Role::ToggleButton))
-                            .with_name(crate::i18n::I18nManager::lookup_plain(
-                                "standalone-history-title",
-                            ))
+                            .with_name(crate::i18n::I18nManager::lookup_plain("history-mode-title"))
                             .with_action_target(format!("tab-history:{}", t.id))
                             .with_state(AccessState {
                                 focusable: true,
@@ -4427,7 +4425,7 @@ impl Widget for TabBar {
             if let Some(control) = self.history.get(&self.active_id) {
                 let mut history = button(
                     Role::ToggleButton,
-                    crate::i18n::I18nManager::lookup_plain("standalone-history-title"),
+                    crate::i18n::I18nManager::lookup_plain("history-mode-title"),
                     WINDOW_HISTORY_TARGET,
                     self.controls.history,
                 );

@@ -32,8 +32,13 @@ pub const ROOM_OWNER_KEY: &str = "owner";
 /// Key of the next id counter a durable topology owner mints from, so a
 /// restarted owner never reuses an id a closed tab once had.
 pub const ROOM_DESKTOP_COUNTER_KEY: &str = "desktop_counter_v1";
-/// Key a room document stores its effect receipts under.
+/// Key a room document stores its effect receipts under: one slice per
+/// member, `{person → {invocation → JSON receipt}}`, which only that
+/// member's devices write.
 pub const ROOM_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
+/// Key a room document anchors each member's archived effect receipts
+/// under: `{person → {device → history root}}`, each device's own.
+pub const ROOM_EFFECT_HISTORY_KEY: &str = "effect_history_root_v1";
 /// Key a room document stores its saved shortcuts under.
 pub const ROOM_AUTOMATIONS_KEY: &str = "automations_v1";
 /// Key a room document stores its named grant sets under, by lowercase name.
@@ -385,22 +390,30 @@ pub fn schedule_claims_of(doc: &AutoCommit) -> Vec<tilo_automation::ScheduleClai
     claims
 }
 
-/// Project effect receipts keyed by invocation, so receipts from two
-/// peers merge as separate map keys.
+/// Project `receipts` into `person`'s slice of the room's effect receipts,
+/// keyed by invocation, so receipts from two devices merge as separate
+/// keys.
 ///
 /// # Errors
 ///
-/// The document's error when the receipts map cannot be created.
+/// The document's error when a receipts map cannot be created.
 pub fn project_effect_receipts(
     doc: &mut AutoCommit,
+    person: &str,
     receipts: &[WorkspaceEffectReceipt],
 ) -> Result<(), automerge::AutomergeError> {
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
-    let object = match doc.get(&ROOT, ROOM_EFFECT_RECEIPTS_KEY).ok().flatten() {
-        Some((_, id)) => id,
-        None if receipts.is_empty() => return Ok(()),
-        None => doc.put_object(&ROOT, ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map)?,
+    if receipts.is_empty() {
+        return Ok(());
+    }
+    let ledger = match doc.get(&ROOT, ROOM_EFFECT_RECEIPTS_KEY)? {
+        Some((Value::Object(ObjType::Map), id)) => id,
+        _ => doc.put_object(&ROOT, ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map)?,
+    };
+    let slice = match doc.get(&ledger, person)? {
+        Some((Value::Object(ObjType::Map), id)) => id,
+        _ => doc.put_object(&ledger, person, ObjType::Map)?,
     };
     for receipt in receipts {
         let key = receipt.invocation.0.to_string();
@@ -408,34 +421,42 @@ pub fn project_effect_receipts(
             continue;
         };
         let unchanged = matches!(
-            doc.get(&object, key.as_str()).ok().flatten(),
+            doc.get(&slice, key.as_str())?,
             Some((Value::Scalar(value), _))
                 if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
         );
         if !unchanged {
-            let _ = doc.put(&object, key, ScalarValue::Bytes(blob));
+            doc.put(&slice, key, ScalarValue::Bytes(blob))?;
         }
     }
     Ok(())
 }
 
+/// Every effect receipt the room holds, each member's slice together,
+/// oldest first. Receipts that do not decode are skipped.
 pub fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectReceipt> {
-    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-    let Some((_, object)) = doc.get(&ROOT, ROOM_EFFECT_RECEIPTS_KEY).ok().flatten() else {
+    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value};
+    let Some((Value::Object(ObjType::Map), ledger)) =
+        doc.get(&ROOT, ROOM_EFFECT_RECEIPTS_KEY).ok().flatten()
+    else {
         return Vec::new();
     };
-    let mut receipts = doc
-        .keys(&object)
-        .filter_map(|key| {
-            let (Value::Scalar(value), _) = doc.get(&object, key).ok().flatten()? else {
+    let mut receipts = Vec::new();
+    for person in doc.keys(&ledger) {
+        let Some((Value::Object(ObjType::Map), slice)) = doc.get(&ledger, &person).ok().flatten()
+        else {
+            continue;
+        };
+        receipts.extend(doc.keys(&slice).filter_map(|key| {
+            let (Value::Scalar(value), _) = doc.get(&slice, key).ok().flatten()? else {
                 return None;
             };
             let ScalarValue::Bytes(blob) = value.as_ref() else {
                 return None;
             };
-            serde_json::from_slice(blob).ok()
-        })
-        .collect::<Vec<_>>();
+            serde_json::from_slice::<WorkspaceEffectReceipt>(blob).ok()
+        }));
+    }
     receipts.compact_sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
     receipts
 }

@@ -11,9 +11,7 @@ fn saved_before_hosts(path: &std::path::Path) -> Vec<u8> {
     for workspace in &mut tree.desktop.workspaces {
         workspace.policy.owner = None;
     }
-    let bytes = crate::shell::persist::encode_tree(&tree)
-        .expect("encoded")
-        .bytes;
+    let bytes = crate::shell::persist::encode_tree(&tree).expect("encoded");
     std::fs::write(path, &bytes).expect("written");
     bytes
 }

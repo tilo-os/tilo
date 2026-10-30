@@ -1232,7 +1232,7 @@ fn the_picker_opens_at_the_caret_and_centred_when_the_field_reports_none() {
         card
     };
 
-    // Phase `below_the_caret`.
+    // Below the caret.
     let caret = Rect::new(320.0, 190.0, 322.0, 208.0);
     let card = open_with_caret(&mut h, Some((120, 40)));
     assert!(
@@ -1244,7 +1244,7 @@ fn the_picker_opens_at_the_caret_and_centred_when_the_field_reports_none() {
         "the card opens just below the caret: {card:?}"
     );
 
-    // Phase `above_a_caret_near_the_bottom`.
+    // Above a caret near the bottom.
     let caret = Rect::new(320.0, 630.0, 322.0, 648.0);
     let card = open_with_caret(&mut h, Some((120, 480)));
     assert!(
@@ -1252,7 +1252,7 @@ fn the_picker_opens_at_the_caret_and_centred_when_the_field_reports_none() {
         "the card flips above the caret when the display ends first: {card:?}"
     );
 
-    // Phase `clamped_at_the_right_edge`.
+    // Clamped at the right edge.
     let caret = Rect::new(990.0, 190.0, 992.0, 208.0);
     let card = open_with_caret(&mut h, Some((790, 40)));
     assert!(
@@ -1261,7 +1261,7 @@ fn the_picker_opens_at_the_caret_and_centred_when_the_field_reports_none() {
     );
     assert!(card.y0 >= caret.y1);
 
-    // Phase `centred_without_a_caret`.
+    // Centred without a caret.
     let card = open_with_caret(&mut h, None);
     drop(h);
     assert!(

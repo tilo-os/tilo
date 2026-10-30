@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 use runtime_portal::runtime_request::{Client, OfferedLanguage, Response};
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx};
+use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_resource;
 
 use crate::device_read::Reading;
@@ -23,7 +23,12 @@ use crate::settings_app::SettingsApp;
 
 crate::effects::effect_family!(LanguageEffect => answer);
 
-crate::area::pane_area! { LanguageArea; }
+crate::area::pane_area! {
+    LanguageArea;
+    fn poll(&self) {
+        LanguageArea::poll(self);
+    }
+}
 
 /// The window's [`LanguageArea`].
 pub fn area(app: &SettingsApp) -> Option<&LanguageArea> {
@@ -60,6 +65,11 @@ pub struct LanguageArea {
     pub installing: LocalState<Option<String>>,
     /// Why the last install failed.
     pub failed: LocalState<Option<String>>,
+    /// Moves whenever what the Language card shows does: what the
+    /// repositories offer, an install starting or stopping.
+    pub shown: LocalState<u64>,
+    /// The revisions [`Self::shown`] last moved for.
+    seen: std::cell::Cell<(u64, u64, u64)>,
 }
 
 impl Default for LanguageArea {
@@ -76,6 +86,20 @@ impl LanguageArea {
             offered: Reading::new(read_offered),
             installing: LocalState::new(None),
             failed: LocalState::new(None),
+            shown: LocalState::new(0),
+            seen: std::cell::Cell::new((0, 0, 0)),
+        }
+    }
+
+    /// Move [`Self::shown`] when what the Language card shows moved.
+    fn poll(&self) {
+        let now = (
+            self.offered.revision(),
+            self.installing.revision(),
+            self.failed.revision(),
+        );
+        if self.seen.replace(now) != now {
+            self.shown.set(self.shown.get().wrapping_add(1));
         }
     }
 
@@ -120,7 +144,7 @@ pub const DEVICE: &str = "device";
 pub(crate) fn value(app: &SettingsApp, follows: &crate::setting::Follows) -> String {
     name(
         follows
-            .get::<AppearancePrefs>(app.host())
+            .get::<AppearancePrefs>(app.storage())
             .language
             .as_deref(),
     )
@@ -212,7 +236,7 @@ fn resolve(language: &str, choices: &[String]) -> Option<Chosen> {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: LanguageEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let LanguageEffect::ChooseLanguage { language } = effect;
     let languages = area(app).ok_or_else(crate::area::missing)?;
@@ -227,17 +251,18 @@ pub(crate) fn answer(
                 Chosen::Language(locale) => Some(locale),
             };
             return app
-                .host()
-                .update::<AppearancePrefs>(move |prefs| prefs.language = language);
+                .sections()
+                .invoke::<AppearancePrefs>(AppearancePrefs::paths().language.set(language))
+                .map(|()| Effected::done());
         }
     };
     languages.failed.set(None);
     languages.installing.set(Some(locale.clone()));
     let chosen = locale.clone();
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         move || install(&locale),
-        move |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+        move |app: &SettingsApp, outcome: Result<(), String>, _| {
             let area = area(app).ok_or_else(crate::area::missing)?;
             area.installing.set(None);
             match outcome {
@@ -245,8 +270,11 @@ pub(crate) fn answer(
                     area.offered.refresh();
                     // The pack is on disk: this window reads it too.
                     ui::i18n::refresh_language_packs();
-                    app.host()
-                        .update::<AppearancePrefs>(move |prefs| prefs.language = Some(chosen))
+                    app.sections()
+                        .invoke::<AppearancePrefs>(
+                            AppearancePrefs::paths().language.set(Some(chosen)),
+                        )
+                        .map(|()| Effected::done())
                 }
                 Err(error) => {
                     area.failed.set(Some(error.clone()));

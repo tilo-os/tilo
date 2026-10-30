@@ -85,6 +85,10 @@ pub struct WorkspaceRuntime {
     /// The in-process authority governing this workspace's room, if any: it
     /// answers the room's calls.
     pub room_authority: Option<crate::rooms::RoomAuthority>,
+    /// This host's replica of a room it hosts for a governor elsewhere, if
+    /// it hosts this workspace's room: what a subscribing device builds its
+    /// own replica from.
+    pub(crate) hosted_replica: Option<std::sync::Arc<crate::hosted::HostedReplica>>,
     /// The standing of each member device, as the room's governor projects
     /// it: what the relay decides each change's claimed action against.
     /// `None` until a governor projects one; the relay then decides changes
@@ -429,6 +433,7 @@ impl WorkspaceRuntime {
             recent_deltas: HashMap::new(),
             governor_tap: None,
             room_authority: None,
+            hosted_replica: None,
             standings: None,
             live_members: HashMap::new(),
             last_seq: 0,

@@ -670,7 +670,7 @@ impl DeviceLocalDoor {
     fn new(chrome: crate::shell::chrome_state::Chrome) -> Self {
         let mut registry = crate::shell::search::SearchRegistry::new();
         registry.register(Rc::new(
-            crate::shell::device_local_actions::DeviceLocalActionsProvider,
+            crate::shell::device_local_actions::DeviceLocalActionsProvider::default(),
         ));
         Self {
             chrome,

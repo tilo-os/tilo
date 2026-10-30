@@ -134,7 +134,7 @@ pub use store::{BOOKKEEPING, RECORDS_DIR, Store, made_by, profile};
 /// `$HOME`, and getting that rule wrong in one reader and right in another is what made this
 /// crate necessary.
 pub fn config_root() -> Option<PathBuf> {
-    Some(tilo_paths::xdg::config_home()?.join("tilo"))
+    tilo_settings_records::profile_root()
 }
 
 /// Resolve one settings file under the config root.

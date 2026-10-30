@@ -106,7 +106,7 @@ impl Snapshot {
             });
             ("tour", ops)
         } else if view.codec_page {
-            let operations = if view.codec_choice().is_some() {
+            let operations = if view.codec_choice_offered() {
                 vec![
                     (KEY_CODECS_INSTALL, "onboarding-codecs-install"),
                     (KEY_CODECS_SKIP, "onboarding-codecs-skip"),
@@ -285,7 +285,7 @@ impl Provider {
         operation: &'static str,
         label: &'static str,
     ) -> SearchResult {
-        let title = t(label);
+        let title = tilo_onboarding::t(label);
         let params = if queued_operation(operation) {
             self.snapshot.upgrade().map_or_else(Vec::new, |snapshot| {
                 request_params(&snapshot.borrow(), operation)
@@ -533,14 +533,14 @@ fn request_params(snapshot: &Snapshot, operation: &str) -> Vec<ActionParam> {
         return vec![ActionParam::optional_owned(
             "acknowledge_without_backup",
             ParamType::Boolean,
-            t("onboarding-backup-skip-acknowledgement"),
+            tilo_onboarding::t("onboarding-backup-skip-acknowledgement"),
         )];
     }
     if operation == "prepared.import" {
         return vec![ActionParam::required_owned(
             "password",
             ParamType::Secret,
-            t("onboarding-prepared-password"),
+            tilo_onboarding::t("onboarding-prepared-password"),
         )];
     }
     let Some(migration) = snapshot.migration.as_ref() else {
@@ -555,7 +555,7 @@ fn request_params(snapshot: &Snapshot, operation: &str) -> Vec<ActionParam> {
             "migration.review" | "migration.retry" | "migration.adopt" | "migration.start"
         )
     {
-        let label = t("onboarding-prepared-password");
+        let label = tilo_onboarding::t("onboarding-prepared-password");
         let mut params = vec![if migration["requires_password"] == true {
             ActionParam::required_owned("password", ParamType::Secret, label)
         } else {
@@ -565,7 +565,7 @@ fn request_params(snapshot: &Snapshot, operation: &str) -> Vec<ActionParam> {
             params.push(ActionParam::optional_owned(
                 "operation",
                 ParamType::Text,
-                t("onboarding-migration-review"),
+                tilo_onboarding::t("onboarding-migration-review"),
             ));
         }
         return params;
@@ -574,7 +574,7 @@ fn request_params(snapshot: &Snapshot, operation: &str) -> Vec<ActionParam> {
         vec![ActionParam::optional_owned(
             "operation",
             ParamType::Text,
-            t("onboarding-migration-review"),
+            tilo_onboarding::t("onboarding-migration-review"),
         )]
     } else {
         vec![]

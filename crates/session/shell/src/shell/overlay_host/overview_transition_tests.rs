@@ -6,7 +6,7 @@ fn host() -> ShellOverlayHost {
 }
 
 #[test]
-fn overview_panel_curve_is_settled_monotonic_and_keeps_windows_inset() {
+fn a_full_width_window_keeps_its_gutters() {
     /// A window at the strip's max width still has to stop short of the
     /// display edge, or its border/corners/shadow — which live in the last
     /// few pixels — get clipped by the bezel. Both edges keep the same
@@ -53,53 +53,7 @@ fn overview_panel_curve_is_settled_monotonic_and_keeps_windows_inset() {
         );
     }
 
-    /// At rest the panel is either absent or fully arrived — no
-    /// half-drawn surface sits on screen when nothing is animating.
-    fn the_panel_curve_is_settled_at_both_ends() {
-        let (alpha, dy, scale) = overview_panel_curve(0.0);
-        assert_eq!(alpha, 0.0);
-        assert_eq!(dy, OVERVIEW_PANEL_RISE_PX);
-        assert_eq!(scale, OVERVIEW_PANEL_START_SCALE);
-
-        let (alpha, dy, scale) = overview_panel_curve(1.0);
-        assert_eq!(alpha, 1.0);
-        assert_eq!(dy, 0.0);
-        assert_eq!(scale, 1.0);
-    }
-
-    /// Mid-flight the panel is partly transparent, still low, and still
-    /// small — all three moving together, so it reads as one object
-    /// arriving rather than three properties animating.
-    fn the_panel_curve_moves_alpha_rise_and_scale_together() {
-        let (alpha, dy, scale) = overview_panel_curve(0.5);
-        assert!(alpha > 0.0 && alpha < 1.0, "alpha mid-flight: {alpha}");
-        assert!(
-            dy > 0.0 && dy < OVERVIEW_PANEL_RISE_PX,
-            "rise mid-flight: {dy}"
-        );
-        assert!(
-            scale > OVERVIEW_PANEL_START_SCALE && scale < 1.0,
-            "scale mid-flight: {scale}"
-        );
-    }
-
-    /// The curve is monotonic, so the panel never backs up on its way in
-    /// or stutters on its way out.
-    fn the_panel_curve_never_reverses() {
-        let mut prev = overview_panel_curve(0.0);
-        for step in 1_i16..=20 {
-            let cur = overview_panel_curve(f32::from(step) / 20.0);
-            assert!(cur.0 >= prev.0, "alpha went backwards at {step}");
-            assert!(cur.1 <= prev.1, "rise went backwards at {step}");
-            assert!(cur.2 >= prev.2, "scale went backwards at {step}");
-            prev = cur;
-        }
-    }
-
     a_full_width_window_stops_short_of_both_screen_edges();
-    the_panel_curve_is_settled_at_both_ends();
-    the_panel_curve_moves_alpha_rise_and_scale_together();
-    the_panel_curve_never_reverses();
 }
 
 fn motion(reduced: bool) -> ui::tokens::EffectiveMotion {
@@ -217,9 +171,13 @@ fn overview_section(
     theme: &Theme,
     open: bool,
 ) -> (Scene, ui::scene_parts::SectionParts) {
-    // What the layout pass does before every draw: the panel's metrics for
-    // the display it is on.
-    host.resolve_overview_layout(theme);
+    // What a frame does before it draws: the flag followed, the app laid
+    // out over the display it covers.
+    if let Some(chrome) = host.chrome.clone() {
+        chrome.borrow_mut().overlays.overview = open;
+    }
+    host.update(&AutoCommit::new(), &automerge::ROOT);
+    let _ = crate::shell::test_support::lay_out_in_viewport(host, 3200.0, 1080.0, theme);
     let mut scene = Scene::new();
     let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
         host.draw_overview_overlay(scene, Affine::IDENTITY, renderer, theme, open);
@@ -266,15 +224,8 @@ fn overview_transition_damages_one_display_not_both() {
     mid_fade(&mut host);
     let opening = overview_section(&mut host, &mut renderer, &theme, true);
     on_first_display(&overview_damage(&closed, &opening), "mid-open");
-    let fills = host.overview_panel_cache_fills();
-    assert_eq!(fills, 1, "the first fade frame records the panel once");
     mid_fade(&mut host);
     let again = overview_section(&mut host, &mut renderer, &theme, true);
-    assert_eq!(
-        host.overview_panel_cache_fills(),
-        fills,
-        "the next fade frame reuses the panel recording"
-    );
     for rect in overview_damage(&opening, &again) {
         assert!(rect.x1 <= 1920.0, "a later fade frame stays on one display");
     }
@@ -423,7 +374,6 @@ fn a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once() {
     let pressed = chord(&mut h, false);
     assert!(chrome.borrow().overlays.overview);
     assert!(h.overview_zoom.is_open());
-    assert_eq!(h.overview_selection, h.overview_here_index());
     let rest = h.overview_zoom.settles_at().expect("the windows fly in");
     assert!(rest.saturating_duration_since(pressed) <= fast);
     assert!(h.needs_animation_frame(), "the flight asks for frames");
@@ -440,14 +390,10 @@ fn a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once() {
         assert_eq!(h.overview_zoom.is_open(), open);
     }
 
-    // Arrow + Enter goes to another workspace: the overview is closed the
-    // moment the key is handled, whatever the windows still show.
-    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::ArrowDown), false, &mut handled));
-    let selected = h
-        .overview_selection
-        .expect("the next workspace is selected");
-    let destination = chrome.borrow().tree().desktop.workspaces[selected].id;
-    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled));
+    // Going to another workspace from it closes the overview the moment it
+    // is chosen, whatever the windows still show.
+    let destination = chrome.borrow().tree().desktop.workspaces[1].id;
+    h.carry_out_overview_pick(tilo_overview::OverviewPick::Workspace(destination));
     assert_eq!(chrome.borrow().tree().desktop.active, destination);
     assert!(!chrome.borrow().overlays.overview);
     assert!(!h.overview_zoom.is_open());
@@ -504,4 +450,188 @@ fn maximize_and_restore_keys_land() {
             "{action:?}"
         );
     }
+}
+
+/// A host over the populated desktop with the overview's app mounted and
+/// the desktop lent to it.
+fn mounted() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::WorkspaceTree;
+
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    tree.create_hosted_workspace("Second");
+    let chrome = ChromeState::new(tree);
+    let mut h = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        .with_chrome(chrome.clone());
+    h.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
+    h.update(&AutoCommit::new(), &automerge::ROOT);
+    assert!(
+        h.layers.overview.is_mounted(),
+        "mounted before it is ever opened"
+    );
+    (h, chrome)
+}
+
+fn lent(h: &ShellOverlayHost) -> tilo_overview::OverviewDesk {
+    h.layers.overview.seat().desk().1
+}
+
+/// The overview is lent every workspace, and the one you are in with each
+/// strip under its own name and every window the switcher lists; the
+/// strips this machine names can be renamed and moved from it.
+#[test]
+fn the_overview_is_lent_every_workspace_and_this_ones_strips_and_windows() {
+    let (mut h, chrome) = mounted();
+    let second = chrome
+        .borrow_mut()
+        .create_strip("Research")
+        .expect("a strip");
+    h.update(&AutoCommit::new(), &automerge::ROOT);
+    let desk = lent(&h);
+    let (workspaces, strips, windows) = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let workspace = tree.desktop.active_workspace().expect("a workspace");
+        (
+            tree.desktop.workspaces.len(),
+            workspace
+                .strips
+                .iter()
+                .map(|strip| (strip.id, strip.name.clone()))
+                .collect::<Vec<_>>(),
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .map(|group| group.tabs.len())
+                .sum::<usize>(),
+        )
+    };
+    assert_eq!(desk.cards.len(), workspaces);
+    let here = desk
+        .cards
+        .iter()
+        .find(|card| card.is_current)
+        .expect("here");
+    assert_eq!(
+        here.strips
+            .iter()
+            .map(|strip| (strip.id, strip.name.clone()))
+            .collect::<Vec<_>>(),
+        strips,
+        "one row per strip, in the workspace's order, under its own name"
+    );
+    let pictured: usize = here
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.groups)
+        .map(|group| group.tabs.len())
+        .sum();
+    assert_eq!(pictured, windows, "every window is pictured");
+    assert_eq!(desk.pictured.len(), windows, "and drawn by the compositor");
+    assert!(
+        desk.renamable.contains(&second),
+        "this machine names its strips"
+    );
+    assert!(desk.can_add && desk.can_join);
+}
+
+/// What the overview asks is carried out through the shell's own
+/// commands: a strip renamed and moved is the strip the switcher lists, a
+/// new workspace or the directory leaves the overview for it.
+#[test]
+fn what_the_overview_asks_is_carried_out_through_the_shells_commands() {
+    use tilo_overview::OverviewPick;
+    let (mut h, chrome) = mounted();
+    chrome
+        .borrow_mut()
+        .create_strip("Research")
+        .expect("a strip");
+    chrome.borrow_mut().focus_strip_index(0);
+    let strips = |chrome: &crate::shell::chrome_state::Chrome| {
+        chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .map(|strip| (strip.id, strip.name.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    chrome.borrow_mut().overlays.overview = true;
+    h.update(&AutoCommit::new(), &automerge::ROOT);
+    assert!(h.overview_open(), "the app follows the flag up");
+
+    let first = strips(&chrome)[0].0;
+    h.carry_out_overview_pick(OverviewPick::RenameStrip {
+        strip: first,
+        name: "Studio".into(),
+    });
+    assert_eq!(strips(&chrome)[0].1, "Studio");
+    h.carry_out_overview_pick(OverviewPick::MoveStrip {
+        strip: first,
+        before: None,
+    });
+    assert_eq!(strips(&chrome).last().map(|(id, _)| *id), Some(first));
+    assert!(chrome.borrow().overlays.overview, "the overview stays up");
+
+    h.carry_out_overview_pick(OverviewPick::JoinWorkspace);
+    assert_eq!(
+        chrome.borrow_mut().take_peer_sync_requests(),
+        vec![PeerSyncAction::BrowseDirectory],
+        "the directory of public workspaces, not the paste field"
+    );
+    assert!(!chrome.borrow().overlays.overview);
+
+    chrome.borrow_mut().overlays.overview = true;
+    h.update(&AutoCommit::new(), &automerge::ROOT);
+    let before = chrome.borrow().tree().desktop.workspaces.len();
+    h.carry_out_overview_pick(OverviewPick::NewWorkspace);
+    assert_eq!(chrome.borrow().tree().desktop.workspaces.len(), before + 1);
+    assert!(
+        !chrome.borrow().overlays.overview,
+        "creating a workspace leaves the overview so navigation reaches it"
+    );
+}
+
+/// The app taking itself down (Escape, a choice, a press on nothing) clears
+/// the overview's flag; the flag going down takes the app down, and the
+/// pictures land back before it is gone.
+#[test]
+fn the_overview_and_its_flag_follow_each_other() {
+    use tilo_sheets::{Phase, Seat as _};
+    let (mut h, chrome) = mounted();
+    chrome.borrow_mut().overlays.overview = true;
+    h.latch_overview_transition();
+    h.update(&AutoCommit::new(), &automerge::ROOT);
+    let presentation = h.layers.overview.seat().presentation().clone();
+    assert_eq!(presentation.phase(), Phase::Open);
+
+    presentation.dismissed();
+    h.update(&AutoCommit::new(), &automerge::ROOT);
+    assert!(!chrome.borrow().overlays.overview, "it took itself down");
+    assert!(!h.overview_zoom.is_open(), "the windows fly back");
+
+    chrome.borrow_mut().overlays.overview = true;
+    h.latch_overview_transition();
+    h.update(&AutoCommit::new(), &automerge::ROOT);
+    assert_eq!(presentation.phase(), Phase::Open, "and comes up again");
+    // Drawn open, so its pictures have somewhere to fly back from.
+    h.force_overview_settled(true);
+    chrome.borrow_mut().overlays.overview = false;
+    h.latch_overview_transition();
+    h.update(&AutoCommit::new(), &automerge::ROOT);
+    assert_eq!(
+        presentation.phase(),
+        Phase::Leaving,
+        "the shell took it down"
+    );
+    assert!(!chrome.borrow().overlays.overview, "and it stays down");
+    h.force_overview_settled(false);
+    assert_eq!(presentation.phase(), Phase::Closed, "landed, it is gone");
 }

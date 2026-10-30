@@ -100,7 +100,7 @@ fn host() -> ShellOverlayHost {
 
 fn search(host: &mut ShellOverlayHost, doc: &AutoCommit, query: &str) {
     host.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-    host.palette.set_query(query);
+    host.search.set_query(query);
     host.refresh_search_results(doc, &automerge::ROOT);
 }
 
@@ -111,12 +111,12 @@ fn select(host: &mut ShellOverlayHost, pick: impl Fn(&SearchResult) -> bool) {
         .position(pick)
         .expect("the row is listed");
     let row = host
-        .palette
+        .search
         .visible_entries()
         .iter()
         .position(|entry| entry.id == format!("result:{at}"))
         .expect("the row is shown");
-    host.palette.set_cursor(row);
+    host.search.set_cursor(row);
 }
 
 fn is_window(row: &SearchResult) -> bool {
@@ -170,7 +170,7 @@ fn shift_enter_on_the_window_opens_a_new_window_of_its_app_here() {
     let mut doc = AutoCommit::new();
     search(&mut host, &doc, "src");
     let entry_label = host
-        .palette
+        .search
         .visible_entries()
         .iter()
         .find(|entry| entry.label == "~/src")
@@ -199,7 +199,7 @@ fn the_window_wears_its_apps_icon() {
     let doc = AutoCommit::new();
     search(&mut host, &doc, "alacritty");
     let icon_of = |label: &str| {
-        host.palette
+        host.search
             .visible_entries()
             .iter()
             .find(|entry| entry.label == label)

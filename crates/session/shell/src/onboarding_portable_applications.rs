@@ -1,34 +1,29 @@
 //! Explicit first-login continuation for authenticated portable applications.
 //! The canonical helper owns archive proofs, user-state adoption and signed
 //! offline restoration; this controller never substitutes a public receipt for them.
+use crate::onboarding_continuation::{self as continuation, Context, Continuation, Kind, Settled};
 use crate::onboarding_prepared::{Pending as Prepared, PortableApplications};
 use std::{
-    fs::OpenOptions,
-    io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    io,
     path::{Path, PathBuf},
-    process::Command,
     time::Duration,
 };
-use zeroize::{Zeroize, Zeroizing};
+
+pub(crate) type Pending = Continuation<Applications>;
+
+/// Portable applications carried over by a prepared setup.
+pub(crate) enum Applications {}
 
 fn failure() -> io::Error {
-    io::Error::other("Portable applications are pending or unavailable")
+    continuation::failure::<Applications>()
 }
+#[cfg(test)]
 fn root(home: &Path) -> PathBuf {
-    home.join(".local/state/tilo/prepared-applications")
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Choice {
-    schema: u32,
-    setup_digest: [u8; 32],
-    declaration: PortableApplications,
-    outcome: String,
+    continuation::root::<Applications>(home)
 }
 #[derive(serde::Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
-enum Event {
+pub(crate) enum Event {
     #[serde(rename = "ready-to-restore")]
     Ready {
         applications: usize,
@@ -38,377 +33,75 @@ enum Event {
     #[serde(rename = "complete")]
     Complete { restored: usize, verified: bool },
 }
-struct Worker {
-    command: bounded_command::AsyncCommand,
-    _scratch: tempfile::TempDir,
-}
-pub(crate) struct Pending {
-    home: PathBuf,
-    identity: PathBuf,
-    declaration: PortableApplications,
-    digest: [u8; 32],
-    state: &'static str,
-    result: serde_json::Value,
-    worker: Option<Worker>,
-    password: Zeroizing<Vec<u8>>,
-    automatic: bool,
-}
-fn private_file(path: &Path, bound: u64) -> io::Result<Vec<u8>> {
-    let parent = crate::onboarding_migration::directory(path.parent().ok_or_else(failure)?)?;
-    crate::onboarding_migration::private(&parent)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o077 != 0
-        || metadata.len() > bound
-    {
-        return Err(failure());
+
+impl Kind for Applications {
+    type Declaration = PortableApplications;
+    type Event = Event;
+    const FAILURE: &'static str = "Portable applications are pending or unavailable";
+    const ROOT: &'static str = "prepared-applications";
+    const RECEIPT_BOUND: u64 = 8192;
+    const LINE_BOUND: usize = 8192;
+    const HELPER_FLAG: &'static str = "--portable-applications";
+    const WORKSPACE: &'static str = "portable-applications";
+    const WORKSPACE_NAMESPACE: bool = true;
+    const OUTPUT_BOUND: usize = 64 * 1024;
+    const TIMEOUT: Duration = Duration::from_secs(1800);
+    const READY: &'static str = "reviewed";
+    const PROCEED: &'static str = "start";
+    const PROCEED_ACTION: &'static str = "restore";
+    const PROCEEDING: &'static str = "restoring-applications";
+    const CONTINUES_WHEN_COMPLETE: bool = true;
+    const FORGETS_PASSWORD_ON_FAILURE: bool = false;
+    const FAILURE_CLEARS_RESULT: bool = false;
+    const MONOTONIC_RECEIPTS: bool = false;
+    const COMPLETION_NEEDS_PROOF: bool = false;
+
+    fn declared(prepared: &Prepared, identity: &Path) -> io::Result<Option<PortableApplications>> {
+        prepared.portable_applications(identity)
     }
-    let mut bytes = Vec::new();
-    file.take(bound.checked_add(1).ok_or_else(failure)?)
-        .read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).map_err(|_| failure())? > bound {
-        return Err(failure());
+    fn valid(declaration: &PortableApplications) -> bool {
+        declaration.valid()
     }
-    Ok(bytes)
-}
-impl Pending {
-    pub(crate) fn open(
-        home: PathBuf,
-        identity: PathBuf,
-        declaration: PortableApplications,
-    ) -> io::Result<Self> {
-        if !declaration.valid() {
-            return Err(failure());
-        }
-        let prepared = Prepared::open(&home)?;
-        if prepared.portable_applications(&identity)?.as_ref() != Some(&declaration) {
-            return Err(failure());
-        }
-        let state = match private_file(&root(&home).join("choice.json"), 8192) {
-            Ok(bytes) => {
-                let receipt: Choice = serde_json::from_slice(&bytes).map_err(|_| failure())?;
-                if receipt.schema != 1
-                    || receipt.setup_digest != prepared.digest()
-                    || receipt.declaration != declaration
-                    || !["complete", "deferred"].contains(&receipt.outcome.as_str())
-                {
-                    return Err(failure());
-                }
-                if receipt.outcome == "complete" {
-                    "complete"
-                } else {
-                    "deferred"
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => "pending",
-            Err(error) => return Err(error),
-        };
-        Ok(Self {
-            home,
-            identity,
-            declaration,
-            digest: prepared.digest(),
-            state,
-            result: serde_json::Value::Null,
-            worker: None,
-            password: Zeroizing::new(Vec::new()),
-            automatic: false,
-        })
+    fn operation(declaration: &PortableApplications) -> &str {
+        &declaration.operation
     }
-    pub(crate) fn receive_prepared_password(
-        &mut self,
-        digest: [u8; 32],
-        password: Zeroizing<Vec<u8>>,
-    ) -> io::Result<()> {
-        self.validate()?;
-        if digest != self.digest
-            || password.is_empty()
-            || password.len() > 4096
-            || std::str::from_utf8(&password).is_err()
-            || self.busy()
-        {
-            return Err(failure());
-        }
-        self.password = password;
-        self.automatic = true;
-        Ok(())
+    fn mark(_: &PortableApplications, status: &mut serde_json::Map<String, serde_json::Value>) {
+        status.insert("portable_applications".to_owned(), true.into());
+        status.insert("applications_only".to_owned(), true.into());
     }
-    fn validate(&self) -> io::Result<()> {
-        let prepared = Prepared::open(&self.home)?;
-        if prepared.digest() != self.digest
-            || prepared.portable_applications(&self.identity)?.as_ref() != Some(&self.declaration)
-        {
-            return Err(failure());
-        }
-        Ok(())
-    }
-    pub(crate) fn continue_automatic(&mut self) -> bool {
-        if self.automatic && self.state == "pending" && !self.password.is_empty() && !self.busy() {
-            if self.invoke("review", b"").is_err() {
-                self.automatic = false;
-            }
-            return true;
-        }
-        false
-    }
-    pub(crate) fn deferred(&self) -> bool {
-        self.state == "deferred"
-    }
-    pub(crate) fn pending(&self) -> bool {
-        !["complete", "deferred"].contains(&self.state)
-    }
-    pub(crate) fn needs_password(&self) -> bool {
-        self.password.is_empty() && !self.busy() && self.pending()
-    }
-    pub(crate) fn busy(&self) -> bool {
-        self.worker.is_some()
-    }
-    pub(crate) fn operation(&self) -> &str {
-        &self.declaration.operation
-    }
-    pub(crate) fn status(&self) -> serde_json::Value {
-        serde_json::json!({"state":self.state,"portable_applications":true,"applications_only":true,"operations":[self.operation()],"selected":self.operation(),"result":self.result,"can_review":!self.busy(),"requires_password":self.password.is_empty()&&!self.busy(),"complete":self.state=="complete","deferred":self.state=="deferred"})
-    }
-    pub(crate) fn next_action(&self) -> &'static str {
-        if self.state == "reviewed" {
-            "start"
-        } else {
-            "review"
-        }
-    }
-    pub(crate) fn invoke(&mut self, op: &str, password: &[u8]) -> io::Result<()> {
-        if op == "cancel" && self.busy() {
-            self.worker = None;
-            self.password.zeroize();
-            self.state = "cancelled";
-            return Ok(());
-        }
-        if self.busy() {
-            return Err(failure());
-        }
-        if op == "resume" && self.deferred() {
-            self.validate()?;
-            self.state = "pending";
-            return Ok(());
-        }
-        if op == "later" {
-            self.acknowledge("deferred")?;
-            self.state = "deferred";
-            self.password.zeroize();
-            return Ok(());
-        }
-        if op == "continue" && self.state == "complete" {
-            self.validate()?;
-            return Ok(());
-        }
-        let action = match op {
-            "review" | "retry" => "review",
-            "start" if self.state == "reviewed" => "restore",
-            _ => return Err(failure()),
-        };
-        if !password.is_empty() {
-            if password.len() > 4096 || std::str::from_utf8(password).is_err() {
-                return Err(failure());
-            }
-            self.password = Zeroizing::new(password.to_vec());
-        }
-        if self.password.is_empty() {
-            return Err(failure());
-        }
-        match self.start(action) {
-            Ok(worker) => {
-                self.worker = Some(worker);
-                self.state = if action == "review" {
-                    "reviewing"
-                } else {
-                    "restoring-applications"
-                };
-                Ok(())
-            }
-            Err(error) => {
-                self.state = "unavailable";
-                Err(error)
-            }
-        }
-    }
-    fn start(&self, action: &str) -> io::Result<Worker> {
-        self.start_with(
-            action,
-            crate::onboarding_portable_home::helper_executable()?,
-        )
-    }
-    fn start_with(&self, action: &str, executable: &Path) -> io::Result<Worker> {
-        self.validate()?;
-        let directory = root(&self.home);
+    fn package(cx: &Context<Self>, directory: &Path) -> io::Result<(PathBuf, String)> {
         let expected: PortableApplications =
-            serde_json::from_slice(&private_file(&directory.join("expectation.json"), 8192)?)
-                .map_err(|_| failure())?;
-        if expected != self.declaration {
+            serde_json::from_slice(&continuation::private_file::<Self>(
+                &directory.join("expectation.json"),
+                8192,
+            )?)
+            .map_err(|_| failure())?;
+        if expected != cx.declaration {
             return Err(failure());
         }
-        let package = directory.join(&self.declaration.filename);
-        // Check private literal file custody; large hashing/authentication belongs to the helper.
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(&package)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file()
-            || metadata.uid() != rustix::process::geteuid().as_raw()
-            || metadata.mode() & 0o077 != 0
-            || metadata.len() != self.declaration.sealed_bytes
-        {
-            return Err(failure());
-        }
-        let mut pin = crate::onboarding_migration::directory(&self.home)?;
-        for segment in [
-            ".local",
-            "state",
-            "tilo",
-            "portable-applications",
-            self.operation(),
-        ] {
-            pin = crate::onboarding_migration::create(&pin, segment)?;
-            if [".local", "state", "tilo"].contains(&segment) {
-                tilo_files::native::atomic::StorageDirectory::from_file(pin.try_clone()?)?
-                    .validate_namespace_control()?;
-            } else {
-                crate::onboarding_migration::private(&pin)?;
-            }
-        }
-        let scratch = tempfile::Builder::new()
-            .prefix(".setup-review-")
-            .tempdir_in(&directory)?;
-        let mut command = Command::new(executable);
-        command
-            .arg("--portable-applications")
-            .arg("--package")
-            .arg(package)
-            .arg("--receipt")
-            .arg(directory.join("expectation.json"))
-            .arg("--setup-package")
-            .arg(
-                self.home
-                    .join(".local/state/tilo/prepared-setup/prepared-setup.sealed"),
-            )
-            .arg("--setup-quarantine")
-            .arg(scratch.path().join("contents"))
-            .arg("--home")
-            .arg(&self.home)
-            .arg("--workspace")
-            .arg(
-                self.home
-                    .join(".local/state/tilo/portable-applications")
-                    .join(self.operation()),
-            )
-            .arg("--action")
-            .arg(action);
-        let command = bounded_command::spawn_prepared(
-            command,
-            Some(&self.password),
-            64 * 1024,
-            Duration::from_secs(1800),
-        )
-        .map_err(|_| failure())?;
-        Ok(Worker {
-            command,
-            _scratch: scratch,
-        })
+        let package = directory.join(&cx.declaration.filename);
+        continuation::private_package::<Self>(&package, Some(cx.declaration.sealed_bytes))?;
+        Ok((package, cx.declaration.operation.clone()))
     }
-    fn acknowledge(&self, outcome: &str) -> io::Result<()> {
-        self.validate()?;
-        let directory = root(&self.home);
-        let pin = crate::onboarding_migration::directory(&directory)?;
-        crate::onboarding_migration::private(&pin)?;
-        let choice = Choice {
-            schema: 1,
-            setup_digest: self.digest,
-            declaration: self.declaration.clone(),
-            outcome: outcome.into(),
-        };
-        let bytes = serde_json::to_vec(&choice).map_err(|_| failure())?;
-        if bytes.len() > 8192 {
-            return Err(failure());
-        }
-        let mut staged = tempfile::NamedTempFile::new_in(&directory)?;
-        staged.write_all(&bytes)?;
-        staged.as_file().sync_all()?;
-        self.validate()?;
-        let destination = directory.join("choice.json");
-        match private_file(&destination, 8192) {
-            Ok(previous) => {
-                let previous: Choice = serde_json::from_slice(&previous).map_err(|_| failure())?;
-                if previous.schema != 1
-                    || previous.setup_digest != self.digest
-                    || previous.declaration != self.declaration
-                {
-                    return Err(failure());
-                }
-                staged.persist(&destination).map_err(|_| failure())?;
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                staged
-                    .persist_noclobber(&destination)
-                    .map_err(|_| failure())?;
-            }
-            Err(error) => return Err(error),
-        }
-        pin.sync_all()
-    }
-    pub(crate) fn poll(&mut self) -> bool {
-        let Some(worker) = &mut self.worker else {
-            return false;
-        };
-        let Some(result) = worker.command.try_wait() else {
-            return false;
-        };
-        self.worker = None;
-        let result = result.map_err(|_| failure()).and_then(|output| {
-            if !output.status.success() {
-                return Err(failure());
-            }
-            let last = output
-                .stdout
-                .split(|byte| *byte == b'\n')
-                .rfind(|line| !line.is_empty())
-                .ok_or_else(failure)?;
-            if last.len() > 8192 {
-                return Err(failure());
-            }
-            serde_json::from_slice::<Event>(last).map_err(|_| failure())
-        });
-        match result {
-            Ok(Event::Ready {
+    fn settle(_: &Context<Self>, event: Event) -> Settled {
+        match event {
+            Event::Ready {
                 applications,
                 deployments,
                 user_state,
-            }) => {
-                self.state = "reviewed";
-                self.result = serde_json::json!({"applications":applications,"deployments":deployments,"user_state":user_state});
-                if self.automatic && self.invoke("start", b"").is_err() {
-                    self.automatic = false;
-                }
-            }
-            Ok(Event::Complete {
+            } => Settled::Ready {
+                result: serde_json::json!({"applications":applications,"deployments":deployments,"user_state":user_state}),
+                proceed: true,
+            },
+            Event::Complete {
                 restored,
                 verified: true,
-            }) => {
-                self.result = serde_json::json!({"restored":restored,"verified":true});
-                self.state = if self.acknowledge("complete").is_ok() {
-                    "complete"
-                } else {
-                    "incomplete"
-                };
-                self.password.zeroize();
-            }
-            _ => self.state = "failed",
+            } => Settled::Complete {
+                result: serde_json::json!({"restored":restored,"verified":true}),
+                projection: None,
+            },
+            Event::Complete { .. } => Settled::Failed,
         }
-        true
     }
 }
 
@@ -417,6 +110,7 @@ pub(crate) mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::{PermissionsExt, symlink};
+    use zeroize::Zeroizing;
     pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, PortableApplications) {
         let (home, identity, _) = crate::onboarding_portable_home::tests::fixture();
         let prepared = Prepared::open(home.path()).unwrap();
@@ -535,27 +229,27 @@ pub(crate) mod tests {
                 Zeroizing::new(b"private password".to_vec()),
             )
             .unwrap();
-        pending.automatic = false;
+        pending.manual();
         let helper = home.path().join("inert-helper");
         std::fs::write(&helper,b"#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"event\":\"ready-to-restore\",\"applications\":2,\"deployments\":3,\"user_state\":true}'\n").unwrap();
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
-        pending.worker = Some(pending.start_with("review", &helper).unwrap());
+        pending.run_with("review", &helper).unwrap();
         wait(&mut pending);
         assert_eq!(pending.status()["state"], "reviewed");
         assert!(pending.pending());
         assert!(!root(home.path()).join("choice.json").exists());
         std::fs::write(&helper,b"#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"event\":\"complete\",\"restored\":2,\"verified\":false}'\n").unwrap();
-        pending.worker = Some(pending.start_with("restore", &helper).unwrap());
+        pending.run_with("restore", &helper).unwrap();
         wait(&mut pending);
         assert_eq!(pending.status()["state"], "failed");
         assert!(!root(home.path()).join("choice.json").exists());
         std::fs::write(&helper,b"#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"event\":\"complete\",\"restored\":2,\"verified\":true}'\n").unwrap();
-        pending.worker = Some(pending.start_with("restore", &helper).unwrap());
+        pending.run_with("restore", &helper).unwrap();
         wait(&mut pending);
         assert_eq!(pending.status()["state"], "complete");
         assert!(!pending.pending());
-        assert!(pending.password.is_empty());
-        let reopened =
+        assert!(!pending.holds_password());
+        let mut reopened =
             Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
         assert!(!reopened.pending());
         let mut changed = declaration.clone();
@@ -582,6 +276,6 @@ pub(crate) mod tests {
             root(home.path()).join("expectation.json"),
         )
         .unwrap();
-        assert!(reopened.start_with("review", &helper).is_err());
+        assert!(reopened.run_with("review", &helper).is_err());
     }
 }

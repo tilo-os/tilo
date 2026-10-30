@@ -751,8 +751,7 @@ fn pip_targets_retire_with_their_app_and_keep_virtual_bounds() {
 }
 
 #[test]
-fn spatial_capture_geometry_frames_regions_without_desktop_gaps() {
-    // Phase `spatial_multi_capture_leaves_unselected_gap_transparent`.
+fn spatial_multi_capture_leaves_unselected_gap_transparent() {
     fn spatial_multi_capture_leaves_unselected_gap_transparent() {
         let source = two_source_cards();
         let regions = [
@@ -774,49 +773,55 @@ fn spatial_capture_geometry_frames_regions_without_desktop_gaps() {
         );
         assert!(alpha(1_300, 70) > 0, "selected right card is present");
     }
-    // Phase `spatial_capture_can_frame_content_beyond_both_screen_edges`.
-    {
-        let source = two_source_cards();
-        let regions = [
-            Rect::new(-300.0, 20.0, -100.0, 120.0),
-            Rect::new(900.0, 40.0, 1_100.0, 140.0),
-        ];
-        let (scene, width, height) = compose_scene(&source, &regions, PipLayout::Auto).unwrap();
-        assert_eq!((width, height), (1_400, 120));
-        assert!(!scene.encoding().is_empty());
-    }
-    // Phase `grid_removes_the_unused_virtual_desktop_gap`.
-    {
-        let source = two_source_cards();
-        let regions = [
-            Rect::new(-300.0, 20.0, -100.0, 120.0),
-            Rect::new(900.0, 40.0, 1_100.0, 140.0),
-        ];
-        let (_, width, height) = compose_scene(&source, &regions, PipLayout::Grid).unwrap();
-        assert_eq!((width, height), (416, 100));
-    }
-    // Phase `multi_region_handoff_geometry_preserves_source_and_grid_endpoints`.
-    {
-        let regions = [
-            Rect::new(250.0, 180.0, 710.0, 410.0),
-            Rect::new(760.0, 310.0, 1_170.0, 590.0),
-        ];
-        let source_bounds = union_rects(&regions).unwrap();
-        let first_source = normalized_rect(regions[0], source_bounds);
-        assert_eq!(first_source.x0, 0.0);
-        assert_eq!(first_source.y0, 0.0);
-        assert!(first_source.x1 < 0.51);
+}
 
-        let (width, height, placements) = grid_geometry(&regions);
-        let target_bounds = Rect::new(0.0, 0.0, width, height);
-        let first_target = normalized_rect(placements[0], target_bounds);
-        let second_target = normalized_rect(placements[1], target_bounds);
-        assert!(first_target.x1 < second_target.x0, "grid gap must survive");
-        assert!(first_target.height() < 1.0, "wide source is letterboxed");
-        assert_eq!(second_target.y0, 0.0);
-        assert_eq!(second_target.y1, 1.0);
-    }
-    // Phase `oversized_capture_scales_down_without_changing_aspect_ratio`.
+#[test]
+fn spatial_capture_can_frame_content_beyond_both_screen_edges() {
+    let source = two_source_cards();
+    let regions = [
+        Rect::new(-300.0, 20.0, -100.0, 120.0),
+        Rect::new(900.0, 40.0, 1_100.0, 140.0),
+    ];
+    let (scene, width, height) = compose_scene(&source, &regions, PipLayout::Auto).unwrap();
+    assert_eq!((width, height), (1_400, 120));
+    assert!(!scene.encoding().is_empty());
+}
+
+#[test]
+fn grid_removes_the_unused_virtual_desktop_gap() {
+    let source = two_source_cards();
+    let regions = [
+        Rect::new(-300.0, 20.0, -100.0, 120.0),
+        Rect::new(900.0, 40.0, 1_100.0, 140.0),
+    ];
+    let (_, width, height) = compose_scene(&source, &regions, PipLayout::Grid).unwrap();
+    assert_eq!((width, height), (416, 100));
+}
+
+#[test]
+fn multi_region_handoff_geometry_preserves_source_and_grid_endpoints() {
+    let regions = [
+        Rect::new(250.0, 180.0, 710.0, 410.0),
+        Rect::new(760.0, 310.0, 1_170.0, 590.0),
+    ];
+    let source_bounds = union_rects(&regions).unwrap();
+    let first_source = normalized_rect(regions[0], source_bounds);
+    assert_eq!(first_source.x0, 0.0);
+    assert_eq!(first_source.y0, 0.0);
+    assert!(first_source.x1 < 0.51);
+
+    let (width, height, placements) = grid_geometry(&regions);
+    let target_bounds = Rect::new(0.0, 0.0, width, height);
+    let first_target = normalized_rect(placements[0], target_bounds);
+    let second_target = normalized_rect(placements[1], target_bounds);
+    assert!(first_target.x1 < second_target.x0, "grid gap must survive");
+    assert!(first_target.height() < 1.0, "wide source is letterboxed");
+    assert_eq!(second_target.y0, 0.0);
+    assert_eq!(second_target.y1, 1.0);
+}
+
+#[test]
+fn oversized_capture_scales_down_without_changing_aspect_ratio() {
     {
         let (_, _, scale) = output_dimensions(16_384.0, 8_192.0).unwrap();
         assert_eq!(scale, 0.5);
@@ -828,12 +833,8 @@ fn spatial_capture_geometry_frames_regions_without_desktop_gaps() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
-fn app_capture_follows_its_live_surface_and_never_fakes_success() {
-    // Phase `full_app_capture_paints_a_wholly_offscreen_live_group`.
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
+fn full_app_capture_paints_a_wholly_offscreen_live_group() {
     fn full_app_capture_paints_a_wholly_offscreen_live_group() {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let (strip_id, target_group, target_tab) = {
@@ -996,70 +997,73 @@ fn app_capture_follows_its_live_surface_and_never_fakes_success() {
     }
     // Phase `full_app_capture_paints_a_wholly_offscreen_live_group` (defined above).
     full_app_capture_paints_a_wholly_offscreen_live_group();
-    // Phase `vanished_full_app_never_falls_back_to_a_blank_success`.
-    {
-        let mut frame_builder = FrameBuilder::new((800, 600));
-        let clean_screen = frame_builder.paint();
-        let intent = CaptureIntent {
-            mode: ui::widget::CaptureMode::Screenshot,
-            source: ui::widget::SourceMode::Window,
-            destination: CaptureDestination::File,
-            regions: Vec::new(),
-            anchors: Vec::new(),
-            include_pointer: false,
-            audio: AudioCaptureMode::None,
-            pip_layout: PipLayout::Auto,
-            targets: vec![ui::widget::CaptureTarget {
-                id: "group:999999:tab:999999".into(),
-                title: "Gone".into(),
-                app_id: "so.tilo.gone".into(),
-                visible_rect: Rect::ZERO,
-                virtual_rect: Rect::new(1_000.0, 100.0, 1_800.0, 700.0),
-                complete_rect: None,
-                ..Default::default()
-            }],
-            recording_command: None,
-            replay_command: None,
-            screenshot_command: None,
-        };
-        let (_, regions) = capture_source(&mut frame_builder, &clean_screen, &intent);
-        assert!(regions.is_empty());
-        assert!(
-            compose_scene(&Scene::new(), &regions, PipLayout::Auto).is_err(),
-            "a vanished target must report failure instead of saving transparent pixels"
-        );
-    }
-    // Phase `tracked_app_region_follows_its_surface_without_changing_local_content`.
-    {
-        let local_video = Rect::new(80.0, 120.0, 560.0, 390.0);
-        let first_app = Rect::new(200.0, 60.0, 1_000.0, 660.0);
-        let moved_app = Rect::new(640.0, 90.0, 1_440.0, 690.0);
-        let first = app_local_region_on_surface(local_video, first_app).unwrap();
-        let moved = app_local_region_on_surface(local_video, moved_app).unwrap();
-        assert_eq!(first, Rect::new(280.0, 180.0, 760.0, 450.0));
-        assert_eq!(moved, Rect::new(720.0, 210.0, 1_200.0, 480.0));
-        assert_eq!(first.size(), moved.size());
-    }
-    // Phase `semantic_region_update_preserves_element_identity`.
-    {
-        let updated = updated_local_tracking_source(
-            Some(FloatingSource::AppElement {
-                app_id: "so.tilo.browser".into(),
-                element_id: "media:7".into(),
-                region: Rect::new(10.0, 20.0, 410.0, 245.0),
-            }),
-            "so.tilo.browser".into(),
-            Rect::new(24.0, 36.0, 624.0, 374.0),
-        );
-        assert_eq!(
-            updated,
-            FloatingSource::AppElement {
-                app_id: "so.tilo.browser".into(),
-                element_id: "media:7".into(),
-                region: Rect::new(24.0, 36.0, 624.0, 374.0),
-            }
-        );
-    }
+}
+
+#[test]
+fn vanished_full_app_never_falls_back_to_a_blank_success() {
+    let mut frame_builder = FrameBuilder::new((800, 600));
+    let clean_screen = frame_builder.paint();
+    let intent = CaptureIntent {
+        mode: ui::widget::CaptureMode::Screenshot,
+        source: ui::widget::SourceMode::Window,
+        destination: CaptureDestination::File,
+        regions: Vec::new(),
+        anchors: Vec::new(),
+        include_pointer: false,
+        audio: AudioCaptureMode::None,
+        pip_layout: PipLayout::Auto,
+        targets: vec![ui::widget::CaptureTarget {
+            id: "group:999999:tab:999999".into(),
+            title: "Gone".into(),
+            app_id: "so.tilo.gone".into(),
+            visible_rect: Rect::ZERO,
+            virtual_rect: Rect::new(1_000.0, 100.0, 1_800.0, 700.0),
+            complete_rect: None,
+            ..Default::default()
+        }],
+        recording_command: None,
+        replay_command: None,
+        screenshot_command: None,
+    };
+    let (_, regions) = capture_source(&mut frame_builder, &clean_screen, &intent);
+    assert!(regions.is_empty());
+    assert!(
+        compose_scene(&Scene::new(), &regions, PipLayout::Auto).is_err(),
+        "a vanished target must report failure instead of saving transparent pixels"
+    );
+}
+
+#[test]
+fn tracked_app_region_follows_its_surface_without_changing_local_content() {
+    let local_video = Rect::new(80.0, 120.0, 560.0, 390.0);
+    let first_app = Rect::new(200.0, 60.0, 1_000.0, 660.0);
+    let moved_app = Rect::new(640.0, 90.0, 1_440.0, 690.0);
+    let first = app_local_region_on_surface(local_video, first_app).unwrap();
+    let moved = app_local_region_on_surface(local_video, moved_app).unwrap();
+    assert_eq!(first, Rect::new(280.0, 180.0, 760.0, 450.0));
+    assert_eq!(moved, Rect::new(720.0, 210.0, 1_200.0, 480.0));
+    assert_eq!(first.size(), moved.size());
+}
+
+#[test]
+fn semantic_region_update_preserves_element_identity() {
+    let updated = updated_local_tracking_source(
+        Some(FloatingSource::AppElement {
+            app_id: "so.tilo.browser".into(),
+            element_id: "media:7".into(),
+            region: Rect::new(10.0, 20.0, 410.0, 245.0),
+        }),
+        "so.tilo.browser".into(),
+        Rect::new(24.0, 36.0, 624.0, 374.0),
+    );
+    assert_eq!(
+        updated,
+        FloatingSource::AppElement {
+            app_id: "so.tilo.browser".into(),
+            element_id: "media:7".into(),
+            region: Rect::new(24.0, 36.0, 624.0, 374.0),
+        }
+    );
 }
 
 #[test]

@@ -6,8 +6,8 @@ use crate::{BtDevice, PowerProfile, QsLevel, WifiNetwork};
 /// and the focused window, in desktop coordinates, either unknown.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PasteOrigin {
-    pub caret: Option<vello::kurbo::Rect>,
-    pub window: Option<vello::kurbo::Rect>,
+    pub caret: Option<ui::vello::kurbo::Rect>,
+    pub window: Option<ui::vello::kurbo::Rect>,
 }
 
 /// One monitor's brightness control in Quick Settings.
@@ -147,6 +147,9 @@ pub struct QuickSettingsState {
     /// The person's devices a Bluetooth accessory can move to, read while
     /// an accessory's page shows; `None` without a device fabric.
     pub handoff_targets: Option<Vec<crate::HandoffTarget>>,
+    /// Which of the device's controls the desktop found it has: an effect
+    /// working one it lacks is published unavailable.
+    pub available: crate::actions::QsActionAvailability,
 }
 
 impl Default for QuickSettingsState {
@@ -195,11 +198,19 @@ impl Default for QuickSettingsState {
             arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             notifications: crate::NotificationsView::default(),
             handoff_targets: None,
+            available: crate::actions::QsActionAvailability::default(),
         }
     }
 }
 
 impl QuickSettingsState {
+    /// Whether anything on this device can set the brightness: a backlight
+    /// the desktop found, or a brightness it read.
+    #[must_use]
+    pub fn can_set_brightness(&self) -> bool {
+        self.available.brightness || self.brightness_available
+    }
+
     /// A panel with stand-in readings and no device reads, for shots and
     /// tests.
     #[must_use]
@@ -254,6 +265,7 @@ impl QuickSettingsState {
             arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             notifications: crate::NotificationsView::default(),
             handoff_targets: None,
+            available: crate::actions::QsActionAvailability::all(),
         }
     }
 

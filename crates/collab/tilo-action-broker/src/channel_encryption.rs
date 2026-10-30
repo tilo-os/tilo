@@ -2,21 +2,25 @@
 //!
 //! Every document route is a channel with one MLS group, whose members are
 //! exactly the devices the room's access policy lets read the route
-//! ([`ChannelDirectory::allowed_devices`]) and the room's governor. Every
-//! such device is a participant and runs the same [`ChannelPeer`]: any of
-//! them writes the commit that brings the group in line with the policy, and
-//! every one refuses a commit the policy does not back (see
-//! [`channel_crypto::peer`]).
+//! ([`ChannelDirectory::allowed_devices`]) and the room's governor, the
+//! person's node that takes part in the channels of the rooms it governs.
+//! Every such device is a participant and runs the same [`ChannelPeer`]: any
+//! of them writes the commit that brings the group in line with the policy,
+//! and every one refuses a commit the policy does not back (see
+//! [`channel_crypto::peer`]). A device that cannot name a channel's record
+//! cannot tell who may read it: it commits nothing to that channel, and only
+//! follows the commits of participants that can.
 //!
 //! [`ChannelEncryption::access`] answers an application endpoint that wants
 //! the content keys of a route, starting to take part in its channel as
-//! needed: the governing device creates the group (on its own endpoint's
-//! first access, or the first request of a device the policy allows), any
-//! other device asks the participants for access. Creating a group is the
-//! governor's alone, so no device that missed a genesis (offline, or before
-//! its room's frames arrived) starts a second group beside one that holds
-//! content. [`ChannelEncryption::pump`] runs the protocol over the room
-//! transport:
+//! needed: the device asks the participants for access, and creates the
+//! group itself when no genesis of the channel has arrived a short while
+//! later ([`found_after`]). A device that holds no state for a channel
+//! another device asks about waits the same while, to create the group if
+//! no one has; it leaves the channel alone once a genesis arrives. Two
+//! geneses made at once resolve to one, and nothing sealed under the other
+//! is lost (see [`channel_crypto::peer`]). [`ChannelEncryption::pump`] runs
+//! the protocol over the room transport:
 //!
 //! - inbound frames advance the group, inbound access requests are kept for
 //!   the next commit;
@@ -72,6 +76,27 @@ const REQUEST_LONGEST: Duration = Duration::from_secs(120);
 const REQUEST_FRESH: Duration = Duration::from_secs(60);
 /// Under the state root, the directory of a room's channels.
 const CHANNELS_DIR: &str = "channels";
+/// Channels remembered as having a group this device takes no part in.
+const MAX_GROUPS_SEEN: usize = 1 << 16;
+
+/// How long a device that holds no state for a channel waits for its genesis
+/// (from the room's retained frames, or a participant answering its request)
+/// before it creates the group itself. Each device waits its own while
+/// within a second or two of the next, set by its key and the channel, so
+/// one creates the group and the others hear of it in time.
+fn found_after(device: &Ed25519PublicKey, channel: ChannelId) -> Duration {
+    let spread =
+        device
+            .as_bytes()
+            .iter()
+            .zip(channel.0.as_bytes())
+            .fold(0_u64, |acc, (device, channel)| {
+                acc.wrapping_mul(31)
+                    .wrapping_add(u64::from(device ^ channel))
+            })
+            % 2_000;
+    REQUEST_FIRST.saturating_add(Duration::from_millis(spread))
+}
 
 /// What an application endpoint may do with a route's content right now.
 #[derive(Clone, Debug)]
@@ -151,9 +176,6 @@ pub trait GovernanceTransport {
 
 /// The access policy inputs this service needs from the workspace model.
 pub trait ChannelDirectory: Send {
-    /// Whether this device governs `room`: it creates a channel's group the
-    /// first time one of its endpoints opens the channel.
-    fn governs(&self, room: RoomId) -> bool;
     /// The device key of `room`'s governor, when this device knows the
     /// room's governance: a participant of every channel of the room.
     fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey>;
@@ -183,16 +205,16 @@ pub trait ChannelDirectory: Send {
     /// `route` is the channel's record when this device knows it: proven
     /// against the channel ([`ChannelRoute::proves`]), from a device's routed
     /// request or this device's own endpoint. Without it the directory names
-    /// the record only from grants naming it, and must withhold the channel
-    /// from every device a Deny over a pattern of records could keep out of
-    /// it ([`collab_types::pattern_read_witnesses`]).
+    /// the record only from grants naming it. `None` for a channel it cannot
+    /// name: it may be a member's own record, so who reads it is unknown, and
+    /// this device admits and removes no one.
     fn allowed_devices(
         &self,
         room: RoomId,
         channel: ChannelId,
         route: Option<&ChannelRoute>,
         now: u64,
-    ) -> BTreeSet<Ed25519PublicKey>;
+    ) -> Option<BTreeSet<Ed25519PublicKey>>;
     /// The [`tilo_identity_host::policy_change`] epoch (or a test's own) when
     /// every write to what [`Self::allowed_devices`] reads is announced and
     /// its expiries can be timed: groups then re-check on announcements and
@@ -252,6 +274,15 @@ impl Backoff {
     }
 }
 
+/// When this device may create a channel's group itself.
+struct Founding {
+    /// When it creates the group if no genesis has arrived.
+    at: Instant,
+    /// Whether the policy, when last read, let this device read the channel
+    /// and so create its group.
+    allowed: bool,
+}
+
 /// One channel this device takes part in.
 struct PeerEntry {
     room: RoomId,
@@ -270,6 +301,10 @@ struct PeerEntry {
     /// An endpoint opened the route after this device was removed: ask
     /// again, and the policy decides whether access resumes.
     rejoin: bool,
+    founding: Founding,
+    /// An endpoint of this device opened the route. A channel taken up only
+    /// because another device asked is left once a genesis arrives.
+    wanted: bool,
 }
 
 /// A channel an endpoint asked about that this device could not open: its
@@ -336,6 +371,9 @@ pub struct ChannelEncryption {
     /// the desktop while its frame loop was the reader. Only a changed gate
     /// takes the lock.
     registered: HashMap<ChannelId, channel_crypto::ChannelGate>,
+    /// Channels whose frames arrived while this device took no part in
+    /// them: they have a group, so this device never creates one.
+    groups_seen: std::collections::HashSet<ChannelId>,
 }
 
 impl ChannelEncryption {
@@ -404,6 +442,7 @@ impl ChannelEncryption {
             unopened: HashMap::new(),
             hosted: HashMap::new(),
             registered: HashMap::new(),
+            groups_seen: std::collections::HashSet::new(),
         }
     }
 
@@ -420,9 +459,9 @@ impl ChannelEncryption {
 
     /// What an endpoint of this device may do with `channel` in `room`.
     /// The first call for a route starts taking part in its channel: this
-    /// device creates the group when it governs the room, else asks the
-    /// participants for access. The caller has already decided the endpoint
-    /// may read the route.
+    /// device asks the participants for access, and creates the group when
+    /// no genesis arrives. The caller has already decided the endpoint may
+    /// read the route.
     pub fn access(&mut self, room: RoomId, channel: ChannelId, now: Instant) -> ChannelAccess {
         self.access_routed(room, channel, None, now)
     }
@@ -463,6 +502,7 @@ impl ChannelEncryption {
         let Some(entry) = self.peers.get_mut(&channel) else {
             return ChannelAccess::Unavailable;
         };
+        entry.wanted = true;
         match entry.peer.access() {
             Access::Ready { .. } => entry
                 .peer
@@ -597,16 +637,23 @@ impl ChannelEncryption {
 
     /// The devices whose membership of `channel` the policy backs at `wall`:
     /// every device it lets read the channel, and the room's governor.
+    /// `None` while this device cannot name the channel's record.
     fn allowed(
         &self,
         room: RoomId,
         channel: ChannelId,
         route: Option<&ChannelRoute>,
         wall: u64,
-    ) -> BTreeSet<Ed25519PublicKey> {
-        let mut allowed = self.directory.allowed_devices(room, channel, route, wall);
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let mut allowed = self.directory.allowed_devices(room, channel, route, wall)?;
         allowed.extend(self.directory.governor_of(room));
-        allowed
+        Some(allowed)
+    }
+
+    fn device(&self) -> Option<Ed25519PublicKey> {
+        self.store
+            .as_ref()
+            .map(|store| Ed25519PublicKey::from_bytes(store.device_key.verifying_key().to_bytes()))
     }
 
     /// Run the governance protocol once: apply what arrived, move groups to
@@ -627,6 +674,7 @@ impl ChannelEncryption {
         let mut reconciled = false;
         for channel in channels {
             let due = reconcile_due || self.peers.get(&channel).is_some_and(|entry| entry.dirty);
+            self.found(channel, now, wall);
             if due {
                 self.reconcile(channel, wall);
                 reconciled = true;
@@ -685,19 +733,32 @@ impl ChannelEncryption {
             .values()
             .filter_map(|entry| {
                 let asking = match entry.peer.access() {
-                    Access::Waiting => true,
+                    Access::Waiting => entry.wanted,
                     Access::Removed => entry.rejoin,
                     Access::Ready { .. } => false,
                 };
                 asking.then_some(entry.retry.due)
             })
             .min();
+        let founding = self
+            .peers
+            .values()
+            .filter(|entry| {
+                entry.founding.allowed && entry.founding.at > now && !entry.peer.knows_group()
+            })
+            .map(|entry| entry.founding.at)
+            .min();
         let unopened = self
             .unopened
             .values()
             .filter_map(|entry| entry.retry.as_ref().map(|retry| retry.due))
             .min();
-        policy.into_iter().chain(asking).chain(unopened).min()
+        policy
+            .into_iter()
+            .chain(asking)
+            .chain(founding)
+            .chain(unopened)
+            .min()
     }
 
     /// Whether the groups wait for their directory to announce a policy
@@ -764,19 +825,39 @@ impl ChannelEncryption {
             .filter(|entry| entry.room == room)
             .map(|entry| entry.route.clone())
         else {
+            // A group this device takes no part in yet: if it comes to, it
+            // asks to join and never creates a second one.
+            if self.groups_seen.len() < MAX_GROUPS_SEEN {
+                self.groups_seen.insert(channel);
+            }
             return;
         };
         let allowed = self.allowed(room, channel, route.as_ref(), wall);
         let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
             return;
         };
-        let event = match entry.peer.receive(frame, &allowed, &store.vault) {
+        let received = match &allowed {
+            Some(allowed) => entry.peer.receive(frame, allowed, &store.vault),
+            None => entry.peer.follow(frame, &store.vault),
+        };
+        let event = match received {
             Ok(event) => event,
             Err(error) => {
                 tracing::debug!(%error, %room, "channel frame refused");
                 return;
             }
         };
+        if !entry.wanted && entry.peer.access() == Access::Waiting && entry.peer.knows_group() {
+            // Taken up only to create the group if no one had: someone has,
+            // and its participants admit whoever asked.
+            let dir = channels_dir(&store.root, room);
+            self.peers.remove(&channel);
+            self.groups_seen.insert(channel);
+            if let Err(error) = std::fs::remove_file(ChannelPeer::path_in(&dir, channel)) {
+                tracing::debug!(%error, %room, "unwanted channel state could not be removed");
+            }
+            return;
+        }
         let changed = match event {
             PeerEvent::Joined { .. } | PeerEvent::Advanced { .. } => {
                 // The group may still differ from the policy.
@@ -816,18 +897,43 @@ impl ChannelEncryption {
             return;
         }
         if !self.peers.contains_key(&channel)
-            && self.store.is_some()
-            && self.directory.governs(room)
+            && self
+                .directory
+                .hosted_channel_keys(room, channel, route, false)
+                .is_some()
+        {
+            // This device's own host takes part in the room's channels with
+            // this device's leaf and answers the request itself. A second
+            // peer here would found another group under the same device key
+            // (it never sees the host's genesis), and the host's own leaf
+            // would then be dropped as a member that lost its state.
+            return;
+        }
+        if !self.peers.contains_key(&channel)
             && request.verify().is_ok()
             && self
                 .allowed(room, channel, route, wall)
-                .contains(&request.device)
+                .is_some_and(|allowed| {
+                    allowed.contains(&request.device)
+                        && self
+                            .device()
+                            .is_some_and(|device| allowed.contains(&device))
+                })
         {
-            // The governor creates the group of a channel a device the
-            // policy allows asks for, so outsiders cannot make it mint state.
-            if let Err(error) = self.start_peer(room, channel, now) {
-                tracing::warn!(%error, %room, "channel group could not be created");
-                return;
+            // A device the policy allows asks for a channel this device may
+            // read and holds nothing of: it creates the group if no genesis
+            // arrives. Outsiders cannot make it mint state.
+            match self.start_peer(room, channel, now) {
+                Ok(true) => {
+                    if let Some(entry) = self.peers.get_mut(&channel) {
+                        entry.wanted = false;
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, %room, "channel state could not be created");
+                    return;
+                }
             }
         }
         if let Some(route) = route {
@@ -859,6 +965,11 @@ impl ChannelEncryption {
             return;
         };
         entry.dirty = false;
+        // Without the channel's record this device cannot tell who may read
+        // it: it commits nothing, and removes no one.
+        let Some(allowed) = allowed else {
+            return;
+        };
         let outcome = match entry.peer.reconcile_now(&allowed, &store.vault) {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -911,7 +1022,7 @@ impl ChannelEncryption {
             return;
         };
         let asking = match entry.peer.access() {
-            Access::Waiting => true,
+            Access::Waiting => entry.wanted,
             Access::Removed => entry.rejoin,
             Access::Ready { .. } => false,
         };
@@ -956,9 +1067,9 @@ impl ChannelEncryption {
         let _ = transport.publish(message);
     }
 
-    /// Start taking part in `channel`: create its group when this device
-    /// governs the room, else wait for access. `Ok(false)` while the room's
-    /// governance is not known here.
+    /// Start taking part in `channel`: wait for access, and for the group to
+    /// be created ([`Self::found`]). `Ok(false)` while the room's governance
+    /// is not known here.
     fn start_peer(
         &mut self,
         room: RoomId,
@@ -975,13 +1086,46 @@ impl ChannelEncryption {
         let dir = channels_dir(&store.root, room);
         create_private_dir(&dir)?;
         let signer = Box::new(store.device_key.clone());
-        let peer = if self.directory.governs(room) {
-            ChannelPeer::create_now(Some(&dir), channel, signer, &store.vault)?
-        } else {
-            ChannelPeer::waiting(Some(&dir), channel, signer, &store.vault)?
-        };
+        let peer = ChannelPeer::waiting(Some(&dir), channel, signer, &store.vault)?;
         self.insert_peer(room, channel, peer, now);
         Ok(true)
+    }
+
+    /// Create `channel`'s group when this device waited its while and no
+    /// genesis of the channel arrived, and the policy lets it read the
+    /// channel. A device that has seen a genesis never creates one.
+    fn found(&mut self, channel: ChannelId, now: Instant, wall: u64) {
+        let Some(entry) = self.peers.get(&channel) else {
+            return;
+        };
+        if entry.peer.knows_group() || self.groups_seen.contains(&channel) {
+            return;
+        }
+        let (room, route) = (entry.room, entry.route.clone());
+        let reads = self
+            .allowed(room, channel, route.as_ref(), wall)
+            .zip(self.device())
+            .is_some_and(|(allowed, device)| allowed.contains(&device));
+        let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
+            return;
+        };
+        // Looked at again on every pass, a policy re-check's included.
+        entry.founding.allowed = reads;
+        if !reads || now < entry.founding.at {
+            return;
+        }
+        match entry.peer.found_now(&store.vault) {
+            Ok(true) => {
+                // The requests it holds are admitted at once.
+                entry.dirty = true;
+                entry.wanted = true;
+                let gate = entry.peer.gate();
+                self.register_gate(channel, gate);
+                self.bump(channel);
+            }
+            Ok(false) => {}
+            Err(error) => tracing::warn!(%error, %room, "channel group could not be created"),
+        }
     }
 
     /// Open the state kept for `channel`. `Ok(false)` when there is none.
@@ -1012,6 +1156,9 @@ impl ChannelEncryption {
             .as_ref()
             .and_then(|store| load_route(&route_path(&store.root, room, channel), room, channel));
         let gate = peer.gate();
+        let found_at = now
+            .checked_add(found_after(&peer.device(), channel))
+            .unwrap_or(now);
         self.peers.insert(
             channel,
             PeerEntry {
@@ -1023,6 +1170,11 @@ impl ChannelEncryption {
                 fresh_at: now.checked_add(REQUEST_FRESH).unwrap_or(now),
                 dirty: true,
                 rejoin: false,
+                founding: Founding {
+                    at: found_at,
+                    allowed: true,
+                },
+                wanted: true,
             },
         );
         self.register_gate(channel, gate);
@@ -1605,9 +1757,12 @@ pub mod testing {
         pub withheld: Arc<Mutex<HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>>>,
         /// Devices kept out of every record of an app: a Read Deny on the
         /// app. A channel whose route a device does not know may be any
-        /// app's, so they are kept out of it too, as a production directory
-        /// keeps out whoever may not read a pattern's witness.
+        /// app's, so they are kept out of it too (a production directory
+        /// keeps everyone out of a channel whose record it cannot name).
         pub withheld_apps: Arc<Mutex<HashMap<String, BTreeSet<Ed25519PublicKey>>>>,
+        /// Channels whose record no grant names: without a route the
+        /// directory cannot tell who reads them.
+        pub unnamed: Arc<Mutex<std::collections::HashSet<ChannelId>>>,
     }
 
     /// The epoch a test [`Directory`] reports as its
@@ -1621,15 +1776,11 @@ pub mod testing {
     }
 
     pub struct Directory {
-        pub governs: bool,
         pub governor: Ed25519PublicKey,
         pub policy: Policy,
     }
 
     impl ChannelDirectory for Directory {
-        fn governs(&self, _: RoomId) -> bool {
-            self.governs
-        }
         fn governor_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
             Some(self.governor)
         }
@@ -1639,7 +1790,10 @@ pub mod testing {
             channel: ChannelId,
             route: Option<&ChannelRoute>,
             now: u64,
-        ) -> BTreeSet<Ed25519PublicKey> {
+        ) -> Option<BTreeSet<Ed25519PublicKey>> {
+            if route.is_none() && self.policy.unnamed.lock().unwrap().contains(&channel) {
+                return None;
+            }
             let mut allowed = self.policy.allowed.lock().unwrap().clone();
             allowed.extend(
                 self.policy
@@ -1658,7 +1812,7 @@ pub mod testing {
                     allowed.retain(|device| !withheld.contains(device));
                 }
             }
-            allowed
+            Some(allowed)
         }
         fn policy_epoch(&self) -> Option<u64> {
             match &*self.policy.announces.lock().unwrap() {
@@ -1723,7 +1877,6 @@ mod tests {
                 device_key: key(seed),
             },
             Box::new(Directory {
-                governs: seed == governor,
                 governor: public(governor),
                 policy: policy.clone(),
             }),
@@ -1749,6 +1902,22 @@ mod tests {
                 device.service.pump(&device.endpoint, *now, 1_000);
             }
         }
+    }
+
+    /// `device` opens `channel` and creates its group, as it does once it
+    /// waited its while and no genesis arrived.
+    fn create(
+        device: &mut Device,
+        room_id: RoomId,
+        channel: ChannelId,
+        now: Instant,
+    ) -> ChannelAccess {
+        device.service.access(room_id, channel, now);
+        if let Some(entry) = device.service.peers.get_mut(&channel) {
+            entry.founding.at = now;
+        }
+        device.service.found(channel, now, 1_000);
+        device.service.access(room_id, channel, now)
     }
 
     fn ready_epoch(access: &ChannelAccess) -> Option<u64> {
@@ -1883,7 +2052,7 @@ mod tests {
         let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
         let mut laptop = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
 
-        assert!(ready_epoch(&owner.service.access(room_id, channel, now)).is_some());
+        assert!(ready_epoch(&create(&mut owner, room_id, channel, now)).is_some());
         assert!(
             refuses_plaintext(&owner, channel),
             "encrypted from creation"
@@ -1915,6 +2084,56 @@ mod tests {
             laptop.service.access(room_id, channel, now),
             ChannelAccess::Removed
         ));
+    }
+
+    /// A participant that cannot name a channel's record (it lost the route,
+    /// and no grant names the record) cannot tell who may read it: it removes
+    /// no one, though the policy it can read names only the governor. Named
+    /// again, the group follows the policy once more.
+    #[test]
+    fn a_participant_that_cannot_name_the_record_removes_no_one() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let route = ChannelRoute::new("notes", "plan");
+        let channel = route.channel(&room_id.to_string());
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(public(2));
+        let dirs = [(); 2].map(|()| tempfile::tempdir().unwrap());
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, dirs[0].path());
+        let mut laptop = device(&room, room_id, 1, (2, 1), &policy, dirs[1].path());
+        for device in [&mut owner, &mut laptop] {
+            device.service.access(room_id, channel, now);
+        }
+        run(&mut [&mut owner, &mut laptop], &mut now, 8);
+        let epoch = ready_epoch(&laptop.service.access(room_id, channel, now));
+        assert!(epoch.is_some());
+        assert_eq!(
+            ready_epoch(&owner.service.access(room_id, channel, now)),
+            epoch
+        );
+
+        // Everyone loses the route; the record is no longer named.
+        policy.unnamed.lock().unwrap().insert(channel);
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        assert_eq!(
+            ready_epoch(&owner.service.access(room_id, channel, now)),
+            epoch
+        );
+        assert_eq!(
+            ready_epoch(&laptop.service.access(room_id, channel, now)),
+            epoch
+        );
+
+        // Named again, the group follows the policy: the laptop is removed.
+        owner.service.learn_route(room_id, channel, &route);
+        policy.allowed.lock().unwrap().remove(&public(2));
+        run(&mut [&mut owner, &mut laptop], &mut now, 3);
+        assert!(matches!(
+            laptop.service.access(room_id, channel, now),
+            ChannelAccess::Removed
+        ));
+        assert!(ready_epoch(&owner.service.access(room_id, channel, now)) > epoch);
     }
 
     /// A Read Deny on one record takes the denied device out of that
@@ -2022,6 +2241,12 @@ mod tests {
             laptop.service.access_record(room_id, route, now);
         }
         run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        // Whichever of the two created q3's and draft's groups, the owner
+        // takes part in them too.
+        for channel in [q3, draft] {
+            owner.service.access(room_id, channel, now);
+        }
+        run(&mut [&mut owner, &mut laptop], &mut now, 8);
         let epoch = |device: &mut Device, channel, now| {
             ready_epoch(&device.service.access(room_id, channel, now))
         };
@@ -2253,7 +2478,7 @@ mod tests {
         let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
         let mut laptop = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
 
-        assert!(ready_epoch(&owner.service.access(room_id, channel, now)).is_some());
+        assert!(ready_epoch(&create(&mut owner, room_id, channel, now)).is_some());
         assert!(matches!(
             laptop.service.access(room_id, channel, now),
             ChannelAccess::Waiting
@@ -2306,7 +2531,7 @@ mod tests {
         let mut now = Instant::now();
         let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
         let mut laptop = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
-        assert!(ready_epoch(&owner.service.access(room_id, channel, now)).is_some());
+        assert!(ready_epoch(&create(&mut owner, room_id, channel, now)).is_some());
         assert!(matches!(
             laptop.service.access(room_id, channel, now),
             ChannelAccess::Waiting
@@ -2348,7 +2573,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut now = Instant::now();
         let mut owner = device(&room, room_id, 0, (1, 1), &policy, dir.path());
-        assert!(ready_epoch(&owner.service.access(room_id, channel, now)).is_some());
+        assert!(ready_epoch(&create(&mut owner, room_id, channel, now)).is_some());
         owner.service.pump(&owner.endpoint, now, 1_000);
         let reconciled = now;
         now = now.checked_add(Duration::from_millis(100)).unwrap();
@@ -2377,8 +2602,9 @@ mod tests {
         *policy.announces.lock().unwrap() = Some(Announcements::Process);
         policy.allowed.lock().unwrap().insert(public(2));
         let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
         let laptop = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
+        create(&mut owner, room_id, channel, Instant::now());
         let (owner_endpoint, laptop_endpoint) = (owner.endpoint, laptop.endpoint);
         let owner = ChannelKeyAccess::new(owner.service);
         let laptop = ChannelKeyAccess::new(laptop.service);
@@ -2471,7 +2697,7 @@ mod tests {
         let keys = ChannelKeyProvider::default();
         keys.set(Some(ChannelKeyAccess::new(service)));
         let laptop = keys.get().unwrap();
-        assert!(ready_epoch(&owner.service.access(room_id, channel, now)).is_some());
+        assert!(ready_epoch(&create(&mut owner, room_id, channel, now)).is_some());
         assert!(matches!(
             laptop.access(room_id, channel).0,
             ChannelAccess::Waiting
@@ -2510,7 +2736,7 @@ mod tests {
             laptop.access(room_id, other).0,
             ChannelAccess::Waiting
         ));
-        pump(8);
+        pump(20);
         assert!(ready_epoch(&laptop.access(room_id, other).0).is_some());
         assert_ne!(laptop.channel_change(other), 0, "the other channel changed");
         if let Some(change) = waiting.poll() {
@@ -2587,7 +2813,7 @@ mod tests {
             room_id,
         };
         room.queues.lock().unwrap().entry(1).or_default();
-        assert!(ready_epoch(&owner.service.access(room_id, channel, now)).is_some());
+        assert!(ready_epoch(&create(&mut owner, room_id, channel, now)).is_some());
         run(&mut [&mut owner], &mut now, 3);
         let genesis: Vec<_> = observer
             .take_inbound()
@@ -2617,21 +2843,28 @@ mod tests {
         let mut now = Instant::now();
         let mut owner = device(&room, room_id, 0, (3, 3), &policy, owner_dir.path());
         let mut phone = device(&room, room_id, 1, (4, 3), &policy, phone_dir.path());
-        owner.service.access(room_id, channel, now);
+        create(&mut owner, room_id, channel, now);
         phone.service.access(room_id, channel, now);
         // The request gets through, then the network fails before the
-        // Welcome can.
+        // genesis and the Welcome can. The phone, hearing of no group,
+        // creates its own.
         run(&mut [&mut phone], &mut now, 1);
         room.down.store(true, Ordering::SeqCst);
         run(&mut [&mut owner, &mut phone], &mut now, 30);
-        assert!(matches!(
-            phone.service.access(room_id, channel, now),
-            ChannelAccess::Waiting
-        ));
         assert!(!owner.service.peers[&channel].peer.outbox().is_empty());
         room.down.store(false, Ordering::SeqCst);
         run(&mut [&mut owner, &mut phone], &mut now, 130);
-        assert!(ready_epoch(&phone.service.access(room_id, channel, now)).is_some());
+        let epoch = ready_epoch(&phone.service.access(room_id, channel, now));
+        assert!(epoch.is_some());
+        assert_eq!(
+            ready_epoch(&owner.service.access(room_id, channel, now)),
+            epoch
+        );
+        assert_eq!(
+            owner.service.peers[&channel].peer.members(),
+            phone.service.peers[&channel].peer.members(),
+            "one group"
+        );
         assert!(
             owner.service.peers[&channel].peer.outbox().is_empty(),
             "the outbox drains once the transport takes it"
@@ -2691,7 +2924,7 @@ mod tests {
         owner.service.access(room_id, channel, now);
         lost.service.access(room_id, channel, now);
         run(&mut [&mut owner, &mut lost], &mut now, 5);
-        let ChannelAccess::Ready(keys) = owner.service.access(room_id, channel, now) else {
+        let ChannelAccess::Ready(keys) = create(&mut owner, room_id, channel, now) else {
             panic!("owner keys");
         };
         let before = keys
@@ -2729,7 +2962,7 @@ mod tests {
                 .is_ok(),
             "its key history opens everything written before the loss"
         );
-        let ChannelAccess::Ready(keys) = owner.service.access(room_id, channel, now) else {
+        let ChannelAccess::Ready(keys) = create(&mut owner, room_id, channel, now) else {
             panic!("owner keys");
         };
         let after = keys
@@ -2786,7 +3019,7 @@ mod tests {
         let mut now = Instant::now();
         let mut owner = device(&room, room_id, 0, (11, 11), &policy, owner_dir.path());
         let mut laptop = device(&room, room_id, 1, (12, 11), &policy, laptop_dir.path());
-        let ChannelAccess::Ready(first) = owner.service.access(room_id, channel, now) else {
+        let ChannelAccess::Ready(first) = create(&mut owner, room_id, channel, now) else {
             panic!("owner keys");
         };
         let old = sealed_op(
@@ -2856,7 +3089,7 @@ mod tests {
         let mut now = Instant::now();
         let mut owner = device(&room, room_id, 0, (10, 10), &policy, owner_dir.path());
         let mut laptop = device(&room, room_id, 1, (11, 10), &policy, laptop_dir.path());
-        let ChannelAccess::Ready(before) = owner.service.access(room_id, channel, now) else {
+        let ChannelAccess::Ready(before) = create(&mut owner, room_id, channel, now) else {
             panic!("the owner holds the channel's keys");
         };
         let stale = sealed_write(artifact, &before);
@@ -2915,7 +3148,7 @@ mod tests {
         let now = Instant::now();
         let mut owner = device(&room, room_id, 0, (12, 12), &policy, owner_dir.path());
         let laptop = device(&room, room_id, 1, (13, 12), &policy, laptop_dir.path());
-        let ChannelAccess::Ready(keys) = owner.service.access(room_id, channel, now) else {
+        let ChannelAccess::Ready(keys) = create(&mut owner, room_id, channel, now) else {
             panic!("the owner holds the channel's keys");
         };
         let write = sealed_write(artifact, &keys);
@@ -2937,7 +3170,7 @@ mod tests {
         let channel = ChannelId::new();
         let artifact = ArtifactId::new();
         let owner_dir = tempfile::tempdir().unwrap();
-        let owner = device(
+        let mut owner = device(
             &room,
             room_id,
             0,
@@ -2945,6 +3178,7 @@ mod tests {
             &Policy::default(),
             owner_dir.path(),
         );
+        create(&mut owner, room_id, channel, Instant::now());
         let keys = ChannelKeyAccess::new(owner.service);
         let (ChannelAccess::Ready(held), _) = keys.access(room_id, channel) else {
             panic!("explicit fixture admission provides the original key");
@@ -2998,9 +3232,6 @@ mod tests {
     }
 
     impl ChannelDirectory for LateGovernor {
-        fn governs(&self, _: RoomId) -> bool {
-            false
-        }
         fn governor_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
             *self.governor.lock().unwrap()
         }
@@ -3010,8 +3241,8 @@ mod tests {
             _: ChannelId,
             _: Option<&ChannelRoute>,
             _: u64,
-        ) -> BTreeSet<Ed25519PublicKey> {
-            BTreeSet::new()
+        ) -> Option<BTreeSet<Ed25519PublicKey>> {
+            Some(BTreeSet::new())
         }
         fn policy_epoch(&self) -> Option<u64> {
             Some(self.epoch.load(Ordering::SeqCst))
@@ -3152,7 +3383,6 @@ mod tests {
         let broker = Arc::new(Mutex::new(BrokerChannels::default()));
         let mut service = ChannelEncryption::without_store(
             Box::new(Directory {
-                governs: false,
                 governor: public(1),
                 policy: policy.clone(),
             }),
@@ -3184,7 +3414,6 @@ mod tests {
         // The room is a governed one too: still no state of its own.
         let mut governed = ChannelEncryption::without_store(
             Box::new(Directory {
-                governs: true,
                 governor: public(1),
                 policy,
             }),

@@ -19,10 +19,8 @@
 //! - **sibling** — a note under a group's rows, a block among them;
 //! - **group** — one group to the next.
 
-use std::cell::Cell;
-
 use ui::icons::Icon;
-use ui::tokens::{Metrics, Rhythm, Spacing, SpacingStep, TextRole};
+use ui::tokens::{Rhythm, Spacing, SpacingStep, TextRole};
 pub use ui::widget::Tone as StatusTone;
 use ui::widget::{
     Badge, Button, ChipStyle, Column, Container, ControlSize, IconSize, IconWidget, ListRow, Row,
@@ -505,57 +503,6 @@ pub fn error_row(label: &str, message: &str) -> Item {
             ))
             .push(error_caption(message)),
     ))
-}
-
-thread_local! {
-    static COMPOSE_TEXT_GROWTH: Cell<f32> = const { Cell::new(1.0) };
-}
-
-/// Record the live theme's [`ui::Theme::text_growth`] before a pane
-/// composes. Compact choosers are authored at 1×; large type has to grow
-/// that pin or option labels clip inside the chooser.
-pub fn set_compose_text_growth(growth: f32) {
-    let growth = if growth.is_finite() {
-        growth.clamp(1.0, 4.0)
-    } else {
-        1.0
-    };
-    COMPOSE_TEXT_GROWTH.set(growth);
-}
-
-fn compose_text_growth() -> f32 {
-    COMPOSE_TEXT_GROWTH.get()
-}
-
-/// The width of a compact right-aligned chooser (dropdown, segmented
-/// picker): the toolkit's utility-panel width grown for the current
-/// compose-time text scale, so a short-option control reads as a trailing
-/// chooser rather than a full-width form field.
-pub fn compact_chooser_width() -> f32 {
-    Metrics::BASE.panel_width_utility * compose_text_growth()
-}
-
-/// Pin a trailing control to the compact chooser width so it aligns to the
-/// row's right edge instead of stretching across the whole group.
-pub fn compact_control(control: El) -> El {
-    compact_control_w(compact_chooser_width(), control)
-}
-
-/// [`compact_control`] with an explicit width, for controls that need more
-/// (long device names) or less room.
-pub fn compact_control_w(width: f32, control: El) -> El {
-    Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_width(width)
-            .with_child(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_align_items(taffy::AlignItems::Center)
-                    .with_justify(taffy::JustifyContent::FlexEnd)
-                    .push(control),
-            )),
-    )
 }
 
 /// The width of a slider on a row's trailing edge: one for every slider of

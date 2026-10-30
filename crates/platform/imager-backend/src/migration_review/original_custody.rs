@@ -7,6 +7,9 @@ use std::{fs::File, os::unix::fs::MetadataExt};
 enum Kind {
     Preparation,
     SourceControl,
+    /// The lock of the settings profile the setup held in this Home; a file
+    /// that stays behind when the setup exits and is never Home data.
+    SettingsLock,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -20,6 +23,7 @@ pub struct OriginalOmission {
 pub struct OriginalPreparation {
     namespace: NativePath,
     omission: OriginalOmission,
+    settings_lock: Option<OriginalOmission>,
 }
 impl<'de> Deserialize<'de> for OriginalOmission {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -45,11 +49,13 @@ impl<'de> Deserialize<'de> for OriginalPreparation {
         struct Fields {
             namespace: NativePath,
             omission: OriginalOmission,
+            settings_lock: Option<OriginalOmission>,
         }
         let fields = Fields::deserialize(deserializer)?;
         Ok(Self {
             namespace: fields.namespace,
             omission: fields.omission,
+            settings_lock: fields.settings_lock,
         })
     }
 }
@@ -76,6 +82,18 @@ impl OriginalPreparation {
         let namespace = crate::session::preparation_namespace()
             .ok_or_else(|| changed("Preparation namespace unavailable"))?;
         held.validate()?;
+        let root = PinnedDirectory::open_absolute(home)?;
+        let settings_lock = match setup_settings_lock(home) {
+            Some(relative) if held_file(&root, &relative)?.is_some() => {
+                let file = open_plain_file(&root.file, &relative)?;
+                Some(OriginalOmission::from_held(
+                    Kind::SettingsLock,
+                    &relative,
+                    &file,
+                )?)
+            }
+            _ => None,
+        };
         let value = Self {
             namespace: NativePath::encode(&namespace),
             omission: OriginalOmission::from_held(
@@ -83,15 +101,23 @@ impl OriginalPreparation {
                 &held.relative,
                 &held.pin.file,
             )?,
+            settings_lock,
         };
         value.validate_original(home, rustix::process::getuid().as_raw())?;
         Ok(Some(value))
     }
-    pub fn validate_original(&self, home: &Path, caller: u32) -> io::Result<OriginalOmission> {
+    /// Every omission this preparation registers, checked in `home`.
+    pub fn validate_original(&self, home: &Path, caller: u32) -> io::Result<Vec<OriginalOmission>> {
         if self.omission.kind != Kind::Preparation || self.omission.facts.3 != caller {
             return Err(changed("Original preparation owner differs"));
         }
         let root = PinnedDirectory::open_absolute(home)?;
+        if let Some(lock) = &self.settings_lock {
+            if lock.kind != Kind::SettingsLock || lock.facts.3 != caller {
+                return Err(changed("Original settings lock owner differs"));
+            }
+            lock.open(&root.file)?;
+        }
         let selected = self.omission.open(&root.file)?;
         let namespace =
             PinnedDirectory::open_absolute(&self.namespace.decode().map_err(io::Error::other)?)?;
@@ -100,15 +126,45 @@ impl OriginalPreparation {
         }
         root.validate()?;
         namespace.validate()?;
-        Ok(self.omission.clone())
+        Ok(std::iter::once(self.omission.clone())
+            .chain(self.settings_lock.clone())
+            .collect())
     }
 }
+/// The identity of a held omission; its registered shape decides whether it
+/// has to be a directory or a file.
 fn facts(file: &File) -> io::Result<(u64, u64, u32, u32, u32)> {
     let m = file.metadata()?;
-    if !m.is_dir() {
-        return Err(changed("Original omission is not a directory"));
+    if !m.is_dir() && !m.is_file() {
+        return Err(changed(
+            "Original omission is neither a directory nor a file",
+        ));
     }
     Ok((m.dev(), m.ino(), m.mode(), m.uid(), m.gid()))
+}
+/// Open the plain file at `relative` below `home`, one no-follow edge at a time.
+fn open_plain_file(home: &File, relative: &Path) -> io::Result<File> {
+    use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
+    let mut parts: Vec<_> = relative.components().collect();
+    let name = parts
+        .pop()
+        .ok_or_else(|| changed("Original omission has no name"))?;
+    let mut directory = home.try_clone()?;
+    for part in parts {
+        let part = Path::new(part.as_os_str());
+        let m = metadata_nofollow(&directory, part)?;
+        directory = super::super::nofollow::open_directory_nofollow(&directory, part, &m)?;
+    }
+    let mut options = cap_primitives::fs::OpenOptions::new();
+    options
+        .read(true)
+        .follow(cap_primitives::fs::FollowSymlinks::No)
+        .nonblock(true);
+    let file = cap_primitives::fs::open(&directory, Path::new(name.as_os_str()), &options)?;
+    if !file.metadata()?.is_file() {
+        return Err(changed("Original settings lock is not a plain file"));
+    }
+    Ok(file)
 }
 impl OriginalOmission {
     fn from_held(kind: Kind, relative: &Path, held: &File) -> io::Result<Self> {
@@ -141,6 +197,7 @@ impl OriginalOmission {
         let suffix = match self.kind {
             Kind::Preparation => "tilo/installer/preparations",
             Kind::SourceControl => "tilo-imager/home-capture/records",
+            Kind::SettingsLock => return self.validate_lock_shape(&p),
         };
         if p.as_os_str().is_empty()
             || p.as_os_str().len() > 4096
@@ -159,22 +216,37 @@ impl OriginalOmission {
         }
         Ok(())
     }
+    /// A settings lock: the plain file the settings records keep, at a
+    /// bounded path of plain names.
+    fn validate_lock_shape(&self, relative: &Path) -> io::Result<()> {
+        if !settings_lock_shape(relative)
+            || self.facts.0 == 0
+            || self.facts.1 == 0
+            || self.facts.2 & libc::S_IFMT != libc::S_IFREG
+        {
+            return Err(changed(
+                "Original omission is not the exact settings lock of its Home",
+            ));
+        }
+        Ok(())
+    }
     fn open(&self, home: &File) -> io::Result<File> {
         self.open_identity(home, false)
     }
     fn open_identity(&self, home: &File, translated_device: bool) -> io::Result<File> {
         self.validate_shape()?;
-        let mut file = home.try_clone()?;
-        for name in self
-            .relative
-            .decode()
-            .map_err(io::Error::other)?
-            .components()
-        {
-            let name = Path::new(name.as_os_str());
-            let m = metadata_nofollow(&file, name)?;
-            file = super::super::nofollow::open_directory_nofollow(&file, name, &m)?;
-        }
+        let relative = self.relative.decode().map_err(io::Error::other)?;
+        let file = if self.kind == Kind::SettingsLock {
+            open_plain_file(home, &relative)?
+        } else {
+            let mut file = home.try_clone()?;
+            for name in relative.components() {
+                let name = Path::new(name.as_os_str());
+                let m = metadata_nofollow(&file, name)?;
+                file = super::super::nofollow::open_directory_nofollow(&file, name, &m)?;
+            }
+            file
+        };
         let observed = facts(&file)?;
         let mut expected = self.facts;
         if translated_device {
@@ -221,14 +293,16 @@ impl OriginalOmission {
         Self::validate_shapes(values)?;
         for value in values {
             value.open(home)?;
-            if value.kind == Kind::Preparation && value.facts.3 != owner {
+            if matches!(value.kind, Kind::Preparation | Kind::SettingsLock)
+                && value.facts.3 != owner
+            {
                 return Err(changed("Original omission owner differs"));
             }
         }
         Ok(())
     }
     pub fn validate_shapes(values: &[Self]) -> io::Result<()> {
-        if values.len() > 2 {
+        if values.len() > 3 {
             return Err(changed("Original omission count exceeds bound"));
         }
         for (index, value) in values.iter().enumerate() {
@@ -257,6 +331,25 @@ impl OriginalOmission {
     }
 }
 impl SourceInventory {
+    /// Leave the registered omissions out: installer directories as custody,
+    /// the setup's settings lock as one of its own files, each checked
+    /// against its registered identity in `root`.
+    fn admit_omissions(
+        &mut self,
+        root: &Arc<PinnedDirectory>,
+        values: &[OriginalOmission],
+    ) -> io::Result<()> {
+        for value in values {
+            if value.kind == Kind::SettingsLock {
+                value.open(&root.file)?;
+                self.running
+                    .push(value.relative.decode().map_err(io::Error::other)?);
+            } else {
+                self.original_custody.push(value.custody(root)?);
+            }
+        }
+        Ok(())
+    }
     /// Metadata-discovery policy from protected original registration, without
     /// deriving privileged HOME/XDG or enumerating mounted contents.
     pub fn original_home_policy(
@@ -265,10 +358,7 @@ impl SourceInventory {
     ) -> io::Result<Self> {
         OriginalOmission::validate_set(values, &root.file, root.file.metadata()?.uid())?;
         let mut inventory = Self::capture_home_policy(root, None)?;
-        inventory.original_custody = values
-            .iter()
-            .map(|v| v.custody(root))
-            .collect::<io::Result<_>>()?;
+        inventory.admit_omissions(root, values)?;
         Ok(inventory)
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -278,10 +368,7 @@ impl SourceInventory {
     ) -> io::Result<Self> {
         OriginalOmission::validate_set(values, &root.file, root.file.metadata()?.uid())?;
         let mut inventory = Self::capture_home_policy(root, None)?;
-        inventory.original_custody = values
-            .iter()
-            .map(|v| v.custody(root))
-            .collect::<io::Result<_>>()?;
+        inventory.admit_omissions(root, values)?;
         inventory.walk(root, Path::new(""), 0)?;
         Ok(inventory)
     }
@@ -298,10 +385,7 @@ impl SourceInventory {
         OriginalOmission::validate_set(values, &root.file, root.file.metadata()?.uid())?;
         let mut inventory = Self::capture_home_policy(root, None)?;
         inventory.facts = super::storage::Storage::with_scratch(scratch);
-        inventory.original_custody = values
-            .iter()
-            .map(|value| value.custody(root))
-            .collect::<io::Result<_>>()?;
+        inventory.admit_omissions(root, values)?;
         inventory.projected_roots = Some(roots);
         inventory.walk_with_cancel(root, Path::new(""), 0, cancel)?;
         inventory.facts.finish(cancel)?;
@@ -326,10 +410,7 @@ impl SourceInventory {
         OriginalOmission::validate_set(values, &root.file, root.file.metadata()?.uid())?;
         let mut inventory = Self::capture_home_policy(root, None)?;
         inventory.facts = super::storage::Storage::with_scratch(scratch);
-        inventory.original_custody = values
-            .iter()
-            .map(|v| v.custody(root))
-            .collect::<io::Result<_>>()?;
+        inventory.admit_omissions(root, values)?;
         inventory.walk_with_cancel(root, Path::new(""), 0, cancel)?;
         inventory.facts.finish(cancel)?;
         Ok(inventory)
@@ -417,7 +498,8 @@ mod tests {
             .unwrap()
             .unwrap()
             .validate_original(&home, rustix::process::getuid().as_raw())
-            .unwrap();
+            .unwrap()
+            .remove(0);
         assert!(OriginalOmission::validate_shapes(&[proof.clone(), proof.clone()]).is_err());
         let mut forged = serde_json::to_value(&proof).unwrap();
         forged["relative"] =
@@ -444,5 +526,54 @@ mod tests {
         environment.set("HOME", &home);
         environment.set("XDG_STATE_HOME", temp.path().join("outside"));
         assert!(OriginalPreparation::review(&home).unwrap().is_none());
+    }
+    #[test]
+    fn original_capture_leaves_out_the_setups_settings_lock_by_its_registered_identity() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path().canonicalize().unwrap().join("home");
+        fs::create_dir(&home).unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("HOME", &home);
+        environment.set("XDG_STATE_HOME", home.join(".local/state"));
+        environment.set("XDG_CONFIG_HOME", home.join(".config"));
+        let namespace = home.join(".local/state/tilo/installer/preparations");
+        fs::create_dir_all(&namespace).unwrap();
+        fs::set_permissions(&namespace, fs::Permissions::from_mode(0o700)).unwrap();
+        // The setup held its settings profile in this Home; its lock stays.
+        let records =
+            tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
+        fs::create_dir_all(records.dir()).unwrap();
+        let [lock, _] = records.runtime_files();
+        fs::write(&lock, b"").unwrap();
+        fs::write(records.dir().join("person.automerge"), b"real settings").unwrap();
+        fs::write(home.join("document"), b"real document").unwrap();
+        let proofs = OriginalPreparation::review(&home)
+            .unwrap()
+            .unwrap()
+            .validate_original(&home, rustix::process::getuid().as_raw())
+            .unwrap();
+        assert_eq!(proofs.len(), 2);
+        // The reader resolves nothing from its own environment.
+        environment.set("XDG_CONFIG_HOME", temporary.path().join("elsewhere"));
+        let pin = PinnedDirectory::open_absolute(&home).unwrap();
+        let inventory = SourceInventory::capture_original_home(&pin, &proofs).unwrap();
+        let relative = lock.strip_prefix(&home).unwrap();
+        assert!(inventory.facts.get(relative).unwrap().is_none());
+        assert_eq!(
+            inventory.summary().unwrap().files,
+            2,
+            "the document and settings"
+        );
+        // Only the settings lock's own place may be claimed.
+        let mut forged = serde_json::to_value(&proofs[1]).unwrap();
+        forged["relative"] =
+            serde_json::to_value(NativePath::encode(Path::new("document"))).unwrap();
+        let forged: OriginalOmission = serde_json::from_value(forged).unwrap();
+        assert!(forged.validate_shape().is_err());
+        // A different file in its place is Home data again.
+        fs::write(records.dir().join("replacement"), b"").unwrap();
+        fs::rename(records.dir().join("replacement"), &lock).unwrap();
+        assert!(SourceInventory::capture_original_home(&pin, &proofs).is_err());
     }
 }

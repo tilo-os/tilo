@@ -530,7 +530,7 @@ pub struct PdfApp {
     search_reads_text: bool,
     /// What the open document says, for search: rebuilt during state sync
     /// when the document or the find results change, never on a keystroke.
-    search_entries: Vec<ui::tilo_resource::SearchEntry>,
+    search_entries: std::rc::Rc<Vec<ui::tilo_resource::SearchEntry>>,
     search_projection_revision: Option<SearchProjectionRevision>,
     #[cfg(test)]
     search_projection_refreshes: usize,
@@ -762,6 +762,15 @@ pub struct PdfApp {
     dispatcher: Option<ui::framework::Dispatcher<crate::markup::PdfMarkup>>,
     /// The participant may only view the document.
     read_only: bool,
+    /// Whether the participant may only view the document, as the view
+    /// says; absent outside a host.
+    read_only_state: Option<ui::LocalState<bool>>,
+    /// The document as it changes; absent outside a host.
+    live: Option<ui::framework::Live<crate::markup::PdfMarkup>>,
+    /// The `(revision, loads)` of the document last taken up.
+    presented: Option<(u64, u64)>,
+    /// What the window shares with the view it stands in.
+    store: std::rc::Rc<std::cell::RefCell<shared::ReaderStore>>,
     /// How each displayed page maps between the engine's page space, PDF
     /// user space and its card in the stack (rotation and fit included).
     page_maps: Vec<model::PageMap>,
@@ -1121,7 +1130,7 @@ impl PdfApp {
             page_text: HashMap::new(),
             page_text_revision: 0,
             search_reads_text: false,
-            search_entries: Vec::new(),
+            search_entries: std::rc::Rc::default(),
             search_projection_revision: None,
             #[cfg(test)]
             search_projection_refreshes: 0,
@@ -1218,6 +1227,10 @@ impl PdfApp {
             #[cfg(not(test))]
             dispatcher: None,
             read_only: false,
+            read_only_state: None,
+            live: None,
+            presented: None,
+            store: std::rc::Rc::default(),
             people: None,
             page_maps: Vec::new(),
             resource_page_rotations: Vec::new(),
@@ -1293,7 +1306,7 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    /// Attach the resource's dispatcher when hosted as a [`ResourceSurface`].
+    /// Attach the resource's dispatcher when hosted in the app's view.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::markup::PdfMarkup>,
@@ -1485,7 +1498,10 @@ impl PdfApp {
         if self.search_projection_revision.as_ref() == Some(&revision) {
             return;
         }
-        self.search_entries = crate::search::surface_entries(&ctx, &self.displayed_page_text());
+        self.search_entries = std::rc::Rc::new(crate::search::surface_entries(
+            &ctx,
+            &self.displayed_page_text(),
+        ));
         self.search_projection_revision = Some(revision);
         #[cfg(test)]
         {
@@ -1705,14 +1721,20 @@ impl PdfApp {
         if self.page_maps.len() != self.doc.page_count() {
             self.rebuild_page_maps();
         }
-        self.stored_annotations = PdfMarkup::of(state).list_annotations();
+        // Markup that does not read is not markup that holds nothing: the
+        // framework says why in place of the view, and the annotations,
+        // comments and their open views stay as they last read whole.
+        let Ok(markup) = <PdfMarkup as ui::tilo_resource::Resource>::read(state) else {
+            return;
+        };
+        self.stored_annotations = markup.list_annotations();
         self.annotations = self
             .stored_annotations
             .iter()
             .map(|a| self.page_map(a.page).annotation_to_card(a))
             .collect();
-        self.adopted = PdfMarkup::of(state).adopted_entries();
-        self.comments = PdfMarkup::of(state).list_comments();
+        self.adopted = markup.adopted_entries();
+        self.comments = markup.list_comments();
         let shown: HashSet<String> = self
             .comments
             .iter()
@@ -1727,12 +1749,12 @@ impl PdfApp {
         self.comment_views
             .get_mut()
             .retain(|key, _| shown.contains(key));
-        self.signatures = PdfMarkup::of(state)
+        self.signatures = markup
             .list_signatures()
             .iter()
             .map(|s| self.page_map(s.page).signature_to_card(s))
             .collect();
-        self.form_values = PdfMarkup::of(state).form_values;
+        self.form_values = markup.form_values;
     }
 
     // ---- geometry ---------------------------------------------------
@@ -4743,7 +4765,25 @@ impl Widget for PdfApp {
         dyn ui::widget::controls::ActionControls
     );
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let mut changed = self.follow_document() | self.asked();
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.follow_document();
+        self.take_up_asked();
         // A progress note stays while its copy or import is under way.
         // So does one while a document opens or a save is written.
         let working = self.pending_copy
@@ -4814,6 +4854,7 @@ impl Widget for PdfApp {
         self.restore_reading();
         self.record_reading();
         self.refresh_search_entries(state);
+        self.publish();
     }
 
     fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
@@ -5601,9 +5642,10 @@ impl PdfApp {
         self.search_reads_text && self.raster_active() && !self.raster_text_pending.is_empty()
     }
 
+    #[cfg(test)]
     pub(crate) fn shown_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         if self.has_document {
-            self.search_entries.clone()
+            self.search_entries.as_ref().clone()
         } else {
             Vec::new()
         }
@@ -5613,6 +5655,7 @@ impl PdfApp {
 impl PdfApp {
     /// The open document's live rows: its outline and the current find
     /// hits, read from the PDF and the find bar rather than the record.
+    #[cfg(test)]
     pub(crate) fn document_rows(&self) -> Vec<ui::framework::LiveRow> {
         self.pdf_resource_ctx()
             .map(|ctx| crate::actions::live_rows(&ctx))
@@ -5620,6 +5663,7 @@ impl PdfApp {
     }
 
     /// The live row `id`, beyond the bounded page listed.
+    #[cfg(test)]
     pub(crate) fn document_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
         self.pdf_resource_ctx()
             .and_then(|ctx| crate::actions::live_row(&ctx, id))
@@ -5687,7 +5731,7 @@ impl PdfApp {
     pub(crate) fn open_effect(
         &mut self,
         path: Option<ui::tilo_resource::AbsolutePath>,
-        cx: &mut ui::framework::EffectCx<crate::PdfMarkup, Self>,
+        cx: &mut ui::framework::EffectCx<crate::PdfMarkup>,
     ) -> ui::framework::EffectAnswer {
         if self.portal_action.is_some()
             || self.pending_open.is_some()
@@ -5696,39 +5740,18 @@ impl PdfApp {
             return Err("another PDF open is already in progress".into());
         }
         if let Some(path) = path {
-            return self.open_here_effect(path.into_path_buf(), cx);
+            return self.ask_here().open(path.into_path_buf(), cx);
         }
         if tilo_paths::available(tilo_paths::Feature::NativePaths) {
+            let ask = self.ask_here();
             return Ok(
-                cx.choose_path(pdf_open_request(), |app, chosen, cx| match chosen {
-                    Some(path) => app.open_here_effect(path, cx),
+                cx.choose_path(pdf_open_request(), move |(), chosen, cx| match chosen {
+                    Some(path) => ask.open(path, cx),
                     None => Err("file selection cancelled".into()),
                 }),
             );
         }
         self.answer_effect(&PdfEffect::OpenPdf { path: None }, || cx.reply())
-    }
-
-    /// Ask the host to show the PDF at `path` on its own markup record in
-    /// this window, and answer with whether it does.
-    fn open_here_effect(
-        &mut self,
-        path: std::path::PathBuf,
-        cx: &mut ui::framework::EffectCx<crate::PdfMarkup, Self>,
-    ) -> ui::framework::EffectAnswer {
-        use ui::framework::Effected;
-        if self.source_path.as_deref() == Some(path.as_path()) {
-            return Ok(Effected::done());
-        }
-        let Some(open_here) = self.open_here.clone() else {
-            return Err("this window shows the document it was opened on".into());
-        };
-        self.status_note.show(crate::t("pdf-note-opening"));
-        self.dirty = true;
-        let arguments = [path.display().to_string()];
-        Ok(cx.open_here(&open_here, &arguments, move |app, answer, _| {
-            app.opened_here(&path, answer).map(|()| Effected::done())
-        }))
     }
 
     /// Take up the host's answer to showing the PDF at `path` here: the
@@ -5742,7 +5765,7 @@ impl PdfApp {
         let Err(reason) = answer else {
             return Ok(());
         };
-        let error = format!("Could not open {}: {reason}", path.display());
+        let error = open_error(path, &reason);
         if self.has_document {
             self.status_note.show(open_failed_note(path));
         } else {
@@ -5917,10 +5940,16 @@ impl PdfApp {
     }
 }
 
+/// Why the PDF at `path` could not be shown here.
+fn open_error(path: &std::path::Path, reason: &str) -> String {
+    format!("Could not open {}: {reason}", path.display())
+}
+
 mod content_import;
 mod note_action;
 mod scroll_damage;
 mod selection;
+mod shared;
 mod window_bar;
 use scroll_damage::CanvasShown;
 use selection::{PendingPress, PendingSelectionEffect, SelectionStart, TextPos, TextSelection};

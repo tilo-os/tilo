@@ -50,15 +50,21 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
 A room's records are sealed per app: today only a connection holding that app's launch custody
 opens them. The task host is not an app, so it gets its own admission instead of borrowing one:
 
-- **Admission.** The broker admits a task host's connection as *the agent acting for the
-  person* (`BrokerActor` agent for person, never session-delegated, so no preset widens it).
-  It holds no app's route and publishes nothing.
-- **Reads, per record.** Each record the program reads is decided by the same check every
-  reader goes through (`check_document_read` with that actor: the lesser of the agent's and
-  the person's grants). When allowed, the identity service hands the task host that record
-  channel's read key, for that record only and for the task's lifetime. A revoked grant or a
-  removed member cuts it like any other reader's. Index queries (`find`, `grep`) answer only
-  from records the same check allows.
+- **Admission.** The door serves the task as *the agent acting for the person* who admitted
+  it (`Caller::local_agent(agent).acting_for(person)`; `BrokerActor` agent for person, never
+  session-delegated, so no preset widens it). The task host's only connection is its program
+  connection to the door: it holds no app's route, no broker connection and publishes nothing.
+- **Reads, per record.** The task host asks the door for each record it reads, once per
+  program (`{"record": {app, record}}`; the person's own record for an app with
+  `records: .own`). The broker decides it at the record's node with that actor, the lesser of
+  the agent's and the person's grants (`RecordReads`, `record_read.rs`), and the room's
+  document owner captures it under the person's device certificate, whose own check is the
+  person's read. The capture decides the agent's read again before every chunk it hands out.
+  The task host gets the record's committed content, read-only: the record channel's keys
+  never leave the broker. It reads that content with the app's own package, the reads an app's
+  host answers (`task_records.rs`), and builds the index `find` and `grep` search from records
+  that passed the check. A revoked grant or a removed member cuts the next read and one under
+  way. No app runs for a read, so whether its window is open never matters.
 - **Changes, never writes.** The task host gets no write custody. It runs the action's code
   from the app's package provisionally (preview) and sends the invocation (action, arguments,
   package version) to the record's origin, which orders and applies it like any device's

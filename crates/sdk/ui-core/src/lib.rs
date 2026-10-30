@@ -241,7 +241,6 @@ pub mod passcode_keyboard;
 pub mod pen;
 pub mod people_photos;
 pub mod permissions;
-pub mod persist;
 pub mod person_card;
 pub mod pick;
 pub mod pick_wire;
@@ -254,7 +253,6 @@ pub mod query_text;
 pub use tilo_ui_paint::raster;
 pub mod realtime_continuity;
 pub mod room_sync;
-pub mod standalone_history_pane;
 pub mod storage;
 /// The desktop's keyboard shortcut table (actions, their chords and the
 /// defaults) as the settings document keeps it: what every desktop host
@@ -329,8 +327,6 @@ pub mod shared_selection;
 pub mod shell_tabs;
 mod slot_row;
 pub mod snap;
-mod standalone_history;
-mod standalone_history_host;
 pub mod state;
 pub mod strip_layers;
 pub mod surface;
@@ -446,10 +442,7 @@ pub use search::{
     FnProvider, ListIndex, SearchGroup, SearchProvider, SearchRegistry, SearchResult,
 };
 pub use selection::{KeySelection, SelectionModel};
-pub use state::{
-    DocumentDiagnostics, DocumentFrontier, FrontierDiagnostics, Revision, RevisionHistory,
-    RevisionId, State, UndoEntry, UndoLog, UnknownRevision,
-};
+pub use state::{DocumentFrontier, State, UndoEntry, UndoLog};
 pub use text_break::discretionary_hyphen_breaks;
 pub use text_break::{Hyphenate, MakeHyphenation, builtin_hyphenation, hyphenation_generation};
 #[cfg(feature = "lazy-hyphenation")]

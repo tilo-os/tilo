@@ -127,6 +127,7 @@ impl Rooms {
             room.peer(),
             &room.peer().governance().governed_access(now)?,
             Some(participant),
+            None,
             now,
         )?;
         let messages = participation.open_channel(channel, &allowed)?;

@@ -227,82 +227,9 @@ fn reserved_chords_are_owned_by_rename_and_quick_settings_with_help_and_escape_p
         assert!(!chrome.borrow().overlays.quick_settings);
     }
 
-    fn direct_quick_settings_open_reconciles_focus_before_the_first_draw() {
-        let (mut host, chrome) = host_with_chrome();
-
-        // Simulate a retained selection from the previous visit, then open
-        // through ChromeState as top-bar, accessibility and deep-link paths
-        // do. The first key may arrive before any rendering pass.
-        chrome.borrow_mut().overlays.quick_settings = true;
-        host.reconcile_quick_settings_open_edge(true);
-        assert!(
-            host.qs_root
-                .focus_next(&chrome.borrow().quick_settings, false)
-        );
-
-        let slider = host
-            .qs_root
-            .adjust_focused_slider(&mut chrome.borrow_mut().quick_settings, 1.0);
-        assert!(
-            matches!(slider, Some(SliderCommit::Brightness(_))),
-            "the first Tab after every direct open must select Brightness"
-        );
-    }
-
-    fn the_wifi_chevron_opens_and_closes_its_section_by_keyboard() {
-        let (mut host, chrome) = host_with_chrome();
-        {
-            let mut state = chrome.borrow_mut();
-            state.overlays.quick_settings = true;
-            state.quick_settings.radios.wifi_available = true;
-        }
-        let mut handled = false;
-        let chevron_focused = |host: &ShellOverlayHost| {
-            host.qs_root
-                .accessibility_snapshot(&chrome.borrow().quick_settings)
-                .children
-                .iter()
-                .any(|node| node.state.focused && node.name.as_deref() == Some("Wi-Fi networks"))
-        };
-        for _ in 0..40 {
-            assert!(host.handle_quick_settings_keyboard(
-                &Key::Named(NamedKey::Tab),
-                false,
-                false,
-                &mut handled,
-            ));
-            if chevron_focused(&host) {
-                break;
-            }
-        }
-        assert!(chevron_focused(&host), "Tab reaches the Wi-Fi chevron");
-        for open in [true, false] {
-            handled = false;
-            assert!(host.handle_quick_settings_keyboard(
-                &Key::Named(NamedKey::Enter),
-                false,
-                false,
-                &mut handled,
-            ));
-            assert!(handled);
-            let state = chrome.borrow();
-            assert_eq!(
-                state.quick_settings.section,
-                open.then_some(tilo_quick_settings::QsSection::Wifi),
-                "Enter on the chevron toggles the section in place"
-            );
-            assert!(matches!(
-                state.quick_settings.current_level(),
-                tilo_quick_settings::QsLevel::Root
-            ));
-        }
-    }
-
     workspace_rename_owns_reserved_chords_in_production_dispatch();
     quick_settings_owns_reserved_chords_but_keeps_f1_and_escape_paths();
     quick_settings_absorbs_text_keys_but_keeps_f1_help_escape_hatch();
-    direct_quick_settings_open_reconciles_focus_before_the_first_draw();
-    the_wifi_chevron_opens_and_closes_its_section_by_keyboard();
 }
 
 #[test]
@@ -911,40 +838,6 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
 
 #[test]
 fn escape_unwinds_the_innermost_overlay_state_first() {
-    fn escape_returns_from_quick_settings_drill_in_before_closing_popover() {
-        let (mut host, chrome) = host_with_chrome();
-        {
-            let mut state = chrome.borrow_mut();
-            state.overlays.quick_settings = true;
-            state
-                .quick_settings
-                .push_level(tilo_quick_settings::QsLevel::Notifications);
-        }
-
-        let mut handled = false;
-        assert!(host.handle_shell_escape_chord(&mut handled));
-        assert!(handled);
-        {
-            let state = chrome.borrow();
-            assert!(
-                state.overlays.quick_settings,
-                "Back must keep the popover open"
-            );
-            assert!(matches!(
-                state.quick_settings.current_level(),
-                tilo_quick_settings::QsLevel::Root
-            ));
-        }
-
-        handled = false;
-        assert!(host.handle_shell_escape_chord(&mut handled));
-        assert!(handled);
-        assert!(
-            !chrome.borrow().overlays.quick_settings,
-            "Escape on the root page closes Quick Settings"
-        );
-    }
-
     fn escape_leaves_resource_search_scope_before_closing_palette() {
         let (mut host, chrome) = host_with_chrome();
         host.palette_visible = true;
@@ -970,47 +863,7 @@ fn escape_unwinds_the_innermost_overlay_state_first() {
         assert!(!host.palette_visible, "Escape at the root closes search");
     }
 
-    fn escape_cancels_wifi_password_then_closes_the_section_then_the_panel() {
-        let (mut host, chrome) = host_with_chrome();
-        {
-            let mut state = chrome.borrow_mut();
-            state.overlays.quick_settings = true;
-            state.quick_settings.radios.wifi_available = true;
-            state.quick_settings.section = Some(tilo_quick_settings::QsSection::Wifi);
-            state.quick_settings.wifi_password = Some(
-                tilo_quick_settings::WifiPasswordPrompt::new("Secure network"),
-            );
-        }
-
-        let mut handled = false;
-        assert!(host.handle_shell_escape_chord(&mut handled));
-        assert!(handled);
-        {
-            let state = chrome.borrow();
-            assert!(state.overlays.quick_settings);
-            assert!(state.quick_settings.wifi_password.is_none());
-            assert_eq!(
-                state.quick_settings.section,
-                Some(tilo_quick_settings::QsSection::Wifi),
-                "the password goes first, the networks stay"
-            );
-        }
-        assert!(host.handle_shell_escape_chord(&mut handled));
-        {
-            let state = chrome.borrow();
-            assert!(state.overlays.quick_settings);
-            assert_eq!(
-                state.quick_settings.section, None,
-                "then the section closes"
-            );
-        }
-        assert!(host.handle_shell_escape_chord(&mut handled));
-        assert!(!chrome.borrow().overlays.quick_settings, "then the panel");
-    }
-
-    escape_returns_from_quick_settings_drill_in_before_closing_popover();
     escape_leaves_resource_search_scope_before_closing_palette();
-    escape_cancels_wifi_password_then_closes_the_section_then_the_panel();
 }
 
 /// The reference rows, every group's, in order.
@@ -1311,7 +1164,9 @@ fn quick_settings_settings_opens_the_personal_app_or_reports_its_absence() {
                 .push((package_id.to_string(), display_name.to_string()));
         });
         chrome.borrow_mut().overlays.quick_settings = true;
-        host.apply_quick_settings_root_action(RootAction::OpenSettings(None), &chrome);
+        host.run_quick_settings_effect_for_test(tilo_quick_settings::QsEffect::OpenSettings {
+            link: String::new(),
+        });
 
         let state = chrome.borrow();
         assert!(!state.overlays.quick_settings, "the source popover closes");
@@ -1343,7 +1198,9 @@ fn quick_settings_settings_opens_the_personal_app_or_reports_its_absence() {
         let mut host =
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         chrome.borrow_mut().overlays.quick_settings = true;
-        host.apply_quick_settings_root_action(RootAction::OpenSettings(None), &chrome);
+        host.run_quick_settings_effect_for_test(tilo_quick_settings::QsEffect::OpenSettings {
+            link: String::new(),
+        });
 
         let state = chrome.borrow();
         assert!(!state.overlays.quick_settings, "the source popover closes");
@@ -2461,7 +2318,7 @@ fn an_apps_choose_identity_opens_the_palette_on_choosing_the_workspaces_identity
         chrome.borrow().search_scope,
         crate::shell::chrome_state::SearchScope::All
     );
-    let query = host.palette.query().to_string();
+    let query = host.search.query().to_string();
     assert_eq!(query, t("search-action-identity-select"));
     let document = AutoCommit::new();
     let state = chrome.borrow();

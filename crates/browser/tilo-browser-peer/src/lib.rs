@@ -9,6 +9,9 @@
 //! - the **durable plane**: signed document envelopes ([`document`]) sent as
 //!   acknowledged commits from a persisted outbox and replayed after every
 //!   reconnect;
+//! - the **room's governance**: each joined room's replica, built from the
+//!   bootstrap the host sends ahead of the room's replay and admitting the
+//!   governance it relays, as a native device's does (`replica`);
 //! - the **live plane** ([`live`]): ephemeral presence and previews relayed
 //!   by the host to live members;
 //! - **calls** ([`voice`]): the device's participation in the calls the host
@@ -33,7 +36,7 @@ mod held_live;
 pub mod invite;
 pub mod live;
 pub mod remote_page;
-mod room_layout;
+mod replica;
 pub mod session;
 #[cfg(feature = "toolkit")]
 pub mod transport;

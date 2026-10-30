@@ -7,20 +7,20 @@ use tilo_automation::ShortcutChange;
 const MAX_SHORTCUTS: usize = 512;
 
 impl PeerWorkspaceMut<'_> {
-    /// Save or remove one shortcut of the room, for the admitted member whose
-    /// device `caller` asked, under the governor's signing custody `key`.
+    /// Save or remove one shortcut of the room as the admitted member whose
+    /// device `caller` is, signed by `key`, that device's own: written into
+    /// the room and admitted the way every receiver admits it.
     ///
     /// A saved shortcut names as who saved it nobody or the caller's person,
     /// by the proof of a device of theirs signed in this room
     /// ([`crate::room::proven_saver`]): the same rule admission holds every
-    /// writer to. Transport authentication must independently bind the
-    /// caller's device key. Answers whether the room changed.
+    /// writer to. Answers whether the room changed.
     ///
     /// # Errors
     ///
     /// A caller that is not current admitted evidence or may not change the
-    /// room, a saver without proof, a full room, removing a shortcut the room
-    /// does not hold, or absent governor custody.
+    /// room, a key that is not the caller's, a saver without proof, a full
+    /// room, or removing a shortcut the room does not hold.
     pub fn apply_shortcut_change(
         self,
         caller: &tilo_user_identity::DeviceCert,
@@ -28,9 +28,11 @@ impl PeerWorkspaceMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        use automerge::{ObjType, ROOT, ReadDoc, Value, transaction::Transactable};
         use tilo_desktop_model::projection::ROOM_AUTOMATIONS_KEY;
-        self.peer.require_governance_writer(key, now)?;
+        if key.verifying_key().to_bytes() != caller.device_public_key {
+            return Err("a shortcut change is signed by its caller's own device".into());
+        }
         if self.peer.certificate(&caller.device_public_key, now)? != caller {
             return Err("shortcut caller is not exact current admitted evidence".into());
         }
@@ -55,6 +57,8 @@ impl PeerWorkspaceMut<'_> {
             .as_deref()
             .ok_or("shortcut room is absent")?;
         let mut candidate = room.clone();
+        let before = candidate.get_heads();
+        candidate.set_actor(automerge::ActorId::from(caller.device_public_key.to_vec()));
         let map = match candidate
             .get(ROOT, ROOM_AUTOMATIONS_KEY)
             .map_err(|e| e.to_string())?
@@ -82,29 +86,7 @@ impl PeerWorkspaceMut<'_> {
                     }
                 }
                 let blob = serde_json::to_vec(shortcut).map_err(|e| e.to_string())?;
-                let map = match map {
-                    Some(map) => map,
-                    None => candidate
-                        .put_object(ROOT, ROOM_AUTOMATIONS_KEY, ObjType::Map)
-                        .map_err(|e| e.to_string())?,
-                };
-                match candidate
-                    .get(&map, shortcut.id.as_str())
-                    .map_err(|e| e.to_string())?
-                {
-                    Some((Value::Scalar(held), _)) if matches!(held.as_ref(), ScalarValue::Bytes(bytes) if *bytes == blob) => {
-                        false
-                    }
-                    held => {
-                        if held.is_none() && candidate.length(&map) >= MAX_SHORTCUTS {
-                            return Err("the workspace holds as many shortcuts as it can".into());
-                        }
-                        candidate
-                            .put(&map, shortcut.id.as_str(), ScalarValue::Bytes(blob))
-                            .map_err(|e| e.to_string())?;
-                        true
-                    }
-                }
+                put_shortcut(&mut candidate, map, shortcut.id.as_str(), blob)?
             }
             ShortcutChange::Delete(id) => {
                 let held = map
@@ -120,10 +102,45 @@ impl PeerWorkspaceMut<'_> {
                 true
             }
         };
-        if changed {
-            self.peer.core.room_doc = Some(candidate.into());
+        if !changed {
+            return Ok(false);
         }
-        Ok(changed)
+        candidate.commit();
+        self.peer
+            .apply_governance_doc(candidate.into(), &before, key, now)?;
+        Ok(true)
+    }
+}
+
+/// Put `blob` as shortcut `id` into the room's shortcuts `map`, made if the
+/// room has none yet. Answers whether the room changed.
+fn put_shortcut(
+    candidate: &mut impl automerge::transaction::Transactable,
+    map: Option<automerge::ObjId>,
+    id: &str,
+    blob: Vec<u8>,
+) -> Result<bool, String> {
+    use automerge::{ObjType, ROOT, ScalarValue, Value};
+    use tilo_desktop_model::projection::ROOM_AUTOMATIONS_KEY;
+    let map = match map {
+        Some(map) => map,
+        None => candidate
+            .put_object(ROOT, ROOM_AUTOMATIONS_KEY, ObjType::Map)
+            .map_err(|e| e.to_string())?,
+    };
+    match candidate.get(&map, id).map_err(|e| e.to_string())? {
+        Some((Value::Scalar(held), _)) if matches!(held.as_ref(), ScalarValue::Bytes(bytes) if *bytes == blob) => {
+            Ok(false)
+        }
+        held => {
+            if held.is_none() && candidate.length(&map) >= MAX_SHORTCUTS {
+                return Err("the workspace holds as many shortcuts as it can".into());
+            }
+            candidate
+                .put(&map, id, ScalarValue::Bytes(blob))
+                .map_err(|e| e.to_string())?;
+            Ok(true)
+        }
     }
 }
 

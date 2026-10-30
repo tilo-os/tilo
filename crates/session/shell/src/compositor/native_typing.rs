@@ -89,6 +89,23 @@ pub(super) struct PendingTyping {
     pub(super) response: test_control::Response,
 }
 
+/// The actions after `actions[index]` when that one sent a character to the
+/// field as text: they wait until the field has it, so the text stays in
+/// order. `None` when it typed by keys.
+pub(super) fn held_after_text_commit(
+    ctx: &mut TestControlCtx,
+    actions: &[PlannedAction],
+    index: usize,
+) -> Option<std::collections::VecDeque<PlannedAction>> {
+    std::mem::take(&mut ctx.typing_commit_requested).then(|| {
+        actions
+            .iter()
+            .skip(index.saturating_add(1))
+            .cloned()
+            .collect()
+    })
+}
+
 /// Type what `typing` holds once the field has the text it waits for,
 /// stopping again at the next character that goes as text. Returns the
 /// command's answer once everything is typed; `None` while it still waits

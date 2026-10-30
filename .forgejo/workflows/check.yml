@@ -1,8 +1,11 @@
 name: CI / affected packages
 
 # Main is allowed to be unstable, so a commit is never gated before it lands;
-# this workflow measures pushes after the fact. Every push runs and plans from
-# the main commit it landed on; no run is skipped or superseded by a newer one.
+# this workflow measures pushes after the fact, one window of commits at a time.
+# Each push plans from the head of the newest earlier push run on main whose
+# window really ran, so a window covers every commit whose own run was dropped,
+# and a newer push makes an older waiting run skip instead of leaving fifteen
+# runs queued behind one another (see the `supersede` job).
 # `stable` is moved by hand when a release is cut; nothing here writes it.
 #
 # Affected reverse dependencies are checked on native x86; changed packages,
@@ -22,8 +25,11 @@ on:
         type: string
 
 concurrency:
-  # One run per pushed commit. A later run never cancels or replaces an earlier
-  # one: every head on main is tested.
+  # One run per pushed commit. The forge does not cancel one push's run for a
+  # later one: a shard may already be testing, and a run's window of commits is
+  # planned as a whole. Superseding is the `supersede` job's business below,
+  # which only drops runs that never reached a runner and only after the plan
+  # base has moved below their commits.
   group: check-${{ github.event_name }}-${{ github.sha }}
   cancel-in-progress: false
 
@@ -50,7 +56,63 @@ env:
   WGPU_ADAPTER_NAME: llvmpipe
 
 jobs:
+  # The window decision, before anything expensive starts. Main takes a push
+  # every couple of minutes and a full run needs five large runner slots for
+  # about an hour, so without this the queue grows and never drains: about
+  # fifteen runs used to wait behind one another and the newest head never got a
+  # slot. tools/ci/push_window.py asks the Forgejo API about this workflow's push
+  # runs on main:
+  #   * is a newer run still going to run? Then those commits are its business
+  #     and this run skips every job -- a clean success, not a failure, because
+  #     nothing here was tested and nothing was lost.
+  #   * is an older run still waiting to start? Then it is cancelled: this run's
+  #     plan starts below it, so its commits are measured here.
+  #   * is an older run executing? Then this run waits for it, so main runs one
+  #     window at a time, with a deadline past which it starts beside it -- two
+  #     windows at once is the most this can cost.
+  # `base` is where this run's plan starts. A dispatch is nobody's duplicate and
+  # keeps its full-workspace plan.
+  supersede:
+    # The native class, not the quality one: this job can wait 45 minutes for an
+    # executing window, and the quality label serves a single runner that the
+    # sweeps and the lint gate need while it waits. The job itself is a checkout
+    # and an API conversation.
+    runs-on: runner
+    # The bounded wait for an executing window, plus the API calls around it.
+    timeout-minutes: 50
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+    outputs:
+      superseded: ${{ steps.window.outputs.superseded }}
+      base: ${{ steps.window.outputs.base }}
+    steps:
+      - name: Check out the window decision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          filter: blob:none
+
+      - name: Decide this run's window of commits
+        id: window
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+          API_URL: ${{ github.api_url }}
+          REPOSITORY: ${{ github.repository }}
+          CI_TOKEN: ${{ github.token }}
+          # Cancelling a run writes to this repository, and the run's own token
+          # may not carry that; a refusal falls back to the repository token.
+          CI_SPARE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          POLL_SECONDS: '30'
+          # 45 minutes: long enough for most windows to finish before this one
+          # starts, short enough that a stuck run costs one window of latency.
+          WAIT_SECONDS: '2700'
+        run: python3 tools/ci/push_window.py
+
   builder:
+    needs: [supersede]
+    # A superseded run keeps every job skipped; only the decision job above ran.
+    if: needs.supersede.outputs.superseded != 'true'
     runs-on: runner-quality
     timeout-minutes: 5
     container:
@@ -73,6 +135,8 @@ jobs:
   select:
     # Selection uses its pinned tools image and needs no builder result.
     # Leave admission to the scheduler instead of serializing independent jobs.
+    needs: [supersede]
+    if: needs.supersede.outputs.superseded != 'true'
     runs-on: runner-quality
     timeout-minutes: 15
     container:
@@ -134,6 +198,7 @@ jobs:
         id: plan
         env:
           EVENT_NAME: ${{ github.event_name }}
+          PLAN_BASE: ${{ needs.supersede.outputs.base }}
           PULL_REQUEST_BASE: ${{ steps.merge.outputs.main }}
           PUSH_BEFORE: ${{ github.event.before }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -867,8 +932,9 @@ jobs:
           ./os/dev/verify-snapshot-pins.sh "${pins[@]}"
 
   checks:
-    if: ${{ always() }}
-    needs: [builder, select, security, test, check, clippy, android, wasm, suites, vendored, pins]
+    # A superseded run has nothing to aggregate; it still finishes successfully.
+    if: ${{ always() && needs.supersede.outputs.superseded != 'true' }}
+    needs: [supersede, builder, select, security, test, check, clippy, android, wasm, suites, vendored, pins]
     runs-on: runner-quality
     timeout-minutes: 10
     container:

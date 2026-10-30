@@ -17,7 +17,8 @@
 //!   plugged in or an app that starts playing appears.
 //!
 //! Balance, mono output, echo cancellation and system sounds are the
-//! person's `audio` settings; the compositor session applies them.
+//! person's `audio` settings; the compositor session applies them. The page
+//! is view code over that section ([`page::view`]).
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -34,34 +35,44 @@ use media::audio_runtime::{
 };
 use media::event_sound::SoundTheme;
 use os_actions::Dispatcher;
+use provider_settings_ui::bound::SettingRows as _;
 use settings_store::system_sounds::SystemSoundEvent;
 use tracing::warn;
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Dropdown, Row, Slider, Widget};
 
+use crate::area::AreaContext;
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
-use crate::panes::model::{PaneModel, Shared};
 
 mod level_meter;
+mod page;
 mod speaker_sets;
+
+pub(crate) use page::view;
 
 use crate::prefs::{AudioDevicePrefs, AudioPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
-    Item, SettingsSection, block, error_caption, error_row, note, row, rows, section, setting_row,
-    setting_row_described,
-};
+use provider_settings_ui::widgets::Item;
 use speaker_sets::{NoSpeakerSets, SampleSpeakerSets, SpeakerSets, speaker_call};
 
 crate::effects::effect_family!(AudioEffect => answer);
 
-crate::area::pane_area!(AudioArea);
+crate::area::pane_area! {
+    AudioArea;
+    fn poll(&self) {
+        AudioArea::poll(self);
+    }
+    fn busy(&self) -> bool {
+        self.model.get().is_some_and(|model| model.borrow().busy())
+    }
+    fn next_wake(&self) -> Option<Instant> {
+        self.model.get().and_then(|model| model.borrow().next_wake())
+    }
+}
 
 /// The window's [`AudioArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AudioArea> {
@@ -70,36 +81,38 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AudioArea> {
 
 pub(crate) mod values;
 
-/// The switch that mutes the output.
-pub(crate) fn mute(cx: &PaneCx, on: bool) -> Item {
-    cx.row(t("sound-mute"))
-        .id("audio.mute")
-        .toggle_effect(&LocalState::new(on), effect(AudioEffect::SET_OUTPUT_MUTED))
+/// The switch that mutes the output: the device's, as search shows it.
+pub(crate) fn mute(cx: &ViewCx<Settings>, on: bool) -> Item {
+    cx.setting(t("sound-mute")).id("audio.mute").toggle_effect(
+        &LocalState::new(on),
+        &cx.actions(),
+        effect(AudioEffect::SET_OUTPUT_MUTED),
+    )
 }
 
 /// The switch that plays both channels in each ear.
-pub(crate) fn mono(cx: &PaneCx, on: bool) -> Item {
-    cx.row(t("sound-mono"))
-        .id("audio.mono")
-        .toggle_effect(&LocalState::new(on), effect(AudioEffect::SET_MONO_OUTPUT))
+pub(crate) fn mono(cx: &ViewCx<AudioPrefs>) -> Item {
+    cx.setting(t("sound-mono")).id("audio.mono").toggle_verb(
+        |prefs: &AudioPrefs| prefs.mono_output,
+        AudioPrefs::SET_MONO_OUTPUT,
+    )
 }
 
 /// The switch that gives calls an echo-cancelled microphone.
-pub(crate) fn echo_cancellation(cx: &PaneCx, on: bool) -> Item {
-    cx.row(t("sound-echo"))
+pub(crate) fn echo_cancellation(cx: &ViewCx<AudioPrefs>) -> Item {
+    cx.setting(t("sound-echo"))
         .id("audio.echo_cancellation")
-        .toggle_effect(
-            &LocalState::new(on),
-            effect(AudioEffect::SET_ECHO_CANCELLATION),
+        .toggle_verb(
+            |prefs: &AudioPrefs| prefs.echo_cancellation,
+            AudioPrefs::SET_ECHO_CANCELLATION,
         )
 }
 
 /// The switch that lets system events make sounds.
-pub(crate) fn system_sounds(cx: &PaneCx, on: bool) -> Item {
-    cx.row(t("sound-system")).id("audio.system_sounds").toggle(
-        &LocalState::new(on),
-        AudioPrefs::paths().system_sounds.enabled,
-    )
+pub(crate) fn system_sounds(cx: &ViewCx<AudioPrefs>) -> Item {
+    cx.setting(t("sound-system"))
+        .id("audio.system_sounds")
+        .toggle(AudioPrefs::paths().system_sounds.enabled)
 }
 
 /// How often the pane re-reads the `PipeWire` graph while it is open, so a
@@ -127,8 +140,9 @@ fn event_sound(event: SystemSoundEvent) -> ui::tilo_resource::Path<AudioPrefs, b
     }
 }
 
-/// What Sound changes: this device's outputs, inputs and app streams, and
-/// the person's audio preferences.
+/// What Sound changes of this device: its outputs, inputs and app streams,
+/// and its bounded tests. The person's audio preferences are the `audio`
+/// section's field edits and verbs.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AudioEffect {
@@ -163,18 +177,6 @@ pub enum AudioEffect {
     SelectInput {
         #[param("The input device's name")]
         device: String,
-    },
-    /// Play both channels in each ear.
-    #[effect(idempotent)]
-    SetMonoOutput { on: bool },
-    /// Give calls an echo-cancelled microphone.
-    #[effect(idempotent)]
-    SetEchoCancellation { on: bool },
-    /// The sound theme system events play from.
-    #[effect(idempotent)]
-    SetSoundTheme {
-        #[param("The theme's name")]
-        theme: String,
     },
     /// Use another profile of an audio device (high fidelity, headset…).
     #[effect(row, job, idempotent)]
@@ -218,7 +220,7 @@ pub enum AudioEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AudioEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let model = crate::panes::audio::area(app)
         .ok_or_else(crate::area::missing)?
@@ -231,10 +233,10 @@ pub(crate) fn answer(
         // click is answered and painted at once.
         Plan::Device { key, work, settle } => {
             let work = model.changes.submit(key, work);
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 work,
-                move |app: &mut SettingsApp, ran: Option<Result<(), String>>, _| {
+                move |app: &SettingsApp, ran: Option<Result<(), String>>, _| {
                     // Replaced by a newer change of the same kind before it
                     // ran: that one settles the model.
                     let Some(result) = ran else {
@@ -257,8 +259,7 @@ type DeviceWork = Box<dyn FnOnce() -> Result<(), String> + Send>;
 
 /// An effect as decided on the UI thread ([`AudioModel::plan`]).
 enum Plan {
-    /// A preference or diagnostic change, made on the UI thread
-    /// ([`AudioModel::apply_local`]).
+    /// A diagnostic, started on the UI thread ([`AudioModel::apply_local`]).
     Local,
     /// A device change still to run, keyed by what it changes, and what
     /// the model takes in once it ran.
@@ -524,33 +525,77 @@ fn devices_from_graph(graph: &AudioGraph) -> AudioDevices {
     }
 }
 
+/// The Sound area's model, shared by the area and the page showing it.
+pub type SharedModel = Rc<std::cell::RefCell<AudioModel>>;
+
 /// What the Sound area keeps for the window: the model, read when first
 /// needed.
 pub struct AudioArea {
-    cx: PaneCx,
-    model: std::cell::OnceCell<Shared<AudioModel>>,
+    /// Whether it reads and drives this device's audio.
+    devices: bool,
+    /// The settings document the remembered devices are read from.
+    storage: ui::storage::AppStorage,
+    /// The sound sections' actions.
+    sections: crate::sections::Sections,
+    model: std::cell::OnceCell<SharedModel>,
     /// The device's audio, read off the UI thread after the window's first
     /// frame ([`Self::start_read`]); `None` stands for the sample graph a
     /// screenshot shows.
     read: crate::device_read::DeviceRead<Option<AudioRead>>,
+    /// Moves whenever what the page shows of the device does: a new
+    /// reading, a change it took, a notice, a test starting or ending.
+    shown: LocalState<u64>,
+    /// The mono output the page last showed, to say what changing it did.
+    mono_seen: std::cell::Cell<Option<bool>>,
 }
 
 impl AudioArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            storage: cx.storage.clone(),
+            sections: cx.sections.clone(),
             model: std::cell::OnceCell::new(),
             read: crate::device_read::DeviceRead::default(),
+            shown: LocalState::new(0),
+            mono_seen: std::cell::Cell::new(None),
+        }
+    }
+
+    /// Take in what moved since the last frame: tests and changes that
+    /// ended, the graph a page follows. The page is built again when
+    /// anything it shows did.
+    pub(crate) fn poll(&self) {
+        if let Some(model) = self.model.get()
+            && model.borrow_mut().poll()
+        {
+            self.shown.set(self.shown.get().wrapping_add(1));
+        }
+    }
+
+    /// The page shows mono output as `on`: once it changed from what the
+    /// page showed before, the output card says what that did.
+    fn saw_mono(&self, on: bool) {
+        if self
+            .mono_seen
+            .replace(Some(on))
+            .is_some_and(|seen| seen != on)
+        {
+            self.model().borrow_mut().runtime_notice = Some(t(if on {
+                "sound-notice-mono-active"
+            } else {
+                "sound-notice-mono-restored"
+            }));
         }
     }
 
     /// The model, over `PipeWire`, or over a sample graph for a screenshot.
-    pub fn model(&self) -> &Shared<AudioModel> {
+    pub fn model(&self) -> &SharedModel {
         self.model.get_or_init(|| {
             let read = self.read.take().unwrap_or_else(|| self.read_now());
             let model = match read {
-                Some(read) => AudioModel::from_read(self.cx.clone(), read),
-                None => AudioModel::sample(self.cx.clone()),
+                Some(read) => AudioModel::from_read(self.sections.clone(), read),
+                None => AudioModel::sample(self.sections.clone()),
             };
             Rc::new(std::cell::RefCell::new(model))
         })
@@ -566,12 +611,8 @@ impl AudioArea {
     /// Whether the area reaches the device, and the remembered output and
     /// input devices a read routes to again.
     fn route(&self) -> (bool, Option<String>, Option<String>) {
-        let prefs = self.cx.settings::<AudioDevicePrefs>().get();
-        (
-            self.cx.reaches_devices(),
-            prefs.output_device,
-            prefs.input_device,
-        )
+        let prefs = self.storage.settings::<AudioDevicePrefs>().get();
+        (self.devices, prefs.output_device, prefs.input_device)
     }
 
     /// Read the device's audio off the UI thread; `false` when it has been
@@ -690,8 +731,16 @@ fn stream_live_row(stream: &AudioStream) -> LiveRow {
         }))
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts: whether it drives the device, what the runtime offers, what changed"
+)]
 pub struct AudioModel {
-    cx: PaneCx,
+    /// Whether it drives this device's audio: a capture's and a test's
+    /// show what they were given.
+    reaches_devices: bool,
+    /// The sound sections' actions, which remember the devices chosen.
+    sections: crate::sections::Sections,
     output: Arc<dyn OutputControl>,
     input: Arc<dyn InputControl>,
     device: Arc<dyn DeviceControl>,
@@ -710,8 +759,6 @@ pub struct AudioModel {
     last_enum: Option<Instant>,
     runtime: Arc<dyn AudioRuntimeControl>,
     runtime_caps: RuntimeCapabilities,
-    /// The person's audio preferences.
-    prefs: Followed<AudioPrefs>,
     /// Installed freedesktop sound themes, for the theme picker.
     sound_themes: Vec<SoundTheme>,
     /// Whether this machine can play event sounds at all.
@@ -744,6 +791,9 @@ pub struct AudioModel {
     /// While a pane shows the area: the capture behind the output's meter.
     /// Held by the pane, so it ends when the page is left.
     metering: std::rc::Weak<OutputMetering>,
+    /// What a page showing the model holds: the graph is followed, and the
+    /// speaker sets read, only while one does.
+    page: std::rc::Weak<()>,
     /// The person's speaker sets, each an output like any other.
     sets: SpeakerSets,
     /// Where speaker sets are read and chosen: the shell, or a sample.
@@ -976,7 +1026,7 @@ impl AudioModel {
     }
 
     /// The model over what `read` found on this device.
-    fn from_read(cx: PaneCx, read: AudioRead) -> Self {
+    fn from_read(sections: crate::sections::Sections, read: AudioRead) -> Self {
         let AudioRead {
             initial,
             volume_error,
@@ -1002,7 +1052,6 @@ impl AudioModel {
             last_enum: Some(ui::time::now()),
             runtime_caps,
             runtime,
-            prefs: cx.follow::<AudioPrefs>(),
             sound_themes,
             event_sounds_available,
             volume_error,
@@ -1021,15 +1070,18 @@ impl AudioModel {
             following: std::rc::Weak::new(),
             output_meter: level_meter::Level::default(),
             metering: std::rc::Weak::new(),
+            page: std::rc::Weak::new(),
             sets: SpeakerSets::default(),
             speakers: Arc::new(crate::speaker_setup::BrokerSpeakers),
-            cx,
+            reaches_devices: true,
+            sections,
         }
     }
 
-    /// A model over `cx`'s settings with no devices and controls that do
-    /// nothing; tests give it what they drive.
-    fn detached(cx: PaneCx) -> Self {
+    /// A model with no devices and controls that do nothing, remembering
+    /// the devices chosen through `sections`; tests give it what they
+    /// drive.
+    fn detached(sections: crate::sections::Sections) -> Self {
         Self {
             output: Arc::new(NoopOutput),
             input: Arc::new(NoopInput),
@@ -1042,7 +1094,6 @@ impl AudioModel {
             last_enum: Some(ui::time::now()),
             runtime: Arc::new(NoopAudioRuntime),
             runtime_caps: RuntimeCapabilities::default(),
-            prefs: cx.follow::<AudioPrefs>(),
             sound_themes: Vec::new(),
             event_sounds_available: false,
             volume_error: None,
@@ -1061,15 +1112,17 @@ impl AudioModel {
             following: std::rc::Weak::new(),
             output_meter: level_meter::Level::default(),
             metering: std::rc::Weak::new(),
+            page: std::rc::Weak::new(),
             sets: SpeakerSets::default(),
             speakers: Arc::new(NoSpeakerSets),
-            cx,
+            reaches_devices: false,
+            sections,
         }
     }
 
     /// What a screenshot and the crate's tests show: speakers and
     /// headphones, a microphone, and three apps playing or recording.
-    fn sample(cx: PaneCx) -> Self {
+    fn sample(sections: crate::sections::Sections) -> Self {
         use media::audio::AudioDevice as GDevice;
         let sink = |id, serial, name: &str, def| GDevice {
             id,
@@ -1107,7 +1160,7 @@ impl AudioModel {
             record_streams: vec![stream(95, 340, "Meeting", "Microphone", 52, false, 0.75)],
             hardware: vec![],
         };
-        let mut model = Self::detached(cx);
+        let mut model = Self::detached(sections);
         model.speakers = Arc::new(SampleSpeakerSets);
         model.volume = 0.65;
         model.input_volume = 0.7;
@@ -1367,7 +1420,7 @@ impl AudioModel {
                     set.output_here = false;
                 }
                 self.sets.due = true;
-                self.save_device(|prefs| prefs.output_device = Some(name))?;
+                self.remember(AudioDevicePrefs::REMEMBER_OUTPUT.with(name))?;
                 Ok(t("sound-notice-out-device"))
             }
             Settle::SpeakerSet(group) => {
@@ -1387,7 +1440,7 @@ impl AudioModel {
                 for source in &mut self.devices.sources {
                     source.default = source.id == id;
                 }
-                self.save_device(|prefs| prefs.input_device = Some(name))?;
+                self.remember(AudioDevicePrefs::REMEMBER_INPUT.with(name))?;
                 Ok(t("sound-notice-in-device"))
             }
             Settle::Profile => {
@@ -1416,46 +1469,9 @@ impl AudioModel {
         }
     }
 
-    /// Carry out an effect that changes no hardware: a preference, the
-    /// sound theme or a bounded diagnostic.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one arm per effect, each a short preference or diagnostic change"
-    )]
+    /// Carry out an effect that changes no hardware: a bounded diagnostic.
     fn apply_local(&mut self, effect: &AudioEffect) -> Result<String, String> {
         match effect {
-            AudioEffect::SetMonoOutput { on } => {
-                let on = *on;
-                self.save(|prefs| prefs.mono_output = on)?;
-                self.runtime_notice = Some(t(if on {
-                    "sound-notice-mono-active"
-                } else {
-                    "sound-notice-mono-restored"
-                }));
-                Ok(t(if on {
-                    "sound-notice-mono-on"
-                } else {
-                    "sound-notice-mono-off"
-                }))
-            }
-            AudioEffect::SetEchoCancellation { on } => {
-                let on = *on;
-                self.save(|prefs| prefs.echo_cancellation = on)?;
-                Ok(t(if on {
-                    "sound-notice-echo-on"
-                } else {
-                    "sound-notice-echo-off"
-                }))
-            }
-            AudioEffect::SetSoundTheme { theme } => {
-                let id = self
-                    .sound_themes
-                    .iter()
-                    .find(|known| &known.name == theme || &known.id == theme)
-                    .map(|known| known.id.clone())
-                    .ok_or_else(|| t("sound-notice-theme-missing"))?;
-                self.save_sounds(|sounds| sounds.theme = Some(id))
-            }
             AudioEffect::TestSpeaker { channel } => {
                 let left = match channel.as_str() {
                     "left" => true,
@@ -1551,523 +1567,12 @@ impl AudioModel {
         notice
     }
 
-    /// Change the person's audio settings.
-    fn save(&mut self, change: impl FnOnce(&mut AudioPrefs)) -> Result<(), String> {
-        self.prefs.settings().update(change).map_err(|error| {
-            t_args(
-                "sound-notice-pref-err",
-                &[("error", error.to_string().into())],
-            )
-        })?;
-        self.prefs.refresh();
-        Ok(())
-    }
-
-    /// Change this device's audio settings.
-    fn save_device(&self, change: impl FnOnce(&mut AudioDevicePrefs)) -> Result<(), String> {
-        self.cx
-            .settings::<AudioDevicePrefs>()
-            .update(change)
-            .map(drop)
-            .map_err(|error| {
-                t_args(
-                    "sound-notice-pref-err",
-                    &[("error", error.to_string().into())],
-                )
-            })
-    }
-
-    /// Change the person's system sounds.
-    fn save_sounds(
-        &mut self,
-        change: impl FnOnce(&mut settings_store::system_sounds::SystemSoundPrefs),
-    ) -> Result<String, String> {
-        self.save(|prefs| {
-            change(&mut prefs.system_sounds);
-            prefs.system_sounds = prefs.system_sounds.clone().sanitized();
-        })?;
-        Ok(t("sound-notice-sounds-ok"))
-    }
-
-    fn build_composition(&self) -> Box<dyn Widget> {
-        // With no sound server to ask, every reading fails the same way:
-        // say it once, instead of a failure per row and empty lists of apps
-        // that only look like silence.
-        if let (Some(error), Some(_), Some(_)) =
-            (&self.devices_error, &self.volume_error, &self.input_error)
-        {
-            return crate::widgets::page(vec![
-                section(
-                    &t("sound-unavailable-title"),
-                    rows(vec![row(error_caption(&t_args(
-                        "sound-devices-error",
-                        &[("error", error.as_str().into())],
-                    )))]),
-                ),
-                self.speakers_card(),
-                self.build_system_sounds_card(),
-            ]);
-        }
-        let output = self.build_output_card();
-        let input = self.build_input_card();
-        let hardware = self.build_hardware_card();
-
-        // --- Applications card: one block per playback stream, with a picker
-        //     that routes just that app to a chosen sink, plus per-app volume +
-        //     mute. This is the per-application routing surface — the music app
-        //     to the headphones while the browser stays on the speakers.
-        let apps = self.streams_card(
-            &t("sound-apps"),
-            &self.graph.playback_streams,
-            &self.devices.sinks,
-            &t("sound-apps-empty"),
-        );
-        // --- Recording card: the capture streams (which app is using the mic),
-        //     routed to a chosen source, with per-app level + mute.
-        let recording = self.streams_card(
-            &t("sound-recording"),
-            &self.graph.record_streams,
-            &self.devices.sources,
-            &t("sound-recording-empty"),
-        );
-
-        let mut cards = vec![output, input];
-        if let Some(hardware) = hardware {
-            cards.push(hardware);
-        }
-        cards.extend([
-            apps,
-            recording,
-            self.speakers_card(),
-            self.build_system_sounds_card(),
-        ]);
-        crate::widgets::page(cards)
-    }
-
-    /// The way into Speakers: several of your devices as one set.
-    fn speakers_card(&self) -> SettingsSection {
-        let open_label = t("sound-speakers-open");
-        let open = self.cx.bind_invocation(
-            Button::new("sound.speakers", &open_label),
-            crate::effects::NavigationEffect::OpenPane {
-                pane: crate::categories::Category::Speakers.slug().to_owned(),
-            },
-        );
-        crate::widgets::section(
-            &t("sound-speakers-title"),
-            rows(vec![setting_row_described(
-                &t("sound-speakers-row"),
-                &t("sound-speakers-desc"),
-                Box::new(open),
-            )]),
-        )
-    }
-
-    /// The "Output" card: an optional device picker (only when more than one
-    /// sink exists), then volume + mute on the default sink, plus balance /
-    /// mono / speaker-test controls the runtime reports support for.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the output card's device, level, balance, mono and test rows"
-    )]
-    fn build_output_card(&self) -> SettingsSection {
-        let mut output_rows = Vec::new();
-        if let Some(error) = &self.devices_error {
-            output_rows.push(row(error_caption(&t_args(
-                "sound-devices-error",
-                &[("error", error.as_str().into())],
-            ))));
-        }
-        if self.devices.sinks.len() + self.sets.shown.len() >= 2 {
-            // The outputs as a list to pick from, the person's speaker sets
-            // among them: the one in use checked.
-            output_rows.push(row(self.device_list(&self.devices.sinks, true)));
-        }
-        if let Some(error) = &self.volume_error {
-            output_rows.push(error_row(
-                &t("sound-volume"),
-                &t_args("sound-volume-error", &[("error", error.as_str().into())]),
-            ));
-        } else {
-            // The volume and, beside it, the button that mutes it, as each
-            // app's line has.
-            let volume = self.cx.bind(
-                Slider::from_state(&LocalState::new(f64::from(self.volume)))
-                    .with_id("audio.volume")
-                    .with_accessible_name(&t("sound-volume"))
-                    .shows_value()
-                    .with_enabled(!self.muted)
-                    // What the output in use plays, while the page is open:
-                    // inside the volume's own track, never a second bar.
-                    .with_level({
-                        let meter = self.output_meter.clone();
-                        move || meter.is_live().then(|| meter.get())
-                    }),
-                effect(AudioEffect::SET_OUTPUT_VOLUME),
-            );
-            let mute = self.cx.bind_invocation(
-                ui::widget::primitives::IconButton::regular(
-                    "audio.mute",
-                    if self.muted {
-                        ui::icons::Icon::VolumeX
-                    } else {
-                        ui::icons::Icon::Volume2
-                    },
-                    &t(if self.muted {
-                        "sound-unmute"
-                    } else {
-                        "sound-mute"
-                    }),
-                ),
-                AudioEffect::SetOutputMuted { muted: !self.muted },
-            );
-            let line = Row::new()
-                .no_wrap()
-                .with_align_items(taffy::AlignItems::Center)
-                .with_rhythm(ui::tokens::Rhythm::Related)
-                .push(Box::new(
-                    ui::widget::Container::new()
-                        .with_no_padding()
-                        .with_width(OUTPUT_SLIDER_WIDTH)
-                        .with_child(Box::new(volume)),
-                ))
-                .push(Box::new(mute));
-            let control: Box<dyn Widget> = Box::new(line);
-            output_rows.push(setting_row(&t("sound-volume"), control));
-        }
-        let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
-        if self.runtime_caps.balance && stereo_sink.is_some() {
-            output_rows.push(setting_row(
-                &t("sound-balance"),
-                crate::widgets::trailing_slider(Box::new(
-                    self.cx.bind_field_with(
-                        Slider::from_state(&LocalState::new(f64::from(
-                            self.prefs.get().balance.clamp(0.0, 1.0),
-                        )))
-                        .with_id("audio.balance"),
-                        AudioPrefs::paths().balance,
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "a balance between 0 and 1 is stored as f32"
-                        )]
-                        |balance: f64| Ok(balance as f32),
-                    ),
-                )),
-            ));
-        }
-        if self.offers_mono() {
-            output_rows.push(mono(&self.cx, self.prefs.get().mono_output));
-            output_rows.push(note(&t("sound-mono-caption")));
-        }
-        if self.runtime_caps.channel_test && stereo_sink.is_some() {
-            // A tone on one side, then the other: one row, its two buttons
-            // the row's control.
-            let side = |id: &str, label: &str, channel: &str| {
-                self.cx.bind_invocation(
-                    Button::new(id, label).control_size(ui::widget::ControlSize::Small),
-                    AudioEffect::TestSpeaker {
-                        channel: channel.into(),
-                    },
-                )
-            };
-            output_rows.push(setting_row_described(
-                &t("sound-test-row"),
-                &t("sound-test-caption"),
-                Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .with_rhythm(ui::tokens::Rhythm::Related)
-                        .push(Box::new(side(
-                            "settings.audio.test.left",
-                            &t("sound-test-left"),
-                            "left",
-                        )))
-                        .push(Box::new(side(
-                            "settings.audio.test.right",
-                            &t("sound-test-right"),
-                            "right",
-                        ))),
-                ),
-            ));
-        }
-        if let Some(notice) = &self.runtime_notice {
-            output_rows.push(note(notice));
-        }
-        section(&t("sound-output"), rows(output_rows))
-    }
-
-    /// The "Input" card: an optional source picker, then the mic level and
-    /// (when the runtime supports it) a bounded microphone meter test.
-    fn build_input_card(&self) -> SettingsSection {
-        let mut input_rows = Vec::new();
-        if self.devices.sources.len() >= 2 {
-            input_rows.push(row(self.device_list(&self.devices.sources, false)));
-        }
-        if let Some(error) = &self.input_error {
-            input_rows.push(error_row(
-                &t("sound-input-level"),
-                &t_args("sound-input-error", &[("error", error.as_str().into())]),
-            ));
-        } else {
-            input_rows.push(
-                self.cx
-                    .row(t("sound-input-level"))
-                    .id("audio.input_volume")
-                    .slider_effect(
-                        &LocalState::new(f64::from(self.input_volume)),
-                        effect(AudioEffect::SET_INPUT_VOLUME),
-                    ),
-            );
-        }
-        if self.runtime_caps.microphone_meter && self.graph.default_source().is_some() {
-            let running = self.mic_session.is_some();
-            let activity = if running {
-                t("sound-mic-listening")
-            } else {
-                t("sound-mic-idle")
-            };
-            if running {
-                input_rows.push(block(Box::new(level_meter::LevelMeter::new(
-                    &self.mic_meter,
-                    t("sound-input-level"),
-                ))));
-            }
-            input_rows.push(setting_row(
-                &activity,
-                Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        "settings.audio.mic_test",
-                        &if running {
-                            t("sound-mic-stop")
-                        } else {
-                            t("sound-mic-test")
-                        },
-                    ),
-                    AudioEffect::ToggleMicrophoneTest,
-                )),
-            ));
-            input_rows.push(note(&t("sound-mic-caption")));
-        }
-        if self.offers_echo_cancellation() {
-            input_rows.push(echo_cancellation(
-                &self.cx,
-                self.prefs.get().echo_cancellation,
-            ));
-            input_rows.push(note(&t("sound-echo-caption")));
-        }
-        section(&t("sound-input"), rows(input_rows))
-    }
-
-    /// The "Device capabilities" card: per-hardware profile pickers (only for
-    /// devices reporting more than one selectable profile) plus each sink's
-    /// reported codec. `None` when there is nothing to show — no empty card.
-    fn build_hardware_card(&self) -> Option<SettingsSection> {
-        let mut hardware_rows = Vec::new();
-        for hw in &self.graph.hardware {
-            let selectable: Vec<_> = hw.profiles.iter().filter(|p| p.available).collect();
-            if selectable.len() < 2 {
-                continue;
-            }
-            let options: Vec<String> = selectable.iter().map(|p| p.description.clone()).collect();
-            let device = hw.id;
-            let active = hw
-                .active_profile
-                .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
-                .map_or_else(|| t("sound-choose-profile"), |p| p.description.clone());
-            hardware_rows.push(
-                self.cx
-                    .row(&hw.description)
-                    .described(t("sound-profile"))
-                    .id(format!("audio.profile.{}", hw.id))
-                    .choice_effect(
-                        options,
-                        &LocalState::new(active.clone()),
-                        effect(AudioEffect::SET_DEVICE_PROFILE)
-                            .map(move |profile: String| (device, profile)),
-                    ),
-            );
-        }
-        for sink in &self.graph.sinks {
-            if let Some(codec) = &sink.codec {
-                hardware_rows.push(crate::widgets::value_row(
-                    &t_args(
-                        "sound-codec",
-                        &[("device", sink.description.as_str().into())],
-                    ),
-                    codec,
-                ));
-            }
-        }
-        (!hardware_rows.is_empty()).then(|| section(&t("sound-hardware"), rows(hardware_rows)))
-    }
-
-    /// Build one streams card (Applications or Recording). Each stream becomes
-    /// a routing picker (the app's target device, or "Default" to follow the
-    /// system default) plus a volume slider and a mute toggle, all keyed by the
-    /// stream's node id. An empty stream list renders `empty_note` rather than a
-    /// fabricated row.
-    fn streams_card(
-        &self,
-        title: &str,
-        streams: &[AudioStream],
-        devices: &[AudioDevice],
-        empty_note: &str,
-    ) -> SettingsSection {
-        if streams.is_empty() {
-            return section(title, rows(vec![note(empty_note)]));
-        }
-        // Picker options: every device label, plus a leading "follow default".
-        let mut options = vec![follow_shown()];
-        options.extend(devices.iter().map(|d| d.name.clone()));
-
-        let mut items: Vec<Item> = Vec::new();
-        for s in streams {
-            items.push(row(self.stream_row(s, &options, devices.len() >= 2)));
-        }
-        section(title, rows(items))
-    }
-
-    /// Outputs or inputs as rows to choose from, the one in use checked;
-    /// choosing another plays (or records) through it.
-    fn device_list(&self, devices: &[AudioDevice], outputs: bool) -> Box<dyn Widget> {
-        let mut list = ui::widget::Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(0.0);
-        for device in devices {
-            let icon = if !outputs {
-                ui::icons::Icon::Mic
-            } else if device_is_headphones(&device.name) {
-                ui::icons::Icon::Headphones
-            } else {
-                ui::icons::Icon::Speaker
-            };
-            let kind = if outputs { "output" } else { "input" };
-            let mut entry = ui::widget::ListRow::new(
-                format!("audio.{kind}.{}", device.id),
-                device.name.clone(),
-            )
-            .icon(icon)
-            .checked(device.default)
-            .selected(device.default);
-            if !device.default {
-                let choose = if outputs {
-                    AudioEffect::SelectOutput {
-                        device: device.name.clone(),
-                    }
-                } else {
-                    AudioEffect::SelectInput {
-                        device: device.name.clone(),
-                    }
-                };
-                if let Some(binding) = self.cx.invocation_binding(choose) {
-                    entry = entry.on_action(binding);
-                }
-            }
-            list = list.push(Box::new(entry));
-        }
-        if outputs {
-            for set in &self.sets.shown {
-                let mut entry = ui::widget::ListRow::new(
-                    format!("audio.output.set.{}", set.id),
-                    set.name.clone(),
-                )
-                .icon(ui::icons::Icon::Speaker)
-                .secondary(t_args(
-                    "sound-speaker-set-detail",
-                    &[(
-                        "count",
-                        ui::i18n::ArgValue::from(i64::try_from(set.speakers).unwrap_or(i64::MAX)),
-                    )],
-                ))
-                .checked(set.output_here)
-                .selected(set.output_here);
-                if !set.output_here
-                    && let Some(binding) =
-                        self.cx.invocation_binding(AudioEffect::SelectSpeakerSet {
-                            group: set.id.clone(),
-                        })
-                {
-                    entry = entry.on_action(binding);
-                }
-                list = list.push(Box::new(entry));
-            }
-        }
-        Box::new(list)
-    }
-
-    /// One app's stream on one line: the app and what it plays, its
-    /// volume, a mute button and, with more than one device to choose
-    /// from, where it plays.
-    fn stream_row(&self, s: &AudioStream, options: &[String], routable: bool) -> Box<dyn Widget> {
-        let id = s.id;
-        let muted = s.muted.unwrap_or(false);
-        // The stream's controls act on its row of the published surface,
-        // where its volume, mute and route are operations.
-        let resource = stream_live_row(s).into_resource();
-        let volume = bound(
-            Slider::from_state(&LocalState::new(f64::from(s.volume.unwrap_or(1.0))))
-                .with_id(&format!("audio.stream.{id}.volume.sl"))
-                .with_accessible_name(&t_args(
-                    "sound-app-volume",
-                    &[("app", s.app.as_str().into())],
-                ))
-                .with_enabled(!muted),
-            self.cx.row_binding(
-                &resource,
-                effect(AudioEffect::SET_STREAM_VOLUME).map(move |volume: f64| (id, volume)),
-            ),
-        );
-        let mute = bound(
-            ui::widget::primitives::IconButton::regular(
-                &format!("audio.stream.{id}.muted.tg"),
-                if muted {
-                    ui::icons::Icon::VolumeX
-                } else {
-                    ui::icons::Icon::Volume2
-                },
-                &t(if muted { "sound-unmute" } else { "sound-mute" }),
-            ),
-            self.cx.row_binding(
-                &resource,
-                effect(AudioEffect::SET_STREAM_MUTED).map(move |()| (id, !muted)),
-            ),
-        );
-        // The volume and its mute button stay together, then the route; in
-        // a narrow window they move under the name.
-        let mut controls = Row::new()
-            .with_align_items(taffy::AlignItems::Center)
-            .with_rhythm(ui::tokens::Rhythm::Related)
-            .push(Box::new(
-                // One width for every app's volume, so they line up, down to
-                // a short slider in a narrow window.
-                ui::widget::Container::new()
-                    .with_no_padding()
-                    .with_width(STREAM_SLIDER_WIDTH)
-                    .with_min_width(STREAM_SLIDER_MIN_WIDTH)
-                    .with_child(Box::new(volume)),
-            ))
-            .push(Box::new(mute));
-        if routable {
-            let current = self.stream_target_label(s);
-            let route = Dropdown::from_state(options.to_vec(), &LocalState::new(current.clone()))
-                .with_id(&format!("audio.stream.{id}.sink.dd"))
-                .with_placeholder(&current);
-            let route = bound(
-                route,
-                self.cx.row_binding(
-                    &resource,
-                    effect(AudioEffect::ROUTE_STREAM).map(move |device: String| (id, device)),
-                ),
-            );
-            controls = controls.push(Box::new(route));
-        }
-        let mut line = ui::widget::ListRow::new(format!("audio.stream.{id}"), s.app.clone())
-            .trailing(Box::new(controls));
-        if let Some(media) = s.media_name.as_deref().filter(|media| !media.is_empty()) {
-            line = line.secondary(media);
-        }
-        Box::new(line)
+    /// Remember the device chosen, through the `audio-device` section's
+    /// verb.
+    fn remember(&self, invoke: ui::tilo_resource::Invoke<AudioDevicePrefs>) -> Result<(), String> {
+        self.sections
+            .invoke(invoke)
+            .map_err(|error| t_args("sound-notice-pref-err", &[("error", error.into())]))
     }
 
     /// The picker label for a stream's *current* route: the device it is linked
@@ -2087,71 +1592,6 @@ impl AudioModel {
             Some(d) => d.description.clone(),
             None => follow_shown(),
         }
-    }
-
-    /// The "System sounds" card: the master switch, then volume, theme and
-    /// one switch per event while it is on.
-    fn build_system_sounds_card(&self) -> SettingsSection {
-        let sounds = &self.prefs.get().system_sounds;
-        if !self.event_sounds_available {
-            let reason = match super::installed_programs_unreadable() {
-                Some(error) => row(error_caption(&t_args(
-                    "settings-programs-error",
-                    &[("error", error.into())],
-                ))),
-                None => note(&t("sound-system-missing")),
-            };
-            return section(&t("sound-system"), rows(vec![reason]));
-        }
-        let mut sound_rows = vec![system_sounds(&self.cx, sounds.enabled)];
-        if !sounds.enabled {
-            return section(&t("sound-system"), rows(sound_rows));
-        }
-        sound_rows.push(
-            self.cx
-                .row(t("sound-volume"))
-                .id("audio.system_sound_volume")
-                .slider(
-                    &LocalState::new(sounds.volume),
-                    AudioPrefs::paths().system_sounds.volume,
-                ),
-        );
-        if self.sound_themes.len() >= 2 {
-            let names: Vec<String> = self
-                .sound_themes
-                .iter()
-                .map(|theme| theme.name.clone())
-                .collect();
-            let current = self
-                .sound_themes
-                .iter()
-                .find(|theme| theme.id == sounds.theme_name())
-                .map(|theme| theme.name.clone())
-                .unwrap_or_default();
-            sound_rows.push(
-                self.cx
-                    .row(t("sound-theme"))
-                    .id("audio.sound_theme")
-                    .choice_effect(
-                        names,
-                        &LocalState::new(current),
-                        effect(AudioEffect::SET_SOUND_THEME),
-                    ),
-            );
-        }
-        for event in SystemSoundEvent::ALL {
-            sound_rows.push(
-                self.cx
-                    .row(event_shown(event))
-                    .id(format!("audio.event_sound.{}", event.key()))
-                    .toggle(
-                        &LocalState::new(sounds.events.get(event)),
-                        event_sound(event),
-                    ),
-            );
-        }
-        sound_rows.push(note(&t("sound-system-caption")));
-        section(&t("sound-system"), rows(sound_rows))
     }
 
     /// Re-enumerate the graph on the hotplug throttle. When the topology
@@ -2237,13 +1677,16 @@ impl AudioModel {
                 self.changed = true;
             }
         }
-        // Re-read the PipeWire graph on the hotplug throttle so a device
-        // plugged in or an app that just started playing appears live.
-        if self.poll_hotplug() {
-            self.changed = true;
-        }
-        if self.poll_speaker_sets() {
-            self.changed = true;
+        // While a page shows the model, re-read the PipeWire graph on a
+        // change (or the hotplug throttle) so a device plugged in or an app
+        // that just started playing appears live.
+        if self.page.upgrade().is_some() {
+            if self.poll_hotplug() {
+                self.changed = true;
+            }
+            if self.poll_speaker_sets() {
+                self.changed = true;
+            }
         }
         self.follow_output_meter();
     }
@@ -2252,7 +1695,7 @@ impl AudioModel {
     /// start its capture, move it when the default output changes, and let
     /// it go when it ends. Without a pane nothing is captured.
     fn follow_output_meter(&self) {
-        if !self.cx.reaches_devices() {
+        if !self.reaches_devices {
             // A capture or a test shows the level it was given.
             return;
         }
@@ -2299,28 +1742,24 @@ impl AudioModel {
     }
 }
 
-impl PaneModel for AudioModel {
-    fn compose(&self) -> Box<dyn Widget> {
-        self.build_composition()
-    }
-
+impl AudioModel {
+    /// Take in what moved: tests that ended and, while a page shows the
+    /// model, the graph and the speaker sets. Whether what the page shows
+    /// changed since the last call, by this or by an effect.
     fn poll(&mut self) -> bool {
-        if self.prefs.refresh() {
-            self.changed = true;
-        }
         self.tick_sessions_and_hotplug();
         std::mem::take(&mut self.changed)
     }
 
-    fn name(&self) -> &'static str {
-        "AudioPane"
-    }
-
+    /// Whether a test is running that the window keeps drawing for.
     fn busy(&self) -> bool {
         self.mic_session.is_some() || self.channel_test.is_some()
     }
 
+    /// When a page showing the model next re-reads the graph while nothing
+    /// else happens.
     fn next_wake(&self) -> Option<Instant> {
+        self.page.upgrade()?;
         if let Some(monitor) = self
             .following
             .upgrade()
@@ -2334,9 +1773,14 @@ impl PaneModel for AudioModel {
             .then(|| self.last_enum.unwrap_or_else(ui::time::now) + self.hotplug_interval)
     }
 
-    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
-        if !self.cx.reaches_devices() {
-            return None;
+    /// Start following the device for a page that shows the model:
+    /// `PipeWire`'s change stream and the output's meter run while a page
+    /// holds what this answers. Pages showing the model share one, so
+    /// building a page again never restarts them.
+    fn follow(&mut self) -> Rc<dyn std::any::Any> {
+        let page = crate::watch::shared(&mut self.page, || ());
+        if !self.reaches_devices {
+            return page;
         }
         let metering = self.metering.upgrade().unwrap_or_else(|| {
             let metering = Rc::new(OutputMetering::default());
@@ -2349,7 +1793,7 @@ impl PaneModel for AudioModel {
             Some(monitor)
         });
         self.follow_output_meter();
-        Some(Rc::new((monitor, metering)))
+        Rc::new((page, monitor, metering))
     }
 }
 
@@ -2411,27 +1855,62 @@ mod tests {
         calls: Mutex<Vec<f32>>,
     }
 
+    type App = ui::framework::testing::TestApp<crate::SettingsShell>;
+
+    /// Change the window's Sound model as `change` does, for the page to
+    /// show.
+    fn change_model(app: &mut App, change: impl FnOnce(&mut AudioModel) + 'static) {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
+            let mut model = area(settings).unwrap().model().borrow_mut();
+            change(&mut model);
+            model.changed = true;
+        })
+        .expect("the Settings window is mounted");
+    }
+
+    /// What the window shows once it took in what changed.
+    fn frame(app: &mut App) -> String {
+        for _ in 0..4 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
+        app.harness().inspection_json().unwrap()
+    }
+
+    /// The window, on the Sound page.
+    fn on_sound() -> App {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = App::new().unwrap();
+        app.harness().resize((1200, 6000)).unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Sound);
+        app
+    }
+
     /// Levels that could not be read are reported, not drawn as sliders at
     /// a made-up position; when nothing can be read, the failure is said
     /// once rather than once per row.
     #[test]
     fn unreadable_levels_are_shown_as_errors() {
-        let profile = tempfile::tempdir().unwrap().keep();
-        let mut model = AudioModel::detached(PaneCx::in_profile(profile));
-        model.volume_error = Some("wpctl: Could not connect to PipeWire".into());
-        let text = crate::widgets::announced_text(model.compose().as_ref());
+        let mut app = on_sound();
+        let error = "wpctl: Could not connect to PipeWire";
+        change_model(&mut app, move |model| {
+            model.volume_error = Some(error.into());
+        });
         let volume = "Can't read the output volume: wpctl: Could not connect to PipeWire";
-        assert!(text.iter().any(|line| line == volume), "{text:#?}");
+        let text = frame(&mut app);
+        assert!(text.contains(volume), "{text}");
 
-        model.input_error = Some("wpctl: Could not connect to PipeWire".into());
-        model.devices_error = Some("wpctl: Could not connect to PipeWire".into());
-        let text = crate::widgets::announced_text(model.compose().as_ref());
+        change_model(&mut app, move |model| {
+            model.input_error = Some(error.into());
+            model.devices_error = Some(error.into());
+        });
+        let text = frame(&mut app);
         let devices = "Can't list audio devices: wpctl: Could not connect to PipeWire";
-        assert!(text.iter().any(|line| line == devices), "{text:#?}");
-        assert!(!text.iter().any(|line| line == volume), "{text:#?}");
+        assert!(text.contains(devices), "{text}");
+        assert!(!text.contains(volume), "{text}");
         assert!(
-            !text.iter().any(|line| line == &t("sound-apps-empty")),
-            "no list of apps that only looks silent: {text:#?}"
+            !text.contains(&t("sound-apps-empty")),
+            "no list of apps that only looks silent: {text}"
         );
     }
 
@@ -2560,8 +2039,7 @@ mod tests {
     }
 
     fn model() -> AudioModel {
-        let profile = tempfile::tempdir().unwrap().keep();
-        AudioModel::detached(PaneCx::in_profile(profile))
+        AudioModel::detached(crate::sections::Sections::default())
     }
 
     fn recording(rec: &Arc<RecordingDispatcher>) -> AudioModel {
@@ -2620,6 +2098,9 @@ mod tests {
         }
     }
 
+    /// A speaker set is listed among the outputs (the sink it plays from
+    /// is not), choosing it plays through it, and choosing another output
+    /// leaves it, remembering that output.
     #[test]
     fn a_speaker_set_is_an_output_chosen_like_any_other() {
         use media::audio::AudioDevice as GDevice;
@@ -2644,33 +2125,34 @@ mod tests {
             ..AudioGraph::default()
         };
         let speakers = Arc::new(RecordingSpeakers::default());
-        let mut model = model().with_graph(graph, Arc::new(NoopGraphControl));
-        model.speakers = speakers.clone();
-        // The sets are read off the calling thread when an executor runs.
-        let first = model.poll_speaker_sets();
-        tilo_test_env::wait_until("the speaker sets to be read", || {
-            model.sets.read.is_finished()
-        });
-        assert!(first || model.poll_speaker_sets(), "the sets are read");
-        let said = |model: &AudioModel| {
-            crate::widgets::announced_text(
-                crate::widgets::page(vec![model.build_output_card()]).as_ref(),
-            )
+        let mut app = on_sound();
+        {
+            let speakers = Arc::clone(&speakers);
+            change_model(&mut app, move |model| {
+                let devices = devices_from_graph(&graph);
+                model.devices = devices;
+                model.graph = graph;
+                model.speakers = speakers;
+                model.sets = SpeakerSets::default();
+            });
+        }
+        let lists_the_set = |app: &mut App| {
+            app.harness()
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
+                    harness
+                        .inspection_json()
+                        .is_ok_and(|frame| frame.contains("Living room"))
+                })
         };
-        let text = said(&model);
-        let shows = |text: &[String], needle: &str| text.iter().any(|line| line == needle);
-        assert!(shows(&text, "Speakers"), "{text:#?}");
-        assert!(
-            shows(&text, "Living room"),
-            "the set is in the output list: {text:#?}"
-        );
-        assert!(!shows(&text, "Speaker group"), "{text:#?}");
+        assert!(lists_the_set(&mut app), "the set is in the output list");
+        let text = frame(&mut app);
+        assert!(text.contains("Speakers"), "{text}");
+        assert!(!text.contains("Speaker group"), "{text}");
 
-        model
-            .apply(&AudioEffect::SelectSpeakerSet {
-                group: "cd".repeat(16),
-            })
-            .unwrap();
+        app.effect(&SettingsEffect::from(AudioEffect::SelectSpeakerSet {
+            group: "cd".repeat(16),
+        }))
+        .expect("the set is chosen");
         assert!(
             speakers
                 .commands
@@ -2680,27 +2162,50 @@ mod tests {
                     group: "cd".repeat(16)
                 })
         );
+        let model = |app: &mut App, read: fn(&AudioModel) -> bool| {
+            app.with_widget::<crate::window::Inspected, _>(move |settings| {
+                read(&area(settings).unwrap().model().borrow())
+            })
+            .unwrap()
+        };
         assert!(
-            model.sets.shown[0].output_here,
+            model(&mut app, |model| model.sets.shown[0].output_here),
             "the set is the output in use"
         );
         assert!(
-            model.devices().sinks.iter().all(|sink| !sink.default),
+            model(&mut app, |model| model
+                .devices()
+                .sinks
+                .iter()
+                .all(|sink| !sink.default)),
             "and no other output is"
         );
 
-        model
-            .apply(&AudioEffect::SelectOutput {
-                device: "Speakers".into(),
-            })
-            .unwrap();
-        assert_eq!(
-            speakers.commands.lock().unwrap().last(),
-            Some(&SpeakerCommand::StopUsingAsOutput),
+        let before = speakers.commands.lock().unwrap().len();
+        app.effect(&SettingsEffect::from(AudioEffect::SelectOutput {
+            device: "Speakers".into(),
+        }))
+        .expect("the output is chosen");
+        assert!(
+            speakers.commands.lock().unwrap()[before..]
+                .contains(&SpeakerCommand::StopUsingAsOutput),
             "choosing another output leaves the set"
         );
-        assert!(!model.sets.shown[0].output_here);
-        assert!(model.devices().sinks.iter().any(|sink| sink.default));
+        assert!(!model(&mut app, |model| model.sets.shown[0].output_here));
+        assert!(model(&mut app, |model| model
+            .devices()
+            .sinks
+            .iter()
+            .any(|sink| sink.default)));
+        let _ = frame(&mut app);
+        assert_eq!(
+            app.settings::<AudioDevicePrefs>()
+                .get()
+                .output_device
+                .as_deref(),
+            Some("Speakers"),
+            "the chosen output is remembered"
+        );
     }
 
     /// Volume, mute and the input level reach their backends once each.
@@ -2736,36 +2241,36 @@ mod tests {
         assert_eq!(d.default_sink(), Some("Built-in Audio Analog Stereo"));
 
         let dev = Arc::new(RecordingDevice::default());
-        let mut model = model();
-        model.devices = d;
-        model.device = dev.clone();
-        model
-            .apply(&AudioEffect::SelectOutput {
-                device: "HDMI / DisplayPort".into(),
-            })
-            .unwrap();
-        model
-            .apply(&AudioEffect::SelectInput {
-                device: "USB Microphone".into(),
-            })
-            .unwrap();
+        let mut app = on_sound();
+        {
+            let dev = Arc::clone(&dev);
+            change_model(&mut app, move |model| {
+                model.devices = d;
+                model.device = dev;
+            });
+        }
+        app.effect(&SettingsEffect::from(AudioEffect::SelectOutput {
+            device: "HDMI / DisplayPort".into(),
+        }))
+        .unwrap();
+        app.effect(&SettingsEffect::from(AudioEffect::SelectInput {
+            device: "USB Microphone".into(),
+        }))
+        .unwrap();
         assert_eq!(dev.calls.lock().unwrap().as_slice(), [52, 54]);
+        let _ = frame(&mut app);
+        let remembered = app.settings::<AudioDevicePrefs>().get();
         assert_eq!(
-            model
-                .cx
-                .settings::<AudioDevicePrefs>()
-                .get()
-                .output_device
-                .as_deref(),
+            remembered.output_device.as_deref(),
             Some("HDMI / DisplayPort"),
             "the chosen output is remembered"
         );
+        assert_eq!(remembered.input_device.as_deref(), Some("USB Microphone"));
         assert!(
-            model
-                .apply(&AudioEffect::SelectOutput {
-                    device: "Not here".into()
-                })
-                .is_err()
+            app.effect(&SettingsEffect::from(AudioEffect::SelectOutput {
+                device: "Not here".into()
+            }))
+            .is_err()
         );
 
         let rec = Arc::new(RecordingGraph::default());
@@ -2922,14 +2427,11 @@ mod tests {
             let mut model = model().with_graph(graph, Arc::new(NoopGraphControl));
             model.runtime_caps = runtime.capabilities();
             model.runtime = runtime.clone();
-            model
-                .cx
-                .settings::<AudioPrefs>()
-                .update(|prefs| prefs.balance = 0.75)
-                .unwrap();
-            model
-                .apply(&AudioEffect::SetMonoOutput { on: true })
-                .unwrap();
+            let profile = tempfile::tempdir().unwrap();
+            let stored = crate::area::AreaContext::in_profile(profile.path().to_path_buf())
+                .storage
+                .settings::<AudioPrefs>();
+            stored.update(|prefs| prefs.balance = 0.75).unwrap();
             model
                 .apply(&AudioEffect::TestSpeaker {
                     channel: "left".into(),
@@ -2941,9 +2443,8 @@ mod tests {
                 ["test(alsa_speakers,true)", "meter(alsa_input.mic)",]
             );
             assert_eq!(drops.load(Ordering::SeqCst), 0);
-            let prefs = model.cx.settings::<AudioPrefs>().get();
+            let prefs = stored.get();
             assert!((prefs.balance - 0.75).abs() < 0.001);
-            assert!(prefs.mono_output);
             drop(model);
             assert_eq!(
                 drops.load(Ordering::SeqCst),
@@ -2968,6 +2469,7 @@ mod tests {
             });
             model.hotplug_interval = Duration::ZERO;
             model.last_enum = None;
+            let _page = model.follow();
             assert_eq!(model.graph().sinks.len(), 1, "starts with one sink");
             // The re-read runs on the background executor: the sync that
             // starts it returns at once, and a later sync adopts it.
@@ -3003,6 +2505,7 @@ mod tests {
         });
         model.hotplug_interval = HOTPLUG_INTERVAL;
         model.last_enum = None;
+        let page = model.follow();
         let monitor = Rc::new(GraphMonitor::by_hand());
         model.following = Rc::downgrade(&monitor);
         assert!(monitor.take(), "the monitor starts flagged");
@@ -3031,6 +2534,8 @@ mod tests {
             model.next_wake().is_some(),
             "a monitor that ended leaves the pane on its timer"
         );
+        drop(page);
+        assert_eq!(model.next_wake(), None, "no page, no timer");
     }
 
     /// Only nodes, devices and the default-device metadata move the graph;
@@ -3150,45 +2655,45 @@ mod tests {
         }
     }
 
+    /// Mono output, echo cancellation and the system sounds are the
+    /// person's `audio` section, changed by its verbs and field edits as the
+    /// page's controls change them.
     #[test]
     fn echo_cancellation_and_system_sounds_are_the_persons_settings() {
-        let mut model = model();
+        use crate::testing::{edit_path, invoke_section};
+        const AUDIO: &str = "settings.audio";
+        let mut app = on_sound();
         assert!(
-            model.cx.settings::<AudioPrefs>().get().echo_cancellation,
+            app.settings::<AudioPrefs>().get().echo_cancellation,
             "calls are echo-cancelled until the person turns it off"
         );
-        model
-            .apply(&AudioEffect::SetEchoCancellation { on: false })
-            .unwrap();
-        assert!(!model.cx.settings::<AudioPrefs>().get().echo_cancellation);
+        invoke_section(
+            &mut app,
+            AUDIO,
+            "set-echo-cancellation",
+            serde_json::json!({ "on": false }),
+        )
+        .unwrap();
+        assert!(!app.settings::<AudioPrefs>().get().echo_cancellation);
+        invoke_section(
+            &mut app,
+            AUDIO,
+            "set-mono-output",
+            serde_json::json!({ "on": true }),
+        )
+        .unwrap();
+        assert!(app.settings::<AudioPrefs>().get().mono_output);
 
-        model.sound_themes = vec![
-            SoundTheme {
-                id: "freedesktop".into(),
-                name: "Default".into(),
-            },
-            SoundTheme {
-                id: "ocean".into(),
-                name: "Ocean".into(),
-            },
-        ];
-        model.event_sounds_available = true;
-        model
-            .cx
-            .settings::<AudioPrefs>()
-            .update(|prefs| prefs.system_sounds.volume = 0.3)
-            .unwrap();
-        model
-            .apply(&AudioEffect::SetSoundTheme {
-                theme: "Ocean".into(),
-            })
-            .unwrap();
-        model
-            .cx
-            .settings::<AudioPrefs>()
-            .update(|prefs| prefs.system_sounds.events.volume_change = false)
-            .unwrap();
-        let saved = model.cx.settings::<AudioPrefs>().get().system_sounds;
+        edit_path(&mut app, AUDIO, &["system_sounds", "volume"], 0.3).unwrap();
+        edit_path(&mut app, AUDIO, &["system_sounds", "theme"], "ocean").unwrap();
+        edit_path(
+            &mut app,
+            AUDIO,
+            &["system_sounds", "events", "volume_change"],
+            false,
+        )
+        .unwrap();
+        let saved = app.settings::<AudioPrefs>().get().system_sounds;
         assert!((saved.volume - 0.3).abs() < 0.001);
         assert_eq!(saved.theme.as_deref(), Some("ocean"));
         assert!(!saved.events.volume_change);
@@ -3196,31 +2701,67 @@ mod tests {
             saved.events.low_battery,
             "untouched events keep their choice"
         );
-
-        model
-            .apply(&AudioEffect::SetSoundTheme {
-                theme: "Default".into(),
-            })
-            .unwrap();
-        model
-            .cx
-            .settings::<AudioPrefs>()
-            .update(|prefs| prefs.system_sounds.enabled = false)
-            .unwrap();
-        let saved = model.cx.settings::<AudioPrefs>().get().system_sounds;
-        assert!(!saved.enabled);
-        assert_eq!(
-            saved.theme, None,
-            "the default theme is stored as no choice"
-        );
         assert!(
-            model
-                .apply(&AudioEffect::SetSoundTheme {
-                    theme: "Not installed".into()
-                })
-                .is_err()
+            edit_path(&mut app, AUDIO, &["mono_output"], false).is_err(),
+            "mono output changes only through its verb"
         );
-        assert_eq!(model.cx.settings::<AudioPrefs>().get().system_sounds, saved);
+
+        // The page's switches and choosers are bound to those edits.
+        change_model(&mut app, |model| {
+            model.event_sounds_available = true;
+            model.sound_themes = vec![
+                SoundTheme {
+                    id: "freedesktop".into(),
+                    name: "Default".into(),
+                },
+                SoundTheme {
+                    id: "ocean".into(),
+                    name: "Ocean".into(),
+                },
+            ];
+        });
+        let _ = frame(&mut app);
+        let bound: Vec<String> =
+            ui::widget::controls::control_action_bindings(app.harness().root_widget())
+                .into_iter()
+                .filter(|binding| {
+                    matches!(
+                        &binding.kind,
+                        ui::widget::ControlBindingKind::Action(address)
+                            if address.resource == format!("settings:{AUDIO}")
+                    )
+                })
+                .map(|binding| binding.control_id)
+                .collect();
+        for control in [
+            "audio.system_sounds",
+            "audio.system_sound_volume",
+            "audio.sound_theme",
+            "audio.event_sound.low_battery",
+        ] {
+            assert!(
+                bound.iter().any(|id| id == control),
+                "{control} changes the section: {bound:?}"
+            );
+        }
+
+        // Turning mono output off while the page is open says what it did.
+        invoke_section(
+            &mut app,
+            AUDIO,
+            "set-mono-output",
+            serde_json::json!({ "on": false }),
+        )
+        .unwrap();
+        let text = frame(&mut app);
+        assert!(text.contains(&t("sound-notice-mono-restored")), "{text}");
+
+        edit_path(&mut app, AUDIO, &["system_sounds", "enabled"], false).unwrap();
+        let text = frame(&mut app);
+        assert!(
+            !text.contains(&t("sound-theme")),
+            "with system sounds off only their switch is shown: {text}"
+        );
     }
 
     /// A mixer that does not answer until it is let go, as `wpctl` does
@@ -3254,7 +2795,7 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
-        app.with_widget::<SettingsApp, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             crate::panes::audio::area(settings)
                 .unwrap()
                 .model()
@@ -3272,7 +2813,7 @@ mod tests {
             .expect("the window draws its next frame");
         gate.assert_held("the click");
         let shows_set_level = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>| {
-            app.with_widget::<SettingsApp, _>(|settings| {
+            app.with_widget::<crate::window::Inspected, _>(|settings| {
                 (crate::panes::audio::area(settings)
                     .unwrap()
                     .model()

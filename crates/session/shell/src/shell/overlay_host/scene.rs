@@ -27,9 +27,7 @@ impl ShellOverlayHost {
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.overview_zoom_moving(now),
                 workspace_switch: self.workspace_switch_owed() || self.workspace_slide_moving(now),
-                quick_settings: self.qs_motion.is_animating(now)
-                    || self.qs_root.is_animating(now)
-                    || self.qs_root_scroll_fading(),
+                quick_settings: self.qs_motion.is_animating(now),
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_moving(now),
                 power_menu: layers.power_menu.is_animating(now),
@@ -40,9 +38,11 @@ impl ShellOverlayHost {
                 display_confirm: layers.display_question.visible()
                     || layers.display_confirm.is_animating(now),
                 follow: self.follow_banner.is_moving(now),
-                projection: self.projection_overlay.needs_animation_frame(now)
+                projection: self.display_sheet_needs_frame(now)
                     || self.display_identify.needs_frame(now),
-                content: self.content.needs_animation_frame(),
+                // The top bar was the desktop's own content until it became
+                // an app the shell hosts; its frames still count as such.
+                content: self.content.needs_animation_frame() || self.topbar_needs_frame(),
                 strip_switcher: self.strip_navigator.labels_need_animation_frame(now),
                 strip_indicators: self.strip_navigator.indicators_need_animation_frame(now),
                 capture_mirror: self
@@ -53,10 +53,7 @@ impl ShellOverlayHost {
                     .screenshot_markup
                     .as_ref()
                     .is_some_and(Widget::needs_animation_frame),
-                notification: self.chrome.as_ref().is_some_and(|chrome| {
-                    self.notification_stack
-                        .needs_animation_frame(&ChromeNotifications::new(chrome))
-                }),
+                notification: self.chrome.is_some() && self.banners_need_frame(),
                 desk: self.desk_animating(now),
                 cursor_chat: self.cursor_chat_animating(now),
                 collaborators: (self.overlay_flags().collaborators
@@ -73,7 +70,7 @@ impl ShellOverlayHost {
                 fullscreen_hint: self.fullscreen_hint_fading(now),
                 window_previews: self.window_previews.changed(),
                 peer_sync: self.peer_sync_overlay.needs_animation_frame(),
-                directory_sheet: self.directory_sheet.needs_animation_frame(),
+                directory_sheet: self.layers.directory.is_animating(now),
                 feedback_picker: self.feedback_picker.needs_animation_frame(now),
                 control_hints: self.control_hints_animating(now),
             },
@@ -166,20 +163,14 @@ impl ShellOverlayHost {
         self.refresh_active_tab_presence();
         self.refresh_live_layout();
         self.hand_flying_windows_to_the_overview(ui::time::now());
-        self.qs_root.set_layout_text_scale(theme.text_scale);
-        self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
         self.qs_panel = QsPanelMetrics::for_theme(theme);
         if let Some(chrome) = self.chrome.as_ref() {
             // A live projection holds notification banners back so their
             // contents never reach the room.
             chrome.borrow_mut().set_presenting(matches!(
-                self.projection_overlay.controller().status,
+                self.display_sheet.controller().status,
                 crate::shell::projection::ProjectionStatus::Connected { .. }
             ));
-            // The root keeps its natural size; a popover shorter than the
-            // page scrolls it (`QuickSettingsRoot::draw`).
-            let state = chrome.borrow();
-            self.qs_root.sync_displays(&state.quick_settings);
         }
 
         let flags = self.overlay_flags();
@@ -198,7 +189,7 @@ impl ShellOverlayHost {
             // accessor; `&mut self` makes the access exclusive.
             unsafe { (&mut *row).set_drawn_apart(true) };
         }
-        let topbar_bounds = self.draw_workspace_sections(
+        let content_bounds = self.draw_workspace_sections(
             backdrop,
             topbar,
             workspace,
@@ -301,6 +292,16 @@ impl ShellOverlayHost {
         self.prepare_strip_indicators(Instant::now());
         self.prepare_control_hints(Instant::now());
         self.sync_top_bar_presence(Instant::now());
+        // The top bar app over the windows, with the presence just settled:
+        // its bars on every display and the menu or card one opened.
+        let topbar_bounds = self.draw_topbar(
+            topbar,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            content_bounds,
+        );
         let quick_settings_transition_visible = self.qs_motion.is_visible(ui::time::now());
         phase_at = scene_phase("scene/sections/overlays", phase_at);
         // The panel, the ribbon and the rail are each a damage part of the
@@ -379,8 +380,18 @@ impl ShellOverlayHost {
             },
         );
         self.room_activity.observe_replay_presence(presence);
+        let outputs = self.layer_outputs();
         overlay_part(above_quick_settings, "shell.projection", desktop, |scene| {
-            self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
+            use super::layers::ShellLayer as _;
+            self.layers.display_sheet.draw(&mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
+            });
             None
         });
         overlay_part(
@@ -482,15 +493,6 @@ impl ShellOverlayHost {
         });
         overlay_part(
             above_quick_settings,
-            "shell.bar-popovers",
-            desktop,
-            |scene| {
-                self.draw_bar_popovers(scene, transform, text_renderer, theme, presence);
-                None
-            },
-        );
-        overlay_part(
-            above_quick_settings,
             "shell.control-hints",
             desktop,
             |scene| {
@@ -549,22 +551,24 @@ impl ShellOverlayHost {
         self.overlay_is_open(id, self.overlay_flags())
     }
 
-    /// Open the palette empty and focused, as its chord does.
+    /// Open search empty, as its chord does.
     #[cfg(test)]
     pub(crate) fn open_palette_for_test(&mut self) {
         self.palette_visible = true;
-        self.palette.set_focus(true);
-        self.palette.set_query("");
+        self.search.set_query("");
         self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
     }
 
     /// The open overlays, topmost first — the order the synthetic
-    /// accessibility tree publishes them in.
+    /// accessibility tree publishes them in. Search is the launcher's,
+    /// which publishes its own tree as this host's child.
     pub(super) fn accessible_overlay_order(&self) -> Vec<LayerId> {
         let flags = self.overlay_flags();
         LayerId::ALL
             .into_iter()
-            .filter(|&id| !id.is_app() && self.overlay_is_open(id, flags))
+            .filter(|&id| {
+                !id.is_app() && id != LayerId::CommandPalette && self.overlay_is_open(id, flags)
+            })
             .collect()
     }
 
@@ -580,13 +584,9 @@ impl ShellOverlayHost {
         }
         match id {
             LayerId::DisplayLayouts => flags.projection,
-            // The palette has a complete semantic tree (query, result list,
-            // and focused result).  It is drawn as a top overlay, so publish
-            // it from the same ordered synthetic tree as every other overlay
-            // rather than leaving screen readers with only the obscured
-            // workspace.
             LayerId::CommandPalette => self.palette_visible,
             LayerId::MemberSheet => self.workspace_settings_overlay.member_sheet_is_open(),
+            LayerId::Directory => self.directory_sheet.is_open(),
             LayerId::Overview => flags.overview,
             LayerId::WorkspaceSettings => flags.ws_settings,
             LayerId::Collaborators => flags.collaborators,
@@ -620,11 +620,6 @@ impl ShellOverlayHost {
             self.overview_zoom
                 .show(open, ui::motion::Zoom::OVERVIEW, motion, source, now);
             self.request_compositor_transition_paints();
-            // Reseed from the current room so the first arrow press moves
-            // one step from here, not from a stale previous visit.
-            self.reseed_overview_selection(open);
-            self.overview_scroll_y = 0.0;
-            self.overview_naming = None;
         }
         self.overview_zoom.progress(now)
     }
@@ -647,7 +642,7 @@ impl ShellOverlayHost {
             .chrome
             .as_ref()
             .is_some_and(|chrome| chrome.borrow().overlays.overview);
-        let motion = self.overview_layout_theme.motion();
+        let motion = self.layout_theme.motion();
         let _ = self.sync_overview_zoom(open, source, motion);
     }
 
@@ -663,12 +658,13 @@ impl ShellOverlayHost {
 
     /// Whether the desktop is being rearranged right now: a workspace switch
     /// owes its frame, or the overview's windows or a workspace slide are in
-    /// flight, or setup has the screen instead of the desktop. A pointer
-    /// action read meanwhile names a rectangle the caller was not shown.
+    /// flight. A pointer action read meanwhile names a rectangle the caller
+    /// was not shown. Setup in front of the desktop is a fact of its own
+    /// ([`Self::onboarding_is_open`]): it holds back the desktop's targets,
+    /// not its own.
     pub fn desktop_is_moving(&self) -> bool {
         let now = ui::time::now();
-        self.onboarding_is_open()
-            || self.workspace_switch_owed()
+        self.workspace_switch_owed()
             || self.overview_zoom_moving(now)
             || self.workspace_slide_moving(now)
     }
@@ -676,12 +672,6 @@ impl ShellOverlayHost {
     /// Whether setup stands in front of the desktop.
     pub fn onboarding_is_open(&self) -> bool {
         self.onboarding.is_some()
-    }
-
-    /// A key opened or closed the overview: the windows fly at `fast`, as
-    /// spatial context, and input acts on the new state at once.
-    pub(super) fn latch_keyboard_overview(&mut self) {
-        self.latch_overview_transition_from(ui::tokens::MotionSource::Keyboard);
     }
 
     /// A workspace switch was asked for by `source`: ask for the frame that
@@ -745,8 +735,6 @@ impl ShellOverlayHost {
     #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         chrome.borrow_mut().peer_sync_enabled = self.peer_sync_enabled;
-        self.projection_overlay
-            .bind_shared_display_authority(chrome.clone());
         self.chrome = Some(chrome);
         self
     }
@@ -772,7 +760,7 @@ impl ShellOverlayHost {
     pub(super) fn wake_deadline_sources(
         &self,
         now: Instant,
-    ) -> [(&'static str, Option<Instant>); 23] {
+    ) -> [(&'static str, Option<Instant>); 24] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -795,13 +783,11 @@ impl ShellOverlayHost {
             ),
             ("people", self.people_wake_deadline()),
             ("content", self.content.next_wake_deadline()),
+            ("topbar", self.topbar_deadline()),
             ("strip-switcher", self.strip_switcher_wake_deadline(now)),
             (
                 "notification",
-                self.chrome.as_ref().and_then(|chrome| {
-                    self.notification_stack
-                        .next_wake_deadline(&ChromeNotifications::new(chrome))
-                }),
+                self.chrome.as_ref().and_then(|_| self.banners_deadline()),
             ),
             (
                 // Clear all's Undo goes away when its window ends, though
@@ -829,15 +815,10 @@ impl ShellOverlayHost {
             ("fullscreen-hint", self.fullscreen_hint_deadline(now)),
             ("now-playing", self.now_playing_wake_deadline(now)),
             (
-                "quick-settings-scroll",
-                self.chrome
-                    .as_ref()
-                    .is_some_and(|chrome| chrome.borrow().overlays.quick_settings)
-                    .then(|| {
-                        self.qs_root
-                            .scroll_wake_deadline(&self.overview_layout_theme)
-                    })
-                    .flatten(),
+                "quick-settings",
+                self.quick_settings
+                    .app()
+                    .and_then(ui::widget::Widget::next_wake_deadline),
             ),
             ("quick-settings-wifi-scan", self.qs_wifi_rescan_deadline()),
             ("window-previews", self.window_previews_wake_deadline(now)),

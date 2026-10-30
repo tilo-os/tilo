@@ -2,10 +2,10 @@
 //! "Errors that teach"): `grep`, `find`, the chaining functions, `read`, `describe` and `print`,
 //! over every app the task may read.
 //!
-//! Two app hosts as the door reaches them: one runs Tasks and a journal, the other Notes, Chat
-//! and Board with their scenarios. The task's programs run in a host of the task's own, which
-//! holds no records: what a program asks of an app is answered by that app's host
-//! (`read-for-program`) while it runs.
+//! Two rooms' worth of records: Tasks and a journal in one, Notes, Chat and Board with their
+//! scenarios in the other. The task's programs run in a host of the task's own, which reads
+//! each app's record itself as the door hands it over (`task_records`): no app's host answers
+//! what a program asks.
 
 use std::fmt::Write as _;
 use std::rc::Rc;
@@ -84,7 +84,7 @@ fn world() -> World {
         other.commit();
     }
     let apps = Rc::new(apps);
-    let task = apps.task();
+    let (task, _door) = apps.record_task();
     // The task reads times as they are: what an app wrote just now was changed within any recent window.
     task.set_clock(tilolang_tilo::host::system_time);
     World { task }
@@ -411,4 +411,33 @@ fn a_session_of_the_agents_doc_examples() {
         transcript.contains("single: 5 match, not one"),
         "{transcript}"
     );
+}
+
+#[test]
+fn a_task_reads_each_record_anew_for_every_program_and_after_changing_it() {
+    let apps = Rc::new(Apps::new(&[&[app!("notes")]]));
+    let (task, _door) = apps.record_task();
+    task.set_clock(tilolang_tilo::host::system_time);
+    let notes = "so.tilo.lang.notes";
+    let fetches = || {
+        apps.fetched
+            .borrow()
+            .iter()
+            .filter(|app| *app == notes)
+            .count()
+    };
+    printed(&task.run(r#"find("standup")"#, true));
+    printed(&task.run(r#"find("standup")"#, true));
+    assert_eq!(
+        fetches(),
+        2,
+        "each program fetches the record it reads again"
+    );
+    // A note the program makes is found by the same program: the record is read again after
+    // the change.
+    let out = printed(&task.run(
+        "let n = notes.new_note(notes.notes)\nn.title = \"Coffee order\"\nfind(\"coffee\")",
+        true,
+    ));
+    assert!(out.contains("Coffee order"), "{out}");
 }

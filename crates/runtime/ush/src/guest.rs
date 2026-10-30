@@ -86,6 +86,13 @@ impl GuestUser {
     pub fn home(&self) -> PathBuf {
         PathBuf::from("/home").join(&self.name)
     }
+
+    /// The guest's `XDG_RUNTIME_DIR`: a tmpfs of its own, the user's alone
+    /// (0700), living as long as the guest, where programs keep their
+    /// sockets, locks and pid files (podman, gpg-agent, dbus).
+    pub fn runtime_dir(&self) -> PathBuf {
+        PathBuf::from("/run/user").join(self.uid.to_string())
+    }
 }
 
 /// A name safe to put in `passwd` and in a path: what `useradd` accepts.
@@ -451,6 +458,12 @@ fn push_pseudo_filesystems_and_var(a: &mut Vec<OsString>, plan: &GuestPlan) {
         a.push(flag.into());
         a.push(dest.into());
     }
+    a.extend([
+        "--perms".into(),
+        "0700".into(),
+        "--tmpfs".into(),
+        plan.user.runtime_dir().into_os_string(),
+    ]);
     for (target, link) in root_symlinks()
         .into_iter()
         .filter(|(_, link)| link.starts_with("/var"))
@@ -586,6 +599,11 @@ fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
     setenv("TERM", &plan.term, a);
     setenv("USER", &plan.user.name, a);
     setenv("LOGNAME", &plan.user.name, a);
+    setenv(
+        "XDG_RUNTIME_DIR",
+        &plan.user.runtime_dir().to_string_lossy(),
+        a,
+    );
     setenv("SHELL", &plan.shell.to_string_lossy(), a);
     setenv("TILO_USH_ENVIRONMENT", &plan.environment, a);
     if broker {

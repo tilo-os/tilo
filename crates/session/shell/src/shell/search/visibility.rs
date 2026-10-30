@@ -431,66 +431,59 @@ mod tests {
         );
     }
 
+    // A document-shaped resource is never gated.
     #[test]
-    fn showing_needs_no_authority_but_launching_is_decided_on_the_app() {
-        // Phase `showing_a_document_requires_no_authority`.
-        // A document-shaped resource is never gated.
-        {
-            for kind in [
-                ResourceKind::Note,
-                ResourceKind::Record,
-                ResourceKind::File,
-                ResourceKind::Folder,
-            ] {
-                assert_eq!(
-                    required_action(&resource("notes", "abc"), &kind),
-                    None,
-                    "{kind:?} must not require authority to be shown"
-                );
-            }
-        }
-
-        // Phase `opening_an_overlay_is_showing_not_acting`.
-        // Reveals a view and changes nothing; not an act.
-        {
-            for id in [
-                "shortcut-help.toggle",
-                "overview.toggle",
-                "settings.open",
-                "quick-settings.open",
-                "quick-settings.clipboard",
-                "quick-settings.devices",
-                "projection.open",
-                "collaborators.open",
-                "room.activity.open",
-            ] {
-                assert_eq!(
-                    required_action(&resource("actions", id), &ResourceKind::Action),
-                    None,
-                    "{id} opens a view and must not be gated"
-                );
-            }
-        }
-
-        // Phase `launching_an_app_is_decided_on_that_app`.
-        // Launching an app is decided at the app being launched, so a grant
-        // can name one app without opening the whole catalogue.
-        {
-            let (node, kind) = required_action(
-                &resource("applications", "so.tilo.terminal"),
-                &ResourceKind::Application,
-            )
-            .expect("launching must be gated");
-            assert_eq!(kind, ActionKind::Undoable);
-            assert_eq!(node, TreePath::root().app("so.tilo.terminal"));
+    fn showing_a_document_requires_no_authority() {
+        for kind in [
+            ResourceKind::Note,
+            ResourceKind::Record,
+            ResourceKind::File,
+            ResourceKind::Folder,
+        ] {
+            assert_eq!(
+                required_action(&resource("notes", "abc"), &kind),
+                None,
+                "{kind:?} must not require authority to be shown"
+            );
         }
     }
 
+    // Reveals a view and changes nothing; not an act.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
+    fn opening_an_overlay_is_showing_not_acting() {
+        for id in [
+            "shortcut-help.toggle",
+            "overview.toggle",
+            "settings.open",
+            "quick-settings.open",
+            "quick-settings.clipboard",
+            "quick-settings.devices",
+            "projection.open",
+            "collaborators.open",
+            "room.activity.open",
+        ] {
+            assert_eq!(
+                required_action(&resource("actions", id), &ResourceKind::Action),
+                None,
+                "{id} opens a view and must not be gated"
+            );
+        }
+    }
+
+    // Launching an app is decided at the app being launched, so a grant
+    // can name one app without opening the whole catalogue.
+    #[test]
+    fn launching_an_app_is_decided_on_that_app() {
+        let (node, kind) = required_action(
+            &resource("applications", "so.tilo.terminal"),
+            &ResourceKind::Application,
+        )
+        .expect("launching must be gated");
+        assert_eq!(kind, ActionKind::Undoable);
+        assert_eq!(node, TreePath::root().app("so.tilo.terminal"));
+    }
+
+    #[test]
     fn acting_needs_the_matching_answer_and_unclassified_acts_fail_closed() {
         {
             for id in [
@@ -540,103 +533,103 @@ mod tests {
                 TreePath::root().app(SHELL_APP_ID).action("record.bring")
             );
         }
+    }
 
-        // Phase `an_unauthorised_caller_cannot_see_the_document_edit`.
-        // Hides the edit from someone holding nothing while still showing
-        // them the document itself, against a real `Workspace`.
-        {
-            let owner: UserId = "owner".to_string();
-            let stranger: UserId = "stranger".to_string();
-            let mut ws = owned("edit-gate", &owner);
+    // Hides the edit from someone holding nothing while still showing
+    // them the document itself, against a real `Workspace`.
+    #[test]
+    fn an_unauthorised_caller_cannot_see_the_document_edit() {
+        let owner: UserId = "owner".to_string();
+        let stranger: UserId = "stranger".to_string();
+        let mut ws = owned("edit-gate", &owner);
 
-            let edit = resource("actions", "record.bring");
-            let note = resource("notes", "15");
+        let edit = resource("actions", "record.bring");
+        let note = resource("notes", "15");
 
-            let stranger_view = PolicyVisibility::new(&ws, ws.actor_for_person(&stranger));
-            assert!(
-                !stranger_view.can_see(&edit, &ResourceKind::Action),
-                "someone holding nothing must not be offered the edit"
-            );
-            assert!(
-                stranger_view.can_see(&note, &ResourceKind::Note),
-                "…but the document itself stays visible: showing is free"
-            );
+        let stranger_view = PolicyVisibility::new(&ws, ws.actor_for_person(&stranger));
+        assert!(
+            !stranger_view.can_see(&edit, &ResourceKind::Action),
+            "someone holding nothing must not be offered the edit"
+        );
+        assert!(
+            stranger_view.can_see(&note, &ResourceKind::Note),
+            "…but the document itself stays visible: showing is free"
+        );
 
-            let owner_view = PolicyVisibility::new(&ws, ws.actor_for_person(&owner));
-            assert!(
-                owner_view.can_see(&edit, &ResourceKind::Action),
-                "the room's owner may edit its documents"
-            );
+        let owner_view = PolicyVisibility::new(&ws, ws.actor_for_person(&owner));
+        assert!(
+            owner_view.can_see(&edit, &ResourceKind::Action),
+            "the room's owner may edit its documents"
+        );
 
-            grant_room(
-                &mut ws,
-                Subject::person(stranger.clone()),
-                KindSet::READ_UNDOABLE,
-            );
-            let granted = PolicyVisibility::new(&ws, ws.actor_for_person(&stranger));
-            assert!(
-                granted.can_see(&edit, &ResourceKind::Action),
-                "granting undoable changes must make the edit reachable"
-            );
+        grant_room(
+            &mut ws,
+            Subject::person(stranger.clone()),
+            KindSet::READ_UNDOABLE,
+        );
+        let granted = PolicyVisibility::new(&ws, ws.actor_for_person(&stranger));
+        assert!(
+            granted.can_see(&edit, &ResourceKind::Action),
+            "granting undoable changes must make the edit reachable"
+        );
+    }
+
+    // A new provider landing without a mapping should go dark, not open.
+    #[test]
+    fn an_unclassified_action_fails_closed() {
+        let (_, kind) = required_action(
+            &resource("actions", "some.provider.landed.without.a.mapping"),
+            &ResourceKind::Action,
+        )
+        .expect("an unmapped action must be gated, not waved through");
+        assert_eq!(kind, ActionKind::Undoable);
+    }
+
+    // End-to-end: an owner sees gated actions, someone holding nothing
+    // does not, both still see the ungated ones.
+    #[test]
+    fn the_gate_hides_acts_from_someone_holding_nothing() {
+        let owner: UserId = "owner".to_string();
+        let stranger: UserId = "stranger".to_string();
+        let mut ws = owned("gate-test", &owner);
+
+        let owner_view = PolicyVisibility::new(&ws, ws.actor_for_person(&owner));
+        let stranger_view = PolicyVisibility::new(&ws, ws.actor_for_person(&stranger));
+
+        let gated = resource("actions", "window.new.terminal");
+        let ungated = resource("actions", "settings.open");
+        let document = resource("notes", "note-1");
+
+        assert!(
+            owner_view.can_see(&gated, &ResourceKind::Action),
+            "the room's owner must see an act they may perform"
+        );
+        assert!(
+            !stranger_view.can_see(&gated, &ResourceKind::Action),
+            "someone holding nothing must not see the act"
+        );
+
+        // …but showing is never gated, for either of them.
+        for view in [&owner_view, &stranger_view] {
+            assert!(view.can_see(&ungated, &ResourceKind::Action));
+            assert!(view.can_see(&document, &ResourceKind::Note));
         }
 
-        // Phase `an_unclassified_action_fails_closed`.
-        // A new provider landing without a mapping should go dark, not open.
-        {
-            let (_, kind) = required_action(
-                &resource("actions", "some.provider.landed.without.a.mapping"),
-                &ResourceKind::Action,
-            )
-            .expect("an unmapped action must be gated, not waved through");
-            assert_eq!(kind, ActionKind::Undoable);
-        }
-
-        // Phase `the_gate_hides_acts_from_someone_holding_nothing`.
-        // End-to-end: an owner sees gated actions, someone holding nothing
-        // does not, both still see the ungated ones.
-        {
-            let owner: UserId = "owner".to_string();
-            let stranger: UserId = "stranger".to_string();
-            let mut ws = owned("gate-test", &owner);
-
-            let owner_view = PolicyVisibility::new(&ws, ws.actor_for_person(&owner));
-            let stranger_view = PolicyVisibility::new(&ws, ws.actor_for_person(&stranger));
-
-            let gated = resource("actions", "window.new.terminal");
-            let ungated = resource("actions", "settings.open");
-            let document = resource("notes", "note-1");
-
-            assert!(
-                owner_view.can_see(&gated, &ResourceKind::Action),
-                "the room's owner must see an act they may perform"
-            );
-            assert!(
-                !stranger_view.can_see(&gated, &ResourceKind::Action),
-                "someone holding nothing must not see the act"
-            );
-
-            // …but showing is never gated, for either of them.
-            for view in [&owner_view, &stranger_view] {
-                assert!(view.can_see(&ungated, &ResourceKind::Action));
-                assert!(view.can_see(&document, &ResourceKind::Note));
-            }
-
-            // A grant makes exactly that act appear, without opening
-            // anything else.
-            grant_room(
-                &mut ws,
-                Subject::person(stranger.clone()),
-                KindSet::READ_UNDOABLE,
-            );
-            let granted_view = PolicyVisibility::new(&ws, ws.actor_for_person(&stranger));
-            assert!(
-                granted_view.can_see(&gated, &ResourceKind::Action),
-                "granting undoable changes must make the act visible"
-            );
-            assert!(
-                !granted_view.can_see(&resource("actions", "peer.invite"), &ResourceKind::Action),
-                "undoable changes must not confer inviting"
-            );
-        }
+        // A grant makes exactly that act appear, without opening
+        // anything else.
+        grant_room(
+            &mut ws,
+            Subject::person(stranger.clone()),
+            KindSet::READ_UNDOABLE,
+        );
+        let granted_view = PolicyVisibility::new(&ws, ws.actor_for_person(&stranger));
+        assert!(
+            granted_view.can_see(&gated, &ResourceKind::Action),
+            "granting undoable changes must make the act visible"
+        );
+        assert!(
+            !granted_view.can_see(&resource("actions", "peer.invite"), &ResourceKind::Action),
+            "undoable changes must not confer inviting"
+        );
     }
 }

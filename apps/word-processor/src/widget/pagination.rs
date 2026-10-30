@@ -23,15 +23,14 @@ use vello::kurbo::Rect;
 use vello::peniko::Color;
 
 use super::{
-    ESTIMATED_BLOCK_EXTENT, Edges, FLOAT_GUTTER, FloatReserve, FrameGeometry, ImagePlacement, Laid,
-    MAX_PAGE_W, PAGE_GAP, PAGE_TOP, PAPER_INK, PageCursor, PaginationResult,
+    ESTIMATED_BLOCK_EXTENT, Edges, Editor, FLOAT_GUTTER, FloatReserve, FrameGeometry,
+    ImagePlacement, Laid, MAX_PAGE_W, PAGE_GAP, PAGE_TOP, PAPER_INK, PageCursor, PaginationResult,
     ParagraphPaginationContext, ParagraphPlacement, ParagraphShape, ResolvedImage,
-    TableLayoutContext, TableRow, VIEWPORT_BLOCK_WINDOW, VIRTUALIZE_BODY_AFTER,
-    WordProcessorWidget, layout_line_tops,
+    TableLayoutContext, TableRow, VIEWPORT_BLOCK_WINDOW, VIRTUALIZE_BODY_AFTER, layout_line_tops,
 };
 
 /// Frame-level geometry resolved once per frame by
-/// [`WordProcessorWidget::draw_frame_chrome`] and threaded through `draw`'s
+/// [`Editor::draw_frame_chrome`] and threaded through `draw`'s
 /// other per-pass helpers below — split out so `draw` itself stays under the
 /// line-count limit.
 /// The canvas clip as a vertical band in the coordinates of a laid text item
@@ -165,7 +164,7 @@ impl PageCursor {
     }
 }
 
-impl WordProcessorWidget {
+impl Editor {
     /// Pass 1 of [`Self::draw`]: shape blocks top-to-bottom and paginate them
     /// across discrete page sheets. Runs of consecutive `cell` blocks sharing a
     /// table id lay out as a grid; everything else stacks normally.

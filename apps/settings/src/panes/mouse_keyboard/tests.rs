@@ -3,10 +3,17 @@
 
 use super::tablet::*;
 use super::*;
-use crate::effects::SettingsEffect;
-use crate::host::testing::{INPUT, INPUT_DEVICE, TEXT_ASSISTANCE, edit_field};
+use crate::prefs::tablet_choices::{
+    PadButtonChoice, WHOLE_DESKTOP, dial, dial_id, eraser, eraser_id, pad_button, pad_button_id,
+    set_pad_button, stylus_button, stylus_button_id,
+};
 use crate::resource::SettingsShell;
+use crate::testing::{INPUT, INPUT_DEVICE, TEXT_ASSISTANCE, edit_field, invoke_section};
+use settings_store::hardware::{
+    EraserAction, PadDial, PadDialAction, ShortcutAction, StylusButtonAction, TabletConfig,
+};
 use ui::prelude::TestApp;
+use ui::theme::Theme;
 use winit::event::WindowEvent;
 
 #[test]
@@ -103,9 +110,25 @@ fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
 
 #[test]
 fn personal_dictionary_editor_renders_preserved_words_and_clear_controls() {
-    use settings_store::personal_dictionary::{Edit, Service, Vocabulary, Word};
+    use settings_store::personal_dictionary::{Edit, Service, Vocabulary, Word, host::Host};
+    use std::sync::Arc;
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ui::local_identity::install_source(None);
+        }
+    }
+    let _guard = tilo_test_env::lock();
+    let _restore = Restore;
+    ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
+        ui::local_identity::LocalIdentity {
+            group_public_key: [1; 32],
+            display_name: String::new(),
+            avatar_color: [0; 3],
+        },
+    ))));
     let profile = tempfile::tempdir().unwrap();
-    let service = Service::new(profile.path().join("dictionary")).unwrap();
+    let service = Arc::new(Service::new(profile.path().join("dictionary")).unwrap());
     let reader = service.bind(Some([1; 32])).unwrap();
     for (word, language) in [("Tilo", None), ("Élodie", Some("fr")), ("東京", Some("ja"))] {
         let revision = reader.snapshot().unwrap().revision;
@@ -117,30 +140,37 @@ fn personal_dictionary_editor_renders_preserved_words_and_clear_controls() {
             )
             .unwrap();
     }
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
-    let area = InputArea::new(&cx);
-    let mut pane = MouseKeyboardPane::new(cx, &area);
-    pane.dictionary = Some(reader.snapshot().unwrap());
-    let frame = ui::headless::FrameHarness::new(
-        ui::State::new(),
-        crate::widgets::page(vec![pane.dictionary_card()]),
-        (1100, 760),
-    );
+    let source = Arc::new(Host::new(
+        Arc::new(settings_store::HostDocument::new(
+            serde_json::Map::new(),
+            |_| Ok(()),
+        )),
+        service,
+        Arc::new(|| Some([1; 32])),
+    ));
+    let mut app = TestApp::<SettingsShell>::for_person(&"01".repeat(32)).unwrap();
+    let _host =
+        ui::personal_dictionary::TestHost::new(source, "so.tilo.settings", [1; 32]).unwrap();
+    app.harness().resize((1100, 1400)).unwrap();
+    crate::effects::show_pane(&mut app, crate::categories::Category::Spelling);
+    app.settle();
+    let targets = app.harness().targets();
     for control in [
         "dictionary.word",
         "dictionary.language",
         "dictionary.add",
         "dictionary.0.save",
         "dictionary.0.remove",
+        "dictionary.2.word",
         "dictionary.reset",
     ] {
         assert!(
-            frame.targets().contains_key(control),
+            targets.contains_key(control),
             "missing shared dictionary control: {control}"
         );
     }
     if let Some(path) = std::env::var_os("TILO_DICTIONARY_SCREENSHOT") {
-        frame.render_png(std::path::Path::new(&path));
+        app.harness().render_png(std::path::Path::new(&path));
     }
 }
 
@@ -168,7 +198,7 @@ pub(super) fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, 
     // them once the read has landed.
     tilo_test_env::wait_until("the device's layouts are read", || {
         app.settle();
-        app.with_widget::<crate::settings_app::SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             !crate::panes::mouse_keyboard::area(settings)
                 .unwrap()
                 .catalog_pending()
@@ -263,7 +293,7 @@ fn dropdown_language_mounted_settings_flow_is_clear_and_keyboard_operable() {
                 panic!(
                     "{name}: the chooser is still on the page after Escape closed its list \
                      ({error}); showing {:?}",
-                    app.with_widget::<crate::settings_app::SettingsApp, _>(|settings| (
+                    app.with_widget::<crate::window::Inspected, _>(|settings| (
                         settings.selected(),
                         settings.sidebar_open()
                     ))
@@ -299,30 +329,16 @@ fn dropdown_language_mounted_settings_flow_is_clear_and_keyboard_operable() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-fn pane_with(input: &InputPrefs, catalog: Vec<CatalogEntry>) -> MouseKeyboardPane {
+/// An area over `catalog` and no devices, in a profile of its own (kept
+/// with it).
+fn area_with(catalog: Vec<CatalogEntry>) -> (tempfile::TempDir, InputArea) {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
-    cx.settings::<InputPrefs>().set(input).unwrap();
-    let area = InputArea {
-        catalog: SourceCatalog::ready(catalog, None),
-        live: std::cell::Cell::new(false),
-        devices: std::rc::Rc::new(RefCell::new((None, None))),
-        following: RefCell::new(std::rc::Weak::new()),
-        editor: ui::LocalState::new(keyboard_editor::EditorState {
-            view: if cx.scene().is_some() {
-                keyboard_editor::SourceView::Configured
-            } else {
-                keyboard_editor::SourceView::Native
-            },
-            ..Default::default()
-        }),
-        osk_always: false,
-        document: cx.storage().settings_document().clone(),
-    };
-    MouseKeyboardPane::new(cx, &area)
+    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
+    let area = InputArea::over(&cx, SourceCatalog::ready(catalog, None), None);
+    (profile, area)
 }
 
-/// A shown pane reads the attached devices when the compositor's
+/// A shown page reads the attached devices when the compositor's
 /// snapshot changes, never on a timer; only a snapshot that cannot be
 /// watched is read once a second.
 #[test]
@@ -332,34 +348,46 @@ fn attached_devices_are_read_when_their_snapshot_changes_not_on_a_timer() {
             .checked_sub(std::time::Duration::from_secs(5))
             .unwrap()
     };
-    let mut pane = pane_with(&InputPrefs::default(), catalog());
-    pane.hardware_live = true;
-    let watch = std::rc::Rc::new(crate::watch::Watched::by_hand());
-    pane.devices_watch = Some(std::rc::Rc::clone(&watch));
-    assert!(pane.devices_due(), "the first sync reads them");
-    assert!(!pane.devices_due());
-    pane.next_device_poll = Some(long_ago());
-    assert!(!pane.devices_due(), "an idle pane reads nothing on a timer");
-    assert_eq!(pane.next_wake_deadline(), None, "nor sets a deadline");
+    let (_profile, area) = area_with(catalog());
+    area.live.set(true);
+    let watch = Rc::new(crate::watch::Watched::by_hand());
+    let showing = Rc::new(Showing {
+        watch: Some(Rc::clone(&watch)),
+    });
+    *area.showing.borrow_mut() = Rc::downgrade(&showing);
+    assert!(area.devices_due(Some(&watch)), "the first look reads them");
+    assert!(!area.devices_due(Some(&watch)));
+    area.next_device_poll.set(Some(long_ago()));
+    assert!(
+        !area.devices_due(Some(&watch)),
+        "an idle page reads nothing on a timer"
+    );
+    assert_eq!(area.wake_deadline(), None, "nor sets a deadline");
     watch.touch();
-    assert!(pane.devices_due(), "a changed snapshot is read");
-    assert!(!pane.devices_due(), "once");
+    assert!(area.devices_due(Some(&watch)), "a changed snapshot is read");
+    assert!(!area.devices_due(Some(&watch)), "once");
 
     let root = tempfile::tempdir().unwrap();
-    pane.devices_watch = Some(std::rc::Rc::new(crate::watch::Watched::files(&[root
+    let unwatched = Rc::new(crate::watch::Watched::files(&[root
         .path()
         .join("absent")
-        .join("input-state.json")])));
-    assert!(pane.next_wake_deadline().is_some());
-    pane.next_device_poll = Some(long_ago());
+        .join("input-state.json")]));
+    let showing = Rc::new(Showing {
+        watch: Some(Rc::clone(&unwatched)),
+    });
+    *area.showing.borrow_mut() = Rc::downgrade(&showing);
+    assert!(area.wake_deadline().is_some());
+    area.next_device_poll.set(Some(long_ago()));
     assert!(
-        pane.devices_due(),
+        area.devices_due(Some(&unwatched)),
         "an unwatchable snapshot is read each second"
     );
+    drop(showing);
+    assert_eq!(area.wake_deadline(), None, "no page, no wake");
 }
 
 /// The area watches the file the compositor publishes the attached
-/// devices in, and every pane showing them shares that one watch.
+/// devices in, and every page showing them shares that one watch.
 #[test]
 fn the_input_area_watches_the_compositors_input_snapshot() {
     let runtime = tempfile::tempdir().unwrap();
@@ -367,19 +395,11 @@ fn the_input_area_watches_the_compositors_input_snapshot() {
     env.set("XDG_RUNTIME_DIR", runtime.path());
     let snapshot = settings_store::hardware::input_snapshot_path().unwrap();
     std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
-    let pane = pane_with(&InputPrefs::default(), catalog());
-    let area = InputArea {
-        catalog: SourceCatalog::ready(catalog(), None),
-        live: std::cell::Cell::new(true),
-        devices: std::rc::Rc::new(RefCell::new((None, None))),
-        following: RefCell::new(std::rc::Weak::new()),
-        editor: ui::LocalState::new(keyboard_editor::EditorState::default()),
-        osk_always: false,
-        document: pane.cx.storage().settings_document().clone(),
-    };
+    let (_profile, area) = area_with(catalog());
+    area.live.set(true);
     let watch = area.follow().expect("a live area follows its devices");
     assert!(watch.is_complete());
-    assert!(std::rc::Rc::ptr_eq(&watch, &area.follow().unwrap()));
+    assert!(Rc::ptr_eq(&watch, &area.follow().unwrap()));
     assert!(watch.take(), "the first look reads the snapshot");
     InputHardwareSnapshot::default().save().unwrap();
     tilo_test_env::wait_until("a published snapshot to be flagged", || watch.take());
@@ -402,76 +422,76 @@ fn catalog() -> Vec<CatalogEntry> {
     ]
 }
 
-/// The pane lays out and imported repeat settings show the live rate or disabled.
+/// Imported repeat settings show the live rate, or that repeat is off.
 #[test]
 #[expect(
     clippy::float_cmp,
     reason = "off, pass-through and clamped slider values are exact sentinels, not computed"
 )]
-fn input_pane_lays_out_and_shows_imported_repeat_settings() {
-    {
-        let mut pane = pane_with(&InputPrefs::default(), catalog());
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
-    }
+fn imported_repeat_settings_show_the_live_rate_or_off() {
+    let disabled = InputPrefs {
+        key_repeat: 0.5,
+        key_repeat_delay_ms: Some(500),
+        key_repeat_rate_hz: Some(0),
+        ..Default::default()
+    };
+    assert_eq!(key_repeat_slider_value(&disabled), 0.0);
+    assert_eq!(
+        key_repeat_description(&disabled),
+        "Repeat is off. Move the slider to turn it on."
+    );
 
-    {
-        let disabled = pane_with(
-            &InputPrefs {
-                key_repeat: 0.5,
-                key_repeat_delay_ms: Some(500),
-                key_repeat_rate_hz: Some(0),
-                ..Default::default()
-            },
-            catalog(),
-        );
-        assert_eq!(disabled.key_repeat_slider_value(), 0.0);
-        assert_eq!(
-            disabled.key_repeat_description(),
-            "Repeat is off. Move the slider to turn it on."
-        );
+    let exact = InputPrefs {
+        key_repeat: 0.5,
+        key_repeat_delay_ms: Some(275),
+        key_repeat_rate_hz: Some(37),
+        ..Default::default()
+    };
+    assert!((key_repeat_slider_value(&exact) - 0.675).abs() < f64::EPSILON);
+    assert_eq!(
+        key_repeat_description(&exact),
+        "37 keys per second, starts after 275 ms"
+    );
 
-        let exact = pane_with(
-            &InputPrefs {
-                key_repeat: 0.5,
-                key_repeat_delay_ms: Some(275),
-                key_repeat_rate_hz: Some(37),
-                ..Default::default()
-            },
-            catalog(),
-        );
-        assert!((exact.key_repeat_slider_value() - 0.675).abs() < f64::EPSILON);
-        assert_eq!(
-            exact.key_repeat_description(),
-            "37 keys per second, starts after 275 ms"
-        );
+    let partial = InputPrefs {
+        key_repeat: 0.25,
+        key_repeat_rate_hz: Some(50),
+        ..Default::default()
+    };
+    assert_eq!(key_repeat_slider_value(&partial), 0.25);
+    assert_eq!(
+        key_repeat_description(&partial),
+        "Faster repeat starts sooner"
+    );
 
-        let partial = pane_with(
-            &InputPrefs {
-                key_repeat: 0.25,
-                key_repeat_rate_hz: Some(50),
-                ..Default::default()
-            },
-            catalog(),
-        );
-        assert_eq!(partial.key_repeat_slider_value(), 0.25);
-        assert_eq!(
-            partial.key_repeat_description(),
-            "Faster repeat starts sooner"
-        );
+    let clamped = InputPrefs {
+        key_repeat_delay_ms: Some(200),
+        key_repeat_rate_hz: Some(1_000),
+        ..Default::default()
+    };
+    assert_eq!(key_repeat_slider_value(&clamped), 1.0);
+}
 
-        let clamped = pane_with(
-            &InputPrefs {
-                key_repeat_delay_ms: Some(200),
-                key_repeat_rate_hz: Some(1_000),
-                ..Default::default()
-            },
-            catalog(),
-        );
-        assert_eq!(clamped.key_repeat_slider_value(), 1.0);
-    }
+/// The Keyboard page lays out over imported repeat settings, its repeat
+/// row saying what they are.
+#[test]
+fn the_keyboard_page_shows_imported_repeat_settings() {
+    let _env = tilo_test_env::lock();
+    let mut app = TestApp::<SettingsShell>::new().unwrap();
+    let mut input = app.settings::<InputPrefs>().get();
+    input.key_repeat_delay_ms = Some(275);
+    input.key_repeat_rate_hz = Some(37);
+    app.settings::<InputPrefs>().set(&input).unwrap();
+    app.harness().resize((1200, 1600)).unwrap();
+    crate::effects::show_pane(&mut app, crate::categories::Category::Keyboard);
+    app.settle();
+    assert!(app.harness().targets().contains_key("input.key_repeat"));
+    assert!(
+        app.harness()
+            .inspection_json()
+            .unwrap()
+            .contains("37 keys per second, starts after 275 ms")
+    );
 }
 
 #[test]
@@ -519,10 +539,7 @@ fn tablet_and_pad_choices_travel_as_stable_ids() {
         StylusButtonAction::Shortcut(ShortcutAction::Search),
     ];
     for action in actions {
-        assert_eq!(
-            stylus_button_for_id(&stylus_button_id(action)),
-            Some(action)
-        );
+        assert_eq!(stylus_button(&stylus_button_id(action)), Some(action));
     }
     assert_eq!(
         stylus_button_id(StylusButtonAction::Shortcut(
@@ -530,7 +547,7 @@ fn tablet_and_pad_choices_travel_as_stable_ids() {
         )),
         "shortcut:workspace_overview"
     );
-    assert_eq!(stylus_button_for_id("Right click"), None);
+    assert_eq!(stylus_button("Right click"), None);
     let choices = stylus_button_choices();
     assert_eq!(choices[3], ("right".into(), "Right click".into()));
     assert!(
@@ -538,11 +555,11 @@ fn tablet_and_pad_choices_travel_as_stable_ids() {
         "every listed shortcut can go on a pen button"
     );
 
-    assert_eq!(pad_button_for_id("none"), Some(PadButtonChoice::Nothing));
+    assert_eq!(pad_button("none"), Some(PadButtonChoice::Nothing));
     let mut pad = TabletConfig::default();
     set_pad_button(&mut pad, 2, PadButtonChoice::Shortcut(ShortcutAction::Lock));
     assert_eq!(
-        pad_button_for_id(&pad_button_id(&pad, 2)),
+        pad_button(&pad_button_id(&pad, 2)),
         Some(PadButtonChoice::Shortcut(ShortcutAction::Lock))
     );
     set_pad_button(&mut pad, 2, PadButtonChoice::ShowMap);
@@ -554,10 +571,10 @@ fn tablet_and_pad_choices_travel_as_stable_ids() {
     set_pad_button(&mut pad, 0, PadButtonChoice::ShowMap);
     assert_eq!(pad.pad_map_button, Some(0), "one button shows the map");
     assert_eq!(pad_button_id(&pad, 2), "none");
-    assert_eq!(pad_button_for_id("left"), None, "a pad runs shortcuts only");
+    assert_eq!(pad_button("left"), None, "a pad runs shortcuts only");
 
     for id in ["native", "left", "back", "shortcut:search"] {
-        let action = eraser_for_id(id).expect("an offered eraser choice");
+        let action = eraser(id).expect("an offered eraser choice");
         assert_eq!(eraser_id(action), id);
     }
     assert!(
@@ -566,12 +583,12 @@ fn tablet_and_pad_choices_travel_as_stable_ids() {
             .any(|(id, _)| id == "shortcut:search"),
         "every listed shortcut can go on the eraser"
     );
-    assert_eq!(eraser_for_id("disabled"), None);
+    assert_eq!(eraser("disabled"), None);
     for (id, _) in dial_choices() {
-        let action = dial_for_id(&id).expect("an offered dial choice");
+        let action = dial(&id).expect("an offered dial choice");
         assert_eq!(dial_id(action), id);
     }
-    assert_eq!(dial_for_id("shortcut:search"), None);
+    assert_eq!(dial("shortcut:search"), None);
 
     assert_eq!(tablet_output_for_id(WHOLE_DESKTOP), Ok(None));
     assert_eq!(tablet_output_choices()[0].0, WHOLE_DESKTOP);
@@ -579,7 +596,6 @@ fn tablet_and_pad_choices_travel_as_stable_ids() {
 
 #[test]
 fn each_tablet_is_one_card_holding_its_own_pad_buttons() {
-    let _cfg = crate::prefs::test_env::ConfigGuard::new();
     let device = |kind, product, name: &str, group: &str, pad_buttons| {
         settings_store::hardware::InputDeviceSnapshot {
             key: settings_store::hardware::input_device_key(0x056a, product, name),
@@ -590,83 +606,79 @@ fn each_tablet_is_one_card_holding_its_own_pad_buttons() {
             ..Default::default()
         }
     };
-    let snapshot = InputHardwareSnapshot {
-        devices: vec![
-            device(
-                InputDeviceKind::Tablet,
-                0x0374,
-                "Wacom Intuos S Pen",
-                "event4",
-                0,
-            ),
-            device(
-                InputDeviceKind::Tablet,
-                0x0357,
-                "Wacom Intuos Pro M Pen",
-                "event7",
-                0,
-            ),
-            // Listed after both pens, in the other order: each pad still
-            // belongs to its own tablet.
-            device(
-                InputDeviceKind::TabletPad,
-                0x0357,
-                "Wacom Intuos Pro M Pad",
-                "event7",
-                8,
-            ),
-            device(
-                InputDeviceKind::TabletPad,
-                0x0374,
-                "Wacom Intuos S Pad",
-                "event4",
-                4,
-            ),
-            // A remote is a pad no tablet has: a device of its own.
-            device(
-                InputDeviceKind::TabletPad,
-                0x0331,
-                "Wacom ExpressKey Remote Pad",
-                "event9",
-                18,
-            ),
-        ],
-        ..Default::default()
-    };
-    let mut pane = pane_with(&InputPrefs::default(), catalog());
-    pane.observe_devices(Some(&snapshot));
-    let cards = pane.tablet_cards();
+    let tablets = [
+        device(
+            InputDeviceKind::Tablet,
+            0x0374,
+            "Wacom Intuos S Pen",
+            "event4",
+            0,
+        ),
+        device(
+            InputDeviceKind::Tablet,
+            0x0357,
+            "Wacom Intuos Pro M Pen",
+            "event7",
+            0,
+        ),
+    ];
+    let pads = [
+        // Listed after both pens, in the other order: each pad still
+        // belongs to its own tablet.
+        device(
+            InputDeviceKind::TabletPad,
+            0x0357,
+            "Wacom Intuos Pro M Pad",
+            "event7",
+            8,
+        ),
+        device(
+            InputDeviceKind::TabletPad,
+            0x0374,
+            "Wacom Intuos S Pad",
+            "event4",
+            4,
+        ),
+        // A remote is a pad no tablet has: a device of its own.
+        device(
+            InputDeviceKind::TabletPad,
+            0x0331,
+            "Wacom ExpressKey Remote Pad",
+            "event9",
+            18,
+        ),
+    ];
+    let cards = tablet_devices(&tablets, &pads);
     assert_eq!(cards.len(), 3, "one card per device, never one per pad");
+    let pad_buttons = |card: &TabletDevice<'_>| card.pad.map_or(0, |pad| pad.pad_buttons);
+    assert_eq!(cards[0].title(), "Wacom Intuos S");
+    assert!(cards[0].pen.is_some(), "a tablet's card maps its pen");
+    assert_eq!(pad_buttons(&cards[0]), 4);
+    assert_eq!(cards[1].title(), "Wacom Intuos Pro M");
+    assert_eq!(pad_buttons(&cards[1]), 8);
+    assert_eq!(cards[2].title(), "Wacom ExpressKey Remote");
+    assert!(cards[2].pen.is_none(), "a remote maps no pen");
+    assert_eq!(pad_buttons(&cards[2]), 18);
+}
 
-    let said: Vec<Vec<String>> = cards
-        .into_iter()
-        .map(|card| crate::widgets::announced_text(crate::widgets::page(vec![card]).as_ref()))
-        .collect();
-    let says = |card: &[String], needle: &str| card.iter().any(|line| line == needle);
-    let pad_buttons = |card: &[String]| {
-        (1..=32)
-            .filter(|number| says(card, &format!("Pad button {number}")))
-            .count()
-    };
-    assert!(says(&said[0], "Wacom Intuos S"), "{:#?}", said[0]);
-    assert!(says(&said[0], &t("input-tablet-map-to")), "{:#?}", said[0]);
-    assert_eq!(pad_buttons(&said[0]), 4, "{:#?}", said[0]);
-    assert!(says(&said[1], "Wacom Intuos Pro M"), "{:#?}", said[1]);
-    assert_eq!(pad_buttons(&said[1]), 8, "{:#?}", said[1]);
-    assert!(says(&said[2], "Wacom ExpressKey Remote"), "{:#?}", said[2]);
-    assert!(!says(&said[2], &t("input-tablet-map-to")), "{:#?}", said[2]);
-    assert_eq!(pad_buttons(&said[2]), 18, "{:#?}", said[2]);
-    assert!(
-        said.iter()
-            .flatten()
-            .all(|line| !line.ends_with(" buttons")),
-        "no card is titled as a separate pad"
-    );
+/// The Pointing page of a window whose area reports `devices` attached.
+fn pointing_with(devices: Option<InputHardwareSnapshot>) -> TestApp<SettingsShell> {
+    let mut app = TestApp::<SettingsShell>::new().unwrap();
+    app.with_widget::<crate::window::Inspected, _>(|surface| {
+        let area = crate::panes::mouse_keyboard::area(surface).unwrap();
+        area.live.set(false);
+        area.devices.borrow_mut().1 = devices;
+    })
+    .unwrap();
+    app.harness().resize((1200, 2400)).unwrap();
+    crate::effects::show_pane(&mut app, crate::categories::Category::Pointing);
+    app.settle();
+    app
 }
 
 #[test]
 fn a_card_appears_for_each_attached_tablet() {
-    let _cfg = crate::prefs::test_env::ConfigGuard::new();
+    let _env = tilo_test_env::lock();
     let device = |kind, name: &str, pad_buttons| settings_store::hardware::InputDeviceSnapshot {
         key: settings_store::hardware::input_device_key(0x056a, 0x0374, name),
         name: name.into(),
@@ -674,32 +686,15 @@ fn a_card_appears_for_each_attached_tablet() {
         pad_buttons,
         ..Default::default()
     };
+    let pen = device(InputDeviceKind::Tablet, "Wacom Intuos S Pen", 0);
     let mut pad = device(InputDeviceKind::TabletPad, "Wacom Intuos S Pad", 4);
     pad.pad_rings = vec![4];
     pad.pad_strips = vec![1, 1];
     pad.pad_mode_buttons = vec![0];
-    let snapshot = InputHardwareSnapshot {
-        devices: vec![
-            device(InputDeviceKind::Tablet, "Wacom Intuos S Pen", 0),
-            pad,
-            device(InputDeviceKind::Mouse, "Mouse", 0),
-        ],
-        ..Default::default()
-    };
-    let mut pane = pane_with(&InputPrefs::default(), catalog());
-    pane.observe_devices(Some(&snapshot));
-    assert!(pane.take_structure_dirty(), "new devices rebuild the page");
-    assert_eq!(pane.tablets.len(), 1);
-    assert_eq!(pane.pads.len(), 1);
-    assert_eq!(device_title(&pane.tablets[0]), "Wacom Intuos S");
-    assert_eq!(device_title(&pane.pads[0]), "Wacom Intuos S buttons");
+    assert_eq!(device_title(&pen), "Wacom Intuos S");
+    assert_eq!(device_title(&pad), "Wacom Intuos S buttons");
     assert_eq!(
-        pane.tablet_cards().len(),
-        1,
-        "the pen and pad of one tablet are one card"
-    );
-    assert_eq!(
-        pad_dials(&pane.pads[0]),
+        pad_dials(&pad),
         [
             (PadDial::Ring(0), 4),
             (PadDial::Strip(0), 1),
@@ -709,19 +704,84 @@ fn a_card_appears_for_each_attached_tablet() {
     );
     assert_eq!(dial_label(PadDial::Ring(0), 1, 4), "Ring 1, mode 2");
     assert_eq!(dial_label(PadDial::Strip(1), 0, 1), "Strip 2");
-    pane.observe_devices(Some(&snapshot));
+    let snapshot = InputHardwareSnapshot {
+        devices: vec![
+            pen.clone(),
+            pad.clone(),
+            device(InputDeviceKind::Mouse, "Mouse", 0),
+        ],
+        ..Default::default()
+    };
+    let mut app = pointing_with(Some(snapshot));
+    let (pen_card, pad_card) = (tablet_resource_id(&pen.key), pad_resource_id(&pad.key));
+    let targets = app.harness().targets();
+    for control in [
+        format!("{pen_card}.map-to"),
+        format!("{pen_card}.keep-aspect"),
+        format!("{pen_card}.tip-feel"),
+        format!("{pen_card}.eraser"),
+        format!("{pad_card}.button-1"),
+        format!("{pad_card}.ring-0-mode-3"),
+        format!("{pad_card}.strip-1-mode-0"),
+    ] {
+        assert!(targets.contains_key(&control), "missing {control}");
+    }
     assert!(
-        !pane.take_structure_dirty(),
-        "nothing changed, nothing rebuilt"
+        !targets.contains_key(&format!("{pad_card}.button-0")),
+        "a mode button runs no shortcut"
     );
+    // The page's controls change the tablet's entry through the section's
+    // verbs.
+    app.harness()
+        .click_named(&format!("{pen_card}.keep-aspect"))
+        .unwrap();
+    app.settle();
+    assert!(
+        app.settings::<InputDevicePrefs>().get().tablets[&pen.key].keep_aspect,
+        "the switch keeps this tablet's shape"
+    );
+    // Unplugging removes the card.
+    app.with_widget::<crate::window::Inspected, _>(|surface| {
+        crate::panes::mouse_keyboard::area(surface)
+            .unwrap()
+            .devices
+            .borrow_mut()
+            .1 = Some(InputHardwareSnapshot::default());
+    })
+    .unwrap();
+    app.settle();
+    assert!(
+        !app.harness()
+            .targets()
+            .contains_key(&format!("{pen_card}.map-to"))
+    );
+}
 
-    let mut theme_taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let _ = pane.build_layout(&mut theme_taffy, &Theme::dark(), &mut node_map);
-
-    pane.observe_devices(Some(&InputHardwareSnapshot::default()));
-    assert!(pane.take_structure_dirty(), "unplugging removes the cards");
-    assert!(pane.tablets.is_empty() && pane.pads.is_empty());
+/// A tablet's live row offers its choices bound to it.
+#[test]
+fn a_tablets_row_offers_its_choices() {
+    let _env = tilo_test_env::lock();
+    let pen = settings_store::hardware::InputDeviceSnapshot {
+        key: "pen-a".into(),
+        name: "Wacom Intuos S Pen".into(),
+        kind: InputDeviceKind::Tablet,
+        ..Default::default()
+    };
+    let mut app = pointing_with(Some(InputHardwareSnapshot {
+        devices: vec![pen],
+        ..Default::default()
+    }));
+    app.call_on(
+        &tablet_resource_id("pen-a"),
+        "set-tablet-eraser",
+        serde_json::json!({ "action": "right" }),
+    )
+    .unwrap();
+    app.settle();
+    assert_eq!(
+        app.settings::<InputDevicePrefs>().get().tablets["pen-a"].eraser,
+        EraserAction::Right
+    );
 }
 
 #[test]
@@ -1036,7 +1096,9 @@ fn physical_key_inspection_is_published_validated_and_never_applies_layout() {
 }
 
 fn set(app: &mut TestApp<SettingsShell>, effect: InputEffect) -> bool {
-    app.effect(&SettingsEffect::from(effect)).is_ok()
+    let answered = app.effect(&SettingsEffect::from(effect)).is_ok();
+    app.settle();
+    answered
 }
 
 /// Pointer and keyboard choices are the person's `input` section, the
@@ -1156,41 +1218,64 @@ fn input_sources_are_added_ordered_and_removed() {
 /// A tablet's choices are kept per device id; a pad's controls by
 /// button and dial.
 #[test]
-fn tablet_effects_keep_each_device_apart() {
-    // The pane follows the identity the process has bound, which the
-    // dictionary test swaps: a swap mid-test rebuilds the page under it.
+fn tablet_verbs_keep_each_device_apart() {
     let _env = tilo_test_env::lock();
     let mut app = TestApp::<SettingsShell>::new().unwrap();
-    assert!(set(
+    let verb = |app: &mut TestApp<SettingsShell>, action: &str, arguments| {
+        let done = invoke_section(app, INPUT_DEVICE, action, arguments).is_ok();
+        app.settle();
+        done
+    };
+    assert!(verb(
         &mut app,
-        InputEffect::SetTabletEraser {
-            device: "pen-a".into(),
-            action: "right".into(),
-        }
+        "set-tablet-eraser",
+        serde_json::json!({ "device": "pen-a", "action": "right" })
     ));
-    assert!(set(
+    assert!(verb(
         &mut app,
-        InputEffect::SetPadDial {
-            device: "pad-a".into(),
-            dial: "ring".into(),
-            index: 0,
-            mode: 1,
-            action: "zoom".into(),
-        }
+        "set-pad-dial",
+        serde_json::json!({
+            "device": "pad-a", "dial": "ring", "index": 0, "mode": 1, "action": "zoom"
+        })
     ));
-    assert!(!set(
+    assert!(!verb(
         &mut app,
-        InputEffect::SetTabletButton {
-            device: "pen-a".into(),
-            button: "fourth".into(),
-            action: "left".into(),
-        }
+        "set-tablet-button",
+        serde_json::json!({ "device": "pen-a", "button": "fourth", "action": "left" })
+    ));
+    assert!(!verb(
+        &mut app,
+        "set-pad-button",
+        serde_json::json!({ "device": "pad-a", "button": 32, "action": "none" })
+    ));
+    assert!(!verb(
+        &mut app,
+        "set-tablet-tip-feel",
+        serde_json::json!({ "device": "", "feel": 0.5 })
     ));
     let input = app.settings::<InputDevicePrefs>().get();
     assert_eq!(input.tablets["pen-a"].eraser, EraserAction::Right);
     assert_eq!(
         input.tablets["pad-a"].dial_action(PadDial::Ring(0), 1),
         PadDialAction::Zoom
+    );
+    assert!(!input.tablets.contains_key(""));
+    assert!(set(
+        &mut app,
+        InputEffect::SetTabletOutput {
+            device: "pen-a".into(),
+            output: WHOLE_DESKTOP.into(),
+        }
+    ));
+    assert!(
+        !set(
+            &mut app,
+            InputEffect::SetTabletOutput {
+                device: "pen-a".into(),
+                output: "HDMI-9".into(),
+            }
+        ),
+        "only a connected display is offered"
     );
     assert_eq!(
         parse_dial_action_id("strip-1-mode-0"),

@@ -19,12 +19,12 @@ pub(crate) use crate::undo::EDIT_OPERATION;
 pub(crate) fn edit_resource(status: &UndoStatus) -> ResourceSpec {
     let action = |request: UndoRequest, key: &str| {
         let label = match status.summary(request) {
-            Some(change) if change != crate::history_source::NO_VISIBLE_CHANGE => {
+            Some(change) => {
                 let mut args = FluentArgs::new();
                 args.set("change", change.to_owned());
                 I18nManager::lookup(&format!("{key}-named"), Some(&args))
             }
-            _ => I18nManager::lookup_plain(key),
+            None => I18nManager::lookup_plain(key),
         };
         let mut spec = ActionSpec::operation(
             request.verb(),

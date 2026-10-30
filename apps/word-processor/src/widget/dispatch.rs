@@ -16,11 +16,11 @@ use ui::tilo_resource::Effect as _;
 use ui::widget::toast::ToastKind;
 
 use super::{
-    BoundRows, WordProcessorWidget, block_presence_key, inline_mark, local_version, open_request,
+    BoundRows, Editor, block_presence_key, inline_mark, local_version, open_request,
     participant_presence_payload, save_request, to_spans,
 };
 
-impl WordProcessorWidget {
+impl Editor {
     /// Resolve the Find results of this window's view and of each
     /// participant's against `doc` as it is now.
     pub(super) fn resolve_bound_edits(&mut self, doc: &AutoCommit) {
@@ -71,7 +71,7 @@ impl WordProcessorWidget {
     fn answer_edit_effect(
         &mut self,
         effect: &WordProcessorEffect,
-        cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
+        cx: &mut ui::framework::EffectCx<crate::framework::Document>,
     ) -> Option<ui::framework::EffectAnswer> {
         let doc = match cx.document() {
             Some(doc) => doc.clone(),
@@ -156,7 +156,7 @@ impl WordProcessorWidget {
         // One that answers its caller does so with the blocks its edit
         // changed, once the door applied it.
         if answers_later(effect) {
-            return Some(cx.when_landed(|_, landed, _| {
+            return Some(cx.when_landed(|(), landed, _| {
                 // The blocks it changed; the ids it minted are among them.
                 let answer = match landed.answer {
                     Some(serde_json::Value::Object(mut fields)) => {
@@ -1210,7 +1210,7 @@ fn answers_later(effect: &WordProcessorEffect) -> bool {
         .any(|declaration| declaration.id == id && declaration.is_job())
 }
 
-impl WordProcessorWidget {
+impl Editor {
     /// Apply a synchronous command or view operation. Returns `Ok(false)`
     /// when `type_id` is not this widget's.
     /// Invoke `effect` through the document's door, as the palette or an
@@ -1222,11 +1222,14 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    /// Answer `effect`, however it was invoked.
+    /// Answer `effect`, however it was invoked. What the person chooses
+    /// later (a file to open, where to save) reaches the editor through
+    /// `this`, the editor as its window and view share it.
     pub(crate) fn answer_effect(
         &mut self,
+        this: &std::rc::Rc<std::cell::RefCell<Self>>,
         effect: WordProcessorEffect,
-        cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
+        cx: &mut ui::framework::EffectCx<crate::framework::Document>,
     ) -> ui::framework::EffectAnswer {
         use ui::framework::Effected;
         if let Some(answer) = self.answer_edit_effect(&effect, cx) {
@@ -1251,11 +1254,12 @@ impl WordProcessorWidget {
                 // Where files have paths, the document is worked on where it
                 // is; elsewhere (a browser page) its contents are brought in
                 // and Save asks where they go.
+                let editor = std::rc::Rc::clone(this);
                 if tilo_files::available(tilo_files::Feature::NativePaths) {
                     return Ok(
-                        cx.choose_path(open_request(), |editor, path, cx| match path {
+                        cx.choose_path(open_request(), move |(), path, cx| match path {
                             Some(path) => {
-                                editor.open_in_place(cx, &path)?;
+                                editor.borrow_mut().open_in_place(cx, &path)?;
                                 Ok(Effected::done())
                             }
                             None => Err("the file picker was cancelled".into()),
@@ -1263,9 +1267,11 @@ impl WordProcessorWidget {
                     );
                 }
                 return Ok(
-                    cx.choose_file(open_request(), |editor, file, cx| match file {
+                    cx.choose_file(open_request(), move |(), file, cx| match file {
                         Some(file) => {
-                            editor.open_contents(cx, &file.name, &file.bytes)?;
+                            editor
+                                .borrow_mut()
+                                .open_contents(cx, &file.name, &file.bytes)?;
                             Ok(Effected::done())
                         }
                         None => Err("the file picker was cancelled".into()),
@@ -1280,7 +1286,7 @@ impl WordProcessorWidget {
                     Some(path) => self.save_now(cx, &path)?,
                     None => match self.kept.clone() {
                         Some((kept, format)) => return self.write_kept(cx, &kept, format),
-                        None => return Ok(self.choose_where_to_save(cx)),
+                        None => return Ok(self.choose_where_to_save(this, cx)),
                     },
                 }
             }
@@ -1288,7 +1294,7 @@ impl WordProcessorWidget {
                 self.save_now(cx, &path)?;
             }
             WordProcessorEffect::SaveAs { path: None } => {
-                return Ok(self.choose_where_to_save(cx));
+                return Ok(self.choose_where_to_save(this, cx));
             }
             WordProcessorEffect::Find => {
                 ui::window_toolbar::open_search(ui::window_toolbar::SearchOpening::Find);
@@ -1326,7 +1332,7 @@ impl WordProcessorWidget {
     /// Save writes.
     fn open_in_place(
         &mut self,
-        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        cx: &ui::framework::EffectCx<crate::framework::Document>,
         path: &std::path::Path,
     ) -> Result<(), String> {
         let bytes = tilo_files::file_at(path)
@@ -1343,7 +1349,7 @@ impl WordProcessorWidget {
     /// path here, so Save asks where it goes.
     fn open_contents(
         &mut self,
-        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        cx: &ui::framework::EffectCx<crate::framework::Document>,
         name: &str,
         bytes: &[u8],
     ) -> Result<(), String> {
@@ -1361,7 +1367,7 @@ impl WordProcessorWidget {
     /// tables in it is someone's writing, which an import never replaces.
     fn import_content(
         &mut self,
-        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        cx: &ui::framework::EffectCx<crate::framework::Document>,
         content: &str,
         name: Option<&str>,
     ) -> ui::framework::EffectAnswer {
@@ -1412,7 +1418,7 @@ impl WordProcessorWidget {
     /// content store, and answer its address.
     fn export_content(
         &mut self,
-        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        cx: &ui::framework::EffectCx<crate::framework::Document>,
         format: Option<&str>,
     ) -> ui::framework::EffectAnswer {
         let extension = format
@@ -1446,7 +1452,7 @@ impl WordProcessorWidget {
     /// Replace the document's body with `bytes` read as `format`.
     fn replace_with(
         &mut self,
-        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        cx: &ui::framework::EffectCx<crate::framework::Document>,
         bytes: &[u8],
         format: WpFormat,
     ) -> Result<(), String> {
@@ -1468,7 +1474,7 @@ impl WordProcessorWidget {
     /// effect.
     fn save_now(
         &mut self,
-        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        cx: &ui::framework::EffectCx<crate::framework::Document>,
         path: &std::path::Path,
     ) -> Result<(), String> {
         let doc = cx.document().ok_or("the document is not at hand")?.clone();
@@ -1482,13 +1488,13 @@ impl WordProcessorWidget {
     /// `format`, without asking.
     fn write_kept(
         &mut self,
-        cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
+        cx: &mut ui::framework::EffectCx<crate::framework::Document>,
         destination: &ui::portal::SaveDestination,
         format: WpFormat,
     ) -> ui::framework::EffectAnswer {
         let doc = cx.document().ok_or("the document is not at hand")?.clone();
         let bytes = self.export_bytes(&doc, format)?;
-        Ok(cx.write_destination(destination, bytes, |_, written, _| {
+        Ok(cx.write_destination(destination, bytes, |(), written, _| {
             written.map(|()| ui::framework::Effected::done())
         }))
     }
@@ -1497,7 +1503,8 @@ impl WordProcessorWidget {
     /// is written on the next sync, which answers the caller.
     fn choose_where_to_save(
         &self,
-        cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
+        this: &std::rc::Rc<std::cell::RefCell<Self>>,
+        cx: &mut ui::framework::EffectCx<crate::framework::Document>,
     ) -> ui::framework::Effected {
         let suggested = self.path.as_ref().and_then(|p| p.file_name()).map_or_else(
             || "Untitled.md".to_string(),
@@ -1507,10 +1514,12 @@ impl WordProcessorWidget {
             // No path here (a browser page): the document goes where the
             // person chooses, as the chosen name's format, and that place is
             // kept for the next Save.
-            return cx.choose_destination(save_request(&suggested), |editor, destination, cx| {
+            let editor = std::rc::Rc::clone(this);
+            return cx.choose_destination(save_request(&suggested), move |(), destination, cx| {
                 let destination =
                     destination.ok_or_else(|| "the file picker was cancelled".to_owned())?;
                 let format = WpFormat::from_path(std::path::Path::new(destination.name()));
+                let mut editor = editor.borrow_mut();
                 // An export-only format is a copy, not the document's place.
                 if !matches!(format, WpFormat::Pdf | WpFormat::Epub) {
                     editor.kept = Some((destination.clone(), format));
@@ -1518,8 +1527,10 @@ impl WordProcessorWidget {
                 editor.write_kept(cx, &destination, format)
             });
         }
-        cx.choose_path(save_request(&suggested), |editor, path, cx| match path {
+        let editor = std::rc::Rc::clone(this);
+        cx.choose_path(save_request(&suggested), move |(), path, cx| match path {
             Some(path) => {
+                let mut editor = editor.borrow_mut();
                 editor.pending_save = Some((path, cx.reply()));
                 editor.lifecycle.dirty = true;
                 Ok(ui::framework::Effected::Pending)

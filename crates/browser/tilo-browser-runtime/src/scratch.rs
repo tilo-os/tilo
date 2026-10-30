@@ -51,9 +51,24 @@ fn page_resource() -> tilo_actions::ResourceSpec {
     )
 }
 
+/// The page's History: every version, drawn as its document outline.
+static HISTORY: ui::history_mode::HistoryDefinition = ui::history_mode::HistoryDefinition {
+    app_id: APP_ID,
+    scopes: &[ui::history_mode::HistoryScopeDefinition {
+        key: "page",
+        title: "Page",
+        presentation: ui::history_mode::HistoryPresentation::Domain {
+            create: ui::history_mode::outline_preview,
+        },
+        content_schema: None,
+    }],
+};
+
+const APP_ID: &str = "so.tilo.browser-scratch";
+
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
     std::sync::LazyLock::new(|| ApplicationDefinition {
-        app_id: "so.tilo.browser-scratch".into(),
+        app_id: APP_ID.into(),
         title: "Scratch".into(),
         icon: IconDescriptor::Named("notes".into()),
         record_kind: RecordKind::new("browser-scratch.page"),
@@ -106,7 +121,7 @@ fn create(mut context: HostContext, target: &LaunchTarget) -> Result<AppComponen
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let mut actions = tilo_actions::ActionRegistry::new();
     actions.register::<Rename>(RENAME_TYPE);
-    Ok(AppComponent::new(
+    let mut component = AppComponent::new(
         context,
         Box::new(Page {
             root,
@@ -114,7 +129,11 @@ fn create(mut context: HostContext, target: &LaunchTarget) -> Result<AppComponen
             resource,
         }),
         actions,
-    ))
+    );
+    component
+        .register_document_history(&HISTORY)
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    Ok(component)
 }
 
 /// The graph-built surface as the component's application root. It owns a

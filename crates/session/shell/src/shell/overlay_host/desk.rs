@@ -24,12 +24,12 @@
 //! paints, at the same instant.
 //!
 //! The Super surface is global search over a light scrim, with every widget
-//! open around it and the time and status under the field. Tapped, it shows
-//! the launcher under the field ([`crate::shell::search::launcher`]); held,
-//! it is the field alone
-//! ([`ui::CommandPalette::set_field_only_while_empty`]), a glance at the
-//! widgets. Typing searches exactly as the palette always has; Escape and a
-//! click outside close it through the palette's own paths.
+//! open around it and the time and status under the field. Search is the
+//! launcher app's card ([`super::launcher_host`]). Tapped, it lists the
+//! launcher's sections under the field ([`crate::shell::search::launcher`]);
+//! held, it is the field alone (the answer's `field_only`), a glance at the
+//! widgets. Typing searches as search always does; Escape and a click
+//! outside close it through search's own paths.
 //!
 //! Nothing here paints a blurred backdrop: glance forms and cards are the
 //! opaque overlay surface, the scrim one translucent fill, so an idle desk
@@ -316,17 +316,17 @@ impl ShellOverlayHost {
                 self.cancel_super_surface();
             }
             (SuperGesture::PeekReleased, Some(SuperSurface::Peek)) => {
-                if self.palette.query().is_empty() {
+                if self.search.query().is_empty() {
                     self.close_super_surface();
                 } else {
                     self.desk.super_surface = Some(SuperSurface::Pinned);
-                    self.palette.set_field_only_while_empty(false);
+                    self.search.set_field_only_while_empty(false);
                     self.palette_layout_dirty = true;
                 }
             }
             (SuperGesture::PeekTaken, Some(SuperSurface::Peek)) => {
                 self.desk.super_surface = Some(SuperSurface::Pinned);
-                self.palette.set_field_only_while_empty(false);
+                self.search.set_field_only_while_empty(false);
                 self.palette_layout_dirty = true;
             }
             _ => return,
@@ -337,9 +337,9 @@ impl ShellOverlayHost {
     /// The quiet first stage of a held Super: the widgets come to their
     /// glance forms, so growing into the whole surface moves nothing.
     fn open_super_glimpse(&mut self) {
-        // Lay the palette out field-only, unseen, so it has its place before
-        // the field shows.
-        self.palette.set_field_only_while_empty(true);
+        // Lay search out field-only, unseen, so it has its place before the
+        // field shows.
+        self.search.set_field_only_while_empty(true);
         self.palette_layout_dirty = true;
         self.desk.super_surface = Some(SuperSurface::Glimpse);
     }
@@ -352,7 +352,7 @@ impl ShellOverlayHost {
         }
         // Tapped, it is global search with the launcher under the field;
         // held, a glance at the widgets with the field alone.
-        self.palette
+        self.search
             .set_field_only_while_empty(mode != SuperSurface::Pinned);
         self.palette_layout_dirty = true;
         self.desk.super_surface = Some(mode);
@@ -362,7 +362,7 @@ impl ShellOverlayHost {
     /// Close the Super surface (and the search it holds).
     pub fn close_super_surface(&mut self) {
         self.palette_visible = false;
-        self.palette.close();
+        self.search.close();
         self.end_super_surface();
     }
 
@@ -377,7 +377,7 @@ impl ShellOverlayHost {
 
     fn end_super_surface(&mut self) {
         self.desk.super_surface = None;
-        self.palette.set_field_only_while_empty(false);
+        self.search.set_field_only_while_empty(false);
         self.palette_layout_dirty = true;
     }
 
@@ -972,8 +972,8 @@ impl ShellOverlayHost {
                 .super_surface
                 .is_some_and(|surface| surface != SuperSurface::Glimpse)
         {
-            // Closed through the palette's own paths (Escape, a click
-            // outside, an activated result).
+            // Closed through search's own paths (Escape, a click outside,
+            // an activated result).
             self.end_super_surface();
         }
         self.desk.team_count = self.team_count();
@@ -2404,9 +2404,9 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The search palette and the desk, in their stacking order: the scrim
-    /// (light over the Super surface), the widgets, the time and status,
-    /// then the palette card. Each is its own damage part, so a keystroke
+    /// Search and the desk, in their stacking order: the scrim (light over
+    /// the Super surface), the widgets, the time and status, then the
+    /// launcher's card. Each is its own damage part, so a keystroke
     /// in the field repaints the card alone and a widget's fade only its
     /// own rect.
     pub(crate) fn draw_search_and_desk(

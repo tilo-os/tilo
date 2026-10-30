@@ -2,9 +2,7 @@
 //! drawn over the document as it was at one version. The root is a separate
 //! read-only instance; no event, focus or dispatch path ever reaches it.
 
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ChangeHash};
-use tilo_automerge::ApplyIncoming;
+use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
@@ -13,19 +11,6 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
-
-/// The committed live document frozen at `heads`. Forked and isolated rather
-/// than `fork_at`, whose Automerge 0.8 collector can walk a merged graph out
-/// of order and panic.
-pub(crate) fn document_at(live: &AutoCommit, heads: &[ChangeHash]) -> AutoCommit {
-    let mut doc = live.clone();
-    if doc.pending_ops() > 0 {
-        doc.rollback();
-    }
-    let mut frozen = doc.fork();
-    frozen.isolate_at(heads);
-    frozen
-}
 
 /// A past version drawn by a read-only root of the app over its frozen
 /// document.
@@ -172,9 +157,22 @@ impl HistoryPreview for FrozenRootPreview {
 
 const OUTLINE_LINES: usize = 400;
 
+/// A past version drawn as its document outline ([`outline_root`]): the
+/// preview of a document whose app draws no version of its own.
+///
+/// # Errors
+/// The snapshot does not load as a document.
+pub fn outline_preview(input: super::PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
+    let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|error| error.to_string())?;
+    let label = crate::i18n::I18nManager::lookup_plain("history-mode-preview-resource");
+    Ok(Box::new(
+        FrozenRootPreview::new(outline_root(&doc), doc, label).with_view(input.initial_view),
+    ))
+}
+
 /// A faithful fallback when the app's own root cannot be built a second
 /// time: the version's document itself, one `path: value` line per field.
-pub(crate) fn outline_root(doc: &AutoCommit) -> Box<dyn Widget> {
+fn outline_root(doc: &AutoCommit) -> Box<dyn Widget> {
     use automerge::{ObjType, ReadDoc, Value};
     fn walk(doc: &AutoCommit, obj: &automerge::ObjId, path: &str, out: &mut Vec<String>) {
         let props: Vec<automerge::Prop> = match doc.object_type(obj) {

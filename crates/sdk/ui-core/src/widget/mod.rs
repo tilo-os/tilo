@@ -1,10 +1,10 @@
 mod action_directory_identity;
 mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
-pub use disclosing::{Disclosing, Placement, event_offset};
 pub(crate) use disclosing::{
-    Ghosts, KeptBand, content_box, follower_shifts, place_bands, route_to_shifted_children,
+    BandMotion, Ghosts, content_box, follower_shifts, place_bands, route_to_shifted_children,
 };
+pub use disclosing::{Disclosing, Placement, event_offset};
 pub(crate) mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,
 // reached from outside the toolkit only through `crate::host_operation`.
@@ -3601,6 +3601,8 @@ pub mod stat_tile;
 pub use stat_tile::{StatGroup, StatTile, StatTileFace, Trend};
 pub mod banner;
 pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice};
+mod disclosure_band;
+pub use disclosure_band::DisclosureBand;
 pub mod chip;
 mod chip_component;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle, REFERENCE_LEAD};
@@ -3676,7 +3678,6 @@ pub(crate) mod control_result_probe {
             Rc<RefCell<Vec<Result<ResourceOperationStart, tilo_actions::DoorError>>>>,
         pub(crate) calls: Rc<Cell<usize>>,
         pub(crate) polls: Rc<Cell<usize>>,
-        pub(crate) commits: Rc<Cell<usize>>,
         pub(crate) pending: Rc<RefCell<VecDeque<tilo_actions::ControlInvocation>>>,
         pub(crate) payloads: Rc<RefCell<Vec<String>>>,
     }
@@ -3710,7 +3711,6 @@ pub(crate) mod control_result_probe {
         accepted: bool,
         pub(crate) confirmation: bool,
         pub(crate) terminal_after: Option<(usize, bool)>,
-        pub(crate) dirty_typing: bool,
         pub(crate) typed_text: bool,
     }
     impl Probe {
@@ -3722,7 +3722,6 @@ pub(crate) mod control_result_probe {
                     accepted,
                     confirmation: false,
                     terminal_after: None,
-                    dirty_typing: false,
                     typed_text: false,
                 },
                 observed,

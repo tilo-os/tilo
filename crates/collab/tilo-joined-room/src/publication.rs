@@ -4,14 +4,15 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, time::SystemTime};
+use std::collections::BTreeSet;
 use tilo_owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::{Reseal, StatePeer};
+use web_time::SystemTime;
 
 mod reservation;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use reservation::check_actual_projection_bound;
-pub use reservation::{authority_limit, preflight_storage, reserved_file_bytes};
+pub use reservation::{authority_limit, preflight_storage};
 
 pub(crate) const MAX_ENTRIES: usize = 64;
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -952,6 +953,16 @@ fn validate_member_changes(
         .workspace_memberships
         .values()
         .any(|receipt| receipt.receipt.binding == entry.binding)
+        && !view
+            .record
+            .effect_receipts
+            .values()
+            .any(|receipt| receipt.receipt.binding == entry.binding)
+        && view
+            .record
+            .shortcut_change
+            .as_ref()
+            .is_none_or(|receipt| receipt.binding != entry.binding)
     {
         return Err("native membership publication lacks its receipt".into());
     }

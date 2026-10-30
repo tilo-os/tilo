@@ -35,6 +35,7 @@ pub use tilo_output_passes::xrgb_history::{
 
 mod bridge;
 mod diagnostics;
+mod output_image;
 mod output_view;
 mod retained_target;
 mod subrect;
@@ -49,6 +50,7 @@ mod tests;
 mod window_cycle_memory_tests;
 mod xrgb;
 use diagnostics::DispatchStageObserver;
+pub use output_image::OutputImageChange;
 use output_view::OutputSurface;
 pub use output_view::{OutputSignal, OutputTarget, OutputView};
 pub use subrect::{

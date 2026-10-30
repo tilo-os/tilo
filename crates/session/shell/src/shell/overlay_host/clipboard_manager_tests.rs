@@ -1,12 +1,21 @@
 use super::*;
 use crate::compositor::selection::{
     SelectionStore, SharedSelection, Target, activate_history_item, clear_clipboard_history,
-    clear_mirror, clipboard_history, pin_history_item, remove_history_item, set_mirror_text,
+    clipboard_history, pin_history_item, remove_history_item, set_mirror_text,
 };
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::WorkspaceTree;
 use std::sync::{Arc, Mutex};
 use ui::widget::Container;
+
+/// Choose copy `index` of the history, newest first, as a press on its row
+/// in Quick Settings does.
+fn choose(host: &mut ShellOverlayHost, index: usize) {
+    let id = host.clipboard_manager_call(ClipboardManagerAction::Snapshot)[index].id;
+    host.run_quick_settings_effect_for_test(tilo_quick_settings::QsEffect::PasteCopy {
+        copy: hex::encode(id),
+    });
+}
 
 fn bridge(store: SharedSelection) -> ClipboardManagerBridge {
     std::rc::Rc::new(move |action| {
@@ -88,8 +97,7 @@ fn clipboard_history_is_bridged_searched_and_activated_only_explicitly() {
             .borrow_mut()
             .open_quick_settings_section(tilo_quick_settings::QsSection::Clipboard);
 
-        assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::ArrowDown), false));
-        assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
+        choose(&mut host, 1);
         assert_eq!(
             crate::compositor::selection::mirror_text(&store, Target::Clipboard).as_deref(),
             Some("older")
@@ -111,40 +119,9 @@ fn clipboard_history_is_bridged_searched_and_activated_only_explicitly() {
         assert_eq!(clipboard_history_relative_time(1_000, 181_000), "3 min ago");
     }
 
-    fn clipboard_search_filters_metadata_before_explicit_activation() {
-        let store = Arc::new(Mutex::new(SelectionStore::default()));
-        assert!(set_mirror_text(&store, Target::Clipboard, "project alpha"));
-        assert!(set_mirror_text(&store, Target::Clipboard, "meeting notes"));
-        clear_mirror(&store, Target::Clipboard);
-        let tree = WorkspaceTree::bootstrap_demo();
-        let chrome = ChromeState::new(tree);
-        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
-            .with_chrome(chrome.clone());
-        host.set_clipboard_manager_bridge(bridge(store.clone()));
-        chrome
-            .borrow_mut()
-            .open_quick_settings_section(tilo_quick_settings::QsSection::Clipboard);
-
-        assert!(host.handle_qs_clipboard_keyboard(&Key::Character("alpha".into()), false));
-        let matches = host.filtered_clipboard_history();
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].text_preview.as_deref(), Some("project alpha"));
-        assert_eq!(
-            crate::compositor::selection::mirror_text(&store, Target::Clipboard),
-            None
-        );
-
-        assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
-        assert_eq!(
-            crate::compositor::selection::mirror_text(&store, Target::Clipboard).as_deref(),
-            Some("project alpha")
-        );
-    }
-
     quick_settings_clipboard_bridge_uses_the_compositor_history();
     clipboard_keyboard_selects_then_explicitly_activates_an_item();
     clipboard_provenance_labels_are_concise_and_honest();
-    clipboard_search_filters_metadata_before_explicit_activation();
 }
 
 /// Super+V opens history where the text goes and pastes the choice; history
@@ -166,7 +143,7 @@ fn super_v_opens_history_at_the_caret_and_pastes_the_choice() {
         .open_quick_settings_section(tilo_quick_settings::QsSection::Clipboard);
     let tray = host.quick_settings_rect_for_tests();
     assert!(tray.x1 > 1400.0 && tray.y0 < 100.0, "{tray:?}");
-    assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
+    choose(&mut host, 0);
     assert!(
         host.take_clipboard_pastes().is_empty(),
         "choosing in Quick Settings only copies"
@@ -185,10 +162,8 @@ fn super_v_opens_history_at_the_caret_and_pastes_the_choice() {
         (at.x0 - caret.x0).abs() < 1.0 && at.y0 > caret.y1 && at.y0 - caret.y1 < 24.0,
         "history opens just below the caret, not under the tray: {at:?}"
     );
-    let history = host.filtered_clipboard_history();
-    let older = history[1].id;
-    assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::ArrowDown), false));
-    assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
+    let older = host.clipboard_manager_call(ClipboardManagerAction::Snapshot)[1].id;
+    choose(&mut host, 1);
     assert!(!chrome.borrow().overlays.quick_settings);
     assert_eq!(
         crate::compositor::selection::mirror_text(&store, Target::Clipboard).as_deref(),
@@ -288,8 +263,8 @@ fn super_v_into_a_wayland_window_is_pasted_by_the_compositor() {
     host.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
     host.set_clipboard_manager_bridge(bridge(store));
     assert!(host.run_shortcut_action(settings_store::hardware::ShortcutAction::ClipboardHistory));
-    let id = host.filtered_clipboard_history()[0].id;
-    assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
+    let id = host.clipboard_manager_call(ClipboardManagerAction::Snapshot)[0].id;
+    choose(&mut host, 0);
     assert_eq!(host.take_clipboard_pastes(), vec![id]);
     let _ = host.take_in_process_pastes();
     assert_eq!(host.take_in_process_pastes(), 0);

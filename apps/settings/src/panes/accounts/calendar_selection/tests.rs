@@ -1,5 +1,5 @@
 use super::AccountsPane;
-use crate::{SettingsApp, SettingsShell};
+use crate::SettingsShell;
 
 pub(super) fn reviewed_nextcloud(config: serde_json::Value) -> (tempfile::TempDir, AccountsPane) {
     let root = tempfile::tempdir().unwrap();
@@ -160,7 +160,7 @@ fn calendar_review_is_discoverable_and_operable_through_settings_resources() {
     vault.try_save().unwrap();
 
     let mut app = TestApp::<SettingsShell>::new().unwrap();
-    app.surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         let mut pane = crate::panes::accounts::area(settings)
             .unwrap()
             .model()

@@ -768,7 +768,7 @@ mod tests {
     }
 
     /// How an output's flips reach KMS, for [`plane_choice`].
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     enum Flips {
         Legacy,
         Atomic,
@@ -795,53 +795,44 @@ mod tests {
 
     #[test]
     fn argb_scans_out_as_xrgb_only_when_declared_opaque() {
-        for flips in [Flips::Legacy, Flips::Atomic] {
-            // Phase `argb_with_an_opaque_region_covering_the_surface`: what
-            // a fullscreen browser commits. Its alpha is padding, so KMS
-            // reads the same bytes as XRGB and even a legacy flip keeps the
-            // output's format.
+        use DrmFourcc::{Abgr8888, Argb8888, Xbgr8888, Xrgb8888};
+        const ALPHA: &str = "the fullscreen client's buffer has an alpha channel";
+        const DIFFERS: &str = "the client's buffer format differs from the output's";
+        let cases = [
+            // What a fullscreen browser commits: an opaque region covering
+            // the surface. Its alpha is padding, so KMS reads the same bytes
+            // as XRGB and even a legacy flip keeps the output's format.
+            (Argb8888, true, Flips::Legacy, Ok(Xrgb8888)),
+            (Argb8888, true, Flips::Atomic, Ok(Xrgb8888)),
+            // No or a partial opaque region (rounded corners, a shadow, a
+            // translucent terminal) composites.
+            (Argb8888, false, Flips::Legacy, Err(ALPHA)),
+            (Argb8888, false, Flips::Atomic, Err(ALPHA)),
+            (Xrgb8888, true, Flips::Legacy, Ok(Xrgb8888)),
+            (Xrgb8888, true, Flips::Atomic, Ok(Xrgb8888)),
+            (Abgr8888, false, Flips::Legacy, Err(ALPHA)),
+            (Abgr8888, false, Flips::Atomic, Err(ALPHA)),
+            // An opaque ABGR or XBGR buffer's X twin is not the targets'
+            // format. A legacy flip cannot change formats; an atomic one can.
+            (Abgr8888, true, Flips::Legacy, Err(DIFFERS)),
+            (Abgr8888, true, Flips::Atomic, Ok(Xbgr8888)),
+            (Xbgr8888, true, Flips::Legacy, Err(DIFFERS)),
+            (Xbgr8888, true, Flips::Atomic, Ok(Xbgr8888)),
+        ];
+        for (fourcc, opaque, flips, expected) in cases {
             assert_eq!(
-                plane_choice(DrmFourcc::Argb8888, true, flips),
-                Ok(DrmFourcc::Xrgb8888)
-            );
-            // Phase `argb_partly_translucent`: no or a partial opaque region
-            // (rounded corners, a shadow, a translucent terminal) composites.
-            assert_eq!(
-                plane_choice(DrmFourcc::Argb8888, false, flips),
-                Err("the fullscreen client's buffer has an alpha channel")
-            );
-            assert_eq!(
-                plane_choice(DrmFourcc::Xrgb8888, true, flips),
-                Ok(DrmFourcc::Xrgb8888)
-            );
-            // Phase `abgr_translucent`: composited whatever the flips.
-            assert_eq!(
-                plane_choice(DrmFourcc::Abgr8888, false, flips),
-                Err("the fullscreen client's buffer has an alpha channel")
+                plane_choice(fourcc, opaque, flips),
+                expected,
+                "{fourcc:?} opaque {opaque} {flips:?}"
             );
         }
-        // Phase `abgr_declared_opaque`: its X twin is not the targets'
-        // format. A legacy flip cannot change formats; an atomic one can.
+    }
+
+    #[test]
+    fn only_an_opaque_8_bit_alpha_buffer_is_shown_as_its_x_twin() {
         assert_eq!(
             scanout_fourcc(DrmFourcc::Abgr8888, true),
             DrmFourcc::Xbgr8888
-        );
-        assert_eq!(
-            plane_choice(DrmFourcc::Abgr8888, true, Flips::Legacy),
-            Err("the client's buffer format differs from the output's")
-        );
-        assert_eq!(
-            plane_choice(DrmFourcc::Abgr8888, true, Flips::Atomic),
-            Ok(DrmFourcc::Xbgr8888)
-        );
-        // Phase `xbgr`: the same.
-        assert_eq!(
-            plane_choice(DrmFourcc::Xbgr8888, true, Flips::Legacy),
-            Err("the client's buffer format differs from the output's")
-        );
-        assert_eq!(
-            plane_choice(DrmFourcc::Xbgr8888, true, Flips::Atomic),
-            Ok(DrmFourcc::Xbgr8888)
         );
         assert_eq!(
             scanout_fourcc(DrmFourcc::Argb8888, false),
@@ -947,58 +938,88 @@ mod tests {
         assert!(!formats.supports(ARGB, MODIFIER_LINEAR));
     }
 
-    #[test]
-    fn client_formats_are_what_scans_out_as_the_target() {
-        use smithay::backend::allocator::Format;
-        let format = |code, modifier: u64| Format {
+    fn format(code: DrmFourcc, modifier: u64) -> smithay::backend::allocator::Format {
+        smithay::backend::allocator::Format {
             code,
             modifier: DrmModifier::from(modifier),
-        };
-        let plane = PlaneFormats::Modifiers(vec![
+        }
+    }
+
+    /// A plane scanning out XRGB with any modifier, and ARGB and XBGR linear.
+    fn tiled_plane() -> PlaneFormats {
+        PlaneFormats::Modifiers(vec![
             (XRGB, MODIFIER_LINEAR),
             (XRGB, TILED),
             (ARGB, MODIFIER_LINEAR),
             (DrmFourcc::Xbgr8888 as u32, MODIFIER_LINEAR),
-        ]);
+        ])
+    }
 
-        let legacy = |format| OfferTarget {
+    fn legacy(format: DrmFourcc) -> OfferTarget {
+        OfferTarget {
             format,
             changes_format: false,
-        };
-        let atomic = |format| OfferTarget {
+        }
+    }
+
+    fn atomic(format: DrmFourcc) -> OfferTarget {
+        OfferTarget {
             format,
             changes_format: true,
-        };
+        }
+    }
 
-        // Phase `xrgb_targets`: an XRGB buffer, and an ARGB one declared
-        // opaque (shown as XRGB), with every modifier XRGB takes. The
-        // plane's own ARGB listing does not matter: the buffer is shown as
-        // XRGB. XBGR and ABGR cannot follow an XRGB framebuffer by a legacy
-        // flip.
-        let xrgb = vec![
+    /// An XRGB buffer, and an ARGB one declared opaque (shown as XRGB),
+    /// with every modifier XRGB takes on [`tiled_plane`].
+    fn xrgb_offer() -> Vec<smithay::backend::allocator::Format> {
+        vec![
             format(DrmFourcc::Xrgb8888, MODIFIER_LINEAR),
             format(DrmFourcc::Xrgb8888, TILED),
             format(DrmFourcc::Argb8888, MODIFIER_LINEAR),
             format(DrmFourcc::Argb8888, TILED),
-        ];
-        assert_eq!(client_formats(&plane, legacy(DrmFourcc::Xrgb8888)), xrgb);
+        ]
+    }
 
-        let xbgr = vec![
+    fn xbgr_offer() -> Vec<smithay::backend::allocator::Format> {
+        vec![
             format(DrmFourcc::Xbgr8888, MODIFIER_LINEAR),
             format(DrmFourcc::Abgr8888, MODIFIER_LINEAR),
-        ];
-        assert_eq!(client_formats(&plane, legacy(DrmFourcc::Xbgr8888)), xbgr);
+        ]
+    }
 
-        // Phase `atomic_flips`: an atomic flip changes format, so XRGB
-        // targets are followed by every format the plane scans out.
-        let every = [xrgb, xbgr].concat();
+    /// The plane's own ARGB listing does not matter: the buffer is shown as
+    /// XRGB. XBGR and ABGR cannot follow an XRGB framebuffer by a legacy
+    /// flip.
+    #[test]
+    fn legacy_flips_offer_what_scans_out_as_the_target() {
+        let plane = tiled_plane();
+        assert_eq!(
+            client_formats(&plane, legacy(DrmFourcc::Xrgb8888)),
+            xrgb_offer()
+        );
+        assert_eq!(
+            client_formats(&plane, legacy(DrmFourcc::Xbgr8888)),
+            xbgr_offer()
+        );
+    }
+
+    /// An atomic flip changes format, so targets are followed by every
+    /// format the plane scans out.
+    #[test]
+    fn atomic_flips_offer_every_format_the_plane_scans_out() {
+        let plane = tiled_plane();
+        let every = [xrgb_offer(), xbgr_offer()].concat();
         assert_eq!(client_formats(&plane, atomic(DrmFourcc::Xrgb8888)), every);
         assert_eq!(client_formats(&plane, atomic(DrmFourcc::Xbgr8888)), every);
+    }
 
-        // Phase `targets_no_client_format_matches`: HDR targets.
-        assert!(client_formats(&plane, legacy(DrmFourcc::Xrgb2101010)).is_empty());
+    #[test]
+    fn hdr_targets_match_no_client_format() {
+        assert!(client_formats(&tiled_plane(), legacy(DrmFourcc::Xrgb2101010)).is_empty());
+    }
 
-        // Phase `a_driver_without_modifiers`: linear.
+    #[test]
+    fn a_driver_without_modifiers_is_offered_linear() {
         let implicit = PlaneFormats::Implicit(vec![XRGB]);
         let linear = vec![
             format(DrmFourcc::Xrgb8888, MODIFIER_LINEAR),
@@ -1034,10 +1055,7 @@ mod tests {
             device: 226,
             formats: client_formats(
                 &PlaneFormats::Implicit(vec![XRGB]),
-                OfferTarget {
-                    format: DrmFourcc::Xrgb8888,
-                    changes_format: false,
-                },
+                legacy(DrmFourcc::Xrgb8888),
             ),
         });
         plane.offered = Some(Arc::clone(&offer));

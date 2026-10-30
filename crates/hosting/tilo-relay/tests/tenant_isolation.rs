@@ -37,9 +37,8 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay::rooms::{
-    CREATE_ROOM, ENTER_ROOM, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
-    IssueInvitationRequest, IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER,
-    RECORD_EFFECT_RECEIPT, RemoveMemberRequest, RoomSummary, Rooms, member_resource,
+    CREATE_ROOM, ENTER_ROOM, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssueInvitationRequest,
+    IssuedInvitation, LIST_ROOMS, RemoveMemberRequest, RoomSummary, Rooms,
 };
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
@@ -544,21 +543,6 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
             HOST_ROOMS_RESOURCE.to_owned(),
             ENTER_ROOM,
             serde_json::json!({ "room": globex }),
-        ),
-        (
-            HOST_ACTIONS_PROVIDER,
-            HOST_ROOMS_RESOURCE.to_owned(),
-            GRANT_APP_AUTHORSHIP,
-            serde_json::json!({ "room": globex, "app": "so.tilo.notes" }),
-        ),
-        (
-            MEMBER_ACTIONS_PROVIDER,
-            member_resource(globex),
-            RECORD_EFFECT_RECEIPT,
-            serde_json::json!({
-                "invocation": uuid::Uuid::new_v4().to_string(),
-                "redacted": r#"{"status":"completed"}"#,
-            }),
         ),
     ];
     for (provider, resource, action, argument) in probes {
