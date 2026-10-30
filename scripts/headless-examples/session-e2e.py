@@ -95,6 +95,20 @@ HANG_BOUND = float(os.environ.get("TILO_TEST_HANG_BOUND_SECS", "30"))
 REQUEST = "Tidy up the release tasks"
 FIXED_REPLY = "The release tasks are tidy. (This is the e2e test model's fixed reply.)"
 TEST_MODEL = "e2e-fixed-reply"
+# The task the test model's program adds: the change the asked agent makes in an app.
+ASKED_TASK = "Call Xaver about the launch video"
+# What the session logs as the task agent's process exits: a task agent ends with its run.
+AGENT_EXITED = "app-exit: package=so.tilo.agent "
+# What the agent logs when the issue refuses one of the run's own calls on it
+# (apps/agent/src/session/tracker.rs, session.rs, agent_loop.rs).
+RUN_REFUSALS = [
+    "the issue did not take the run's report",
+    "the issue's action was not invoked",
+    "the issue refused the turn's receipt",
+    "the issue refused the failed turn's receipt",
+    "native task stopped before completion",
+    "native task review report was refused",
+]
 
 
 def app_id(name: str) -> str:
@@ -152,6 +166,12 @@ class TestOnlyFixedReplyModel:
             return [{"type": "text", "text": json.dumps({"result": {"work": REQUEST}})}]
         with self.lock:
             self.task_turns.append(messages)
+            first = not any(m.get("role") == "assistant" for m in messages)
+        # Its first turn adds a task through the `tilo` tool (apps/agent/src/programs.rs), the
+        # way a real model does what it is asked; once that answered, the fixed reply ends it.
+        if first:
+            return [{"type": "tool_use", "id": "toolu_e2e_add_task", "name": "tilo",
+                     "input": {"program": f'tasks.add(tasks.tasks, "{ASKED_TASK}")'}}]
         return [{"type": "text", "text": FIXED_REPLY}]
 
     @property
@@ -563,6 +583,22 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
     after = sorted((w.get("app_id"), w.get("tab")) for w in session.windows())
     if after != before:
         raise Failed(f"asking opened or closed windows: before {before}, after {after}")
+    # The agent's change landed: the task its program added is in the running Tasks.
+    wait_for("the task the agent added, in Tasks", lambda: holds(session, "tasks", ASKED_TASK),
+             lambda: f"model errors {model.errors}; turns {len(model.task_turns)}; the program "
+                     f"answered: {text_of(model.task_turns[-1][-1].get('content'))[:1500] if len(model.task_turns) > 1 else '-'}"
+                     f"\n{session.log_tail()}")
+    # The run holds and settles each turn's spend and reports its own end on the issue, and
+    # only then does its task agent exit. Catches the agent's spend arguments not matching
+    # Tasks' actions and its finish-run being refused as made for a task that had ended.
+    exited = wait_for("the task agent ending with its task",
+                      lambda: next((line for line in session.log_lines() if AGENT_EXITED in line), None),
+                      lambda: session.log_tail())
+    refused = [line for line in session.log_lines() if any(r in line for r in RUN_REFUSALS)]
+    if refused:
+        raise Failed("the run's own reports were refused:\n" + "\n".join(refused[:8]))
+    if not exited.rstrip().endswith("exit status: 0"):
+        raise Failed(f"the task agent did not end cleanly: {exited}")
     return {"issue": made, "task_turns": len(model.task_turns)}
 
 

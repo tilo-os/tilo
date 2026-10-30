@@ -25,6 +25,10 @@ impl LocalCaller {
     pub(super) fn admitted_in(&self) -> (String, AdmittedJoinIdentity) {
         (self.route.cluster_id.clone(), self.admitted.clone())
     }
+    /// The route its connection was admitted on.
+    pub(super) const fn route(&self) -> &CrdtRoute {
+        &self.route
+    }
     pub(super) fn capture(channel: &CapnpChannelHandle) -> Result<Self, String> {
         Self::admitted_on(
             &channel.state,

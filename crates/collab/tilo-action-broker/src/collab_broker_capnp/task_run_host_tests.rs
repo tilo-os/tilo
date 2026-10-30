@@ -24,6 +24,8 @@ const DESKTOP_PROVIDER: &str = "test-desktop";
 #[derive(Default)]
 struct Desktop {
     started: Mutex<Vec<String>>,
+    /// Whether its steps are a task agent's steps of its run.
+    for_tasks: bool,
 }
 
 impl crate::services::HostStepServices for Desktop {
@@ -32,6 +34,9 @@ impl crate::services::HostStepServices for Desktop {
     }
     fn app_id(&self) -> &'static str {
         "so.tilo.desktop"
+    }
+    fn for_tasks(&self) -> bool {
+        self.for_tasks
     }
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
@@ -299,6 +304,102 @@ async fn a_door_connection_takes_a_host_step_through_its_run() {
                     .is_err()
             );
             assert_eq!(desktop.started.lock().unwrap().len(), 1);
+            drop(f);
+        })
+        .await;
+}
+
+/// A task agent launched for its task (not the door's connection) joins
+/// over its own channel. A host step marked for tasks (a task's programs) is
+/// in its catalogue, and it takes the step as a child of its run through the
+/// run-admitted host step path the door's connection takes: taken once, read
+/// back by the run, refused once the run stops.
+#[tokio::test(flavor = "current_thread")]
+async fn a_launched_task_agent_takes_its_task_steps_in_its_run() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let steps = Arc::new(Desktop {
+                for_tasks: true,
+                ..Desktop::default()
+            });
+            let f = Fixture::with_services(None, vec![steps.clone()]);
+            let agent = admit(&f);
+            let route = CrdtRoute::record(
+                crate::collab_broker_capnp::task_run_host::TASK_AGENT_APP,
+                room().to_string(),
+                "",
+            );
+            let admitted = crate::collab_broker_capnp::verify_join_identity(
+                &route,
+                &agent.presentation(),
+                f.state.membership.as_ref(),
+                f.state.trusted_devices.as_deref().map(Vec::as_slice),
+                f.state.certificate_authority.get().map(Arc::as_ref),
+            )
+            .unwrap();
+            let actor = admitted.broker_actor();
+            let catalogue: serde_json::Value = serde_json::from_str(
+                &f.state
+                    .action_catalogue_json_for(&room().to_string(), &actor, None)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(
+                catalogue["surfaces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|surface| surface["provider"] == DESKTOP_PROVIDER
+                        && surface["actions"][0]["action"] == "list-windows"),
+                "the task step is in the task agent's catalogue: {catalogue}"
+            );
+            let channel = f.channel_admitted(300, &route, admitted);
+            let run = delivered(&channel).await;
+            let take = |invocation: u128| {
+                let mut request = channel.invoke_task_action_request();
+                let mut p = request.get();
+                p.set_run_id(run.run_id);
+                p.set_lease(&run.lease);
+                p.set_peer_id(0);
+                p.set_provider(DESKTOP_PROVIDER);
+                p.set_resource("desktop");
+                p.set_action("list-windows");
+                p.set_invocation(uuid::Uuid::from_u128(invocation).to_string());
+                request.send().promise
+            };
+            let taken = take(61).await.expect("the run takes its task step");
+            let update: tilo_actions::InvocationUpdate = serde_json::from_str(
+                taken
+                    .get()
+                    .unwrap()
+                    .get_update_json()
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    update,
+                    tilo_actions::InvocationUpdate::Accepted { .. }
+                        | tilo_actions::InvocationUpdate::Succeeded { .. }
+                ),
+                "{update:?}"
+            );
+            assert_eq!(
+                steps.started.lock().unwrap().as_slice(),
+                [format!("agent:{}", agent.delegation.agent_id)],
+                "taken once, by the task agent"
+            );
+            // Asked again, the same step is read back, not taken again.
+            take(61).await.expect("read back");
+            assert_eq!(steps.started.lock().unwrap().len(), 1);
+            for run in f.native.runs.lock().unwrap().iter_mut() {
+                run.active = false;
+            }
+            f.state.refresh_native_task_delivery();
+            assert!(take(62).await.is_err(), "a stopped run takes no step");
+            assert_eq!(steps.started.lock().unwrap().len(), 1);
             drop(f);
         })
         .await;

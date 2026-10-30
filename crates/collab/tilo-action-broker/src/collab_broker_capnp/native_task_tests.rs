@@ -506,6 +506,15 @@ impl Fixture {
             )
             .unwrap();
         }
+        self.channel_admitted(peer, &route, admitted)
+    }
+    /// A channel on `route`, admitted as `admitted`.
+    fn channel_admitted(
+        &self,
+        peer: u64,
+        route: &CrdtRoute,
+        admitted: AdmittedJoinIdentity,
+    ) -> channel_handle::Client {
         capnp_rpc::new_client(CapnpChannelHandle {
             as_app: None,
             person_chat_views: std::cell::RefCell::default(),

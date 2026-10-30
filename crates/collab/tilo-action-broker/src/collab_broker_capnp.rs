@@ -1536,6 +1536,11 @@ struct PendingTaskRun {
     action_context: tilo_actions::ActionContext,
     terminal: bool,
     native: crate::services::NativeTaskBinding,
+    /// The host the run's agent takes its host steps through (a task's
+    /// programs), the same the agent door's connection is: one for the run,
+    /// so each step is read back by the caller that took it. Made at its
+    /// first host step.
+    task_host: Option<TaskRunHost>,
 }
 
 /// The application's terminal answer to a directed invocation.
@@ -5299,51 +5304,94 @@ impl CapnpBrokerState {
             })
             .filter(|app| !live_apps.contains(&app.package_id))
             .collect::<Vec<_>>();
+        // A task agent's run takes the host's task steps (a task's programs)
+        // as steps of the run: listed for it alone, each admitted by the run
+        // when taken.
+        let task_steps = self
+            .services
+            .host_steps
+            .iter()
+            .filter(|steps| actor.issue().is_some() && steps.for_tasks())
+            .map(|steps| {
+                let actions = steps
+                    .descriptors()
+                    .into_iter()
+                    .filter(|descriptor| {
+                        scope.is_none_or(|scope| {
+                            scope.app_id == steps.app_id()
+                                && descriptor.address.resource == scope.resource
+                                && descriptor.address.action == scope.action
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                (steps.provider(), steps.app_id().to_owned(), actions)
+            })
+            .collect::<Vec<_>>();
         // One policy sample decides every row; serialization runs after the
         // committed authority is released.
-        let (published, applications) = membership.decide_in_room(cluster_id, |workspace| {
-            let workspace = workspace
-                .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-            let published = published
-                .into_iter()
-                .map(|mut surface| {
-                    if !surface.live
-                        && !actor.may_in(
+        let (published, applications, task_steps) =
+            membership.decide_in_room(cluster_id, |workspace| {
+                let workspace = workspace
+                    .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+                let published = published
+                    .into_iter()
+                    .map(|mut surface| {
+                        if !surface.live
+                            && !actor.may_in(
+                                workspace,
+                                &app_node(workspace, &surface.app_id),
+                                ActionKind::Undoable,
+                                now,
+                            )
+                        {
+                            surface.actions.clear();
+                        }
+                        // Listed when the actor may take it, or would be asked
+                        // first.
+                        surface.actions.retain(|action| {
+                            actor.action_answer_in(
+                                workspace,
+                                &surface.app_id,
+                                (&action.resource_kind, &action.resource, &action.action),
+                                &action.contract.need(),
+                                now,
+                            ) != Answer::Deny
+                        });
+                        surface
+                    })
+                    .collect::<Vec<_>>();
+                let applications = applications
+                    .into_iter()
+                    .filter(|app| {
+                        actor.may_in(
                             workspace,
-                            &app_node(workspace, &surface.app_id),
+                            &app_node(workspace, &app.package_id),
                             ActionKind::Undoable,
                             now,
                         )
-                    {
-                        surface.actions.clear();
-                    }
-                    // Listed when the actor may take it, or would be asked
-                    // first.
-                    surface.actions.retain(|action| {
-                        actor.action_answer_in(
-                            workspace,
-                            &surface.app_id,
-                            (&action.resource_kind, &action.resource, &action.action),
-                            &action.contract.need(),
-                            now,
-                        ) != Answer::Deny
-                    });
-                    surface
-                })
-                .collect::<Vec<_>>();
-            let applications = applications
-                .into_iter()
-                .filter(|app| {
-                    actor.may_in(
-                        workspace,
-                        &app_node(workspace, &app.package_id),
-                        ActionKind::Undoable,
-                        now,
-                    )
-                })
-                .collect::<Vec<_>>();
-            Ok::<_, String>((published, applications))
-        })??;
+                    })
+                    .collect::<Vec<_>>();
+                let task_steps = task_steps
+                    .into_iter()
+                    .map(|(provider, app_id, mut actions)| {
+                        actions.retain(|descriptor| {
+                            actor.action_answer_in(
+                                workspace,
+                                &app_id,
+                                (
+                                    &descriptor.resource_kind,
+                                    &descriptor.address.resource,
+                                    &descriptor.address.action,
+                                ),
+                                &descriptor.contract.need(),
+                                now,
+                            ) != Answer::Deny
+                        });
+                        (provider, app_id, actions)
+                    })
+                    .collect::<Vec<_>>();
+                Ok::<_, String>((published, applications, task_steps))
+            })??;
         let mut surfaces = published
             .into_iter()
             .filter_map(|surface| {
@@ -5361,6 +5409,20 @@ impl CapnpBrokerState {
                 })
             })
             .collect::<Vec<_>>();
+        for (provider, app_id, actions) in task_steps {
+            if actions.is_empty() {
+                continue;
+            }
+            surfaces.push(serde_json::json!({
+                "peer_id": 0,
+                "provider": provider,
+                "app_id": app_id,
+                "cluster_id": cluster_id,
+                "record_id": "",
+                "live": true,
+                "actions": actions.iter().map(PublishedAction::from).collect::<Vec<_>>(),
+            }));
+        }
         for app in applications {
             let package_id = app.package_id;
             let display_name = app.display_name;

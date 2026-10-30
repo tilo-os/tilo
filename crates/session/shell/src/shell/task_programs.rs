@@ -20,10 +20,10 @@ use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
 use tilo_lock::MutexRecover as _;
 
-use crate::shell::remote_actions::BrokerActionHost;
+use tilo_action_broker::collab_broker_capnp::TaskRunHost;
 
 /// One task's session of the door.
-type Door = tilo_runtime::mcp::McpServer<BrokerActionHost>;
+type Door = tilo_runtime::mcp::McpServer<TaskRunHost>;
 
 /// A task, by its room, its agent and its issue.
 type TaskKey = (String, String, String);
@@ -122,8 +122,10 @@ fn bind(argument: Option<&str>) -> Result<ActionArgs, String> {
 }
 
 /// The task's session of the door, started for its run `group` when it has none or its last
-/// run's.
+/// run's: over `host`, the run's own host, so everything its programs do (an app's action, a
+/// read or a change of a record) is a step the run admits, as the agent door's are.
 fn session_of(
+    host: &TaskRunHost,
     room: &str,
     agent: &str,
     person: Option<&str>,
@@ -137,17 +139,11 @@ fn session_of(
     {
         return Ok(Arc::clone(door));
     }
-    let broker = crate::shell::link_open::session_broker()?;
     let run = group.id.clone();
     let door = Arc::new(
-        Door::for_task(
-            BrokerActionHost::new(broker),
-            room.to_owned(),
-            agent,
-            person,
-        )
-        .with_work_group(group)
-        .with_task_hosts(Some(Arc::new(TaskHosts))),
+        Door::for_task(host.clone(), room.to_owned(), agent, person)
+            .with_work_group(group)
+            .with_task_hosts(Some(Arc::new(TaskHosts))),
     );
     // A later run of the issue ends the earlier one's session, its host with it.
     sessions.insert(key, (run, Arc::clone(&door)));
@@ -165,6 +161,10 @@ impl HostStepServices for BrokerDoor {
 
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![descriptor()]
+    }
+
+    fn for_tasks(&self) -> bool {
+        true
     }
 
     fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
@@ -195,7 +195,11 @@ impl HostStepServices for BrokerDoor {
             .id()
             .strip_prefix("agent:")
             .unwrap_or_else(|| actor.id());
+        let host = request
+            .task_run
+            .ok_or("a task's programs run only as steps of its run")?;
         let door = session_of(
+            host,
             request.room,
             agent,
             actor.acting_for(),

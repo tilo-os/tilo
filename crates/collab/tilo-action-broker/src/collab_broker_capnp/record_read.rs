@@ -117,18 +117,93 @@ impl RecordChanges for BrokerRecordChanges {
                 });
             }
         }
-        let origin = state
-            .services
-            .record_changes
-            .clone()
-            .ok_or_else(|| unavailable("this host has no origin for its records".into()))?;
-        drop(state);
-        let invoker = tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
-            .with_kind(tilo_actions::ActorKind::Agent)
-            .acting_for(person);
-        origin.apply(room, change, &invoker).map_err(unavailable)
+        apply_record_change(state, room, change, (agent, person))
     }
 }
+
+/// Apply `change` in `room` at its record's origin as `agent` acting for
+/// `person`, admitted already.
+fn apply_record_change(
+    state: Arc<CapnpBrokerState>,
+    room: &str,
+    change: &RecordChange,
+    (agent, person): (&str, &str),
+) -> Result<serde_json::Value, ActionHostError> {
+    let unavailable = |reason: String| ActionHostError::Unavailable { reason };
+    let origin = state
+        .services
+        .record_changes
+        .clone()
+        .ok_or_else(|| unavailable("this host has no origin for its records".into()))?;
+    drop(state);
+    let invoker = tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
+        .with_kind(tilo_actions::ActorKind::Agent)
+        .acting_for(person);
+    origin.apply(room, change, &invoker).map_err(unavailable)
+}
+
+/// A task run's reads and changes of records outside their apps: admitted by
+/// the run, as every other step of it is (its delegation, its issue's and its
+/// starter's live grants decide, only while it goes), then read and applied
+/// as the run's agent acting for its starter. The agent door's connection
+/// and a launched task agent's programs reach records through it alike.
+pub(super) struct RunRecords(pub(super) super::TaskRunHost);
+
+impl RecordChanges for RunRecords {
+    fn apply(
+        &self,
+        caller: &Caller,
+        change: &RecordChange,
+    ) -> Result<serde_json::Value, ActionHostError> {
+        let host = &self.0;
+        host.admit_record_step(
+            caller,
+            (&change.app, &change.resource, &change.action),
+            ActionKind::Undoable,
+        )?;
+        apply_record_change(
+            host.state(),
+            host.room(),
+            change,
+            (host.agent(), host.person()),
+        )
+    }
+}
+
+impl RecordReads for RunRecords {
+    fn read(
+        &self,
+        caller: &Caller,
+        address: &RecordAddress,
+    ) -> Result<RecordCopy, ActionHostError> {
+        let host = &self.0;
+        let read = (address.app.clone(), address.record.clone());
+        host.admit_record_step(
+            caller,
+            (&read.0, &read.1, RECORD_READ_ACTION),
+            ActionKind::Read,
+        )?;
+        let checked = (host.clone(), caller.clone());
+        let revalidate = Arc::new(move || {
+            let (host, caller) = &checked;
+            host.admit_record_step(
+                caller,
+                (&read.0, &read.1, RECORD_READ_ACTION),
+                ActionKind::Read,
+            )
+            .map_err(|_| "record read no longer allowed".to_owned())
+        });
+        read_record(
+            host.state(),
+            (host.person(), host.room()),
+            address,
+            revalidate,
+        )
+    }
+}
+
+/// The action a record read is decided as, on the record's node.
+const RECORD_READ_ACTION: &str = "read";
 
 /// The person an agent task acts for, when `caller` is one: an agent the host admitted as a
 /// member acting for its person, confined to a room.
@@ -160,6 +235,29 @@ impl RecordReads for BrokerRecordReads {
             });
         };
         state.may_read_record(caller, room, address)?;
+        let checked = (Arc::downgrade(&state), caller.clone(), address.clone());
+        let revalidate = Arc::new(move || {
+            let (state, caller, address) = &checked;
+            let state = state.upgrade().ok_or("record read broker ended")?;
+            let room = caller.room().ok_or("record read lost its room")?;
+            state
+                .may_read_record(caller, room, address)
+                .map_err(|_| "record read no longer allowed".to_owned())
+        });
+        read_record(state, (person, room), address, revalidate)
+    }
+}
+
+/// Read `address` in `room` as `person`'s device captures it, admitted
+/// already; `revalidate` decides the read again before every chunk.
+fn read_record(
+    state: Arc<CapnpBrokerState>,
+    (person, room): (&str, &str),
+    address: &RecordAddress,
+    revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+) -> Result<RecordCopy, ActionHostError> {
+    let unavailable = |reason: String| ActionHostError::Unavailable { reason };
+    {
         let (Some(owner), Some(people)) = (
             state.services.committed_documents.clone(),
             state.services.local_person.clone(),
@@ -169,16 +267,7 @@ impl RecordReads for BrokerRecordReads {
             ));
         };
         let certificate = people.certificate(room, person).map_err(unavailable)?;
-        let checked = (Arc::downgrade(&state), caller.clone(), address.clone());
         drop(state);
-        let revalidate = Arc::new(move || {
-            let (state, caller, address) = &checked;
-            let state = state.upgrade().ok_or("record read broker ended")?;
-            let room = caller.room().ok_or("record read lost its room")?;
-            state
-                .may_read_record(caller, room, address)
-                .map_err(|_| "record read no longer allowed".to_owned())
-        });
         let context = NativeDocumentReadContext::for_task(
             CrdtRoute::record(address.app.clone(), room, address.record.clone()),
             certificate,
