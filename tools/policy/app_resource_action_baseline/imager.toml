@@ -1,5 +1,4 @@
 [ratchets.closure_control]
 "apps/imager/src/app.rs" = 2
-"apps/imager/src/setup/journey/existing_identity.rs" = 1
 "apps/imager/src/setup/journey/mod.rs" = 2
 "apps/imager/src/write_setup.rs" = 1

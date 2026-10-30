@@ -2171,7 +2171,9 @@ fn unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
             .get(&id)
             .and_then(|key| shared.selection_actions.get(key))
             .is_some_and(|action| !action.is_available())
-            || shared.bound.unavailable_check(shared.checks.contains_key(&id));
+            || shared
+                .bound
+                .unavailable_check(shared.checks.contains_key(&id));
     }
     shared.bound.unavailable_button(target, shared)
 }
@@ -2478,7 +2480,8 @@ impl crate::widget::controls::ActionControls for NavList {
                 .visible_row_range()
                 .filter_map(|index| self.tree.visible_row(index))
                 .any(|(node, _, _)| {
-                    (shared.checks.contains_key(&node) && shared.bound.check_control(node).is_some())
+                    (shared.checks.contains_key(&node)
+                        && shared.bound.check_control(node).is_some())
                         || !shared
                             .bound
                             .row_controls(node, &shared, self.tree.model())

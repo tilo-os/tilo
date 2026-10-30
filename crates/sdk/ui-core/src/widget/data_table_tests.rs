@@ -700,7 +700,9 @@ fn sorting_is_owned_by_the_model_and_reapplied_on_rows() {
         let mut table = DataTable::new(columns())
             .selectable(true)
             .with_sort_state(&state)
-            .on_row_click(move |row, _, _| click_sink.borrow_mut().push(row))
+            .on_row_click_view("table.click", move |row, _, _| {
+                click_sink.borrow_mut().push(row)
+            })
             .on_activate(move |row| activate_sink.borrow_mut().push(row));
         table.set_rows(rows());
         let _ = lay_out(&mut table);
@@ -1217,7 +1219,9 @@ fn pointer_and_keyboard_select_rows_unless_cells_or_mode_consume() {
             let clicks = clicks.clone();
             DataTable::<R>::new(sample_cols())
                 .selectable(true)
-                .on_row_click(move |i, c, s| clicks.borrow_mut().push((i, c, s)))
+                .on_row_click_view("table.click", move |i, c, s| {
+                    clicks.borrow_mut().push((i, c, s))
+                })
         };
         t.set_rows(rows4());
         let (tree, node) = lay_out(&mut t);

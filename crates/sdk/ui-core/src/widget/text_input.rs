@@ -596,6 +596,9 @@ pub struct TextInput {
     on_submit: Option<TextChangeCallback>,
     /// Route a submitting Enter through an exported resource action.
     submit_action: Option<ActionEmitter<String>>,
+    /// Enter's submit, published as the field's view action `submit`
+    /// ([`Self::on_submit_view`]) and the resource it announces.
+    submit_view: Option<(ActionEmitter<()>, tilo_actions::ResourceSpec)>,
     /// A trailing icon button inside the field.
     accessory: Option<Accessory>,
     /// `font_size_override` is a document-space size, never grown by the text
@@ -693,6 +696,15 @@ pub enum AccessoryAction {
 /// The action target of a field's trailing accessory, for agents and
 /// assistive technology.
 const ACCESSORY_TARGET: &str = "text-input-accessory";
+
+/// The operation type of a field's submitting Enter.
+const SUBMIT_TEXT: &str = "tilo.ui.text.submit";
+
+/// What a `tilo.ui.text.submit` operation carries: the field it submits.
+#[derive(serde::Deserialize)]
+struct SubmitPayload {
+    control: String,
+}
 
 /// A trailing icon button inside a field.
 struct Accessory {
@@ -885,6 +897,7 @@ impl TextInput {
             document_inset: false,
             on_submit: None,
             submit_action: None,
+            submit_view: None,
             accessory: None,
             content_sized: false,
             span_highlighter: None,
@@ -3820,6 +3833,38 @@ impl TextInput {
         self
     }
 
+    /// Run `callback` with the text on a submitting Enter, the field, as
+    /// control `tilo.control:<id>`, publishing the submit as its view action
+    /// `submit`: a person's Enter, a screen reader, a script and an agent
+    /// submit through the same action. Two Enters delivered before the host
+    /// collects one submit once.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "the generated payload is serializable and the action is the resource's own"
+    )]
+    pub fn on_submit_view(mut self, callback: impl FnMut(&str) + 'static) -> Self {
+        use crate::tilo_actions::{ActionBinding, ActionSpec, OperationKind, ResourceSpec};
+        let id = self.test_id().unwrap_or("text_input").to_owned();
+        let spec = ActionSpec::operation(
+            "submit",
+            "Submit",
+            OperationKind::View,
+            SUBMIT_TEXT,
+            &serde_json::json!({ "control": id }),
+        )
+        .expect("the submit payload is serializable")
+        .for_audience(crate::tilo_actions::Audience::Agents);
+        let resource = ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control", "Submit")
+            .with_action(spec);
+        let binding = ActionBinding::unit_for(&resource, "submit")
+            .expect("the submit action is the resource's own and takes no arguments");
+        self.enter_submits = true;
+        self.on_submit = Some(Box::new(callback));
+        self.submit_view = Some((ActionEmitter::new_replace_one(binding), resource));
+        self
+    }
+
     /// A trailing clear button inside the field while it holds text.
     #[must_use]
     pub fn with_clear_button(self) -> Self {
@@ -4190,6 +4235,13 @@ impl TextInput {
         self.submit_requested = true;
         if let Some(action) = &mut self.submit_action {
             let _ = action.emit(self.text.clone());
+        }
+        let control = self.test_id().unwrap_or("text_input").to_owned();
+        if let Some((action, _)) = &mut self.submit_view {
+            if let Err(error) = action.emit(()) {
+                tracing::warn!(%error, %control, "a field refused its submit");
+            }
+            return;
         }
         if let Some(callback) = self.on_submit.as_mut() {
             callback(&self.text);
@@ -5587,6 +5639,55 @@ impl Drop for TextInput {
     }
 }
 
+impl crate::resources::PublishesResources for TextInput {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        self.submit_view
+            .iter()
+            .map(|(_, resource)| resource.clone())
+            .collect()
+    }
+}
+
+impl crate::widget::ResourceOperations for TextInput {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        let history = crate::widget::resource_operation::local_history_handlers(self);
+        match (self.submit_view.is_some(), history.is_empty()) {
+            (false, _) => history,
+            (true, true) => &[SUBMIT_TEXT],
+            (true, false) => &[SUBMIT_TEXT, crate::undo::EDIT_OPERATION],
+        }
+    }
+
+    /// Answer a `submit` addressed to this field: hand its text to the
+    /// field's handler, whoever submitted.
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let is_submit = op.unscoped().is_some_and(|request| {
+            request.kind == tilo_actions::OperationKind::View && request.type_id == SUBMIT_TEXT
+        });
+        if !is_submit {
+            return crate::widget::resource_operation::start_by_default(self, op, doc, path);
+        }
+        let payload: SubmitPayload =
+            serde_json::from_slice(op.unscoped().map_or(&[][..], |request| request.payload))
+                .map_err(|error| error.to_string())?;
+        if payload.control != self.test_id().unwrap_or("text_input") {
+            return Ok(None);
+        }
+        let text = self.text.clone();
+        if let Some(callback) = self.on_submit.as_mut() {
+            callback(&text);
+        }
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
 impl Widget for TextInput {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -5595,7 +5696,9 @@ impl Widget for TextInput {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::undo::UndoPoints,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -6656,12 +6759,20 @@ impl crate::widget::controls::ActionControls for TextInput {
         if let Some(action) = &mut self.submit_action {
             let _ = action.install_custody(domain, attachment);
         }
+        if let Some((action, _)) = &mut self.submit_view {
+            let _ = action.install_custody(domain, attachment);
+        }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action
             .as_mut()
             .and_then(ActionEmitter::take)
             .or_else(|| self.submit_action.as_mut().and_then(ActionEmitter::take))
+            .or_else(|| {
+                self.submit_view
+                    .as_mut()
+                    .and_then(|(action, _)| action.take())
+            })
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let mut bindings = self.field_action_bindings();
@@ -6770,6 +6881,9 @@ impl TextInput {
         if let Some(action) = &self.submit_action {
             bindings.push(action.metadata(control_id));
         }
+        if let Some((action, _)) = &self.submit_view {
+            bindings.push(action.metadata(control_id));
+        }
         bindings
     }
     fn refresh_control_action_availability(
@@ -6780,6 +6894,9 @@ impl TextInput {
             action.refresh_availability(allowed);
         }
         if let Some(action) = &mut self.submit_action {
+            action.refresh_availability(allowed);
+        }
+        if let Some((action, _)) = &mut self.submit_view {
             action.refresh_availability(allowed);
         }
         self.reveal.set_enabled(!self.effectively_disabled());
@@ -6797,10 +6914,8 @@ impl TextInput {
                 kind: ControlBindingKind::CollaborativeDocument("<nested-text>".to_string()),
             }]
         } else if self.on_change.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
-            }]
+            // A callback-only field reaches no door, so it is no binding.
+            Vec::new()
         } else {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),

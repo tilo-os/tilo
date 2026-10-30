@@ -196,10 +196,13 @@ pub(crate) fn value_control_bindings<I>(
     if let Some(action) = action {
         return vec![action.metadata(control_id)];
     }
+    if has_callback {
+        // A callback-only value control reaches no door, so it is no
+        // binding: the inventory names what an agent can invoke.
+        return Vec::new();
+    }
     let kind = if let Some(key) = document_key {
         ControlBindingKind::CollaborativeDocument(key.to_owned())
-    } else if has_callback {
-        ControlBindingKind::LegacyCallback
     } else {
         ControlBindingKind::SemanticAction(control_id.to_owned())
     };

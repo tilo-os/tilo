@@ -564,7 +564,9 @@ fn a_bound_property_action_runs_the_apps_action_on_every_path() {
     harness.click_at(center.x, center.y);
     let mut root = harness.root_mut::<crate::widget::Uncustodied<PropertyList>>();
     let list = &mut root.0;
-    let invocation = list.take_control_invocation().expect("the press runs the action");
+    let invocation = list
+        .take_control_invocation()
+        .expect("the press runs the action");
     assert_eq!(invocation.address.action, "edit");
     assert!(list.take_control_invocation().is_none());
 

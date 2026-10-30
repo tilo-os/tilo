@@ -479,7 +479,6 @@ pub enum ControlBindingStatus {
     /// Multiple affordances intentionally invoke the same operation.
     SharedAddress,
     StaleAddress,
-    ExplicitLegacy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

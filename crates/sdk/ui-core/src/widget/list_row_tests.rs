@@ -564,13 +564,6 @@ fn on_view_publishes_the_row_as_an_action_instead_of_a_callback() {
     });
     let bindings = crate::widget::controls::ActionControls::control_action_bindings(&row);
     assert_eq!(bindings.len(), 1);
-    assert!(
-        !matches!(
-            bindings[0].kind,
-            crate::widget::ControlBindingKind::LegacyCallback
-        ),
-        "a view action is not a legacy callback"
-    );
     let doc = automerge::AutoCommit::new();
     let resources = crate::resources::PublishesResources::resources(&row, &doc);
     assert_eq!(resources.len(), 1);

@@ -3664,10 +3664,9 @@ impl crate::widget::controls::ActionControls for ListRow {
                 ActionHandler::Bound(emitter) => {
                     bindings.push(emitter.metadata(format!("{id}/action/{index}")));
                 }
-                ActionHandler::Callback(_) => bindings.push(ControlBindingMetadata {
-                    control_id: format!("{id}/action/{index}"),
-                    kind: crate::widget::ControlBindingKind::LegacyCallback,
-                }),
+                // A callback-only action reaches no door, so it is no
+                // binding: the inventory names what an agent can invoke.
+                ActionHandler::Callback(_) => {}
             }
         }
         for child in Widget::children(self) {

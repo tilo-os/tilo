@@ -5743,11 +5743,6 @@ impl FrameHarness {
                 }
                 ControlBindingKind::CollaborativeDocument(_)
                 | ControlBindingKind::SemanticAction(_) => None,
-                ControlBindingKind::LegacyCallback => Some(NativeAppIssue {
-                    control: binding.control_id,
-                    code: "legacy-callback".into(),
-                    message: "imperative callback bypasses the resource/action door".into(),
-                }),
             })
             .collect::<Vec<_>>();
         if !has_semantics && inventoried_controls.is_empty() {
@@ -10841,15 +10836,6 @@ mod tests {
                 .perform_named("save", &crate::a11y::Action::Activate)
                 .expect("bound control dispatches through the headless host");
             assert_eq!(calls.get(), 1);
-
-            let legacy = FrameHarness::new(
-                State::new(),
-                Box::new(Button::new("legacy", "Legacy").on_click(|| {})),
-                (320, 160),
-            );
-            let audit = legacy.native_app_audit();
-            assert!(!audit.is_certified());
-            assert_eq!(audit.issues[0].code, "legacy-callback");
 
             let omitted = FrameHarness::new(
                 State::new(),

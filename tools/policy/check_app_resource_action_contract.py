@@ -173,6 +173,13 @@ NOT_CONTROL_CALLBACKS = {
     "what this window shows, no edit",
     "on_sync": "a view's per-sync upkeep hook, run by the framework, not a control",
     "on_presented": "a view's after-frame hook, run by the framework, not a control",
+    "on_station_view": "answers the stepper's published view action for the station chosen",
+    "on_files_view": "answers the drop zone's published view action for the files dropped",
+    "on_check_view": "answers the table's published view action for the box turned",
+    "on_row_click_view": "answers the table's published view action for the row clicked",
+    "on_submit_view": "answers the field's published view action for the text submitted",
+    "on_enter_default": "the surrounding dialog's default action reaching a host that has no "
+    "dialog around the body, not a control of the prompt's own",
 }
 # Buttons a toolkit composite draws itself and runs a closure for: a row's
 # and a property's actions, a row's swipe actions, a card's hover action, a
