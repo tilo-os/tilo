@@ -85,7 +85,8 @@
                   "secondary",
                   "destructive",
                   "plain",
-                  "key"
+                  "key",
+                  "bar"
                 ]
               }
             }
@@ -164,7 +165,8 @@
                   "secondary",
                   "destructive",
                   "plain",
-                  "key"
+                  "key",
+                  "bar"
                 ]
               }
             }
