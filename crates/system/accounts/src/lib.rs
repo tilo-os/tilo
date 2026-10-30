@@ -75,6 +75,7 @@ pub mod cloud_types {
     pub const MOUNT_CONFIG_KEY: &str = "mount";
 }
 
+pub mod custody;
 pub mod email;
 pub mod handoff;
 pub mod thunderbird;

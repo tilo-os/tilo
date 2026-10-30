@@ -1,4 +1,14 @@
-//! Private Browser sessions through the certified native route: Read or Admin.
+//! Account custody through the certified native route of the app asking.
+//!
+//! The session is the custodian of the person's account secrets: it alone
+//! opens their vault, under session custody, which no app sandbox reaches.
+//! On an app's own route it answers:
+//!
+//! - Browser: its private website sessions, Read or Admin;
+//! - Settings, the keeper of the person's accounts: sealing an account's
+//!   secret, which it is never released back;
+//! - the app that keeps an account's type ([`accounts::person::secret_keeper`],
+//!   Mail for email): that one account's secret.
 use super::NativeOwnerCommitService;
 use accounts::{AccountId, AccountStore};
 use runtime_collab::{
@@ -16,6 +26,7 @@ use tilo_action_broker::services::{
 };
 
 const UNAVAILABLE: &str = "Selected website session unavailable";
+const BROWSER: &str = "so.tilo.browser";
 const MAX_STORE: u64 = 2 * 1024 * 1024;
 pub(super) struct NativeBrowserServiceSessions {
     owner: Arc<NativeOwnerCommitService>,
@@ -26,13 +37,16 @@ impl NativeBrowserServiceSessions {
     }
 }
 impl NativeBrowserServiceSessions {
-    fn authorize_selection(&self, context: &Context, admin: bool) -> Result<(), String> {
+    /// The certified person's own route of `app`, with Read on that app (or
+    /// Admin of the workspace and Outside on it, for `admin`), now and
+    /// rechecked after.
+    fn authorize_selection(&self, context: &Context, admin: bool, app: &str) -> Result<(), String> {
         context.revalidate()?;
         let person = collab_types::caps::Principal::person_from_key(
             collab_types::crypto::Ed25519PublicKey::from_bytes(context.identity_public_key()),
         );
-        if context.app_id() != "so.tilo.browser" || context.person() != person.id() {
-            return Err("Website sessions require the certified Browser person".into());
+        if context.app_id() != app || context.person() != person.id() {
+            return Err("Account custody requires the certified person's own app".into());
         }
         self.owner.authorize(context.read_context())?;
         let room = super::super::state::RoomId::parse(context.workspace_id())
@@ -87,18 +101,37 @@ impl NativeBrowserServiceSessions {
 }
 impl BrowserServiceSessionServices for NativeBrowserServiceSessions {
     fn authorize(&self, context: &Context) -> Result<(), String> {
-        self.authorize_selection(context, false)
+        self.authorize_selection(context, false, BROWSER)
     }
     fn authorize_command(&self, context: &Context, command: &Command) -> Result<(), String> {
-        self.authorize_selection(context, matches!(command, Command::Forget { .. }))
+        match command {
+            Command::StoreAccountSecret { .. } => {
+                self.authorize_selection(context, false, accounts::person::ACCOUNTS_OWNER)
+            }
+            // Which app keeps the account is read from the person's
+            // accounts when it is resolved; here, only that the route is
+            // the person's own, with Read on its app.
+            Command::ReleaseAccountSecret { .. } => {
+                self.authorize_selection(context, false, context.app_id())
+            }
+            _ => self.authorize_selection(
+                context,
+                matches!(command, Command::Forget { .. }),
+                BROWSER,
+            ),
+        }
     }
     fn command(&self, context: &Context, command: Command) -> Result<Reply, String> {
         self.authorize_command(context, &command)?;
         if !command.valid() {
-            return Err("Invalid website session request".into());
+            return Err("Invalid account custody request".into());
         }
         let root = accounts::config_root().ok_or(UNAVAILABLE)?;
-        let reply = resolve(&root, context.identity_public_key(), command.clone())?;
+        let reply = if command.browser_only() {
+            resolve(&root, context.identity_public_key(), command.clone())?
+        } else {
+            account_secret(&root, context.app_id(), command.clone())?
+        };
         self.authorize_command(context, &command)?;
         Ok(reply)
     }
@@ -165,8 +198,11 @@ fn resolve(root: &Path, identity: [u8; 32], command: Command) -> Result<Reply, S
                 .map_err(|_| UNAVAILABLE)?;
             Reply::Resolved { session }
         }
-        // Forget is handled before the read snapshot is validated.
-        Command::Forget { .. } => return Err(UNAVAILABLE.into()),
+        // Forget is handled before the read snapshot is validated; account
+        // secrets are not website sessions.
+        Command::Forget { .. }
+        | Command::StoreAccountSecret { .. }
+        | Command::ReleaseAccountSecret { .. } => return Err(UNAVAILABLE.into()),
     };
     if read_store(root).map_err(|_| UNAVAILABLE)? != store {
         return Err("Selected website sessions changed".into());
@@ -175,6 +211,28 @@ fn resolve(root: &Path, identity: [u8; 32], command: Command) -> Result<Reply, S
         return Err(UNAVAILABLE.into());
     }
     Ok(reply)
+}
+
+/// Seal or release one account's secret under `root` for the app `app`
+/// ([`accounts::custody`] decides). The secret never enters the person's
+/// accounts record or a log.
+fn account_secret(root: &Path, app: &str, command: Command) -> Result<Reply, String> {
+    match command {
+        Command::StoreAccountSecret { account, password } => {
+            let mut credentials = accounts::AccountCredentials::open_in(root)?;
+            accounts::custody::seal(&mut credentials, app, &account, &password)?;
+            tracing::info!(%account, app, "account custody: sealed an account's secret");
+            Ok(Reply::AccountSecretStored { account })
+        }
+        Command::ReleaseAccountSecret { account } => {
+            let store = read_store(root).map_err(|_| accounts::custody::REFUSED)?;
+            let credentials = accounts::AccountCredentials::open_in(root)?;
+            let password = accounts::custody::release(&store, &credentials, app, &account)?;
+            tracing::info!(%account, app, "account custody: released an account's secret to the app that keeps its type");
+            Ok(Reply::AccountSecret { account, password })
+        }
+        _ => Err(accounts::custody::REFUSED.into()),
+    }
 }
 
 /// Traverse only held directory descriptors; neither missing custody nor metadata
@@ -242,6 +300,78 @@ fn read_store(root: &Path) -> io::Result<AccountStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Settings seals an email account's password, which Settings is never
+    /// released; Mail, which keeps email accounts, is released it while the
+    /// account is enabled; no other app is, and no other type of account
+    /// is released to Mail.
+    #[test]
+    fn custody_seals_for_settings_and_releases_only_to_the_accounts_keeper() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let store_secret = |app: &str, account: &str| {
+            account_secret(
+                root.path(),
+                app,
+                Command::StoreAccountSecret {
+                    account: account.into(),
+                    password: zeroize::Zeroizing::new("app-password".into()),
+                },
+            )
+        };
+        let release = |app: &str, account: &str| {
+            account_secret(
+                root.path(),
+                app,
+                Command::ReleaseAccountSecret {
+                    account: account.into(),
+                },
+            )
+        };
+        assert!(store_secret("so.tilo.mail", "me@example.test").is_err());
+        assert!(matches!(
+            store_secret("so.tilo.settings", "me@example.test").unwrap(),
+            Reply::AccountSecretStored { account } if account == "me@example.test"
+        ));
+        assert!(matches!(
+            store_secret("so.tilo.settings", "dav@example.test").unwrap(),
+            Reply::AccountSecretStored { .. }
+        ));
+        // Sealed, but no account of the person's yet: nothing is released.
+        assert!(release("so.tilo.mail", "me@example.test").is_err());
+
+        let mut store = AccountStore::new();
+        let mut mail = accounts::Account::new(AccountId::from("me@example.test"), "email");
+        store.upsert(mail.clone());
+        store.upsert(accounts::Account::new(
+            AccountId::from("dav@example.test"),
+            "caldav",
+        ));
+        store.save_in(root.path()).unwrap();
+        let Reply::AccountSecret { account, password } =
+            release("so.tilo.mail", "me@example.test").unwrap()
+        else {
+            panic!("Mail is released its email account's secret");
+        };
+        assert_eq!(account, "me@example.test");
+        assert_eq!(password.as_str(), "app-password");
+        for (app, account) in [
+            ("so.tilo.settings", "me@example.test"),
+            ("so.tilo.calendar", "me@example.test"),
+            ("so.tilo.notes", "me@example.test"),
+            ("so.tilo.mail", "dav@example.test"),
+            ("so.tilo.mail", "nobody@example.test"),
+        ] {
+            assert!(
+                release(app, account).is_err(),
+                "{app} must not be released {account}"
+            );
+        }
+        mail.enabled = false;
+        store.upsert(mail);
+        store.save_in(root.path()).unwrap();
+        assert!(release("so.tilo.mail", "me@example.test").is_err());
+    }
     use browser_continuity::sessions::{Cookie, SameSite, Service, SessionCookies};
     use std::os::unix::fs::{PermissionsExt, symlink};
 
