@@ -255,7 +255,7 @@ async fn every_web_app_over_the_session() {
         browser_device.key.clone(),
     );
     let browser_events = browser.events();
-    browser.join(workspace()).unwrap();
+    browser.join_placed(ROOM, "Workspace").unwrap();
     ready(&[&browser]).await;
     wait_for("the agent to be admitted", || {
         agent.pump();
@@ -315,7 +315,13 @@ async fn every_web_app_over_the_session() {
             agent.pump();
             for event in browser_events.drain() {
                 if let PeerEvent::Document(document) = event {
-                    assert_eq!(document.author, agent_key, "only the agent edits here");
+                    // The governed room's host takes part too: it checkpoints
+                    // what the agent wrote.
+                    assert!(
+                        document.author == agent_key
+                            || document.author == host_device.cert.device_public_key,
+                        "only the agent and the room's host write here"
+                    );
                     if let Some(
                         collab_types::DocumentMutation::Snapshot(bytes)
                         | collab_types::DocumentMutation::Incremental(bytes),
@@ -660,6 +666,7 @@ async fn every_web_app_over_the_session() {
         .await
         .unwrap();
     let (readable, _) = common::retained_documents(
+        &host_device.cert.device_public_key,
         retained
             .into_iter()
             .map(|retained| (retained.author, retained.body)),
