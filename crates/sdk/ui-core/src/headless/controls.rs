@@ -600,7 +600,7 @@ pub(super) fn is_control_operation(spec: &tilo_actions::ActionSpec) -> bool {
 mod locus_tests {
     use super::*;
     use crate::state::State;
-    use crate::widget::{Button, Column, resource_actions};
+    use crate::widget::{Button, Column, Container, resource_actions};
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -859,10 +859,16 @@ mod locus_tests {
         let mut root = Column::new();
         for kind in ["one", "two"] {
             let resource = resource_actions::resource(kind, "Same label", "edit", "Edit");
+            let owner = resource.id.as_str().to_owned();
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
+            // A widget id addresses a container for inspection; only a
+            // semantic key such as a landmark makes it an owner, so each
+            // resource's surface keeps its own `edit` control.
             root = root.push(resource_actions::immediate(
-                Box::new(Column::new().with_id(kind).push(Box::new(
-                    Button::new("edit", "Same label").on_action(binding),
+                Box::new(Container::new().landmark(kind, owner).with_child(Box::new(
+                    Column::new().push(Box::new(
+                        Button::new("edit", "Same label").on_action(binding),
+                    )),
                 ))),
                 resource,
                 |_| panic!("observation must not execute"),
@@ -870,8 +876,9 @@ mod locus_tests {
         }
         let frame = FrameHarness::new(State::new(), Box::new(root), (400, 300));
         let paths = frame.semantic_tree().control_paths("edit");
-        assert!(
-            paths.len() >= 2,
+        assert_eq!(
+            paths.len(),
+            2,
             "fixture contains distinct owners with the same control id"
         );
         let (tree, bindings) = frame.retained_action_geometry().unwrap();
