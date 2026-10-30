@@ -48,11 +48,41 @@ pub enum NetworkAction {
         #[param(secret, "The network's password")]
         password: String,
     },
+    /// Join a Wi-Fi network that does not broadcast its name.
+    #[effect(own_device, icon = "wifi", keywords = "hidden network, hidden ssid")]
+    ConnectHiddenWifi {
+        #[param("The network's name")]
+        network: String,
+        #[param(secret, "The network's password; nothing for an open network")]
+        password: Option<String>,
+    },
     /// Leave the Wi-Fi network this device is connected to.
     #[effect(own_device, row, icon = "wifi-off")]
     DisconnectWifi {
         #[param("The network's name")]
         network: String,
+    },
+    /// Forget a saved network: this device no longer joins it by itself.
+    #[effect(own_device, destructive, icon = "trash-2")]
+    ForgetNetwork {
+        #[param("The saved network, by its id")]
+        profile: String,
+    },
+    /// Join a saved network by itself when it is in reach, or stop.
+    #[effect(own_device, idempotent, icon = "wifi")]
+    SetNetworkAutoconnect {
+        #[param("The saved network, by its id")]
+        profile: String,
+        #[param("Whether it joins by itself")]
+        on: bool,
+    },
+    /// Send a saved network's traffic through a proxy, or straight out.
+    #[effect(own_device, idempotent, icon = "globe")]
+    SetNetworkProxy {
+        #[param("The saved network, by its id")]
+        profile: String,
+        #[param("The proxy server as host:port; nothing for no proxy")]
+        server: Option<String>,
     },
     /// Connect or disconnect the wired network.
     #[effect(
@@ -74,6 +104,24 @@ pub enum NetworkAction {
     )]
     SetMobileData {
         #[param("Whether mobile data is on")]
+        on: bool,
+    },
+    /// Type the access point name mobile data connects through.
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "signal",
+        keywords = "apn, access point, operator"
+    )]
+    SetMobileApn {
+        #[param("The access point name; nothing to choose it from the SIM's operator")]
+        apn: Option<String>,
+    },
+    /// Let mobile data connect on another operator's network, or keep it to
+    /// this one.
+    #[effect(own_device, idempotent, icon = "signal", keywords = "roaming, abroad")]
+    SetMobileRoaming {
+        #[param("Whether it may roam")]
         on: bool,
     },
     /// Turn airplane mode on or off: every wireless radio goes off with it.
@@ -132,6 +180,32 @@ pub enum BluetoothAction {
         #[param("The accessory's address")]
         address: String,
     },
+    /// Look for accessories in reach, or stop looking.
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "search",
+        keywords = "discover, find accessory, pair"
+    )]
+    Scan {
+        #[param("Whether to look and show what is in reach")]
+        on: bool,
+    },
+    /// Pair a device in reach: `BlueZ` bonds with it, trusting it and
+    /// connecting it. What the device asks to compare is a question the
+    /// person answers.
+    #[effect(own_device, icon = "bluetooth", keywords = "pair, connect new")]
+    Pair {
+        #[param("The device's address")]
+        address: String,
+    },
+    /// Forget a device: its bond, its keys and its trust go, so it must be
+    /// paired again from scratch.
+    #[effect(own_device, destructive, icon = "trash-2")]
+    Forget {
+        #[param("The device's address")]
+        address: String,
+    },
 }
 
 /// The `vpn` resource's actions.
@@ -151,6 +225,27 @@ pub enum VpnAction {
         #[param("Whether it is connected")]
         on: bool,
     },
+    /// Add a VPN from a configuration file's text: `WireGuard`, `OpenVPN` or
+    /// a `NetworkManager` key file.
+    #[effect(
+        own_device,
+        icon = "shield",
+        keywords = "vpn, import, wireguard, openvpn"
+    )]
+    ImportVpn {
+        #[param("The kind of configuration: wireguard, openvpn, openconnect or a key file")]
+        kind: String,
+        #[param("What the profile is called")]
+        name: String,
+        #[param(secret, "The configuration's text")]
+        text: String,
+    },
+    /// Remove a VPN profile from this device.
+    #[effect(own_device, destructive, icon = "trash-2")]
+    ForgetVpn {
+        #[param("The profile, by its id")]
+        profile: String,
+    },
 }
 
 /// The `tethering` resource's actions.
@@ -167,5 +262,20 @@ pub enum TetheringAction {
     SetHotspot {
         #[param("Whether the hotspot is on")]
         on: bool,
+    },
+    /// Name the hotspot, choose its band and set its password, then share
+    /// the connection over it.
+    #[effect(
+        own_device,
+        icon = "radio-tower",
+        keywords = "hotspot name, hotspot password, band"
+    )]
+    ConfigureHotspot {
+        #[param("The hotspot's network name")]
+        name: String,
+        #[param(secret, "The hotspot's password, at least eight characters")]
+        password: String,
+        #[param("The band: automatic, two-point-four or five")]
+        band: String,
     },
 }

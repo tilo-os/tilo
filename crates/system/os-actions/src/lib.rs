@@ -83,6 +83,11 @@ pub use battery::{
     ChargeCapCapability, PowerDevice, PowerSupplyKind, charge_capability, load_battery_history,
     power_devices, set_charge_limit, set_charge_limit_checked,
 };
+pub use bluetooth::{
+    BluetoothHandoffTarget, BtDeviceInfo, NearbyBtDevice, bt_connect, bt_disconnect,
+    forget_bluetooth, get_bluetooth, inspect_bluetooth_handoff_target, list_bt_devices,
+    nearby_bluetooth, pair_bluetooth_handoff, scan_bluetooth, scanning_bluetooth, set_bluetooth,
+};
 pub use brightness::{
     BrightnessKind, BrightnessService, BrightnessTarget, MonitorBrightness, MonitorLevel,
     SOFTWARE_DIM_FLOOR, SessionDisplays, software_luminance, step_together,
@@ -117,15 +122,16 @@ pub use modem::{
 pub use network::{
     CertificateInfo, ConnectionDiagnostics, ConnectionPolicy, ConnectionPolicyPatch,
     ConnectionProfileSettings, ConnectivityState, EnterpriseEapMethod, EnterpriseWifiConfiguration,
-    HOTSPOT_PROFILE, HotspotBand, HotspotClient, HotspotConfiguration, InterfaceTraffic,
+    HOTSPOT_PROFILE, HotspotBand, HotspotClient, HotspotConfiguration, HotspotDetails,
+    InterfaceTraffic,
     IpConfiguration, LinkKind, LinkStatus, MacPolicy, MeteredPolicy, ProxyConfiguration,
     RadioState, SavedNetworkProfile, VpnConnectionInfo, WifiNetworkInfo, WifiSecurity, WiredInfo,
     captive_portal_uri, check_connectivity_now, configure_connection_policy,
     configure_connection_policy_patch, configure_hotspot, configure_ipv4, connect_enterprise_wifi,
     connect_wifi, connection_diagnostics, connection_profile_settings, delete_vpn_connection,
     delete_vpn_connection_uuid, disconnect_wifi, forget_network_profile, get_connectivity,
-    get_link_status, get_radio_state, get_wifi, get_wired, import_vpn_config, inspect_certificate,
-    link_status_from_state, list_hotspot_clients, list_saved_network_profiles,
+    get_link_status, get_radio_state, get_wifi, get_wired, hotspot_details, import_vpn_config,
+    inspect_certificate, link_status_from_state, list_hotspot_clients, list_saved_network_profiles,
     list_vpn_connections, list_wifi_networks, portable_wifi_profile_secret, read_interface_traffic,
     scan_wifi, set_airplane_mode, set_hotspot, set_mobile_broadband, set_network_autoconnect,
     set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wifi_radio, set_wired,

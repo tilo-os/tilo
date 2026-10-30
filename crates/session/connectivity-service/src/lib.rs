@@ -4,13 +4,16 @@
 //! actions that change it:
 //!
 //! * `network`: Wi-Fi (the radio and the networks in reach, each a child
-//!   offering to join or leave it), the wired link, mobile data, airplane
-//!   mode and whether the internet answers;
-//! * `bluetooth`: the radio and the paired accessories, each a child
-//!   offering to connect or disconnect it;
+//!   offering to join or leave it), the networks this device keeps (each a
+//!   child offering to join by itself again or be forgotten), the wired
+//!   link, mobile data, airplane mode and whether the internet answers;
+//! * `bluetooth`: the radio, the paired accessories (each a child offering
+//!   to connect, disconnect or be forgotten) and the devices in reach (each
+//!   a child offering to be paired);
 //! * `vpn`: the VPN profiles, each a child offering to connect or
-//!   disconnect it;
-//! * `tethering`: the hotspot sharing this device's connection.
+//!   disconnect it, which a configuration's text adds and removes;
+//! * `tethering`: the hotspot sharing this device's connection, its name,
+//!   band and the devices on it.
 //!
 //! Quick settings, Settings, the top bar, the palette, a script and an
 //! agent read the same readings and invoke the same actions. An action the
@@ -198,15 +201,34 @@ impl Connectivity {
                 Change::Join {
                     network: name,
                     password: None,
+                    hidden: false,
                 }
             }
             NetworkAction::ConnectWifi { network, password } => Change::Join {
                 network,
                 password: Some(password),
+                hidden: false,
+            },
+            NetworkAction::ConnectHiddenWifi { network, password } => Change::Join {
+                network,
+                password: password.filter(|password| !password.is_empty()),
+                hidden: true,
             },
             NetworkAction::DisconnectWifi { network } => Change::Leave { network },
+            NetworkAction::ForgetNetwork { profile } => Change::Forget { profile },
+            NetworkAction::SetNetworkAutoconnect { profile, on } => {
+                Change::Autoconnect { profile, on }
+            }
+            NetworkAction::SetNetworkProxy { profile, server } => Change::Proxy {
+                profile,
+                server: proxy(server)?,
+            },
             NetworkAction::SetWired { on } => Change::Wired(on),
             NetworkAction::SetMobileData { on } => Change::MobileData(on),
+            NetworkAction::SetMobileApn { apn } => Change::MobileApn {
+                apn: apn.filter(|apn| !apn.trim().is_empty()),
+            },
+            NetworkAction::SetMobileRoaming { on } => Change::MobileRoaming(on),
             NetworkAction::SetAirplaneMode { on } => Change::Airplane(on),
             NetworkAction::ToggleAirplaneMode => Change::Airplane(!network.airplane_mode),
         };
@@ -220,8 +242,40 @@ impl Connectivity {
             BluetoothAction::ToggleBluetooth => Change::Bluetooth(!self.readings.bluetooth.on),
             BluetoothAction::Connect { address } => Change::Connect { address },
             BluetoothAction::Disconnect { address } => Change::Disconnect { address },
+            BluetoothAction::Scan { on } => Change::ScanBluetooth(on),
+            BluetoothAction::Pair { address } => Change::Pair { address },
+            BluetoothAction::Forget { address } => Change::ForgetBluetooth { address },
         };
         self.start(Part::Bluetooth, id, change)
+    }
+
+    fn vpn(&mut self, action: VpnAction) -> Started {
+        let id = action.id();
+        let change = match action {
+            VpnAction::SetVpn { profile, on } => Change::Vpn { profile, on },
+            VpnAction::ImportVpn { kind, name, text } => Change::ImportVpn { kind, name, text },
+            VpnAction::ForgetVpn { profile } => Change::ForgetVpn { profile },
+        };
+        self.start(Part::Vpn, id, change)
+    }
+
+    fn tethering(&mut self, action: TetheringAction) -> Result<Started, DoorError> {
+        let id = action.id();
+        let change = match action {
+            TetheringAction::SetHotspot { on } => Change::Hotspot(on),
+            TetheringAction::ConfigureHotspot {
+                name,
+                password,
+                band,
+            } => Change::ConfigureHotspot {
+                name,
+                password,
+                band: band
+                    .parse::<model::Band>()
+                    .map_err(DoorError::InvalidArguments)?,
+            },
+        };
+        Ok(self.start(Part::Tethering, id, change))
     }
 }
 
@@ -241,6 +295,27 @@ fn child_id(kind: &str, key: &str) -> Option<String> {
         .then(|| format!("{kind}:{key}"))
 }
 
+/// The proxy server as it is used: `host:port`, or nothing for no proxy. An
+/// empty entry is none.
+fn proxy(server: Option<String>) -> Result<Option<String>, DoorError> {
+    let Some(server) = server.map(|server| server.trim().to_owned()) else {
+        return Ok(None);
+    };
+    if server.is_empty() {
+        return Ok(None);
+    }
+    let host_and_port = server
+        .split_once(':')
+        .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok());
+    if host_and_port {
+        Ok(Some(server))
+    } else {
+        Err(DoorError::InvalidArguments(format!(
+            "{server} is not a proxy as host:port"
+        )))
+    }
+}
+
 /// The `network` resource reading `network`.
 #[must_use]
 pub fn network_resource(network: &Network) -> ResourceSpec {
@@ -249,51 +324,71 @@ pub fn network_resource(network: &Network) -> ResourceSpec {
         "so.tilo.connectivity.network",
         "Network",
     ));
+    mark_what_the_device_lacks(&mut resource, network);
+    resource.with_children(network_children(network))
+}
+
+/// Publish what `network` cannot do now (no radio, no modem, Wi-Fi off) as
+/// its actions being unavailable, saying why.
+fn mark_what_the_device_lacks(resource: &mut ResourceSpec, network: &Network) {
     if !network.wifi.available {
-        for action in ["set-wifi", "toggle-wifi", "scan-wifi", "connect-wifi"] {
-            unavailable(&mut resource, action, "no_wifi", "This device has no Wi-Fi");
+        for action in [
+            "set-wifi",
+            "toggle-wifi",
+            "scan-wifi",
+            "connect-wifi",
+            "connect-hidden-wifi",
+        ] {
+            unavailable(resource, action, "no_wifi", "This device has no Wi-Fi");
         }
     } else if network.wifi.hardware_blocked {
         for action in ["set-wifi", "toggle-wifi"] {
             unavailable(
-                &mut resource,
+                resource,
                 action,
                 "hardware_switch",
                 "A switch on the device holds Wi-Fi off",
             );
         }
     } else if !network.wifi.on {
-        for action in ["scan-wifi", "connect-wifi"] {
-            unavailable(&mut resource, action, "wifi_off", "Wi-Fi is off");
+        for action in ["scan-wifi", "connect-wifi", "connect-hidden-wifi"] {
+            unavailable(resource, action, "wifi_off", "Wi-Fi is off");
         }
     }
     if network.wired.is_none() {
         unavailable(
-            &mut resource,
+            resource,
             "set-wired",
             "no_wired",
             "This device has no wired network",
         );
     }
     if !network.mobile.available {
-        unavailable(
-            &mut resource,
-            "set-mobile-data",
-            "no_modem",
-            "This device has no mobile data",
-        );
+        for action in ["set-mobile-data", "set-mobile-apn", "set-mobile-roaming"] {
+            unavailable(
+                resource,
+                action,
+                "no_modem",
+                "This device has no mobile data",
+            );
+        }
     }
     if !network.wifi.available && !network.mobile.available {
         for action in ["set-airplane-mode", "toggle-airplane-mode"] {
             unavailable(
-                &mut resource,
+                resource,
                 action,
                 "no_radio",
                 "This device has no wireless radio",
             );
         }
     }
-    let children = network.wifi.networks.iter().filter_map(|wifi| {
+}
+
+/// The networks in reach and the networks this device keeps, each with what
+/// pressing it does now.
+fn network_children(network: &Network) -> impl Iterator<Item = ResourceSpec> + '_ {
+    let reachable = network.wifi.networks.iter().filter_map(|wifi| {
         let id = child_id("wifi-network", &wifi.name)?;
         let action = if wifi.connected {
             NetworkAction::DisconnectWifi {
@@ -309,7 +404,38 @@ pub fn network_resource(network: &Network) -> ResourceSpec {
                 .with_action(action.bound()),
         )
     });
-    resource.with_children(children)
+    let saved = network.saved.iter().filter_map(|profile| {
+        let id = child_id("saved-network", &profile.id)?;
+        let mut child = ResourceSpec::new(
+            id,
+            "so.tilo.connectivity.saved-network",
+            profile.name.clone(),
+        )
+        .with_action(
+            NetworkAction::SetNetworkAutoconnect {
+                profile: profile.id.clone(),
+                on: !profile.autoconnect,
+            }
+            .bound(),
+        )
+        .with_action(
+            NetworkAction::ForgetNetwork {
+                profile: profile.id.clone(),
+            }
+            .bound(),
+        );
+        if profile.proxy.is_some() {
+            child = child.with_action(
+                NetworkAction::SetNetworkProxy {
+                    profile: profile.id.clone(),
+                    server: None,
+                }
+                .bound(),
+            );
+        }
+        Some(child)
+    });
+    reachable.chain(saved)
 }
 
 /// The `bluetooth` resource reading `bluetooth`.
@@ -321,7 +447,13 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
         "Bluetooth",
     ));
     if !bluetooth.available {
-        for action in ["set-bluetooth", "toggle-bluetooth"] {
+        for action in [
+            "set-bluetooth",
+            "toggle-bluetooth",
+            "scan",
+            "pair",
+            "forget",
+        ] {
             unavailable(
                 &mut resource,
                 action,
@@ -329,8 +461,12 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
                 "This device has no Bluetooth",
             );
         }
+    } else if !bluetooth.on {
+        for action in ["scan", "pair"] {
+            unavailable(&mut resource, action, "bluetooth_off", "Bluetooth is off");
+        }
     }
-    let children = bluetooth.accessories.iter().filter_map(|accessory| {
+    let paired = bluetooth.accessories.iter().filter_map(|accessory| {
         let id = child_id("bluetooth-accessory", &accessory.address)?;
         let action = if accessory.connected {
             BluetoothAction::Disconnect {
@@ -347,10 +483,32 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
                 "so.tilo.connectivity.bluetooth-accessory",
                 accessory.name.clone(),
             )
-            .with_action(action.bound()),
+            .with_action(action.bound())
+            .with_action(
+                BluetoothAction::Forget {
+                    address: accessory.address.clone(),
+                }
+                .bound(),
+            ),
         )
     });
-    resource.with_children(children)
+    let nearby = bluetooth.nearby.iter().filter_map(|nearby| {
+        let id = child_id("bluetooth-nearby", &nearby.address)?;
+        Some(
+            ResourceSpec::new(
+                id,
+                "so.tilo.connectivity.bluetooth-nearby",
+                nearby.name.clone(),
+            )
+            .with_action(
+                BluetoothAction::Pair {
+                    address: nearby.address.clone(),
+                }
+                .bound(),
+            ),
+        )
+    });
+    resource.with_children(paired.chain(nearby))
 }
 
 /// The `vpn` resource reading `vpn`.
@@ -374,7 +532,13 @@ pub fn vpn_resource(vpn: &Vpn) -> ResourceSpec {
         };
         Some(
             ResourceSpec::new(id, "so.tilo.connectivity.vpn-profile", profile.name.clone())
-                .with_action(action.bound()),
+                .with_action(action.bound())
+                .with_action(
+                    VpnAction::ForgetVpn {
+                        profile: profile.id.clone(),
+                    }
+                    .bound(),
+                ),
         )
     });
     resource.with_children(children)
@@ -389,12 +553,14 @@ pub fn tethering_resource(tethering: &Tethering) -> ResourceSpec {
         "Tethering",
     ));
     if !tethering.available {
-        unavailable(
-            &mut resource,
-            "set-hotspot",
-            "no_wifi",
-            "This device has no Wi-Fi to share over",
-        );
+        for action in ["set-hotspot", "configure-hotspot"] {
+            unavailable(
+                &mut resource,
+                action,
+                "no_wifi",
+                "This device has no Wi-Fi to share over",
+            );
+        }
     }
     resource
 }
@@ -431,23 +597,21 @@ impl Service for Connectivity {
         // A child's action belongs to its parent's vocabulary.
         let parent = resource.split_once(':').map_or(resource, |(kind, _)| kind);
         match parent {
-            NETWORK | "wifi-network" => {
+            NETWORK | "wifi-network" | "saved-network" => {
                 let action = decode::<NetworkAction>(&published, resource, action, arguments)?;
                 self.network(action)
             }
-            BLUETOOTH | "bluetooth-accessory" => {
+            BLUETOOTH | "bluetooth-accessory" | "bluetooth-nearby" => {
                 let action = decode::<BluetoothAction>(&published, resource, action, arguments)?;
                 Ok(self.bluetooth(action))
             }
             VPN | "vpn-profile" => {
-                let VpnAction::SetVpn { profile, on } =
-                    decode::<VpnAction>(&published, resource, action, arguments)?;
-                Ok(self.start(Part::Vpn, "set-vpn", Change::Vpn { profile, on }))
+                let action = decode::<VpnAction>(&published, resource, action, arguments)?;
+                Ok(self.vpn(action))
             }
             TETHERING => {
-                let TetheringAction::SetHotspot { on } =
-                    decode::<TetheringAction>(&published, resource, action, arguments)?;
-                Ok(self.start(Part::Tethering, "set-hotspot", Change::Hotspot(on)))
+                let action = decode::<TetheringAction>(&published, resource, action, arguments)?;
+                self.tethering(action)
             }
             _ => Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
                 resource, action,

@@ -1750,6 +1750,36 @@ impl HotspotConfiguration {
     }
 }
 
+/// How the hotspot is set up, as far as it can be read back: its name and
+/// band, never its passphrase.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HotspotDetails {
+    pub ssid: String,
+    pub band: HotspotBand,
+}
+
+/// The hotspot's name and band; `None` until one has been configured.
+///
+/// # Errors
+///
+/// Returns an error message if `NetworkManager` cannot be reached.
+pub fn hotspot_details() -> Result<Option<HotspotDetails>, String> {
+    with_nm(|nm| async move {
+        let Ok(profile) = profile_named(&nm, HOTSPOT_PROFILE).await else {
+            return Ok(None);
+        };
+        let settings = &profile.settings;
+        Ok(Some(HotspotDetails {
+            ssid: String::from_utf8(settings.bytes("802-11-wireless", "ssid")).unwrap_or_default(),
+            band: match settings.string("802-11-wireless", "band").as_deref() {
+                Some("a") => HotspotBand::FiveGhz,
+                Some("bg") => HotspotBand::TwoPointFourGhz,
+                _ => HotspotBand::Automatic,
+            },
+        }))
+    })
+}
+
 /// # Errors
 ///
 /// Returns an error message if `config` fails [`HotspotConfiguration::validate`], or
