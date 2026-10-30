@@ -191,8 +191,11 @@ impl super::App {
             #[cfg(test)]
             let _probe = crate::profiling::frame_probe::span("pump.update");
             self.update_model();
-            // A model-dirty wake raised while draining joins this sync.
-            force_sync |= self.take_hosted_wakes().is_none_or(|(_, sync)| sync);
+            // A model-dirty wake raised while draining joins this sync. It
+            // is left pending as well: the host prepares a frame only for a
+            // wake it can see, so taking it here would leave the work it
+            // asks for to a frame nobody requests.
+            force_sync |= self.hosted_wake_sync_pending();
         }
         // A host pump is the worker's model frame and must drain asynchronous
         // notifications even when no native Wake/redraw event exists.
@@ -251,6 +254,15 @@ impl super::App {
         self.wake_scope
             .as_ref()
             .and_then(crate::wake::WakeScope::take_pending)
+    }
+
+    /// Whether a wake raised during the pump asks for a model pass, asked
+    /// without taking it: the wake stays pending for the next one too.
+    fn hosted_wake_sync_pending(&self) -> bool {
+        self.wake_scope
+            .as_ref()
+            .and_then(crate::wake::WakeScope::sync_pending)
+            .is_none_or(|sync| sync)
     }
 
     /// Returns true when policy meaning changed since the previous hosted pump
