@@ -79,7 +79,7 @@ impl Target {
     /// The same web address, opened as a visitor ([`Self::Visit`]);
     /// anything else as it is.
     #[must_use]
-    pub(crate) fn as_visitor(self) -> Self {
+    pub(crate) fn into_visit(self) -> Self {
         match self {
             Self::Url(url) => Self::Visit(url),
             other => other,
