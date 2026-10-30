@@ -53,6 +53,7 @@ mod state;
 mod tablet;
 mod text_input;
 mod touch;
+mod window_frame;
 mod xdnd;
 mod xdnd_bridge;
 mod xwayland;
@@ -88,6 +89,7 @@ pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
 pub use policy::{Arrangement, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy, WindowRequest};
 pub use selection::Selection;
 pub use state::State;
+pub use window_frame::{Edge, Shadow, WindowFrame};
 
 /// Why the compositor could not start or keep running.
 #[derive(Debug)]
@@ -363,6 +365,22 @@ impl Compositor {
         match effect {
             Some(effect) => self.data.state.effects.insert(id, effect),
             None => self.data.state.effects.remove(&id),
+        };
+    }
+
+    /// How every window is framed (its corners, its shadow, its edge) from
+    /// the next frame on. A window that fills the display asks for
+    /// [`WindowFrame::square`] through [`Compositor::set_window_frame_for`].
+    pub fn set_window_frame(&mut self, frame: WindowFrame) {
+        self.data.state.frame = frame;
+    }
+
+    /// Frame the window `id` with `frame` instead of the desktop's, or as
+    /// the desktop frames windows again (`None`).
+    pub fn set_window_frame_for(&mut self, id: u64, frame: Option<WindowFrame>) {
+        match frame {
+            Some(frame) => self.data.state.window_frames.insert(id, frame),
+            None => self.data.state.window_frames.remove(&id),
         };
     }
 

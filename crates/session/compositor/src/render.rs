@@ -19,8 +19,9 @@ use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Kind};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::output::Output;
-use smithay::utils::{Physical, Point, Scale, Size};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 
+use crate::effects::WindowEffect;
 use crate::state::State;
 
 /// The colour behind every window: the desktop's background before a
@@ -40,6 +41,11 @@ smithay::backend::renderer::element::render_elements! {
     ZoomedSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
     /// A hosted surface's layer under the magnifier.
     ZoomedHosted=RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
+    /// A window drawn moved, scaled or faded, or pictured by a hosted
+    /// surface.
+    Transformed=crate::effects::TransformedElement<R>,
+    /// A window's shadow and edge, behind it.
+    Frame=crate::effects::FrameElement<R>,
 }
 
 /// `element` as the magnifier shows it: scaled by `zoom` about `centre`
@@ -94,6 +100,62 @@ where
     ))
 }
 
+/// What lies below hosted surface `host`, front first: the hosts beneath
+/// it and the windows, drawn at `scale` with `origin` (logical) at the
+/// top left of the area `bounds` (physical), as its backdrop sees them —
+/// the windows where their effects draw them, framed as they are drawn.
+pub(crate) fn below_host<R>(
+    renderer: &mut R,
+    state: &State,
+    host: usize,
+    origin: Point<f64, Logical>,
+    scale: f64,
+    bounds: Rectangle<i32, Physical>,
+) -> Vec<OutputRenderElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    let mut elements = Vec::new();
+    if state.locked() {
+        return elements;
+    }
+    for below in state.hosts.iter().take(host).rev() {
+        for layer in below.layers().into_iter().rev() {
+            let location =
+                (Point::<i32, Logical>::from(layer.location).to_f64() - origin).to_physical(scale);
+            match MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                location,
+                &layer.buffer,
+                None,
+                None,
+                Some(Size::from(layer.size)),
+                Kind::Unspecified,
+            ) {
+                Ok(element) => elements.push(OutputRenderElement::Hosted(element)),
+                Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
+            }
+        }
+    }
+    for window in state.space.elements().rev() {
+        let Some(location) = state.space.element_location(window) else {
+            continue;
+        };
+        let at = (location - window.geometry().loc).to_f64() - origin;
+        let effect = state.effect_of(window);
+        elements.extend(crate::effects::with_effect(
+            renderer,
+            state.framing(window),
+            window,
+            at,
+            &effect,
+            (bounds, scale),
+        ));
+    }
+    elements
+}
+
 /// The elements `output` shows, front first, in its physical pixels.
 pub(crate) fn output_elements<R>(
     renderer: &mut R,
@@ -108,7 +170,15 @@ where
         return Vec::new();
     };
     let dim = dim_element(state, output);
-    let scale = Scale::from(output.current_scale().fractional_scale());
+    let output_scale = output.current_scale().fractional_scale();
+    let scale = Scale::from(output_scale);
+    let bounds = Rectangle::from_size(geometry.size.to_physical_precise_round(output_scale));
+    let window_of = |id: u64| {
+        state
+            .space
+            .elements()
+            .find(|window| crate::state::describe(window).is_some_and(|info| info.id == id))
+    };
     let locked = state.locked();
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
     let hosted = |renderer: &mut R, elements: &mut Vec<OutputRenderElement<R>>, below: bool| {
@@ -116,6 +186,18 @@ where
             // While locked only the lock screen shows; until then never.
             host.lock_screen() == locked && host.below_windows() == below
         }) {
+            for picture in host.window_pictures().iter().rev() {
+                if let Some(window) = window_of(picture.window) {
+                    elements.extend(crate::effects::pictured(
+                        renderer,
+                        state.framing(window),
+                        window,
+                        picture,
+                        geometry.loc.to_f64(),
+                        (bounds, output_scale),
+                    ));
+                }
+            }
             for layer in host.layers().into_iter().rev() {
                 let location: Point<i32, Physical> =
                     (Point::from(layer.location) - geometry.loc).to_physical_precise_round(scale);
@@ -139,12 +221,28 @@ where
         elements.extend(state.lock_elements(renderer, output));
         return elements;
     }
+    elements.extend(state.drag_icon_elements(renderer, output));
     elements.extend(state.input_popup_elements(renderer, output));
     hosted(renderer, &mut elements, false);
     for window in state.space.elements_for_output(output).rev() {
         let Some(location) = state.space.element_location(window) else {
             continue;
         };
+        let effect = state.effect_of(window);
+        let framing = state.framing(window);
+        // A window drawn as it stands keeps its buffer's own element, which
+        // a display can scan out; anything else is drawn through its frame.
+        if effect != WindowEffect::default() || !framing.frame.is_square() {
+            elements.extend(crate::effects::with_effect(
+                renderer,
+                framing,
+                window,
+                (location - geometry.loc).to_f64(),
+                &effect,
+                (bounds, output_scale),
+            ));
+            continue;
+        }
         let origin = location - window.geometry().loc - geometry.loc;
         elements.extend(window.render_elements::<OutputRenderElement<R>>(
             renderer,
