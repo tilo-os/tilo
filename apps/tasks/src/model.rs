@@ -23,7 +23,7 @@ pub mod search;
 mod tracker_area;
 
 pub use issue::{
-    AgentRequest, Imported, ImportedMessage, Issue, Link, Message, MessageKind, Status,
+    AgentRequest, Imported, ImportedMessage, Issue, Link, Message, MessageKind, Said, Status,
     agent_assignee, person_assignee,
 };
 pub use record::{Tracker, tracker};
