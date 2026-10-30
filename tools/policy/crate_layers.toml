@@ -87,22 +87,17 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the seam a workspace host reads the engine's peer-sync vocabulary through"
 
   [[rule.allow]]
-  package = "tilo-joined-room"
-  why = "a device's enrolled replicas of rooms a remote host governs: it runs the join and admission"
+  package = "tilo-agent-participant"
+  why = "a participant opens the document frame of the record it plans against, the framing every reader of a record's frames speaks"
 
   [[rule.allow]]
-  package = "tilo-governor"
-  why = "it answers the workspace-join exchange out of the store its rooms live in"
+  package = "tilo-browser-runtime"
+  why = "a page's runtime mounts and replicates records on the same document frames a device exchanges, and merges their changes the same way"
 
   [[rule.allow]]
-  package = "tilo-owner-commit"
-  why = "the request and receipt vocabulary hosts ask a room's owner to commit with, over the engine's policy basis"
+  package = "tilo-room-load"
+  why = "the room loader seeds a room with the frames the wire carries, so what it writes is what a device reads"
 
   [[rule.allow]]
   package = "tilo-browser-peer"
   why = "the browser peer runs the same admission as a native device: it is the engine's browser glue"
-
-  [[rule.allow]]
-  package = "tilo-delivery-protocol"
-  tests = true
-  why = "its descriptor tests seed a real room to sign a transport descriptor against; the wire contract itself carries no engine state"

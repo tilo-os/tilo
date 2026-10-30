@@ -230,13 +230,16 @@ fn check_delegation(grant: &Grant) -> Result<(), String> {
             Err("delegated invitation is missing workspace delegation".into())
         };
     };
+    // The delegate is the device the authority let issue; the invitation
+    // carries that device as its issuer.
+    let delegate = &delegation.delegate;
     if delegation.version != JOIN_VERSION
         || delegation.authority_device_public_key != grant.authority.device_public_key
         || uuid::Uuid::parse_str(&delegation.room)
             .map_or(true, |room| room.to_string() != delegation.room)
         || delegation.room != grant.room
         || delegation.workspace_id != grant.workspace_id
-        || delegation.delegate != grant.issuer
+        || delegate != &grant.issuer
         || !delegation.permissions.issue_invitations
         || !delegation.permissions.admit_invited_members
         || delegation
