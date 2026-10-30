@@ -776,7 +776,11 @@ impl StatePeer {
     /// is admitted as far as its person's grants reach, as every receiver
     /// admits it (`room::membership`); the rest of governance stays the
     /// owner's.
-    fn require_member_writer(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
+    pub(crate) fn require_member_writer(
+        &self,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<(), String> {
         let device = key.verifying_key().to_bytes();
         self.certificate(&device, now)?;
         self.role(&device, now).map(drop)

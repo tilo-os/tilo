@@ -316,6 +316,32 @@ impl TestGovernor {
             .collect())
     }
 
+    /// Let `person` exercise the governance `action` of this room, as an
+    /// administrator may: a participant a test needs to govern something
+    /// without giving it the room's owner role.
+    ///
+    /// # Errors
+    /// The grant is not the governor's to record.
+    pub fn allow_governance(&mut self, person: &str, action: &str) -> Result<(), String> {
+        let now = self.now();
+        let grant = tilo_action_policy::Grant::new(
+            format!("fixture-administrator:{action}"),
+            tilo_action_policy::Subject::person(person.to_owned()),
+            tilo_action_policy::roles::governance_action(self.room(), action),
+            tilo_action_policy::KindSet::OUTSIDE,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Subject::person(hex::encode(self.peer.owner())),
+        );
+        let mut candidate = self.peer.clone();
+        candidate.governance_mut().put_governed_grants(
+            std::slice::from_ref(&grant),
+            &self.host_key,
+            now,
+        )?;
+        self.peer = candidate;
+        self.refresh_checkpoint()
+    }
+
     /// What the last commit published, oldest first, each with its
     /// retention: the whole checkpoint after [`Self::refresh_checkpoint`],
     /// what changed after [`Self::commit_changes`].

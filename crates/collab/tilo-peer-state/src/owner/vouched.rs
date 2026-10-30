@@ -131,6 +131,8 @@ impl NativeWorkspaceOwner {
             effect_receipts: std::collections::BTreeMap::new(),
             shortcut_change: None,
             effect_history_root: None,
+            join_ledger: crate::join_ledger::JoinLedger::default(),
+            join_admissions: std::collections::BTreeMap::new(),
         };
         self.publish_room(room, NativeCommittedView { peer, record }, None)?;
         Ok(true)

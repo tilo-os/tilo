@@ -16,16 +16,15 @@ pub(crate) struct StoredMembershipReceipt {
 impl NativeWorkspaceOwner {
     /// Commit a typed membership command as this device, signed with its
     /// own `key`: the room's admission decides it against the caller's
-    /// grants, here and on every device that receives it. A device that
-    /// governs the room publishes its governance as a checkpoint; any
-    /// other member publishes the changes it made, which the room's host
-    /// admits as it admits every member's. Exact retries converge; changed
+    /// grants, here and on every device that receives it. A device of the
+    /// room's owner publishes the governance as a checkpoint; any other
+    /// member publishes the changes it made, which every participant admits
+    /// as it admits every member's. Exact retries converge; changed
     /// invocation reuse never changes policy.
     ///
     /// # Errors
     /// Refuses a key that is not this device's, a change the caller's
-    /// grants do not allow, a change only the room's governor commits,
-    /// exhausted custody or failed durable publication.
+    /// grants do not allow, exhausted custody or failed durable publication.
     pub fn commit_workspace_membership_command(
         &self,
         request: OwnerCommitRequest,
@@ -46,10 +45,6 @@ impl NativeWorkspaceOwner {
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {
             return Err("membership mutation is not signed by this device".into());
-        }
-        let governs = candidate.hosted_here();
-        if !governs && !any_member_commits(&command) {
-            return Err("only the room's governor commits this change".into());
         }
         let id = serde_json::to_string(&(caller.device_public_key, invocation))
             .map_err(|error| error.to_string())?;
@@ -72,9 +67,13 @@ impl NativeWorkspaceOwner {
             .generation()
             .checked_add(1)
             .ok_or("native membership generation exhausted")?;
-        let written = if governs {
-            // Its durable state includes the signed room policy and admitted
-            // graph; no legacy cache or relay acceptance stands in for it.
+        // What this device signs, it publishes: a device of the room's owner
+        // its governance as a checkpoint, carrying its durable state; any
+        // other member the changes it made, which every participant admits.
+        let writes_checkpoint = candidate
+            .peer
+            .signed_by_owner(&candidate.device().device_public_key);
+        let written = if writes_checkpoint {
             let messages = peer.publication_mut().durable_mutation_messages(
                 &candidate.peer,
                 key,
@@ -108,7 +107,7 @@ impl NativeWorkspaceOwner {
                 receipt: receipt.clone(),
             },
         );
-        if governs {
+        if writes_checkpoint {
             crate::owner::publication::replace_governance_checkpoint(
                 &mut candidate,
                 receipt.binding.clone(),
@@ -125,26 +124,6 @@ impl NativeWorkspaceOwner {
         self.publish_room(room, candidate, None)?;
         Ok(receipt)
     }
-}
-
-/// Whether a member's own device may commit `command` by its grants; the
-/// rest only the room's governor commits.
-fn any_member_commits(
-    command: &crate::workspace_membership::WorkspaceMembershipCommand,
-) -> bool {
-    use crate::workspace_membership::WorkspaceMembershipCommand as Command;
-    matches!(
-        command,
-        Command::Member { .. }
-            | Command::Settings(_)
-            | Command::Grant { .. }
-            | Command::Revoke { .. }
-            | Command::AddAgent { .. }
-            | Command::RemoveAgent { .. }
-            | Command::GrantAppAuthorship { .. }
-            | Command::Share { .. }
-            | Command::Unshare { .. }
-    )
 }
 
 #[cfg(test)]
@@ -367,7 +346,7 @@ mod tests {
 
     #[test]
     fn a_device_that_does_not_govern_publishes_its_own_changes_until_governance_carries_them() {
-        let mut fixture = crate::owner::application_record::tests::owner_device_fixture();
+        let mut fixture = crate::owner::application_record::tests::member_device_fixture();
         let room = RoomId::parse(crate::owner::testing::ROOM).unwrap();
         let outgoing = |owner: &NativeWorkspaceOwner| {
             owner

@@ -17,23 +17,37 @@ pub(crate) struct Fixture {
 
 pub(crate) fn fixture() -> Fixture {
     let key = SigningKey::from_bytes(&[92; 32]);
-    fixture_governed_by(key)
+    let root = SigningKey::from_bytes(&[91; 32]);
+    fixture_with(&root, key.clone(), key, join::MemberRole::Editor, false)
 }
 
-/// A device of the owner's that does not govern the room: another device of
-/// the same person does.
-pub(crate) fn owner_device_fixture() -> Fixture {
-    fixture_governed_by(SigningKey::from_bytes(&[94; 32]))
+/// A device of a second person, enrolled into a room another person governs:
+/// a participant that neither governs nor hosts the room.
+pub(crate) fn member_device_fixture() -> Fixture {
+    fixture_with(
+        &SigningKey::from_bytes(&[96; 32]),
+        SigningKey::from_bytes(&[92; 32]),
+        SigningKey::from_bytes(&[94; 32]),
+        join::MemberRole::Moderator,
+        true,
+    )
 }
 
-fn fixture_governed_by(governor_key: SigningKey) -> Fixture {
+/// A device of `root` at `key`, enrolled into the room `governor_key`'s
+/// device of the room owner's root governs.
+fn fixture_with(
+    root: &SigningKey,
+    key: SigningKey,
+    governor_key: SigningKey,
+    role: join::MemberRole,
+    administers: bool,
+) -> Fixture {
+    let governor_root = SigningKey::from_bytes(&[91; 32]);
     let directory = tempfile::tempdir().unwrap();
     let owner = open_file(&directory.path().join("owner.json")).unwrap();
-    let root = SigningKey::from_bytes(&[91; 32]);
-    let key = SigningKey::from_bytes(&[92; 32]);
-    let certificate = testing::certificate(&root, &key, "Governor");
+    let certificate = testing::certificate(root, &key, "Governor");
     let mut governor = testing::governor::TestGovernor::empty_interactive(
-        testing::certificate(&root, &governor_key, "Governor"),
+        testing::certificate(&governor_root, &governor_key, "Governor"),
         governor_key,
         testing::ROOM,
     )
@@ -44,6 +58,14 @@ fn fixture_governed_by(governor_key: SigningKey) -> Fixture {
         )
         .unwrap(),
     );
+    if administers {
+        governor
+            .allow_governance(
+                &hex::encode(certificate.user_public_key),
+                tilo_action_policy::roles::governance::GRANT,
+            )
+            .unwrap();
+    }
     let hint = governor.hint(endpoint);
     let now = SystemTime::now();
     // The owner side runs on `now` throughout; the governor answers on the
@@ -53,7 +75,7 @@ fn fixture_governed_by(governor_key: SigningKey) -> Fixture {
     let now_ns = testing::ns(now).unwrap();
     let invitation = governor.issue(
         vec![hint.clone()],
-        join::MemberRole::Editor,
+        role,
         Some(certificate.user_public_key),
         None,
         now_ns.checked_add(60_000_000_000).unwrap(),

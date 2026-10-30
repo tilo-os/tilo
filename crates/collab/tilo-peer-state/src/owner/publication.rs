@@ -876,25 +876,34 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
         }
         return Ok(());
     }
-    if !view
-        .record
-        .workspace_memberships
-        .values()
-        .any(|receipt| receipt.receipt.binding == entry.binding)
-        && !view
-            .record
-            .effect_receipts
-            .values()
-            .any(|receipt| receipt.receipt.binding == entry.binding)
-        && view
-            .record
-            .shortcut_change
-            .as_ref()
-            .is_none_or(|receipt| receipt.binding != entry.binding)
-    {
+    if !receipted(view, &entry.binding) {
         return Err("native governance checkpoint lacks its owner receipt".into());
     }
     Ok(())
+}
+
+/// Whether `binding` is one this device receipted: a membership command, a
+/// broker effect, a shortcut change or a join admission it committed.
+fn receipted(view: &NativeCommittedView, binding: &CommitBinding) -> bool {
+    view.record
+        .workspace_memberships
+        .values()
+        .any(|receipt| &receipt.receipt.binding == binding)
+        || view
+            .record
+            .effect_receipts
+            .values()
+            .any(|receipt| &receipt.receipt.binding == binding)
+        || view
+            .record
+            .shortcut_change
+            .as_ref()
+            .is_some_and(|receipt| &receipt.binding == binding)
+        || view
+            .record
+            .join_admissions
+            .values()
+            .any(|receipt| &receipt.receipt.binding == binding)
 }
 /// A member's published room changes: a delta of changes this device made,
 /// every one of them in the room it holds, bound to its membership receipt.
@@ -924,22 +933,7 @@ fn validate_member_changes(
     if neighbour_wire::retention(&message, false) != Some((entry.channel, Retention::Delta)) {
         return Err("native membership publication transport mismatch".into());
     }
-    if !view
-        .record
-        .workspace_memberships
-        .values()
-        .any(|receipt| receipt.receipt.binding == entry.binding)
-        && !view
-            .record
-            .effect_receipts
-            .values()
-            .any(|receipt| receipt.receipt.binding == entry.binding)
-        && view
-            .record
-            .shortcut_change
-            .as_ref()
-            .is_none_or(|receipt| receipt.binding != entry.binding)
-    {
+    if !receipted(view, &entry.binding) {
         return Err("native membership publication lacks its receipt".into());
     }
     Ok(())

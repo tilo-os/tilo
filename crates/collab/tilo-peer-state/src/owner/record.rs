@@ -118,6 +118,22 @@ pub(crate) struct StoredRoom {
     /// Content-addressed cold UUID index, also anchored in signed public room history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect_history_root: Option<[u8; 32]>,
+    /// The invitations this device issued for the room, the challenges it is
+    /// answering and the joins it admitted: what another device's join is
+    /// decided against, held by every participant that answers one.
+    #[serde(default)]
+    pub join_ledger: crate::join_ledger::JoinLedger,
+    /// The join admissions committed here, by the digest of their binding:
+    /// the room delta that carried each one is published under its receipt.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub join_admissions: BTreeMap<String, StoredJoinReceipt>,
+}
+
+/// The receipt of one join admission this device committed, by the digest of
+/// its binding: what the room delta it published is admitted as.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct StoredJoinReceipt {
+    pub(crate) receipt: crate::owner_commit::OwnerCommitReceipt,
 }
 
 /// The signed join a device enrolled in a host-governed room with, and the

@@ -100,6 +100,11 @@ pub enum CommitTarget {
         device: [u8; 32],
         invocation: uuid::Uuid,
     },
+    /// A device this device admitted into the room, answered through the
+    /// room's join ledger; not a caller-facing operation.
+    JoinAdmission {
+        device: [u8; 32],
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitBinding {

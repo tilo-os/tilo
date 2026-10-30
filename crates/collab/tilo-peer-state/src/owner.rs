@@ -23,6 +23,8 @@ mod enrollment;
 mod file_store;
 #[cfg(not(target_arch = "wasm32"))]
 mod history_content;
+#[cfg(not(target_arch = "wasm32"))]
+mod join_service;
 mod limits;
 mod private_direct_conversations;
 mod publication;
@@ -51,6 +53,8 @@ pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, Documen
 pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file, write_file};
 #[cfg(not(target_arch = "wasm32"))]
 pub use history_content::HistoryContent;
+#[cfg(not(target_arch = "wasm32"))]
+pub use join_service::OwnerJoinRooms;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use private_direct_conversations::{
     DirectContact, DirectConversation, DirectConversationPage, DirectMessage, DirectMessageReceipt,
@@ -517,10 +521,10 @@ impl NativeWorkspaceOwner {
         let mut reports = Vec::with_capacity(inputs.len());
         let mut governed = BTreeSet::new();
         for (origin, message) in inputs {
-            let from_governance = Self::governance_changes(&candidate, origin, &message);
+            let received = Self::received_changes(origin, &message);
             let report = Self::admit_input(&mut candidate, room, origin, message, now);
             if report.is_ok()
-                && let Some(changes) = from_governance
+                && let Some(changes) = received
             {
                 governed.extend(changes);
             }
@@ -552,37 +556,29 @@ impl NativeWorkspaceOwner {
         self.publish_room(room, candidate, None)?;
         Ok(reports)
     }
-    /// The room changes `message` carries when one of the owner's devices,
-    /// other than this one, sent it, or this device's own room host: the
-    /// room's governance, which retires what this member published once it
-    /// carries it. This device's host signs with this device's key; what it
-    /// sends is told from this replica's own writes by the host's actor its
-    /// changes are made under ([`crate::room_host_actor`]).
-    fn governance_changes(
-        candidate: &NativeCommittedView,
+    /// The room changes `message` carries, from any device of the room: each
+    /// participant admits every other's, and the room's governance that now
+    /// carries what this device published retires it
+    /// ([`publication::retire_member_changes`]). A delta that does not
+    /// carry them all retires nothing.
+    fn received_changes(
         origin: TransportOrigin,
         message: &NeighbourMsg,
     ) -> Option<BTreeSet<automerge::ChangeHash>> {
-        let (TransportOrigin::RelayDelta(author) | TransportOrigin::RetainedRelayDelta(author)) =
-            origin
-        else {
+        if !matches!(
+            origin,
+            TransportOrigin::RelayDelta(_) | TransportOrigin::RetainedRelayDelta(_)
+        ) {
             return None;
-        };
-        let NeighbourMsg::SyncResp { changes, .. } = message else {
+        }
+        if !matches!(message, NeighbourMsg::SyncResp { .. }) {
             return None;
-        };
-        let from_governance = if author == candidate.device().device_public_key {
-            let host = crate::room_host_actor(&author);
-            changes.iter().any(|bytes| {
-                automerge::Change::from_bytes(bytes.clone())
-                    .is_ok_and(|change| change.actor_id() == &host)
-            })
-        } else {
-            candidate.peer.signed_by_owner(&author)
-        };
-        from_governance
-            .then(|| publication::change_hashes(changes).ok())
-            .flatten()
+        }
+        publication::change_hashes(match message {
+            NeighbourMsg::SyncResp { changes, .. } => changes,
+            _ => return None,
+        })
+        .ok()
     }
     /// Decide one relay input into `candidate`: refused, it changes nothing.
     fn admit_input(

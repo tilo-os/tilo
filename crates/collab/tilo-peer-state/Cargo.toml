@@ -96,5 +96,9 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 name = "renewed_membership"
 required-features = ["test-support"]
 
+[[test]]
+name = "three_devices"
+required-features = ["test-support"]
+
 [lints]
 workspace = true
