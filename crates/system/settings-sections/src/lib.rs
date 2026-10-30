@@ -10,6 +10,8 @@ pub mod accessibility;
 pub mod continuity;
 pub mod desktop;
 pub mod device_vpn;
+pub mod identity;
+pub mod mobile_data;
 pub mod network_usage;
 pub mod osk;
 pub mod prefs;
@@ -94,6 +96,8 @@ sections!(
     desktop::PendingDisplayChange,
     osk::OskSourceSettings,
     device_vpn::DeviceVpnPrefs,
+    identity::IdentityPrefs,
+    mobile_data::MobileDataUsage,
     network_usage::NetworkUsage,
 );
 

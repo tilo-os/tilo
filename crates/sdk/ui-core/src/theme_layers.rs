@@ -89,6 +89,14 @@ pub const WORKSPACE_TEMPERATURES_KEY: &str = "workspace_temperatures";
 /// `false`; absent follows the face (on with Hyperlegible).
 pub const DISTINCT_LETTERS_KEY: &str = "distinct_letters";
 
+/// `appearance` key: the interface face the person chose, by name, over the
+/// theme's own (`settings_store::appearance::UI_FACE`).
+pub const UI_FACE_KEY: &str = "ui_face";
+/// `appearance` key: how much of the theme's translucency the person keeps,
+/// `1` as the theme sets it and `0` opaque
+/// (`settings_store::appearance::TRANSLUCENCY`).
+pub const TRANSLUCENCY_KEY: &str = "translucency";
+
 fn distribution_schema() -> u32 {
     DISTRIBUTION_DEFAULTS_SCHEMA_VERSION
 }
@@ -317,6 +325,67 @@ impl Default for AccessibilityLayer {
     }
 }
 
+/// The person's own finish over whichever theme is shown: the interface face
+/// they read best, and how much of the theme's translucency they keep. Both
+/// are roles the theme already has ([`PIN_TYPE`], [`PIN_MATERIAL`]); this
+/// layer only says the person would rather have them their way than the
+/// theme's, so no custom theme has to be written for a face or a blur.
+///
+/// A role the distribution pins stays the distribution's, and accessibility
+/// is applied after this (high contrast and "make panels opaque" win).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FinishLayer {
+    /// Any family name a theme's type role may name; `None` follows the
+    /// theme.
+    pub ui_face: Option<String>,
+    /// `0` opaque floating chrome, `1` as the theme sets it; `None` follows
+    /// the theme.
+    pub translucency: Option<f32>,
+}
+
+impl FinishLayer {
+    /// Structural check. A failure means this layer is not applied.
+    /// A face name is anything a theme document may name; a translucency
+    /// outside the band is clamped by [`Self::materialize`], not rejected.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(face) = &self.ui_face {
+            let face = face.trim();
+            if face.is_empty() || face.len() > 128 || face.chars().any(char::is_control) {
+                return Err("not a face name");
+            }
+        }
+        if self.translucency.is_some_and(|value| !value.is_finite()) {
+            return Err("non-finite translucency");
+        }
+        Ok(())
+    }
+
+    /// Whether this layer names anything at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ui_face.is_none() && self.translucency.is_none()
+    }
+
+    /// [`Self::validate`], then trim the face and clamp the translucency into
+    /// its band: what resolution applies.
+    ///
+    /// # Errors
+    ///
+    /// The same static message as [`Self::validate`].
+    pub fn materialize(&self) -> Result<Self, &'static str> {
+        self.validate()?;
+        Ok(Self {
+            ui_face: self.ui_face.as_ref().map(|face| face.trim().to_owned()),
+            translucency: self.translucency.map(|value| {
+                value.clamp(
+                    settings_store::appearance::TRANSLUCENCY_MIN,
+                    settings_store::appearance::TRANSLUCENCY_MAX,
+                )
+            }),
+        })
+    }
+}
+
 /// Inputs to [`resolve_theme_layers`]. Absent layers contribute nothing.
 #[derive(Clone, Debug, Default)]
 pub struct ThemeLayerStack {
@@ -324,6 +393,8 @@ pub struct ThemeLayerStack {
     /// The theme the person chose for the current mode. `None` means they
     /// have not chosen one, or chose one this build does not admit.
     pub user_theme: Option<ThemeDocument>,
+    /// The person's own face and translucency over that theme.
+    pub finish: FinishLayer,
     /// Where and for whom the window is shown: the temperature of its
     /// workspace (the person's override for it,
     /// [`workspace_temperature_override`], or the hue of its wallpaper,
@@ -362,9 +433,36 @@ impl ThemeLayerStack {
             user_theme: document
                 .as_ref()
                 .and_then(|value| user_document(value, moment)),
+            finish: finish_layer(appearance),
             window: WindowAppearance::default(),
             accessibility: accessibility_layer(document.as_ref(), appearance),
         }
+    }
+}
+
+/// The person's finish an `appearance` section names: their face and how much
+/// of the theme's translucency they keep. Keys the section does not name (or
+/// names unusably) leave that role to the theme.
+fn finish_layer(appearance: Option<&serde_json::Value>) -> FinishLayer {
+    let face = appearance
+        .and_then(|section| section.get(UI_FACE_KEY))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let translucency = appearance
+        .and_then(|section| section.get(TRANSLUCENCY_KEY))
+        .and_then(serde_json::Value::as_f64)
+        .map(|value| {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a translucency is a factor in 0..=1; f32 holds it exactly enough"
+            )]
+            let factor = value as f32;
+            factor
+        })
+        .filter(|value| value.is_finite());
+    FinishLayer {
+        ui_face: face,
+        translucency,
     }
 }
 
@@ -538,7 +636,8 @@ fn merge_pins(
 ///
 /// 1. built-in defaults ([`Preset::Dark`])
 /// 2. distribution defaults, when [`DistributionDefaults::validate`] accepts them
-/// 3. the user's theme, except the roles the distribution pins
+/// 3. the user's theme and their finish ([`ThemeLayerStack::finish`]), except
+///    the roles the distribution pins
 /// 4. the window ([`ThemeLayerStack::window`]): its workspace's temperature,
 ///    which moves the neutral hue only and shows nothing on a palette with
 ///    chroma 0, and the person's colour
@@ -554,12 +653,17 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
         .distribution_defaults
         .as_ref()
         .and_then(|layer| Some((layer.admitted_document()?, layer.policy.clone())));
-    let document = match (&stack.user_theme, &distribution) {
+    let mut document = match (&stack.user_theme, &distribution) {
         (Some(user), Some((dist, policy))) => merge_pins(user, dist, policy),
         (Some(user), None) => user.clone(),
         (None, Some((dist, _))) => dist.clone(),
         (None, None) => Preset::Dark.document(),
     };
+    apply_finish(
+        &mut document,
+        &stack.finish,
+        distribution.as_ref().map(|(_, policy)| policy),
+    );
     let mut theme = Theme::from_document(&document).unwrap_or_else(Theme::dark);
     theme = theme.in_window(&stack.window);
 
@@ -586,6 +690,34 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
         .with_text_scale(access.text_scale)
         .with_reduce_motion(access.reduce_motion)
         .with_reduce_transparency(access.reduce_transparency)
+}
+
+/// The person's finish over the resolved theme: their face for the theme's,
+/// and their share of the theme's translucency — `0` turns the floating
+/// chrome's blur off and its tint opaque, `1` leaves the theme as it is. Both
+/// are roles the theme already has, so a pinned `type` or `material` stays the
+/// distribution's; accessibility is applied after this and still wins.
+fn apply_finish(
+    document: &mut ThemeDocument,
+    finish: &FinishLayer,
+    pins: Option<&DistributionPolicy>,
+) {
+    let Ok(finish) = finish.materialize() else {
+        return;
+    };
+    let pinned = |role: &str| pins.is_some_and(|policy| policy.pins(role));
+    if let Some(face) = finish.ui_face {
+        if !pinned(PIN_TYPE) {
+            document.type_.face = face;
+        }
+    }
+    if let Some(strength) = finish.translucency {
+        if !pinned(PIN_MATERIAL) {
+            document.material.blur *= strength;
+            document.material.tint_opacity +=
+                (1.0 - strength) * (1.0 - document.material.tint_opacity);
+        }
+    }
 }
 
 /// Tokens a content surface paints with when [`ContentSurface::forced`] is
@@ -1062,5 +1194,154 @@ mod tests {
             r#"{"appearance_device":{"distribution_defaults":{"theme":"light"}}}"#,
         );
         assert_eq!(Theme::configured_from(&settings).name, Theme::light().name);
+    }
+
+    #[test]
+    fn the_persons_face_and_translucency_are_read_from_settings_over_the_theme() {
+        let theme = Theme::resolved_from_settings(
+            r#"{"appearance":{"mode":"dark","ui_face":"Hyperlegible","translucency":0.0}}"#,
+        );
+        assert_eq!(theme.document.type_.face, "Hyperlegible");
+        assert_eq!(
+            theme.tokens.typography.sans_family,
+            crate::text_render::UI_HYPERLEGIBLE_FAMILY
+        );
+        assert!(
+            theme.tokens.colors.surfaces.material_blur_px.abs() < f32::EPSILON,
+            "no translucency, no blur"
+        );
+        assert!(
+            (theme.tokens.colors.surfaces.material_opacity - 1.0).abs() < 1e-6,
+            "and opaque chrome"
+        );
+
+        // The theme's own material stays when the person keeps all of it.
+        let full =
+            Theme::resolved_from_settings(r#"{"appearance":{"mode":"dark","translucency":1.0}}"#);
+        assert!(
+            (full.tokens.colors.surfaces.material_blur_px
+                - theme.tokens.colors.surfaces.material_blur_px)
+                .abs()
+                > 1.0
+        );
+        let stock = resolve_theme_layers(&ThemeLayerStack {
+            user_theme: Some(Preset::Dark.document()),
+            ..ThemeLayerStack::default()
+        });
+        assert!(
+            (full.tokens.colors.surfaces.material_blur_px
+                - stock.tokens.colors.surfaces.material_blur_px)
+                .abs()
+                < 1e-4
+        );
+        assert_eq!(full.document.type_.face, stock.document.type_.face);
+    }
+
+    #[test]
+    fn a_pinned_type_or_material_keeps_the_distributions_and_accessibility_still_wins() {
+        let mut pinned_document = house();
+        pinned_document.type_.face = "Noto Sans".into();
+        pinned_document.material.blur = 24.0;
+        let pinned = resolve_theme_layers(&ThemeLayerStack {
+            distribution_defaults: Some(DistributionDefaults {
+                document: Some(pinned_document),
+                policy: DistributionPolicy {
+                    pins: vec![PIN_TYPE.into(), PIN_MATERIAL.into()],
+                },
+                ..DistributionDefaults::default()
+            }),
+            finish: FinishLayer {
+                ui_face: Some("Hyperlegible".into()),
+                translucency: Some(0.0),
+            },
+            ..light_stack()
+        });
+        assert_eq!(pinned.document.type_.face, "Noto Sans");
+        assert!((pinned.tokens.colors.surfaces.material_blur_px - 24.0).abs() < 1e-4);
+
+        // High contrast turns the material opaque whatever the person chose,
+        // and "reduce transparency" still overrides a translucent choice.
+        let opaque = resolve_theme_layers(&ThemeLayerStack {
+            finish: FinishLayer {
+                ui_face: None,
+                translucency: Some(1.0),
+            },
+            accessibility: AccessibilityLayer {
+                reduce_transparency: true,
+                ..AccessibilityLayer::default()
+            },
+            ..light_stack()
+        });
+        assert!(opaque.reduce_transparency);
+        let contrast = resolve_theme_layers(&ThemeLayerStack {
+            finish: FinishLayer {
+                ui_face: None,
+                translucency: Some(1.0),
+            },
+            accessibility: AccessibilityLayer {
+                high_contrast: true,
+                ..AccessibilityLayer::default()
+            },
+            ..light_stack()
+        });
+        assert!(contrast.tokens.colors.surfaces.material_blur_px.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn an_unusable_finish_is_not_applied_and_out_of_band_is_clamped() {
+        let stock = resolve_theme_layers(&ThemeLayerStack {
+            user_theme: Some(Preset::Dark.document()),
+            ..ThemeLayerStack::default()
+        });
+        for finish in [
+            FinishLayer {
+                ui_face: Some("   ".into()),
+                translucency: None,
+            },
+            FinishLayer {
+                ui_face: None,
+                translucency: Some(f32::NAN),
+            },
+        ] {
+            let theme = resolve_theme_layers(&ThemeLayerStack {
+                finish,
+                ..light_stack()
+            });
+            assert_eq!(
+                theme.document.type_.face,
+                Theme::light().document.type_.face
+            );
+        }
+
+        let clamped = resolve_theme_layers(&ThemeLayerStack {
+            finish: FinishLayer {
+                ui_face: Some(" Default ".into()),
+                translucency: Some(-3.0),
+            },
+            ..ThemeLayerStack::default()
+        });
+        assert_eq!(clamped.document.type_.face, "Default");
+        assert!(clamped.tokens.colors.surfaces.material_blur_px.abs() < f32::EPSILON);
+        assert_eq!(
+            stock.tokens.colors.surfaces.material_opacity,
+            Theme::dark().tokens.colors.surfaces.material_opacity
+        );
+    }
+
+    #[test]
+    fn a_finish_naming_nothing_leaves_the_theme_alone() {
+        assert!(FinishLayer::default().is_empty());
+        let theme = Theme::resolved_from_settings(r#"{"appearance":{"mode":"dark"}}"#);
+        let plain = resolve_theme_layers(&ThemeLayerStack {
+            user_theme: Some(Preset::Dark.document()),
+            ..ThemeLayerStack::default()
+        });
+        assert_eq!(theme.document.type_.face, plain.document.type_.face);
+        assert!(
+            (theme.tokens.colors.surfaces.material_blur_px
+                - plain.tokens.colors.surfaces.material_blur_px)
+                .abs()
+                < 1e-4
+        );
     }
 }

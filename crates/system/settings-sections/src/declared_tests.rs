@@ -16,6 +16,8 @@ const FREE_TEXT: &[(&str, &str)] = &[
     ("settings.appearance", "sunset"),
     // A BCP 47 tag among the languages installed.
     ("settings.appearance", "language"),
+    // Any family a theme's type role may name.
+    ("settings.appearance", "ui_face"),
     ("settings.text-assistance", "spelling_language"),
     // A shipped wallpaper's id, checked against the ones installed.
     ("settings.appearance", "wallpaper"),

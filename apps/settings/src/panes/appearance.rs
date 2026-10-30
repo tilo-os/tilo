@@ -181,6 +181,90 @@ pub(crate) fn ui_scale_label(scale: f64) -> &'static str {
         .map_or("100%", |(label, _)| *label)
 }
 
+/// The value a choice shows while the person follows the theme's own.
+const THEME_CHOICE: &str = "theme";
+
+/// The interface faces offered beyond following the theme, as
+/// `(stored face name, ftl label key)`. Any family a theme may name is
+/// admitted; these are the ones the system ships, so the list stays short
+/// enough to choose from.
+const UI_FACES: [(&str, &str); 2] = [
+    ("Default", "settings-appearance-face-default"),
+    ("Hyperlegible", "settings-appearance-face-hyperlegible"),
+];
+
+/// The offered translucency steps as `(stored choice, ftl label key, value)`,
+/// over following the theme's own.
+const TRANSLUCENCIES: [(&str, &str, f64); 3] = [
+    ("full", "settings-appearance-translucency-full", 1.0),
+    ("subtle", "settings-appearance-translucency-subtle", 0.4),
+    ("opaque", "settings-appearance-translucency-opaque", 0.0),
+];
+
+/// The face chooser's choices as `(stored value, label)`: following the
+/// theme first, then the faces the system ships.
+fn face_choices() -> Vec<(String, String)> {
+    let mut choices = vec![(THEME_CHOICE.to_owned(), t("settings-appearance-face-theme"))];
+    choices.extend(
+        UI_FACES
+            .iter()
+            .map(|(face, label)| ((*face).to_owned(), t(label))),
+    );
+    choices
+}
+
+/// The translucency chooser's choices as `(stored value, label)`.
+fn translucency_choices() -> Vec<(String, String)> {
+    let mut choices = vec![(
+        THEME_CHOICE.to_owned(),
+        t("settings-appearance-translucency-theme"),
+    )];
+    choices.extend(
+        TRANSLUCENCIES
+            .iter()
+            .map(|(choice, label, _)| ((*choice).to_owned(), t(label))),
+    );
+    choices
+}
+
+/// The face name the chooser persists for `choice`.
+fn ui_face_of(choice: String) -> Result<Option<String>, String> {
+    if choice == THEME_CHOICE {
+        return Ok(None);
+    }
+    if UI_FACES.iter().any(|(face, _)| *face == choice) {
+        return Ok(Some(choice));
+    }
+    Err(format!("`{choice}` is not an interface face"))
+}
+
+/// The translucency key the chooser shows for a record: the step nearest what
+/// it stores, or [`THEME_CHOICE`] when it follows the theme's own.
+fn translucency_key(prefs: &AppearancePrefs) -> String {
+    match prefs.translucency {
+        None => THEME_CHOICE.to_owned(),
+        Some(value) => TRANSLUCENCIES
+            .iter()
+            .min_by(|(_, _, a), (_, _, b)| (a - value).abs().total_cmp(&(b - value).abs()))
+            .map_or_else(
+                || THEME_CHOICE.to_owned(),
+                |(choice, _, _)| (*choice).to_owned(),
+            ),
+    }
+}
+
+/// The translucency the chooser persists for `key`.
+fn translucency_of(key: String) -> Result<Option<f64>, String> {
+    if key == THEME_CHOICE {
+        return Ok(None);
+    }
+    TRANSLUCENCIES
+        .iter()
+        .find(|(choice, _, _)| *choice == key)
+        .map(|(_, _, value)| Some(*value))
+        .ok_or_else(|| format!("`{key}` is not a translucency"))
+}
+
 /// The person's current appearance selectors and controls, before the OS
 /// resolves Automatic mode. Theme documents and their private content are not
 /// part of this read surface.
@@ -377,8 +461,35 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
         if let Some(card) = cx.record(&desk, desk_widgets::card) {
             groups.push(card);
         }
+        let colour = cx.settings::<crate::prefs::IdentityPrefs>();
+        if let Some(card) = cx.record(&colour, colour_card) {
+            groups.push(card);
+        }
         page_of(groups)
     })
+}
+
+/// The colour the person wears: their focus ring, caret and selection, and
+/// the mark collaborators see on their cursor. Following their identity is
+/// the default, so a desktop looks like them before they choose anything.
+fn colour_card(cx: &ViewCx<crate::prefs::IdentityPrefs>) -> Element {
+    let mut choices = vec![(String::new(), t("settings-appearance-colour-identity"))];
+    choices.extend(
+        ui::tokens::PresenceHue::ALL
+            .iter()
+            .map(|hue| (hue.id().to_owned(), hue.label().to_owned())),
+    );
+    let row = cx
+        .setting(t("settings-appearance-colour"))
+        .described(t("settings-appearance-colour-desc"))
+        .id("appearance.colour")
+        .keyed(
+            crate::prefs::IdentityPrefs::paths().colour,
+            choices,
+            |prefs| prefs.colour.clone().unwrap_or_default(),
+            |key| Ok(if key.is_empty() { None } else { Some(key) }),
+        );
+    section(&t("settings-appearance-colour-card"), rows(vec![row])).into_element()
 }
 
 /// The theme, the density and the interface scale, and the way to the
@@ -412,6 +523,29 @@ fn theme_card(cx: &ViewCx<AppearancePrefs>, actions: &Actions<Settings>) -> Elem
                     paths.ui_scale,
                     UI_SCALES.iter().map(|(_, scale)| *scale),
                     |scale: &f64| ui_scale_label(*scale).to_owned(),
+                ),
+            cx.setting(t("settings-appearance-ui-face"))
+                .described(t("settings-appearance-ui-face-desc"))
+                .id("appearance.ui_face")
+                .keyed(
+                    paths.ui_face,
+                    face_choices(),
+                    |prefs| {
+                        prefs
+                            .ui_face
+                            .clone()
+                            .unwrap_or_else(|| THEME_CHOICE.to_owned())
+                    },
+                    ui_face_of,
+                ),
+            cx.setting(t("settings-appearance-translucency"))
+                .described(t("settings-appearance-translucency-desc"))
+                .id("appearance.translucency")
+                .keyed(
+                    paths.translucency,
+                    translucency_choices(),
+                    translucency_key,
+                    translucency_of,
                 ),
             // Contrast, motion and text size are Accessibility's alone.
             cx.setting(t("settings-appearance-accessibility"))
@@ -637,7 +771,8 @@ mod tests {
     use ui::theme::Theme;
     use ui::widget::Widget;
 
-    use crate::testing::{APPEARANCE, edit_field, invoke_section};
+    use crate::prefs::IdentityPrefs;
+    use crate::testing::{APPEARANCE, IDENTITY, edit_field, invoke_section};
 
     /// Every appearance control's effect writes the person's `appearance`
     /// section, where the compositor and every app read it; a value outside
@@ -695,6 +830,98 @@ mod tests {
         );
         assert!(edit_field(&mut app, APPEARANCE, "sunrise", "25:00").is_err());
         assert_eq!(app.settings::<AppearancePrefs>().get(), prefs);
+    }
+
+    /// The interface face and the translucency are the person's over the
+    /// theme: a choice made in the page is stored in the appearance section
+    /// and the theme every app resolves wears it, while following the theme
+    /// leaves the theme's own.
+    #[test]
+    fn the_interface_face_and_translucency_are_the_persons_over_the_theme() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let device = crate::prefs::AppearanceDevicePrefs::default();
+        let stock = app
+            .settings::<AppearancePrefs>()
+            .get()
+            .resolve_theme(&device);
+        assert!(
+            stock.tokens.colors.surfaces.material_blur_px > 1.0,
+            "the stock theme blurs its floating chrome"
+        );
+
+        edit_field(&mut app, APPEARANCE, "ui_face", "Hyperlegible").unwrap();
+        edit_field(&mut app, APPEARANCE, "translucency", 0.0).unwrap();
+
+        let prefs = app.settings::<AppearancePrefs>().get();
+        assert_eq!(prefs.ui_face.as_deref(), Some("Hyperlegible"));
+        assert_eq!(prefs.translucency, Some(0.0));
+        let chosen = prefs.resolve_theme(&device);
+        assert_eq!(chosen.document.type_.face, "Hyperlegible");
+        assert_eq!(
+            chosen.tokens.typography.sans_family,
+            ui::text_render::UI_HYPERLEGIBLE_FAMILY
+        );
+        assert!(chosen.tokens.colors.surfaces.material_blur_px.abs() < f32::EPSILON);
+        assert!((chosen.tokens.colors.surfaces.material_opacity - 1.0).abs() < 1e-6);
+
+        // Following the theme again gives the theme's own face and blur back.
+        edit_field(&mut app, APPEARANCE, "ui_face", serde_json::Value::Null).unwrap();
+        edit_field(
+            &mut app,
+            APPEARANCE,
+            "translucency",
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        let following = app.settings::<AppearancePrefs>().get();
+        assert_eq!(following.ui_face, None);
+        assert_eq!(following.translucency, None);
+        let theme = following.resolve_theme(&device);
+        assert_eq!(theme.document.type_.face, stock.document.type_.face);
+        assert!(
+            (theme.tokens.colors.surfaces.material_blur_px
+                - stock.tokens.colors.surfaces.material_blur_px)
+                .abs()
+                < 1e-4
+        );
+
+        // A name that is no face name and a share outside the band are
+        // refused and change nothing.
+        assert!(edit_field(&mut app, APPEARANCE, "ui_face", "   ").is_err());
+        assert!(edit_field(&mut app, APPEARANCE, "translucency", 2.0).is_err());
+        assert_eq!(app.settings::<AppearancePrefs>().get(), following);
+    }
+
+    /// The colour the person wears is a setting of theirs: choosing one
+    /// stores it in the shared `identity` section, where the toolkit and
+    /// every app read it (`PresenceHue::chosen_in`), and following their
+    /// identity again writes none.
+    #[test]
+    fn the_colour_the_person_wears_is_stored_where_the_theme_reads_it() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let chosen = || {
+            let section = app
+                .settings::<IdentityPrefs>()
+                .document()
+                .section(settings_store::identity::SECTION);
+            ui::tokens::PresenceHue::chosen_in(&serde_json::json!({
+                settings_store::identity::SECTION: section,
+            }))
+        };
+        assert_eq!(chosen(), None, "no choice follows the identity");
+
+        edit_field(&mut app, IDENTITY, "colour", "violet").unwrap();
+        assert_eq!(
+            app.settings::<IdentityPrefs>().get().colour.as_deref(),
+            Some("violet")
+        );
+        assert_eq!(chosen(), Some(ui::tokens::PresenceHue::Violet));
+
+        edit_field(&mut app, IDENTITY, "colour", serde_json::Value::Null).unwrap();
+        assert_eq!(chosen(), None);
+
+        assert!(edit_field(&mut app, IDENTITY, "colour", "chartreuse").is_err());
+        assert_eq!(app.settings::<IdentityPrefs>().get().colour, None);
     }
 
     /// The page follows the section, whoever changes it, and while it is

@@ -1494,6 +1494,18 @@ pub struct AppearancePrefs {
     /// device again replaces a language chosen before.
     #[serde(default)]
     pub language: Option<String>,
+    /// The interface face, by any family name a theme may name (`Default`,
+    /// `Hyperlegible`, `Noto Sans`); `None` follows the theme's own. The
+    /// face is a role of the theme, so this only says the person would
+    /// rather have theirs than the one the theme chose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_face: Option<String>,
+    /// How much of the theme's translucency to keep: `1` as the theme sets
+    /// it, `0` floating chrome opaque; `None` follows the theme. The
+    /// accessibility option that makes panels opaque still wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(range = 0.0..=1.0)]
+    pub translucency: Option<f64>,
 }
 
 /// What the desktop shows while the person has chosen nothing: the built-in
@@ -1570,6 +1582,8 @@ impl Default for AppearancePrefs {
             forced_colors: false,
             distinct_letters: None,
             language: None,
+            ui_face: None,
+            translucency: None,
         }
     }
 }
@@ -1619,8 +1633,22 @@ impl AppearancePrefs {
         ui::theme::ThemeLayerStack {
             distribution_defaults: device.distribution_defaults.clone(),
             user_theme: self.user_document(),
+            finish: self.finish(),
             window: ui::WindowAppearance::default(),
             accessibility,
+        }
+    }
+
+    /// The person's own face and share of the theme's translucency.
+    fn finish(&self) -> ui::theme::FinishLayer {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a translucency is a factor in 0..=1; f32 holds it exactly enough"
+        )]
+        let translucency = self.translucency.map(|value| value as f32);
+        ui::theme::FinishLayer {
+            ui_face: self.ui_face.clone(),
+            translucency,
         }
     }
 
@@ -1992,7 +2020,23 @@ impl AppearancePrefs {
     /// What the appearance section holds, however it was changed.
     fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
         time_of_day(&self.sunrise, "the start of day")?;
-        time_of_day(&self.sunset, "the start of night")
+        time_of_day(&self.sunset, "the start of night")?;
+        ui::theme::FinishLayer {
+            ui_face: self.ui_face.clone(),
+            translucency: None,
+        }
+        .validate()
+        .map_err(|error| ui::tilo_resource::Refusal::new(format!("the interface face: {error}")))?;
+        if let Some(translucency) = self.translucency {
+            let band = settings_store::appearance::TRANSLUCENCY_MIN as f64
+                ..=settings_store::appearance::TRANSLUCENCY_MAX as f64;
+            if !band.contains(&translucency) {
+                return Err(ui::tilo_resource::Refusal::new(
+                    "translucency is between none and the theme's own",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
