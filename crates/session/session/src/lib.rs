@@ -1736,6 +1736,7 @@ impl Session {
             date: ui::format::day_heading(ui::clock::today(), false),
             person: self.unlocking.user.clone(),
             status: self.lock_status(),
+            media: mount::lock::media(&self.shared.readings),
             ..lock.shown()
         });
         for password in lock.take_attempts() {
@@ -1790,6 +1791,7 @@ impl Session {
                 layout: self.lock_layout(self.shared.lock_layout.get()),
                 next_layout: self.next_lock_layout(),
                 layouts: self.shared.lock_layouts.len(),
+                keyboard: true,
                 power: self.shared.lock_power,
                 ..tilo_sheets::lock::Status::default()
             };
@@ -1807,7 +1809,9 @@ impl Session {
             layout: self.lock_layout(self.shared.lock_layout.get()),
             next_layout: self.next_lock_layout(),
             layouts: self.shared.lock_layouts.len(),
-            keyboard: false,
+            // The screen draws its own keyboard: a touch-only device can
+            // always ask for it.
+            keyboard: true,
             power: self.shared.lock_power,
         }
     }
@@ -1862,13 +1866,15 @@ impl Session {
                         ..tilo_compositor::KeyboardLayout::default()
                     });
             }
-            LockEffect::ShowKeyboard => {
-                tracing::info!("this session has no on-screen keyboard to show");
+            LockEffect::PlayPause | LockEffect::NextTrack | LockEffect::PreviousTrack => {
+                mount::lock::transport(asked, &self.shared.readings, &self.shared.services);
             }
             LockEffect::Suspend => self.session_action(SessionAction::Suspend),
             LockEffect::Restart => self.session_action(SessionAction::Restart),
             LockEffect::ShutDown => self.session_action(SessionAction::ShutDown),
             LockEffect::TypePassword { .. } | LockEffect::Unlock => {}
+            // The screen draws its own keyboard; showing it is the screen's.
+            LockEffect::ShowKeyboard => {}
         }
     }
 

@@ -36,6 +36,7 @@ use ui::motion::{
     Appear, Attention, Direction, MotionSpec, MotionValue, Pace, Presence, Reduced, Shortcut,
     frame_now, want_frames_until,
 };
+use ui::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
 use ui::prelude::*;
 use ui::text_render::{NumericStyle, OpenTypeTag, TextWeight};
 use ui::tokens::{EffectiveMotion, MotionSource, Rhythm, Spacing};
@@ -119,6 +120,15 @@ pub enum LockEffect {
     /// Ask for the on-screen keyboard
     #[effect(own_device, keywords = "keyboard, on-screen, accessibility, touch")]
     ShowKeyboard,
+    /// Play or pause what is playing
+    #[effect(own_device, keywords = "music, media, pause, resume")]
+    PlayPause,
+    /// Play the next song
+    #[effect(own_device, keywords = "music, media, skip")]
+    NextTrack,
+    /// Play the previous song
+    #[effect(own_device, keywords = "music, media, skip")]
+    PreviousTrack,
     /// Suspend the computer
     #[effect(own_device, keywords = "sleep, standby")]
     Suspend,
@@ -128,6 +138,26 @@ pub enum LockEffect {
     /// Shut the computer down
     #[effect(own_device, destructive, keywords = "shutdown, power off")]
     ShutDown,
+}
+
+/// What plays, as the screen says it: the song and what the player in front
+/// can be asked to do about it. A locked screen shows no more than that —
+/// no queue, no scrubber, no choice of player.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Media {
+    /// The song's name.
+    pub title: String,
+    /// Who it is by.
+    pub subtitle: String,
+    /// Whether it plays now, which is what the middle control offers to
+    /// change.
+    pub playing: bool,
+    /// Whether the player can be paused and resumed.
+    pub can_toggle: bool,
+    /// Whether the player has a song before this one.
+    pub can_previous: bool,
+    /// Whether the player has a song after this one.
+    pub can_next: bool,
 }
 
 /// The battery, as the screen says it.
@@ -176,6 +206,10 @@ pub struct Shown {
     pub caps_lock: bool,
     /// What the device says about itself.
     pub status: Status,
+    /// What plays, while a player says.
+    pub media: Option<Media>,
+    /// The keyboard drawn on the screen is up, for unlocking by touch.
+    pub keyboard: bool,
     /// The password was accepted: the screen is dissolving.
     pub unlocking: bool,
 }
@@ -349,6 +383,9 @@ impl LockSeat {
         self.show(Shown {
             error: None,
             checking: true,
+            // What was typed is in the field's hands now; the keyboard has
+            // done its work.
+            keyboard: false,
             ..self.shown()
         });
         Ok(())
@@ -417,6 +454,12 @@ impl ResourceApp for LockApp {
                     acting.type_password(&password);
                 }
                 LockEffect::Unlock => acting.attempt()?,
+                // The keyboard is the screen's own: opening it is nothing the
+                // session has to do.
+                LockEffect::ShowKeyboard => acting.show(Shown {
+                    keyboard: true,
+                    ..acting.shown()
+                }),
                 asked => acting.ask(asked),
             }
             Ok(Effected::done())
@@ -432,6 +475,9 @@ impl ResourceApp for LockApp {
             shake: Attention::default(),
             blank: MotionValue::new(0.0),
             caps: CapsLockEstimate::new(),
+            keyboard: Cell::new(PasscodeKeyboard::default()),
+            keyboard_place: Cell::new((Rect::ZERO, 0.0, 0.0)),
+            pointer: None,
             last_input: frame_now(),
             idle: Idle::Awake,
             seen_error: None,
@@ -439,7 +485,9 @@ impl ResourceApp for LockApp {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["plain", "refused", "checking", "caps", "quiet", "minimal"]
+        &[
+            "plain", "refused", "checking", "caps", "quiet", "playing", "minimal",
+        ]
     }
 
     fn fixture(fixture: &mut ui::framework::Fixture<LockScreen>) {
@@ -462,6 +510,8 @@ impl ResourceApp for LockApp {
                 keyboard: false,
                 power: true,
             },
+            media: None,
+            keyboard: false,
             unlocking: false,
         };
         let shown = match fixture.scenario() {
@@ -475,6 +525,17 @@ impl ResourceApp for LockApp {
             },
             Some("caps") => Shown {
                 caps_lock: true,
+                ..shown
+            },
+            Some("playing") => Shown {
+                media: Some(Media {
+                    title: "Clair de lune".to_owned(),
+                    subtitle: "Claude Debussy".to_owned(),
+                    playing: true,
+                    can_toggle: true,
+                    can_previous: true,
+                    can_next: true,
+                }),
                 ..shown
             },
             Some("minimal") => Shown {
@@ -527,13 +588,16 @@ fn screen(cx: &ViewCx<LockScreen>, shown: &Shown, seat: &LockSeat) -> Element {
         ));
     let card = FloatingPanel::new(Box::new(card)).width(CARD_WIDTH);
 
-    let blocks = Column::new()
+    let mut blocks = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Group)
         .push(Box::new(clock))
-        .push(centred(Box::new(card)))
-        .push(status_row(cx, shown));
+        .push(centred(Box::new(card)));
+    if let Some(transport) = transport(cx, shown) {
+        blocks = blocks.push(centred(transport));
+    }
+    let blocks = blocks.push(status_row(cx, shown));
 
     Box::new(
         Manual::new(|layout| {
@@ -563,6 +627,80 @@ fn screen(cx: &ViewCx<LockScreen>, shown: &Shown, seat: &LockSeat) -> Element {
         })
         .child(Box::new(blocks)),
     )
+}
+
+/// What plays, and the controls the player in front allows: nothing the
+/// song is behind, so a locked screen leaks no more of the session than its
+/// name.
+fn transport(cx: &ViewCx<LockScreen>, shown: &Shown) -> Option<Element> {
+    let media = shown.media.as_ref()?;
+    let song = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_intrinsic_width()
+        .with_rhythm(Rhythm::Tight)
+        .push(Box::new(
+            Text::new(&media.title)
+                .with_id("lock-media-title")
+                .with_role(TextRole::Body)
+                .strong(),
+        ))
+        .push(Box::new(
+            Text::new(&media.subtitle)
+                .with_id("lock-media-subtitle")
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        ));
+    let actions = cx.actions();
+    let mut controls = Row::new()
+        .no_wrap()
+        .with_rhythm(Rhythm::Tight)
+        .with_align_items(ui::taffy::AlignItems::Center);
+    let toggle = if media.playing {
+        (Icon::Pause, "lock-pause")
+    } else {
+        (Icon::Play, "lock-play")
+    };
+    for (offered, effect, icon, id, name) in [
+        (
+            media.can_previous,
+            LockEffect::PreviousTrack,
+            Icon::SkipBack,
+            "lock-previous",
+            "lock-previous",
+        ),
+        (
+            media.can_toggle,
+            LockEffect::PlayPause,
+            toggle.0,
+            toggle.1,
+            toggle.1,
+        ),
+        (
+            media.can_next,
+            LockEffect::NextTrack,
+            Icon::SkipForward,
+            "lock-next",
+            "lock-next",
+        ),
+    ] {
+        let Some(binding) = actions.effect(&effect).filter(|_| offered) else {
+            continue;
+        };
+        controls = controls.push(Box::new(
+            Button::icon_only(id, icon, &t(name))
+                .control_size(ControlSize::Small)
+                .on_action(binding),
+        ));
+    }
+    Some(Box::new(
+        Row::new()
+            .no_wrap()
+            .with_rhythm(Rhythm::Related)
+            .with_align_items(ui::taffy::AlignItems::Center)
+            .push(Box::new(song))
+            .push(Box::new(controls)),
+    ))
 }
 
 /// The avatar and whose session this is.
@@ -753,6 +891,15 @@ struct Stage {
     blank: MotionValue<f64>,
     /// The running guess at the keyboard's Caps Lock, from the typed letters.
     caps: CapsLockEstimate,
+    /// The screen's own keyboard, for unlocking by touch: the layer and
+    /// shift its keys pressed it to, which are no change to what the screen
+    /// shows.
+    keyboard: Cell<PasscodeKeyboard>,
+    /// Where the last paint put that keyboard, so a finger presses exactly
+    /// the keys it saw.
+    keyboard_place: Cell<(Rect, f64, f64)>,
+    /// Where the pointer is, in window coordinates.
+    pointer: Option<Point>,
     /// When the person last touched the keyboard or the pointer.
     last_input: ui::time::Instant,
     /// Where the screen stands in going quiet and coming back.
@@ -828,6 +975,79 @@ impl Stage {
             .then(|| self.last_input.checked_add(IDLE))
             .flatten()
     }
+
+    /// Bring the screen's keyboard up, on the layer it was left on.
+    fn show_keyboard(&self) {
+        self.seat.show(Shown {
+            keyboard: true,
+            ..self.seat.shown()
+        });
+    }
+
+    /// A press at `point` on the keyboard the last paint placed: the key
+    /// there is pressed, as a finger would.
+    fn press_key(&mut self, point: Point) -> bool {
+        let (rect, key_height, gap) = self.keyboard_place.get();
+        let Some(pressed) = self.keyboard.get().key_at(rect, key_height, gap, point) else {
+            return false;
+        };
+        self.press(pressed);
+        true
+    }
+
+    /// Press one key of the screen's keyboard: a character, a layer or shift
+    /// changes the keyboard, and everything else is typed into the field.
+    fn press(&mut self, pressed: PasscodeKey) {
+        let mut keyboard = self.keyboard.get();
+        let typed = keyboard.press(pressed);
+        self.keyboard.set(keyboard);
+        if let Some(typed) = typed {
+            self.type_input(&typed);
+        }
+    }
+
+    /// Type what a key of the screen's keyboard asks into the one field, or
+    /// unlock with what is there.
+    fn type_input(&mut self, input: &PasscodeInput) {
+        let checking = self.seat.shown().checking;
+        let Some(field) = find_field(self.content.as_mut()) else {
+            return;
+        };
+        match input {
+            PasscodeInput::Text(text) => field.insert_at_cursor(text),
+            PasscodeInput::Backspace => {
+                let mut value = Zeroizing::new(field.value().to_owned());
+                value.pop();
+                field.set_text(&value);
+            }
+            PasscodeInput::Enter if !checking => self.dispatch.effect(&LockEffect::Unlock),
+            PasscodeInput::Enter => {}
+        }
+    }
+}
+
+/// How tall a key of the screen's keyboard is and how far apart they stand,
+/// as the sheet's other keys do.
+fn key_metrics(theme: &ui::theme::Theme) -> (f64, f64) {
+    (
+        f64::from(theme.tokens.metrics.panel_row_height),
+        f64::from(theme.tokens.spacing.s2),
+    )
+}
+
+/// Where the keyboard stands on a screen of `bounds`: along the bottom edge,
+/// no wider than a wide sheet so its keys stay a thumb's reach apart.
+fn keyboard_rect(theme: &ui::theme::Theme, bounds: Rect) -> Rect {
+    let (key_height, gap) = key_metrics(theme);
+    let height = PasscodeKeyboard::height(key_height, gap);
+    let margin = f64::from(Spacing::BASE.s4);
+    let widest = (bounds.width() - margin * 2.0)
+        .max(1.0)
+        .min(f64::from(theme.tokens.metrics.panel_width_sheet) * 1.25);
+    Rect::from_center_size(
+        Point::new(bounds.center().x, bounds.y1 - margin - height / 2.0),
+        (widest, height),
+    )
 }
 
 /// The password field anywhere under `widget`, so its input can be reached
@@ -856,6 +1076,14 @@ impl ui::widget::Decorator for Stage {
         use ui::winit::event::ElementState;
         use ui::winit::keyboard::{Key, NamedKey};
 
+        // Where the pointer is, for a press on the screen's own keyboard.
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = Some(Point::new(position.x, position.y));
+            }
+            WindowEvent::CursorLeft { .. } => self.pointer = None,
+            _ => {}
+        }
         let now = frame_now();
         // A typed letter is what says whether Caps Lock is on; nothing else
         // knows.
@@ -870,18 +1098,20 @@ impl ui::widget::Decorator for Stage {
             }
             _ => None,
         };
+        let press = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: ui::winit::event::MouseButton::Left,
+                ..
+            }
+        );
         let touched = typed.is_some()
             || matches!(
                 event,
                 WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed
             )
-            || matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    ..
-                }
-            );
+            || press;
         if touched {
             self.last_input = now;
         }
@@ -894,6 +1124,16 @@ impl ui::widget::Decorator for Stage {
                 *ctx.handled = true;
                 return;
             }
+        }
+        // The screen's keyboard, where the last paint put it, is above
+        // everything else: a press on a key types that key.
+        if self.seat.shown().keyboard
+            && press
+            && let Some(point) = self.pointer
+            && self.press_key(point)
+        {
+            *ctx.handled = true;
+            return;
         }
         let escape = matches!(
             event,
@@ -928,6 +1168,22 @@ impl ui::widget::Decorator for Stage {
             if field.take_submit() && !checking {
                 self.dispatch.effect(&LockEffect::Unlock);
             }
+        }
+        // A press on the screen's own ground brings the keyboard up: a finger
+        // is unlocking, and there is no keyboard under it to type on. A press
+        // the screen's controls took is theirs.
+        if press && !*ctx.handled && !self.seat.shown().keyboard {
+            self.show_keyboard();
+            *ctx.handled = true;
+            return;
+        }
+        // A letter typed on a real keyboard puts the screen's own away: the
+        // one under the hands is what a person is using.
+        if typed.is_some() && self.seat.shown().keyboard {
+            self.seat.show(Shown {
+                keyboard: false,
+                ..self.seat.shown()
+            });
         }
     }
 
@@ -964,8 +1220,18 @@ impl ui::widget::Decorator for Stage {
         )]
         let placement = transform * ui::advanced::Affine::translate((shake.x, shake.y));
         let content = &mut self.content;
+        // The screen's own keyboard goes up with the screen it belongs to:
+        // same arrival, same shake, same fade when it leaves.
+        let showed = self.seat.shown().keyboard;
+        let (key_height, gap) = key_metrics(theme);
+        let place = keyboard_rect(theme, bounds);
+        self.keyboard_place.set((place, key_height, gap));
+        let keyboard = self.keyboard.get();
         pose.paint(scene, placement, bounds, |scene, xform| {
             content.draw(scene, xform, text_renderer, theme, presence);
+            if showed {
+                keyboard.paint(scene, xform, text_renderer, theme, (place, key_height, gap));
+            }
         });
     }
 
@@ -990,6 +1256,10 @@ impl ui::widget::Decorator for Stage {
         regions.push(self.content.get_rect());
     }
 
+    /// The whole surface is one dialog. Its field and its controls are
+    /// widgets of their own, so they are exported beneath it; the keyboard
+    /// drawn on top never is — a screen reader types into the field and
+    /// presses the same controls a finger does, without seeing the screen.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         Some(

@@ -634,6 +634,118 @@ fn the_play_key_reaches_whatever_publishes_the_player() {
     assert_eq!(*asked.borrow(), ["play-pause"]);
 }
 
+/// The player, as a system service the session hosts: it publishes what
+/// plays and records what it was asked.
+struct PlayerService {
+    asked: Rc<RefCell<Vec<String>>>,
+}
+
+impl tilo_session::Service for PlayerService {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        let spec = |id: &'static str| {
+            tilo_actions::ActionSpec::typed_operation(
+                id,
+                id,
+                String::new(),
+                tilo_actions::OperationKind::Effect,
+                "test.player",
+                Vec::new(),
+                move |_| tilo_actions::EncodedAction::encode_operation("test.player", &id).unwrap(),
+            )
+        };
+        vec![
+            tilo_actions::ResourceSpec::new(tilo_session::MEDIA, "media", "Player")
+                .with_action(spec("play-pause"))
+                .with_action(spec("next"))
+                .with_action(spec("previous")),
+        ]
+    }
+
+    fn read(&self, _resource: &str) -> Option<serde_json::Value> {
+        None
+    }
+
+    fn invoke(
+        &mut self,
+        _resource: &str,
+        action: &str,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        self.asked.borrow_mut().push(action.to_owned());
+        Ok(tilo_service::Started::Done(
+            tilo_actions::ActionOutput::default(),
+        ))
+    }
+}
+
+#[test]
+fn the_lock_screens_transport_steers_whatever_plays() {
+    let _settled = ui::motion::testing::settled();
+    let host = Rc::new(FixtureHost::new(QuickSettingsState::fixture()));
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(QuickSettings::Lent(
+                Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
+            )),
+            services: vec![Box::new(PlayerService {
+                asked: Rc::clone(&asked),
+            })],
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    host.update(|state| {
+        state.now_playing = Some(tilo_quick_settings::NowPlaying::fixture());
+    });
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(session.compositor().locked());
+    let unlock = tilo_sheets::lock::LockEffect::UNLOCK.id;
+    let screen = publisher(&session, unlock).expect("the lock screen is up");
+    assert!(
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Clair de lune"),
+        "the locked screen says what plays: {:?}",
+        session.accessible_labels()
+    );
+
+    use tilo_sheets::lock::LockEffect;
+    session
+        .invoke(&screen, LockEffect::PLAY_PAUSE.id, &serde_json::Map::new())
+        .expect("play/pause");
+    session
+        .invoke(&screen, LockEffect::NEXT_TRACK.id, &serde_json::Map::new())
+        .expect("next");
+    pump(&mut session, &mut [], |_, _| asked.borrow().len() == 2);
+    assert_eq!(
+        *asked.borrow(),
+        ["play-pause", "next"],
+        "the locked screen's transport reaches the player, as the unlocked one does"
+    );
+
+    // With nothing playing there is no transport, and no player is steered.
+    host.update(|state| state.now_playing = None);
+    session.step(Duration::from_millis(1)).unwrap();
+    session
+        .invoke(&screen, LockEffect::PLAY_PAUSE.id, &serde_json::Map::new())
+        .expect("play/pause");
+    for _ in 0..20 {
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert_eq!(
+        *asked.borrow(),
+        ["play-pause", "next"],
+        "nothing plays, so nothing is asked of a player"
+    );
+}
+
 #[test]
 fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
     let _settled = ui::motion::testing::settled();
