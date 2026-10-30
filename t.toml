@@ -330,6 +330,11 @@ requires = ["arch=any"]
 run = "python3 tools/policy/findings.py python3 tools/policy/check_breakpoints.py"
 
 [[check]]
+name = "policy/socket-paths"
+requires = ["arch=any"]
+run = "python3 tools/policy/findings.py python3 tools/policy/check_socket_paths.py"
+
+[[check]]
 name = "policy/swallowed-decodes"
 requires = ["arch=any"]
 run = "python3 tools/policy/findings.py python3 tools/policy/check_swallowed_decodes.py"
@@ -1054,6 +1059,11 @@ run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_signal_z
 name = "policy/tests/unit/smoke-shards"
 requires = ["arch=any"]
 run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_smoke_shards.py"
+
+[[check]]
+name = "policy/tests/unit/socket-paths"
+requires = ["arch=any"]
+run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_socket_paths.py"
 
 [[check]]
 name = "policy/tests/unit/source-content"

@@ -27,7 +27,10 @@
 //! follows the holder's saves; its writes go to the holder over
 //! `<root>/records/settings.sock`, which applies them as its own and saves
 //! before it answers. Nothing else stands in for the documents: there is no
-//! copy to keep in step.
+//! copy to keep in step. A follower whose write the door does not take
+//! makes it itself only where the holder is gone (its lock is free); while
+//! the holder lives, the write fails with what the door said, and never
+//! waits for the holder to end.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -232,13 +235,31 @@ impl Store {
     /// Take other processes' writes from now on.
     fn open_door(&self) {
         let weak = self.me.clone();
-        *self.door.lock_recover() = self.records.open_door(move |request| {
+        let opened = self.records.open_door(move |request| {
             let answer = match weak.upgrade() {
                 Some(store) => door::answer(&store, request),
                 None => door::Answer::Refused("the settings were closed".to_owned()),
             };
-            serde_json::to_vec(&answer).unwrap_or_default()
+            match serde_json::to_vec(&answer) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::error!(%error, "the settings door could not encode its answer");
+                    Vec::new()
+                }
+            }
         });
+        *self.door.lock_recover() = match opened {
+            Ok(door) => Some(door),
+            Err(error) if error.kind() == std::io::ErrorKind::Unsupported => None,
+            Err(error) => {
+                tracing::error!(
+                    root = %self.root.display(),
+                    %error,
+                    "the settings door did not open: other processes' settings writes fail"
+                );
+                None
+            }
+        };
     }
 
     fn is_follower(&self) -> bool {
@@ -247,17 +268,13 @@ impl Store {
 
     /// A follower opened to hold the profile takes it over when its holder
     /// is gone (a session that ended): from what the holder saved, as the
-    /// holder from now on. Whether this process now holds it.
-    fn take_over(&self, wait: bool) -> bool {
+    /// holder from now on. Whether this process now holds it; never waits
+    /// for a holder that is still there.
+    fn take_over(&self) -> bool {
         if !self.may_hold || !self.is_follower() {
             return false;
         }
-        let held = if wait {
-            self.records.wait_to_hold()
-        } else {
-            self.records.try_hold()
-        };
-        let Hold::Held(lock) = held else {
+        let Hold::Held(lock) = self.records.try_hold() else {
             return false;
         };
         let Ok((person, device, seen)) = load_docs(&self.records) else {
@@ -370,7 +387,7 @@ impl Store {
     ) -> std::io::Result<ConditionalUpdate> {
         let refused = self.refused.lock_recover().clone();
         if let Some(why) = refused
-            && !self.take_over(false)
+            && !self.take_over()
         {
             if self.is_follower() {
                 return self.forward(origin, decide, &why);
@@ -512,7 +529,7 @@ impl Store {
         let holder = placement::holder(section);
         let refused = self.refused.lock_recover().clone();
         if let Some(why) = refused
-            && !self.take_over(false)
+            && !self.take_over()
         {
             if !self.is_follower() {
                 return Err(std::io::Error::new(
@@ -591,7 +608,7 @@ impl Store {
                 self.take_in_saves();
                 Ok(())
             }
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound && self.take_over(true) => {
+            Err(_) if self.take_over() => {
                 let Some(changes) = request.changes else {
                     return Ok(());
                 };
@@ -749,11 +766,11 @@ impl Store {
         };
         let answer = match door::send(&self.records, &request) {
             Ok(answer) => answer,
-            // The holder's door closes only as the holder ends: once it has
-            // let the settings go, this process holds them and makes the
-            // change itself.
-            // A holder with no door at all (`NotFound`) is not waited for.
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound && self.take_over(true) => {
+            // The holder lets the settings go before it closes its door:
+            // where the door no longer answers and the lock is free, this
+            // process holds them and makes the change itself. A holder that
+            // is still there is never waited for.
+            Err(_) if self.take_over() => {
                 let door::Request {
                     expected, sections, ..
                 } = request;
@@ -1383,6 +1400,80 @@ mod tests {
         reader.update_section("s", object(json!({"z": 3}))).unwrap();
         assert!(!reader.is_holder(), "a reader never holds");
         assert_eq!(follower.load_section_value("s")["z"], 3);
+    }
+
+    /// `write`'s result, failing the test where it has not returned within
+    /// seconds: a write that waits for nobody.
+    fn promptly<T: Send + 'static>(write: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(write()));
+        result
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the write returned")
+    }
+
+    /// A profile whose door's path is longer than a socket's path may be.
+    fn deep_profile() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("a".repeat(60)).join("b".repeat(60));
+        let [_, door] = Records::of(&root).runtime_files();
+        assert!(door.as_os_str().len() > 108, "{}", door.display());
+        (dir, root)
+    }
+
+    #[test]
+    fn a_profile_deeper_than_a_socket_path_still_takes_followers_writes() {
+        let (_dir, root) = deep_profile();
+        let holder = Store::open(&root).unwrap();
+        holder.update_section("s", object(json!({"x": 1}))).unwrap();
+        holder.flush_pending();
+        let follower = Store::open(&root).unwrap();
+        assert!(!follower.is_holder());
+        let writer = Arc::clone(&follower);
+        promptly(move || writer.update_section("s", object(json!({"x": 2})))).unwrap();
+        assert_eq!(holder.load_section_value("s"), json!({"x": 2}));
+        let writer = Arc::clone(&follower);
+        promptly(move || {
+            writer.edit_document(
+                "power",
+                &ChangeOrigin::local("settings.power/undo"),
+                |doc| {
+                    put_leaf(doc, "power", "x", 2);
+                    Ok(())
+                },
+            )
+        })
+        .unwrap();
+        assert_eq!(holder.load_section_value("power"), json!({"x": 2}));
+        assert!(!follower.is_holder(), "the holder is still there");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_follower_never_waits_for_a_live_holder_whose_door_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let holder = Store::open(dir.path()).unwrap();
+        holder.update_section("s", object(json!({"x": 1}))).unwrap();
+        holder.flush_pending();
+        let follower = Store::open(dir.path()).unwrap();
+        // The holder lives on with its lock, behind a door nobody answers.
+        *holder.door.lock_recover() = None;
+        let [_, door] = holder.records.runtime_files();
+        drop(std::os::unix::net::UnixListener::bind(&door).unwrap());
+
+        let writer = Arc::clone(&follower);
+        let refused = promptly(move || writer.update_section("s", object(json!({"x": 2}))));
+        assert!(refused.is_err(), "{refused:?}");
+        let writer = Arc::clone(&follower);
+        let refused = promptly(move || {
+            writer.edit_document("power", &ChangeOrigin::default(), |doc| {
+                put_leaf(doc, "power", "x", 2);
+                Ok(())
+            })
+        });
+        assert!(refused.is_err(), "{refused:?}");
+        assert!(!follower.is_holder());
+        assert_eq!(holder.load_section_value("s"), json!({"x": 1}));
     }
 
     #[test]
