@@ -38,10 +38,9 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
             drop(replica);
             loaded.last().unwrap().meta.clone()
         };
-        assert!(
-            (1..=3).contains(&meta.scenarios.len()),
-            "{app} declares one to three scenarios"
-        );
+        // A scenario per window worth seeing (a list, a task's page, a project's board): the
+        // seed a shot or a layout check of that window starts from, so there is no upper bound.
+        assert!(!meta.scenarios.is_empty(), "{app} declares a scenario");
         for (i, scenario) in meta.scenarios.iter().enumerate() {
             // Each scenario in a room of its own, as a shot starts from one.
             let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
