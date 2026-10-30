@@ -79,6 +79,7 @@ mod governance_witness_tests;
 mod directory;
 mod launch_child;
 mod own_device;
+mod readmit;
 mod room_nodes;
 mod shortcut_run;
 use directory::bridge_error;
@@ -2097,18 +2098,7 @@ impl CapnpBrokerState {
                         permit.map_err(|_| ActionHostError::Unavailable { reason: "the launch queue stopped".into() })?
                     }
                 });
-                // Re-read custody and launch policy after the queue wait.
-                self.check_launch_origin(caller, origin, &room)?;
-                let current = match native {
-                    Some(native) => native.destination(self).map_err(refusal)?,
-                    None => self.admit_launchable(caller, request)?,
-                };
-                if current.workspace.room() != destination.workspace.room()
-                    || current.app_id != *app_id
-                    || current.record != destination.record
-                {
-                    return Err(ActionHostError::NotPermitted);
-                }
+                let current = self.readmit_launch(caller, origin, request, destination, native)?;
                 let launch = self.finish_retained_launch(
                     completer,
                     caller,

@@ -247,14 +247,16 @@ impl NativeStateRuntime {
     pub(super) fn attach(&self, owner: &NativeWorkspaceOwner, tree: &WorkspaceTreeHandle) {
         *self.0.attached.lock() = Some((owner.downgrade(), tree.downgrade()));
     }
-    /// Write nothing more, once any write in progress has finished: the
-    /// state file stays as this writer last left it, as at the end of the
-    /// process that held it. For a test that starts a device again in the
-    /// same process, where the old session's work can outlive it.
-    #[cfg(test)]
-    pub(crate) fn close_for_shutdown(&self) {
-        let _writer = self.0.writer.lock();
+    /// Write nothing more, once any write in progress has finished, and let
+    /// go of the state file's lease: the file stays as this writer last left
+    /// it, as at the end of the process that held it. The session that owned
+    /// the writer ends with it, so the profile's next session takes the lease
+    /// however long work of the old one (a network task, a queued snapshot)
+    /// still holds the tree; that work's writes are refused.
+    pub(crate) fn close(&self) {
+        let mut writer = self.0.writer.lock();
         self.0.closed.store(true, Ordering::Release);
+        writer.lease = None;
     }
     /// Order of a snapshot of the tree among every other snapshot of it.
     /// Taken while the caller holds the tree, so a later sequence is never an
