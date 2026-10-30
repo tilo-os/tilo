@@ -762,7 +762,7 @@ fn hosted_browser_affordances_are_canonical_peer_local_actions() {
             ("browser.back", "browser.page", "back"),
             ("browser.forward", "browser.page", "forward"),
             ("browser.reload", "browser.page", "reload"),
-            ("browser.library", "browser.history", "show-history"),
+            ("browser.library", "browser.library", "show-history"),
         ] {
             assert_action_binding(&page, control, resource, action);
         }
@@ -778,7 +778,7 @@ fn hosted_browser_affordances_are_canonical_peer_local_actions() {
         for (label, resource, action) in [
             ("Pause history", "browser.session", "toggle-pause"),
             ("Picture in Picture", "browser.page", "picture-in-picture"),
-            ("Settings", "browser.settings", "show-settings"),
+            ("Settings", crate::resource::Browser::KIND, "show-settings"),
         ] {
             let mut page = BrowserWidget::new_headless();
             compose(&mut page);

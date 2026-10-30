@@ -1247,7 +1247,7 @@ fn narrow_chrome_keeps_settings_toolbar_and_page_viewport_usable() {
                 .pending_controls
                 .iter()
                 .any(
-                    |invocation| invocation.address.resource == "browser.settings"
+                    |invocation| invocation.address.resource == crate::resource::Browser::KIND
                         && invocation.address.action == "show-settings"
                 ),
             "the actual Settings menu command queues its canonical action"
