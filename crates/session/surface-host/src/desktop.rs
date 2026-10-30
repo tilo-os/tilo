@@ -326,6 +326,31 @@ impl StripPolicy {
 }
 
 impl WindowPolicy for StripPolicy {
+    /// Focus follows the pointer onto another display: to the window last
+    /// focused there, else to none, so the next window opens there.
+    fn pointer_moved(&mut self, x: f64, y: f64) {
+        let mut desk = self.desk.borrow_mut();
+        let (ox, oy) = desk.host.placement().origin;
+        let (x, y) = (x - f64::from(ox), y - f64::from(oy));
+        let handle = desk.policy.handle().clone();
+        let under = handle.read(|tree| {
+            if !tree.is_partitioned() {
+                return None;
+            }
+            tree.outputs
+                .displays
+                .iter()
+                .find(|d| x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height)
+                .map(|d| d.id)
+        });
+        if let Some(display) = under
+            && handle.focused_display() != Some(display)
+            && handle.focus_display(display)
+        {
+            desk.host.relayout();
+        }
+    }
+
     fn monitors(&mut self, monitors: &[(Rectangle<i32, Logical>, String)]) {
         monitors.clone_into(&mut self.desk.borrow_mut().monitors);
     }

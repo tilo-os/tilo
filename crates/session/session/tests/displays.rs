@@ -19,7 +19,7 @@ use std::os::fd::AsFd as _;
 use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
-use tilo_compositor::{Compositor, OutputConfig};
+use tilo_compositor::{Compositor, InputEvent, OutputConfig};
 use tilo_desktop::desktop_actions::{DESK_RESOURCE, DISPLAY_KIND, WINDOW_KIND};
 use tilo_session::{Options, Session};
 use wayland_client::protocol::{
@@ -332,6 +332,43 @@ fn new_windows_open_on_the_display_with_focus() {
         "the first window stays on its display"
     );
     assert_eq!(focused(&mut session).as_deref(), Some("org.example.Right"));
+}
+
+#[test]
+fn focus_follows_the_pointer_onto_the_other_display() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = docked();
+    let mut client = client(&mut session);
+    tab(&mut session, &mut client, "org.example.Left");
+    focus_display(&mut session, &mut client, 1);
+    tab(&mut session, &mut client, "org.example.Right");
+    assert_eq!(focused(&mut session).as_deref(), Some("org.example.Right"));
+
+    let (x, y, w, h) = rect(&mut session, "org.example.Left");
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion {
+            x: f64::from(x + w / 2),
+            y: f64::from(y + h / 2),
+        })
+        .unwrap();
+    pump(&mut session, &mut client, |session, _| {
+        focused(session).as_deref() == Some("org.example.Left")
+    });
+
+    // Moving about the same display leaves focus where it is.
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion {
+            x: f64::from(x + 1),
+            y: f64::from(y + 1),
+        })
+        .unwrap();
+    for _ in 0..4 {
+        client.exchange();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert_eq!(focused(&mut session).as_deref(), Some("org.example.Left"));
 }
 
 #[test]
