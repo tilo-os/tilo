@@ -358,11 +358,6 @@ impl Compositor {
         Ok(())
     }
 
-    /// The night light's colour temperature in kelvin, while it is on.
-    pub fn night_light(&self) -> Option<u32> {
-        self.data.state.gamma.night_light()
-    }
-
     /// Draw the window `id` with `effect` (moved, scaled about its centre,
     /// faded) from the next frame on, or as it stands again (`None`). The
     /// desktop animates windows by setting this every frame; input still
