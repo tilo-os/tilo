@@ -180,7 +180,7 @@ impl NowPlayingSource for MprisSource {
     }
 
     fn send(&self, bus_name: &str, command: PlayerCommand) -> bool {
-        crate::shell::mpris::control(bus_name, command)
+        crate::shell::mpris::control(bus_name, &command)
     }
 
     fn refresh(&self) {
