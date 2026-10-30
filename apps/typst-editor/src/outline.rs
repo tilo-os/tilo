@@ -7,11 +7,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use typst::syntax::{LinkedNode, Source, SyntaxKind, SyntaxNode, ast};
+use ui::framework::LiveRow;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::ResourceSpec;
-use ui::tilo_resource::Effect;
 use ui::widget::{NavItem, NavList, NavSection, SidebarDrawer, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -255,19 +254,19 @@ impl Outline {
         }
     }
 
-    /// The headings as resources, each with the effect that goes to it.
-    pub(crate) fn resources(&self) -> Vec<ResourceSpec> {
-        fn row(heading: &Heading) -> ResourceSpec {
-            ResourceSpec::new(heading_id(heading.line), "typst.heading", &heading.title)
-                .with_action(TypstEffect::GoToHeading { line: heading.line }.bound())
-        }
-        if self.headings.is_empty() {
-            return Vec::new();
-        }
-        vec![
-            ResourceSpec::new("typst.outline", "typst.outline", "Outline")
-                .with_children(self.headings.iter().map(row)),
-        ]
+    /// The headings as live rows, each with the effect that goes to it.
+    pub(crate) fn rows(&self) -> Option<LiveRow> {
+        (!self.headings.is_empty()).then(|| {
+            self.headings.iter().fold(
+                LiveRow::new("typst.outline", "typst.outline", "Outline"),
+                |outline, heading| {
+                    outline.row(
+                        LiveRow::new(heading_id(heading.line), "typst.heading", &heading.title)
+                            .effect(&TypstEffect::GoToHeading { line: heading.line }),
+                    )
+                },
+            )
+        })
     }
 }
 
@@ -347,9 +346,9 @@ mod tests {
         );
         assert_eq!(outline.list.selected_id(), None);
         assert_eq!(outline.take_chosen(), None);
-        let resources = outline.resources();
-        assert_eq!(resources[0].children.len(), 2);
-        assert_eq!(resources[0].children[1].label, "Child");
+        let outline = outline.rows().unwrap().into_resource();
+        assert_eq!(outline.children.len(), 2);
+        assert_eq!(outline.children[1].label, "Child");
     }
 
     #[test]
