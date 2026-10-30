@@ -83,11 +83,13 @@ use crate::shell::state::WorkspaceAuthority as _;
 mod agent_provider;
 #[cfg(target_os = "linux")]
 use agent_provider::workspace_agent_provider;
+mod task_agent;
 use std::collections::VecDeque;
 #[cfg(any(test, target_os = "linux"))]
 use std::process::Command;
 #[cfg(any(test, target_os = "linux"))]
 use std::process::Stdio;
+pub use task_agent::{launch_task_agent, task_agent_runtime_installed};
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;

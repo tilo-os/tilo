@@ -37,6 +37,8 @@ use tilo_sort::CompactSort as _;
 mod audio_output;
 #[path = "broker_bytes.rs"]
 mod bytes;
+#[path = "task_agent_route.rs"]
+mod task_agent_route;
 pub(crate) use bytes::ByteMeter;
 use bytes::{
     command_bytes, event_diagnostics, fit_catalogue, remote_action_round_trip, serialized_bytes,

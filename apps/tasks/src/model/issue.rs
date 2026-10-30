@@ -407,6 +407,12 @@ pub struct AgentRequest {
     /// what came back.
     #[serde(default)]
     pub quick: bool,
+    /// The task delegation the asking device signed for a task agent made
+    /// for this issue, hex (`TaskDelegation::to_hex`). It rides on the run
+    /// beside its starter; the broker verifies it. `None` when a
+    /// collaborator is asked.
+    #[serde(default)]
+    pub delegation: Option<String>,
 }
 
 /// A task kept in the workspace's room before the tracker, as the import
