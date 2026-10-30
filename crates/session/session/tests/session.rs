@@ -3067,6 +3067,27 @@ fn the_studio_takes_a_screenshot_of_one_window_as_its_client_drew_it() {
     #[allow(clippy::cast_possible_wrap, reason = "a window's pixels on a screen")]
     let (middle_x, middle_y) = ((width / 2) as i32, (height / 2) as i32);
     assert_eq!(pixel_at(&picture, middle_x, middle_y), [200, 40, 40, 255]);
+
+    // A capture that names no window takes the one with focus.
+    assert!(
+        session.compositor().focused_shareable_window().is_some(),
+        "the window has focus"
+    );
+    ask_studio(
+        &mut session,
+        "screenshot",
+        &serde_json::json!({ "source": "window" }),
+    );
+    pump(&mut session, &mut [], |_, _| {
+        kept(pictures.path(), "png").len() == 2
+    });
+    let path = kept(pictures.path(), "png").remove(1);
+    let focused = image::open(&path).expect("a picture").to_rgba8();
+    assert_eq!(
+        focused.dimensions(),
+        (width, height),
+        "the focused window, not every window side by side"
+    );
 }
 
 #[test]

@@ -1314,6 +1314,21 @@ impl Compositor {
         self.data.state.focused_window()
     }
 
+    /// The identifier the focused window can be captured under, when it has
+    /// focus and can be captured at all: a capture that names no window
+    /// takes this one.
+    #[must_use]
+    pub fn focused_shareable_window(&self) -> Option<String> {
+        let focused = self.focused_window()?.id;
+        self.data
+            .state
+            .capture
+            .shareable_windows()
+            .into_iter()
+            .find(|(_, info)| info.id == focused)
+            .map(|(identifier, _)| identifier)
+    }
+
     /// An activation token for something the session itself did (the
     /// person chose a notification, so its app should come to the front):
     /// handing it to the app lets that app raise its window.

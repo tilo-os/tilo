@@ -393,6 +393,7 @@ fn copy(kept: &Kept, compositor: &mut Compositor) -> Result<(), String> {
 
 /// The windows a capture may take, as the studio lists them.
 fn windows(compositor: &Compositor) -> Vec<CaptureTarget> {
+    let focused = compositor.focused_shareable_window();
     compositor
         .shareable_windows()
         .into_iter()
@@ -405,13 +406,13 @@ fn windows(compositor: &Compositor) -> Vec<CaptureTarget> {
                 f64::from(y.saturating_add(height)),
             );
             Some(CaptureTarget {
+                focused: focused.as_deref() == Some(id.as_str()),
                 id,
                 title,
                 app_id: app_id.unwrap_or_default(),
                 visible_rect: rect,
                 virtual_rect: rect,
                 complete_rect: None,
-                focused: false,
                 on_active_strip: true,
             })
         })
@@ -428,10 +429,10 @@ fn grab(compositor: &mut Compositor, take: &Take) -> Result<Frame, String> {
         }
         SourceMode::Window | SourceMode::Strip => {
             let targets = if take.targets.is_empty() {
-                windows(compositor)
-                    .into_iter()
-                    .map(|target| target.id)
-                    .collect()
+                match compositor.focused_shareable_window() {
+                    Some(focused) => vec![focused],
+                    None => return Err("no window has focus to capture".to_owned()),
+                }
             } else {
                 take.targets.clone()
             };
