@@ -27,6 +27,32 @@ use tilo_lock::MutexRecover as _;
 
 use crate::collaboration::{CollabEvent, CollabRequest, PeerTransport};
 
+thread_local! {
+    /// What this process's surface publishes, shared with the peer that
+    /// answers the session: the app hands its resources over every frame it
+    /// draws, as a hosted app hands them to its host.
+    static PUBLISHED: std::cell::RefCell<Option<Arc<std::sync::Mutex<crate::collaboration::SurfaceTable>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Publish what this surface offers now, as its frame ends: the resources
+/// the app was built from, with the actions they carry. Nothing happens in a
+/// process that is not a surface.
+pub fn publish(resources: &[tilo_actions::ResourceSpec]) {
+    let table = PUBLISHED.with(|slot| slot.borrow().clone());
+    let Some(table) = table else {
+        return;
+    };
+    let descriptors = tilo_actions::door::survey(resources);
+    // What the surface offers is small and changed as a whole: each frame
+    // hands over the whole surface rather than tracking what moved.
+    let (delta, _) = crate::collaboration::SurfacePublication::next(None, &descriptors);
+    let mut table = table.lock_recover();
+    if let Err(error) = table.apply(&delta) {
+        tracing::warn!(%error, "a surface's actions did not apply");
+    }
+}
+
 /// The environment variable naming the descriptor on which a surface app
 /// talks to the session that places it.
 pub const ACTIONS_FD_ENV: &str = "TILO_SURFACE_ACTIONS_FD";
@@ -44,8 +70,9 @@ pub struct SurfacePeer {
     /// published under, and what the desktop calls it.
     app_id: String,
     /// What this surface offers, as its publication moves it: the actions
-    /// the session is answered with when it asks.
-    published: crate::collaboration::SurfaceTable,
+    /// the session is answered with when it asks. Shared with the app's
+    /// frames, which hand their resources over as they end.
+    published: Arc<std::sync::Mutex<crate::collaboration::SurfaceTable>>,
     /// The route the session has acknowledged, if the app asked to join
     /// one: a surface's is its own window's, which the session places.
     acknowledged: Option<crate::collaboration::RouteSpec>,
@@ -92,10 +119,12 @@ impl SurfacePeer {
                 write_messages(stream, &writes);
             });
         }
+        let published: Arc<std::sync::Mutex<crate::collaboration::SurfaceTable>> = Arc::default();
+        PUBLISHED.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&published)));
         Self {
             outgoing,
             app_id: String::new(),
-            published: crate::collaboration::SurfaceTable::default(),
+            published,
             acknowledged: None,
             asked: HashMap::new(),
             asking: 0,
@@ -112,6 +141,7 @@ impl SurfacePeer {
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
                 let rows: Vec<CatalogueRow> = self
                     .published
+                    .lock_recover()
                     .actions()
                     .iter()
                     .filter(|_| {
@@ -208,7 +238,7 @@ impl PeerTransport for SurfacePeer {
             }
             CollabRequest::PublishActionSurface { app_id, delta } => {
                 self.app_id = app_id;
-                if let Err(error) = self.published.apply(&delta) {
+                if let Err(error) = self.published.lock_recover().apply(&delta) {
                     tracing::warn!(%error, "a surface's action surface did not apply");
                 }
                 Ok(())
@@ -319,7 +349,7 @@ mod tests {
         let mut peer = SurfacePeer {
             outgoing,
             app_id: "so.tilo.topbar".into(),
-            published: crate::collaboration::SurfaceTable::default(),
+            published: Arc::default(),
             acknowledged: None,
             asked: HashMap::new(),
             asking: 0,

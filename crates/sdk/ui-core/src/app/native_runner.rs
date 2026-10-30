@@ -3081,6 +3081,9 @@ impl AppHandler {
         // The surface a handled input left for this frame, now that its sync
         // ran and the frame's availability refresh built the tree.
         app.publish_owed_action_surface();
+        // A surface app's frame also hands the session what the app offers,
+        // as a hosted app hands its host: its resources and their actions.
+        crate::surface_peer::publish(&app.collect_resources());
 
         if needs_followup_redraw {
             window.request_redraw();
