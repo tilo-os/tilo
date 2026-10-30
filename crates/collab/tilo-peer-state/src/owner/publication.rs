@@ -107,9 +107,18 @@ impl<'a> NativeOutgoingEntry<'a> {
     pub fn channel(&self) -> [u8; 32] {
         self.0.channel
     }
+    /// How the store keeps this entry: a write appends after the record's
+    /// checkpoint, while a checkpoint of this author's own — the room's
+    /// governance snapshot or its sealed compaction of a record — stands as
+    /// the whole of what it retained there, so the store drops the frames it
+    /// covers.
     #[must_use]
     pub fn retention(&self) -> Retention {
-        Retention::Delta
+        if self.0.incremental {
+            Retention::Delta
+        } else {
+            Retention::Checkpoint
+        }
     }
 }
 fn read_entries<'de, D: serde::Deserializer<'de>>(
@@ -416,7 +425,9 @@ pub(crate) fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), 
 fn member_publishes_as_delta(kind: Retention, sealed: bool, op: OpKind) -> bool {
     match kind {
         Retention::Delta => true,
-        Retention::Checkpoint => !sealed || op != OpKind::Compaction,
+        // A cleartext snapshot is the governor's baseline, whoever writes it.
+        Retention::Checkpoint if !sealed => false,
+        Retention::Checkpoint => op != OpKind::Compaction,
     }
 }
 struct Count {
@@ -1301,6 +1312,23 @@ mod encoding_tests {
             channel: [9; 32],
             incremental: true,
         }
+    }
+
+    /// Custody leaves each entry as the class it was published by: a write
+    /// appends after the record's checkpoint, while a member's sealed
+    /// compaction replaces that author's retained history with itself.
+    #[test]
+    fn an_entry_leaves_as_the_class_it_was_published_by() {
+        let delta = entry(Vec::new());
+        assert_eq!(NativeOutgoingEntry(&delta).retention(), Retention::Delta);
+        let checkpoint = StoredOutgoing {
+            incremental: false,
+            ..entry(Vec::new())
+        };
+        assert_eq!(
+            NativeOutgoingEntry(&checkpoint).retention(),
+            Retention::Checkpoint
+        );
     }
 
     /// An entry's bytes are base64 text in JSON, an entry written as the

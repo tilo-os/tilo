@@ -438,12 +438,15 @@ impl Scope {
                             neighbour_wire::Retention::Delta => {
                                 session.publish_retained_delta(channel, bytes.to_vec())
                             }
-                            // Members never republish a governor checkpoint with
-                            // their own relay author, even if a producer errs. A
-                            // sealed checkpoint already arrives here as a delta
-                            // (`publication::member_publishes_as_delta`).
+                            // A checkpoint leaves as one: this device's sealed
+                            // compaction of a record, which covers the writes
+                            // before it, and the room's own governance
+                            // checkpoint. The store then keeps it as the whole
+                            // of what this author retained there. A cleartext
+                            // snapshot never reaches here: the governor's
+                            // baseline stays the governor's to send.
                             neighbour_wire::Retention::Checkpoint => {
-                                return Err("native member checkpoint publication refused".into());
+                                session.publish_checkpoint(channel, bytes.to_vec())
                             }
                         }
                         .map_err(|e| e.to_string())
