@@ -138,6 +138,10 @@ impl Widget for ShellOverlayHost {
             });
         let action_dirty = action_dirty
             | self.pump_agent_asks()
+            | self.launch_task_agents()
+            | self.open_composer_chats()
+            | self.fix_composer_blocker()
+            | self.pump_canvas_asks()
             | self.switch_composer_agent()
             | self.open_composer_answer();
         if action_dirty {
@@ -166,6 +170,7 @@ impl Widget for ShellOverlayHost {
         }
         self.pump_room_activity();
         self.serve_activity();
+        self.serve_desktop_jobs();
         if let Some(chrome) = &self.chrome
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
         {
@@ -434,6 +439,9 @@ impl Widget for ShellOverlayHost {
         let desk_dirty = self.update_desk(ui::time::now());
         // The banners run what their wake or a published action brought.
         let banners_dirty = self.update_banners(doc, path);
+        // The apps run with no window take what their wake brought; nothing
+        // of them is drawn.
+        self.run_windowless(doc, path);
         // A window bar's tooltip whose dwell ran out shows on this tick: its
         // deadline woke the loop, and a deadline alone paints nothing.
         let tooltip_dirty = self.bar_tooltip.tick(ui::time::now());

@@ -48,6 +48,18 @@ pub enum TasksEffect {
         issue: Id,
     },
 
+    /// Open as chat
+    ///
+    /// Show an issue as a conversation with its agent, in a window of its
+    /// own: the thread, the run's steps as they come, what it asks, and a
+    /// field to tell it more.
+    #[effect(view, idempotent, item = issues)]
+    #[effect(icon = "message-circle")]
+    OpenChat {
+        #[param("The issue")]
+        issue: Id,
+    },
+
     /// Write a note
     ///
     /// A note in Notes for the issue, titled after it and linked from it.
@@ -89,9 +101,10 @@ pub(crate) fn handle(effect: TasksEffect, cx: &mut EffectCx<Tracker>) -> EffectA
         TasksEffect::WriteNote { issue } => write_note(cx, issue),
         // The window answers these itself as they arrive (see `lib::router`):
         // the form a project is made in, the page an issue is shown on, and
-        // the place showing.
+        // the place showing, and the window an issue's chat is.
         TasksEffect::NewProject
         | TasksEffect::OpenIssue { .. }
+        | TasksEffect::OpenChat { .. }
         | TasksEffect::ShowList
         | TasksEffect::ShowBoard
         | TasksEffect::ShowTasks

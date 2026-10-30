@@ -15,7 +15,8 @@ native UI come from the system.
 - **Actions** are the only way to change a resource. They're typed, attributed to who did
   them, undoable, and checked against permissions.
 - **Views** show resources. They're plain functions of resources. Every resource type has a
-  default view, and anyone (you, an agent) can compose others.
+  default view, and anyone (you, an agent) can write others: a view someone writes is a real
+  `view` declaration, kept as that person's own code (agent-ux.md, "Answers as views").
 - **The system** decides when and where all of this runs: search across everything or within
   one thing, windows, the canvas, agents' programs, automations.
 
@@ -89,6 +90,7 @@ which people, agents and automations can find, read and pin.
 | Workspace, windows, views | workspace-model.md |
 | Layout | layout.md |
 | Forms, dialogs and diagrams | forms-and-diagrams.md |
+| The shell | shell.md |
 | The first new experience | first-experience.md |
 | Language changes found by writing the apps | language-changes.md |
 | Chat, the flagship app | chat.md |

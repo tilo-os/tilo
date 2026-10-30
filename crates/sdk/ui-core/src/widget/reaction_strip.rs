@@ -118,6 +118,10 @@ pub struct StripLayout {
     /// Whose strip it is (`me` reacting toggles their own reaction).
     me: String,
     can_react: bool,
+    /// The least a control's target measures each way: its face grown about
+    /// its centre to it, the face itself staying compact (0 until a host that
+    /// knows its input says, see [`Self::with_minimum_target`]).
+    minimum_target: f64,
 }
 
 /// How wide `emoji` is drawn in a pill: a square for a picture or a
@@ -203,6 +207,7 @@ pub fn layout(
         bounds: Rect::new(origin.x, origin.y, x_max, bottom),
         me: me.to_owned(),
         can_react,
+        minimum_target: 0.0,
     }
 }
 
@@ -254,34 +259,73 @@ impl StripLayout {
         self.add
     }
 
-    /// What is at `point`. A pill of someone who may not react is not a
+    /// The layout whose controls are targets of at least `side` each way
+    /// (the input's minimum: 48 on touch), their faces unchanged.
+    #[must_use]
+    pub fn with_minimum_target(mut self, side: f64) -> Self {
+        self.minimum_target = side;
+        self
+    }
+
+    /// Where a control whose face is `face` is pressed: the face, grown
+    /// about its centre to the minimum target.
+    fn target(&self, face: Rect) -> Rect {
+        let side = self.minimum_target;
+        Rect::from_center_size(
+            face.center(),
+            (face.width().max(side), face.height().max(side)),
+        )
+    }
+
+    /// What is at `point`: the control whose face holds it, else the one
+    /// whose grown target does. A pill of someone who may not react is not a
     /// control.
     #[must_use]
     pub fn hit(&self, point: Point) -> Option<StripHit> {
         if !self.can_react {
             return None;
         }
-        if let Some(add) = self.add.filter(|add| add.contains(point)) {
-            return Some(StripHit::Add { anchor: add });
-        }
-        self.pills
+        let faces = self.faces();
+        faces
             .iter()
-            .find(|pill| pill.rect.contains(point))
-            .map(|pill| StripHit::Toggle(pill.emoji.clone()))
+            .find(|(face, _)| face.contains(point))
+            .or_else(|| {
+                faces
+                    .iter()
+                    .find(|(face, _)| self.target(*face).contains(point))
+            })
+            .map(|(_, hit)| hit.clone())
     }
 
-    /// Every control with its rect, pills first: a canvas host registers
+    /// Every control with its face, pills first.
+    fn faces(&self) -> Vec<(Rect, StripHit)> {
+        self.pills
+            .iter()
+            .map(|pill| (pill.rect, StripHit::Toggle(pill.emoji.clone())))
+            .chain(self.add.map(|add| (add, StripHit::Add { anchor: add })))
+            .collect()
+    }
+
+    /// Every control with its target, pills first: a canvas host registers
     /// them as its hit targets.
     #[must_use]
     pub fn targets(&self) -> Vec<(Rect, StripHit)> {
         if !self.can_react {
             return Vec::new();
         }
-        self.pills
-            .iter()
-            .map(|pill| (pill.rect, StripHit::Toggle(pill.emoji.clone())))
-            .chain(self.add.map(|add| (add, StripHit::Add { anchor: add })))
+        self.faces()
+            .into_iter()
+            .map(|(face, hit)| (self.target(face), hit))
             .collect()
+    }
+
+    /// Everything a press can reach: the strip, and its controls' targets
+    /// where they grow past it.
+    #[must_use]
+    pub fn reach(&self) -> Rect {
+        self.targets()
+            .into_iter()
+            .fold(self.bounds, |reach, (target, _)| reach.union(target))
     }
 
     /// The tooltip of what is at `point`: who reacted with a pill's emoji
@@ -311,7 +355,7 @@ impl StripLayout {
                 AccessNode::new(Role::ToggleButton)
                     .with_name(pill_name(&pill.emoji, pill.mine))
                     .with_value(pill_count(pill.count))
-                    .with_bounds(pill.rect)
+                    .with_bounds(self.target(pill.rect))
                     .with_hashed_key(("reaction", &pill.emoji))
                     .with_state(
                         AccessState::new()
@@ -325,7 +369,7 @@ impl StripLayout {
             nodes.push(
                 AccessNode::new(Role::Button)
                     .with_name(crate::i18n::widget_format("reaction-strip-add", &[]))
-                    .with_bounds(add)
+                    .with_bounds(self.target(add))
                     .with_hashed_key("reaction-add")
                     .with_state(AccessState::new().focusable(true)),
             );

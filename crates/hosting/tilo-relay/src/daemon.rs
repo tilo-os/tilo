@@ -697,16 +697,24 @@ impl Relay {
         }
     }
 
-    /// Tell the host that `cert`'s device is an agent: verify its root-signed
-    /// delegation against this relay's user, confine the device to the
-    /// delegated rooms from its next envelope on, and put it on the roster of
-    /// every governed room the delegation names, as the supervisor does when
-    /// a person approves one ([`crate::agents::RelayAgentLink`]). Replaces an
-    /// earlier delegation of the same device.
+    /// Tell the host that the device `cert` certifies is an agent: verify
+    /// its root-signed delegation against this relay's user and confine the
+    /// device to the delegated rooms from its next envelope on, then put it
+    /// on the roster of each room this relay governs that the delegation
+    /// names, as an approved grant does ([`crate::rooms::Rooms::reconcile_agent`]).
+    /// Once this returns, those rooms admit it. Replaces an earlier
+    /// delegation of the same device.
     ///
     /// # Errors
     ///
-    /// The delegation is not this relay's user's, or names another device.
+    /// The delegation names another device, or does not verify.
+    #[cfg_attr(
+        not(feature = "agents"),
+        allow(
+            clippy::unused_async,
+            reason = "only a build with agents keeps them on governed rosters, which it awaits"
+        )
+    )]
     pub async fn register_agent(
         &self,
         cert: &tilo_user_identity::DeviceCert,

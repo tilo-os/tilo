@@ -343,6 +343,10 @@ pub struct TextInput {
     is_hovered: bool,
     /// The form marked the value invalid ([`Widget::set_invalid`]).
     invalid: bool,
+    /// Someone else changed what it holds and the person has not seen it yet
+    /// ([`Self::with_change`]): their presence identity, which tints the field, and what the
+    /// field says of it on hover.
+    change: Option<(String, String)>,
     is_focused: bool,
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
@@ -772,6 +776,7 @@ impl TextInput {
             rect: Rect::ZERO,
             is_hovered: false,
             invalid: false,
+            change: None,
             is_focused: false,
             caret_paint_suppressed: false,
             ml_caret: None,
@@ -1554,6 +1559,15 @@ impl TextInput {
         let mut input = Self::local().with_initial_value(&value);
         input.local_state = Some(binding);
         input
+    }
+
+    /// Someone else (`identity`, by their presence) changed what the field holds and the person
+    /// has not seen it: the field is tinted in their colour, and hovering it says `note` (who
+    /// changed it, and what it held before). `None` once it is seen.
+    #[must_use]
+    pub fn with_change(mut self, change: Option<(String, String)>) -> Self {
+        self.change = change;
+        self
     }
 
     /// Key the field's presence by `path`: collaborators editing the field at the same path
@@ -4041,6 +4055,12 @@ impl TextInput {
         self.document_inset = true;
     }
 
+    /// Set the text flush with the field's edge, without the document's inset: a body read
+    /// where it stands under a name, as a message's does.
+    pub(crate) fn drop_document_inset(&mut self) {
+        self.document_inset = false;
+    }
+
     /// Where the trailing accessory sits: a square at the field's trailing
     /// edge, one band tall, while it is shown.
     fn accessory_rect(&self) -> Option<Rect> {
@@ -5355,7 +5375,7 @@ impl TextInput {
 }
 
 /// How a field stands: what its chrome shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "a POD bundle of independent interaction flags a field can be in any combination of"
@@ -5365,11 +5385,15 @@ struct FieldState {
     focused: bool,
     invalid: bool,
     disabled: bool,
+    /// The presence colour of whoever changed the value without the person having seen it:
+    /// washed into the face and drawn as its edge, as their attribution is everywhere.
+    changed_by: Option<vello::peniko::Color>,
 }
 
 /// A field's chrome: the raised face, a half lift under the pointer, the
-/// derived rest edge, your colour as the focus ring and danger ink for a
-/// rejected value. Shared by [`TextInput`] and [`FieldFace`].
+/// derived rest edge, your colour as the focus ring, danger ink for a
+/// rejected value, and someone else's colour for a change the person has not
+/// seen. Shared by [`TextInput`] and [`FieldFace`].
 fn paint_field_chrome(
     scene: &mut Scene,
     transform: Affine,
@@ -5381,6 +5405,12 @@ fn paint_field_chrome(
     let rest = theme.tokens.colors.surfaces.raised;
     // Focus keeps the rest fill: the ring alone marks it, so a focused
     // field reads as the same field. Hover is a half lift of an idle one.
+    let rest = match state.changed_by {
+        Some(tint) if !disabled => {
+            crate::tokens::colors::mix8(rest, tint, crate::widget::chip::TINT_FILL)
+        }
+        _ => rest,
+    };
     let bg_color = if state.hovered && !state.focused && !disabled {
         theme.tokens.colors.lift_on(rest, 0.5)
     } else {
@@ -5398,13 +5428,7 @@ fn paint_field_chrome(
             shape,
         );
     }
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        bg_color,
-        None,
-        shape,
-    );
+    let bordered = crate::surface::control_face(scene, transform, shape, bg_color, theme);
     // A field is a raised well: no edge at rest (the level step separates
     // it), and no ring when focused (the caret is the focus). A value the
     // form rejected edges the field in danger ink, the one status colour a
@@ -5419,7 +5443,19 @@ fn paint_field_chrome(
                 crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
             ),
         ))
-    } else if theme.colors_are_forced() {
+    } else if let Some(tint) = state
+        .changed_by
+        .filter(|_| !disabled && !theme.colors_are_forced())
+    {
+        Some((
+            1.0,
+            crate::tokens::colors::mix8(
+                colors.surfaces.raised,
+                tint,
+                crate::widget::chip::TINT_EDGE,
+            ),
+        ))
+    } else if theme.colors_are_forced() && !bordered {
         // Accessibility deliberately collapses surface levels. Keep the
         // declared contrast edge instead of deriving a decorative hairline;
         // disabled fields keep this edge under the existing group opacity.
@@ -5850,6 +5886,30 @@ impl Widget for TextInput {
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
+        } else if let Some((identity, _)) = &self.change {
+            // A field without chrome (a document's large title) still shows someone else's
+            // unseen change: their colour washed under the text.
+            let colors = &theme.tokens.colors;
+            let tint = colors
+                .presence
+                .hue(crate::tokens::colors::PresenceHue::of_identity(identity));
+            let ground = colors.surfaces.content;
+            let wash = crate::tokens::colors::mix8(ground, tint, crate::widget::chip::TINT_FILL);
+            let edge = crate::tokens::colors::mix8(ground, tint, crate::widget::chip::TINT_EDGE);
+            // Out past the text by a related gap, so the text keeps its own edge.
+            let outset = f64::from(theme.tokens.spacing.s2);
+            let washed = RoundedRect::from_rect(
+                self.rect.inflate(outset, 0.0),
+                f64::from(theme.tokens.radii.control),
+            );
+            scene.fill(vello::peniko::Fill::NonZero, transform, wash, None, &washed);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                edge,
+                None,
+                &crate::surface::edge_outline(washed.rect(), washed.radii().top_left),
+            );
         }
         self.draw_accessory(scene, transform, theme);
 
@@ -6215,11 +6275,16 @@ impl Widget for TextInput {
     /// Hosts that embed the field without a layout tree still get the
     /// show/hide control's tooltip.
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
-        if self.has_reveal_control() {
-            self.reveal.tooltip_at(point)
-        } else {
-            None
+        if self.has_reveal_control()
+            && let Some(tip) = self.reveal.tooltip_at(point)
+        {
+            return Some(tip);
         }
+        // A change the person has not seen says who made it and what the field held before.
+        self.change
+            .as_ref()
+            .filter(|_| self.rect.contains(point))
+            .map(|(_, note)| (self.rect, note.clone()))
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -6828,6 +6893,13 @@ impl TextInput {
                 focused: self.is_focused,
                 invalid: self.invalid,
                 disabled: self.effectively_disabled(),
+                changed_by: self.change.as_ref().map(|(identity, _)| {
+                    theme
+                        .tokens
+                        .colors
+                        .presence
+                        .hue(crate::tokens::colors::PresenceHue::of_identity(identity))
+                }),
             },
         );
     }

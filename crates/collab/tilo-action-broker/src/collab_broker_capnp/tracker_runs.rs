@@ -42,6 +42,29 @@ fn run_of<'a>(runs: &'a [TrackerRun], binding: &NativeTaskBinding) -> Option<&'a
         .find(|run| run.issue == binding.task_id && run.agent == binding.agent_id)
 }
 
+/// Whether invoking `action` of `app` on `resource` with `argument` is the
+/// run of issue `task`'s report on that issue: one of the tracker's own
+/// verbs, naming the run's issue.
+pub(super) fn reports_on_own_issue(
+    task: &str,
+    (app, resource): (&str, &str),
+    argument: Option<&str>,
+) -> bool {
+    use crate::services::{TRACKER_APP, TRACKER_ISSUE_PREFIX, TRACKER_RESOURCE};
+    let Some(issue) = task.strip_prefix(TRACKER_ISSUE_PREFIX) else {
+        return false;
+    };
+    let json = argument.map(|text| {
+        text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+            .unwrap_or(text)
+    });
+    app == TRACKER_APP
+        && tilo_actions::selection::logical_resource_id(resource) == TRACKER_RESOURCE
+        && json
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok()) // optional-decode: an argument that is no JSON map names no issue
+            .is_some_and(|arguments| arguments.get("issue").and_then(|v| v.as_str()) == Some(issue))
+}
+
 /// The steering page of `run` for an agent whose lease reached `revision`.
 ///
 /// # Errors
@@ -292,7 +315,7 @@ impl CapnpBrokerState {
             .with_group(
                 runtime_collab::task_run_group(&run.issue, run_id),
                 run.title.clone(),
-                "task",
+                tilo_actions::context::TASK_RUN_GROUP,
             );
         self.offer_native_run(
             room,
@@ -341,7 +364,7 @@ impl CapnpBrokerState {
         }
         self.tracker_runs(&run.cluster_id)
             .ok_or("the tracker is unavailable")?
-            .check_agent(&run.cluster_id, &current.agent)?;
+            .check_agent(&run.cluster_id, &current)?;
         if !current.active {
             self.cancel_native_children(run)?;
             return Ok(runtime_collab::TaskRunStatus {
@@ -415,12 +438,17 @@ impl CapnpBrokerState {
     /// message to it taken in (`binding.revision`), and the agent allowed it
     /// for the run's starter.
     ///
+    /// A `report` on the run's own issue (that it started, its progress, the
+    /// messages it took in, how it ended) acts on nothing a message could
+    /// change and is how the agent takes a message in, so unread messages
+    /// do not hold it back; a pause still does.
+    ///
     /// # Errors
     /// As [`TrackerRuns::authorize_action`], or the run has unread messages.
     pub(super) fn admit_tracker_action(
         &self,
         run: &PendingTaskRun,
-        binding: &NativeTaskBinding,
+        (binding, report): (&NativeTaskBinding, bool),
         requirement: &NativeTaskActionRequirement,
         action: &mut dyn FnMut() -> Result<StagedJob, String>,
     ) -> Result<StagedJob, String> {
@@ -428,8 +456,9 @@ impl CapnpBrokerState {
         if current.paused_through.is_some() {
             return Err(paused_at(false));
         }
-        if current.applied_revision() != binding.revision
-            || current.latest_revision() != binding.revision
+        if !report
+            && (current.applied_revision() != binding.revision
+                || current.latest_revision() != binding.revision)
         {
             return Err("read the run's new messages before acting".into());
         }
@@ -558,9 +587,16 @@ impl CapnpBrokerState {
         Ok(self.tracker_run_of(run)?.applied_revision())
     }
 
-    /// Whether agents in `room` act only through their runs' admission: a
-    /// room whose tracker the host keeps.
+    /// Whether the room's tracker serves runs here: a task agent may
+    /// subscribe to its runs and its retained surfaces are offered.
     pub(super) fn task_admitted_room(&self, room: &str) -> bool {
         self.tracker_runs(room).is_some()
+    }
+
+    /// Whether agents in `room` act only through their runs' admission
+    /// ([`crate::services::TrackerRuns::confines_agents_to_tasks`]).
+    pub(super) fn confines_agents_to_tasks(&self, room: &str) -> bool {
+        self.tracker_runs(room)
+            .is_some_and(|runs| runs.confines_agents_to_tasks(room))
     }
 }

@@ -437,6 +437,26 @@ impl WeakAppActionBroker {
     }
 }
 
+/// Why an app opening in a room was not let author there
+/// ([`AppActionBroker::grant_app_authorship`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppAuthorshipError {
+    /// The grant was not asked: the broker is shutting down, or this device
+    /// may not ask it in the room.
+    Unasked(String),
+    /// The room's owner refused the grant or could not commit it.
+    Refused(String),
+}
+
+impl std::fmt::Display for AppAuthorshipError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unasked(why) => formatter.write_str(why),
+            Self::Refused(why) => write!(formatter, "native app authorship refused: {why}"),
+        }
+    }
+}
+
 impl AppActionBroker {
     /// Exact current owner-backed agent identity while the session is live.
     pub fn certified_agent_identity(
@@ -471,6 +491,53 @@ impl AppActionBroker {
     ) -> Result<std::sync::mpsc::Receiver<bool>, String> {
         self.state
             .while_live(|state| Ok(state.await_membership_surface(room)))
+    }
+
+    /// Let `app` author in `room`, as `certificate`'s person, this device,
+    /// opening it there: checked as their membership invocation is, and
+    /// committed by the room's owner before this returns
+    /// (`CapnpBrokerState::app_authorship_commit`). Blocks on the owner's
+    /// commit: call it off the broker's loop and the frame loop.
+    ///
+    /// # Errors
+    /// [`AppAuthorshipError::Unasked`]: the broker is shutting down, or the
+    /// device may not ask it in this room; [`AppAuthorshipError::Refused`]:
+    /// the room's owner refused or could not commit it.
+    pub fn grant_app_authorship(
+        &self,
+        room: &str,
+        app: &str,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), AppAuthorshipError> {
+        use AppAuthorshipError::{Refused, Unasked};
+        // A room this device just made or joined holds its membership here
+        // once its replica is projected: told so by the refresh that
+        // publishes the room's membership, never on a clock.
+        let projected = self
+            .state
+            .while_live(|state| Ok(state.membership_projection(room)))
+            .map_err(Unasked)?;
+        if let Some(published) = projected
+            && !published.recv().map_err(|_| {
+                Unasked(
+                    "the session's broker ended before the workspace's membership was held here"
+                        .to_owned(),
+                )
+            })?
+        {
+            return Err(Unasked(
+                "the workspace's membership is not held on this device, and it neither holds, \
+                 joins nor places the workspace's room"
+                    .into(),
+            ));
+        }
+        let (service, request) = self
+            .state
+            .while_live(|state| state.app_authorship_commit(room, app, certificate))
+            .map_err(Unasked)?;
+        let receipt =
+            futures::executor::block_on(service.execute(request.clone())).map_err(Refused)?;
+        receipt.validate_for(&request).map_err(Refused)
     }
 
     pub fn change_workspace_membership(
@@ -885,6 +952,13 @@ impl AppActionBroker {
         update: tilo_actions::InvocationUpdate,
     ) {
         self.state.record_completion_for_test(id, actor, update);
+    }
+
+    /// Name `peer_id` the connection of the window launched as `instance`,
+    /// as the launcher's handoff does.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn bind_window_instance_for_test(&self, peer_id: u64, instance: u64) {
+        self.state.bind_window_instance_for_test(peer_id, instance);
     }
 
     #[cfg(any(test, feature = "test-support"))]

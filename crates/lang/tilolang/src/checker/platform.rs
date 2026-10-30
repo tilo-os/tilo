@@ -7,6 +7,7 @@ use crate::abi::Imp;
 use crate::ast;
 use crate::diag::Span;
 use crate::ir::{Ek, Stmt};
+use crate::resolve::CKind;
 use crate::types::{Ty, TypeKey};
 
 /// A value type of the host: `host.Action`.
@@ -85,6 +86,56 @@ impl Checker<'_> {
                 )
             }
         }
+    }
+
+    /// `unseen(r)`: the versions of `r` the person looking has not seen, oldest first: those a
+    /// task run or an agent made after the person's seen mark of `r` and after their own last
+    /// change of it (task-legibility.md §2, §4). A view that reads it runs again when either
+    /// moves.
+    pub(super) fn builtin_unseen(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("unseen", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(Imp::Unseen, vec![r], Ty::List(Box::new(host_ty("Version"))))
+    }
+
+    /// `changes(of: run)`: every version the task run made, of every resource, oldest first.
+    pub(super) fn builtin_changes(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [a] = args else {
+            self.err(
+                "E022",
+                span,
+                "`changes` takes one task run: `changes(of: run)`",
+            );
+            return Ex::error();
+        };
+        if a.name.as_ref().is_some_and(|n| n.name != "of") {
+            self.err(
+                "E022",
+                a.value.span,
+                "`changes` takes the run as `of`: `changes(of: run)`",
+            );
+        }
+        let run_ty = host_ty("TaskRun");
+        let run = self.expr(&a.value, Some(&run_ty));
+        match &run.ty {
+            Ty::Error => return Ex::error(),
+            ty if *ty == run_ty => {}
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    a.value.span,
+                    format!("`changes` takes a `host.TaskRun` (a version's `task`); this is {t}"),
+                );
+                return Ex::error();
+            }
+        }
+        Ex::host(
+            Imp::RunChanges,
+            vec![run],
+            Ty::List(Box::new(host_ty("Version"))),
+        )
     }
 
     pub(super) fn builtin_lenses(&mut self, args: &[ast::Arg], span: Span) -> Ex {
@@ -324,6 +375,42 @@ impl Checker<'_> {
         }
         let call = Ex::host(Imp::Phrase, vec![id, Ex::local(list, list_ty)], Ty::Text);
         Ex::new(Ek::Seq(stmts, Box::new(call)), Ty::Text)
+    }
+
+    /// `v.is(edit)` of a `host.Version` or a `host.Action`: whether the action it names is the
+    /// declared action `edit`, named by the compiler, so a renamed or relabelled action is still
+    /// found and a misspelt one is an error.
+    pub(super) fn names_action(&mut self, r: Ex, ty: &str, args: &[ast::Arg], span: Span) -> Ex {
+        let named = match args {
+            [a] if a.name.is_none() => match &a.value.kind {
+                ast::ExprKind::Ident(name) if self.lookup(name).is_none() => self
+                    .own_callable(name)
+                    .filter(|c| matches!(c.kind, CKind::Action | CKind::Flow))
+                    .map(|c| c.id.clone()),
+                ast::ExprKind::Field { base, name } if self.names_import(base) => {
+                    super::expr::dotted(base).and_then(|path| {
+                        let import = self.env.find_import(&path.join("."))?;
+                        self.env
+                            .foreign_callable(&import.app, &name.name)
+                            .filter(|c| matches!(c.kind, CKind::Action | CKind::Flow))
+                            .map(|c| c.id.clone())
+                    })
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let (Some(id), Some(at)) = (named, crate::host::action_id_at(ty)) else {
+            self.err(
+                "E022",
+                span,
+                format!("`.is` takes one of the app's actions by its name: `history(m).any(v -> v.is(edit))`; a `host.{ty}` names the action, not its label"),
+            );
+            return Ex::error();
+        };
+        let at = Ex::new(Ek::I32(i32::try_from(at).unwrap_or(0)), Ty::Bool);
+        let held = Ex::host(Imp::TupleGetH, vec![r, at], Ty::Text);
+        Ex::host(Imp::StrEq, vec![held, Ex::str(&id)], Ty::Bool)
     }
 
     /// A field of a value of a host value type (`a.label` of a `host.Action`): read from the

@@ -438,3 +438,15 @@ mod tests {
 }
 
 ui::reach_tests!(PrintCentreShell);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<super::PrintCentreShell>()
+        {
+            panic!("{failures}");
+        }
+    }
+}

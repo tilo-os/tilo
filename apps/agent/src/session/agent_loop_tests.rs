@@ -353,6 +353,10 @@ const PEER: u64 = 7;
 const CHAT_PEER: u64 = 8;
 const DESKTOP_PEER: u64 = 9;
 const SECOND_PEER: u64 = 10;
+const BROWSER_PEER: u64 = 11;
+const SEARCH_PEER: u64 = 12;
+/// The Browser tab the fixture's Browser publishes its page actions on.
+const BROWSER_TAB: &str = "browser.tab:1";
 const DOC: &str = "word-processor.document";
 
 /// The first run waits for a companion until it has published actions:
@@ -508,6 +512,14 @@ struct World {
     /// An action that asks its person first, and how many more asks the
     /// host answers with its draft waiting before the person confirms.
     awaiting: Option<(String, usize)>,
+    /// A mailbox of this many letters published beside the document, each
+    /// read whole by `read-letter` (a host-owned read, which no view
+    /// settles after); zero publishes none.
+    letters: usize,
+    /// A Browser and the web search beside it are published, and a capture
+    /// of the page answers with this content address; `None` publishes
+    /// neither.
+    browser: Option<String>,
     /// The room also runs tilolang Board and Views, whose hosts take programs,
     /// and the Tasks tracker records the run's steps.
     tilolang: bool,
@@ -649,6 +661,73 @@ impl World {
                 }],
             },
         ];
+        if self.letters > 0 {
+            surfaces[0].actions.push(descriptor(
+                "read-letter",
+                "Read a letter",
+                tilo_actions::OperationKind::Effect,
+                vec![ActionParam::required(
+                    "letter",
+                    ParamType::Integer,
+                    "Which letter",
+                )],
+                Availability::Available,
+                vec![],
+            ));
+        }
+        if self.browser.is_some() {
+            let tab = |action: &str, label: &str, params: Vec<ActionParam>| ExportedAction {
+                resource: BROWSER_TAB.into(),
+                resource_kind: "browser.tab".into(),
+                resource_label: "Jane Doe".into(),
+                ..descriptor(
+                    action,
+                    label,
+                    tilo_actions::OperationKind::Effect,
+                    params,
+                    Availability::Available,
+                    vec![],
+                )
+            };
+            surfaces.push(BrokerActionSurface {
+                peer_id: BROWSER_PEER,
+                provider: None,
+                app_id: "so.tilo.browser".into(),
+                cluster_id: Uuid::from_u128(1).to_string(),
+                record_id: String::new(),
+                live: true,
+                actions: vec![
+                    tab(
+                        "navigate",
+                        "Go to an address",
+                        vec![ActionParam::required("url", ParamType::Text, "The address")],
+                    ),
+                    tab("read-page", "Read the page", vec![]),
+                    tab("capture-page", "Capture the page", vec![]),
+                ],
+            });
+            surfaces.push(BrokerActionSurface {
+                peer_id: SEARCH_PEER,
+                provider: None,
+                app_id: "so.tilo.web-search".into(),
+                cluster_id: Uuid::from_u128(1).to_string(),
+                record_id: String::new(),
+                live: true,
+                actions: vec![ExportedAction {
+                    resource: "web.search:default".into(),
+                    resource_kind: "web.search".into(),
+                    resource_label: "Web search".into(),
+                    ..descriptor(
+                        "fetch",
+                        "Fetch a page's text",
+                        tilo_actions::OperationKind::Effect,
+                        vec![ActionParam::required("url", ParamType::Text, "The address")],
+                        Availability::Available,
+                        vec![],
+                    )
+                }],
+            });
+        }
         if self.tilolang {
             surfaces.extend(programs::surfaces());
         }
@@ -798,6 +877,40 @@ impl World {
                 }
                 (serde_json::json!({"succeeded": {}}), false)
             }
+            "navigate" => (
+                serde_json::json!({"succeeded": {"value": {"url": text("url"), "title": "Jane Doe"}}}),
+                false,
+            ),
+            "read-page" => (
+                serde_json::json!({"succeeded": {"value": {
+                    "title": "Jane Doe",
+                    "text": "Jane Doe. Projects: a CRDT text editor, a Rust tracing library."
+                }}}),
+                false,
+            ),
+            "capture-page" => (
+                serde_json::json!({"succeeded": {"resources": [self.browser.clone()]}}),
+                false,
+            ),
+            "fetch" => (
+                serde_json::json!({"succeeded": {"value": {"text": "Jane Doe."}}}),
+                false,
+            ),
+            "read-letter" => {
+                let letter = arguments.get("letter").and_then(Value::as_u64).unwrap_or(0);
+                (
+                    serde_json::json!({"succeeded": {"value": {
+                        "letter": letter,
+                        "text": format!(
+                            "Candidate letter {letter}: {}",
+                            "I am applying for the role and attach my CV and a link to my \
+                             work. "
+                                .repeat(40)
+                        )
+                    }}}),
+                    false,
+                )
+            }
             "post" => {
                 self.posts.push(text("message"));
                 (serde_json::json!({"succeeded": {}}), false)
@@ -836,7 +949,7 @@ impl World {
             ),
             "answer" => (
                 serde_json::json!({"succeeded": {"value": {
-                    "type": "Answer", "id": "root/items:v1", "label": text("title")
+                    "type": "WrittenView", "id": "root/items:v1", "label": text("title")
                 }}}),
                 false,
             ),
@@ -1385,6 +1498,7 @@ fn execution_fixture(
             agent_id: "agent-1".into(),
             endpoint: None,
             endpoint_identity: None,
+            task_agent: false,
             app_id: "so.tilo.agent".into(),
             cluster: Uuid::from_u128(1),
             record: None,
@@ -1457,12 +1571,18 @@ fn finish(reply: &str, done: bool) -> (&'static str, Value) {
     )
 }
 
+#[path = "agent_loop/tests/follow_up.rs"]
+mod follow_up;
+#[path = "agent_loop/tests/long_run.rs"]
+mod long_run;
 #[path = "agent_loop/tests/native_pipeline.rs"]
 mod native_pipeline;
 #[path = "agent_loop/tests/pictures.rs"]
 mod pictures;
 #[path = "agent_loop/tests/programs.rs"]
 mod programs;
+#[path = "agent_loop/tests/web_pages.rs"]
+mod web_pages;
 
 fn native_fixture(latest: u64) -> Fixture {
     let control = runtime_collab::TaskRunControl {
@@ -2296,6 +2416,7 @@ fn explicit_owner_task_budget_reaches_transport_and_keeps_the_default() {
         Some(collab_types::task_budget::TaskExecutionBudget {
             turn_ms: 20_000,
             total_ms: 60_000,
+            max_turns: None,
         }),
     );
     bounded.session.run_task(&bounded.run).unwrap();
@@ -2324,6 +2445,7 @@ fn explicit_total_task_deadline_stops_silent_transport_before_any_step() {
         Some(collab_types::task_budget::TaskExecutionBudget {
             turn_ms: 100,
             total_ms: 100,
+            max_turns: None,
         }),
     );
     f.session.run_task(&f.run).unwrap();
@@ -2340,18 +2462,40 @@ fn explicit_total_task_deadline_stops_silent_transport_before_any_step() {
     );
 }
 
-/// A model that never finishes is stopped at the turn bound.
+/// A model that never finishes is stopped at its budget's turns: the
+/// runner's default for an issue that sets none, and the issue's own turns
+/// when it sets them, past the old fixed bound.
 #[test]
-fn a_loop_that_never_finishes_stops_at_its_turn_bound() {
-    let turns = (0..MAX_LOOP_TURNS + 2)
-        .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
-        .collect();
-    let mut f = fixture("wander", World::default(), turns);
+fn a_loop_that_never_finishes_stops_at_its_budgets_turns() {
+    let wander = |count: usize| -> Vec<Vec<TurnEvent>> {
+        (0..count)
+            .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
+            .collect()
+    };
+    let mut f = fixture("wander", World::default(), wander(DEFAULT_LOOP_TURNS + 2));
     f.session.run_task(&f.run).unwrap();
-    assert_eq!(f.script.bodies.lock().unwrap().len(), MAX_LOOP_TURNS);
+    assert_eq!(f.script.bodies.lock().unwrap().len(), DEFAULT_LOOP_TURNS);
     assert!(matches!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed { message } if message.contains("did not finish")
+        runtime_collab::TaskRunUpdate::Failed { message } if message.contains("model turns of its budget")
+    ));
+    let turns = DEFAULT_LOOP_TURNS * 2 + 5;
+    let mut f = execution_fixture(
+        "wander",
+        World::default(),
+        wander(turns + 2),
+        None,
+        Some(collab_types::task_budget::TaskExecutionBudget {
+            turn_ms: 20_000,
+            total_ms: 600_000,
+            max_turns: Some(u32::try_from(turns).unwrap()),
+        }),
+    );
+    f.session.run_task(&f.run).unwrap();
+    assert_eq!(f.script.bodies.lock().unwrap().len(), turns);
+    assert!(matches!(
+        terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Failed { message } if message.contains(&format!("all {turns} model turns"))
     ));
 }
 

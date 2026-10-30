@@ -115,6 +115,9 @@ struct Opening {
     stage: Stage,
     /// The window's connection, until the instance runs.
     window: Option<Channel>,
+    /// For a change applied at the record's origin instead of a window: the change's
+    /// connection ([`InstanceRequest::applies_change`]).
+    change: Option<OwnedFd>,
     identity: Option<OwnedFd>,
     /// The connection to the app's origin connector, for an app whose types hold an outside
     /// service's resources.
@@ -159,6 +162,8 @@ enum Stage {
 /// What became of an opening after a step.
 enum Step {
     Waiting,
+    /// A change applies, its connection watched by the applier.
+    Apply(Box<hosted::Applier>),
     /// It runs, its window's connection watched by the second.
     Open(Box<Hosted>, OwnedFd),
 }
@@ -171,6 +176,8 @@ pub struct TilolangHost {
     scope: tilo_wake::WakeScope,
     running: Vec<Running>,
     opening: Vec<Opening>,
+    /// Changes being applied at their record's origin, each until the session lets go of it.
+    appliers: Vec<hosted::Applier>,
     /// The windows whose instances ended since the session was last told.
     ended: Vec<u64>,
     /// The agent task whose programs this host runs, when its author is a task.
@@ -194,6 +201,7 @@ impl TilolangHost {
             scope,
             running: Vec::new(),
             opening: Vec::new(),
+            appliers: Vec::new(),
             ended: Vec::new(),
             task: None,
         }
@@ -286,7 +294,14 @@ impl TilolangHost {
     /// # Errors
     /// Its window's connection is unusable.
     pub fn admit(&mut self, request: InstanceRequest, fds: InstanceFds) -> Result<(), AdmitError> {
-        let window = Channel::from_socket(fds.window).map_err(AdmitError::Window)?;
+        let (window, change) = if request.applies_change {
+            (None, Some(fds.window))
+        } else {
+            (
+                Some(Channel::from_socket(fds.window).map_err(AdmitError::Window)?),
+                None,
+            )
+        };
         let (sender, decoded) = std::sync::mpsc::channel();
         let (module, len, wake) = (fds.module, request.module_len, Arc::clone(&self.wake));
         let (app, instance) = (request.app.clone(), request.instance);
@@ -306,7 +321,8 @@ impl TilolangHost {
                 broker: fds.broker,
                 decoded,
             },
-            window: Some(window),
+            window,
+            change,
             identity: Some(fds.identity),
             origin: fds.origin,
             received: std::time::Instant::now(),
@@ -334,6 +350,7 @@ impl TilolangHost {
                 manager,
             },
             window: Some(window),
+            change: None,
             identity: None,
             origin: None,
             received: std::time::Instant::now(),
@@ -531,6 +548,20 @@ impl TilolangHost {
             .map_err(|error| AdmitError::Join(error.to_string()))?;
         let _scope = self.scope.enter();
         let record = RoomRecord::open_read(manager, read, &kept.documents, spec.person.clone())?;
+        if let Some(change) = opening.change.take() {
+            // A change at the record's origin: the record and the package, no instance.
+            let applier = hosted::Applier::open(
+                spec,
+                record,
+                &bundle,
+                &self.phrases,
+                Arc::clone(&self.wake),
+                change,
+            )
+            .map_err(AdmitError::Join)?;
+            opening.reached("opened");
+            return Ok(Step::Apply(Box::new(applier)));
+        }
         let window = opening
             .window
             .take()
@@ -595,12 +626,17 @@ impl TilolangHost {
         let mut changed = false;
         let mut opening = std::mem::take(&mut self.opening);
         let mut started = Vec::new();
+        let mut applying = Vec::new();
         let mut ended = Vec::new();
         opening.retain_mut(|open| {
             if open
                 .window
                 .as_ref()
                 .is_some_and(|window| hung_up(window.as_fd()))
+                || open
+                    .change
+                    .as_ref()
+                    .is_some_and(|change| hung_up(change.as_fd()))
             {
                 tracing::info!(
                     app = open.app,
@@ -616,6 +652,11 @@ impl TilolangHost {
                     started.push((*hosted, watched));
                     false
                 }
+                Ok(Step::Apply(applier)) => {
+                    applying.push(*applier);
+                    changed = true;
+                    false
+                }
                 Err(error) => {
                     tracing::error!(app = open.app, %error, "an instance did not start");
                     ended.push(open.instance);
@@ -626,6 +667,7 @@ impl TilolangHost {
         });
         self.opening = opening;
         self.ended.extend(ended);
+        self.appliers.extend(applying);
         for (hosted, watched) in started {
             changed = true;
             self.add(hosted, Some(watched));
@@ -639,6 +681,8 @@ impl TilolangHost {
         self.running
             .iter()
             .filter_map(|running| running.window.as_ref().map(OwnedFd::as_fd))
+            // A change's connection: its line arriving, and the session letting go of it.
+            .chain(self.appliers.iter().map(hosted::Applier::connection))
     }
 
     /// The window connections of the instances being opened, to wait on for closing only: what
@@ -647,6 +691,11 @@ impl TilolangHost {
         self.opening
             .iter()
             .filter_map(|open| open.window.as_ref().map(AsFd::as_fd))
+            .chain(
+                self.opening
+                    .iter()
+                    .filter_map(|open| open.change.as_ref().map(AsFd::as_fd)),
+            )
     }
 
     /// One frame of every instance; an instance whose window closed ends, its record written
@@ -676,7 +725,37 @@ impl TilolangHost {
             }
             open
         });
-        changed || self.running.len() != before
+        // A change runs, is answered, and ends once the session let go of its connection: the
+        // room was handed what it wrote by then.
+        for applier in &mut self.appliers {
+            changed |= applier.turn();
+        }
+        let applying = self.appliers.len();
+        let ended = &mut self.ended;
+        self.appliers.retain(|applier| {
+            let gone = hung_up(applier.connection());
+            if gone {
+                if !applier.answered() {
+                    tracing::warn!(
+                        app = applier.spec().app,
+                        "a change's session left before it was answered"
+                    );
+                }
+                ended.push(applier.spec().instance);
+            }
+            !gone
+        });
+        changed || self.running.len() != before || self.appliers.len() != applying
+    }
+
+    /// How long until the time a view of some instance read (`today` in a query) next reads
+    /// differently: the host's wait ends then, and that turn runs again the views that read it.
+    /// `None` when no view read the time: the host waits for nothing but its descriptors.
+    #[must_use]
+    pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        self.instances()
+            .filter_map(|hosted| hosted.instance().wakes_in())
+            .min()
     }
 
     /// The windows whose instances ended since this was last asked: closed, or never opened.
@@ -687,7 +766,10 @@ impl TilolangHost {
     /// Whether the host runs no instance and opens none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.running.is_empty() && self.opening.is_empty() && self.task.is_none()
+        self.running.is_empty()
+            && self.opening.is_empty()
+            && self.appliers.is_empty()
+            && self.task.is_none()
     }
 }
 

@@ -180,6 +180,11 @@ impl Photos {
             | PhotosEffect::RetryLibraryAnalysisFailures => {
                 return Err("local image analysis requires document dispatch".to_owned());
             }
+            PhotosEffect::ReadPeople
+            | PhotosEffect::ReadPerson { .. }
+            | PhotosEffect::ReadLibraryAnalysis => {
+                return Err("a read answers through effect dispatch".to_owned());
+            }
             PhotosEffect::Copy => {
                 self.copy_to_clipboard();
             }
@@ -611,6 +616,13 @@ impl Photos {
                 self.begin_library_analysis(invocation, library, true)?;
                 return Ok(None);
             }
+            PhotosEffect::ReadPeople => return Ok(Some(answered(self.read_people(library)))),
+            PhotosEffect::ReadPerson { person } => {
+                return read_person(library, &person).map(|read| Some(answered(read)));
+            }
+            PhotosEffect::ReadLibraryAnalysis => {
+                return Ok(Some(answered(self.read_library_analysis())));
+            }
             PhotosEffect::PauseLibraryAnalysis => {
                 if !self.pause_library_analysis() {
                     return Err("Photo analysis is not running".to_owned());
@@ -929,4 +941,88 @@ impl Photos {
             self.settle(update);
         }
     }
+}
+
+impl Photos {
+    /// Who is named in `library` and on how many photographs, and whether
+    /// this device recognises faces: the People place's read. This
+    /// device's unapproved suggestions are not part of it.
+    fn read_people(&self, library: &crate::model::PhotoLibrary) -> serde_json::Value {
+        use crate::people::FaceCapability;
+        let capability = self.people_controller.capability();
+        serde_json::json!({
+            "recognition": {
+                "enabled": self.people_controller.privacy().recognition_enabled,
+                "state": match capability {
+                    FaceCapability::DisabledByOwner => "off",
+                    FaceCapability::NoVerifiedFaceModel => "no-model",
+                    FaceCapability::Ready { .. } => "ready",
+                },
+                "summary": capability.summary(),
+            },
+            "people": crate::people::approved_people(library)
+                .iter()
+                .map(|person| serde_json::json!({
+                    "name": person.label,
+                    "photos": person.count(),
+                }))
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    /// Where this device's analysis of the library stands: the analysis
+    /// place's read.
+    fn read_library_analysis(&self) -> serde_json::Value {
+        use crate::library_analysis::LibraryAnalysisPhase;
+        let analysis = &self.library_analysis;
+        serde_json::json!({
+            "phase": match analysis.phase {
+                LibraryAnalysisPhase::Idle => "idle",
+                LibraryAnalysisPhase::Running => "running",
+                LibraryAnalysisPhase::Paused => "paused",
+                LibraryAnalysisPhase::Complete => "complete",
+            },
+            "model": analysis.model_label,
+            "model_revision": analysis.model_revision,
+            "total": analysis.total,
+            "completed": analysis.completed,
+            "succeeded": analysis.succeeded,
+            "failed": analysis.failed,
+            "unavailable": analysis.unavailable,
+            "remaining": analysis.remaining(),
+            "current": analysis.current_name,
+            "failures": analysis
+                .failures()
+                .map(|failure| serde_json::json!({
+                    "photo": failure.photo_id,
+                    "name": failure.name,
+                    "message": failure.message,
+                }))
+                .collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// `value` as a read's answer.
+fn answered(value: serde_json::Value) -> tilo_actions::ActionOutput {
+    tilo_actions::ActionOutput {
+        value: Some(value),
+        resources: Vec::new(),
+    }
+}
+
+/// The person named `person` in `library` and the photographs they are
+/// named on: the person's read.
+fn read_person(
+    library: &crate::model::PhotoLibrary,
+    person: &str,
+) -> Result<serde_json::Value, String> {
+    let person = crate::people::approved_people(library)
+        .into_iter()
+        .find(|named| named.label == person)
+        .ok_or_else(|| "no one by that name is in the library".to_owned())?;
+    Ok(serde_json::json!({
+        "name": person.label,
+        "photos": person.photo_ids,
+    }))
 }

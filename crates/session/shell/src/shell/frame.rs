@@ -1452,6 +1452,19 @@ impl FrameBuilder {
         target: Option<NodeId>,
         reveal: bool,
     ) {
+        self.move_native_focus(focus, target, reveal, false);
+    }
+
+    /// Move keyboard focus to `target`, revealing it with `reveal`;
+    /// `by_keyboard` when the person's Tab moved it there, which reads
+    /// what it lands on (the top bar then stays shown while it hides).
+    fn move_native_focus(
+        &mut self,
+        focus: &mut Option<NodeId>,
+        target: Option<NodeId>,
+        reveal: bool,
+        by_keyboard: bool,
+    ) {
         if *focus == target
             && self.node_map.iter().all(|(&node, &widget)| {
                 // SAFETY: every pointer belongs to the current live tree.
@@ -1485,6 +1498,10 @@ impl FrameBuilder {
                     .reveal_descendant(std::ptr::from_ref(unsafe { &*widget }));
             }
         }
+        self.host.native_focus_moved(
+            gaining.map(|widget| widget.cast::<()>().cast_const()),
+            by_keyboard,
+        );
         *focus = target;
         self.native_focus_ordinal = target.and_then(|id| {
             self.focusable_order()
@@ -1512,6 +1529,35 @@ impl FrameBuilder {
                 let _entry = app.app().enter_wake_scope();
                 ui::wake::WakeHandle::new().wake();
                 count = count.saturating_add(1);
+            }
+        }
+        count
+    }
+
+    /// [`Self::wake_mounted_components`], counting only the components
+    /// whose root `of` recognises: the windows of one app among the chrome
+    /// apps the session also mounts.
+    #[cfg(test)]
+    pub(crate) fn wake_mounted_components_where(
+        &mut self,
+        of: impl Fn(&mut dyn Widget) -> bool,
+    ) -> usize {
+        let mut count = 0_usize;
+        for pointer in self.node_map.values_mut() {
+            // SAFETY: node_map pointers are owned by the live widget tree and
+            // remain valid for the exclusive borrow of this frame.
+            let widget = unsafe { &mut **pointer };
+            if let Some(app) = widget
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<ui::app::EmbeddedApp>())
+            {
+                {
+                    let _entry = app.app().enter_wake_scope();
+                    ui::wake::WakeHandle::new().wake();
+                }
+                if app.component_root_mut().is_some_and(&of) {
+                    count = count.saturating_add(1);
+                }
             }
         }
         count
@@ -1923,7 +1969,7 @@ impl FrameBuilder {
             }
             None => 0,
         };
-        self.set_native_focus(focus, order.get(next).copied());
+        self.move_native_focus(focus, order.get(next).copied(), true, true);
         true
     }
 
@@ -6571,8 +6617,6 @@ mod tests {
     use super::*;
 
     use crate::shell::state::FreshId as _;
-    use automerge::ReadDoc as _;
-    use automerge::transaction::Transactable;
     use winit::event::ElementState;
     use winit::keyboard::ModifiersState;
 
@@ -8085,7 +8129,7 @@ mod tests {
         store.forget(FULLSCREEN);
     }
 
-    fn key_press(key: Key) -> WindowEvent {
+    pub(super) fn key_press(key: Key) -> WindowEvent {
         let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
@@ -8235,12 +8279,25 @@ mod tests {
         assert!(!fb.widget_registry().contains_key("launcher-field"));
     }
 
-    fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {
+    /// The name of the control the keyboard reaches: the focused shell
+    /// node, or, when that node hosts an app (setup is one), the control
+    /// focused inside it, as the reader is told.
+    pub(super) fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {
+        fn focused_within(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
+            node.children
+                .iter()
+                .find_map(focused_within)
+                .or_else(|| node.state.focused.then_some(node))
+        }
         let ptr = fb.node_map.get(&focus?)?;
-        unsafe { (**ptr).accessibility()?.name }
+        let node = unsafe { (**ptr).accessibility()? };
+        node.children
+            .iter()
+            .find_map(focused_within)
+            .map_or_else(|| node.name.clone(), |inner| inner.name.clone())
     }
 
-    fn exported_node_named(
+    pub(super) fn exported_node_named(
         update: &ui::accesskit::TreeUpdate,
         name: &str,
     ) -> Option<(ui::accesskit::NodeId, ui::accesskit::Node)> {
@@ -8819,14 +8876,19 @@ mod tests {
         assert_eq!(fb.host().palette_query(), "photos");
     }
 
-    fn onboarding_frame() -> (FrameBuilder, tempfile::TempDir) {
+    pub(super) fn onboarding_frame() -> (FrameBuilder, tempfile::TempDir) {
         let (fb, identity_dir, _press) = onboarding_frame_with_presser();
         (fb, identity_dir)
     }
 
     /// An onboarding frame plus a way to take a setup action as its button
     /// would, for tests that walk past a step rather than exercise it.
-    fn onboarding_frame_with_presser()
+    ///
+    /// Setup is an app the shell hosts: what it shows of a new step (its
+    /// controls, their names and state) is read from the frame that drew
+    /// it, so a test that moves setup on paints the frame the compositor's
+    /// loop paints after the pump and the layout before reading it.
+    pub(super) fn onboarding_frame_with_presser()
     -> (FrameBuilder, tempfile::TempDir, Box<dyn Fn(&'static str)>) {
         let identity_dir = tempfile::tempdir().expect("temporary identity directory");
         let mut fb = FrameBuilder::new((1280, 800));
@@ -8927,596 +8989,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn native_oobe_accessibility_tree_owns_focus_roles_and_editable_text() {
-        fn native_oobe_initializes_focus_without_test_control() {
-            let (mut fb, _identity_dir) = onboarding_frame();
-            let mut focus = None;
-            fb.reconcile_native_focus(&mut focus);
-            assert_eq!(
-                focused_name(&fb, focus).as_deref(),
-                Some("Use my existing Tilo identity")
-            );
-        }
-
-        fn native_oobe_exports_named_roles_state_and_focus_to_accesskit() {
-            let (mut fb, _identity_dir) = onboarding_frame();
-            let mut focus = None;
-            fb.reconcile_native_focus(&mut focus);
-
-            let update = fb.build_a11y_tree_update(focus, 1.0);
-            let (existing_id, existing) =
-                exported_node_named(&update, "Use my existing Tilo identity")
-                    .expect("existing-identity action reaches the external tree");
-            let (_, create) = exported_node_named(&update, "Create a new identity")
-                .expect("create-identity action reaches the external tree");
-            // Identity setup has distinct backup and final hand-off states, so
-            // its semantic progress surface contains four stages.
-            let (_, progress) = exported_node_named(&update, "Identity setup, step 1 of 4: Choose")
-                .expect("the OOBE progress state reaches the external tree");
-
-            // The ways forward are one list of rows that each open a flow.
-            assert_eq!(existing.role(), ui::accesskit::Role::ListItem);
-            assert_eq!(create.role(), ui::accesskit::Role::ListItem);
-            assert_eq!(progress.role(), ui::accesskit::Role::ProgressIndicator);
-            assert!(existing.supports_action(ui::accesskit::Action::Focus));
-            assert!(existing.supports_action(ui::accesskit::Action::Click));
-            assert_eq!(update.focus, existing_id);
-            assert_eq!(
-                update.tree.as_ref().map(|tree| tree.root),
-                Some(ui::accesskit_bridge::ROOT_ID)
-            );
-        }
-
-        fn native_oobe_routes_external_focus_and_editable_text_to_the_live_widget() {
-            let (mut fb, _identity_dir) = onboarding_frame();
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            fb.reconcile_native_focus(&mut focus);
-
-            let intro = fb.build_a11y_tree_update(focus, 1.0);
-            let (existing_id, _) = exported_node_named(&intro, "Use my existing Tilo identity")
-                .expect("the external tree exposes the Connect-existing action");
-            assert!(fb.dispatch_a11y_action(
-                existing_id,
-                &ui::a11y::Action::Activate,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-
-            let choice = fb.build_a11y_tree_update(focus, 1.0);
-            let (restore_id, _) = exported_node_named(&choice, "Restore from a backup")
-                .expect("the use-existing choice offers its restore flow");
-            assert!(fb.dispatch_a11y_action(
-                restore_id,
-                &ui::a11y::Action::Activate,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-
-            let connect = fb.build_a11y_tree_update(focus, 1.0);
-            let (field_id, field) = exported_node_named(&connect, "Identity backup file")
-                .expect("the non-secret identity-path field reaches the external tree");
-            assert_eq!(field.role(), ui::accesskit::Role::TextInput);
-            assert!(field.supports_action(ui::accesskit::Action::Focus));
-            assert!(field.supports_action(ui::accesskit::Action::SetValue));
-            assert_eq!(field.value(), Some(""));
-
-            assert!(fb.dispatch_a11y_action(
-                field_id,
-                &ui::a11y::Action::Focus,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            assert_eq!(
-                focused_name(&fb, focus).as_deref(),
-                Some("Identity backup file"),
-                "an external focus request must update the compositor's real focus cursor"
-            );
-
-            let probe = "tilo-atspi-edit-probe";
-            assert!(fb.dispatch_a11y_action(
-                field_id,
-                &ui::a11y::Action::SetValue(probe.into()),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-
-            let updated = fb.build_a11y_tree_update(focus, 1.0);
-            let (_, field) = exported_node_named(&updated, "Identity backup file")
-                .expect("the editable field remains externally addressable after its update");
-            assert_eq!(field.value(), Some(probe));
-        }
-
-        fn native_oobe_external_tree_replaces_step_and_updates_control_state() {
-            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            fb.reconcile_native_focus(&mut focus);
-            let intro = fb.build_a11y_tree_update(focus, 1.0);
-
-            press(crate::onboarding_view::KEY_BEGIN);
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            fb.reconcile_native_focus(&mut focus);
-            let protect = fb.build_a11y_tree_update(focus, 1.0);
-
-            assert!(
-                exported_node_named(&protect, "Use my existing Tilo identity").is_none(),
-                "nodes from the replaced step must leave the exported tree"
-            );
-            assert!(
-                exported_node_named(&intro, &crate::onboarding::acknowledgement()).is_none(),
-                "the next step must not leak into the initial tree"
-            );
-            let (ack_id, acknowledgement) =
-                exported_node_named(&protect, &crate::onboarding::acknowledgement())
-                    .expect("the recovery acknowledgement reaches the external tree");
-            let (_, create) = exported_node_named(&protect, "Create local identity")
-                .expect("the gated create action reaches the external tree");
-            assert_eq!(acknowledgement.role(), ui::accesskit::Role::CheckBox);
-            assert_eq!(
-                acknowledgement.toggled(),
-                Some(ui::accesskit::Toggled::False)
-            );
-            assert!(create.is_disabled());
-            assert_eq!(protect.focus, ack_id);
-
-            assert!(fb.dispatch_a11y_action(
-                ack_id,
-                &ui::a11y::Action::ToggleCheck,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            // The first pump observes the parent flow change; layout rebuilds the
-            // composition just as the production frame loop does before its next
-            // refresh. The second pump then syncs the newly-created checkbox from
-            // the CRDT. Omitting the intervening layout would test two reducer
-            // passes against the old tree, which cannot occur in the live loop.
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            fb.reconcile_native_focus(&mut focus);
-            let acknowledged = fb.build_a11y_tree_update(focus, 1.0);
-            let (_, acknowledgement) =
-                exported_node_named(&acknowledged, &crate::onboarding::acknowledgement()).unwrap();
-            let (_, create) = exported_node_named(&acknowledged, "Create local identity").unwrap();
-            assert_eq!(
-                acknowledgement.toggled(),
-                Some(ui::accesskit::Toggled::True),
-                "the rebuilt checkbox must preserve its visible and spoken state"
-            );
-            assert!(
-                !create.is_disabled(),
-                "the externally-operated acknowledgement must enable the gated action"
-            );
-        }
-
-        native_oobe_initializes_focus_without_test_control();
-        native_oobe_exports_named_roles_state_and_focus_to_accesskit();
-        native_oobe_routes_external_focus_and_editable_text_to_the_live_widget();
-        native_oobe_external_tree_replaces_step_and_updates_control_state();
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn native_oobe_keyboard_order_activates_and_traverses_enabled_controls() {
-        fn native_oobe_enter_activates_the_focused_button() {
-            let (mut fb, _identity_dir) = onboarding_frame();
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            let tab = key_press(Key::Named(NamedKey::Tab));
-
-            assert!(fb.dispatch_event(
-                &tab,
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            assert_eq!(
-                focused_name(&fb, focus).as_deref(),
-                Some("Create a new identity")
-            );
-            assert!(fb.dispatch_event(
-                &key_press(Key::Named(NamedKey::Enter)),
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            assert_eq!(
-                doc.get(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN)
-                    .expect("read begin action"),
-                None,
-                "activation is a view action, never a document write"
-            );
-
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            fb.reconcile_native_focus(&mut focus);
-            assert!(
-                focused_name(&fb, focus).is_some_and(|name| name.contains("I understand")),
-                "Enter must advance into the identity-protection step"
-            );
-        }
-
-        fn native_oobe_backup_tab_order_reaches_fields_acknowledgement_and_continue() {
-            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            for key in [
-                crate::onboarding_view::KEY_BEGIN,
-                crate::onboarding_view::KEY_UNDERSTOOD,
-            ] {
-                if key == crate::onboarding_view::KEY_UNDERSTOOD {
-                    doc.put(&automerge::ROOT, key, true).expect("advance OOBE");
-                } else {
-                    press(key);
-                }
-                fb.pump_apps(&mut doc, &automerge::ROOT);
-                fb.relayout();
-                // The replacement subtree must sync once before a gated control
-                // can be activated, matching the production frame loop.
-                fb.pump_apps(&mut doc, &automerge::ROOT);
-                fb.relayout();
-            }
-            // A structural rebuild exposes the acknowledgement control before
-            // its document value has been synchronized into the new view.
-            doc.put(
-                &automerge::ROOT,
-                crate::onboarding_view::KEY_UNDERSTOOD,
-                true,
-            )
-            .expect("acknowledge identity protection");
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            press(crate::onboarding_view::KEY_CREATE);
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            fb.reconcile_native_focus(&mut focus);
-
-            let names: Vec<_> = fb
-                .focusable_order()
-                .into_iter()
-                .filter_map(|id| focused_name(&fb, Some(id)))
-                .collect();
-            assert!(
-                names.iter().any(|name| name == "New backup passphrase"),
-                "backup passphrase must be keyboard reachable: {names:?}"
-            );
-            assert!(
-                names
-                    .iter()
-                    .any(|name| name == "Confirm new backup passphrase"),
-                "backup confirmation must be keyboard reachable: {names:?}"
-            );
-
-            // A screen reader reaches the passphrase as password text it can
-            // focus and type into: AccessKit's AT-SPI adapter offers Text and
-            // EditableText only on a text input with a text run, so the field
-            // carries one that never holds what was typed.
-            // Its visible label shares the name, so pick the field by role.
-            let passphrase_run = |update: &ui::accesskit::TreeUpdate| {
-                let (id, field) = update
-                    .nodes
-                    .iter()
-                    .find(|(_, node)| {
-                        node.label() == Some("New backup passphrase")
-                            && node.role() == ui::accesskit::Role::PasswordInput
-                    })
-                    .expect("the passphrase reaches AT-SPI as password text");
-                assert!(field.supports_action(ui::accesskit::Action::Focus));
-                assert!(field.supports_action(ui::accesskit::Action::SetValue));
-                assert_eq!(field.value(), None);
-                let runs: Vec<_> = update
-                    .nodes
-                    .iter()
-                    .filter(|(node_id, node)| {
-                        field.children().contains(node_id)
-                            && node.role() == ui::accesskit::Role::TextRun
-                    })
-                    .collect();
-                let [(_, run)] = runs.as_slice() else {
-                    panic!("one text run among {:?}", field.children());
-                };
-                (*id, run.value().map(str::to_owned))
-            };
-            let (field, typed) = passphrase_run(&fb.build_a11y_tree_update(focus, 1.0));
-            assert_eq!(typed.as_deref(), Some(""));
-            assert!(fb.dispatch_a11y_action(
-                field,
-                &ui::a11y::Action::Focus,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            assert!(fb.dispatch_a11y_action(
-                field,
-                &ui::a11y::Action::SetValue("tilosecretprobe42".into()),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            fb.relayout();
-            let update = fb.build_a11y_tree_update(focus, 1.0);
-            assert_eq!(update.focus, field, "AT-SPI focus lands on the field");
-            assert_eq!(passphrase_run(&update).1.as_deref(), Some(""));
-            assert!(
-                update.nodes.iter().all(|(_, node)| {
-                    node.value()
-                        .is_none_or(|value| !value.contains("tilosecretprobe42"))
-                        && node
-                            .label()
-                            .is_none_or(|label| !label.contains("tilosecretprobe42"))
-                }),
-                "a typed passphrase never reaches assistive technology"
-            );
-            assert!(
-                names
-                    .iter()
-                    .any(|name| name.contains("without a recovery key or backup")),
-                "skip acknowledgement must be keyboard reachable: {names:?}"
-            );
-
-            let acknowledgement = fb
-                .focusable_order()
-                .into_iter()
-                .find(|id| {
-                    focused_name(&fb, Some(*id))
-                        .is_some_and(|name| name.contains("without a recovery key or backup"))
-                })
-                .expect("acknowledgement focus target");
-            fb.set_native_focus(&mut focus, Some(acknowledgement));
-            let enter = key_press(Key::Named(NamedKey::Enter));
-            assert!(fb.dispatch_event(
-                &enter,
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            fb.reconcile_native_focus(&mut focus);
-            let tab = key_press(Key::Named(NamedKey::Tab));
-            assert!(fb.dispatch_event(
-                &tab,
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            assert_eq!(
-                focused_name(&fb, focus).as_deref(),
-                Some("Continue without backup"),
-                "acknowledging the risk must make the adjacent continuation action the next keyboard stop"
-            );
-        }
-
-        fn native_oobe_tab_and_shift_tab_follow_dfs_order() {
-            let (mut fb, _identity_dir) = onboarding_frame();
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            let tab = key_press(Key::Named(NamedKey::Tab));
-
-            assert!(fb.dispatch_event(
-                &tab,
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            assert_eq!(
-                focused_name(&fb, focus).as_deref(),
-                Some("Create a new identity")
-            );
-
-            let shift = Modifiers::from(ModifiersState::SHIFT);
-            assert!(fb.dispatch_event(
-                &tab,
-                &shift,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            assert_eq!(
-                focused_name(&fb, focus).as_deref(),
-                Some("Use my existing Tilo identity")
-            );
-        }
-
-        fn native_oobe_focus_order_excludes_disabled_controls() {
-            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
-            let mut doc = AutoCommit::new();
-            press(crate::onboarding_view::KEY_BEGIN);
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-
-            let names: Vec<_> = fb
-                .focusable_order()
-                .into_iter()
-                .filter_map(|id| focused_name(&fb, Some(id)))
-                .collect();
-            assert!(names.iter().any(|name| name.contains("I understand")));
-            assert!(names.iter().any(|name| name == "Back"));
-            assert!(
-                !names.iter().any(|name| name == "Create"),
-                "the gated Create action must not become a Tab stop: {names:?}"
-            );
-        }
-
-        fn focused_terminal_gets_plain_tab_before_focus_traversal() {
-            let mut fb = FrameBuilder::new((1280, 800));
-            fb.relayout();
-            let terminal = fb.node_map.iter().find_map(|(id, widget)| {
-                // SAFETY: node_map pointers are owned by the live widget tree and
-                // remain valid until the next structural rebuild.
-                is_terminal(unsafe { &**widget }).then_some(*id)
-            });
-            let Some(terminal) = terminal else {
-                // Environments without a PTY deliberately mount the terminal
-                // fallback instead; the routing rule remains covered by OOBE's
-                // unclaimed-Tab traversal test above.
-                return;
-            };
-            let mut focus = None;
-            fb.set_native_focus(&mut focus, Some(terminal));
-            let mut doc = AutoCommit::new();
-
-            assert!(fb.dispatch_event(
-                &key_press(Key::Named(NamedKey::Tab)),
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            assert_eq!(focus, Some(terminal), "terminal Tab must not move focus");
-        }
-
-        native_oobe_enter_activates_the_focused_button();
-        native_oobe_backup_tab_order_reaches_fields_acknowledgement_and_continue();
-        native_oobe_tab_and_shift_tab_follow_dfs_order();
-        native_oobe_focus_order_excludes_disabled_controls();
-        focused_terminal_gets_plain_tab_before_focus_traversal();
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn native_oobe_transitions_and_rebuilds_reseat_focus_and_keep_pointer_state() {
-        fn native_oobe_pointer_motion_is_retained_before_modal_dispatch() {
-            let (mut fb, _identity_dir) = onboarding_frame();
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            let position = Point::new(417.0, 263.0);
-
-            assert!(fb.dispatch_event(
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(position.x, position.y),
-                },
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            assert_eq!(
-                fb.capture_pointer_position(),
-                Some(position),
-                "onboarding must retain the motion used to hit-test the following coordinate-free MouseInput"
-            );
-        }
-
-        fn native_oobe_step_transition_reseats_focus_on_new_first_control() {
-            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            fb.reconcile_native_focus(&mut focus);
-            assert_eq!(
-                focused_name(&fb, focus).as_deref(),
-                Some("Use my existing Tilo identity")
-            );
-
-            press(crate::onboarding_view::KEY_BEGIN);
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            fb.reconcile_native_focus(&mut focus);
-
-            assert!(
-                focused_name(&fb, focus).is_some_and(|name| name.contains("I understand")),
-                "focus must move into the replacement OOBE step"
-            );
-        }
-
-        fn native_oobe_step_transition_keeps_the_new_page_at_its_top() {
-            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            fb.reconcile_native_focus(&mut focus);
-
-            press(crate::onboarding_view::KEY_EXISTING);
-            press(crate::onboarding_view::KEY_CHOOSE_RESTORE);
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            fb.reconcile_native_focus(&mut focus);
-
-            let scroll_offset = fb
-                .node_map
-                .values()
-                .copied()
-                .find_map(|pointer| unsafe {
-                    ((*pointer).name() == "Scrollable")
-                        .then(|| (*pointer).as_any_mut())
-                        .flatten()
-                        .and_then(|widget| widget.downcast_mut::<ui::widget::Scrollable>())
-                        .map(|scroll| scroll.offset_y())
-                })
-                .expect("restore page scroll viewport");
-            assert_eq!(
-                scroll_offset, 0.0,
-                "programmatic first focus must not hide a newly presented page's heading"
-            );
-        }
-
-        fn native_oobe_incidental_rebuild_preserves_focus_ordinal() {
-            let (mut fb, _identity_dir) = onboarding_frame();
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            let tab = key_press(Key::Named(NamedKey::Tab));
-            assert!(fb.dispatch_event(
-                &tab,
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus,
-            ));
-            assert_eq!(
-                focused_name(&fb, focus).as_deref(),
-                Some("Create a new identity")
-            );
-
-            fb.rebuild_layout_tree();
-            fb.relayout();
-            fb.reconcile_native_focus(&mut focus);
-            assert_eq!(
-                focused_name(&fb, focus).as_deref(),
-                Some("Create a new identity"),
-                "an unrelated structure refresh must preserve the focused ordinal"
-            );
-        }
-
-        native_oobe_pointer_motion_is_retained_before_modal_dispatch();
-        native_oobe_step_transition_reseats_focus_on_new_first_control();
-        native_oobe_step_transition_keeps_the_new_page_at_its_top();
-        native_oobe_incidental_rebuild_preserves_focus_ordinal();
-    }
-
-    #[test]
     fn scheduled_night_light_follows_the_phase_not_the_switch() {
         assert!(night_light_on(false, true, Some(true)));
         assert!(!night_light_on(true, true, Some(false)));
@@ -9541,8 +9013,13 @@ mod tests {
             st.bump();
         });
         fb.host_mut().latch_overview_transition();
-        // The open's first frame: its sample is still alpha 0, and the
-        // overview's app is up and names its targets already.
+        // The open's first frame, as the compositor's loop makes it: the
+        // pump shows the overview's app the chord, then the paint. Its
+        // sample is still alpha 0, and the app is up and names its targets
+        // already.
+        let mut doc = AutoCommit::new();
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout_if_owed();
         let _ = fb.paint_with_damage();
         let rect = fb
             .widget_registry()
@@ -9559,7 +9036,6 @@ mod tests {
             rect.x1
         );
         let center = rect.center();
-        let mut doc = AutoCommit::new();
         let mut focus = None;
         let modifiers = Modifiers::default();
         let _ = fb.dispatch_event(
@@ -10081,6 +9557,14 @@ mod overlay_latency_tests;
 #[cfg(test)]
 #[path = "frame_retained_tests.rs"]
 mod retained_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each scenario's frame builder is its subject from its first layout to its last assertion"
+)]
+#[path = "frame_oobe_tests.rs"]
+mod oobe_tests;
 
 #[cfg(test)]
 #[path = "frame_quiet_pump_tests.rs"]

@@ -224,7 +224,7 @@ pub enum MailEffect {
     #[effect(returns, kind = "read")]
     Count,
     /// Fetch new mail.
-    #[effect(job)]
+    #[effect(job, returns)]
     Fetch { from: String },
     /// Connect to the server.
     Connect,
@@ -806,7 +806,7 @@ fn delayed_receipt_completion_cannot_exceed_its_original_read_admission() {
 #[effect(operation = "test.tally.effects")]
 pub enum TallyEffect {
     /// Tally.
-    #[effect(job)]
+    #[effect(job, returns)]
     Tally,
     /// Count a row.
     Count {
@@ -1157,7 +1157,7 @@ fn a_view_answers_effects_on_its_window_and_refuses_them_while_it_is_closed() {
 #[effect(operation = "test.hosted-counter.effects")]
 pub enum HostedCounterEffect {
     /// Count off the UI thread.
-    #[effect(job)]
+    #[effect(job, returns)]
     CountLater {
         #[param("How much to count")]
         by: u32,

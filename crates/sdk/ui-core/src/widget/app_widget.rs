@@ -119,6 +119,10 @@ pub enum AppHostIntent {
         /// an empty resource lens while the durable indexes converge.
         entry: Option<crate::widget::HistoryEntry>,
     },
+    /// Show what an agent's task run did: History, at the run (`group`, its
+    /// `runtime_collab::task_run_group`), listed as one unit with Undo for
+    /// each step and for the run. A change mark activates it.
+    ShowTaskRun { group: String },
     /// Open the platform search scoped to this app (or one part of it), with
     /// the query already typed. The shell focuses the source tab first.
     OpenSearch(crate::search::SearchRequest),

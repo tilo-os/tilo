@@ -477,6 +477,7 @@ files-nothing-to-move = Nichts zu verschieben
 ## Kontext-, Ansichts- und Sortiermenüs
 files-menu-open = Öffnen
 files-action-reveal = In Dateien anzeigen
+files-action-read = Informationen
 files-menu-restore = Wiederherstellen
 files-menu-delete-permanently = Endgültig löschen
 files-menu-empty-trash = Papierkorb leeren

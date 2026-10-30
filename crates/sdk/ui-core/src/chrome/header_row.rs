@@ -55,15 +55,37 @@ pub struct HeaderRowMetrics {
 }
 
 impl HeaderRowMetrics {
+    /// The row for a fine pointer. A window that knows its input resolves
+    /// it with [`Self::resolve_for`].
     #[must_use]
     pub fn resolve(theme: &Theme) -> Self {
-        let chip = crate::widget::text_control_height(
-            f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
-            theme,
-        );
+        Self::resolve_for(theme, crate::interaction::InteractionEnvironment::POINTER)
+    }
+
+    /// The row for a person using `input`: a shell button is a square of
+    /// the minimum target `input` needs, as an app's buttons are (a coarse
+    /// pointer grows the face to it; a fine one keeps `min_pointer_target`
+    /// and reaches the target through its hit rect). The row keeps its
+    /// height while the grown square fits it with `s1` above and below, so
+    /// touch moves nothing under the row.
+    #[must_use]
+    pub fn resolve_for(theme: &Theme, input: crate::interaction::InteractionEnvironment) -> Self {
+        let pointer = f64::from(crate::tokens::Metrics::BASE.min_pointer_target);
+        let pointer_chip = crate::widget::text_control_height(pointer, theme);
+        let chip = if input.supports_hover() {
+            pointer_chip
+        } else {
+            crate::widget::text_control_height(
+                pointer.max(f64::from(input.minimum_target())),
+                theme,
+            )
+        };
         let inset = f64::from(theme.tokens.spacing.s3);
+        let tight = f64::from(theme.tokens.spacing.s1);
         Self {
-            height: f64::from(theme.tokens.metrics.header_height).max(chip + 2.0 * inset),
+            height: f64::from(theme.tokens.metrics.header_height)
+                .max(pointer_chip + 2.0 * inset)
+                .max(chip + 2.0 * tight),
             chip,
             inset,
             gap: f64::from(theme.tokens.spacing.s2),

@@ -116,7 +116,7 @@ enum Screen {
 #[effect(operation = "example.prime-search.task")]
 pub enum Task {
     /// Count primes.
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, returns)]
     Run,
     /// Cancel the count.
     Cancel,

@@ -46,5 +46,7 @@ type = "gui"
 splash-budget = 250
 
 [providers]
+# A chat window is launched on `tilo-tasks:chat/<issue>`.
+schemes = ["tilo-tasks"]
 mime = []
 ext = []

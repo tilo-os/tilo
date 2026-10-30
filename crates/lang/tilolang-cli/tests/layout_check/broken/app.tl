@@ -34,7 +34,8 @@ view overflowing(s: Sample) {
     }
 }
 
-/// A word wider than the column it is in.
+/// A word wider than the column it is in: it breaks anywhere rather than running past the
+/// column, so it is laid out right.
 view clipped(s: Sample) {
     stack(max: 6rem) {
         text("Donaudampfschifffahrtsgesellschaft")
@@ -49,7 +50,8 @@ view overlapping(s: Sample) {
     }
 }
 
-/// A chip a finger has to hit, smaller than a finger.
+/// A chip a finger presses: on a touchscreen it takes a finger's room in its line, so it is
+/// the one view here laid out right.
 view small_target(s: Sample) {
     ui.Chip(s.name) {
         on press: rename(s)

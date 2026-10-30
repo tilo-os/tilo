@@ -94,6 +94,10 @@ pub struct RoomRecord {
     /// Whether this device governs the room: the record's origin (convergence.md §1), whose
     /// copy needs no committed read from another host.
     governs: bool,
+    /// The person's gesture open now, and its last action: the next action of theirs that goes
+    /// on from it ([`DynAction::continues`]) is a change of the same gesture, which undo takes
+    /// back with it as one step. Any other step, an undo or a redo closes it.
+    gesture: Option<(tilo_actions::ActionId, DynAction)>,
 }
 
 impl RoomRecord {
@@ -126,6 +130,7 @@ impl RoomRecord {
             words: HostWords::new("en-US"),
             writer,
             governs: true,
+            gesture: None,
         }
     }
 
@@ -192,7 +197,8 @@ impl RoomRecord {
     ) -> Result<Self, RoomError> {
         use collaboration::native_initial::{self, NativeConstruction};
         use collaboration::record::save::{
-            open_stored, open_with_committed_read, record_document, room_document,
+            open_stored, open_stored_adopting, open_with_committed_read, record_document,
+            room_document,
         };
         let route = manager
             .primary_route()
@@ -225,7 +231,14 @@ impl RoomRecord {
         let handed_nothing = primary.is_none();
         let opened = match primary {
             Some(read) => read.and_then(|(_, read)| open_with_committed_read(store, &read)),
-            None => Ok(open_stored(store)),
+            // A member's own record of an app that kept the workspace's record before starts
+            // from what that record held on this device (`open_stored_adopting`).
+            None => Ok(match route.record.as_deref() {
+                Some(record) if tilo_action_policy::member_record(record).is_some() => {
+                    open_stored_adopting(store, room_document(documents, &route.app_id, &room).ok())
+                }
+                _ => open_stored(store),
+            }),
         };
         let (doc, writer) = match opened {
             Ok(opened) => opened,
@@ -382,6 +395,45 @@ impl RoomRecord {
         invoker: ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<Option<Json>, RoomError> {
+        let (result, unshared) = self.history_step(edit, resource, kind, invoker, ambient)?;
+        if let Some(why) = unshared {
+            instance.unshared(why);
+        }
+        instance.sync(Some(&self.doc));
+        Ok(result)
+    }
+
+    /// [`Self::history`] with no instance: the record's origin applying an agent task's history
+    /// verb (its `undo`).
+    ///
+    /// # Errors
+    /// The verb was refused, or the room refuses its change for good.
+    pub fn history_at_origin(
+        &mut self,
+        edit: &HistoryEdit,
+        resource: &str,
+        kind: &str,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+    ) -> Result<Option<Json>, RoomError> {
+        match self.history_step(edit, resource, kind, invoker, ambient)? {
+            (_, Some(why)) => Err(RoomError::Refused(why)),
+            (result, None) => Ok(result),
+        }
+    }
+
+    /// Apply the history verb `edit` as one step and send it: what it did, and why the room
+    /// refused its change for good, when it did.
+    fn history_step(
+        &mut self,
+        edit: &HistoryEdit,
+        resource: &str,
+        kind: &str,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+    ) -> Result<(Option<Json>, Option<String>), RoomError> {
+        // An undo or redo ends the gesture: what is typed after it is a step of its own.
+        self.gesture = None;
         let action = HostHistoryEdit {
             edit: edit.clone(),
             words: self.words.clone(),
@@ -396,11 +448,11 @@ impl RoomRecord {
         self.apply_with(&action, encoded, context, invoker, ambient)?;
         let after = self.doc.get_heads();
         let patches = self.doc.diff(&before, &after);
-        if let Some(why) = self.share() {
-            instance.unshared(why);
-        }
-        instance.sync(Some(&self.doc));
-        Ok(verbs::result(edit.verb(), &self.doc, &patches, &self.words))
+        let unshared = self.share();
+        Ok((
+            verbs::result(edit.verb(), &self.doc, &patches, &self.words),
+            unshared,
+        ))
     }
 
     /// Answer the history view `payload` asks ([`verbs::VIEW_TYPE`]) of the record.
@@ -523,7 +575,13 @@ impl RoomRecord {
             .committed(ticket)
             .ok_or(RoomError::NoAction(ticket))?;
         let invoker = ActionInvoker::actor(self.person.clone());
-        self.apply(&action, invoker, None)
+        let gesture = match self.gesture.take() {
+            Some((gesture, last)) if last.continues(&action) => gesture,
+            _ => tilo_actions::ActionId::new(),
+        };
+        self.apply_in_gesture(&action, invoker, None, Some(gesture))?;
+        self.gesture = Some((gesture, action));
+        Ok(())
     }
 
     /// Apply `action`, which the door built for `invoker` (a person or an agent task the broker
@@ -553,14 +611,29 @@ impl RoomRecord {
         invoker: ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<(), RoomError> {
+        // A step of its own ends the gesture open before it.
+        self.gesture = None;
+        self.apply_in_gesture(action, invoker, ambient, None)
+    }
+
+    /// As [`Self::apply`], the change a part of `gesture` when there is one: the changes of one
+    /// gesture are one undo step.
+    fn apply_in_gesture(
+        &mut self,
+        action: &DynAction,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+        gesture: Option<tilo_actions::ActionId>,
+    ) -> Result<(), RoomError> {
         let encoded = action
             .encode()
             .map_err(|error| RoomError::Refused(error.to_string()))?;
-        let context = ActionContext::for_resource(
+        let mut context = ActionContext::for_resource(
             action.resources().first().copied().unwrap_or("room"),
             &action.kind,
             &action.kind,
         );
+        context.gesture = gesture;
         self.apply_with(action, encoded, context, invoker, ambient)
     }
 
@@ -579,6 +652,7 @@ impl RoomRecord {
         }
         let author = invoker.actor.clone();
         let context = context.with_invoker(invoker);
+        let before = self.doc.get_heads();
         tilo_actions::apply_local_with_context(
             &mut self.doc,
             action,
@@ -590,7 +664,38 @@ impl RoomRecord {
         // The change is a step of whoever made it, by the invoker its entry names: their Undo
         // takes it back.
         self.doc.commit();
-        Ok(())
+        self.keep_only_if_the_room_takes(&before)
+    }
+
+    /// Keep what the record holds past `before` only if the room takes it, as every receiver
+    /// decides its claims against the app's surface ([`collaboration::app_surface::refusal`]):
+    /// a change the room refuses is taken out of the record again, with all of it, so it is
+    /// never kept here, built on and written to disk while the room holds none of it.
+    fn keep_only_if_the_room_takes(&mut self, before: &[ChangeHash]) -> Result<(), RoomError> {
+        let change = self.doc.save_after(before);
+        if change.is_empty() {
+            return Ok(());
+        }
+        let room = self.route.cluster_id.to_string();
+        let record = collab_types::Record {
+            room: &room,
+            app: &self.route.app_id,
+            record: self.route.record.as_deref().unwrap_or(""),
+        };
+        let Some(why) = collaboration::app_surface::refusal(
+            &record,
+            &collab_types::DocumentMutation::Incremental(change),
+        ) else {
+            return Ok(());
+        };
+        tracing::warn!(app = %self.route.app_id, %why, "room: a change the room refuses was not kept");
+        let actor = self.doc.get_actor().clone();
+        let mut kept = self.doc.fork_at(before).map_err(|error| {
+            RoomError::Refused(format!("{why}; and it could not be taken out: {error}"))
+        })?;
+        kept.set_actor(actor);
+        self.doc = kept;
+        Err(RoomError::Refused(format!("the room refuses it: {why}")))
     }
 
     /// Take in what the record's route brought and bring `instance` up to date with the
@@ -601,11 +706,54 @@ impl RoomRecord {
 
     /// [`Self::receive`], handing every event that is no change of the record (an invocation,
     /// presence, the route's state) to `other`, in the order they came.
-    pub fn receive_and(
+    pub fn receive_and(&mut self, instance: &mut Instance, other: impl FnMut(CollabEvent)) -> bool {
+        let changed = self.take_in(other);
+        if changed {
+            instance.sync(Some(&self.doc));
+        }
+        changed
+    }
+
+    /// The record's heads now: what [`Self::changes_since`] starts from.
+    #[must_use]
+    pub fn heads(&mut self) -> Vec<ChangeHash> {
+        self.doc.get_heads()
+    }
+
+    /// What the record holds past `heads`, as Automerge changes: what a change applied here
+    /// wrote, for its invoker to read back without waiting on the room.
+    #[must_use]
+    pub fn changes_since(&mut self, heads: &[ChangeHash]) -> Vec<u8> {
+        self.doc.save_after(heads)
+    }
+
+    /// Take in what the record's route brought, with no instance to bring up to date: a record
+    /// held only to apply changes at its origin. Events that are no change of the record are
+    /// dropped. Whether the record changed.
+    pub fn take_in_room(&mut self) -> bool {
+        self.take_in(|_| {})
+    }
+
+    /// Apply `action`, which the door built for `invoker` (an agent task the broker admitted),
+    /// to the room record as one step of its own in `ambient`, and send it on the record's
+    /// route, with no instance: the record's origin applying a change.
+    ///
+    /// # Errors
+    /// The action could not be applied, or the room refuses its change for good.
+    pub fn apply_change(
         &mut self,
-        instance: &mut Instance,
-        mut other: impl FnMut(CollabEvent),
-    ) -> bool {
+        action: &DynAction,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+    ) -> Result<(), RoomError> {
+        self.apply(action, invoker, ambient)?;
+        match self.share() {
+            Some(why) => Err(RoomError::Refused(why)),
+            None => Ok(()),
+        }
+    }
+
+    fn take_in(&mut self, mut other: impl FnMut(CollabEvent)) -> bool {
         let mut changed = false;
         let before = self.doc.get_heads();
         for event in self.manager.poll() {
@@ -667,7 +815,6 @@ impl RoomRecord {
             if let Some(writer) = &mut self.writer {
                 writer.request(&mut self.doc);
             }
-            instance.sync(Some(&self.doc));
         }
         changed
     }

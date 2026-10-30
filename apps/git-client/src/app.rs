@@ -830,6 +830,35 @@ fn change_list(model: &RepoModel, area: ChangeArea) -> &[FileChange] {
     }
 }
 
+/// The area a change's `area` parameter names.
+fn change_area(area: &str) -> Result<ChangeArea, String> {
+    match area {
+        "staged" => Ok(ChangeArea::Staged),
+        "unstaged" => Ok(ChangeArea::Unstaged),
+        "untracked" => Ok(ChangeArea::Untracked),
+        _ => Err("unknown change area".into()),
+    }
+}
+
+/// `diff` as unified diff text: each line behind its `+`, `-` or space
+/// marker, hunk headers and metadata as git prints them.
+fn unified_text(diff: &crate::model::FileDiff) -> String {
+    use crate::model::DiffLineKind;
+    let mut text = String::new();
+    for line in &diff.lines {
+        let marker = match line.kind {
+            DiffLineKind::Context => " ",
+            DiffLineKind::Addition => "+",
+            DiffLineKind::Deletion => "-",
+            DiffLineKind::Hunk | DiffLineKind::Meta => "",
+        };
+        text.push_str(marker);
+        text.push_str(&line.content);
+        text.push('\n');
+    }
+    text
+}
+
 fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
     if !model.staged.is_empty() {
         Some((ChangeArea::Staged, 0))
@@ -1599,6 +1628,27 @@ impl GitClientState {
 }
 
 impl GitClientState {
+    /// What changed in the file at `path` in `area`, the changed file's
+    /// read: the change as the list shows it and its diff as unified text.
+    fn read_change(&self, area: &str, path: &str) -> Result<serde_json::Value, String> {
+        let area = change_area(area)?;
+        let change = change_list(&self.model, area)
+            .iter()
+            .find(|change| change.path == path)
+            .ok_or_else(|| "changed file no longer exists".to_string())?;
+        let diff = self.diffs.get(&DiffKey::for_area(area, path));
+        Ok(serde_json::json!({
+            "path": change.path,
+            "old_path": change.old_path,
+            "area": crate::actions::change_area_name(area),
+            "kind": change.kind.label(),
+            "additions": change.additions,
+            "deletions": change.deletions,
+            "binary": diff.is_some_and(|diff| diff.binary),
+            "diff": diff.map(unified_text),
+        }))
+    }
+
     /// Resolve a navigation target against the current repository projection.
     fn open_effect_view(&mut self, effect: GitClientEffect) -> Result<(), String> {
         match effect {
@@ -1606,18 +1656,8 @@ impl GitClientState {
             GitClientEffect::ShowHistory => self.switch_screen(Screen::History),
             GitClientEffect::ShowBranches => self.switch_screen(Screen::Panels),
             GitClientEffect::OpenChange { area, path } => {
-                let area = match area.as_str() {
-                    "staged" => ChangeArea::Staged,
-                    "unstaged" => ChangeArea::Unstaged,
-                    "untracked" => ChangeArea::Untracked,
-                    _ => return Err("unknown change area".into()),
-                };
-                let list = match area {
-                    ChangeArea::Staged => &self.model.staged,
-                    ChangeArea::Unstaged => &self.model.unstaged,
-                    ChangeArea::Untracked => &self.model.untracked,
-                };
-                let index = list
+                let area = change_area(&area)?;
+                let index = change_list(&self.model, area)
                     .iter()
                     .position(|change| change.path == path)
                     .ok_or_else(|| "changed file no longer exists".to_string())?;
@@ -1687,6 +1727,7 @@ impl GitClientState {
                 | GitClientEffect::ShowHistory
                 | GitClientEffect::ShowBranches
                 | GitClientEffect::OpenChange { .. }
+                | GitClientEffect::ReadChange { .. }
                 | GitClientEffect::OpenCommit { .. }
         );
         if !view && self.repository_busy() {
@@ -1695,6 +1736,9 @@ impl GitClientState {
         match effect {
             GitClientEffect::OpenRepository { path } => self.open_repository_at(&path)?,
             GitClientEffect::ChooseRepository => return Ok(Self::choose_repository(cx, shared)),
+            GitClientEffect::ReadChange { area, path } => {
+                return self.read_change(&area, &path).map(Effected::value);
+            }
             GitClientEffect::RunApprovedCheck { check_id } => {
                 let checked = cx.approved_check_reported(&check_id)?;
                 return Ok(cx.spawn(checked, |_app, observed, _cx| observed.map(Effected::value)));

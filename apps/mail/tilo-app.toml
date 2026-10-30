@@ -84,3 +84,9 @@ mime = [
 ext  = [
     "eml",
 ]
+# A message or draft address (`mail.message:<id>`, `mail.draft:<id>`) opens
+# in Mail, at it.
+resources = [
+    "mail.message",
+    "mail.draft",
+]

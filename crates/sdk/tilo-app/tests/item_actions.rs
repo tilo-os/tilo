@@ -92,8 +92,14 @@ fn item_actions_are_offered_on_the_item() {
         .find(|child| child.label == "milk")
         .expect("the item is published");
     let actions: Vec<_> = item.actions.iter().map(|spec| spec.id.as_str()).collect();
-    // The item verbs with the item bound, and the item's own fields.
-    assert_eq!(actions, ["set-done", "remove", "field-edit"]);
+    // The item verbs with the item bound, the item's own fields, and its
+    // document read: what discloses it, and what a reader reads it by.
+    assert_eq!(actions, ["set-done", "remove", "field-edit", "read"]);
+    let read = app
+        .call_on(item.id.as_str(), "read", serde_json::json!({}))
+        .unwrap()
+        .expect("the read answers");
+    assert_eq!(read["text"], "milk", "{read}");
     let set_done = item.actions.first().unwrap();
     let params: Vec<_> = set_done.params().iter().map(|p| p.name.as_ref()).collect();
     assert_eq!(params, ["done"], "the item is bound, not asked for");

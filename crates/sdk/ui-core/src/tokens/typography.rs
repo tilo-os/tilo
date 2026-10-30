@@ -142,21 +142,45 @@ impl TextRole {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeScale {
     body: f32,
+    /// How far role sizes stand from the body size: each role's stock ratio
+    /// to the body raised to this power (`1` the stock scale), from the
+    /// theme's type role.
+    contrast: f32,
 }
 
 impl TypeScale {
     pub(crate) const fn new(body: f32) -> Self {
-        Self { body }
+        Self {
+            body,
+            contrast: 1.0,
+        }
     }
 
     /// This scale grown by `factor` (text scale, UI scale, or both).
     #[must_use]
     pub(crate) fn scaled(&self, factor: f32) -> Self {
-        Self::new(self.body * factor)
+        Self {
+            body: self.body * factor,
+            contrast: self.contrast,
+        }
+    }
+
+    /// This scale with role sizes `contrast` apart.
+    #[must_use]
+    pub(crate) fn with_contrast(&self, contrast: f32) -> Self {
+        Self {
+            body: self.body,
+            contrast,
+        }
     }
 
     pub(crate) fn size(&self, role: TextRole) -> f32 {
-        self.body * role.spec().px / REFERENCE_BODY_PX
+        let ratio = role.spec().px / REFERENCE_BODY_PX;
+        if (self.contrast - 1.0).abs() <= f32::EPSILON {
+            return self.body * ratio;
+        }
+        // Whole pixels, as the stock scale lands on them.
+        (self.body * ratio.powf(self.contrast)).round().max(1.0)
     }
 }
 
@@ -311,7 +335,17 @@ pub struct Typography {
     /// accessibility layer; the renderer applies it
     /// ([`crate::text_render::TextRenderer::set_distinct_letters`]).
     pub distinct_letters: bool,
+    /// The weight of body text, labels and headings, from the theme's type
+    /// role (`crate::theme::ThemeWeights`).
+    pub(crate) weights: [TextWeight; 3],
 }
+
+/// The design language's weights of body text, labels and headings.
+const STOCK_WEIGHTS: [TextWeight; 3] = [
+    TextWeight::Regular,
+    TextWeight::Medium,
+    TextWeight::Semibold,
+];
 
 impl Default for Typography {
     fn default() -> Self {
@@ -322,6 +356,7 @@ impl Default for Typography {
             scale: TypeScale::default(),
             ground: TextGround::Light,
             distinct_letters: false,
+            weights: STOCK_WEIGHTS,
         }
     }
 }
@@ -397,8 +432,15 @@ impl Typography {
     /// on a fresh theme, before the text or UI scale is applied.
     #[must_use]
     pub fn with_base_size(mut self, body_px: f32) -> Self {
-        self.scale = TypeScale::new(body_px.max(1.0));
+        self.scale = TypeScale::new(body_px.max(1.0)).with_contrast(self.scale.contrast);
         self
+    }
+
+    /// Set how far the role sizes stand apart and the weight of each tier,
+    /// from a theme document's type role.
+    pub(crate) fn set_hierarchy(&mut self, contrast: f32, weights: [TextWeight; 3]) {
+        self.scale = self.scale.with_contrast(contrast);
+        self.weights = weights;
     }
 
     /// Resolve a role into the complete style consumed by both text
@@ -412,9 +454,15 @@ impl Typography {
             Face::Serif => &self.serif_family,
             Face::Mono => &self.mono_family,
         };
+        let [body, label, heading] = self.weights;
+        let weight = match spec.weight {
+            TextWeight::Regular => body,
+            TextWeight::Medium => label,
+            TextWeight::Semibold | TextWeight::Bold => heading,
+        };
         let mut style = TextStyle::new(self.scale.size(role))
             .with_line_height(spec.leading)
-            .with_weight(spec.weight)
+            .with_weight(weight)
             .with_family(FontChoice::Named(family.clone()))
             .with_ground(self.ground);
         if role == TextRole::Reading {

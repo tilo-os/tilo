@@ -530,7 +530,7 @@ impl Device {
         // The tree is let go first: a publication takes the writer, then
         // the tree.
         let writer = self.tree.read().native_runtime.clone();
-        writer.close_for_shutdown();
+        writer.close();
     }
 
     /// Start this device again from what it kept on disk, as booting it

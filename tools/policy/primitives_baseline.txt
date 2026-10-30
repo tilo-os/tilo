@@ -33,7 +33,6 @@ glyph-join 1 apps/file-explorer/src/files_app/drives.rs
 glyph-join 3 apps/git-client/src/actions.rs
 glyph-join 5 apps/imager/src/app.rs
 glyph-join 7 apps/logs/src/journal.rs
-glyph-join 1 apps/mail/src/app.rs
 glyph-join 1 apps/mail/src/compose.rs
 glyph-join 1 apps/mail/src/html_text.rs
 glyph-join 6 apps/mail/src/validate.rs

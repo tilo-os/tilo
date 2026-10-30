@@ -71,6 +71,7 @@ pub fn run(workspace: uuid::Uuid) -> Result<()> {
         runtime,
         client,
         state: Arc::default(),
+        content: ui::content::device(),
         tx,
         running: HashMap::new(),
     };
@@ -90,6 +91,10 @@ struct Service {
     /// Which engines are backing off and Google's token, shared by every
     /// search this service runs.
     state: Arc<SearchState>,
+    /// The workspace's content store a fetched file that is not text is
+    /// kept in; `None` when the launcher handed this service none, and such
+    /// a fetch then says so.
+    content: Option<ui::content::ContentStore>,
     tx: Sender<Wake>,
     running: HashMap<u64, Running>,
 }
@@ -204,9 +209,10 @@ impl Service {
         tracing::info!(invocation = id, action, actor, "running");
         let client = self.client.clone();
         let state = Arc::clone(&self.state);
+        let content = self.content.clone();
         let tx = self.tx.clone();
         let task = self.runtime.spawn(async move {
-            let update = match actions::run(&client, &state, call).await {
+            let update = match actions::run(&client, &state, content.as_ref(), call).await {
                 Ok(output) => InvocationUpdate::Succeeded { invocation, output },
                 Err(error) => InvocationUpdate::Failed {
                     invocation,

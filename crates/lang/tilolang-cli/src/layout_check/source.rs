@@ -238,7 +238,10 @@ impl SourceMap {
                     .then_some((at, id))
                 })
             })
-            .max_by_key(|(at, _)| *at)?;
+            // The view named last; where a view and a loop body in it (`<view>~row<n>`, a view
+            // of its own in the metadata) both match there, the view, whatever order the map
+            // holds them in, so a finding's id is the same on every run.
+            .max_by_key(|(at, id)| (*at, std::cmp::Reverse(id.len()), std::cmp::Reverse(*id)))?;
         let view = self.views.get(view_id)?;
         let rest = key
             .get(at.saturating_add(view_id.len())..)

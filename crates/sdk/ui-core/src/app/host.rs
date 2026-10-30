@@ -584,6 +584,8 @@ fn run_layout_pass(
     // host's around it (an app hosted in a tile is laid out as its host
     // paints), whose own notes stand.
     let outer = crate::widget::take_layout_moved();
+    // Every edge laid out in this pass lands on one of this display's pixels.
+    let _grid = crate::widget::layout::enter_device_scale(f64::from(scale_factor));
     let result = lay_out_window(
         app,
         root_node,
@@ -638,7 +640,10 @@ fn lay_out_window(
     #[cfg(test)]
     drop(history_probe);
     let viewport_changed = app.layout.last_layout_logical != Some(logical);
-    if !app.layout.layout_dirty && !viewport_changed {
+    // Another display scale is another pixel grid to round the edges onto: the
+    // tree is solved again, though nothing that composes from its size changed.
+    let grid_changed = app.layout.last_layout_scale != Some(scale_factor);
+    if !app.layout.layout_dirty && !viewport_changed && !grid_changed {
         // A sync that moved nothing (a worker's answer, a timer) can still
         // have changed what the app publishes.
         owe_changed_action_surface(app, false);
@@ -679,6 +684,7 @@ fn lay_out_window(
         || app.layout.structure_dirty
         || app.layout.remount
         || viewport_changed
+        || grid_changed
         || scroll_opt_disabled()
         || app.root_widget.layout_needs_measure();
     // A resize re-solves the retained tree; only a widget that composes from
@@ -694,6 +700,10 @@ fn lay_out_window(
     // Whether the last pass asked for another only to remount in place.
     let mut remount_next = false;
     let mut remounted = false;
+    // Whether a control's request placed the keyboard in a rebuild of this
+    // pass: from then on `focus`, captured before the pass, is where focus
+    // was, not where it goes, in this rebuild and every later one.
+    let mut requested = false;
     let result = settle_widget_composition(recompose_for_viewport, |rebuild| {
         let remount_only = rebuild && std::mem::take(&mut remount_next);
         let in_place =
@@ -714,7 +724,7 @@ fn lay_out_window(
             // root-owned scroll/mode; persisted Scrollable offsets also survive.
             let autofocus = app.autofocus_on_structure_change;
             app.autofocus_on_structure_change = false;
-            app.rebuild_structure();
+            requested |= app.rebuild_structure_placing_focus();
             app.autofocus_on_structure_change = autofocus;
             if let Some(view) = &view {
                 crate::view::capability::restore_view_state(app.root_widget.as_mut(), view);
@@ -724,7 +734,12 @@ fn lay_out_window(
             if app.layout.structure_dirty {
                 return Ok((None, true));
             }
-            if let Some(focus) = &focus {
+            if requested {
+                // A control asked for the keyboard in a tree this pass built
+                // and has it (the rebuild keeps it on the control it is in):
+                // one decision places focus, and the focus captured before
+                // the pass is what the request moved on from.
+            } else if let Some(focus) = &focus {
                 // SAFETY: rebuild completed, and sync retained this topology.
                 // A trap narrows eligible targets; it must not bypass identity
                 // restoration or send saved selection to a fallback control.
@@ -859,6 +874,7 @@ fn lay_out_window(
         crate::widget::unmount_native_views(app.root_widget.as_mut());
     }
     app.layout.last_layout_logical = Some(logical);
+    app.layout.last_layout_scale = Some(scale_factor);
     app.layout.layout_dirty = false;
     if must_compute || recomposed || remounted {
         app.update_focusable_order();
@@ -889,6 +905,7 @@ fn lay_out_window(
     let geometry_changed = recomposed
         || remounted
         || viewport_changed
+        || grid_changed
         || geometry_before.is_none_or(|before| {
             before != crate::pointer_replay::widget_geometry(app.root_widget.as_ref())
         });

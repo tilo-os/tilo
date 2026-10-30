@@ -60,6 +60,17 @@ pub enum ContactsEffect {
         #[param("The contact's id")]
         contact: uuid::Uuid,
     },
+    /// Read possible duplicate.
+    ///
+    /// The two contacts, by item and name, the one that stays first, and
+    /// what they share: an email address, a phone number or a name.
+    #[effect(view, row, returns, idempotent, tag = ui::tilo_actions::DOCUMENT_READ_TAG)]
+    ReadDuplicate {
+        #[param("The contact that stays")]
+        survivor: uuid::Uuid,
+        #[param("The contact merged into it")]
+        source: uuid::Uuid,
+    },
     /// Import vCard.
     #[effect(job)]
     ImportVcard,

@@ -434,6 +434,8 @@ pub struct VirtualList<M: ListModel> {
     rows_beside_bar: bool,
     /// The list takes its parent's height, and its viewport follows it.
     fill_height: bool,
+    /// The list is as tall as its rows ([`Self::fitting_rows`]).
+    fit_rows: bool,
     /// The list follows its end, as a transcript does ([`Self::following_end`]).
     follow_end: bool,
     /// Whether a list that follows its end shows it: the last scroll left it there.
@@ -567,6 +569,7 @@ impl<M: ListModel> VirtualList<M> {
             edges: None,
             rows_beside_bar: false,
             fill_height: false,
+            fit_rows: false,
             follow_end: false,
             at_end: false,
             last_tick: None,
@@ -719,6 +722,16 @@ impl<M: ListModel> VirtualList<M> {
     #[must_use]
     pub fn filling(mut self) -> Self {
         self.fill_height = true;
+        self
+    }
+
+    /// Stand as tall as its rows, among the other content of a page that scrolls them all (a
+    /// task's steps above its notes), rather than taking its parent's height and scrolling them
+    /// itself: every row shows, and what follows the list stands after its last row.
+    #[must_use]
+    pub fn fitting_rows(mut self) -> Self {
+        self.fill_height = false;
+        self.fit_rows = true;
         self
     }
 
@@ -1772,6 +1785,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
+        // Every structural rebuild repeats the window's input; what mounts
+        // since hears it as it mounts.
+        if self.interaction == environment {
+            return;
+        }
         self.interaction = environment;
         self.viewport
             .set_minimum_height(f64::from(environment.minimum_collection_row()));
@@ -1873,6 +1891,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         if self.keep_end() {
             self.refresh_anchor();
         }
+        if self.fit_rows {
+            // Every row is in view: the page around the list scrolls them.
+            self.viewport.set_viewport(self.viewport.content_extent());
+        }
         self.reconcile_mounted();
         self.layout_offset = self.viewport.offset();
         let mut child_nodes = Vec::with_capacity(self.mounted.len());
@@ -1889,6 +1911,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     width: percent(1.0_f32),
                     height: if self.fill_height {
                         percent(1.0_f32)
+                    } else if self.fit_rows {
+                        Dimension::length(px(self.viewport.content_extent()))
                     } else {
                         Dimension::length(px(self.viewport.viewport()))
                     },
@@ -1995,6 +2019,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // rows shorter than its box stand at its foot again.
         remeasured |= self.keep_end();
         remeasured |= (self.end_slack() - slack).abs() > 0.5;
+        // A list as tall as its rows grows or shrinks with what they measured.
+        if self.fit_rows && (self.rect.height() - self.viewport.content_extent()).abs() > 0.5 {
+            self.viewport.set_viewport(self.viewport.content_extent());
+            remeasured = true;
+        }
         if remeasured {
             self.visible_window_changed();
         } else if first_measured {

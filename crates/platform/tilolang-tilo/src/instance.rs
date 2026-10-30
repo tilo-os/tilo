@@ -60,6 +60,16 @@ pub enum Mode {
     Capture,
 }
 
+/// What the person asked of their history at the window: the record's undo or redo, as the one
+/// who runs the instance carries it out on the record (`ToApp::Undo`, `ToApp::Redo`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryAsk {
+    /// Take back their last step.
+    Undo,
+    /// Bring back what their last undo took back.
+    Redo,
+}
+
 /// A later build of the package, in a development session.
 #[derive(Clone)]
 pub struct Update {
@@ -272,8 +282,8 @@ pub struct Instance {
     /// The outside services the package's types with an origin are kept in step with.
     origins: crate::origin::Origins,
     pending: Pending,
-    /// The person chose Undo on a notice, and the undo is not yet taken.
-    undo: bool,
+    /// The undos and redos the person asked for, in order, not yet taken.
+    history: Vec<HistoryAsk>,
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
     started: bool,
@@ -352,7 +362,7 @@ impl Instance {
             ),
             origins: Rc::default(),
             pending: Pending::default(),
-            undo: false,
+            history: Vec::new(),
             staged: None,
             started: false,
             loading: false,
@@ -487,6 +497,29 @@ impl Instance {
         self.host.borrow().clone()
     }
 
+    /// How long from the platform's clock now until the time a view of the window read
+    /// (`today` in a query or a filter) next reads differently: the embedder wakes the instance
+    /// then (a frame's deadline, its wait's timeout), and that frame runs again exactly the
+    /// views that read it. Zero once it has. `None` when no view read the time: nothing about
+    /// the time ever wakes the instance.
+    #[must_use]
+    pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        let at = [self.root.as_ref(), self.detail.as_ref()]
+            .into_iter()
+            .flatten()
+            .filter_map(|shown| shown.view.borrow().wakes_at())
+            .min()?;
+        let clock = self.platform.now();
+        let Some(now) = tilolang::calendar::instant(&clock) else {
+            // The runtime read the same clock to answer the view: it could not have.
+            tracing::error!(clock, "the platform's clock reads no time");
+            return None;
+        };
+        Some(std::time::Duration::from_secs(
+            u64::try_from(at.saturating_sub(now)).unwrap_or(0),
+        ))
+    }
+
     /// The resource the root view shows.
     #[must_use]
     pub fn root_target(&self) -> Option<&ResourceRef> {
@@ -538,9 +571,10 @@ impl Instance {
         self.taken_build.take()
     }
 
-    /// Whether the person chose Undo on a notice since last asked.
-    pub fn take_undo(&mut self) -> bool {
-        std::mem::take(&mut self.undo)
+    /// The undos and redos the person asked for since last asked, in the order they asked: Undo
+    /// on a notice, and the window's undo and redo.
+    pub fn take_history(&mut self) -> Vec<HistoryAsk> {
+        std::mem::take(&mut self.history)
     }
 
     /// The bound control the window's keyboard focus is in, and whether an input method is
@@ -845,7 +879,9 @@ impl Instance {
             Ok(view) => {
                 let mut view = Shown::new(target.clone(), self.spaced(Lane::Detail, view));
                 view.with = with.map(str::to_owned);
-                self.detail = Some(view);
+                if let Some(shown) = self.detail.replace(view) {
+                    self.seen_in_window(&shown.target);
+                }
                 self.lenses_changed = true;
                 self.send_open(Lane::Detail, front);
                 self.commit_planned();
@@ -857,11 +893,36 @@ impl Instance {
         }
     }
 
+    /// Show `resource` in the detail lane with the view `view` (an id) rather than its type's
+    /// window: what `open(r, with: v)` asks for, for a view the system shows on a surface of
+    /// its own (a row view as a search result, a proposal view in its card), which
+    /// `tilolang layout-check` lays out as it lays out a window.
+    pub fn open_with(&mut self, resource: &ui::ResourceRef, view: &str) {
+        if let Some(target) = wire::runtime_resource(resource) {
+            self.open_detail(&target, Some(view), None);
+        }
+    }
+
     /// Close the detail view: Back.
     pub fn close_detail(&mut self) {
-        if self.detail.take().is_some() {
+        if let Some(shown) = self.detail.take() {
+            self.seen_in_window(&shown.target);
             self.lenses_changed = true;
             self.out.push(ToUi::Close);
+        }
+    }
+
+    /// The person had `target` open in a window of its own, and goes elsewhere: what it showed
+    /// is seen (task-legibility §4). While the window is open its marks stay, so the person
+    /// sees what changed where it changed.
+    fn seen_in_window(&mut self, target: &ResourceRef) {
+        let Some(host) = self.host() else {
+            return;
+        };
+        let person = host.viewer().0.clone();
+        if let Err(error) = host.runtime().mark_seen(&person, target) {
+            tracing::warn!(%error, "what a window showed could not be marked seen");
+            self.notice(Words::phrase("tilolang-seen-failed"), ui::NoticeKind::Error);
         }
     }
 
@@ -1032,6 +1093,8 @@ impl Instance {
                     let front = front.then_some(ui::Front::Input);
                     self.open_detail(&target, view.as_deref(), front);
                 }
+                // The run's log is the system's: the window's host shows it.
+                ViewEvent::Review { run, .. } => self.out.push(ToUi::ShowRun { run }),
             }
         }
     }
@@ -1192,6 +1255,13 @@ impl Instance {
     /// The record's changes stay on this device, for `why` (the room refused them for good):
     /// the window says so.
     pub fn unshared(&mut self, why: String) {
+        self.notice(Words::Plain(why), ui::NoticeKind::Error);
+        self.flush();
+    }
+
+    /// The undo or redo the person asked for was refused, for `why` (somebody else changed what
+    /// it would take back since): the window says so.
+    pub fn history_refused(&mut self, why: String) {
         self.notice(Words::Plain(why), ui::NoticeKind::Error);
         self.flush();
     }
@@ -1427,6 +1497,30 @@ impl Instance {
         view
     }
 
+    /// Take in what the window tells of itself and of the person at it, which runs nothing
+    /// there and then: where the keyboard is, whether an input method composes, what it calls
+    /// people, the space a view has, and the undos and redos asked for, which the one who runs
+    /// the instance carries out on the record ([`Self::take_history`]).
+    fn window_told(&mut self, told: ToApp) {
+        match told {
+            ToApp::Undo => self.history.push(HistoryAsk::Undo),
+            ToApp::Redo => self.history.push(HistoryAsk::Redo),
+            ToApp::Focus { at } => self.focus = at,
+            ToApp::Composing(composing) => self.composing = composing,
+            ToApp::Names { me, others } => {
+                if self.told.tell(me, others) {
+                    self.names_changed = true;
+                }
+            }
+            ToApp::Space {
+                lane,
+                width,
+                height,
+            } => self.offer_space(lane, f64::from(width), f64::from(height)),
+            other => tracing::error!(?other, "the window told of something it does not"),
+        }
+    }
+
     fn event(&mut self, message: ToApp) {
         let first = self.host().map(|host| host.next_ticket());
         let mut ran: Option<(ActionRef, Value)> = None;
@@ -1482,30 +1576,13 @@ impl Instance {
                 }
                 Ok(())
             }
-            ToApp::Undo => {
-                self.undo = true;
-                Ok(())
-            }
-            ToApp::Focus { at } => {
-                self.focus = at;
-                Ok(())
-            }
-            ToApp::Composing(composing) => {
-                self.composing = composing;
-                Ok(())
-            }
-            ToApp::Names { me, others } => {
-                if self.told.tell(me, others) {
-                    self.names_changed = true;
-                }
-                Ok(())
-            }
-            ToApp::Space {
-                lane,
-                width,
-                height,
-            } => {
-                self.offer_space(lane, f64::from(width), f64::from(height));
+            told @ (ToApp::Undo
+            | ToApp::Redo
+            | ToApp::Focus { .. }
+            | ToApp::Composing(_)
+            | ToApp::Names { .. }
+            | ToApp::Space { .. }) => {
+                self.window_told(told);
                 Ok(())
             }
         };
@@ -2012,8 +2089,17 @@ impl Instance {
         // Who is at a resource shows wherever a view reads its lenses.
         let lenses = std::mem::take(&mut self.lenses_changed);
         let members = self.follow_members();
-        let changed =
-            received || door || opened || pulled || settled || lenses || renamed || members;
+        // The time a view read moved on: the frame its embedder woke for it.
+        let timed = self.wakes_in().is_some_and(|wait| wait.is_zero());
+        let changed = received
+            || door
+            || opened
+            || pulled
+            || settled
+            || lenses
+            || renamed
+            || members
+            || timed;
         if changed {
             self.poll_views();
         }
@@ -2055,6 +2141,35 @@ impl Instance {
         );
         self.members_from = Some((standing.person, standing.policy, self.people.clone()));
         true
+    }
+
+    /// What the person has seen, as the system keeps it in their own record (task-legibility
+    /// §2): per resource the newest version they saw (`None` takes a mark back), and the task
+    /// runs they reviewed. What `unseen(r)` and the marks the host draws read; each view that
+    /// read one runs again.
+    pub fn set_seen(
+        &mut self,
+        marks: impl IntoIterator<Item = (String, Option<crate::runtime::seen::SeenMark>)>,
+        runs: &[String],
+    ) {
+        let Some(host) = self.host() else {
+            return;
+        };
+        let person = host.viewer().0.clone();
+        let runtime = host.runtime();
+        for (resource, mark) in marks {
+            runtime.set_seen(&person, &resource, mark);
+        }
+        runtime.set_seen_runs(&person, runs);
+    }
+
+    /// What the person marked seen in this window since last asked (opening, reviewing,
+    /// a mark's Mark seen), for the host to keep in their own record with the system's
+    /// `mark seen` action.
+    pub fn take_seen(&mut self) -> Vec<crate::runtime::seen::SeenWrite> {
+        self.host()
+            .map(|host| host.runtime().take_seen())
+            .unwrap_or_default()
     }
 
     /// Which person each participant presence reports is a device of, `(participant,

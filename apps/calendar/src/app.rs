@@ -1231,7 +1231,7 @@ impl CalendarApp {
     /// canonical target.
     fn calendar_collections(&self) -> Vec<crate::actions::CalendarCollectionResource> {
         let mut calendars = vec![crate::actions::CalendarCollectionResource {
-            id: "local".to_string(),
+            id: crate::actions::LOCAL_CALENDAR_ID.to_string(),
             label: "On this device".to_string(),
             color: None,
             visible: true,

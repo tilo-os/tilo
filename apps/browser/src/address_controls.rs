@@ -63,7 +63,10 @@ impl AddressControls {
     }
     fn store(&self) -> Result<AutofillStore, String> {
         if self.private {
-            return Err("Address autofill is unavailable in private windows.".into());
+            return Err(
+                "Address autofill is unavailable here: this window browses without your sign-ins."
+                    .into(),
+            );
         }
         let book = self.book.clone().ok_or("Address storage is unavailable.")?;
         Ok(AutofillStore::open(BrowsingMode::Normal, Some(book)))
@@ -295,9 +298,9 @@ impl AddressControls {
     pub fn panel(&self, actions: Option<&ui::framework::Actions<Browser>>) -> Box<dyn Widget> {
         let mut column = Column::new().with_no_padding().with_intrinsic_height();
         if self.private {
-            return Box::new(
-                column.push(line("Address autofill is unavailable in private windows.")),
-            );
+            return Box::new(column.push(line(
+                "Address autofill is unavailable here: this window browses without your sign-ins.",
+            )));
         }
         if !self.notice.is_empty() {
             column = column.push(line(&self.notice));

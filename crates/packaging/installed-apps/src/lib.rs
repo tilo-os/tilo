@@ -44,6 +44,9 @@ pub struct InstalledApp {
     /// `[providers].secondary`: another app claiming the same resource is
     /// the default for it.
     pub opens_secondary: bool,
+    /// The resource kinds `[providers].resources` says the app opens
+    /// (`mail.message`): an address of one opens in this app.
+    pub opens_resource_kinds: Vec<String>,
     /// The signed manifest's `[[offers]]`: actions the app offers while it
     /// is not running, which the action catalogue lists for it.
     pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
@@ -79,6 +82,7 @@ impl InstalledApp {
         let source = std::fs::read_to_string(&entry.manifest_path).ok()?;
         let signed = tilo_app_package::manifest::Manifest::from_toml_str(&source).ok()?;
         let offers = signed.offers.clone();
+        let opens_resource_kinds = signed.providers.resources.clone();
         let manifest = tilo_app_package::view::ManifestView::try_from(signed).ok()?;
         let package_id = if manifest.package_id.is_empty() {
             entry.id.clone()
@@ -107,6 +111,7 @@ impl InstalledApp {
             opens_mime_types: manifest.opens_mime.clone(),
             opens_uri_schemes: manifest.opens_schemes,
             opens_secondary: manifest.opens_secondary,
+            opens_resource_kinds,
             offers,
         })
     }
@@ -784,6 +789,7 @@ mod tests {
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
                 opens_secondary: false,
+                opens_resource_kinds: Vec::new(),
                 offers: Vec::new(),
             }
         };

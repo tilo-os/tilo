@@ -23,13 +23,14 @@ pub mod search;
 mod tracker_area;
 
 pub use issue::{
-    AgentRequest, Imported, ImportedMessage, Issue, Link, Message, MessageKind, Status,
+    AgentRequest, Imported, ImportedMessage, Issue, Link, Message, MessageKind, Said, Status,
     agent_assignee, person_assignee,
 };
 pub use record::{Tracker, tracker};
 pub use run::{
-    Area, Budget, Confirmation, ConfirmationState, ModelChoice, PausedRun, Question, Run,
-    RunOutcome, RunPhase, Spend, SpendLimits, StepSpend, money,
+    Area, Budget, CHAT_TURN_MS, CHAT_TURNS, Confirmation, ConfirmationState, MAX_TOTAL_MS,
+    MAX_TURN_MS, MAX_TURNS, ModelChoice, PausedRun, Question, Run, RunOutcome, RunPhase, Spend,
+    SpendLimits, StepSpend, money,
 };
 pub use tracker_area::{Kind, Person, TrackerArea};
 

@@ -9,8 +9,8 @@
 //! launch identity stays for its surface and accessibility.
 
 use std::os::fd::{AsRawFd as _, OwnedFd};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
@@ -51,10 +51,18 @@ pub fn window_instance() -> Option<u64> {
 /// Wakes the window whenever its patch connection has something, and only then: a thread waits
 /// on the connection, wakes the window once, and waits again only after the window took what
 /// arrived. Idle, nothing runs.
+///
+/// It wakes the component that runs the window now. The window is made by the component shown
+/// before the record ([`ui::framework::Opened`]) and taken over by the one the record opens,
+/// which closes the first: a wake captured once would go to a closed component, and the window
+/// would show what its instance sent only when something else woke it. Every pass of the
+/// window points the watch at the component running it ([`Watch::follow`]).
 struct Watch {
     /// Set by the thread when it woke the window; the window resumes it after reading.
     woke: Arc<AtomicBool>,
     resume: std::sync::mpsc::Sender<()>,
+    /// What the thread wakes: the component running the window.
+    wake: Arc<Mutex<ui::wake::WakeHandle>>,
 }
 
 impl Watch {
@@ -62,6 +70,8 @@ impl Watch {
         let signalled = Arc::new(AtomicBool::new(false));
         let (resume, resumed) = std::sync::mpsc::channel::<()>();
         let flag = Arc::clone(&signalled);
+        let wake = Arc::new(Mutex::new(wake));
+        let waking = Arc::clone(&wake);
         std::thread::Builder::new()
             .name("tilolang-patches".into())
             .spawn(move || {
@@ -81,7 +91,10 @@ impl Watch {
                         return;
                     }
                     flag.store(true, Ordering::Release);
-                    wake.wake();
+                    waking
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .wake();
                     // The host hung up: the window keeps its last frame.
                     if poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
                         return;
@@ -102,7 +115,25 @@ impl Watch {
         Some(Self {
             woke: signalled,
             resume,
+            wake,
         })
+    }
+
+    /// Wake the component running the window from now on: the one whose pass this is, when it
+    /// is another than the one the watch wakes.
+    fn follow(&self) {
+        let running = ui::wake::WakeHandle::new();
+        // A pass outside any component's scope names none to wake.
+        if !running.same_open_scope(&running) {
+            return;
+        }
+        let mut wake = self
+            .wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !wake.same_open_scope(&running) {
+            *wake = running;
+        }
     }
 
     /// The window took what arrived: wait for more.
@@ -225,6 +256,9 @@ impl HostedWindow {
     /// What arrived, shown; the watch resumed. A request to come forward is kept for the
     /// runner, which brings the window forward.
     fn receive(connected: &mut Connected, activation: &std::cell::Cell<bool>) -> bool {
+        if let Some(watch) = &connected.watch {
+            watch.follow();
+        }
         let received = connected.view.receive();
         if connected.view.take_activation() {
             activation.set(true);
@@ -256,12 +290,47 @@ impl ui::component_lifecycle::WindowActivation for HostedWindow {
     }
 }
 
+/// The window's undo and redo (Ctrl+Z, Ctrl+Shift+Z, Edit › Undo) are the record's, and the
+/// record is the instance's: they go to the instance, which takes back the person's last step
+/// there, typing into a field included, and sends the window what it shows then. The window
+/// holds no record, so no undo of its own could take anything back; and a field keeps no
+/// history beside the record's.
+impl ui::undo::LocalUndo for HostedWindow {
+    fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
+        let Some(connected) = &mut self.connected else {
+            // Nothing shown yet: nothing of the person's to take back.
+            return false;
+        };
+        // What the person typed before asking goes first: the undo takes it back too.
+        connected.view.flush();
+        connected.view.tell(match request {
+            ui::undo::UndoRequest::Undo => tilo_render_protocol::patch::ToApp::Undo,
+            ui::undo::UndoRequest::Redo => tilo_render_protocol::patch::ToApp::Redo,
+        });
+        connected.view.flush();
+        true
+    }
+}
+
+/// A change mark in the window asks the shell to show the task run that made the change.
+impl ui::component_lifecycle::HostIntents for HostedWindow {
+    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+        let connected = self.connected.as_mut()?;
+        let run = connected.view.take_shown_run()?;
+        Some(ui::widget::AppHostIntent::ShowTaskRun { group: run })
+    }
+}
+
 /// The window stands for what it shows (the UI host's window, or the loading state before it)
 /// in the layout and in every walk of the widgets: it adds no node of its own.
 impl ui::widget::Decorator for HostedWindow {
     type Inner = dyn Widget;
 
-    ui::provides!(dyn ui::component_lifecycle::WindowActivation);
+    ui::provides!(
+        dyn ui::component_lifecycle::WindowActivation,
+        dyn ui::component_lifecycle::HostIntents,
+        dyn ui::undo::LocalUndo
+    );
 
     fn inner(&self) -> &(dyn Widget + 'static) {
         self.content()

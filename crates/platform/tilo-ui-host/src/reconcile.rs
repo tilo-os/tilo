@@ -281,7 +281,11 @@ fn page_once(node: &UiNode) -> UiNode {
 /// How a child is sized in its container: `fill`, `min:`, `max:` bound its inline size.
 fn fit_of(node: &UiNode) -> Fit {
     let mut fit = number(node, "fill").map_or_else(Fit::hug, Fit::fill);
-    fit.width.min = length(node, "min");
+    // A grid's `min` is its columns' least width, not its own: it takes the width it is given
+    // and holds as many such columns as fit, one where none does.
+    if node.kind != "grid" {
+        fit.width.min = length(node, "min");
+    }
     fit.width.max = length(node, "max");
     if let Some(ratio) = number(node, "aspect") {
         fit = fit.aspect(ratio);
@@ -1677,5 +1681,19 @@ mod tests {
             display(&read_as(InlineView::Unreadable)),
             "Notes in Not shared with you"
         );
+    }
+
+    /// A grid's `min` is the least width of its columns, never its own: on a phone narrower
+    /// than one column it takes the width it is given and holds one column, rather than
+    /// reaching past the window. A stack's `min` stays its own least width.
+    #[test]
+    fn a_grids_least_column_width_is_not_its_own_least_width() {
+        let with_min = |kind: &str| {
+            let mut child = node(kind, "c");
+            child.props.insert("min.rem".to_owned(), Value::Float(22.0));
+            placement(&stack("s", Vec::new()), &child).fit.width.min
+        };
+        assert_eq!(with_min("grid"), None);
+        assert_eq!(with_min("stack"), Some(Length::Rem(22.0)));
     }
 }

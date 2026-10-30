@@ -800,6 +800,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         let analysis = PhotoLibrary::child(&library, &derived_resource_id("analysis"))
             .expect("library analysis is a place of its own");
         for id in [
+            "read-library-analysis",
             "view-library-analysis",
             "analyze-library",
             "pause-library-analysis",

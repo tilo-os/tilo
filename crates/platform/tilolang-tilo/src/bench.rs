@@ -80,6 +80,10 @@ type Doc = tilo_resource::Doc;
 
 /// What to measure.
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent switch of what a run measures"
+)]
 pub struct BenchConfig {
     /// The package directory (`apps/tl/notes`).
     pub package: PathBuf,
@@ -103,7 +107,23 @@ pub struct BenchConfig {
     pub open_only: bool,
     /// Check the records against the budgets ([`over_budget`]).
     pub budgets: bool,
+    /// Also run what is measured in time alone, which counts no [`Work`]: loading the record,
+    /// the first frame over the index, search over every entry, re-indexing and republishing the
+    /// whole room, idle wakeups; and every sample of an open (the first counts its work). Off, a
+    /// run does the work a gate on the counts reads, and nothing else.
+    pub timings: bool,
     pub env: Env,
+}
+
+impl BenchConfig {
+    /// The samples of an open: the first counts the work, the rest only time it.
+    fn open_samples(&self) -> usize {
+        if self.timings {
+            self.samples
+        } else {
+            self.samples.min(1)
+        }
+    }
 }
 
 /// The measurements that compare engines ([`engines`]).
@@ -1327,7 +1347,12 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         if let Some(isolation) = &config.memory {
             out.push(memory(&sized, isolation)?);
         }
-        for record in open(&sized)?.into_iter().chain(search_entries(&sized)?) {
+        for record in open(&sized)? {
+            out.push(record);
+        }
+        if config.timings
+            && let Some(record) = search_entries(&sized)?
+        {
             out.push(record);
         }
         if config.workloads.cold {
@@ -1336,28 +1361,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         if config.open_only {
             continue;
         }
-        let mut room = sized.open()?;
-        room.settle();
-        for record in index_everything(&sized, &room) {
-            out.push(record);
-        }
-        room.frame(&mut [])?;
-        room.phases.take();
-        if shape.subject().is_some() || text_input(&room.host, room.list.tree()).is_some() {
-            out.push(keystroke(&sized, &mut room)?);
-        } else {
-            out.push(press(&sized, &mut room)?);
-        }
-        out.push(peer_edit(&sized, &mut room)?);
-        let more = [
-            peer_post(&sized, &mut room)?,
-            scroll(&sized, &mut room)?,
-            filter(&sized, &mut room)?,
-        ];
-        for record in more.into_iter().flatten() {
-            out.push(record);
-        }
-        out.push(idle(&sized, &mut room)?);
+        changes(&sized, &mut out)?;
     }
     if let Some(list) = &shape.list
         && let Some(nested) = &list.nested
@@ -1371,6 +1375,37 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         }
     }
     Ok(out.records)
+}
+
+/// The scenarios that change a room of the size after it opened, in one window onto it.
+fn changes(sized: &Sized<'_>, out: &mut Recorder<'_>) -> Result<(), String> {
+    let mut room = sized.open()?;
+    room.settle();
+    if sized.config.timings {
+        for record in index_everything(sized, &room) {
+            out.push(record);
+        }
+    }
+    room.frame(&mut [])?;
+    room.phases.take();
+    if sized.shape.subject().is_some() || text_input(&room.host, room.list.tree()).is_some() {
+        out.push(keystroke(sized, &mut room)?);
+    } else {
+        out.push(press(sized, &mut room)?);
+    }
+    out.push(peer_edit(sized, &mut room)?);
+    let more = [
+        peer_post(sized, &mut room)?,
+        scroll(sized, &mut room)?,
+        filter(sized, &mut room)?,
+    ];
+    for record in more.into_iter().flatten() {
+        out.push(record);
+    }
+    if sized.config.timings {
+        out.push(idle(sized, &mut room)?);
+    }
+    Ok(())
 }
 
 /// The process's anonymous memory, in MiB.
@@ -1480,14 +1515,14 @@ fn measure_memory(room: &Path, package: &Path, index: Option<PathBuf>) -> Result
 /// search and publication, which read the room off the frame, have it all. Beside them, loading
 /// the room's record from its saved bytes, which opening a room from disk adds first: the one
 /// part of opening that reads the whole record, and grows with it.
-fn open(sized: &Sized<'_>) -> Result<[Record; 6], String> {
+fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
     let mut samples = Vec::new();
     let mut nodes = 0;
     let mut phases = Phases::default();
     let mut ready = Vec::new();
     let mut live = tilolang_runtime::LiveStats::default();
     let mut work = None;
-    for _ in 0..sized.config.samples {
+    for _ in 0..sized.config.open_samples() {
         // Each sample opens a room of its own, from a store that read nothing yet.
         let allocated = allocations();
         let start = Instant::now();
@@ -1514,6 +1549,17 @@ fn open(sized: &Sized<'_>) -> Result<[Record; 6], String> {
         m.insert("nodes".into(), json!(nodes));
         m.insert("boundaries".into(), json!(live.boundaries));
     }
+    let open = sized.record("open", "ms", samples, extra);
+    let ready = sized.record("ready", "ms", ready, Json::Null);
+    let index_build = sized.record(
+        "index_build",
+        "ms",
+        vec![sized.index_build],
+        json!({"bytes": sized.index.bytes()}),
+    );
+    if !sized.config.timings {
+        return Ok(vec![open, ready, index_build]);
+    }
     let saved = sized.base.clone().save();
     let mut loads = Vec::new();
     for _ in 0..sized.config.samples {
@@ -1522,19 +1568,8 @@ fn open(sized: &Sized<'_>) -> Result<[Record; 6], String> {
         loads.push(ms(start.elapsed()));
     }
     let [first, write] = first_frame(sized, &saved)?;
-    Ok([
-        sized.record("open", "ms", samples, extra),
-        sized.record("ready", "ms", ready, Json::Null),
-        sized.record("load", "ms", loads, json!({"bytes": saved.len()})),
-        sized.record(
-            "index_build",
-            "ms",
-            vec![sized.index_build],
-            json!({"bytes": sized.index.bytes()}),
-        ),
-        first,
-        write,
-    ])
+    let load = sized.record("load", "ms", loads, json!({"bytes": saved.len()}));
+    Ok(vec![open, ready, load, index_build, first, write])
 }
 
 /// The room's record, loading on a thread of its own: what a window opening over its index
@@ -2208,6 +2243,7 @@ fn parse(args: &[String]) -> Result<BenchConfig, String> {
         }),
         open_only: false,
         budgets: false,
+        timings: true,
         env: Env {
             commit: std::env::var("TILO_COMMIT").unwrap_or_else(|_| "unknown".into()),
             virtualization: "none".into(),

@@ -83,6 +83,10 @@ pub(crate) struct ComposerRequest {
     /// run, or something answered in place. `None` while the agent decides,
     /// and always on a follow-up, which the run already shapes.
     pub as_task: Option<bool>,
+    /// The person moved the request into a chat ("Open as chat"): it is
+    /// asked as a task, sized for a conversation, and its issue opens as a
+    /// chat once asked.
+    pub chat: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -415,6 +419,10 @@ struct View {
     has_status: LocalState<bool>,
     /// Whether the composer follows a run, which opens in Tasks.
     has_run: LocalState<bool>,
+    /// Whether "Open as chat" can act: on the followed run, or on what the
+    /// person typed when no run is followed.
+    can_chat: LocalState<bool>,
+
     /// Whether there are steps or an answer view to show.
     has_work: LocalState<bool>,
     /// Whether the work area shows anything: steps, an answer view or a reply.
@@ -423,6 +431,9 @@ struct View {
     waiting: LocalState<bool>,
     running: LocalState<bool>,
     enabled: LocalState<bool>,
+    /// What keeps the chosen agent from being asked, said in place.
+    blocked: LocalState<bool>,
+    blocked_text: LocalState<String>,
 }
 
 impl Default for View {
@@ -447,12 +458,40 @@ impl Default for View {
             can_use_answer: LocalState::new(false),
             has_status: LocalState::new(false),
             has_run: LocalState::new(false),
+            can_chat: LocalState::new(false),
             has_work: LocalState::new(false),
             has_work_area: LocalState::new(false),
             waiting: LocalState::new(false),
             running: LocalState::new(false),
             enabled: LocalState::new(false),
+            blocked: LocalState::new(false),
+            blocked_text: LocalState::new(String::new()),
         }
+    }
+}
+
+/// What keeps a new agent made for a task from being asked here: no agent
+/// runtime can be launched, no model is configured, or the model is on the
+/// internet and this device is offline. Each has its fix, offered in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AskBlocker {
+    NoRuntime,
+    NoModel,
+    Offline,
+}
+
+impl AskBlocker {
+    /// The message that says it, as the composer and the canvas say it.
+    pub(crate) const fn message_key(self) -> &'static str {
+        match self {
+            Self::NoRuntime => "agent-quick-blocked-no-runtime",
+            Self::NoModel => "agent-quick-blocked-no-model",
+            Self::Offline => "agent-quick-blocked-offline",
+        }
+    }
+
+    fn text(self) -> String {
+        t(self.message_key())
     }
 }
 
@@ -465,6 +504,9 @@ struct Presses {
     insert: LocalState<bool>,
     save: LocalState<bool>,
     open_run: LocalState<bool>,
+    open_chat: LocalState<bool>,
+    /// The fix for what keeps a new agent from being asked.
+    fix: LocalState<bool>,
 }
 
 impl Default for Presses {
@@ -476,6 +518,8 @@ impl Default for Presses {
             insert: LocalState::new(false),
             save: LocalState::new(false),
             open_run: LocalState::new(false),
+            open_chat: LocalState::new(false),
+            fix: LocalState::new(false),
         }
     }
 }
@@ -555,6 +599,13 @@ pub(crate) struct AgentQuickComposer {
     mode_picker: PickerListing,
     /// The run the person asked to see in Tasks, until the host takes it.
     open_run: Option<String>,
+    /// The run the person asked to see as a chat, until the host takes it.
+    open_chat: Option<String>,
+    /// What the person typed, to be asked as a chat with the next request.
+    chat_pending: bool,
+    /// The submission moved into a chat: the composer gives way once it is
+    /// asked.
+    chat_submission: Option<u64>,
     /// Whether it stands along the bottom of a narrow viewport.
     sheet: bool,
     /// The work it shows: steps, the answer view and the reply.
@@ -567,6 +618,12 @@ pub(crate) struct AgentQuickComposer {
     answer_to_open: Option<ResourceAt>,
     /// What the composer keeps clear of: where its subject is drawn.
     anchor: Option<Rect>,
+    /// What keeps the chosen agent from being asked, while something does.
+    blocker: Option<AskBlocker>,
+    /// The fix the person pressed, until the host takes it.
+    fix: Option<AskBlocker>,
+    /// The provider settings epoch [`Self::blocker`] was read at.
+    block_epoch: u64,
 }
 
 impl Default for AgentQuickComposer {
@@ -602,27 +659,35 @@ impl Default for AgentQuickComposer {
             model_picker: PickerListing::Listed,
             mode_picker: PickerListing::Unlisted,
             open_run: None,
+            open_chat: None,
+            chat_pending: false,
+            chat_submission: None,
             sheet: false,
             work,
             worked: HashMap::new(),
             opened_answers: HashSet::new(),
             answer_to_open: None,
             anchor: None,
+            blocker: None,
+            fix: None,
+            block_epoch: 0,
         };
         composer.popover = composer.controls(slots);
         composer
     }
 }
 
-/// How wide the composer is beside its subject: one width whatever it
-/// shows, so an answer arriving grows it downwards only.
-const COMPOSER_WIDTH: f32 = 360.0;
-/// Below this viewport width the composer is a sheet along the bottom.
-const SHEET_BELOW: f64 = 600.0;
+/// How wide the composer is beside its subject: a list panel's width
+/// whatever it shows, so an answer arriving grows it downwards only.
+const COMPOSER_WIDTH: f32 = ui::tokens::Metrics::BASE.panel_width_list;
+/// Below a sheet's width the viewport has no room beside the subject, and
+/// the composer is a sheet along the bottom.
+const SHEET_BELOW: f64 = ui::tokens::Metrics::BASE.panel_width_sheet as f64;
 /// The test id of the area showing the work: the steps, the answer view and the reply.
 const WORK_AREA: &str = "agent-quick-work";
-/// The tallest the work area starts, before the viewport it stands in is known.
-const WORK_MAX: f32 = 360.0;
+/// The tallest the work area starts, before the viewport it stands in is
+/// known: as tall as the composer is wide.
+const WORK_MAX: f32 = COMPOSER_WIDTH;
 /// The share of the viewport's height the work area may take; past it the work scrolls,
 /// following its end, so the field and its controls stay in view.
 const WORK_SHARE: f64 = 0.5;
@@ -671,6 +736,7 @@ impl AgentQuickComposer {
         let view = &self.view;
         let stop = self.presses.stop.clone();
         let open_run = self.presses.open_run.clone();
+        let open_chat = self.presses.open_chat.clone();
         let line = Row::new()
             .no_wrap()
             .push(Box::new(When::from_state(
@@ -697,6 +763,14 @@ impl AgentQuickComposer {
                         .on_click(move || open_run.set(true)),
                 ),
             )))
+            .push(Box::new(
+                Button::new("agent-quick-open-chat", &t("agent-quick-open-chat"))
+                    .with_icon(ui::icons::Icon::MessageCircle)
+                    .role(ButtonRole::Plain)
+                    .control_size(ControlSize::Small)
+                    .enabled_from(&view.can_chat)
+                    .on_click(move || open_chat.set(true)),
+            ))
             .push(Box::new(When::from_state(
                 &view.running,
                 |shown| *shown,
@@ -768,6 +842,28 @@ impl AgentQuickComposer {
             ))
     }
 
+    /// What keeps the agent from being asked, and the button that fixes it.
+    fn blocked_row(&self) -> Row {
+        let fix = self.presses.fix.clone();
+        Row::new()
+            .no_wrap()
+            .with_justify(taffy::JustifyContent::SpaceBetween)
+            .push(wrapped(
+                Text::from_state(&self.view.blocked_text, Clone::clone)
+                    .with_id("agent-quick-blocked")
+                    .with_role(ui::TextRole::Caption),
+            ))
+            .push(Box::new(
+                Button::new("agent-quick-fix", &t("agent-quick-fix"))
+                    .role(ButtonRole::Secondary)
+                    .on_click(move || fix.set(true)),
+            ))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the composer's one column of rows, top to bottom, reads as one layout"
+    )]
     fn controls(&self, slots: WorkSlots) -> Popover<Container> {
         let view = &self.view;
         // The work: the steps, the answer view and the reply, following the end while the run
@@ -802,7 +898,7 @@ impl AgentQuickComposer {
         let submit = self.presses.submit.clone();
         let editor = TextInput::from_state(&self.draft)
             .with_id("agent-quick-editor")
-            .with_placeholder(t("agent-quick-placeholder-idle"))
+            .with_placeholder(self.placeholder_text())
             .with_accessible_name(t("agent-quick-editor-name"))
             .with_min_lines(2)
             .on_submit(move |_| submit.set(true));
@@ -852,10 +948,13 @@ impl AgentQuickComposer {
                 |shown| *shown,
                 Box::new(status_line),
             )))
+            // Always there, so typing never moves the field: "Open as chat"
+            // waits disabled until there is something to open.
+            .push(Box::new(run_line))
             .push(Box::new(When::from_state(
-                &view.has_run,
+                &view.blocked,
                 |shown| *shown,
-                Box::new(run_line),
+                Box::new(self.blocked_row()),
             )))
             .push(Box::new(editor))
             .push(Box::new(self.footer()));
@@ -883,7 +982,9 @@ impl AgentQuickComposer {
         self.agents.clear();
         self.agent_switch = None;
         self.view.picks_agent.set(false);
-        self.view.agent.set(owner.agent.clone());
+        self.view.agent.set(agent_label(&owner.agent));
+        self.blocker = None;
+        self.fix = None;
         self.view.mode.set(t("agent-quick-mode-decides"));
         self.offer_models(models_of());
         label.clone_into(&mut self.label);
@@ -1047,6 +1148,12 @@ impl AgentQuickComposer {
         self.open_run.take()
     }
 
+    /// The run the person asked to see as a chat, exactly once: its issue.
+    pub(crate) fn take_open_chat(&mut self) -> Option<String> {
+        self.tick();
+        self.open_chat.take()
+    }
+
     /// What the person did with the work shown since the last take, oldest first: opening a
     /// reference, undoing a change, deciding a proposal. Opening the answer view is not among
     /// them; [`Self::take_answer_to_open`] has it.
@@ -1082,6 +1189,12 @@ impl AgentQuickComposer {
         self.refresh();
     }
 
+    /// What the composer's status line says now.
+    #[cfg(test)]
+    pub(crate) fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
     /// The answer the composer shows now, as text: the agent's last answer,
     /// or what its run streams while it works.
     #[cfg(test)]
@@ -1109,7 +1222,15 @@ impl AgentQuickComposer {
             self.mode_picker = PickerListing::Listed;
         }
         if self.agent_picker == PickerListing::Unlisted
-            && set_picker_options(&mut self.popover, AGENT_PICKER, &self.agents)
+            && set_picker_options(
+                &mut self.popover,
+                AGENT_PICKER,
+                &self
+                    .agents
+                    .iter()
+                    .map(|agent| agent_label(agent))
+                    .collect::<Vec<_>>(),
+            )
         {
             self.agent_picker = PickerListing::Listed;
         }
@@ -1150,6 +1271,31 @@ impl AgentQuickComposer {
     /// opens the composer again for it, about the same thing.
     pub(crate) fn take_agent_switch(&mut self) -> Option<String> {
         self.agent_switch.take()
+    }
+
+    /// Say in place what keeps the chosen agent from being asked, and offer
+    /// its fix; `None` once nothing does. Sending waits until then.
+    pub(crate) fn block(&mut self, blocker: Option<AskBlocker>) {
+        self.block_epoch = crate::shell::settings_records::provider_settings_epoch();
+        if self.blocker != blocker {
+            self.blocker = blocker;
+            self.refresh();
+        }
+    }
+
+    /// Whether what keeps the agent from being asked may have changed since it
+    /// was read: the composer is open, blocked, and the provider settings
+    /// moved on (the person set a model up from its Set up).
+    pub(crate) fn block_stale(&self) -> bool {
+        self.is_open()
+            && self.blocker.is_some()
+            && self.block_epoch != crate::shell::settings_records::provider_settings_epoch()
+    }
+
+    /// The fix the person pressed, exactly once.
+    pub(crate) fn take_fix(&mut self) -> Option<AskBlocker> {
+        self.tick();
+        self.fix.take()
     }
 
     /// Whether the composer is open about a selection rather than beside an
@@ -1287,12 +1433,16 @@ impl AgentQuickComposer {
     pub(crate) fn take_request(&mut self) -> Option<ComposerRequest> {
         self.tick();
         let stop = take(&self.presses.stop);
-        let submit = take(&self.presses.submit);
+        let chat = std::mem::take(&mut self.chat_pending);
+        let submit = take(&self.presses.submit) || chat;
         if !self.is_open() || (!stop && !submit) || self.busy() {
             return None;
         }
         let owner = self.owner.clone()?;
         let task = self.followed().map(|run| run.task.clone());
+        // A chat is asked for what the person typed while no run is
+        // followed; a followed run opens as a chat as it is.
+        let chat = chat && !stop && task.is_none();
         let text = self.draft.get();
         if (stop && task.is_none()) || (!stop && text.trim().is_empty()) {
             return None;
@@ -1306,6 +1456,8 @@ impl AgentQuickComposer {
         // follow-up to one they ruled on keeps that ruling, which the
         // adapter already carries with the run.
         let as_task = match intent {
+            // A chat is work the agent carries on in a conversation.
+            ComposerIntent::Request if chat => Some(true),
             ComposerIntent::Request => mode_of(&self.view.mode.get()),
             ComposerIntent::Steer => None,
         };
@@ -1324,6 +1476,9 @@ impl AgentQuickComposer {
                 busy: true,
             },
         );
+        if chat {
+            self.chat_submission = Some(self.next_submission);
+        }
         self.notice_waits = true;
         self.notice = Some(t(match (stop, intent) {
             (true, _) => "agent-quick-stopping",
@@ -1342,6 +1497,7 @@ impl AgentQuickComposer {
             about: self.about.clone().filter(|_| !stop),
             model: self.picked_model(),
             as_task,
+            chat,
         };
         // The ruling was for that request; the next one starts from the
         // agent's own decision until the person makes another.
@@ -1420,6 +1576,7 @@ impl AgentQuickComposer {
         let revision = pending.revision;
         let asked = pending.text.clone();
         let stop = pending.stop;
+        let moved_to_chat = success && self.chat_submission == Some(receipt.submission);
         if success && !stop && !matches!(receipt.outcome, ComposerOutcome::DirectionApplied(_)) {
             self.clear_sent(&owner, revision);
         }
@@ -1427,6 +1584,13 @@ impl AgentQuickComposer {
         if self.owner.as_ref() == Some(&owner) {
             self.notice = notice;
             self.notice_waits = false;
+            // The conversation goes on in the chat, which opens now.
+            if moved_to_chat && self.is_open() {
+                self.dismiss();
+            }
+        }
+        if moved_to_chat {
+            self.chat_submission = None;
         }
         self.refresh();
     }
@@ -1576,9 +1740,21 @@ impl AgentQuickComposer {
                 && !busy,
         );
         self.view.running.set(running && !starting && !busy);
+        let typed = !self.draft.get().trim().is_empty();
+        // The chat opened is the run shown: the one followed, else the one
+        // whose work stays shown after it ended; with none, what was typed.
+        let can_chat = match run {
+            Some(run) => run.phase != RunPhase::Starting,
+            None => (typed || worked.is_some()) && !busy,
+        };
+        self.view.can_chat.set(can_chat);
+        self.view.enabled.set(
+            !busy && !starting && self.blocker.is_none() && !self.draft.get().trim().is_empty(),
+        );
+        self.view.blocked.set(self.blocker.is_some());
         self.view
-            .enabled
-            .set(!busy && !starting && !self.draft.get().trim().is_empty());
+            .blocked_text
+            .set(self.blocker.map(AskBlocker::text).unwrap_or_default());
         let status = self.notice.clone().or_else(|| {
             run.map(|run| {
                 let key = match run.phase {
@@ -1616,14 +1792,38 @@ impl AgentQuickComposer {
         {
             self.open_run = Some(run.task.task_id.clone());
         }
+        if take(&self.presses.open_chat) {
+            let typed = !self.draft.get().trim().is_empty();
+            // An ended run's work stays shown, and its chat is what opens,
+            // unless the person typed a new request to ask as a chat.
+            let shown = self
+                .owner
+                .as_ref()
+                .and_then(|owner| self.worked.get(owner))
+                .map(|(task, _)| task.clone());
+            match (self.followed(), shown) {
+                (Some(run), _) if run.phase != RunPhase::Starting => {
+                    self.open_chat = Some(run.task.task_id.clone());
+                }
+                (Some(_), _) => {}
+                (None, Some(task)) if !typed => self.open_chat = Some(task),
+                (None, _) => self.chat_pending = typed,
+            }
+        }
+        if take(&self.presses.fix) {
+            self.fix = self.blocker;
+        }
         let picked = self.view.agent.get();
-        if self
-            .owner
-            .as_ref()
-            .is_some_and(|owner| owner.agent != picked)
-            && self.agents.contains(&picked)
+        if let Some(agent) = self
+            .agents
+            .iter()
+            .find(|agent| agent_label(agent) == picked)
+            && self
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.agent != *agent)
         {
-            self.agent_switch = Some(picked);
+            self.agent_switch = Some(agent.clone());
         }
         let answer = self.view.answer.get();
         if take(&self.presses.insert) && self.view.can_use_answer.get() {
@@ -1698,6 +1898,16 @@ fn editor_state(widget: &dyn Widget) -> Option<String> {
 
 /// The test id of the composer's agent picker.
 const AGENT_PICKER: &str = "agent-quick-agent";
+
+/// How the agent picker names `agent`: a new agent made for the task, or a
+/// collaborator by its id.
+fn agent_label(agent: &str) -> String {
+    if agent == crate::shell::task_agents::NEW_TASK_AGENT {
+        t("agent-quick-new-agent")
+    } else {
+        agent.to_owned()
+    }
+}
 
 /// The test id of the composer's model picker.
 const MODEL_PICKER: &str = "agent-quick-model";
@@ -1929,839 +2139,5 @@ impl Decorator for AgentQuickComposer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn owner(agent: &str) -> ComposerOwner {
-        ComposerOwner {
-            room: "room".into(),
-            agent: agent.into(),
-            person: "certified-person".into(),
-            identity_revision: 7,
-        }
-    }
-
-    fn open(composer: &mut AgentQuickComposer, owner: ComposerOwner) {
-        composer.open(
-            owner,
-            "Tide",
-            AgentQuickComposerOrigin {
-                marker: Rect::new(100.0, 100.0, 132.0, 132.0),
-                protected: Rect::new(100.0, 100.0, 220.0, 164.0),
-                context: "Tide was renaming the release notes".into(),
-            },
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-        );
-    }
-
-    fn action(
-        widget: &mut dyn Widget,
-        id: &str,
-        action: &ui::a11y::Action,
-        doc: &mut automerge::AutoCommit,
-    ) -> bool {
-        if widget.test_id() == Some(id) {
-            return widget.perform_action(
-                action,
-                &[],
-                &mut ui::widget::Edits::lend(doc),
-                &automerge::ROOT,
-            );
-        }
-        widget
-            .children_mut()
-            .into_iter()
-            .any(|child| self::action(child, id, action, doc))
-    }
-
-    fn edit(composer: &mut AgentQuickComposer, doc: &mut automerge::AutoCommit, text: &str) {
-        Widget::sync(composer, doc, &automerge::ROOT);
-        assert!(action(
-            composer,
-            "agent-quick-editor",
-            &ui::a11y::Action::SetValue(text.into()),
-            doc
-        ));
-        Widget::sync(composer, doc, &automerge::ROOT);
-    }
-
-    fn press(composer: &mut AgentQuickComposer, doc: &mut automerge::AutoCommit, id: &str) {
-        Widget::sync(composer, doc, &automerge::ROOT);
-        assert!(
-            action(composer, id, &ui::a11y::Action::Activate, doc),
-            "{id} is shown and enabled"
-        );
-        // A press queues the control's intent; the compositor runs the queue
-        // when the input is handled (see `FrameBuilder::dispatch_to_desktop`),
-        // and here the press is the whole input.
-        ui::widget::controls::start_pending_control_invocations(
-            composer,
-            &mut ui::widget::Edits::lend(doc),
-            &automerge::ROOT,
-        );
-    }
-
-    fn submit(
-        composer: &mut AgentQuickComposer,
-        doc: &mut automerge::AutoCommit,
-    ) -> ComposerRequest {
-        press(composer, doc, "agent-quick-send");
-        composer
-            .take_request()
-            .expect("the enabled ordinary button emits one intention")
-    }
-
-    fn shown(composer: &mut AgentQuickComposer, id: &str) -> bool {
-        fn find(widget: &dyn Widget, id: &str) -> bool {
-            widget.test_id() == Some(id) || widget.children().into_iter().any(|c| find(c, id))
-        }
-        let doc = automerge::AutoCommit::new();
-        Widget::sync(composer, &doc, &automerge::ROOT);
-        find(composer, id)
-    }
-
-    fn working(task: &str, phase: RunPhase) -> ComposerRun {
-        ComposerRun {
-            task: ComposerTask {
-                task_id: task.into(),
-                run_epoch: 3,
-                revision: 8,
-                label: "Fix the link".into(),
-            },
-            phase,
-            progress: RunProgress::default(),
-        }
-    }
-
-    #[test]
-    fn one_field_sends_a_request_the_agent_answers_and_a_follow_up_carries_it() {
-        let mut composer = AgentQuickComposer::default();
-        let mut doc = automerge::AutoCommit::new();
-        let heads = doc.get_heads();
-        let tide = owner("tide");
-        open(&mut composer, tide.clone());
-        assert!(!composer.view.enabled.get(), "nothing to send yet");
-        assert!(!composer.view.has_status.get(), "no checking notice");
-        assert!(!shown(&mut composer, "agent-quick-stop"));
-        edit(&mut composer, &mut doc, "What does idempotent mean?");
-        let request = submit(&mut composer, &mut doc);
-        assert_eq!(request.intent, ComposerIntent::Request);
-        assert_eq!(request.task, None);
-        assert_eq!(request.context, "Tide was renaming the release notes");
-        assert!(request.conversation.is_empty());
-        assert!(
-            composer.take_request().is_none(),
-            "one request at a time per agent"
-        );
-        assert_eq!(composer.view.status.get(), t("agent-quick-thinking"));
-        composer.observe_receipt(ComposerReceipt {
-            owner: tide,
-            submission: request.submission,
-            outcome: ComposerOutcome::Answered("Safe to repeat.".into()),
-        });
-        assert!(composer.draft.get().is_empty());
-        assert_eq!(composer.view.answer.get(), "Safe to repeat.");
-        assert!(composer.view.asked.get().contains("idempotent"));
-        assert!(!composer.view.has_status.get());
-        assert!(
-            !composer.view.can_use_answer.get(),
-            "nothing selected, nothing to insert into"
-        );
-
-        edit(&mut composer, &mut doc, "Give an example");
-        let follow_up = submit(&mut composer, &mut doc);
-        assert_eq!(follow_up.intent, ComposerIntent::Request);
-        assert_eq!(
-            follow_up.conversation,
-            vec![
-                ComposerTurn {
-                    agent: false,
-                    text: "What does idempotent mean?".into()
-                },
-                ComposerTurn {
-                    agent: true,
-                    text: "Safe to repeat.".into()
-                },
-            ]
-        );
-        assert_eq!(
-            doc.get_heads(),
-            heads,
-            "private editor input never writes collaborative content"
-        );
-    }
-
-    #[test]
-    fn the_person_can_rule_that_an_instruction_is_work_or_an_answer() {
-        let mut composer = AgentQuickComposer::default();
-        let mut doc = automerge::AutoCommit::new();
-        let tide = owner("tide");
-        open(&mut composer, tide.clone());
-        edit(
-            &mut composer,
-            &mut doc,
-            "Rename every file to its invoice number",
-        );
-        Widget::sync(&mut composer, &doc, &automerge::ROOT);
-        // Nothing is picked until the person picks it: the agent decides.
-        let decided = submit(&mut composer, &mut doc);
-        assert_eq!(decided.as_task, None);
-        assert!(
-            decided.conversation.is_empty(),
-            "the agent's own decision says nothing extra"
-        );
-        composer.observe_receipt(ComposerReceipt {
-            owner: tide.clone(),
-            submission: decided.submission,
-            outcome: ComposerOutcome::Answered("Which folder?".into()),
-        });
-
-        edit(&mut composer, &mut doc, "Sum up this section");
-        Widget::sync(&mut composer, &doc, &automerge::ROOT);
-        assert!(
-            action(
-                &mut composer,
-                MODE_PICKER,
-                &ui::a11y::Action::SetValue(t("agent-quick-mode-task")),
-                &mut doc
-            ),
-            "the mode picker offers running it as a task"
-        );
-        let ruled = submit(&mut composer, &mut doc);
-        assert_eq!(ruled.as_task, Some(true));
-        assert_eq!(
-            ruled.conversation.last(),
-            Some(&ComposerTurn {
-                agent: false,
-                text: t("agent-quick-mode-task-line"),
-            }),
-            "a follow-up tells the agent what the person ruled"
-        );
-        // The composer waits for the agent's receipt of a request before it
-        // sends another.
-        composer.observe_receipt(ComposerReceipt {
-            owner: tide,
-            submission: ruled.submission,
-            outcome: ComposerOutcome::Answered("Done.".into()),
-        });
-
-        // The ruling was for that request: the next one asks the agent again.
-        edit(&mut composer, &mut doc, "And how long is the section?");
-        Widget::sync(&mut composer, &doc, &automerge::ROOT);
-        let next = submit(&mut composer, &mut doc);
-        assert_eq!(next.as_task, None);
-    }
-
-    #[test]
-    fn work_runs_as_a_task_the_same_field_steers_and_stop_appears_while_it_runs() {
-        let mut composer = AgentQuickComposer::default();
-        let mut doc = automerge::AutoCommit::new();
-        let tide = owner("tide");
-        open(&mut composer, tide.clone());
-        edit(
-            &mut composer,
-            &mut doc,
-            "Replace the link with the real one",
-        );
-        let request = submit(&mut composer, &mut doc);
-        composer.observe_receipt(ComposerReceipt {
-            owner: tide.clone(),
-            submission: request.submission,
-            outcome: ComposerOutcome::Started {
-                task_id: "task:new".into(),
-                title: "Fix the link".into(),
-            },
-        });
-        assert!(composer.draft.get().is_empty());
-        assert!(composer.view.status.get().contains("Fix the link"));
-        assert!(
-            !shown(&mut composer, "agent-quick-stop"),
-            "nothing to stop before the run starts"
-        );
-
-        let run = working("task:new", RunPhase::Working);
-        composer.project(&tide, Some(run.clone()));
-        assert!(shown(&mut composer, "agent-quick-stop"));
-        edit(&mut composer, &mut doc, "Use the https address");
-        let steer = submit(&mut composer, &mut doc);
-        assert_eq!(steer.intent, ComposerIntent::Steer);
-        assert_eq!(steer.task, Some(run.task.clone()));
-        assert!(!steer.stop);
-        let saved = ComposerTask {
-            revision: 9,
-            ..run.task.clone()
-        };
-        composer.observe_receipt(ComposerReceipt {
-            owner: tide.clone(),
-            submission: steer.submission,
-            outcome: ComposerOutcome::DirectionSaved(ComposerTask {
-                run_epoch: 4,
-                ..saved.clone()
-            }),
-        });
-        assert_eq!(
-            composer.draft.get(),
-            "Use the https address",
-            "another run's receipt never clears the draft"
-        );
-        composer.observe_receipt(ComposerReceipt {
-            owner: tide.clone(),
-            submission: steer.submission,
-            outcome: ComposerOutcome::DirectionSaved(saved.clone()),
-        });
-        assert!(composer.draft.get().is_empty());
-        let saved_notice = composer.view.status.get();
-        composer.observe_receipt(ComposerReceipt {
-            owner: tide.clone(),
-            submission: steer.submission,
-            outcome: ComposerOutcome::DirectionApplied(saved.clone()),
-        });
-        let applied_notice = composer.view.status.get();
-        assert_ne!(applied_notice, saved_notice);
-        composer.observe_receipt(ComposerReceipt {
-            owner: tide.clone(),
-            submission: steer.submission,
-            outcome: ComposerOutcome::DirectionSaved(saved),
-        });
-        assert_eq!(
-            composer.view.status.get(),
-            applied_notice,
-            "applied never regresses to saved"
-        );
-
-        press(&mut composer, &mut doc, "agent-quick-stop");
-        let stop = composer.take_request().expect("Stop is a request");
-        assert!(stop.stop);
-        assert_eq!(stop.task, Some(run.task.clone()));
-        composer.observe_receipt(ComposerReceipt {
-            owner: tide.clone(),
-            submission: stop.submission,
-            outcome: ComposerOutcome::Stopped(run.task),
-        });
-        assert!(composer.followed().is_none());
-        assert!(!shown(&mut composer, "agent-quick-stop"));
-        edit(&mut composer, &mut doc, "Something else");
-        assert_eq!(
-            submit(&mut composer, &mut doc).intent,
-            ComposerIntent::Request,
-            "with nothing running, the field asks anew"
-        );
-    }
-
-    #[test]
-    fn a_finished_run_is_told_once_as_the_agents_turn() {
-        let mut composer = AgentQuickComposer::default();
-        let tide = owner("tide");
-        open(&mut composer, tide.clone());
-        composer.set_about_selection(true);
-        composer.project(&tide, Some(working("task:one", RunPhase::Working)));
-        assert!(composer.followed().is_some());
-        let done = working("task:one", RunPhase::Finished(Some("Linked it.".into())));
-        composer.project(&tide, Some(done.clone()));
-        composer.project(&tide, Some(done));
-        assert!(composer.followed().is_none());
-        assert_eq!(composer.view.answer.get(), "Linked it.");
-        assert!(
-            !composer.view.can_use_answer.get(),
-            "a run's closing words are not text to insert"
-        );
-        assert_eq!(
-            composer.conversations[&tide].len(),
-            1,
-            "a repeated projection is told once"
-        );
-        assert!(composer.view.status.get().contains("Tide"));
-    }
-
-    #[test]
-    fn a_refused_request_keeps_the_draft_and_an_unknown_one_is_never_resent() {
-        let mut composer = AgentQuickComposer::default();
-        let mut doc = automerge::AutoCommit::new();
-        let tide = owner("tide");
-        open(&mut composer, tide.clone());
-        edit(&mut composer, &mut doc, "Tidy this");
-        let request = submit(&mut composer, &mut doc);
-        composer.observe_receipt(ComposerReceipt {
-            owner: owner("reed"),
-            submission: request.submission,
-            outcome: ComposerOutcome::Refused,
-        });
-        assert!(composer.busy(), "another agent's receipt is ignored");
-        composer.observe_receipt(ComposerReceipt {
-            owner: tide.clone(),
-            submission: request.submission,
-            outcome: ComposerOutcome::Unknown,
-        });
-        assert_eq!(composer.draft.get(), "Tidy this");
-        assert!(composer.busy(), "uncertain work is not replayed");
-        assert!(composer.take_request().is_none());
-        composer.observe_receipt(ComposerReceipt {
-            owner: tide,
-            submission: request.submission,
-            outcome: ComposerOutcome::Refused,
-        });
-        assert_eq!(composer.draft.get(), "Tidy this");
-        assert!(composer.view.enabled.get());
-    }
-
-    #[test]
-    fn drafts_and_conversations_stay_with_their_agent() {
-        let mut composer = AgentQuickComposer::default();
-        let mut doc = automerge::AutoCommit::new();
-        let tide = owner("tide");
-        open(&mut composer, tide.clone());
-        edit(&mut composer, &mut doc, "Tide's private draft");
-        open(&mut composer, owner("reed"));
-        assert!(composer.draft.get().is_empty());
-        edit(&mut composer, &mut doc, "Reed's private draft");
-        open(&mut composer, tide);
-        assert_eq!(composer.draft.get(), "Tide's private draft");
-    }
-
-    #[test]
-    fn a_text_answer_about_a_selection_can_be_inserted_or_kept_as_a_note() {
-        let mut composer = AgentQuickComposer::default();
-        let mut doc = automerge::AutoCommit::new();
-        let tide = owner("tide");
-        open(&mut composer, tide.clone());
-        composer.set_about_selection(true);
-        assert!(!shown(&mut composer, "agent-quick-insert"), "no answer yet");
-        edit(&mut composer, &mut doc, "Translate this");
-        let request = submit(&mut composer, &mut doc);
-        composer.observe_receipt(ComposerReceipt {
-            owner: tide,
-            submission: request.submission,
-            outcome: ComposerOutcome::Answered("Hallo".into()),
-        });
-        assert!(shown(&mut composer, "agent-quick-insert"));
-        press(&mut composer, &mut doc, "agent-quick-insert");
-        assert_eq!(
-            composer.take_answer_use(),
-            Some(AnswerUse::Insert("Hallo".into()))
-        );
-        press(&mut composer, &mut doc, "agent-quick-save-note");
-        assert_eq!(
-            composer.take_answer_use(),
-            Some(AnswerUse::SaveAsNote("Hallo".into()))
-        );
-        assert_eq!(composer.take_answer_use(), None);
-    }
-
-    #[test]
-    fn the_composer_is_anchored_beside_what_it_is_about() {
-        let mut composer = AgentQuickComposer::default();
-        let selection = Rect::new(560.0, 180.0, 700.0, 240.0);
-        composer.open(
-            owner("tide"),
-            "Tide",
-            AgentQuickComposerOrigin {
-                marker: Rect::new(560.0, 180.0, 561.0, 181.0),
-                protected: selection,
-                context: String::new(),
-            },
-            Rect::new(0.0, 0.0, 1280.0, 800.0),
-        );
-        let theme = Theme::dark();
-        let mut text = ui::text_render::TextRenderer::new();
-        let mut taffy = taffy::TaffyTree::new();
-        let mut nodes = HashMap::new();
-        Widget::build_layout(&mut composer, &mut taffy, &theme, &mut nodes);
-        composer.popover.place(&mut text, &theme);
-        let rect = composer.popover.rect();
-        assert!(rect.area() > 0.0);
-        assert_eq!(
-            rect.intersect(selection).area(),
-            0.0,
-            "{rect:?} covers {selection:?}"
-        );
-        assert!(rect.x0 >= selection.x1, "beside the selection: {rect:?}");
-
-        // No room to its right: below it, still clear of it.
-        let right = Rect::new(1100.0, 180.0, 1270.0, 240.0);
-        composer.open(
-            owner("tide"),
-            "Tide",
-            AgentQuickComposerOrigin {
-                marker: Rect::new(1100.0, 180.0, 1101.0, 181.0),
-                protected: right,
-                context: String::new(),
-            },
-            Rect::new(0.0, 0.0, 1280.0, 800.0),
-        );
-        Widget::build_layout(&mut composer, &mut taffy, &theme, &mut nodes);
-        composer.popover.place(&mut text, &theme);
-        let rect = composer.popover.rect();
-        assert_eq!(
-            rect.intersect(right).area(),
-            0.0,
-            "{rect:?} covers {right:?}"
-        );
-    }
-
-    /// The app said where the selected paragraph is drawn, in a window as
-    /// wide as the screen and reaching its bottom: no room beside it or
-    /// below, so the composer opens above the paragraph and covers none of
-    /// it.
-    #[test]
-    fn the_composer_opens_above_a_selected_paragraph_with_no_room_beside_or_below() {
-        let mut composer = AgentQuickComposer::default();
-        let paragraph = Rect::new(8.0, 470.0, 1272.0, 790.0);
-        composer.open(
-            owner("tide"),
-            "Tide",
-            AgentQuickComposerOrigin {
-                marker: paragraph,
-                protected: paragraph,
-                context: String::new(),
-            },
-            Rect::new(0.0, 0.0, 1280.0, 800.0),
-        );
-        let theme = Theme::dark();
-        let mut text = ui::text_render::TextRenderer::new();
-        let mut taffy = taffy::TaffyTree::new();
-        let mut nodes = HashMap::new();
-        Widget::build_layout(&mut composer, &mut taffy, &theme, &mut nodes);
-        composer.popover.place(&mut text, &theme);
-        let rect = composer.popover.rect();
-        assert!(rect.area() > 0.0);
-        assert_eq!(
-            rect.intersect(paragraph).area(),
-            0.0,
-            "{rect:?} covers {paragraph:?}"
-        );
-        assert!(rect.y1 <= paragraph.y0, "above the paragraph: {rect:?}");
-    }
-
-    #[test]
-    fn a_composer_opened_on_a_selection_carries_it_with_the_request() {
-        use super::super::selection_agent::SelectionSeed;
-        let mut composer = AgentQuickComposer::default();
-        let mut doc = automerge::AutoCommit::new();
-        let tide = owner("tide");
-        let seed = SelectionSeed::new(
-            "so.tilo.word-processor",
-            "Writer",
-            Some(
-                ui::shared_selection::SharedSelection::of_text("which were late")
-                    .at(tilo_actions::SelectionPlace::range("block-4", 12, 27)),
-            ),
-        );
-        composer.open_about(
-            tide.clone(),
-            "Tide",
-            &AgentQuickComposerOrigin {
-                marker: Rect::new(400.0, 200.0, 401.0, 201.0),
-                protected: Rect::new(400.0, 200.0, 401.0, 201.0),
-                context: String::new(),
-            },
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-            seed.clone(),
-        );
-        assert!(composer.about_selection());
-        assert!(composer.selection, "a text answer may go at the selection");
-        assert!(
-            composer.view.context.get().contains("which were late"),
-            "the composer shows what it is about: {}",
-            composer.view.context.get()
-        );
-        edit(&mut composer, &mut doc, "Tighten this");
-        let request = submit(&mut composer, &mut doc);
-        assert_eq!(request.intent, ComposerIntent::Request);
-        assert_eq!(request.text, "Tighten this");
-        assert!(request.context.contains("which were late"));
-        assert_eq!(request.about, Some(seed));
-
-        open(&mut composer, tide);
-        assert!(
-            !composer.about_selection() && !composer.selection,
-            "a composer opened at a marker is about nothing selected"
-        );
-    }
-
-    #[test]
-    fn the_person_picks_which_agent_to_tell_and_the_host_hears_it() {
-        use super::super::selection_agent::SelectionSeed;
-        let mut composer = AgentQuickComposer::default();
-        let mut doc = automerge::AutoCommit::new();
-        let origin = AgentQuickComposerOrigin {
-            marker: Rect::new(400.0, 200.0, 401.0, 201.0),
-            protected: Rect::new(400.0, 200.0, 401.0, 201.0),
-            context: String::new(),
-        };
-        let seed = SelectionSeed::new("so.tilo.notes", "Notes", None);
-        composer.open_about(
-            owner("tide"),
-            "tide",
-            &origin,
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-            seed.clone(),
-        );
-        composer.offer_agents(vec!["tide".into()]);
-        assert!(
-            !shown(&mut composer, AGENT_PICKER),
-            "one agent: nothing to pick"
-        );
-        composer.offer_agents(vec!["tide".into(), "reed".into()]);
-        assert!(shown(&mut composer, AGENT_PICKER));
-        Widget::sync(&mut composer, &doc, &automerge::ROOT);
-        assert!(action(
-            &mut composer,
-            AGENT_PICKER,
-            &ui::a11y::Action::SetValue("reed".into()),
-            &mut doc
-        ));
-        Widget::sync(&mut composer, &doc, &automerge::ROOT);
-        assert_eq!(composer.take_agent_switch(), Some("reed".into()));
-        assert_eq!(composer.take_agent_switch(), None, "heard once");
-        composer.open_about(
-            owner("reed"),
-            "reed",
-            &origin,
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-            seed.clone(),
-        );
-        composer.offer_agents(vec!["tide".into(), "reed".into()]);
-        Widget::sync(&mut composer, &doc, &automerge::ROOT);
-        assert_eq!(composer.take_agent_switch(), None);
-        assert_eq!(composer.about(), Some(&seed));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn the_model_picker_lists_what_the_persons_providers_offer() {
-        use agent_provider_config::{OfferedModel, OfferedModels};
-        let _home = tilo_test_env::TestHome::new().unwrap();
-        let held =
-            crate::shell::settings_records::Holder::of(&crate::shell::state::local_user_id())
-                .unwrap();
-        let mut composer = AgentQuickComposer::default();
-        let mut doc = automerge::AutoCommit::new();
-        open(&mut composer, owner("tide"));
-        assert!(!shown(&mut composer, MODEL_PICKER), "only the agent's own");
-
-        held.run(|records| {
-            let record = records.shared::<OfferedModels>().unwrap();
-            record
-                .invoke(&OfferedModels::OFFER.with(vec![OfferedModel {
-                    profile: "work".into(),
-                    provider: "Work".into(),
-                    model: "m-large".into(),
-                    label: "Large".into(),
-                }]))
-                .unwrap();
-        })
-        .unwrap();
-        open(&mut composer, owner("tide"));
-        assert!(shown(&mut composer, MODEL_PICKER));
-        let large = composer.models[1].0.clone();
-        Widget::sync(&mut composer, &doc, &automerge::ROOT);
-        assert!(action(
-            &mut composer,
-            MODEL_PICKER,
-            &ui::a11y::Action::SetValue(large),
-            &mut doc
-        ));
-        edit(&mut composer, &mut doc, "Tidy the notes");
-        assert_eq!(
-            submit(&mut composer, &mut doc).model,
-            Some(runtime_collab::TaskRunModel {
-                profile: "work".into(),
-                model: "m-large".into(),
-            })
-        );
-    }
-
-    fn board_card() -> ResourceAt {
-        ResourceAt {
-            app: "so.tilo.lang.board".into(),
-            record: None,
-            reference: tilo_reference::ResourceRef::whole(
-                "tl.so.tilo.lang.board.Card",
-                "tl:so.tilo.lang.board:root/cards:c1",
-                "Write the release notes",
-            ),
-        }
-    }
-
-    fn release_progress(answer: bool) -> RunProgress {
-        RunProgress {
-            streamed: "Three cards are **open**".into(),
-            steps: Vec::new(),
-            programs: vec![ProgramStep {
-                program: "board.move(@board.Card:root/cards:c1, column: \"Review\")".into(),
-                outcome: tilo_reference::StepOutcome::Asked,
-                answer: vec![
-                    "@board.Card:root/cards:c1 \"Write the release notes\" column: \"Review\""
-                        .into(),
-                ],
-                refs: vec![board_card()],
-                changes: vec![StepChange {
-                    resource: board_card(),
-                    action: "Moved to Review".into(),
-                }],
-                previews: vec![StepPreview {
-                    invocation: ResourceAt {
-                        app: "so.tilo.lang.chat".into(),
-                        record: None,
-                        reference: tilo_reference::ResourceRef::whole(
-                            "tl.invocation",
-                            "inv-7",
-                            "Post",
-                        ),
-                    },
-                    action: "Post in Release".into(),
-                    summary: String::new(),
-                }],
-                planned: Vec::new(),
-            }],
-            answer: answer.then(|| ResourceAt {
-                app: "so.tilo.lang.views".into(),
-                record: None,
-                reference: tilo_reference::ResourceRef::whole(
-                    "tl.so.tilo.lang.views.Answer",
-                    "tl:so.tilo.lang.views:a1",
-                    "What's left for the release",
-                ),
-            }),
-        }
-    }
-
-    /// A working run shows its steps, and what the person does with them reaches the host as
-    /// presses: opening a reference, undoing a change for the run's task, deciding a proposal.
-    /// The steps stay readable once the run ended, and its answer view opens exactly once.
-    #[test]
-    fn the_run_shows_its_steps_and_what_the_person_does_with_them_reaches_the_host() {
-        let mut composer = AgentQuickComposer::default();
-        let mut doc = automerge::AutoCommit::new();
-        let tide = owner("tide");
-        open(&mut composer, tide.clone());
-        assert!(!composer.view.has_work.get(), "no run, no steps");
-        let mut run = working("task:release", RunPhase::Working);
-        run.progress = release_progress(false);
-        composer.project(&tide, Some(run.clone()));
-        assert!(composer.view.has_work.get());
-        assert_eq!(composer.shown_answer(), "Three cards are **open**");
-        assert!(
-            shown(&mut composer, "agent-quick-answer"),
-            "the reply is rendered"
-        );
-        assert!(
-            composer.take_answer_to_open().is_none(),
-            "no answer view yet"
-        );
-
-        press(
-            &mut composer,
-            &mut doc,
-            "reference:tl:so.tilo.lang.board:root/cards:c1",
-        );
-        press(&mut composer, &mut doc, "agent-quick-step-0-change-0-undo");
-        press(
-            &mut composer,
-            &mut doc,
-            "agent-quick-step-0-preview-0-decline",
-        );
-        let presses = composer.take_work_presses();
-        assert_eq!(
-            presses,
-            vec![
-                WorkPress::Open(board_card()),
-                WorkPress::Undo {
-                    task: "task:release".into(),
-                    change: run.progress.programs[0].changes[0].clone(),
-                },
-                WorkPress::Resolve {
-                    preview: run.progress.programs[0].previews[0].clone(),
-                    approve: false,
-                },
-            ]
-        );
-        assert!(
-            composer.take_work_presses().is_empty(),
-            "each is taken once"
-        );
-
-        // The run answers with a view and ends: the view opens once, the steps stay.
-        run.progress = release_progress(true);
-        composer.project(&tide, Some(run.clone()));
-        let answer = run.progress.answer.clone().unwrap();
-        assert_eq!(composer.take_answer_to_open(), Some(answer.clone()));
-        run.phase = RunPhase::Finished(Some("Moved it.".into()));
-        composer.project(&tide, Some(run.clone()));
-        composer.project(&tide, Some(run));
-        assert_eq!(composer.take_answer_to_open(), None, "opened once");
-        assert!(composer.followed().is_none());
-        assert!(composer.view.has_work.get(), "the ended run's steps stay");
-        assert!(shown(&mut composer, "agent-quick-step-0-program"));
-        // Opening it again is the person's to ask.
-        press(&mut composer, &mut doc, "agent-quick-answer-open");
-        assert_eq!(composer.take_answer_to_open(), Some(answer));
-
-        // A new request makes way for new work.
-        edit(&mut composer, &mut doc, "And what about the website?");
-        let _ = submit(&mut composer, &mut doc);
-        assert!(!composer.view.has_work.get());
-    }
-
-    #[test]
-    fn every_composer_string_is_in_every_catalogue() {
-        const KEYS: &[&str] = &[
-            "agent-quick-title",
-            "agent-quick-agent",
-            "agent-quick-about-selection",
-            "agent-quick-about-window",
-            "agent-quick-accessible-name",
-            "agent-quick-close",
-            "agent-quick-insert",
-            "agent-quick-save-note",
-            "agent-quick-placeholder-idle",
-            "agent-quick-placeholder-running",
-            "agent-quick-editor-name",
-            "agent-quick-send",
-            "agent-quick-stop",
-            "agent-quick-you-asked",
-            "agent-quick-thinking",
-            "agent-quick-steering",
-            "agent-quick-stopping",
-            "agent-quick-steer-saved",
-            "agent-quick-steer-applied",
-            "agent-quick-run-starting",
-            "agent-quick-run-working",
-            "agent-quick-run-done",
-            "agent-quick-run-attention",
-            "agent-quick-run-stopped",
-            "agent-quick-outcome-unknown",
-            "agent-quick-refused",
-            "agent-quick-stop-refused",
-            "agent-quick-answer-view",
-            "agent-quick-answer-open",
-            "agent-quick-undo-refused",
-            "agent-quick-resolve-refused",
-        ];
-        for (locale, source) in [
-            ("en-US", include_str!("../../locales/en-US.ftl")),
-            ("de-DE", include_str!("../../locales/de-DE.ftl")),
-        ] {
-            for key in KEYS {
-                assert!(
-                    source
-                        .lines()
-                        .any(|line| line.starts_with(&format!("{key} = "))),
-                    "{key} is missing from {locale}"
-                );
-            }
-            for retired in [
-                "agent-quick-checking",
-                "agent-quick-queue",
-                "agent-quick-steer",
-            ] {
-                assert!(
-                    !source
-                        .lines()
-                        .any(|line| line.starts_with(&format!("{retired} = "))),
-                    "{retired} is retired from {locale}"
-                );
-            }
-        }
-    }
-}
+#[path = "agent_quick_composer_tests.rs"]
+mod tests;

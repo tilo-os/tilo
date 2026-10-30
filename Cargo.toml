@@ -1353,6 +1353,10 @@ hyper-proxy2 = { path = "vendor/hyper-proxy2" }
 # text is measured and kerned at the width it is drawn. See
 # vendor/cosmic-text/TILO-PATCH.md.
 cosmic-text = { path = "vendor/cosmic-text" }
+# Rounds layout onto the display's device pixels at any scale, not only whole
+# logical pixels, and measures a flex item at the cross size it is laid out
+# at. See vendor/taffy/TILO-PATCH.md.
+taffy = { path = "vendor/taffy" }
 # Erasing above the cursor clears the first line too. See
 # vendor/alacritty_terminal/PROVENANCE.md.
 alacritty_terminal = { path = "vendor/alacritty_terminal" }

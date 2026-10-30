@@ -498,12 +498,15 @@ fn resource_key(value: &str) -> String {
 }
 fn printer_row(queue: &os_actions::printing::PrinterQueue) -> LiveRow {
     let printer = || queue.name.clone();
+    // Opening the printer is Print Centre's own view (`open-printer`, which
+    // names it), not this row's: a view here would be the row's disclosure,
+    // a private one that keeps making it the default, pausing and resuming
+    // it from agents.
     let mut row = LiveRow::new(
         format!("print-centre.printer.{}", resource_key(&queue.name)),
         "print-centre.printer",
         display_name(&queue.name),
-    )
-    .effect(&PrintCentreEffect::OpenPrinter { printer: printer() });
+    );
     if !queue.default {
         row = row.effect(&PrintCentreEffect::SetDefaultPrinter { printer: printer() });
     }

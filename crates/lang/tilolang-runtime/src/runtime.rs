@@ -16,7 +16,7 @@ use crate::ids::{DocId, ModuleHash, PackageId, Principal, RunId};
 use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
 use crate::settle::{AgentBlock, InvocationRecord};
-use crate::store::{ChangeNote, OutboxEntry, Store};
+use crate::store::{ChangeNote, OutboxEntry, Store, StoreError, Version};
 use crate::value::{ActionRef, ResourceRef, Value};
 use crate::view_instance::ViewInstance;
 use tilolang::{BlockKind, Compiled, CompiledBlock};
@@ -269,6 +269,36 @@ impl Runtime {
         source: &str,
     ) -> Result<AgentBlock, RuntimeError> {
         self.core.run_agent_block(agent, source)
+    }
+
+    /// What the written view `source` by `author` is (`tilolang::written`): checked against
+    /// every package this runtime holds, so it reads any type the workspace has installed.
+    ///
+    /// # Errors
+    /// Its diagnostics, located in `source`.
+    pub fn check_written_view(
+        &self,
+        source: &str,
+        author: &Principal,
+    ) -> Result<crate::written::WrittenViewInfo, Vec<tilolang::Diagnostic>> {
+        self.core.check_written_view(source, author)
+    }
+
+    /// Open the written view `source` for `viewer` over `args`: it reads what `viewer` reads,
+    /// and `author`, who wrote it, is its code author, so what it does with an action asks first
+    /// unless the viewer trusts them.
+    ///
+    /// # Errors
+    /// `Package` when it does not compile or takes other arguments; otherwise as
+    /// [`Runtime::open_view`].
+    pub fn open_written_view(
+        &self,
+        viewer: &Principal,
+        source: &str,
+        author: &Principal,
+        args: Vec<Value>,
+    ) -> Result<ViewInstance, RuntimeError> {
+        self.core.open_written_view(viewer, source, author, args)
     }
 
     /// Record the suggestion raised for `action` called with `args` by `invoker` as an
@@ -612,6 +642,82 @@ impl Runtime {
         if states.get(&key) != Some(&value) {
             states.set(key, value);
         }
+    }
+
+    /// `person`'s seen mark of the resource `resource` (its id), as their own record keeps it
+    /// ([`crate::seen`]): what `unseen(r)` and the marks the host draws read. A view that read
+    /// it runs again when it moves.
+    pub fn set_seen(&self, person: &str, resource: &str, mark: Option<crate::seen::SeenMark>) {
+        let key = crate::seen::seen_key(person, resource);
+        let value = mark.map_or_else(Value::none, |mark| {
+            Value::some(Value::Tuple(vec![
+                Value::Text(mark.change),
+                Value::Text(mark.at),
+            ]))
+        });
+        let mut states = self.core.view_states.borrow_mut();
+        if states.get(&key) != Some(&value) {
+            states.set(key, value);
+        }
+    }
+
+    /// `person`'s seen mark of `resource`, as this runtime holds it.
+    #[must_use]
+    pub fn seen(&self, person: &str, resource: &str) -> Option<crate::seen::SeenMark> {
+        self.core.seen_mark(person, resource)
+    }
+
+    /// The versions of `at` that `person` has not seen, oldest first: what `unseen(r)` reads
+    /// for them.
+    ///
+    /// # Errors
+    ///
+    /// The store could not read the versions of `at`.
+    pub fn unseen(&self, person: &str, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
+        self.core.unseen_of(person, at)
+    }
+
+    /// `person` has seen every version of `at` there is now: the mark moves to its newest,
+    /// and the host is handed it to keep ([`Self::take_seen`]). Nothing happens while there is
+    /// nothing unseen.
+    ///
+    /// # Errors
+    ///
+    /// The store could not read the versions of `at`.
+    pub fn mark_seen(&self, person: &str, at: &ResourceRef) -> Result<bool, StoreError> {
+        self.core.mark_seen(person, at)
+    }
+
+    /// The task runs `person` reviewed, as their own record keeps them: every version of one is
+    /// seen. A view that read what is unseen runs again when they move.
+    pub fn set_seen_runs(&self, person: &str, runs: &[String]) {
+        self.core.set_seen_runs(person, runs);
+    }
+
+    /// `person` reviewed the task run `run` (its group, *Mark all seen*): every version it made
+    /// is seen, in every app, and the host is handed it to keep ([`Self::take_seen`]). Whether
+    /// it was not reviewed already.
+    pub fn mark_run_seen(&self, person: &str, run: &str) -> bool {
+        let mut runs = self.core.seen_runs(person);
+        if runs.iter().any(|seen| seen == run) {
+            return false;
+        }
+        runs.push(run.to_owned());
+        self.core.set_seen_runs(person, &runs);
+        self.core
+            .seen_writes
+            .borrow_mut()
+            .push(crate::seen::SeenWrite::Run {
+                person: person.to_owned(),
+                run: run.to_owned(),
+            });
+        true
+    }
+
+    /// The seen marks set here since last asked, for the host to keep in the person's own
+    /// record.
+    pub fn take_seen(&self) -> Vec<crate::seen::SeenWrite> {
+        std::mem::take(&mut *self.core.seen_writes.borrow_mut())
     }
 
     /// The workspace's members now, from its membership, and how its grants decide who of

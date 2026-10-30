@@ -693,8 +693,8 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
 }
 
 /// The person's finish over the resolved theme: their face for the theme's,
-/// and their share of the theme's translucency — `0` turns the floating
-/// chrome's blur off and its tint opaque, `1` leaves the theme as it is. Both
+/// and their share of the theme's translucency — `0` turns every role's blur
+/// off and its tint opaque, `1` leaves the theme as it is. Both
 /// are roles the theme already has, so a pinned `type` or `material` stays the
 /// distribution's; accessibility is applied after this and still wins.
 fn apply_finish(
@@ -713,9 +713,11 @@ fn apply_finish(
     }
     if let Some(strength) = finish.translucency {
         if !pinned(PIN_MATERIAL) {
-            document.material.blur *= strength;
-            document.material.tint_opacity +=
-                (1.0 - strength) * (1.0 - document.material.tint_opacity);
+            let material = &mut document.material;
+            material.window = material.window.with_translucency(strength);
+            material.control = material.control.with_translucency(strength);
+            material.floating = material.floating.with_translucency(strength);
+            material.bar = material.bar.map(|bar| bar.with_translucency(strength));
         }
     }
 }
@@ -1241,7 +1243,11 @@ mod tests {
     fn a_pinned_type_or_material_keeps_the_distributions_and_accessibility_still_wins() {
         let mut pinned_document = house();
         pinned_document.type_.face = "Noto Sans".into();
-        pinned_document.material.blur = 24.0;
+        pinned_document.material.floating = crate::tokens::finish::Finish::Translucent {
+            blur: 24.0,
+            tint: 0.72,
+            saturation: 1.0,
+        };
         let pinned = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
                 document: Some(pinned_document),

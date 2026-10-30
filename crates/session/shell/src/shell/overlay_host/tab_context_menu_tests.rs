@@ -901,11 +901,22 @@ fn an_apps_search_stands_in_its_window_under_its_bar() {
     h.chrome
         .borrow_mut()
         .focus_tab(workspace, h.strip, h.group, h.tabs[0]);
+    // Frames as the session runs them: the launcher app lays its card out
+    // when it draws, and the host reads the card's place from that.
     let lay_out = |h: &mut Harness| {
         for _ in 0..3 {
             let (taffy, root) = lay_out_host_with_theme(&mut h.host, VW, VH, &h.theme);
             h.taffy = taffy;
             h.root = root;
+            let mut scene = vello::Scene::new();
+            let mut text = ui::text_render::TextRenderer::new();
+            h.host.draw(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &h.theme,
+                &ui::presence::PresenceCtx::default(),
+            );
         }
     };
     lay_out(&mut h);

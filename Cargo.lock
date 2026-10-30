@@ -9588,6 +9588,7 @@ dependencies = [
  "tilo-contact-directory",
  "tilo-contact-directory-engine",
  "tilo-content",
+ "tilo-desktop-model",
  "tilo-doc-codecs",
  "tilo-document",
  "tilo-mail-engine",
@@ -15578,6 +15579,7 @@ dependencies = [
  "launcher-app",
  "legacy-agent-protocol",
  "libc",
+ "mail",
  "mime_guess",
  "naga",
  "neighbour-wire",
@@ -16815,8 +16817,6 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aea22054047c16c3f34d3ac473a2170be1424b1115b2a3adcf28cfb067c88859"
 dependencies = [
  "arrayvec",
  "grid",
@@ -21615,6 +21615,7 @@ dependencies = [
  "tilo-ui",
  "tilo-user-identity",
  "tilo-wallpapers",
+ "tilolang-tilo",
  "tokio",
  "tracing",
  "url",
@@ -21681,7 +21682,6 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-rt",
- "tracing",
  "workspace-hack",
 ]
 
@@ -21848,14 +21848,21 @@ dependencies = [
 name = "tilo-surface-host"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "serde",
  "serde_json",
+ "tilo-action-policy",
  "tilo-compositor",
  "tilo-desktop-policy",
  "tilo-desktop-surface",
+ "tilo-render-protocol",
+ "tilo-resource",
  "tilo-topbar",
  "tilo-ui",
+ "tilo-ui-host",
  "tilo-vello",
  "tilo-winit",
+ "tilolang-tilo",
  "tracing",
  "url",
  "workspace-hack",
@@ -22547,6 +22554,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-net",
+ "tilo-web-search",
  "tokio",
  "tracing",
  "url",
@@ -22767,6 +22775,7 @@ dependencies = [
 name = "tilolang-host"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "collab-types",
  "collaboration",

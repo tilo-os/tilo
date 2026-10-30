@@ -116,13 +116,22 @@ pub fn paint_surface(
     }
     let radius = level.radius(theme).min(rect.height() / 2.0);
     match level {
-        SurfaceLevel::Ground | SurfaceLevel::Region | SurfaceLevel::Raised => {
+        SurfaceLevel::Ground | SurfaceLevel::Region => {
             scene.fill(
                 Fill::NonZero,
                 transform,
                 fill,
                 None,
                 &RoundedRect::from_rect(rect, radius),
+            );
+        }
+        SurfaceLevel::Raised => {
+            crate::surface::control_face(
+                scene,
+                transform,
+                &RoundedRect::from_rect(rect, radius),
+                fill,
+                theme,
             );
         }
         SurfaceLevel::Window => {
@@ -133,20 +142,26 @@ pub fn paint_surface(
                 radius,
                 &theme.tokens.elevation.window,
             );
-            scene.fill(
-                Fill::NonZero,
+            let body = RoundedRect::from_rect(rect, radius);
+            crate::backdrop::fill_role(
+                scene,
                 transform,
+                &body,
+                crate::tokens::SurfaceRole::Window,
+                theme,
                 fill,
-                None,
-                &RoundedRect::from_rect(rect, radius),
             );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                theme.window_edge(),
-                None,
-                &RoundedRect::from_rect(rect.inflate(0.5, 0.5), radius + 0.5),
-            );
+            if !crate::surface::paint_border(scene, transform, &body, theme)
+                && theme.finish(crate::tokens::SurfaceRole::Window).hairline()
+            {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    theme.window_edge(),
+                    None,
+                    &RoundedRect::from_rect(rect.inflate(0.5, 0.5), radius + 0.5),
+                );
+            }
         }
         SurfaceLevel::Floating => {
             crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);

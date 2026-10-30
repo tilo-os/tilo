@@ -20,7 +20,7 @@ pub use agent_provider_config::local::snapshot::{
     InProcessLocalModel, InstalledLocalModel, LocalModelPackage, LocalModelPhase,
     LocalModelSnapshot,
 };
-use agent_provider_config::{EndpointLocation, ModelDescriptor, ProviderConfig, ProviderProfile};
+use agent_provider_config::{ModelDescriptor, ProviderConfig, ProviderProfile};
 #[cfg(test)]
 use agent_provider_config::{ModelRequestLimits, ProviderProtocol};
 use ui::LocalState;
@@ -371,19 +371,20 @@ pub enum AgentModelsEffect {
     /// Reload the authoritative profiles and credential status.
     #[effect(job, label = "Refresh providers")]
     RefreshProviders,
-    /// Add a provider from a known one, which fills its name, endpoint and
-    /// protocol; its model is chosen afterwards.
+    /// Add a provider from a known one, which fills its name, endpoint,
+    /// protocol and key header; its key and model are set afterwards. Add
+    /// the same one again for a second account.
     #[effect(job, label = "Add provider")]
     AddProvider {
         #[param(
-            "`openai`, `anthropic`, `gemini`, `mistral`, `openrouter`, `groq`, `xai`, `deepseek`, `together`, `fireworks`, `huggingface`, `ollama`, `lm-studio`, or `openai-compatible` for any other"
+            "A `preset` name from model-providers' list-presets: `openrouter`, `anthropic`, `openai-compatible` or `anthropic-compatible` for any other"
         )]
         preset: String,
     },
     /// Ask the provider which models it offers, with its stored key or
-    /// sign-in: shows whether the connection works, and the models to
-    /// choose from.
-    #[effect(job, row, label = "Test connection")]
+    /// sign-in: shows whether the connection works, and answers the models
+    /// to choose from with what each can do.
+    #[effect(job, row, returns, label = "Test connection")]
     ListProviderModels {
         #[param("The provider's id")]
         provider: String,
@@ -436,6 +437,20 @@ pub enum AgentModelsEffect {
     /// Read source context and this model's configured deployment limits.
     #[effect(row, returns, kind = "read")]
     InspectModelRequestLimits { provider: String, model: String },
+    /// Say what one model can do, over what its provider's list or Tilo's
+    /// table of model families says; omit both to let them decide again.
+    /// An agent plans only with a model that calls tools.
+    #[effect(job, row, idempotent, label = "Set model capabilities")]
+    SetModelCapabilities {
+        #[param("The provider's id")]
+        provider: String,
+        #[param("The model's id")]
+        model: String,
+        #[param("Whether it sees images")]
+        vision: Option<bool>,
+        #[param("Whether it calls tools")]
+        tool_calling: Option<bool>,
+    },
     /// Make a provider the one agents use unless told otherwise.
     #[effect(job, row, idempotent, label = "Use by default")]
     SetDefaultProvider {
@@ -505,7 +520,7 @@ pub enum AgentModelsEffect {
     AddGoogleVertex,
     /// Sign in with Google in the browser for Vertex AI: for the provider
     /// being added, or again for an existing one whose sign-in ended.
-    #[effect(row, label = "Sign in with Google")]
+    #[effect(label = "Sign in with Google")]
     SignInWithGoogle {
         #[param("The provider's id; omit for the one being added")]
         provider: Option<String>,
@@ -516,7 +531,7 @@ pub enum AgentModelsEffect {
     /// Sign in to `ChatGPT`, GitHub Copilot or `OpenRouter`: for a provider
     /// to add, or again for an existing one. Finishes once the
     /// person has signed in and the provider is saved.
-    #[effect(attended, job, row, label = "Sign in")]
+    #[effect(attended, job, label = "Sign in")]
     SignInToProvider {
         #[param("`chatgpt`, `github-copilot` or `openrouter`")]
         service: String,
@@ -954,13 +969,14 @@ impl AgentModelsRead {
     }
 }
 
-/// The ids of the hosted providers in `config`, whose keys this device's
-/// vault holds or not.
+/// The ids of the providers in `config` that take a key, which this
+/// device's vault holds or not: hosted ones, and servers the person gave a
+/// key.
 fn hosted_profiles(config: &ProviderConfig) -> Vec<String> {
     config
         .profiles
         .iter()
-        .filter(|profile| profile.location == EndpointLocation::Hosted)
+        .filter(|profile| profile.credential.is_some())
         .map(|profile| profile.id.clone())
         .collect()
 }
@@ -1863,22 +1879,20 @@ impl AgentModelsModel {
             actions,
             body,
             package,
-            (
-                "agent-models-confirm-install",
-                "agent-models-cancel-install",
-            ),
+            "install",
             AgentModelsEffect::ReviewModelDownload { show: false },
         );
     }
 
     /// The download, storage, source, revision and licence a person accepts,
-    /// with the accept and cancel controls (widget ids `controls`); cancel
-    /// invokes `cancel`.
+    /// with the accept and cancel controls (widget ids
+    /// `agent-models-confirm-{widget}` and `agent-models-cancel-{widget}`);
+    /// cancel invokes `cancel_effect`.
     fn push_confirm(
         actions: &Actions<Settings>,
         body: &mut Vec<Item>,
         package: &LocalModelPackage,
-        controls: (&str, &str),
+        widget: &str,
         cancel_effect: AgentModelsEffect,
     ) {
         let download = t("agent-download");
@@ -1905,7 +1919,7 @@ impl AgentModelsModel {
                 Row::new()
                     .push(Box::new(invoking(
                         actions,
-                        Button::new(controls.0, &accept_btn),
+                        Button::new(&format!("agent-models-confirm-{widget}"), &accept_btn),
                         AgentModelsEffect::InstallModel {
                             model: package.id.clone(),
                             revision: package.revision.clone(),
@@ -1913,7 +1927,7 @@ impl AgentModelsModel {
                     )))
                     .push(Box::new(invoking(
                         actions,
-                        Button::new(controls.1, &cancel),
+                        Button::new(&format!("agent-models-cancel-{widget}"), &cancel),
                         cancel_effect,
                     ))),
             )),
@@ -2018,13 +2032,11 @@ impl AgentModelsModel {
             .reviewing_local
             .with(|reviewing| reviewing.as_deref() == Some(package.id.as_str()));
         if confirming && model.installable() {
-            let confirm_id = format!("agent-models-inprocess-confirm-{widget_token}");
-            let cancel_id = format!("agent-models-inprocess-cancel-{widget_token}");
             Self::push_confirm(
                 actions,
                 &mut body,
                 package,
-                (&confirm_id, &cancel_id),
+                &format!("inprocess-{widget_token}"),
                 AgentModelsEffect::ReviewLocalModel {
                     model: package.id.clone(),
                     show: false,
@@ -2603,6 +2615,8 @@ fn synced_local_profile(
             vision: model.package.vision,
             face_recognition: model.package.face_recognition,
             tool_calling: true,
+            // The signed catalogue declares what the model sees.
+            capabilities_from: agent_provider_config::CapabilitySource::Provider,
         })
         .collect();
     profile.default_model = profile

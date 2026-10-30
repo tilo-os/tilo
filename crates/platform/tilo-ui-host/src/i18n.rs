@@ -19,6 +19,7 @@ mod tests {
             "tilolang-home-heading",
             "tilolang-home-empty",
             "tilolang-open-failed",
+            "tilolang-seen-failed",
             "tilolang-back",
             "tilolang-detail",
             "tilolang-ask-title",

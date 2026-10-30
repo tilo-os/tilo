@@ -1,28 +1,39 @@
-# Theming — a token contract the OS owns
+# Theming: how every part looks, moves and responds
 
-Tilo applications do not own their pixels. An app declares its interface
-through `ui`, and the toolkit and compositor draw it. Theming follows from that
-one decision: a theme is a **typed, validated set of tokens owned by the OS**,
-not a stylesheet an application author writes and a user overrides.
+Tilo applications do not own their pixels. An app (and the shell) declares its
+interface through `ui` components; the toolkit and compositor draw it. A theme
+decides how those components look, move and respond, for every app and the
+shell at once. It can be as small as an accent colour or as large as a
+playful, dithered, pixel-edged desktop with Bauhaus-shaped buttons that squish
+when pressed.
 
-Four rules generate the rest of this document:
+The rules:
 
-1. **Themes target semantic roles, never implementation.** A theme says what
-   "the raised surface", "secondary text" or "danger" look like. It never says
-   what a `Button`'s third child looks like, and there is no selector language
-   in which it could.
-2. **Themes are data, never code.** A theme is a document of numbers and
-   strings that the OS validates and then applies. Nothing in it executes.
-3. **A theme that passes validation cannot break an app.** Validation covers
-   legibility, not only ranges, so "this theme broke my app" is not a bug class
-   an app developer can receive.
-4. **Expressiveness grows by adding roles to a versioned schema.** When a theme
-   needs to say something new, the schema (`ThemeDocument`,
-   `THEME_SCHEMA_VERSION` in `crates/sdk/ui-core/src/theme_document.rs`) gains
-   a role and a version. It never grows CSS-like access to widget internals.
+1. **Views say what is there; the theme says how it looks and behaves.**
+   Structure (which components, where, the shell's arrangement) belongs to
+   views, chosen by the person separately from the theme. A theme reaches
+   every component *part* a component declares, never an app's view tree,
+   and there is no selector language over app structure.
+2. **Two levels.** Most people stay at the **token level**: data
+   (`ThemeDocument`, `THEME_SCHEMA_VERSION` in
+   `crates/sdk/ui-core/src/theme_document.rs`): roles, density, motion
+   presets, built-in painter sets (Default, Glass, Block). The **full level**
+   adds programs: part painters, state transitions, scroll feel and assets
+   (§ "Part painters").
+3. **Safety comes from the sandbox, not from being data.** A theme's
+   programs run as wasm in the UI host with no I/O, no secrets and a measured
+   frame budget; they draw parts and nothing else. The danger KDE's 2024
+   store theme showed was authority (a script that deleted files), which a
+   painter never holds.
+4. **A theme that passes validation cannot break an app.** Legibility is
+   checked on rendered output, for every material a painter draws, so "this
+   theme broke my app" is not a bug class an app developer receives.
 
-It builds on the HIG (`crates/sdk/ui-core/HIG.md`, §7 and §9: "roles, not
-pixels").
+Live surfaces (an interactive background, a lock-screen animation) are a third
+kind, beside views and themes: a program of its own the person chooses. A
+theme may ship one in the same bundle; it is not part of the theme.
+
+It builds on the HIG (`crates/sdk/ui-core/HIG.md`, §7 and §9).
 
 ## What other platforms teach
 
@@ -180,6 +191,46 @@ rise to AAA on a high-contrast palette:
   and every preset with every tinted emphasis hue (5° steps), and require
   no findings at all (`every_preset_keeps_every_floor_at_every_temperature_for_everyone`,
   `every_tinted_emphasis_hue_keeps_every_floor_on_every_preset`).
+
+## Part painters
+
+Every `ui` component declares its **parts** (a `Button`: container, label,
+icon, focus ring; a `Tab`: container, label, close, indicator; a scroll
+container: track, thumb, edge) and their **states** (rest, hover, pressed,
+focused, selected, disabled, dragging, changed-by-someone).
+
+- **A painter** is Rust compiled to wasm against the theme SDK. It is a pure
+  function `(part, size, state, progress, tokens) -> scene`: a vello scene of
+  kurbo paths and peniko brushes (the renderer already draws with them), plus
+  an optional WGSL fill shader for materials such as ordered dithering,
+  pixelation, hatching or refractive glass.
+- **The painted shape is the hit area.** A triangle button takes clicks inside
+  the triangle only; focus rings and accessibility bounds follow the shape.
+- **Motion** belongs to the UI host's clock. A theme declares how each state
+  changes (spring, stepped, duration, curve, or none); the painter only draws
+  a given moment. Reduce motion replaces every transition with its end state.
+- **Scroll feel** is a part too: overscroll (rubber band or hard stop), snapping,
+  momentum, parallax of nested layers, the edge effect and the indicator.
+- **Assets**: fonts (a bitmap font draws unhinted at integer scale), an icon
+  set covering every semantic icon name, cursors, system sounds.
+- **Cost**: painted parts are cached by part, size and state; only animating
+  parts repaint. Each painter's time is measured; one that exceeds the frame
+  budget is reported to the theme's author and drawn by the built-in painter
+  for that part until its author fixes it.
+- **Window effects** (open, close, minimise, focus) and window frames use the
+  same painter interface in the compositor (`WindowEffect`, `WindowFrame`).
+
+Glass and Block are built-in painter sets, written against the same SDK as any
+third-party theme.
+
+## Live surfaces
+
+A live surface is a program that draws a layer the shell places: the desk
+background below the windows, the lock screen's backdrop. It uses the same kit
+(Rust compiled to wasm, vello and wgpu) and gets read-only inputs: time, the
+pointer, the windows' rectangles and motion, notifications, the audio level. It
+does no work while nothing it reads moves, and pauses when covered or on
+battery. It holds no authority and cannot read window content.
 
 ## Layers and precedence
 
@@ -407,6 +458,11 @@ Verified against the code at the time of writing:
   indicators do not carry the frame yet.
 
 ## Roadmap
+
+0. **Part painters and live surfaces**: the theme SDK, the part and state
+   declarations of every `ui` component, Glass and Block as built-in painter
+   sets, and a full-level reference theme (dithered, pixel-edged, Bauhaus
+   shapes, the brand palette) across every app and the shell at native refresh.
 
 1. **Hard-coded chrome colours onto tokens**, one app per change, following
    the appendix and the ratchet shards under

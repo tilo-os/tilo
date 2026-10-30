@@ -55,6 +55,8 @@ pub struct ReactionStripWidget {
     picker: Option<crate::widget::Popover<crate::widget::EmojiPicker>>,
     action: Option<ActionEmitter<ReactionToggle>>,
     test_id: Option<String>,
+    /// The input it is used with: how large a target must be.
+    interaction: crate::interaction::InteractionEnvironment,
     dirty: bool,
     layout_dirty: bool,
 }
@@ -84,6 +86,7 @@ impl ReactionStripWidget {
             ),
             action: None,
             test_id: None,
+            interaction: crate::interaction::InteractionEnvironment::default(),
             dirty: true,
             layout_dirty: true,
         }
@@ -221,7 +224,8 @@ impl ReactionStripWidget {
             (self.rect.origin(), self.rect.width()),
             text,
             &metrics,
-        );
+        )
+        .with_minimum_target(f64::from(self.interaction.minimum_target()));
         self.strip.set_layout(laid, theme.motion());
         self.metrics = Some(metrics);
     }
@@ -287,6 +291,20 @@ impl Widget for ReactionStripWidget {
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction != environment {
+            self.interaction = environment;
+            self.layout_dirty = true;
+            self.dirty = true;
+        }
+        if let Some(picker) = &mut self.picker {
+            picker.set_interaction_environment(environment);
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -384,7 +402,9 @@ impl Widget for ReactionStripWidget {
             WindowEvent::CursorMoved { position, .. } => {
                 let point =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                let hover = self.rect.contains(point).then_some(point);
+                // A control's target may grow past the strip to the input's minimum.
+                let reach = self.strip.laid_out().reach().union(self.rect);
+                let hover = reach.contains(point).then_some(point);
                 if hover != self.hover {
                     let was = self.hover.and_then(|p| self.strip.hit(p));
                     self.hover = hover;

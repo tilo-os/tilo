@@ -245,6 +245,120 @@ impl CertifiedJoinIdentity {
     }
 }
 
+/// Version tag of a task agent's join presentation.
+pub const TASK_AGENT_JOIN_PREFIX: &[u8] = b"tilo-collab-task-agent-join-v1\0";
+
+/// A task agent's join: the asking device's certificate (JSON, as in
+/// [`CertifiedJoinIdentity`]), the task delegation that device signed
+/// (`tilo_workspace_join::task_delegation::TaskDelegation::encode`), and the
+/// task key's signature over the room's join bytes, which proves the agent
+/// holds the key the delegation names.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskAgentJoinIdentity {
+    pub workspace_id: String,
+    pub device_certificate: Vec<u8>,
+    pub delegation: Vec<u8>,
+    pub proof: Vec<u8>,
+}
+
+impl TaskAgentJoinIdentity {
+    /// Encode with [`TASK_AGENT_JOIN_PREFIX`].
+    ///
+    /// # Errors
+    /// Postcard's serialization error.
+    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
+        let mut bytes = TASK_AGENT_JOIN_PREFIX.to_vec();
+        bytes.extend_from_slice(&postcard::to_stdvec(self)?);
+        Ok(bytes)
+    }
+
+    /// Decode a task agent's presentation. `Ok(None)` means the bytes are
+    /// not one.
+    ///
+    /// # Errors
+    /// Postcard's deserialization error for a malformed one.
+    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, postcard::Error> {
+        let Some(encoded) = bytes.strip_prefix(TASK_AGENT_JOIN_PREFIX) else {
+            return Ok(None);
+        };
+        postcard::from_bytes(encoded).map(Some)
+    }
+}
+
+/// The directory, in a task agent's app directory, where the desktop that
+/// launches it leaves its [`TaskAgentCredentials`], one file per task agent
+/// named by its id. The agent reads its file once and removes it.
+pub const TASK_AGENT_CREDENTIALS_DIR: &str = "task-agents";
+
+/// What the desktop hands a task agent it launches for one task: the key it
+/// minted for the task, and what the agent presents to join with it.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskAgentCredentials {
+    pub workspace_id: String,
+    /// The asking device's certificate, JSON.
+    pub device_certificate: Vec<u8>,
+    /// The encoded task delegation.
+    pub delegation: Vec<u8>,
+    /// The task key's secret bytes.
+    pub agent_key: [u8; 32],
+}
+
+impl std::fmt::Debug for TaskAgentCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskAgentCredentials")
+            .field("workspace_id", &self.workspace_id)
+            .field("agent_key", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for TaskAgentCredentials {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.agent_key);
+    }
+}
+
+impl TaskAgentCredentials {
+    /// The file name these credentials are left under for `agent_id`.
+    #[must_use]
+    pub fn file_name(agent_id: &str) -> String {
+        format!("{agent_id}.credentials")
+    }
+
+    /// Encode for the file the agent reads.
+    ///
+    /// # Errors
+    /// Postcard's serialization error.
+    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
+        postcard::to_stdvec(self)
+    }
+
+    /// Decode [`Self::encode`] output.
+    ///
+    /// # Errors
+    /// Postcard's deserialization error.
+    pub fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
+        postcard::from_bytes(bytes)
+    }
+
+    /// The presentation the agent joins with, given the task key's
+    /// signature `proof` over the room's join bytes.
+    ///
+    /// # Errors
+    /// Postcard's serialization error.
+    pub fn presentation(&self, proof: [u8; 64]) -> Result<Vec<u8>, postcard::Error> {
+        TaskAgentJoinIdentity {
+            workspace_id: self.workspace_id.clone(),
+            device_certificate: self.device_certificate.clone(),
+            delegation: self.delegation.clone(),
+            proof: proof.to_vec(),
+        }
+        .encode()
+    }
+}
+
 /// Try to dial the Tilo collab broker via the launcher-supplied service
 /// fd. Returns [`NotAvailable`] when the env var is unset (likely: app
 /// running as a Flatpak on stock Linux) or the fd is no longer open.

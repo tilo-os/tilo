@@ -13,7 +13,7 @@ use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
-use crate::host_ui::{OPEN_ACTION, SET_ACTION, THEN_ACTION};
+use crate::host_ui::{OPEN_ACTION, REVIEW_ACTION, SET_ACTION, THEN_ACTION};
 use crate::ids::{DocId, ModuleHash, Principal};
 use crate::live::{Live, LiveStats};
 use crate::meta::{EffectClass, FieldKind};
@@ -37,6 +37,9 @@ pub enum ViewEvent {
         /// column only (`open(r, front: false)`, a selection the keyboard moves).
         front: bool,
     },
+    /// A change mark was activated: show what the task run `run` (its group) did, where it
+    /// changed `target`.
+    Review { run: String, target: ResourceRef },
 }
 
 /// How an edit of a bound field ended.
@@ -136,6 +139,9 @@ impl ViewInstance {
             self.live.absorb(&self.core, change);
         }
         self.live.check_states(&self.core);
+        if let Some(now) = self.time_passed() {
+            self.live.pass_time(now);
+        }
         if self.refresh_all.take() {
             self.live.mark_all();
         }
@@ -173,10 +179,29 @@ impl ViewInstance {
         self.refresh_all.set(true);
     }
 
-    /// Whether a field or view state some boundary read has changed since it last ran.
+    /// When the time some boundary read (`today` in a query or a filter) next reads
+    /// differently, in seconds since 1970 (UTC): the host wakes the view then, and the next
+    /// poll runs again exactly the boundaries that read it. `None` when no boundary read the
+    /// time: nothing about the time ever wakes the view.
+    #[must_use]
+    pub fn wakes_at(&self) -> Option<i64> {
+        self.live.wakes_at()
+    }
+
+    /// The host clock's time, when the time some boundary read reads differently by then. The
+    /// clock is read only while some boundary waits for it.
+    fn time_passed(&self) -> Option<i64> {
+        let at = self.live.wakes_at()?;
+        let now = tilolang::calendar::instant(&self.core.clock_now())?;
+        (now >= at).then_some(now)
+    }
+
+    /// Whether a field or view state some boundary read has changed since it last ran, or the
+    /// time one read has moved on.
     pub fn is_stale(&self) -> bool {
         self.refresh_all.get()
             || self.live.is_dirty()
+            || self.time_passed().is_some()
             || self
                 .changes
                 .borrow()
@@ -464,6 +489,18 @@ impl ViewInstance {
         match aref.action.as_str() {
             SET_ACTION => self.platform_set(aref),
             OPEN_ACTION => self.platform_open(aref),
+            REVIEW_ACTION => {
+                let (Some(Value::Text(run)), Some(Value::Ref(r))) =
+                    (aref.args.first(), aref.args.get(1))
+                else {
+                    return Err(RuntimeError::BadArgs("a malformed change mark".into()));
+                };
+                self.events.borrow_mut().push(ViewEvent::Review {
+                    run: run.clone(),
+                    target: ResourceRef::clone(&r.target),
+                });
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
             THEN_ACTION => {
                 let [Value::Action(first), Value::Action(next)] = aref.args.as_slice() else {
                     return Err(RuntimeError::BadArgs("a malformed `then`".into()));
@@ -663,6 +700,7 @@ impl ViewInstance {
             approved_by: None,
             at: Some(self.core.clock_now()),
             touched: vec![target.id_string()],
+            group: None,
         };
         let mut store = self.core.store.borrow_mut();
         let txn = store.begin()?;

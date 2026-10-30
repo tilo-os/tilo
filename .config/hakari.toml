@@ -93,6 +93,10 @@ third-party = [
     # Keyboard translation links libxkbcommon; keep that native library with
     # input clients rather than every managed server and cross-build member.
     { name = "xkbcommon" },
+    # Screen capture and media link libpipewire through pkg-config; only the
+    # shell, the portal and the media crate build them.
+    { name = "pipewire" },
+    { name = "libspa" },
     # The compositor's backends link libseat, libinput, udev and gbm; only the
     # shell builds them. The color-management handlers' crate builds smithay
     # with just its Wayland frontend, and the union would put every backend

@@ -10,10 +10,13 @@
 //! work becomes an issue in Tasks, as all its work does. Nothing here keeps
 //! a task of its own.
 //!
-//! When the agent cannot take it (the workspace has none, its model is not
-//! set up, or the model is on the internet and this device is offline) the
-//! row says why in plain words, ranks after searching the web
-//! ([`SearchProvider::fallback_rank`]), and opens the place that fixes it.
+//! Asking makes a new agent for the task ([`crate::shell::task_agents`]),
+//! so asking is possible whenever an agent runtime can be launched and a
+//! model is configured. When it cannot be (no agent runtime is installed,
+//! no model is set up, or the model is on the internet and this device is
+//! offline) the row says why in plain words, ranks after searching the web
+//! ([`SearchProvider::fallback_rank`]), and opens the place that fixes it;
+//! the composer offers the same fix in place ([`open_fix`]).
 //!
 //! [`ChromeState::ask_agent_in_place`]: crate::shell::chrome_state::ChromeState::ask_agent_in_place
 
@@ -26,7 +29,7 @@ use crate::shell::chrome_state::{Chrome, ChromeState, WsTab};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
-use crate::shell::state::{RoomId, WorkspaceAuthority as _};
+use crate::shell::state::RoomId;
 
 pub const PROVIDER_ID: &str = "ask-agent";
 
@@ -36,9 +39,10 @@ const ASK_ID: &str = "ask";
 /// Whether the workspace's agent can take a request now, and if not, why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Readiness {
-    /// `agent` takes requests in `room`.
+    /// A new agent made for the task takes requests in `room`.
     Ready { room: RoomId, agent: String },
-    /// No agent works in the workspace in front.
+    /// No agent can run: the agent runtime is not installed, or there is no
+    /// workspace in front.
     NoAgent,
     /// The workspace's agent has no model to plan with.
     NoModel,
@@ -47,23 +51,24 @@ pub enum Readiness {
 }
 
 impl Readiness {
-    /// The readiness of the workspace in front: its first agent, where that
-    /// agent's model runs (`model_of`, `None` with no model), and whether
+    /// The readiness of the workspace in front for a new agent made for the
+    /// task: whether an agent runtime can be launched (`runtime`), where the
+    /// agents' model runs (`model_of`, `None` with no model), and whether
     /// the device's link is down. An unknown link is not called offline.
     pub fn of(
         chrome: &ChromeState,
+        runtime: bool,
         model_of: impl FnOnce(&str) -> Option<EndpointLocation>,
     ) -> Self {
-        let found = {
-            let tree = chrome.tree();
-            tree.desktop.active_workspace().and_then(|workspace| {
-                let (agent, _) = workspace.agent_members().into_iter().next()?;
-                Some((workspace.room(), agent))
-            })
-        };
-        let Some((room, agent)) = found else {
+        let room = chrome
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(crate::shell::state::Workspace::room);
+        let Some(room) = room.filter(|_| runtime) else {
             return Self::NoAgent;
         };
+        let agent = crate::shell::task_agents::NEW_TASK_AGENT.to_owned();
         let offline = chrome
             .quick_settings
             .status
@@ -81,12 +86,32 @@ impl Readiness {
         matches!(self, Self::Ready { .. })
     }
 
+    /// What keeps a new agent from being asked, as the composer says it.
+    #[must_use]
+    pub(crate) fn blocker(&self) -> Option<crate::shell::agent_quick_composer::AskBlocker> {
+        use crate::shell::agent_quick_composer::AskBlocker;
+        match self {
+            Self::Ready { .. } => None,
+            Self::NoAgent => Some(AskBlocker::NoRuntime),
+            Self::NoModel => Some(AskBlocker::NoModel),
+            Self::Offline => Some(AskBlocker::Offline),
+        }
+    }
+
     /// What the row says under its title: whom it asks, or why it cannot.
     fn subtitle(&self) -> String {
         match self {
             Self::Ready { agent, .. } => t_args(
                 "search-ask-agent-subtitle",
-                &[("agent", agent.clone().into())],
+                &[(
+                    "agent",
+                    if agent == crate::shell::task_agents::NEW_TASK_AGENT {
+                        t("agent-quick-new-agent")
+                    } else {
+                        agent.clone()
+                    }
+                    .into(),
+                )],
             ),
             Self::NoAgent => t("search-ask-agent-no-agent"),
             Self::NoModel => t("search-ask-agent-no-model"),
@@ -110,6 +135,8 @@ type ModelOf = Box<dyn Fn(&str) -> Option<EndpointLocation>>;
 pub struct AskAgentProvider {
     kinds: Vec<ResourceKind>,
     model_of: ModelOf,
+    /// Whether an agent runtime can be launched here.
+    runtime: Box<dyn Fn() -> bool>,
 }
 
 impl Default for AskAgentProvider {
@@ -139,9 +166,22 @@ impl AskAgentProvider {
     pub(crate) fn with_models(
         model_of: impl Fn(&str) -> Option<EndpointLocation> + 'static,
     ) -> Self {
+        Self::with_runtime_and_models(
+            crate::shell::launcher::task_agent_runtime_installed,
+            model_of,
+        )
+    }
+
+    /// A provider that asks `runtime` whether an agent can be launched and
+    /// reads where an agent's model runs from `model_of`.
+    pub(crate) fn with_runtime_and_models(
+        runtime: impl Fn() -> bool + 'static,
+        model_of: impl Fn(&str) -> Option<EndpointLocation> + 'static,
+    ) -> Self {
         Self {
             kinds: vec![ResourceKind::Custom(t("search-kind-agent"))],
             model_of: Box::new(model_of),
+            runtime: Box::new(runtime),
         }
     }
 
@@ -153,7 +193,7 @@ impl AskAgentProvider {
     }
 
     fn readiness(&self, chrome: &ChromeState) -> Readiness {
-        Readiness::of(chrome, |agent| (self.model_of)(agent))
+        Readiness::of(chrome, (self.runtime)(), |agent| (self.model_of)(agent))
     }
 
     fn row(&self, query: &str, readiness: Readiness) -> SearchResult {
@@ -174,29 +214,59 @@ impl AskAgentProvider {
 /// What choosing the row does: ask the agent, or open the place that makes
 /// asking possible.
 fn choose(query: &str, readiness: &Readiness, chrome: &Chrome) -> Result<(), ActionError> {
-    let settings = |page: &str| {
-        crate::shell::uri_open::open_in_workspace(&format!("settings://{page}"), chrome)
-            .map(drop)
-            .map_err(|error| ActionError::Explained(error.user_message()))
-    };
-    match readiness {
+    match readiness.blocker() {
         // Asked about what is focused, in the composer beside it, where
         // the answer shows; work it becomes is an issue in Tasks as ever.
-        Readiness::Ready { .. } => {
+        None => {
             let mut state = chrome.borrow_mut();
             state.ask_agent_in_place(query.trim().to_owned());
             state.bump();
             Ok(())
         }
-        Readiness::NoAgent => {
+        Some(blocker) => open_fix(blocker, chrome),
+    }
+}
+
+/// Open the place that fixes `blocker`: the palette's row and the composer's
+/// Set up button both go here.
+///
+/// # Errors
+/// The settings page could not be opened.
+pub(crate) fn open_fix(
+    blocker: crate::shell::agent_quick_composer::AskBlocker,
+    chrome: &Chrome,
+) -> Result<(), ActionError> {
+    use crate::shell::agent_quick_composer::AskBlocker;
+    let settings = |page: &str| {
+        crate::shell::uri_open::open_in_workspace(&format!("settings://{page}"), chrome)
+            .map(drop)
+            .map_err(|error| ActionError::Explained(error.user_message()))
+    };
+    match blocker {
+        AskBlocker::NoRuntime => {
             let mut state = chrome.borrow_mut();
             state.open_workspace_settings(WsTab::Agents);
             state.bump();
             Ok(())
         }
-        Readiness::NoModel => settings("agent_models"),
-        Readiness::Offline => settings("network"),
+        AskBlocker::NoModel => settings("agent_models"),
+        AskBlocker::Offline => settings("network"),
     }
+}
+
+/// What keeps a new agent made for the task from being asked in front now,
+/// read as the palette's row reads it: `None` when nothing does.
+#[must_use]
+pub(crate) fn task_agent_blocker(
+    chrome: &ChromeState,
+) -> Option<crate::shell::agent_quick_composer::AskBlocker> {
+    let config = ProviderConfig::load();
+    Readiness::of(
+        chrome,
+        crate::shell::launcher::task_agent_runtime_installed(),
+        |agent| model_location(&config, agent),
+    )
+    .blocker()
 }
 
 impl SearchProvider for AskAgentProvider {

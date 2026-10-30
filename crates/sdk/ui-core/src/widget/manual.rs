@@ -333,7 +333,7 @@ impl ManualContext<'_> {
                 self.depth.saturating_add(1),
             )?;
         }
-        let layout = probe.layout(*root)?;
+        let layout = probe.unrounded_layout(*root);
         Ok(ChildMeasurement {
             size: layout.size,
             content_size: layout.content_size,
@@ -443,7 +443,10 @@ pub(super) unsafe fn run_policy(
     depth: usize,
 ) -> Result<bool, WidgetLayoutError> {
     let revision = descriptor.invalidation.0.requested.get();
-    let layout = *tree.layout(node)?;
+    // A policy allocates in the solver's own geometry: the tree rounds its
+    // edges onto device pixels for placing them, and a rounded allocation fed
+    // back in would read as the policy's answer changing.
+    let layout = *tree.unrounded_layout(node);
     let mut context = ManualContext {
         tree,
         nodes,
@@ -503,7 +506,7 @@ pub(super) unsafe fn run_policy(
     let mut overflow_bounds = Rect::ZERO;
     let mut conflict = None;
     for (index, ((child, _), requested)) in descriptor.children.iter().zip(placements).enumerate() {
-        let layout = tree.layout(*child)?;
+        let layout = tree.unrounded_layout(*child);
         let effective = Rect::from_origin_size(
             (f64::from(layout.location.x), f64::from(layout.location.y)),
             (f64::from(layout.size.width), f64::from(layout.size.height)),
@@ -545,7 +548,7 @@ fn descendant_bounds(tree: &TaffyTree<()>, root: NodeId) -> Result<Rect, taffy::
     let mut pending = vec![(root, Point::ZERO, unbounded)];
     let mut extent = Rect::ZERO;
     while let Some((node, parent_origin, clip)) = pending.pop() {
-        let layout = tree.layout(node)?;
+        let layout = tree.unrounded_layout(node);
         let origin = Point::new(
             parent_origin.x + f64::from(layout.location.x),
             parent_origin.y + f64::from(layout.location.y),

@@ -7,6 +7,7 @@
 use vello::kurbo::Rect;
 
 use super::{Inputs, Metrics, NavMode, NavShell, Resize};
+use crate::interaction::InteractionEnvironment;
 use crate::num::f32_of_f64;
 use crate::theme::Theme;
 use crate::widget::flap::SplitLayout;
@@ -25,7 +26,52 @@ pub(super) struct Edge {
     memory: Option<crate::storage::Settings<super::memory::NavShellMemory>>,
 }
 
+impl Metrics {
+    /// The header row for a person using `input`: the shell's own buttons
+    /// are the minimum target it needs, as an app's buttons are
+    /// ([`crate::chrome::HeaderRowMetrics::resolve_for`]).
+    fn for_input(mut self, theme: &Theme, input: InteractionEnvironment) -> Self {
+        let row = crate::chrome::HeaderRowMetrics::resolve_for(theme, input);
+        self.row = row;
+        self.header = row.height;
+        self.chip = row.chip;
+        self.inset = row.inset;
+        self.gap = row.gap;
+        self
+    }
+}
+
 impl NavShell {
+    /// The geometry of the rect this pass laid out, with the layout switch it asks for
+    /// (docking the sidebar once the text is smaller again) taken: whether the switch moved
+    /// anything. The parts were laid out from the plan before it, so then the shell lays out
+    /// again, and asks for the frame that does.
+    pub(super) fn replan(&mut self, before: &super::NavGeometry) -> bool {
+        self.refresh_geometry();
+        let placed = self.geometry.clone();
+        self.reconcile_size_class(before);
+        self.refresh_geometry();
+        let stale = self.geometry != placed;
+        self.paint_dirty |= stale;
+        stale
+    }
+
+    /// How the person reaches the window: its own buttons are sized for it,
+    /// so the row lays out again when it changes.
+    pub(super) fn hear_input(&mut self, input: InteractionEnvironment) {
+        if self.interaction != input {
+            self.interaction = input;
+            self.layout_dirty = true;
+        }
+    }
+
+    /// Parts the app handed over since the input last changed (a header's actions for the
+    /// page a press opened) hear how the person reaches the window before they are measured.
+    pub(super) fn tell_parts_input(&mut self) {
+        let input = self.interaction;
+        self.for_each_owned_mut(|child| child.set_interaction_environment(input));
+    }
+
     pub(super) fn sidebar_resize_target(&self) -> String {
         format!(
             "{}.sidebar-resize",
@@ -188,7 +234,7 @@ impl NavShell {
     /// rail, and a sidebar that is always a rail).
     pub(super) fn sidebar_metrics(&mut self, theme: &Theme) -> (Metrics, Option<AdaptiveSidebar>) {
         self.recall_sidebar_width();
-        let mut metrics = Metrics::resolve(theme);
+        let mut metrics = Metrics::resolve(theme).for_input(theme, self.interaction);
         let (docked_rail, header_actions) = {
             let inputs = self.inputs.borrow();
             let actions = inputs.actions.get(super::Column::Sidebar.index());

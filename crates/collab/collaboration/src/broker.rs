@@ -37,6 +37,10 @@ use tilo_sort::CompactSort as _;
 mod audio_output;
 #[path = "broker_bytes.rs"]
 mod bytes;
+#[path = "refused_answer.rs"]
+mod refused_answer;
+#[path = "task_agent_route.rs"]
+mod task_agent_route;
 use bytes::{command_bytes, event_diagnostics, fit_catalogue, remote_action_round_trip};
 #[path = "change_waits.rs"]
 mod change_waits;
@@ -1974,7 +1978,19 @@ pub type EndpointChannelKeys = std::sync::Arc<
 pub struct CertifiedEndpointIdentity {
     presentation: Vec<u8>,
     device_key: ed25519_dalek::SigningKey,
-    channel_keys: Option<EndpointChannelKeys>,
+    signer: EndpointSigner,
+}
+
+/// What signs an explicit endpoint's writes and where its channel keys come
+/// from.
+#[derive(Clone)]
+enum EndpointSigner {
+    /// A test harness's endpoint: its key, and the channel keys `with_channel_keys`
+    /// gave it, if any.
+    Harness(Option<EndpointChannelKeys>),
+    /// A task agent: the task key its desktop delegated signs, and the
+    /// channel keys are always asked of an identity service.
+    Delegated(EndpointChannelKeys),
 }
 
 impl CertifiedEndpointIdentity {
@@ -1982,7 +1998,21 @@ impl CertifiedEndpointIdentity {
         Self {
             presentation,
             device_key,
-            channel_keys: None,
+            signer: EndpointSigner::Harness(None),
+        }
+    }
+
+    /// An identity signing with `key` under the delegation `presentation`
+    /// carries, its routes' channel keys asked through `keys`.
+    pub(crate) fn delegated(
+        presentation: Vec<u8>,
+        key: ed25519_dalek::SigningKey,
+        keys: EndpointChannelKeys,
+    ) -> Self {
+        Self {
+            presentation,
+            device_key: key,
+            signer: EndpointSigner::Delegated(keys),
         }
     }
 
@@ -1991,12 +2021,16 @@ impl CertifiedEndpointIdentity {
     /// them its writes are plaintext, and refused in a room that seals them.
     #[must_use]
     pub fn with_channel_keys(mut self, keys: EndpointChannelKeys) -> Self {
-        self.channel_keys = Some(keys);
+        self.signer = EndpointSigner::Harness(Some(keys));
         self
     }
 
     fn document_signer(&self) -> SdkDocumentSigner {
-        SdkDocumentSigner::Harness(Box::new(self.device_key.clone()), self.channel_keys.clone())
+        let key = Box::new(self.device_key.clone());
+        match &self.signer {
+            EndpointSigner::Harness(keys) => SdkDocumentSigner::Harness(key, keys.clone()),
+            EndpointSigner::Delegated(keys) => SdkDocumentSigner::Delegated(key, keys.clone()),
+        }
     }
 }
 
@@ -2112,6 +2146,10 @@ enum SdkDocumentSigner {
     /// still rejects the uncertified join before any op reaches policy.
     /// With channel keys to ask, its routes encrypt as a certified one's do.
     Harness(Box<ed25519_dalek::SigningKey>, Option<EndpointChannelKeys>),
+    /// A task agent: the task key signs its writes and the delegation its
+    /// desktop signed admits it; the channel keys come from its launcher's
+    /// identity service, as a launched app's do.
+    Delegated(Box<ed25519_dalek::SigningKey>, EndpointChannelKeys),
 }
 
 /// Identity state after the shovel thread has entered its `LocalSet`. The host
@@ -5743,9 +5781,7 @@ fn origin_claims(
     app_id: &str,
     mutation: &collab_types::DocumentMutation,
 ) -> Vec<collab_types::ChangeClaim> {
-    let claims = collab_types::mutation_claims(mutation, collab_types::record_unit)
-        .map(|claims| crate::app_surface::with_footprints(app_id, claims));
-    claims.unwrap_or_else(|error| {
+    crate::app_surface::claims_of(app_id, mutation).unwrap_or_else(|error| {
         #[cfg(debug_assertions)]
         if let collab_types::DocumentMutation::Incremental(bytes) = mutation
             && collab_types::parse_changes(bytes).is_ok()
@@ -5844,9 +5880,9 @@ async fn try_send_frame(
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             identity.signing_public_key()
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key, _)) => {
-            key.verifying_key().to_bytes()
-        }
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(key, _) | SdkDocumentSigner::Delegated(key, _),
+        ) => key.verifying_key().to_bytes(),
         LocalSdkDocumentSigner::Host(identity) => identity.metadata().signing_public_key(),
     };
     let author = collab_types::Ed25519PublicKey::from_bytes(author);
@@ -5928,7 +5964,9 @@ async fn try_send_frame(
                 ));
             }
         },
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key, _)) => {
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(key, _) | SdkDocumentSigner::Delegated(key, _),
+        ) => {
             use ed25519_dalek::Signer as _;
             let signing_bytes = match op.signing_bytes() {
                 Ok(bytes) => bytes,
@@ -6072,7 +6110,9 @@ async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigne
                 .channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
                 .await
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, Some(keys))) => {
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(_, Some(keys)) | SdkDocumentSigner::Delegated(_, keys),
+        ) => {
             let query = KeyQuery::of(route, generation);
             let mut fetched = endpoint_channel_keys(std::sync::Arc::clone(keys), vec![query])
                 .await
@@ -6113,9 +6153,9 @@ async fn refresh_keys(
                 },
             )
         }
-        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, Some(keys))) => {
-            std::sync::Arc::clone(keys)
-        }
+        LocalSdkDocumentSigner::Inherited(
+            SdkDocumentSigner::Harness(_, Some(keys)) | SdkDocumentSigner::Delegated(_, keys),
+        ) => std::sync::Arc::clone(keys),
         _ => {
             tracing::debug!(target: KEY_ROUNDS, "collab: asking the host for channel keys");
             refresh_all_route_keys(routes, signer, inbound_tx, round).await;
@@ -6827,11 +6867,10 @@ async fn dispatch_sdk_request(
                     // bridge stays open; a lost terminal may follow an effect
                     // and still stops subsequent outbound work.
                     if refused_by_peer(&error) {
-                        tracing::warn!(
-                            %error,
-                            id,
-                            "collab: the broker refused this invocation update; the bridge stays open"
-                        );
+                        if let Some(failed) = refused_answer::failure(id, &update, &error) {
+                            let sent = route.channel.update_invocation(id, &failed).await;
+                            refused_answer::followed(id, sent);
+                        }
                     } else {
                         tracing::warn!(%error, id, "collab: updating action invocation failed");
                         if update.is_terminal() {
@@ -9579,17 +9618,29 @@ mod tests {
     fn a_refused_invocation_update_keeps_the_bridge() {
         let broker = FakeBroker::default();
         let (mut manager, captured, thread) = committed_route_over_fake_broker(broker);
-        captured.lock().unwrap().refuse_terminals = 1;
+        {
+            let mut captured = captured.lock().unwrap();
+            captured.refuse_terminals = 1;
+            captured.invocation_fixture_enabled = true;
+        }
+        let refused = tilo_actions::InvocationId::new();
         manager.send(CollabRequest::UpdateInvocation {
             id: 41,
             update: tilo_actions::InvocationUpdate::Succeeded {
-                invocation: tilo_actions::InvocationId::new(),
+                invocation: refused,
                 output: tilo_actions::ActionOutput::default(),
             },
         });
-        tilo_test_env::wait_until("the refused update to be answered", || {
-            captured.lock().unwrap().terminal_updates == 1
+        // The refused answer is followed by the invocation's failure, so its
+        // caller is not left waiting for an answer that will not come.
+        tilo_test_env::wait_until("the refused answer's failure to reach the broker", || {
+            captured.lock().unwrap().terminal_updates == 2
         });
+        assert!(matches!(
+            &captured.lock().unwrap().invocation_updates[1],
+            (41, tilo_actions::InvocationUpdate::Failed { invocation, error })
+                if *invocation == refused && error.code == "answer_refused"
+        ));
         // Give the shovel a turn to act on the answer the broker sent.
         thread::sleep(Duration::from_millis(50));
         assert!(
@@ -9605,7 +9656,7 @@ mod tests {
             },
         });
         tilo_test_env::wait_until("the later update to reach the broker", || {
-            captured.lock().unwrap().terminal_updates == 2
+            captured.lock().unwrap().terminal_updates == 3
         });
         assert!(manager.is_connected());
         drop(manager);

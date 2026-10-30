@@ -144,9 +144,9 @@ fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::Sc
 /// fading in (reduced motion keeps fades). Two paints a moment apart, while
 /// that pause runs out or the fade runs, catch the glance at different
 /// opacities, so a comparison of two paints waits for both.
-pub(super) fn settle_desk(frame: &mut PopulatedShellFixture) {
+pub(super) fn settle_desk(frame: &mut FrameBuilder) {
     let deadline = tilo_test_env::hang_deadline();
-    let desk_pending = |frame: &PopulatedShellFixture| {
+    let desk_pending = |frame: &FrameBuilder| {
         let now = std::time::Instant::now();
         frame.host.desk_animating(now)
             || frame.host.desk_wake_deadline(now).is_some_and(|due| {
@@ -562,24 +562,20 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
         ]
     );
     assert!(tree.desktop.workspaces[2].collaborators.is_empty());
-    // The fixture is the owning action for its presented tabs: it creates
-    // exactly their records, and constructing the tree fabricates no others.
-    let expected_records = group
-        .tabs
-        .iter()
-        .map(|tab| ui::record::RecordId::for_tab(tab.id).to_string())
-        .collect::<std::collections::BTreeSet<_>>();
+    // A tab's document is its app's own: the shell holds no record for a
+    // presented tab, and constructing the tree fabricates none.
     drop(tree);
     let actual_records = chrome
         .records()
         .open_records()
         .into_iter()
         .map(|record| record.id.to_string())
-        .collect::<std::collections::BTreeSet<_>>();
+        .collect::<Vec<_>>();
     drop(chrome);
     assert_eq!(
-        actual_records, expected_records,
-        "only the fixture's explicit creations may hold document authority"
+        actual_records,
+        Vec::<String>::new(),
+        "the shell's store holds no document for a presented tab"
     );
 }
 
@@ -1427,13 +1423,14 @@ fn dense_capture_does_not_inherit_another_producers_canvas_policy() {
 
 #[cfg(target_os = "linux")]
 fn acknowledge_notes_saves(frame: &mut PopulatedShellFixture) {
-    acknowledge_notes_saves_of(frame, 3);
+    acknowledge_notes_saves_of(frame, (3, 3));
 }
 
-/// Acknowledge the startup writes of the fixture's `surfaces` Notes windows.
+/// Acknowledge the startup writes of the fixture's `records` Notes records,
+/// `surfaces` of them shown.
 #[cfg(target_os = "linux")]
-fn acknowledge_notes_saves_of(frame: &mut PopulatedShellFixture, surfaces: usize) {
-    frame.acknowledge_notes_startup_writes(surfaces);
+fn acknowledge_notes_saves_of(frame: &mut PopulatedShellFixture, notes: (usize, usize)) {
+    frame.acknowledge_notes_startup_writes(notes);
 }
 
 #[cfg(target_os = "linux")]
@@ -1505,7 +1502,7 @@ fn acknowledged_notes_canvas_of(
     }
     // Startup creates real records. A writer acknowledgment between the two
     // encodings would change Saving to Saved and invalidate the pixel oracle.
-    acknowledge_notes_saves_of(frame, records);
+    acknowledge_notes_saves_of(frame, (records, surfaces));
     at_rest = frame.paint_with_damage();
     assert_notes_startup_saved_of(frame, surfaces);
     at_rest
@@ -3177,6 +3174,10 @@ fn overview_fade_repaints_one_display_and_matches_dense_in_every_theme() {
         // first, so the frames before the chord are settled and the fade is
         // the only thing that moves.
         settle_desk(&mut frame);
+        // Its hosted apps take what their first frames handed them in the
+        // loop's pumps: settled through those too.
+        let mut doc = automerge::AutoCommit::new();
+        frame.settle(&mut doc);
         let mut frames = vec![frame.paint_with_damage(), frame.paint_with_damage()];
         frame.with_chrome(|chrome| {
             chrome.overlays.overview = true;
@@ -3184,12 +3185,18 @@ fn overview_fade_repaints_one_display_and_matches_dense_in_every_theme() {
         });
         frame.host_mut().latch_overview_transition();
         // Produce the fade first: rendering 4K oracles between samples
-        // would outlast it.
+        // would outlast it. Each frame is the compositor loop's: the pump
+        // shows the overview's app the chord before the paint.
+        let mut fade_frame = |frame: &mut PopulatedShellFixture| {
+            frame.pump_apps(&mut doc, &automerge::ROOT);
+            frame.relayout_if_owed();
+            frame.paint_with_damage()
+        };
         for _ in 0..3 {
-            frames.push(frame.paint_with_damage());
+            frames.push(fade_frame(&mut frame));
             std::thread::sleep(std::time::Duration::from_millis(120));
         }
-        frames.push(frame.paint_with_damage());
+        frames.push(fade_frame(&mut frame));
         retained.forget_retained_for_test();
         let mut repainted = false;
         for (index, painted) in frames.iter().enumerate() {
@@ -3612,7 +3619,7 @@ fn settle_notes(frame: &mut FrameBuilder) {
         .borrow_mut()
         .flush_fixture_records(notes::definition().app_id(), &room)
         .expect("Notes startup writes acknowledged");
-    assert!(flushed > 0, "the desktop mounted Notes");
+    assert!(!flushed.is_empty(), "the desktop mounted Notes");
     for _ in 0..3 {
         frame.wake_mounted_components();
         frame.relayout();
@@ -3911,7 +3918,8 @@ fn moving_to_another_strip_in((name, theme): ThemeCase) {
             frame.relayout();
             let _ = frame.paint_with_damage();
         }
-        acknowledge_notes_saves_of(&mut frame, 6);
+        // Six Notes records over two strips, four windows shown.
+        acknowledge_notes_saves_of(&mut frame, (6, 4));
         frame.relayout();
         let _ = frame.paint_with_damage();
         for (direction, way) in [(1, "down"), (-1, "up")] {

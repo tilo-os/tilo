@@ -2167,7 +2167,10 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
         &HashSet::new(),
     );
     let node = Widget::accessibility(list_of(&h)).expect("semantics");
-    fn find<'a>(node: &'a crate::a11y::AccessNode, prefix: &str) -> Option<&'a crate::a11y::AccessNode> {
+    fn find<'a>(
+        node: &'a crate::a11y::AccessNode,
+        prefix: &str,
+    ) -> Option<&'a crate::a11y::AccessNode> {
         if node
             .action_target
             .as_deref()
@@ -2177,7 +2180,12 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
         }
         node.children.iter().find_map(|child| find(child, prefix))
     }
-    assert!(find(&node, "section-action:").expect("header button").state.disabled);
+    assert!(
+        find(&node, "section-action:")
+            .expect("header button")
+            .state
+            .disabled
+    );
     click_at(&mut h, work.x1 - s2 - 10.0, header_y);
     assert_eq!(take(&mut h), None);
 }
@@ -2224,8 +2232,10 @@ fn bound_check_rename_and_delete_run_their_actions() {
     assert_eq!(take(&mut h), Some(serde_json::json!("work")));
     let bindings = crate::widget::controls::control_action_bindings(list_of(&h));
     assert!(
-        bindings.iter().any(|binding| binding.control_id.starts_with("node:")
-            && matches!(binding.kind, crate::widget::ControlBindingKind::Action(_))),
+        bindings
+            .iter()
+            .any(|binding| binding.control_id.starts_with("node:")
+                && matches!(binding.kind, crate::widget::ControlBindingKind::Action(_))),
         "a bound check is the checkable row's control: {bindings:?}"
     );
 }

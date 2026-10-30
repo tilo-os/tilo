@@ -92,11 +92,45 @@ pub const VALUE_TYPES: &[ValueType] = &[
     ValueType {
         name: "Version",
         id: "host-version",
-        doc: "A version of a resource, as history keeps it: who made it, when, and by which action.",
+        doc: "A version of a resource, as history keeps it: who made it, when, by which action, in which task run, and what it did.",
         fields: &[
             ("who", "Principal", "Who made it: a person, or an agent."),
             ("at", "Time", "When it was made."),
             ("what", "Text", "The action that made it, by its label."),
+            (
+                "task",
+                "Option<TaskRun>",
+                "The task run that made it; `.none` for a change made outside a run.",
+            ),
+            (
+                "kind",
+                "Text",
+                "What it did to the resource: `created`, `changed` or `removed`. A removed resource keeps its versions, so who removed it stays answerable.",
+            ),
+            (
+                "fields",
+                "List<Text>",
+                "The fields it changed, by name; empty for one that made or removed the resource.",
+            ),
+            ("of", "Resource", "The resource it is a version of."),
+        ],
+    },
+    ValueType {
+        name: "TaskRun",
+        id: "host-task-run",
+        doc: "One run of a task: what an agent did for the person who started it, kept and undone as one unit.",
+        fields: &[
+            (
+                "id",
+                "Text",
+                "The run's group, which every change it made is stamped with.",
+            ),
+            ("task", "Text", "The task it is a run of, by its id."),
+            (
+                "title",
+                "Text",
+                "What the run was asked, as its task is titled when it ran.",
+            ),
         ],
     },
     ValueType {
@@ -270,6 +304,20 @@ pub fn value_field(ty: &str, field: &str) -> Option<usize> {
         .fields
         .iter()
         .position(|(name, ..)| *name == field)
+}
+
+/// The value types that name an action, `Version` (the one that made it) and `Action` (the
+/// one offered), which `v.is(edit)` asks about by the action itself rather than its label.
+pub const NAMES_AN_ACTION: &[&str] = &["Version", "Action"];
+
+/// Where the tuple of the value type `ty` holds the id of the action it names: after its
+/// fields, which code reads by name, so the id is compared only through `.is(action)`.
+#[must_use]
+pub fn action_id_at(ty: &str) -> Option<usize> {
+    NAMES_AN_ACTION
+        .contains(&ty)
+        .then(|| value_type(ty).map(|t| t.fields.len()))
+        .flatten()
 }
 
 fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {

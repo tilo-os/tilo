@@ -540,6 +540,149 @@ impl Ebook {
         self.progress.get(id).copied().unwrap_or_default()
     }
 
+    /// How books are set, with every font and colour scheme offered: the
+    /// reading settings' read.
+    pub(crate) fn read_settings(&self) -> serde_json::Value {
+        use tilo_resource::Model as _;
+        serde_json::json!({
+            "settings": self.settings.to_json(),
+            "default_font": self.default_font.to_json(),
+            "fonts": self.fonts.values().map(tilo_resource::Model::to_json).collect::<Vec<_>>(),
+            "schemes": self.schemes.values().map(tilo_resource::Model::to_json).collect::<Vec<_>>(),
+        })
+    }
+
+    /// The reading font `font`: the font's read.
+    ///
+    /// # Errors
+    /// When the pickers no longer offer it.
+    pub(crate) fn read_font(&self, font: &str) -> Result<serde_json::Value, String> {
+        use tilo_resource::Model as _;
+        self.fonts
+            .values()
+            .find(|entry| entry.id == font)
+            .map(FontEntry::to_json)
+            .ok_or_else(|| "that font is no longer offered".to_owned())
+    }
+
+    /// The colour scheme `scheme`: the scheme's read.
+    ///
+    /// # Errors
+    /// When the pickers no longer offer it.
+    pub(crate) fn read_scheme(&self, scheme: &str) -> Result<serde_json::Value, String> {
+        use tilo_resource::Model as _;
+        self.schemes
+            .values()
+            .find(|entry| entry.id == scheme)
+            .map(ColorScheme::to_json)
+            .ok_or_else(|| "that colour scheme is no longer offered".to_owned())
+    }
+
+    /// What the book `book` on the shelf is: the book's read.
+    ///
+    /// # Errors
+    /// When the book is not on the shelf.
+    pub(crate) fn read_book(&self, book: &str) -> Result<serde_json::Value, String> {
+        let entry = self
+            .entries
+            .values()
+            .find(|entry| entry.id == book)
+            .ok_or("book is no longer in the library")?;
+        let progress = self.progress_of(book);
+        let marks = || self.live_marks().filter(|mark| mark.doc_id == book);
+        let highlights: std::collections::HashSet<Uuid> = marks()
+            .filter(|mark| mark.kind == AnnoKind::Highlight)
+            .map(|mark| mark.group)
+            .collect();
+        let of_kind = |kind: AnnoKind| marks().filter(|mark| mark.kind == kind).count();
+        let comments = marks()
+            .filter(|mark| {
+                mark.kind == AnnoKind::Note
+                    && mark.group != mark.id
+                    && highlights.contains(&mark.group)
+            })
+            .count();
+        Ok(serde_json::json!({
+            "book": entry.id,
+            "title": entry.title,
+            "author": entry.author,
+            "subject": entry.subject,
+            "shared": entry.shared,
+            "progress": {
+                "chapter": progress.chapter,
+                "block": progress.block,
+                "fraction": progress.fraction,
+                "opened": progress.opened,
+            },
+            "highlights": highlights.len(),
+            "notes": of_kind(AnnoKind::Note) - comments,
+            "comments": comments,
+            "bookmarks": of_kind(AnnoKind::Bookmark),
+        }))
+    }
+
+    /// The highlight `highlight` (one of its pieces or its group), piece
+    /// by piece, with its comments: the highlight's read.
+    ///
+    /// # Errors
+    /// When the highlight is gone.
+    pub(crate) fn read_highlight(&self, highlight: Uuid) -> Result<serde_json::Value, String> {
+        let group = self
+            .highlight_group(highlight)
+            .map_err(|refusal| refusal.to_string())?;
+        let mut pieces: Vec<&Mark> = self.highlight_pieces(group).collect();
+        pieces.sort_by_key(|piece| (piece.chapter, piece.block, piece.start));
+        let first = pieces.first().ok_or("highlight is no longer available")?;
+        let comments: Vec<serde_json::Value> = self
+            .live_marks()
+            .filter(|mark| mark.kind == AnnoKind::Note && mark.group == group && mark.id != group)
+            .map(|mark| serde_json::json!({ "id": mark.id, "text": mark.annotation().note }))
+            .collect();
+        Ok(serde_json::json!({
+            "highlight": group,
+            "book": first.doc_id,
+            "chapter": first.chapter,
+            "color": first.color.key(),
+            "pieces": pieces
+                .iter()
+                .map(|piece| serde_json::json!({
+                    "block": piece.block,
+                    "start": piece.start,
+                    "end": piece.end,
+                    "text": piece.excerpt,
+                }))
+                .collect::<Vec<_>>(),
+            "comments": comments,
+        }))
+    }
+
+    /// The bookmark, note or comment `annotation`: the annotation's read.
+    ///
+    /// # Errors
+    /// When the annotation is gone.
+    pub(crate) fn read_annotation(&self, annotation: Uuid) -> Result<serde_json::Value, String> {
+        let mark = self
+            .live_marks()
+            .find(|mark| mark.id == annotation)
+            .ok_or("annotation is no longer available")?;
+        let kind = match mark.kind {
+            AnnoKind::Bookmark => "bookmark",
+            AnnoKind::Note if mark.group != mark.id => "comment",
+            AnnoKind::Note => "note",
+            AnnoKind::Highlight => "highlight",
+        };
+        Ok(serde_json::json!({
+            "annotation": mark.id,
+            "kind": kind,
+            "book": mark.doc_id,
+            "chapter": mark.chapter,
+            "block": mark.block,
+            "passage": mark.excerpt,
+            "text": mark.annotation().note,
+            "created": mark.created,
+        }))
+    }
+
     /// The annotations the reader shows: every one but a comment whose
     /// highlight was deleted while it was written, as deleting a highlight
     /// deletes its comments.
@@ -611,25 +754,32 @@ impl Ebook {
         places
     }
 
-    /// The reading settings as a place: opening them, with each font and
-    /// colour scheme beneath, offering what removes it.
+    /// The reading settings as a place: reading and opening them, with each
+    /// font and colour scheme beneath, offering what removes it.
     fn settings_place(&self) -> Derived<Self> {
         let mut place = Derived::new("Reading settings")
             .of_kind("settings")
             .identified("settings")
+            .with_effect(&BooksEffect::ReadSettings)
             .with_effect(&BooksEffect::Settings);
         for font in self.fonts.values() {
             place = place.with_child(
                 Derived::new(font.name.clone())
                     .of_kind("font")
                     .identified(format!("font:{}", font.id))
+                    .with_effect(&BooksEffect::ReadFont {
+                        font: font.id.clone(),
+                    })
                     .with(Self::REMOVE_FONT.bind(books::RemoveFont::paths().font, font.id.clone())),
             );
         }
         for scheme in self.schemes.values() {
             let mut child = Derived::new(scheme.name.clone())
                 .of_kind("color-scheme")
-                .identified(format!("scheme:{}", scheme.id));
+                .identified(format!("scheme:{}", scheme.id))
+                .with_effect(&BooksEffect::ReadScheme {
+                    scheme: scheme.id.clone(),
+                });
             if !scheme.builtin {
                 child = child.with(
                     Self::DELETE_SCHEME
@@ -654,6 +804,7 @@ impl Ebook {
         let mut place = Derived::new(entry.title.clone())
             .of_kind("book")
             .identified(book_place_id(&book))
+            .with_effect(&BooksEffect::ReadBook { book: book.clone() })
             .with_effect(&BooksEffect::Open {
                 book: book.clone(),
                 chapter: 0,
@@ -748,6 +899,7 @@ impl Ebook {
         let mut place = Derived::new(label)
             .of_kind("highlight")
             .identified(mark_place_id(AnnoKind::Highlight, false, group))
+            .with_effect(&BooksEffect::ReadHighlight { highlight: group })
             .with_effect(&open_at(first))
             .with(Self::CHANGE_COLOR.bind(books::ChangeColor::paths().highlight, group))
             .with(Self::DELETE_HIGHLIGHT.bind(books::DeleteHighlight::paths().highlight, group))
@@ -768,6 +920,9 @@ impl Ebook {
         Derived::new(mark_label(mark))
             .of_kind(kind)
             .identified(mark_place_id(mark.kind, comment, mark.id))
+            .with_effect(&BooksEffect::ReadAnnotation {
+                annotation: mark.id,
+            })
             .with_effect(&open_at(mark))
             .with(
                 Self::DELETE_ANNOTATION.bind(books::DeleteAnnotation::paths().annotation, mark.id),
@@ -1051,6 +1206,35 @@ pub enum BooksEffect {
     /// Open reading settings
     #[effect(view, row)]
     Settings,
+    /// Read reading settings
+    ///
+    /// Answers how books are set: text size, line spacing, the font and the
+    /// colour scheme chosen, the page layout and paragraph fitting, with
+    /// every font and colour scheme the pickers offer. It is the reading
+    /// settings' read: what discloses them, so removing a font or a colour
+    /// scheme is offered to whoever may read it, an agent too.
+    #[effect(view, row, returns, idempotent, label = "Read reading settings", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    ReadSettings,
+    /// Read font
+    ///
+    /// Answers one reading font the pickers offer: its name and what it is.
+    /// It is the font's read: what discloses it, so removing it is offered
+    /// to whoever may read it, an agent too.
+    #[effect(view, row, returns, idempotent, label = "Read font", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    ReadFont {
+        #[param("The font's id")]
+        font: String,
+    },
+    /// Read colour scheme
+    ///
+    /// Answers one colour scheme the pickers offer: its name and colours.
+    /// It is the scheme's read: what discloses it, so deleting it is
+    /// offered to whoever may read it, an agent too.
+    #[effect(view, row, returns, idempotent, label = "Read colour scheme", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    ReadScheme {
+        #[param("The colour scheme's id")]
+        scheme: String,
+    },
     /// Open
     ///
     /// Shows a book at a chapter, page and block. A place that the book no
@@ -1109,6 +1293,40 @@ pub enum BooksEffect {
         book: String,
         #[param("Chapter, counted from 0; the open chapter when omitted")]
         chapter: Option<usize>,
+    },
+    /// Read book
+    ///
+    /// Answers what a book on the shelf is: its title, author and subject,
+    /// whether it is shared with the workspace, where the reader left off,
+    /// and how many highlights, notes and bookmarks it has. Its text is
+    /// what Read chapter answers. It is the book's read: what discloses its
+    /// place, so sharing it, taking it off the shelf and its annotations
+    /// are offered to whoever may read it, an agent too.
+    #[effect(view, row, returns, idempotent, label = "Read book", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    ReadBook {
+        #[param("The book's id")]
+        book: String,
+    },
+    /// Read highlight
+    ///
+    /// Answers a highlight: the passage it marks, piece by piece, where it
+    /// is, its colour and the comments on it. It is the highlight's read:
+    /// what discloses it, so recolouring, deleting and commenting on it are
+    /// offered to whoever may read it, an agent too.
+    #[effect(view, row, returns, idempotent, label = "Read highlight", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    ReadHighlight {
+        #[param("The highlight: the id of one of its pieces or its group")]
+        highlight: Uuid,
+    },
+    /// Read annotation
+    ///
+    /// Answers a bookmark, a note or a comment: what it says, the passage
+    /// it is at and where. It is the annotation's read: what discloses it,
+    /// so deleting it is offered to whoever may read it, an agent too.
+    #[effect(view, row, returns, idempotent, label = "Read annotation", tag = tilo_actions::DOCUMENT_READ_TAG)]
+    ReadAnnotation {
+        #[param("The annotation's id")]
+        annotation: Uuid,
     },
     /// Share with workspace
     ///
@@ -1182,3 +1400,15 @@ pub(crate) fn read_doc(doc: &ui::automerge::AutoCommit) -> Ebook {
 mod tests;
 
 ui::reach_tests!(EbookShell);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<super::EbookShell>()
+        {
+            panic!("{failures}");
+        }
+    }
+}

@@ -175,7 +175,12 @@ pub enum CameraEffect {
     #[effect(attended, row, job)]
     ExportPdf,
     /// Crop selected page
-    #[effect(view, row)]
+    ///
+    /// Opens the crop frame over the selected page in this window. Camera's
+    /// own view, not the document scanner's: a view on that row would be its
+    /// disclosure, a private one that keeps capturing, rotating, recognizing
+    /// and exporting pages from agents.
+    #[effect(view)]
     CropPage,
     /// Move selected page earlier
     #[effect(row)]
@@ -450,7 +455,6 @@ fn document_row(ctx: &CameraResourceCtx) -> LiveRow {
         (CameraEffect::RecognizeText, has_page),
         (CameraEffect::CopyText, ctx.document_has_text),
         (CameraEffect::ExportPdf, has_page),
-        (CameraEffect::CropPage, has_page),
         (
             CameraEffect::MovePageEarlier,
             has_page && ctx.document_selected > 0,
@@ -714,8 +718,10 @@ mod tests {
                 specs
                     .iter()
                     .filter(|spec| spec.kind == OperationKind::View)
-                    .all(|spec| spec.id.starts_with("open-") || spec.id.starts_with("use-")),
-                "only the screen, mode and lens reveals are views: {:?}",
+                    .all(|spec| spec.id.starts_with("open-")
+                        || spec.id.starts_with("use-")
+                        || spec.id == "crop-page"),
+                "only the screen, mode and lens reveals and the crop frame are views: {:?}",
                 specs.iter().map(|spec| &spec.id).collect::<Vec<_>>()
             );
         }

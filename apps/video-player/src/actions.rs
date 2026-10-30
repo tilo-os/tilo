@@ -316,6 +316,10 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
         }
         published.push(media);
     }
+    // Showing the queue or the recent videos is the player's own view
+    // (`show-library`, with its tab), not these rows': a view here would be
+    // the row's disclosure, a private one that keeps removing a queued video
+    // and clearing the recent ones from agents.
     let queue = LiveRow::new(
         "video-player.queue.local",
         "media.queue",
@@ -324,19 +328,13 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
             rows.queue.len(),
             if rows.queue.len() == 1 { "" } else { "s" }
         ),
-    )
-    .effect(&VideoEffect::ShowLibrary {
-        tab: "queue".into(),
-    });
+    );
     published.push(queue_rows(rows).take(limit).fold(queue, LiveRow::row));
     let mut recent = LiveRow::new(
         "video-player.history.local",
         "media.history",
         format!("{} recent videos on this device", rows.recent.len()),
-    )
-    .effect(&VideoEffect::ShowLibrary {
-        tab: "recent".into(),
-    });
+    );
     if !rows.recent.is_empty() {
         recent = recent.effect(&VideoEffect::ClearRecent);
     }

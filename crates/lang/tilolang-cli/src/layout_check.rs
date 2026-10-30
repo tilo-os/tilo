@@ -60,9 +60,9 @@ pub const SIZES: [Size; 6] = [
     },
 ];
 
-/// Display scales: layout is in logical pixels, so these change only what is snapped to device
-/// pixels and how input is scaled.
-pub const DISPLAY_SCALES: [f64; 2] = [1.0, 2.0];
+/// Display scales, a fractional one among them: layout is in logical pixels, so these change only
+/// where edges snap to device pixels and how input is scaled.
+pub const DISPLAY_SCALES: [f64; 3] = [1.0, 1.5, 2.0];
 
 /// The person's text size: as shipped, and enlarged.
 pub const TEXT_SCALES: [f32; 2] = [1.0, 1.5];
@@ -82,6 +82,24 @@ impl std::fmt::Display for Layout {
             "{}×{} @{}x text {}",
             self.size.width, self.size.height, self.display_scale, self.text_scale
         )
+    }
+}
+
+impl Layout {
+    /// The theme of the layout: as shipped, at its text scale.
+    #[must_use]
+    pub fn theme(&self) -> ui::Theme {
+        ui::Theme::light().with_text_scale(self.text_scale)
+    }
+
+    /// How a person reaches the window at its size.
+    #[must_use]
+    pub fn input(&self) -> InteractionEnvironment {
+        if self.size.touch {
+            InteractionEnvironment::TOUCH
+        } else {
+            InteractionEnvironment::POINTER
+        }
     }
 }
 
@@ -162,6 +180,23 @@ pub struct Options {
     /// Print the toolkit's inspection of every layout at this window size to stderr: each
     /// widget's box, clip and semantics, as the check reads them.
     pub dump: Option<(u32, u32)>,
+    /// Write the window at the `dump` size, at display and text scale 1, as each stage leaves
+    /// it, in the light and the dark theme, to PNGs in this directory.
+    pub shots: Option<PathBuf>,
+    /// The shipped themes `shots` are taken in, by name (`glass`, `block`), each in its light
+    /// and dark variant; none takes the stock light and dark.
+    pub themes: Vec<String>,
+}
+
+/// The light and the dark variant of the shipped theme `name`: `default` the stock pair,
+/// another name its preset and that preset's light sibling (`glass`, `glass light`).
+fn theme_pair(name: &str) -> Result<[(&'static str, ui::Theme); 2], String> {
+    if ui::theme::Preset::find(name) == Some(ui::theme::Preset::Dark) || name == "default" {
+        return Ok([("light", ui::Theme::light()), ("dark", ui::Theme::dark())]);
+    }
+    let dark = ui::Theme::named(name).ok_or_else(|| format!("--theme {name}: no such theme"))?;
+    let light = ui::Theme::named(&format!("{name} light")).unwrap_or_else(|| dark.clone());
+    Ok([("light", light), ("dark", dark)])
 }
 
 /// What a check found.
@@ -216,7 +251,13 @@ pub fn check(options: &Options) -> Result<Report, String> {
     let mut layouts_run: usize = 0;
     let mut unreached = Vec::new();
     for dir in &options.dirs {
-        let (app_findings, ran, app_unreached) = check_app(dir, &options.search, options.dump)?;
+        let (app_findings, ran, app_unreached) = check_app(
+            dir,
+            &options.search,
+            options.dump,
+            options.shots.as_deref(),
+            &options.themes,
+        )?;
         findings.extend(app_findings);
         layouts_run = layouts_run.saturating_add(ran);
         unreached.extend(app_unreached);
@@ -247,6 +288,8 @@ fn check_app(
     dir: &Path,
     search: &[PathBuf],
     dump: Option<(u32, u32)>,
+    shots: Option<&Path>,
+    themes: &[String],
 ) -> Result<(Vec<Finding>, usize, Vec<String>), String> {
     let mut search = search.to_vec();
     search.extend(dir.parent().map(Path::to_path_buf));
@@ -264,6 +307,8 @@ fn check_app(
         meta: &meta,
         sources,
         dump,
+        shots,
+        themes,
         gathered: BTreeMap::new(),
         text: ui::TextRenderer::new(),
         ran: 0,
@@ -297,6 +342,30 @@ fn check_app(
                 &format!("{}, then a {} opened", scenario.name, view.name),
             )?;
         }
+        // The views the system shows on surfaces of its own rather than in a window of the
+        // app: a type's row view (a search result, a row of an agent's answer) and an action's
+        // proposal view (the card asking to run it), on a resource of the type they take.
+        for view in surface_views(&meta) {
+            if check.shown.contains(&view.name) {
+                continue;
+            }
+            let [param] = view.params.as_slice() else {
+                continue;
+            };
+            // A parameter names its type as written; a resource carries the type's id.
+            let Some(ty) = meta.types.iter().find(|t| t.name == param.ty) else {
+                continue;
+            };
+            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
+                continue;
+            };
+            staged.open_with(&resource, &view.id);
+            check.run(
+                &mut staged,
+                &format!("{}, then {} shown", scenario.name, view.name),
+            )?;
+        }
+        press_stage(&mut check, &meta, &packages, &scenario.name)?;
     }
     let unreached = meta
         .views
@@ -308,6 +377,94 @@ fn check_app(
     Ok((check.gathered.into_values().collect(), check.ran, unreached))
 }
 
+/// What the window shows once a person pressed one of its primary actions (a new note opened
+/// beside the list, its header row laid out again around it): at each size, from `scenario` as
+/// staged, pressed as a person presses (a tap on a touchscreen, a click otherwise) and with the
+/// motion it starts run out, read as it stands then, before anything lays the window out
+/// afresh. A layout that only a fresh pass puts right (a header row left where a frame of the
+/// motion put it) shows here.
+fn press_stage(
+    check: &mut AppCheck<'_>,
+    meta: &tilolang::PackageMeta,
+    packages: &Rc<stage::Packages>,
+    scenario: &str,
+) -> Result<(), String> {
+    for label in primary_labels(meta) {
+        for size in SIZES {
+            let layout = Layout {
+                size,
+                display_scale: 1.0,
+                text_scale: 1.0,
+            };
+            let viewport = (size.width, size.height);
+            let mut staged =
+                stage::Staged::new(&meta.app, packages, scenario, viewport, layout.theme())?;
+            staged.lay_out_moving(viewport, layout.theme(), layout.input())?;
+            let Some(id) = button_named(&staged.harness().inspection().root, label) else {
+                continue;
+            };
+            staged.press(&id, size.touch)?;
+            check.audit(
+                &mut staged,
+                layout,
+                &format!("{scenario}, then {label} pressed"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The views of `meta` the system shows on surfaces of its own: each type's row view and each
+/// action's proposal view, once each.
+fn surface_views(meta: &tilolang::PackageMeta) -> Vec<&tilolang::meta::ViewMeta> {
+    let ids: BTreeSet<&str> = meta
+        .row_views
+        .iter()
+        .map(|row| row.view.as_str())
+        .chain(
+            meta.actions
+                .iter()
+                .filter_map(|action| action.proposal.as_ref().map(|p| p.view.as_str())),
+        )
+        .collect();
+    meta.views
+        .iter()
+        .filter(|view| ids.contains(view.id.as_str()))
+        .collect()
+}
+
+/// What the window calls each of `meta`'s primary actions, once each.
+fn primary_labels(meta: &tilolang::PackageMeta) -> Vec<&str> {
+    let mut labels: Vec<&str> = meta
+        .actions
+        .iter()
+        .filter(|action| action.role.as_deref() == Some("primary") && !action.scenario)
+        .map(|action| action.label.as_str())
+        .collect();
+    labels.sort_unstable();
+    labels.dedup();
+    labels
+}
+
+/// The test id of the first button under `node` named `label` that a person can press.
+fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<String> {
+    let pressable = node.semantics.as_ref().is_some_and(|access| {
+        access.role == ui::a11y::Role::Button
+            && !access.state.disabled
+            && access.name.as_deref() == Some(label)
+    });
+    if pressable
+        && node.rect[2] > 0.0
+        && node.rect[3] > 0.0
+        && let Some(id) = &node.test_id
+    {
+        return Some(id.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| button_named(child, label))
+}
+
 /// One app's check under way.
 struct AppCheck<'a> {
     dir: &'a Path,
@@ -315,6 +472,8 @@ struct AppCheck<'a> {
     meta: &'a tilolang::PackageMeta,
     sources: source::SourceMap,
     dump: Option<(u32, u32)>,
+    shots: Option<&'a Path>,
+    themes: &'a [String],
     gathered: BTreeMap<Identity, Finding>,
     /// Measures text as the window's pipeline does, for clipped text.
     text: ui::TextRenderer,
@@ -327,58 +486,125 @@ impl AppCheck<'_> {
     /// Lay `staged` out at every layout and gather what is wrong, as staged by `label`.
     fn run(&mut self, staged: &mut stage::Staged, label: &str) -> Result<(), String> {
         for layout in layouts() {
-            let theme = ui::Theme::light().with_text_scale(layout.text_scale);
-            self.text.set_text_scale(theme.text_scale);
-            self.text.apply_typography(&theme.tokens.typography);
-            let input = if layout.size.touch {
-                InteractionEnvironment::TOUCH
-            } else {
-                InteractionEnvironment::POINTER
-            };
-            let viewport = (layout.size.width, layout.size.height);
-            staged.lay_out(viewport, theme, input, layout.display_scale)?;
-            if let Some(why) = staged.failed() {
-                return Err(format!(
-                    "{}: {label}: the window refused what the app sent: {why}",
-                    self.dir.display(),
-                ));
-            }
-            self.ran = self.ran.saturating_add(1);
-            let inspection = staged.harness().inspection();
-            if self.dump == Some(viewport) {
-                let json = serde_json::to_string_pretty(&inspection).map_err(|e| e.to_string())?;
-                eprintln!("== {} {label} at {layout}\n{json}", self.meta.app);
-            }
-            self.note_shown(&inspection.root);
-            let rows = staged.rows();
-            for row in rows.values() {
-                self.note_shown_row(row);
-            }
-            let mut problems = audit::inspect(
-                &inspection.root,
-                viewport,
-                layout.size.touch.then(|| f64::from(input.minimum_target())),
-            );
-            problems.extend(audit::clipped_text(
-                staged.harness_mut().root_widget_mut(),
-                &mut self.text,
-                viewport,
-            ));
-            for mut problem in problems {
-                // A list draws a row as one widget keyed by the row: what it is about is the
-                // row view's node, the deepest the row's tree holds.
-                if let Some(row) = problem.id.as_ref().and_then(|id| rows.get(id)) {
-                    let mut inner = Vec::new();
-                    row_keys(row, &mut inner);
-                    inner.reverse();
-                    inner.append(&mut problem.keys);
-                    problem.keys = inner;
-                    problem.id = None;
-                }
-                self.gather(&problem, layout, label);
-            }
+            staged.lay_out(
+                (layout.size.width, layout.size.height),
+                layout.theme(),
+                layout.input(),
+                layout.display_scale,
+            )?;
+            self.audit(staged, layout, label)?;
         }
         Ok(())
+    }
+
+    /// Gather what is wrong with `staged` as it is laid out now, at `layout`, as staged by
+    /// `label`.
+    fn audit(
+        &mut self,
+        staged: &mut stage::Staged,
+        layout: Layout,
+        label: &str,
+    ) -> Result<(), String> {
+        let theme = layout.theme();
+        self.text.set_text_scale(theme.text_scale);
+        self.text.apply_typography(&theme.tokens.typography);
+        let viewport = (layout.size.width, layout.size.height);
+        if let Some(why) = staged.failed() {
+            return Err(format!(
+                "{}: {label}: the window refused what the app sent: {why}",
+                self.dir.display(),
+            ));
+        }
+        self.ran = self.ran.saturating_add(1);
+        let inspection = staged.harness().inspection();
+        if self.dump == Some(viewport) {
+            let json = serde_json::to_string_pretty(&inspection).map_err(|e| e.to_string())?;
+            eprintln!("== {} {label} at {layout}\n{json}", self.meta.app);
+            if let Some(dir) = self.shots
+                && (layout.display_scale - 1.0).abs() < f64::EPSILON
+                && (layout.text_scale - 1.0).abs() < f32::EPSILON
+            {
+                self.shoot(staged, layout, label, dir)?;
+            }
+        }
+        self.note_shown(&inspection.root);
+        let rows = staged.rows();
+        for row in rows.values() {
+            self.note_shown_row(row);
+        }
+        let mut problems = audit::inspect(
+            &inspection.root,
+            viewport,
+            layout
+                .size
+                .touch
+                .then(|| f64::from(layout.input().minimum_target())),
+            layout.display_scale,
+        );
+        problems.extend(audit::clipped_text(
+            staged.harness_mut().root_widget_mut(),
+            &mut self.text,
+            viewport,
+        ));
+        for mut problem in problems {
+            // A list draws a row as one widget keyed by the row: what it is about is the row
+            // view's node, the deepest the row's tree holds.
+            if let Some(row) = problem.id.as_ref().and_then(|id| rows.get(id)) {
+                let mut inner = Vec::new();
+                row_keys(row, &mut inner);
+                inner.reverse();
+                inner.append(&mut problem.keys);
+                problem.keys = inner;
+                problem.id = None;
+            }
+            self.gather(&problem, layout, label);
+        }
+        Ok(())
+    }
+
+    /// Write the window as `label` leaves it at `layout` to `dir`, light and dark, and lay it
+    /// out again as it was.
+    fn shoot(
+        &self,
+        staged: &mut stage::Staged,
+        layout: Layout,
+        label: &str,
+        dir: &Path,
+    ) -> Result<(), String> {
+        let slug: String = label
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let viewport = (layout.size.width, layout.size.height);
+        let stock = [String::new()];
+        let themes = if self.themes.is_empty() {
+            &stock[..]
+        } else {
+            self.themes
+        };
+        for family in themes {
+            let pair = if family.is_empty() {
+                theme_pair("default")?
+            } else {
+                theme_pair(family)?
+            };
+            for (name, theme) in pair {
+                staged.lay_out(viewport, theme, layout.input(), 1.0)?;
+                let file = if family.is_empty() {
+                    dir.join(format!("{}-{slug}-{name}.png", self.short))
+                } else {
+                    dir.join(format!("{}-{slug}-{family}-{name}.png", self.short))
+                };
+                staged.harness().render_png(&file);
+            }
+        }
+        staged.lay_out(viewport, layout.theme(), layout.input(), 1.0)
     }
 
     /// Remember the views whose nodes `node` and what it holds show.

@@ -68,6 +68,16 @@ pub enum Operand<F> {
     },
 }
 
+/// What of the time a predicate is asked at it reads ([`Pred::clock_reads`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClockReads {
+    /// The person's day (`today`, `today + 7d`): read at their day, it reads the same until
+    /// their next midnight, whatever the offset (a day operand counts whole days).
+    pub day: bool,
+    /// The instant (`now - 7d`): it reads differently as the clock runs.
+    pub instant: bool,
+}
+
 /// A value a predicate compares.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -280,13 +290,37 @@ impl<F> Pred<F> {
     /// Whether it reads the time it is asked at ([`Operand::Clock`]).
     #[must_use]
     pub fn reads_clock(&self) -> bool {
-        match self {
-            Self::Not(p) => p.reads_clock(),
-            Self::And(ps) | Self::Or(ps) => ps.iter().any(Self::reads_clock),
-            Self::Cmp(_, a, b) => {
-                matches!(a, Operand::Clock { .. }) || matches!(b, Operand::Clock { .. })
+        let reads = self.clock_reads();
+        reads.day || reads.instant
+    }
+
+    /// What of the time it is asked at it reads: what [`Self::at`] makes of it changes only
+    /// when that does.
+    #[must_use]
+    pub fn clock_reads(&self) -> ClockReads {
+        let mut reads = ClockReads::default();
+        self.each_clock(&mut |day| {
+            if day {
+                reads.day = true;
+            } else {
+                reads.instant = true;
             }
-            _ => false,
+        });
+        reads
+    }
+
+    fn each_clock(&self, f: &mut impl FnMut(bool)) {
+        match self {
+            Self::Not(p) => p.each_clock(f),
+            Self::And(ps) | Self::Or(ps) => ps.iter().for_each(|p| p.each_clock(f)),
+            Self::Cmp(_, a, b) => {
+                for side in [a, b] {
+                    if let Operand::Clock { day, .. } = side {
+                        f(*day);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
