@@ -222,7 +222,10 @@ async fn every_web_app_over_the_session() {
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay.register_agent(delegation.clone()).unwrap();
+    host.relay
+        .register_agent(&agent_device.cert, delegation.clone())
+        .await
+        .unwrap();
     let agent_key = agent_device.cert.device_public_key;
     let control = AgentControl::new(delegation.clone());
     let mut agent = AgentParticipant::start(
@@ -729,7 +732,10 @@ async fn planning_agent_labelled(
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay.register_agent(delegation.clone()).unwrap();
+    host.relay
+        .register_agent(&agent_device.cert, delegation.clone())
+        .await
+        .unwrap();
     let control = AgentControl::new(delegation.clone());
     let mut agent = AgentParticipant::start(
         ParticipantConfig {

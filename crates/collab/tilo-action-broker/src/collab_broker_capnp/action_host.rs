@@ -1996,6 +1996,25 @@ impl CapnpBrokerState {
             .map(|offer| offered_action(app, offer))
     }
 
+    /// Hand `request` to the publisher `peer_id` that offers it at `address` now: the native
+    /// task's own delivery, or a job on that connection.
+    async fn deliver_to(
+        self: &Arc<Self>,
+        peer_id: u64,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        (request, address): (&InvokeRequest, &tilo_actions::ActionAddress),
+        native: Option<&super::native_task_execution::NativeLaunch>,
+    ) -> Result<u64, ActionHostError> {
+        if let Some(native) = native {
+            return native.deliver(self, peer_id).await.map_err(refusal);
+        }
+        let mut delivered = request.clone();
+        delivered.target.provider = peer_id.to_string();
+        delivered.target.address = address.clone();
+        self.start_job(caller, origin, &delivered, request).await
+    }
+
     /// Launch `app_id` unless it already publishes the action, then deliver
     /// the invocation to the connection that does, through the same
     /// admission a live action takes.
@@ -2049,64 +2068,59 @@ impl CapnpBrokerState {
                 None => self.ready_publisher(app_id, &room, destination.record.as_deref(), address),
             };
             if let Some(peer_id) = ready {
-                let mut delivered = request.clone();
-                delivered.target.provider = peer_id.to_string();
-                delivered.target.address = address.clone();
-                if let Some(native) = native {
-                    return native.deliver(self, peer_id).await.map_err(refusal);
-                }
-                return self.start_job(caller, origin, &delivered, request).await;
+                return self
+                    .deliver_to(peer_id, caller, origin, (request, address), native)
+                    .await;
             }
             // An action that shows nothing runs in an instance of the app
             // with no window, where the host runs one: it publishes, and the
             // wait below delivers to it. Only an `open` launches a window.
-            if !launched && address.action != APPLICATION_OPEN_ACTION {
-                if self.run_windowless(app_id, &room)? {
-                    launched = true;
-                    continue;
-                }
+            if !launched
+                && address.action != APPLICATION_OPEN_ACTION
+                && self.run_windowless(app_id, &room)?
+            {
+                launched = true;
+                continue;
             }
             if !launched {
-                {
-                    let mut permit = Some(tokio::select! {
-                        biased;
-                        () = &mut abandoned => return Err(stopped_waiting()),
-                        () = &mut deadline => return Err(expired()),
-                        seen = changes.changed() => {
-                            if seen.is_err() {
-                                return Err(ActionHostError::Unavailable { reason: "the broker stopped".into() });
-                            }
-                            continue;
+                let mut permit = Some(tokio::select! {
+                    biased;
+                    () = &mut abandoned => return Err(stopped_waiting()),
+                    () = &mut deadline => return Err(expired()),
+                    seen = changes.changed() => {
+                        if seen.is_err() {
+                            return Err(ActionHostError::Unavailable { reason: "the broker stopped".into() });
                         }
-                        () = tilo_rt::sleep(std::time::Duration::from_millis(50)), if native.is_some() => continue,
-                        permit = super::launchable::launch_permits().acquire_owned() => {
-                            permit.map_err(|_| ActionHostError::Unavailable { reason: "the launch queue stopped".into() })?
-                        }
-                    });
-                    // Re-read custody and launch policy after the queue wait.
-                    self.check_launch_origin(caller, origin, &room)?;
-                    let current = match native {
-                        Some(native) => native.destination(self).map_err(refusal)?,
-                        None => self.admit_launchable(caller, request)?,
-                    };
-                    if current.workspace.room() != destination.workspace.room()
-                        || current.app_id != *app_id
-                        || current.record != destination.record
-                    {
-                        return Err(ActionHostError::NotPermitted);
+                        continue;
                     }
-                    let launch = self.finish_retained_launch(
-                        completer,
-                        caller,
-                        (origin, request),
-                        current,
-                        native,
-                        permit.take().ok_or(ActionHostError::NotPermitted)?,
-                        (deadline.deadline(), &address.action),
-                    );
-                    drop(permit);
-                    launch.await?;
+                    () = tilo_rt::sleep(std::time::Duration::from_millis(50)), if native.is_some() => continue,
+                    permit = super::launchable::launch_permits().acquire_owned() => {
+                        permit.map_err(|_| ActionHostError::Unavailable { reason: "the launch queue stopped".into() })?
+                    }
+                });
+                // Re-read custody and launch policy after the queue wait.
+                self.check_launch_origin(caller, origin, &room)?;
+                let current = match native {
+                    Some(native) => native.destination(self).map_err(refusal)?,
+                    None => self.admit_launchable(caller, request)?,
+                };
+                if current.workspace.room() != destination.workspace.room()
+                    || current.app_id != *app_id
+                    || current.record != destination.record
+                {
+                    return Err(ActionHostError::NotPermitted);
                 }
+                let launch = self.finish_retained_launch(
+                    completer,
+                    caller,
+                    (origin, request),
+                    current,
+                    native,
+                    permit.take().ok_or(ActionHostError::NotPermitted)?,
+                    (deadline.deadline(), &address.action),
+                );
+                drop(permit);
+                launch.await?;
                 launched = true;
                 continue;
             }
