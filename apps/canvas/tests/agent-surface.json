@@ -3814,6 +3814,60 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "use-brush",
+    "resource_kind": "canvas.artwork",
+    "label": "Use brush preset",
+    "description": "Use brush preset.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "preset",
+        "ty": "text",
+        "required": true,
+        "description": "The preset's name: round, pen, pencil, marker, airbrush, …"
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "use-colour",
+    "resource_kind": "canvas.artwork",
+    "label": "Use colour",
+    "description": "Use colour. The colour the brush paints on a plain layer.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "colour",
+        "ty": "text",
+        "required": true,
+        "description": "The colour, #rrggbb"
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "use-pigment",
+    "resource_kind": "canvas.artwork",
+    "label": "Load pigment",
+    "description": "Load pigment. The pigment of the layer's medium the brush paints with.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "name",
+        "ty": "text",
+        "required": true,
+        "description": "The pigment's name"
+      },
+      {
+        "name": "colour",
+        "ty": "text",
+        "required": true,
+        "description": "Its masstone, #rrggbb"
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "use-selection",
     "resource_kind": "canvas.artwork",
     "label": "Use selection",
