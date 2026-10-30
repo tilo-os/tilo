@@ -2,6 +2,10 @@
 //! ([`crate::collab_broker_capnp::TaskRunHost`]): an admitted connection
 //! takes an application's action and a host step only as the run admits
 //! them, and loses both once its person stops the run.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "each scenario holds its connection to the end, as the door does"
+)]
 
 use super::*;
 use tilo_actions::ActionAddress;
@@ -81,8 +85,8 @@ fn door_agent(f: &Fixture) -> DoorAgent {
         key.verifying_key().to_bytes(),
         DOOR_ISSUE,
         room().to_string(),
-        now - 1,
-        now + HOUR_NS,
+        now.saturating_sub(1),
+        now.saturating_add(HOUR_NS),
     )
     .unwrap();
     DoorAgent {

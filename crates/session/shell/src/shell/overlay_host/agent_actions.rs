@@ -97,22 +97,14 @@ pub(crate) enum AskOutcome {
 /// Where the run of a task asked for an agent door connection is handed:
 /// the connection, waiting for the person's admission to become its run.
 #[derive(Clone)]
-pub(crate) struct DoorReply(
-    Arc<
-        std::sync::Mutex<
-            Option<
-                tokio::sync::oneshot::Sender<
-                    Result<crate::shell::agent_admission::DoorRun, String>,
-                >,
-            >,
-        >,
-    >,
-);
+pub(crate) struct DoorReply(Arc<std::sync::Mutex<Option<DoorAnswer>>>);
+
+/// Where a door connection hears its run, or why it has none.
+type DoorAnswer =
+    tokio::sync::oneshot::Sender<Result<crate::shell::agent_admission::DoorRun, String>>;
 
 impl DoorReply {
-    pub(crate) fn new(
-        reply: tokio::sync::oneshot::Sender<Result<crate::shell::agent_admission::DoorRun, String>>,
-    ) -> Self {
+    pub(crate) fn new(reply: DoorAnswer) -> Self {
         Self(Arc::new(std::sync::Mutex::new(Some(reply))))
     }
 

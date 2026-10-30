@@ -187,14 +187,13 @@ impl TaskRunHost {
     /// The run as the broker holds it for this connection, with its lease
     /// at the messages the agent took in.
     fn pending_run(&self) -> Result<(PendingTaskRun, String), String> {
-        let state = &self.0.state;
-        let run = state.task_run_for(
+        let run = self.0.state.task_run_for(
             self.0.peer,
             &self.0.agent,
             self.0.run.run_id,
             &self.0.run.lease,
         )?;
-        let applied = state.applied_task_revision(&run)?;
+        let applied = self.0.state.applied_task_revision(&run)?;
         let (base, _) = runtime_collab::native_task_revision(&self.0.run.lease)
             .ok_or("invalid native task lease")?;
         Ok((run, format!("{base}:{applied}")))
@@ -239,7 +238,6 @@ impl TaskRunHost {
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let refused = |reason: String| ActionHostError::Refused { reason };
-        let state = &self.0.state;
         let (run, lease) = self.pending_run().map_err(refused)?;
         let argument = request.argument.to_slot();
         let descriptor = steps
@@ -260,10 +258,13 @@ impl TaskRunHost {
             attended: descriptor.contract.is_attended(),
             confirmed: false,
         };
-        state
+        self.0
+            .state
             .admit_task_launch(&run, &binding, &requirement, &mut || Ok(()))
             .map_err(refused)?;
-        let time = state
+        let time = self
+            .0
+            .state
             .registered_policy_time()
             .map_err(refused)?
             .ok_or_else(|| refused("the policy clock is unavailable".into()))?;
@@ -278,7 +279,10 @@ impl TaskRunHost {
         context.group.clone_from(&run.action_context.group);
         context.purpose.clone_from(&run.action_context.purpose);
         request.context = Some(context);
-        let receipt = state.invoke_host_step(&self.0.caller, Some(&origin), steps, &request)?;
+        let receipt =
+            self.0
+                .state
+                .invoke_host_step(&self.0.caller, Some(&origin), steps, &request)?;
         self.remember(request.invocation, Started::HostStep);
         Ok(receipt)
     }
@@ -325,7 +329,7 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
         // optional-decode: a provider that is no peer number names a launchable app
         let (peer_id, launch) = provider
             .parse::<u64>()
-            .map_or((0, provider.to_owned()), |peer| (peer, String::new()));
+            .map_or_else(|_| (0, provider.to_owned()), |peer| (peer, String::new()));
         let host = self.clone();
         let (complete, answer) = pending();
         let runtime = match super::launchable::delivery_runtime() {
@@ -630,7 +634,12 @@ fn question_id(
         request.target.address.action,
         hex::encode(tilo_actions::draft::arguments_digest(arguments))
     );
-    blake3::hash(key.as_bytes()).to_hex().as_str()[..32].to_owned()
+    blake3::hash(key.as_bytes())
+        .to_hex()
+        .as_str()
+        .chars()
+        .take(32)
+        .collect()
 }
 
 /// A stable invocation id for the run's report `what` about question `id`,

@@ -499,8 +499,9 @@ impl ShellOverlayHost {
                 continue;
             };
             let room = ask.room.to_string();
-            let source = ActionSessionSource::new(broker);
-            let Some(identity_revision) = source.identity_revision(&room) else {
+            let Some(identity_revision) =
+                ActionSessionSource::new(broker.clone()).identity_revision(&room)
+            else {
                 // Just changed, as at a session's start: asked once it settles,
                 // as the composer opens then.
                 match room_identity_settles_at(&room, now) {
@@ -523,7 +524,12 @@ impl ShellOverlayHost {
             self.agent_actions
                 .entry(owner.clone())
                 .or_default()
-                .open_and_ask_for_door(source, &owner, (&ask.title, &ask.body), reply);
+                .open_and_ask_for_door(
+                    ActionSessionSource::new(broker),
+                    &owner,
+                    (&ask.title, &ask.body),
+                    reply,
+                );
             asked = true;
         }
         asked
