@@ -813,7 +813,6 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
 async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
     let t = TwoTenants::start().await;
     let before = t.globex_governance().await;
-    let acme_before = governance(&t.rooms(), &t.host, &t.acme.room).await;
     // The host's own agent: a device of the relay's person with no
     // capabilities, delegated Acme alone.
     let agent = t.provider.enrol(
@@ -848,6 +847,16 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
         .register_agent(&agent.cert, delegation)
         .await
         .unwrap();
+    // Registering the agent puts it on the roster of the room its delegation
+    // names, which is the roster's business and no one else's: the room the
+    // delegation does not name never hears of it.
+    let acme_joined = governance(&t.rooms(), &t.host, &t.acme.room).await;
+    if cfg!(feature = "agents") {
+        let roster = t.rooms().agents(&t.acme.room).await.unwrap();
+        assert_eq!(roster.len(), 1, "the agent's place on Acme's roster");
+        assert_eq!(roster[0].device_public_key, agent.device_pubkey());
+        assert!(t.rooms().agents(&t.globex.room).await.unwrap().is_empty());
+    }
 
     // An agent governs nothing, not even the room it is delegated, and it
     // is no host person: the one decision every door asks refuses it
@@ -896,7 +905,7 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
     assert_eq!(t.globex_governance().await, before);
     assert_eq!(
         governance(&t.rooms(), &t.host, &t.acme.room).await,
-        acme_before
+        acme_joined
     );
     assert_eq!(t.rooms().list().await.len(), 2, "the agent created a room");
 
