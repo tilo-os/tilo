@@ -38,13 +38,6 @@ impl MailApp {
         self.state().store.load(account).len()
     }
 
-    /// Whether the window waits on the server for something it asked.
-    #[must_use]
-    pub fn awaiting_server(&self) -> bool {
-        let room = self.state();
-        room.awaiting_engine || room.resource_refresh_invocation.is_some()
-    }
-
     /// How many messages the window holds.
     #[must_use]
     pub fn held(&self) -> usize {

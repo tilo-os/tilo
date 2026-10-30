@@ -148,15 +148,14 @@ pub fn fetched_into(profile: &Path) -> (FakeImap, FakeSmtp) {
     app.with_surface(MailApp::reach_test_servers).unwrap();
     let held = CANDIDATES.len() + 1;
     let deadline = tilo_test_env::hang_deadline();
-    // The window may be syncing already; once it is not, it is asked to.
+    // The window may be busy with the server already (connecting, or
+    // keeping its drafts there): it is asked again until it takes the ask.
     while app.with_surface(|mail: &mut MailApp| mail.held()).unwrap() < held {
         assert!(ui::time::now() < deadline, "every message is fetched");
-        if !app
-            .with_surface(|mail: &mut MailApp| mail.awaiting_server())
-            .unwrap()
-        {
-            app.effect(&crate::actions::MailEffect::Refresh)
-                .expect("the inbox is fetched");
+        match app.effect(&crate::actions::MailEffect::Refresh) {
+            Ok(_) => {}
+            Err(tilo_actions::DoorError::Failed(why)) if why.contains("already running") => {}
+            Err(error) => panic!("the inbox is fetched: {error:?}"),
         }
         app.settle();
         std::thread::sleep(std::time::Duration::from_millis(10));
