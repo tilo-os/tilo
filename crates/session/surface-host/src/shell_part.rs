@@ -580,8 +580,11 @@ pub struct ShellWork {
     pub turns: u64,
     /// Frames the toolkit drew and the CPU rasterized.
     pub drawn: u64,
-    /// Time spent in those turns and draws.
-    pub busy: std::time::Duration,
+    /// Time the instance and the window spent answering each other (the view run, its
+    /// patches, the widgets reconciled) and the layout after it.
+    pub turning: std::time::Duration,
+    /// Time the toolkit spent drawing those frames and the CPU rasterizing them.
+    pub drawing: std::time::Duration,
     /// Effects the shell handed the session's door, and those the session ran.
     pub handed: u64,
     pub served: u64,
@@ -818,7 +821,7 @@ impl ShellPart {
             self.widgets.relayout();
         }
         self.again = moved;
-        self.work.busy = self.work.busy.saturating_add(started.elapsed());
+        self.work.turning = self.work.turning.saturating_add(started.elapsed());
         shown
     }
 
@@ -881,6 +884,14 @@ impl SurfaceHost for ShellPart {
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
+        // While a menu of the part's is up, a press anywhere over it is the part's: outside
+        // the menu it closes it, as a press outside any menu does.
+        if self.menu
+            && let Some((ox, oy, width, height)) = self.outputs
+        {
+            let (x, y) = (x - f64::from(ox), y - f64::from(oy));
+            return x >= 0.0 && y >= 0.0 && x < f64::from(width) && y < f64::from(height);
+        }
         self.widgets.accepts_pointer(x, y)
     }
 
@@ -965,7 +976,7 @@ impl ShellPart {
         self.widgets.prepare_frame();
         if crate::Published::revision(&self.widgets) != before {
             self.work.drawn = self.work.drawn.wrapping_add(1);
-            self.work.busy = self.work.busy.saturating_add(started.elapsed());
+            self.work.drawing = self.work.drawing.saturating_add(started.elapsed());
         }
     }
 }
@@ -1054,6 +1065,43 @@ mod tests {
         assert_eq!(
             link.asked.borrow().front().map(|ask| ask.action.clone()),
             Some("toggle-quick-settings".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_part_covers_its_band_at_rest_and_the_outputs_while_its_menu_is_up() {
+        let (mut part, _link) = part();
+        assert_eq!(
+            part.widgets.placement().size,
+            (1280, 32),
+            "the band at rest"
+        );
+        assert!(
+            !part.accepts_pointer(900.0, 400.0),
+            "the desk under it takes presses"
+        );
+        click(&mut part, "Desk");
+        assert_eq!(
+            part.widgets.placement().size,
+            (1280, 800),
+            "room for the menu"
+        );
+        assert!(part.control_bounds("Studio").is_some(), "the menu is up");
+        // A press away from the menu closes it.
+        assert!(part.accepts_pointer(900.0, 400.0));
+        part.pointer_motion(900.0, 400.0);
+        part.prepare_frame();
+        part.pointer_button(0x110, true);
+        part.prepare_frame();
+        part.pointer_button(0x110, false);
+        for _ in 0..4 {
+            part.prepare_frame();
+        }
+        assert!(part.control_bounds("Studio").is_none(), "the menu closed");
+        assert_eq!(
+            part.widgets.placement().size,
+            (1280, 32),
+            "back to the band"
         );
     }
 

@@ -280,8 +280,12 @@ fn with_nothing_changing_the_bar_does_no_work() {
     let drawn = after.drawn - before.drawn;
     assert!(turns >= 1 && drawn >= 1, "the change reached the bar");
     assert!(turns <= 4, "a change is a few turns, not a loop: {turns}");
-    let per = after.busy.saturating_sub(before.busy).as_secs_f64() * 1000.0 / drawn as f64;
-    println!("shell bar change: {turns} view turns, {drawn} frames drawn, {per:.2} ms per frame");
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    println!(
+        "shell bar change: {turns} view turns ({:.2} ms), {drawn} frames drawn ({:.2} ms)",
+        ms(after.turning.saturating_sub(before.turning)),
+        ms(after.drawing.saturating_sub(before.drawing)),
+    );
 }
 
 /// A session bus of its own, as `dbus-run-session` starts one, stopped on drop.
