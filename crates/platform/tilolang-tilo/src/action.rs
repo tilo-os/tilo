@@ -157,6 +157,30 @@ impl DynEdit {
         }
     }
 
+    /// Whether `next`, made by the same person straight after this edit, continues the same
+    /// gesture: an edit of the same field of the same resource that the field's kind says goes
+    /// on from this one (typing on in a word, erasing backwards, setting one value again).
+    #[must_use]
+    pub fn continues(&self, next: &Self) -> bool {
+        match (self, next) {
+            (
+                Self::Edit { id, edit },
+                Self::Edit {
+                    id: next_id,
+                    edit: next_edit,
+                },
+            ) => id == next_id && edit.coalesces(next_edit),
+            (
+                Self::In { app, edit },
+                Self::In {
+                    app: next_app,
+                    edit: next_edit,
+                },
+            ) => app == next_app && edit.continues(next_edit),
+            _ => false,
+        }
+    }
+
     /// Whether the edit queues an outside effect, rather than only changing the record.
     #[must_use]
     pub fn reaches_outside(&self) -> bool {
@@ -215,6 +239,25 @@ impl DynAction {
         } else {
             tilo_actions::ActionKind::Undoable
         })
+    }
+
+    /// Whether `next`, invoked by the same person straight after this action, continues the same
+    /// gesture, and so is one undo step with it: the same action (a bound field's edit) making
+    /// one edit that goes on from this one's ([`DynEdit::continues`]). The keystrokes of a word
+    /// typed into a field are one step, as in every other app.
+    #[must_use]
+    pub fn continues(&self, next: &Self) -> bool {
+        let ([edit], [next_edit]) = (self.edits.as_slice(), next.edits.as_slice()) else {
+            return false;
+        };
+        self.app == next.app
+            && self.kind == next.kind
+            && self.action_id == next.action_id
+            // By the same code for the same person; when each keystroke was made differs.
+            && self.authorship.invoker == next.authorship.invoker
+            && self.authorship.chain == next.authorship.chain
+            && self.authorship.module == next.authorship.module
+            && edit.continues(next_edit)
     }
 
     /// Encode under [`ACTION_TYPE`], the framework's action encoding.
