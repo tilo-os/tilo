@@ -19,6 +19,9 @@ linux_type=0fc63daf-8483-4772-8e79-3d69d8477de4
 
 # Fixture lsblk: the boot ESP's parent disk is TILO_ROOT_TEST_DISK and its
 # partitions are TILO_ROOT_TEST_PARTS, space-separated NAME:PARTTYPE pairs.
+# As the real one, it has a partition's type from udev's database, so the type
+# reads as empty until udev has initialized that partition: the fixture udevadm
+# below initializes exactly the devices `udevadm wait --initialized=yes` names.
 cat >"$work/bin/lsblk" <<'EOF'
 #!/bin/bash
 case "$*" in
@@ -26,9 +29,23 @@ case "$*" in
   *NAME,TYPE,PARTTYPE*)
     printf '%s disk\n' "$TILO_ROOT_DEVROOT/$TILO_ROOT_TEST_DISK"
     for part in $TILO_ROOT_TEST_PARTS; do
-      printf '%s part %s\n' "$TILO_ROOT_DEVROOT/${part%%:*}" "${part#*:}"
+      dev="$TILO_ROOT_DEVROOT/${part%%:*}" type=""
+      grep -qxF "$dev" "$TILO_TEST_UDEV_DB" 2>/dev/null && type="${part#*:}"
+      printf '%s part %s\n' "$dev" "$type"
+    done ;;
+  *NAME,TYPE*)
+    printf '%s disk\n' "$TILO_ROOT_DEVROOT/$TILO_ROOT_TEST_DISK"
+    for part in $TILO_ROOT_TEST_PARTS; do
+      printf '%s part\n' "$TILO_ROOT_DEVROOT/${part%%:*}"
     done ;;
 esac
+EOF
+cat >"$work/bin/udevadm" <<'EOF'
+#!/bin/bash
+[ "$1" = settle ] && exit 0
+[ "$1" = wait ] && [ "$2" = --initialized=yes ] && [ "$3" = -- ] || exit 64
+shift 3
+printf '%s\n' "$@" >>"$TILO_TEST_UDEV_DB"
 EOF
 cat >"$work/bin/cryptsetup" <<'EOF'
 #!/bin/bash
@@ -51,12 +68,13 @@ printf 'root=tilo-auto rw composefs=abc quiet tilo.install\n' >"$work/live-cmdli
 discover() {
   local kind="$1" disk="$2"
   shift 2
-  rm -rf "$work/run/tilo-root"
+  rm -rf "$work/run/tilo-root" "$work/udev-db"
   env TILO_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
     TILO_ROOT_CMDLINE_FILE="$work/$kind-cmdline" \
     TILO_ROOT_TEST_DISK="$disk" TILO_ROOT_TEST_PARTS="$*" \
     TILO_ROOT_DEVROOT="$work/dev" TILO_ROOT_RUNTIME="$work/run" \
     TILO_ROOT_LSBLK="$work/bin/lsblk" TILO_ROOT_CRYPTSETUP_PROBE="$work/bin/cryptsetup" \
+    TILO_ROOT_UDEVADM="$work/bin/udevadm" TILO_TEST_UDEV_DB="$work/udev-db" \
     TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover"
 }
 # expect_root NAME KIND DISK PARTS...: the resolver selects exactly NAME.
@@ -84,6 +102,13 @@ esp="esp:$esp_type"
 expect_root tilo-root installed disk0 "$esp" "linux-root:$linux_type" "tilo-root:$tilo_type"
 expect_root tilo-root installed disk0 "$esp" "tilo-root:${tilo_type^^}"
 echo 'ok: foreign Linux roots are ignored; the same-disk Tilo root is selected'
+
+# The partition types are read only once udev has initialized every partition
+# of the ESP's disk, not just the ESP whose link was found.
+expect_root tilo-root installed disk0 "$esp" "linux-root:$linux_type" "tilo-root:$tilo_type"
+printf '%s\n' "$work/dev/esp" "$work/dev/linux-root" "$work/dev/tilo-root" >"$work/expected-udev-db"
+cmp "$work/expected-udev-db" "$work/udev-db"
+echo 'ok: the root is looked for once udev has initialized every partition of the boot ESP disk'
 
 expect_refusal 'expected exactly one Tilo root.*found 2' installed disk0 \
   "$esp" "tilo-root:$tilo_type" "tilo-root-2:$tilo_type"
@@ -189,6 +214,8 @@ EOF
 chmod +x "$work/bin/encrypted" "$work/bin/attach" "$work/bin/plymouth" "$work/bin/systemctl" \
   "$work/bin/sibling"
 encrypted_discover() {
+rm -f "$work/udev-db"
+TILO_ROOT_UDEVADM="$work/bin/udevadm" TILO_TEST_UDEV_DB="$work/udev-db" \
 TILO_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
 TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_TEST_DISK=disk0 \
 TILO_ROOT_TEST_PARTS="$esp tilo-root:$tilo_type" \
