@@ -300,16 +300,13 @@ impl Raster {
                 };
                 let edge_alpha = match (edge_colour, edge) {
                     (Some(colour), Some((thickness, _))) => {
-                        // Full across the stroke just outside the outline, one
-                        // pixel of falloff either side of it.
-                        let outside = if inside < 0.0 {
-                            -inside
-                        } else if inside > thickness {
-                            inside - thickness
-                        } else {
-                            0.0
-                        };
-                        (0.5 - outside).clamp(0.0, 1.0) * colour[3]
+                        // The stroke lies outside the outline, never over
+                        // the window's own pixels: the band from the
+                        // outline out to `thickness`, as much of a pixel
+                        // as it covers.
+                        let covered =
+                            (inside + 0.5).min(thickness).max(0.0) - (inside - 0.5).max(0.0);
+                        covered.clamp(0.0, 1.0) * colour[3]
                     }
                     _ => 0.0,
                 };
