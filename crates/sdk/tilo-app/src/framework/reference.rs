@@ -57,6 +57,9 @@ pub struct Call {
     reference: ResourceRef,
     action: String,
     arguments: Result<serde_json::Map<String, serde_json::Value>, String>,
+    /// The host provider that answers it, for an action the host itself
+    /// publishes ([`Self::host`]) rather than an app.
+    host: Option<String>,
 }
 
 impl Call {
@@ -71,6 +74,22 @@ impl Call {
             reference: reference.clone(),
             action: action.to_owned(),
             arguments: Ok(serde_json::Map::new()),
+            host: None,
+        }
+    }
+
+    /// `action` of `resource`, which the host publishes under `provider`
+    /// itself (the desktop's `open` on `desktop:session`, under
+    /// `tilo.desktop`), with no arguments yet.
+    #[must_use]
+    pub fn host(provider: &str, resource: &str, action: &str) -> Self {
+        Self {
+            app: String::new(),
+            record: None,
+            reference: ResourceRef::whole(resource, resource, String::new()),
+            action: action.to_owned(),
+            arguments: Ok(serde_json::Map::new()),
+            host: Some(provider.to_owned()),
         }
     }
 
@@ -100,9 +119,21 @@ impl Call {
         &self,
     ) -> Result<(tilo_actions::remote::RemoteActionTarget, InvokeArgument), String> {
         let arguments = self.arguments.clone()?;
-        let target =
-            self.reference
-                .action_target(&room()?, &self.app, self.record.as_deref(), &self.action);
+        let target = match &self.host {
+            Some(provider) => tilo_actions::remote::RemoteActionTarget {
+                provider: provider.clone(),
+                address: tilo_actions::ActionAddress::new(
+                    self.reference.id.clone(),
+                    self.action.clone(),
+                ),
+            },
+            None => self.reference.action_target(
+                &room()?,
+                &self.app,
+                self.record.as_deref(),
+                &self.action,
+            ),
+        };
         Ok((target, InvokeArgument::Json(arguments)))
     }
 }

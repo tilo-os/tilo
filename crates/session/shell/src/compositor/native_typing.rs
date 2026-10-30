@@ -1,7 +1,11 @@
 //! Test control's typing: which keys type a character on the seat's
 //! keymap, and the typing that waits for a character committed as text.
 
-use super::*;
+use super::{
+    FrameBuilder, Key, NamedKey, PlannedAction, SessionManager, State, TestControlConn,
+    TestControlCtx, WindowEvent, client_input_allowed, execute_planned_action,
+    keyboard_input_event, test_control,
+};
 
 /// How test control presses or releases the key for one character.
 pub(super) enum CharKey {

@@ -32,6 +32,8 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # labels, local folders, drafts) are exported as replayable actions and a Ctrl+K
 # resource tree. See `src/actions.rs`.
 tilo-actions = { path = "../../crates/collab/actions" }
+# The desktop's `open`, which an attachment opens through in the app for its type.
+tilo-desktop-model = { path = "../../crates/session/desktop-model" }
 # Read-only address-book hints; selection never confirms identity or sends mail.
 tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
 # The shared multi-account store + encrypted secret vault. Mail reads its
@@ -64,6 +66,8 @@ taffy.workspace = true
 # TLS, or async dependencies.
 mail-parser = "0.11.4"
 mail-builder = "0.4.4"
+# The hang bound the review fixture waits within (`fake-servers`).
+tilo-test-env = { path = "../../crates/dev/test-env", optional = true }
 # HTML mail is parsed as an engine parses it (the WHATWG algorithm), for the
 # sealed document the reader's web engine shows and for the styled text it
 # shows without one.
@@ -115,7 +119,7 @@ live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:tokio", 
 
 # The test IMAP and SMTP servers (`fake_servers`), for other crates' tests of
 # what talks to mail servers through this engine. Never in a release.
-fake-servers = ["live", "dep:rcgen"]
+fake-servers = ["live", "dep:rcgen", "dep:tilo-test-env", "ui/test-support"]
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

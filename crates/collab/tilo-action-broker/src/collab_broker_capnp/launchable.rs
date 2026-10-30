@@ -1534,6 +1534,62 @@ mod tests {
         );
     }
 
+    /// A component surface publishes its resources under its instance's
+    /// alias (as the session's windowless Tasks does): an application target
+    /// written with the app's own resource id reaches it, handed over under
+    /// the alias it published, rather than waiting for a publisher of the
+    /// plain id that never comes.
+    #[test]
+    fn an_application_target_reaches_an_instance_publishing_an_alias() {
+        let (state, room) = broker(&workspace());
+        let launches = app_comes_up_later(&state);
+        let (mut windowless, _) = app_runs_windowless(&state, 9);
+        let alias = format!(
+            "{}5de7eba4-60d5-41f3-bd8a-2c4e5d8d9dd2:464da94a-e962-41ee-b1bf-498c32006984:{}",
+            tilo_actions::BOUND_RESOURCE_PREFIX,
+            "files.app"
+                .bytes()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let owner = Caller::local_person("owner").in_room(&room);
+        let target =
+            tilo_actions::remote::application_action_target(&room, APP, "files.app", "new-window");
+        // The instance comes up on the first ask; from then on it publishes
+        // the alias only.
+        invoke(&state, &owner, &target.provider, "new-window", None).expect("admitted");
+        windowless
+            .try_recv()
+            .expect("the first ask came up the instance");
+        for action in &mut state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .get_mut(&9)
+            .expect("the windowless instance publishes")
+            .actions
+        {
+            action.resource.clone_from(&alias);
+        }
+
+        assert_eq!(
+            state.ready_delivery(
+                APP,
+                &room,
+                None,
+                &tilo_actions::ActionAddress::new("files.app", "new-window"),
+            ),
+            Some((9, tilo_actions::ActionAddress::new(&alias, "new-window"))),
+            "the instance publishing the alias is the one ready"
+        );
+        invoke(&state, &owner, &target.provider, "new-window", None)
+            .expect("the instance publishing the alias takes it");
+        let delivered = windowless.try_recv().expect("delivered");
+        assert_eq!(delivered.action, "new-window");
+        assert_eq!(delivered.resource, alias, "handed over as it was published");
+        assert!(launches.lock().expect("launches").is_empty());
+    }
+
     /// Opening shows what it opens: an `open` never goes to an instance with
     /// no window, even one that publishes it, and launches a window instead.
     #[test]

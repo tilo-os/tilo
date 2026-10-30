@@ -116,12 +116,13 @@ pub(crate) enum Layout {
 }
 
 /// A window an [`open`] made, where it is, and the app it opens in.
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Opened {
     pub tab: TabId,
     pub group: GroupId,
     pub strip: StripId,
     pub app: String,
+    /// The launch's startup, which says whether it failed.
+    pub startup: tilo_action_broker::services::LaunchReadiness,
 }
 
 /// Who changed the layout, and the run the change belongs to.
@@ -778,6 +779,36 @@ pub(crate) fn open(
         return Ok(opened);
     }
     let launch = resolve(state, room, &mut workspace, target, publisher)?;
+    if let Some(document) = &launch.document {
+        // The app reads the staged content under a grant the live tree
+        // holds, as a document opened from Files is: the launch's sandbox
+        // is judged against the policy the tree publishes, which a grant
+        // made only on this copy of the workspace never reaches.
+        let folder = document
+            .parent()
+            .ok_or("the staged content has no folder")?
+            .to_path_buf();
+        let granted = crate::shell::doc_open::grant_document_read(
+            &mut state.tree_mut(),
+            workspace_id,
+            &launch.app,
+            &folder,
+        );
+        if granted != Some(true) {
+            return Err(format!(
+                "{} could not be granted the content to read",
+                crate::shell::launcher::display_name_for_package_id(&launch.app)
+            ));
+        }
+        workspace = state
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .cloned()
+            .ok_or("this workspace is not open on this device")?;
+    }
     let label = crate::shell::launcher::display_name_for_package_id(&launch.app);
     let kept = background.then(|| KeptFocus::of(state, workspace_id));
     let tab = {
@@ -843,24 +874,33 @@ pub(crate) fn open(
             .cloned()
             .unwrap_or(workspace)
     };
-    if let Err(error) = crate::shell::launcher::queue_package_open(
-        launch.app.clone(),
-        Some(label),
-        &workspace,
-        launch.document,
-        launch.uri,
-        launch.visitor,
-    ) {
-        // Nothing will arrive for the place: it goes, as a refused launch's does.
-        if let Err(gone) = crate::shell::window_actions::close_tab(state, tab) {
-            tracing::debug!(
-                tab,
-                ?gone,
-                "the place held for a refused launch was already gone"
-            );
+    // This launch's own startup is observed: its failure is this open's,
+    // whatever another launch of the same app does.
+    let started = crate::shell::launch_readiness::observe(|| {
+        crate::shell::launcher::queue_package_open(
+            launch.app.clone(),
+            Some(label),
+            &workspace,
+            launch.document,
+            launch.uri,
+            launch.visitor,
+        )
+        .map_err(|error| error.user_message())
+    });
+    let startup = match started {
+        Ok(startup) => startup,
+        Err(error) => {
+            // Nothing will arrive for the place: it goes, as a refused launch's does.
+            if let Err(gone) = crate::shell::window_actions::close_tab(state, tab) {
+                tracing::debug!(
+                    tab,
+                    ?gone,
+                    "the place held for a refused launch was already gone"
+                );
+            }
+            return Err(error);
         }
-        return Err(error.user_message());
-    }
+    };
     let journal = &mut state.desktop_layout;
     journal.opened.insert(tab, target.address());
     if let Some(resource) = launch.resource {
@@ -879,6 +919,7 @@ pub(crate) fn open(
         group,
         strip,
         app: launch.app,
+        startup,
     })
 }
 
@@ -904,11 +945,36 @@ fn already_open(state: &ChromeState, room: RoomId, address: &str) -> Option<Open
                         strip: strip.id,
                         app: tilo_desktop_model::apps::canonical_app_id(&tab.tile)
                             .unwrap_or_default(),
+                        startup: started_already(),
                     })
             })
         });
     drop(tree);
     found
+}
+
+/// The startup of a window already running: it started, so it cannot fail.
+fn started_already() -> tilo_action_broker::services::LaunchReadiness {
+    let (started, readiness) = tokio::sync::oneshot::channel();
+    if started.send(Ok(())).is_err() {
+        tracing::debug!("a startup observed as done had nobody to tell");
+    }
+    tilo_action_broker::services::LaunchReadiness::new(readiness, || {})
+}
+
+/// `tab`'s launch failed with `why`: its place goes, it is not opened at a
+/// resource, and the open that held it is told so.
+pub(crate) fn launch_failed(state: &mut ChromeState, tab: TabId, why: &str) -> String {
+    state.desktop_layout.opened_at(tab);
+    state.desktop_layout.opened.remove(&tab);
+    if let Err(gone) = crate::shell::window_actions::close_tab(state, tab) {
+        tracing::debug!(
+            tab,
+            ?gone,
+            "the place held for a failed launch was already gone"
+        );
+    }
+    format!("the window did not open: {why}")
 }
 
 /// One window of a workspace, as [`list_windows`] tells it.

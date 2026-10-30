@@ -461,10 +461,7 @@ pub(crate) fn assert_secret_prompts_withheld(fb: &mut FrameBuilder, what: &str) 
 
 #[test]
 fn administrator_authentication() {
-    use shell::shell::portal_dialog::{
-        AuthenticationRequest, NetworkSecretsRequest, PortalDialogQueue, SecretFieldRule,
-        SecretFieldSpec,
-    };
+    use shell::shell::portal_dialog::{AuthenticationRequest, PortalDialogQueue};
     let mut fb = FrameBuilder::new((W, H));
     let queue = PortalDialogQueue::default();
     fb.host_mut().set_portal_dialog_queue(queue.clone());
@@ -487,8 +484,7 @@ fn administrator_authentication() {
 #[test]
 fn network_secrets() {
     use shell::shell::portal_dialog::{
-        AuthenticationRequest, NetworkSecretsRequest, PortalDialogQueue, SecretFieldRule,
-        SecretFieldSpec,
+        NetworkSecretsRequest, PortalDialogQueue, SecretFieldRule, SecretFieldSpec,
     };
     let mut fb = FrameBuilder::new((W, H));
     let queue = PortalDialogQueue::default();

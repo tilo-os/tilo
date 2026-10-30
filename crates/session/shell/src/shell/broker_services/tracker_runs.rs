@@ -211,7 +211,11 @@ impl NativeTrackerRuns {
                 Ok(held.get(room).map(|(_, tracker)| tracker.clone()))
             }
             // A room with no tracker yet holds no runs.
-            Ok(DocumentRead::CheckpointPending) | Err(_) if known.is_none() => Ok(None),
+            Ok(DocumentRead::CheckpointPending) if known.is_none() => Ok(None),
+            Err(error) if known.is_none() => {
+                tracing::debug!(room, %error, "the room's tracker could not be read; it holds no runs yet");
+                Ok(None)
+            }
             Ok(DocumentRead::CheckpointPending) => Err("the tracker is between checkpoints".into()),
             Err(error) => Err(error),
         }
@@ -376,8 +380,14 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
 }
 
 impl TrackerRuns for NativeTrackerRuns {
+    /// Every room whose replica this device holds keeps its tracker here:
+    /// one of committed documents and one of sealed channels alike, whose
+    /// sealed writes [`Self::tracker`] opens with the room's history keys.
+    /// Only the first used to count, so in a sealed room (a fresh person's
+    /// own) a task agent's join found "the room's tracker is unavailable"
+    /// and no run ever reached its agent.
     fn requires_room(&self, room: &str) -> bool {
-        tilo_owner_commit::OwnerCommitService::requires_room(&self.owner, room)
+        tilo_owner_commit::OwnerCommitService::records_effects(&self.owner, room)
     }
 
     /// Keep the newest snapshot of each run's turn: a later epoch, a later

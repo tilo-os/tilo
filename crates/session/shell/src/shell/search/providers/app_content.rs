@@ -154,6 +154,16 @@ impl OpenDoor {
         }
     }
 
+    /// A door whose action sessions are the test broker's own fixture
+    /// sessions, as a test's desktop opens through.
+    #[cfg(test)]
+    pub(crate) fn fixture(broker: AppActionBroker) -> Self {
+        Self {
+            sessions: ActionSessionSource::fixture(broker.clone()),
+            broker,
+        }
+    }
+
     /// A value that changes whenever the windows publishing actions do.
     pub(crate) fn surfaces_generation(&self) -> u64 {
         self.broker.surfaces_generation()
@@ -165,9 +175,11 @@ impl OpenDoor {
         self.broker.window_peer(instance)
     }
 
-    /// The app publishing `resource` in `room`, running or retained:
-    /// the one naming it exactly, else one publishing its kind (the part
-    /// before its first `:`).
+    /// The app for `resource` in `room`: the one publishing it exactly,
+    /// running or retained; else the installed app whose manifest declares
+    /// it opens its kind (the part before its first `:`), as Mail declares
+    /// `mail.message` for the messages it shows on demand; else one
+    /// publishing that kind.
     pub(crate) fn publisher_of(&self, room: &str, resource: &str) -> Option<String> {
         let kind = resource.split_once(':').map_or(resource, |(kind, _)| kind);
         let surfaces: Vec<PublishedSurface> = self
@@ -183,6 +195,7 @@ impl OpenDoor {
                 .map(|surface| surface.app_id.clone())
         };
         publishes(&|action| action.resource == resource)
+            .or_else(|| crate::shell::launcher::app_opening_resource_kind(kind))
             .or_else(|| publishes(&|action| action.resource_kind == kind))
     }
 }

@@ -1,0 +1,61 @@
+# Tests that need a capability a test machine may not have, by capability.
+#
+# A capability marked `mapped` has every test that needs it listed here, each
+# group with the probe that decides it (tilo_test_env::PROBES). A group's
+# filter names packages and tests only: nextest refuses a binary() that a run
+# does not build. Under the ci
+# profile the setup script sets its TILO_REQUIRE_* variable, so such a test
+# fails rather than skips when the capability is missing; and
+# tools/ci/capability_filter.py runs the probes where the tests run first and
+# leaves out each group whose probe fails, so the run reports those tests as
+# not run, naming the capability. A capability not yet mapped keeps the old
+# behaviour: its tests skip with a message where it is missing.
+#
+# A test that fails with "TILO_REQUIRE_... is set but ... is unavailable"
+# belongs in a group here.
+
+[capabilities.UserNamespace]
+variable = "TILO_REQUIRE_USERNS"
+mapped = true
+
+[[capabilities.UserNamespace.tests]]
+# Runs itself as uid 1000 under bubblewrap with a /proc of its own.
+probe = "bubblewrap-with-proc"
+filter = "package(shell) and test(=runtime_host::admission_tests::readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampered_identity)"
+
+[[capabilities.UserNamespace.tests]]
+# The seed test mounts in a private mount namespace.
+probe = "mount-namespace"
+filter = "package(tilo-install-helpers) and test(=native_home_seeds)"
+
+[[capabilities.UserNamespace.tests]]
+# The tool builder's sandbox: root of a user namespace with an overlay.
+probe = "bubblewrap-overlay"
+filter = "package(env-tools) and test(/^build::/)"
+
+[[capabilities.UserNamespace.tests]]
+# A capability-free root runs the peer scenario in a user namespace.
+probe = "user-namespace"
+filter = "package(imager-backend) and test(/capture::original_caller::/)"
+
+[[capabilities.UserNamespace.tests]]
+# Fixtures and guests in a plain bubblewrap sandbox.
+probe = "bubblewrap"
+filter = """\
+(package(runtime-bundle) and test(/component_pins::/)) \
+or (package(tilo-runtime) and test(/mcp_process_tests::/)) \
+or (package(ush) and (test(/^helper_runtime::/) or test(/^network::/) or test(/^serve_handoff::/) or test(/^runtime_dir::/))) \
+or (package(settings) and test(/keyboard_preview::/))"""
+
+[capabilities.NetworkTunnel]
+variable = "TILO_REQUIRE_TUN"
+mapped = true
+
+[[capabilities.NetworkTunnel.tests]]
+probe = "network-tunnel"
+filter = """\
+package(tilo-device-vpn) and (test(=packets_cross_two_network_namespaces) \
+or test(=the_block_comes_and_goes_with_the_profile_state) \
+or test(=a_caller_other_than_the_seats_shell_is_refused) \
+or test(=a_block_left_by_a_crashed_helper_is_kept_until_reset_at_boot) \
+or test(=a_block_left_by_a_crashed_session_is_taken_over_by_the_next))"""

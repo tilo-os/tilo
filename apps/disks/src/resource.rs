@@ -114,13 +114,13 @@ pub enum DisksEffect {
     },
     /// Erase a drive or partition for good: every file on it is lost, and it
     /// starts again empty.
-    #[effect(job, destructive, label = "Format")]
+    #[effect(job, destructive, returns, label = "Format")]
     Format {
         #[param("Kernel name of the drive or partition to erase")]
         device: String,
     },
     /// Benchmark.
-    #[effect(job)]
+    #[effect(job, returns)]
     Benchmark {
         #[param("Kernel name of the drive or partition")]
         device: String,
@@ -135,14 +135,14 @@ pub enum DisksEffect {
     ///
     /// A mount is only useful once its files are reachable: this is the way
     /// there, without copying the path out of the row.
-    #[effect(job, label = "Open in Files")]
+    #[effect(job, returns, label = "Open in Files")]
     OpenFolder {
         #[param("Kernel name of the mounted partition")]
         device: String,
     },
     /// Show how much room a mounted filesystem's files take up, in the Disk
     /// Usage analyzer.
-    #[effect(job, label = "Show disk usage")]
+    #[effect(job, returns, label = "Show disk usage")]
     DiskUsage {
         #[param("Kernel name of the mounted partition")]
         device: String,

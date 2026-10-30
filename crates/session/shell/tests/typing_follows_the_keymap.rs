@@ -2,7 +2,7 @@
 //!
 //! A Wayland client reads each keycode through the keymap the seat sent it,
 //! so typing `y` means pressing the key that layout puts `y` on: evdev 21 on
-//! a US keymap, evdev 44 on a German one, with Shift or AltGr held where the
+//! a US keymap, evdev 44 on a German one, with Shift or `AltGr` held where the
 //! keymap needs them. A character no key types on the keymap reaches the
 //! window's text field as text, the way an input method commits it. The
 //! client here decodes its keys with the keymap it was sent, exactly as a

@@ -12,6 +12,10 @@ use ui::a11y::Action;
 use ui::headless::FrameHarness;
 
 /// The demo desktop with its chrome, drawn once.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the host moves into the harness at its last use; nothing is held past it"
+)]
 fn harness() -> (FrameHarness, Chrome) {
     let tree = WorkspaceTree::bootstrap_demo();
     let (host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);

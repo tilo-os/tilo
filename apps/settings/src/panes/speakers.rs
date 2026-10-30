@@ -76,7 +76,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&SpeakersArea> {
 #[effect(operation = "settings.effect")]
 pub enum SpeakerEffect {
     /// Save a speaker set; the other devices are asked to join.
-    #[effect(job, label = "Create speaker set")]
+    #[effect(job, label = "Create speaker set", returns)]
     CreateSpeakerSet {
         #[param("The set's name")]
         name: String,
@@ -84,7 +84,7 @@ pub enum SpeakerEffect {
         members: Vec<SpeakerMemberSpec>,
     },
     /// Play a short sound on one output, to tell which speaker it is.
-    #[effect(job, label = "Play a sound")]
+    #[effect(job, label = "Play a sound", returns)]
     IdentifySpeaker {
         #[param("The device the output is on")]
         device: String,
@@ -93,7 +93,7 @@ pub enum SpeakerEffect {
     },
     /// Measure a set with the offered microphones: the one at `listening`
     /// (where the person sits), and every other except `excluded`.
-    #[effect(job, row, label = "Calibrate")]
+    #[effect(job, row, label = "Calibrate", returns)]
     CalibrateSpeakerSet {
         #[param("The speaker set's id")]
         group: String,
@@ -103,31 +103,31 @@ pub enum SpeakerEffect {
         listening: Option<String>,
     },
     /// Stop measuring a set.
-    #[effect(job, row, label = "Cancel calibration")]
+    #[effect(job, row, label = "Cancel calibration", returns)]
     CancelCalibration {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Apply a measured proposal.
-    #[effect(job, row, label = "Apply calibration")]
+    #[effect(job, row, label = "Apply calibration", returns)]
     ApplyCalibration {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Go back to how the set sounded before the last calibration.
-    #[effect(job, row, label = "Revert calibration")]
+    #[effect(job, row, label = "Revert calibration", returns)]
     RevertCalibration {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Discard a measured proposal.
-    #[effect(job, row, label = "Discard calibration")]
+    #[effect(job, row, label = "Discard calibration", returns)]
     DismissCalibration {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Delete a speaker set; its devices play on their own again.
-    #[effect(job, row, destructive, label = "Delete speaker set")]
+    #[effect(job, row, destructive, label = "Delete speaker set", returns)]
     DeleteSpeakerSet {
         #[param("The speaker set's id")]
         group: String,

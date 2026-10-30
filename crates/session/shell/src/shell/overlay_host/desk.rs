@@ -908,6 +908,7 @@ impl ShellOverlayHost {
                     open: placement::open_rect(area, item.glance, item.open),
                     reach: placement::reach_zone(area, item.glance),
                     has_content: item.has_content,
+                    area,
                 }
             })
             .collect();
@@ -2038,16 +2039,25 @@ impl ShellOverlayHost {
         } else {
             1.0 + LIFT_SCALE * lift
         };
-        let at = pass.transform * Affine::scale_about(scale, ground.center());
-        let bounds = ground
-            .union(drawn.glance)
-            .union(drawn.open)
-            .inflate(40.0, 48.0);
+        let lifted = Affine::scale_about(scale, ground.center());
+        let at = pass.transform * lifted;
         let carried = self
             .desk
             .grab
             .as_ref()
             .is_some_and(|grab| grab.id == slot.id && grab.dragging);
+        let reach = ground
+            .union(drawn.glance)
+            .union(drawn.open)
+            .inflate(40.0, 48.0);
+        // A widget stands on its display: its shadow at that display's edge
+        // stops there rather than painting (and repainting) the edge of the
+        // display beside it. Carried, it goes where the hand takes it.
+        let bounds = if carried {
+            reach
+        } else {
+            reach.intersect(lifted.inverse().transform_rect_bbox(slot.area))
+        };
         let hovered = !carried
             && self
                 .desk

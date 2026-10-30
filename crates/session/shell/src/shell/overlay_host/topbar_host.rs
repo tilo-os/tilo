@@ -59,6 +59,10 @@ pub(super) struct TopBarHost {
     /// The pointer was over the bar at its last move: the move that takes it
     /// off reaches the bar too, so no control stays lifted.
     hovered: bool,
+    /// The shell's own Tab moved keyboard focus onto the bar: reading it
+    /// with the keyboard holds it shown, as a Tab inside it does. Focus the
+    /// shell merely placed on it (a fresh desktop's first focus) does not.
+    reached_by_keyboard: bool,
 }
 
 /// What of the chrome the feed is built from: a change of any of it
@@ -76,11 +80,17 @@ struct FeedKey {
 }
 
 fn moved(rect: Rect, by: Vec2) -> Rect {
-    if rect.is_zero_area() { rect } else { rect + by }
+    if rect.is_zero_area() {
+        rect
+    } else {
+        vello::kurbo::Affine::translate(by).transform_rect_bbox(rect)
+    }
 }
 
 fn local(rect: Rect, origin: Point) -> Rect {
-    rect - origin.to_vec2()
+    vello::kurbo::Affine::translate(origin.to_vec2())
+        .inverse()
+        .transform_rect_bbox(rect)
 }
 
 impl TopBarHost {
@@ -488,9 +498,43 @@ impl ShellOverlayHost {
         self.bump_chrome();
     }
 
+    /// Hand a click on a tray item to its app, at the item's place on the
+    /// desktop (the bar says where in its own area). Whether it was taken.
+    fn forward_tray_request(
+        &self,
+        key: &str,
+        request: tilo_desktop::chrome::AppTrayRequest,
+    ) -> bool {
+        use tilo_desktop::chrome::AppTrayRequest;
+        let (dx, dy) = (
+            ui::num::i32_of_f64(self.topbar.origin.x),
+            ui::num::i32_of_f64(self.topbar.origin.y),
+        );
+        let at = |x: i32, y: i32| (x.saturating_add(dx), y.saturating_add(dy));
+        let request = match request {
+            AppTrayRequest::Activate { x, y } => {
+                let (x, y) = at(x, y);
+                AppTrayRequest::Activate { x, y }
+            }
+            AppTrayRequest::SecondaryActivate { x, y } => {
+                let (x, y) = at(x, y);
+                AppTrayRequest::SecondaryActivate { x, y }
+            }
+            AppTrayRequest::ContextMenu { x, y } => {
+                let (x, y) = at(x, y);
+                AppTrayRequest::ContextMenu { x, y }
+            }
+        };
+        if let Err(error) = crate::tray::global().request(key, bar_data::tray_request(request)) {
+            tracing::debug!(target: "shell::tray", %key, %error, "tray click not delivered");
+            return false;
+        }
+        true
+    }
+
     /// Carry out what a control on the bar asked for. Whether it was.
     fn topbar_intent(
-        &mut self,
+        &self,
         chrome: &crate::shell::chrome_state::Chrome,
         intent: ChromeIntent,
     ) -> bool {
@@ -550,39 +594,7 @@ impl ShellOverlayHost {
             }
             ChromeIntent::AppTray { key, request } => {
                 drop(state);
-                // The bar says where in its own area; the item's menu opens
-                // where that is on the desktop.
-                let (dx, dy) = (
-                    ui::num::i32_of_f64(self.topbar.origin.x),
-                    ui::num::i32_of_f64(self.topbar.origin.y),
-                );
-                let request = match request {
-                    tilo_desktop::chrome::AppTrayRequest::Activate { x, y } => {
-                        tilo_desktop::chrome::AppTrayRequest::Activate {
-                            x: x.saturating_add(dx),
-                            y: y.saturating_add(dy),
-                        }
-                    }
-                    tilo_desktop::chrome::AppTrayRequest::SecondaryActivate { x, y } => {
-                        tilo_desktop::chrome::AppTrayRequest::SecondaryActivate {
-                            x: x.saturating_add(dx),
-                            y: y.saturating_add(dy),
-                        }
-                    }
-                    tilo_desktop::chrome::AppTrayRequest::ContextMenu { x, y } => {
-                        tilo_desktop::chrome::AppTrayRequest::ContextMenu {
-                            x: x.saturating_add(dx),
-                            y: y.saturating_add(dy),
-                        }
-                    }
-                };
-                if let Err(error) =
-                    crate::tray::global().request(&key, bar_data::tray_request(request))
-                {
-                    tracing::debug!(target: "shell::tray", %key, %error, "tray click not delivered");
-                    return false;
-                }
-                return true;
+                return self.forward_tray_request(&key, request);
             }
             ChromeIntent::RenameWorkspace { name } => {
                 if !state.may_rename_active_workspace() {
@@ -607,7 +619,7 @@ impl ShellOverlayHost {
     }
 
     /// Send a transport command to the player the now-playing card shows.
-    fn send_topbar_media(&mut self, command: MediaCommand) {
+    fn send_topbar_media(&self, command: MediaCommand) {
         use crate::shell::now_playing::PlayerCommand;
         let players = self.now_playing_source.players();
         let Some(bus) = crate::shell::now_playing::active_index(
@@ -698,7 +710,7 @@ impl ShellOverlayHost {
         }
         let at = match event {
             WindowEvent::CursorMoved { position, .. } => Some(ctx.logical(position)),
-            WindowEvent::Touch(touch) => Some(ctx.logical(&touch.location)),
+            WindowEvent::Touch(touch) => Some(ctx.logical(touch.location)),
             _ => self.last_cursor,
         };
         let over = at.is_some_and(|p| self.topbar.covers(p));
@@ -838,7 +850,20 @@ impl ShellOverlayHost {
     /// Whether something the bar opened, or its own keyboard focus, holds it
     /// shown.
     pub(super) fn topbar_holds_shown(&self) -> bool {
-        self.topbar.shown.holds_shown || self.topbar.natively_focused()
+        self.topbar.shown.holds_shown
+            || (self.topbar.reached_by_keyboard && self.topbar.natively_focused())
+    }
+
+    /// The shell moved keyboard focus to `widget`, by the person's Tab with
+    /// `by_keyboard`: whether that is the bar, reached by reading it.
+    pub fn native_focus_moved(&mut self, widget: Option<*const ()>, by_keyboard: bool) {
+        let onto_bar = widget.is_some_and(|widget| {
+            self.topbar
+                .app
+                .as_deref()
+                .is_some_and(|app| std::ptr::addr_eq(std::ptr::from_ref(app), widget))
+        });
+        self.topbar.reached_by_keyboard = onto_bar && by_keyboard;
     }
 
     /// The bar's surface in its app, for a test or a capture driving it.
