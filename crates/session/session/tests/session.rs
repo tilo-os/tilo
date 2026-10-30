@@ -20,7 +20,6 @@ use std::os::fd::AsFd as _;
 use std::rc::Rc;
 use std::time::Duration;
 
-use futures_util::FutureExt as _;
 use tilo_actions::ResourceSpec;
 use tilo_compositor::clipboard_history::{Copy, TEXT_MIME};
 use tilo_compositor::{Compositor, GestureEvent, InputEvent, KeyRepeat, OutputConfig, Selection};

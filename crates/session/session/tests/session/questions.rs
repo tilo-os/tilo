@@ -3,6 +3,7 @@
 
 use super::*;
 
+use futures_util::FutureExt as _;
 use tilo_service::{Answer, Asked};
 
 /// A session whose services ask their questions on its sheets.

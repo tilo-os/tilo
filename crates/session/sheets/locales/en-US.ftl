@@ -271,36 +271,6 @@ lock-shut-down = Shut down
 
 ## The questions the session shows on the portal sheet: apps' access, the
 ## administrator's, a network's secrets and a device pairing.
-portal-allow = Allow
-portal-deny = Deny
-portal-cancel = Cancel
-portal-allow-once = Allow once
-portal-allow-session = Allow for this session
-portal-allow-always = Always allow
-portal-access-title = { $app } wants to use { $what }
-portal-access-detail = Nothing is shared until you allow it.
-portal-access-screenshot = your screen, as a picture
-portal-access-screencast = your screen
-portal-access-remote-desktop = your screen and your input
-portal-access-camera = your camera
-portal-access-microphone = your microphone
-portal-access-speaker = your speakers
-portal-access-location = your location
-portal-access-print = your printers
-portal-access-usb = your USB devices
-portal-access-input-capture = your keyboard and pointer
-portal-access-global-shortcuts = global keyboard shortcuts
-portal-access-notification = your notifications
-portal-access-secret = your saved passwords
-portal-access-generic = { $capability }
-portal-screenshot-title = Let { $app } take a screenshot?
-portal-screenshot-detail = It gets one picture of the screen as it is now.
-portal-screenshot-take = Take screenshot
-portal-auth-heading = Administrator access
-portal-auth-authenticate = Authenticate
-portal-auth-identity = Authenticate as
-portal-auth-ended = Authentication ended unexpectedly.
-portal-auth-rejected = That password was not accepted.
 portal-connect = Connect
 portal-remember-device = Remember on this device
 portal-secret-required = Fill in every required field.

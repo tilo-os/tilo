@@ -751,7 +751,9 @@ fn compose(question: &Question) -> Option<Composed> {
         }
         tilo_portal::wallpaper::WALLPAPER_QUESTION => wallpaper(&question.handle, &who, details)?,
         tilo_portal::print::PRINT_QUESTION => printing(&question.handle, &who, details)?,
-        tilo_portal::screenshot::SCREENSHOT_QUESTION => screenshot(&question.handle, details)?,
+        tilo_portal::screenshot::SCREENSHOT_QUESTION => {
+            screenshot(&question.handle, &who, details)?
+        }
         tilo_portal::screenshot::PICK_COLOR_QUESTION => pick_color(&question.handle),
         tilo_portal::usb::USB_QUESTION => usb(&question.handle, &who, details)?,
         tilo_portal::app_chooser::APP_CHOOSER_QUESTION => app_chooser(&question.handle, details)?,
@@ -980,12 +982,12 @@ fn printing(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     Some((dialog, Plan::Choose(printers)))
 }
 
-fn screenshot(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+fn screenshot(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let _asked: ScreenshotQuestion = serde_json::from_value(details).ok()?;
     let mut dialog = review(
         handle,
-        word("portal-screenshot-title"),
-        String::new(),
+        words("portal-screenshot-title", &[("app", who)]),
+        who.to_owned(),
         word("portal-screenshot-detail"),
     );
     dialog.confirm_label = word("portal-screenshot-take");

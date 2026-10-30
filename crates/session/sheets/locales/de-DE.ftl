@@ -271,36 +271,6 @@ lock-shut-down = Ausschalten
 
 ## The questions the session shows on the portal sheet: apps' access, the
 ## administrator's, a network's secrets and a device pairing.
-portal-allow = Erlauben
-portal-deny = Ablehnen
-portal-cancel = Abbrechen
-portal-allow-once = Einmal erlauben
-portal-allow-session = Für diese Sitzung erlauben
-portal-allow-always = Immer erlauben
-portal-access-title = { $app } möchte { $what } verwenden
-portal-access-detail = Nichts wird geteilt, solange du es nicht erlaubst.
-portal-access-screenshot = deinen Bildschirm als Bild
-portal-access-screencast = deinen Bildschirm
-portal-access-remote-desktop = deinen Bildschirm und deine Eingaben
-portal-access-camera = deine Kamera
-portal-access-microphone = dein Mikrofon
-portal-access-speaker = deine Lautsprecher
-portal-access-location = deinen Standort
-portal-access-print = deine Drucker
-portal-access-usb = deine USB-Geräte
-portal-access-input-capture = deine Tastatur und deinen Zeiger
-portal-access-global-shortcuts = globale Tastenkürzel
-portal-access-notification = deine Benachrichtigungen
-portal-access-secret = deine gespeicherten Passwörter
-portal-access-generic = { $capability }
-portal-screenshot-title = { $app } einen Bildschirmausschnitt geben?
-portal-screenshot-detail = Es bekommt ein Bild des Bildschirms, wie er jetzt ist.
-portal-screenshot-take = Bildschirmausschnitt geben
-portal-auth-heading = Administratorzugriff
-portal-auth-authenticate = Anmelden
-portal-auth-identity = Anmelden als
-portal-auth-ended = Die Authentifizierung wurde unerwartet beendet.
-portal-auth-rejected = Dieses Passwort wurde nicht akzeptiert.
 portal-connect = Verbinden
 portal-remember-device = Auf diesem Gerät merken
 portal-secret-required = Fülle alle Pflichtfelder aus.
