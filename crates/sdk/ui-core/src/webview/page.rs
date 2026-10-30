@@ -337,6 +337,13 @@ impl PageRequest {
         }
     }
 
+    /// Whether the request writes text into the page's focused field: a
+    /// fill, or keys pressed. Which field that is, and so whether what it
+    /// wrote is a credential, is the field's type, read as it settles.
+    pub const fn enters_text(&self) -> bool {
+        matches!(self, Self::Fill { .. } | Self::Press { .. })
+    }
+
     /// Whether the request only looks at the page, as any visitor can: it
     /// reads the document, its picture, its messages or its requests, or
     /// waits for it, and the page sees none of it. Everything else acts on

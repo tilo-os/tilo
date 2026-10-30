@@ -1005,3 +1005,86 @@ fn a_secret_filled_into_a_visitors_page_makes_it_signed_in_for_good() {
     let _ = synced(&mut visitor);
     assert_eq!(agent_default(&visitor, "read-page"), Ask);
 }
+
+/// Run the published page action `id` with `args` on `widget` as an agent's
+/// invocation does, and let the engine's answer settle it.
+fn run_page_action(widget: &mut BrowserWidget, id: &str, args: &serde_json::Value) {
+    let action = widget
+        .published()
+        .children
+        .iter()
+        .find(|resource| resource.id.0 == "browser.page")
+        .and_then(|page| page.actions.iter().find(|action| action.id == id).cloned())
+        .unwrap_or_else(|| panic!("{id} is published on the page"));
+    let encoded = action
+        .build_json(args.as_object().expect("arguments are an object"))
+        .expect("the arguments fit the action");
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            effect_operation(&encoded.payload),
+        )
+        .expect("the page action is accepted");
+    for _ in 0..3 {
+        let _ = synced(widget);
+    }
+    assert!(widget.page_operation.is_none(), "{id} settled");
+}
+
+/// What makes a credential is the field it goes into, not the action that
+/// put it there: an agent's fill or keys into a password field sign the
+/// visitor's page in as a secret does, and the same into any other field
+/// does not.
+#[test]
+fn an_agent_typing_into_a_password_field_signs_a_visitors_page_in() {
+    use ui::permissions::policy::Answer::{Allow, Ask};
+    let field = |purpose| {
+        Some(ui::webview::TextField {
+            purpose,
+            multiline: false,
+            bounds: None,
+            composition: None,
+        })
+    };
+    for (id, args) in [
+        (
+            "press-page",
+            serde_json::json!({"key": "a", "element": "d1e5"}),
+        ),
+        (
+            "fill-page",
+            serde_json::json!({"element": "d1e5", "text": "hunter2"}),
+        ),
+    ] {
+        let engine = TestEngine::new();
+        engine.send(WebViewCommand::Navigate("https://github.com/login".into()));
+        let mut visitor =
+            BrowserWidget::with_engine_mode(engine.clone(), true, BrowsingMode::Visitor);
+        let _ = synced(&mut visitor);
+
+        engine.set_text_field(field(ui::ime::InputPurpose::Email));
+        run_page_action(&mut visitor, id, &args);
+        assert_eq!(
+            agent_default(&visitor, "read-page"),
+            Allow,
+            "{id} into an email field"
+        );
+
+        engine.set_text_field(field(ui::ime::InputPurpose::Password));
+        run_page_action(&mut visitor, id, &args);
+        assert_eq!(
+            agent_default(&visitor, "read-page"),
+            Ask,
+            "{id} into a password field"
+        );
+        assert!(visitor.window_toolbar().leading.is_empty(), "{id}");
+
+        engine.set_text_field(None);
+        run_page_action(&mut visitor, id, &args);
+        assert_eq!(
+            agent_default(&visitor, "read-page"),
+            Ask,
+            "{id}: and it stays signed in"
+        );
+    }
+}
