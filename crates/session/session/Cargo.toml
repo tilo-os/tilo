@@ -67,6 +67,9 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-notifications-service = { path = "../notifications-service" }
 tilo-polkit-agent = { path = "../polkit-agent" }
 tilo-network-secret-agent = { path = "../network-secret-agent" }
+# The person's other devices: what was copied here is shared through
+# the same fabric as everything else that follows them.
+tilo-device-fabric = { path = "../device-fabric" }
 tilo-bluetooth-agent = { path = "../bluetooth-agent" }
 tilo-tray-host = { path = "../tray-host" }
 tilo-bluez = { path = "../../system/tilo-bluez" }

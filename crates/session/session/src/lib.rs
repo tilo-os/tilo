@@ -36,6 +36,7 @@ pub mod displays;
 mod env;
 mod keys;
 mod lists;
+mod mount;
 mod notifications;
 mod panels;
 pub mod portal_link;
@@ -76,8 +77,8 @@ use ui::shortcut_table::ShortcutAction;
 
 pub use config::SessionConfig;
 pub use controls::{
-    DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
-    SESSION_RESOURCE, SessionCommand,
+    CLIPBOARD_RESOURCE, DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify,
+    NIGHT_LIGHT_RESOURCE, SESSION_RESOURCE, SessionCommand,
 };
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
@@ -184,6 +185,10 @@ pub struct Options {
     /// here in each workspace's room, over Iroh. Off, this desktop has no
     /// collaborators but its own person.
     pub collab: bool,
+    /// The person's device fabric, when this session runs on one: what was
+    /// copied here is shared with their other devices through it, and what
+    /// they copied there joins the clipboard here.
+    pub fabric: Option<tilo_device_fabric::link::SharedLink>,
 }
 
 /// Where quick settings reads the device from.
@@ -263,6 +268,7 @@ impl Default for Options {
             portal: None,
             state: None,
             collab: true,
+            fabric: None,
         }
     }
 }
@@ -334,6 +340,9 @@ struct Shared {
     /// Who is here: this session's membership of each workspace's room,
     /// when it takes part in the collaboration plane.
     sync: Option<Rc<sync::Client>>,
+    /// The copies the person can paste again, and what the Clipboard section
+    /// was last fed of them.
+    clipboard: mount::clipboard::Clipboard,
 }
 
 /// The app a window shows, by its id.
@@ -587,12 +596,41 @@ impl Shared {
                         tracing::warn!(%error, "open settings");
                     }
                 }
+                // A copy is pasted into the app the panel was opened over,
+                // so the panel closes and the loop puts it on the clipboard
+                // and pastes it once the app has the keyboard again.
+                SessionRequest::Effect(QsEffect::PasteCopy { copy }) => {
+                    self.close_quick_settings();
+                    self.clipboard.ask(mount::clipboard::Ask::Paste(copy));
+                }
+                SessionRequest::Effect(QsEffect::PinCopy { copy, pinned }) => {
+                    self.clipboard.pin(&copy, pinned);
+                }
+                SessionRequest::Effect(QsEffect::RemoveCopy { copy }) => {
+                    self.clipboard.remove(&copy);
+                }
+                SessionRequest::Effect(QsEffect::ClearClipboard) => {
+                    self.clipboard.clear();
+                }
                 other => {
                     tracing::debug!(?other, "quick settings asks what the session cannot do yet");
                 }
             }
         }
         self.feed_notifications();
+        self.feed_clipboard();
+    }
+
+    /// Feed the panel's Clipboard section when it changed: every copy the
+    /// person can paste again, newest first.
+    fn feed_clipboard(&self) {
+        let Some(device) = &self.device else {
+            return;
+        };
+        let Some(view) = self.clipboard.changed_view(ui::time::unix_now_ms()) else {
+            return;
+        };
+        device.update(|state| state.clipboard = view);
     }
 
     /// The workspace in front, as its room: where a chosen notification's
@@ -974,6 +1012,8 @@ pub struct Session {
     night_light: (bool, bool),
     /// The portal's link to the loop, while the portal serves.
     portal: Option<portal_link::SessionLink>,
+    /// The person's device fabric, while this session runs on one.
+    fabric: Option<tilo_device_fabric::link::SharedLink>,
     /// The desktop services the portal and the notifications daemon run
     /// in, fed what the session knows of itself.
     desktop: Option<Rc<desktop_services::DesktopServices>>,
@@ -1194,6 +1234,7 @@ impl Session {
             asker,
             notice_view: RefCell::new(None),
             sync,
+            clipboard: mount::clipboard::Clipboard::new(),
         };
         shared.start_search();
         // What the portal brings comes from any thread, and wakes the loop
@@ -1218,6 +1259,7 @@ impl Session {
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             night_light: (options.config.night_light, options.config.kept),
             portal: options.portal,
+            fabric: options.fabric,
             screen_locked: false,
             desktop: options.desktop,
             running: Vec::new(),
@@ -1454,6 +1496,9 @@ impl Session {
             portal.serve(&mut self.compositor, &self.shared.handle);
         }
         self.feed_portal();
+        // What the apps copied since the last pass joins the history; a copy
+        // chosen in it is pasted once the panel let the keyboard go.
+        self.shared.clipboard.follow(&mut self.compositor);
         // Each round can ask for another (a key's shortcut the chrome
         // leaves to the session); a few rounds settle any chain.
         for _ in 0..4 {
@@ -1472,6 +1517,17 @@ impl Session {
             // handle (the chrome switching workspace): the desk carries
             // them out on its next pass.
             self.shared.desktop.with_widgets(WidgetHost::relayout);
+        }
+        self.shared.clipboard.serve_asks(&mut self.compositor);
+        // One file of a paste in flight per turn, so a folder of files does
+        // not hold up a frame.
+        self.shared.clipboard.step_files();
+        // What was copied here reaches the person's other devices, and what
+        // they copied there joins the clipboard here.
+        if let Some(fabric) = &self.fabric
+            && self.shared.clipboard.sync_fabric(fabric.as_ref())
+        {
+            self.shared.feed_clipboard();
         }
         Ok(())
     }
@@ -1628,6 +1684,12 @@ impl Session {
                 if kept && let Err(error) = settings_store::hardware::NIGHT_LIGHT.set(on) {
                     tracing::warn!(%error, "the night light setting was not kept");
                 }
+                Ok(())
+            }
+            SessionCommand::PasteFiles { destination } => {
+                self.shared
+                    .clipboard
+                    .paste_files(std::path::Path::new(&destination));
                 Ok(())
             }
             SessionCommand::SetTouchpad { on } => {

@@ -22,7 +22,8 @@ use std::time::Duration;
 
 use futures_util::FutureExt as _;
 use tilo_actions::ResourceSpec;
-use tilo_compositor::{Compositor, GestureEvent, InputEvent, KeyRepeat, OutputConfig};
+use tilo_compositor::clipboard_history::{Copy, TEXT_MIME};
+use tilo_compositor::{Compositor, GestureEvent, InputEvent, KeyRepeat, OutputConfig, Selection};
 use tilo_desktop::desktop_actions::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND};
 use tilo_onboarding::OnboardingEffect;
 use tilo_quick_settings::QsEffect;
@@ -2793,4 +2794,182 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
         held.len() + 1,
         "a new workspace joins the desk"
     );
+}
+
+/// A session whose quick settings reads a stand-in laptop, so the panel is
+/// fed as it is on a real one.
+fn session_reading_a_device() -> Session {
+    let machine = Machine::laptop();
+    let reads = machine;
+    Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
+                DeviceHost::new(
+                    Device {
+                        reads: std::sync::Arc::new(reads.clone()),
+                        dispatcher: std::sync::Arc::new(reads),
+                        preferences: Box::new(Kept::default()),
+                    },
+                    wake,
+                )
+            }))),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session")
+}
+
+/// The Clipboard section, open in quick settings.
+fn open_clipboard(session: &mut Session) {
+    if !session.quick_settings_open() {
+        invoke(session, CHROME_RESOURCE, "toggle-quick-settings");
+    }
+    session
+        .invoke(
+            tilo_session::QUICK_SETTINGS,
+            "open-section",
+            &arguments(serde_json::json!({ "section": "clipboard" })),
+        )
+        .expect("open the Clipboard section");
+    settle(session, 3);
+}
+
+/// Pin `key` and clear the history: the pinned copy stays, a copy made after
+/// it does not, and the clipboard itself is left as it was.
+fn pin_and_clear_the_history(session: &mut Session, key: &str) {
+    let panel = tilo_session::QUICK_SETTINGS;
+    session
+        .invoke(
+            panel,
+            QsEffect::PIN_COPY.id,
+            &arguments(serde_json::json!({ "copy": key, "pinned": true })),
+        )
+        .expect("pin the copy");
+    session
+        .invoke(
+            panel,
+            QsEffect::CLEAR_CLIPBOARD.id,
+            &arguments(serde_json::json!({})),
+        )
+        .expect("clear the history");
+    settle(session, 3);
+    assert!(
+        session
+            .compositor()
+            .selection_formats(Selection::Clipboard)
+            .iter()
+            .any(|mime| mime == TEXT_MIME),
+        "clearing the history leaves the clipboard as it was"
+    );
+
+    // Another copy is added and then cleared: only the pinned one stays.
+    session
+        .compositor()
+        .set_selection(
+            Selection::Clipboard,
+            vec![(TEXT_MIME.to_owned(), b"a stray copy".to_vec())],
+        )
+        .expect("another app copies");
+    settle(session, 3);
+    session
+        .invoke(
+            panel,
+            QsEffect::CLEAR_CLIPBOARD.id,
+            &arguments(serde_json::json!({})),
+        )
+        .expect("clear the history");
+    settle(session, 3);
+    let labels = format!("{:?}", session.accessible_labels());
+    assert!(labels.contains("meeting notes"), "{labels}");
+    assert!(!labels.contains("a stray copy"), "{labels}");
+}
+
+#[test]
+fn a_copy_is_listed_pinned_across_a_restart_and_pasted_into_the_app_in_front() {
+    let _settled = ui::motion::testing::settled();
+    let text = b"meeting notes\nsecond line";
+    let copy = Copy::new(TEXT_MIME, text.to_vec(), ui::time::unix_now_ms());
+    let key = copy.key();
+    {
+        let mut session = session_reading_a_device();
+        // An app copies: the copy joins the history and lists in quick
+        // settings with its first line.
+        session
+            .compositor()
+            .set_selection(
+                Selection::Clipboard,
+                vec![(TEXT_MIME.to_owned(), text.to_vec())],
+            )
+            .expect("the app copies");
+        open_clipboard(&mut session);
+        pump(&mut session, &mut [], |session, _| {
+            session
+                .accessible_labels()
+                .iter()
+                .any(|label| label.contains("meeting notes"))
+        });
+        let labels = session.accessible_labels();
+        assert!(
+            labels.iter().any(|label| label == "One copy"),
+            "the section counts the copy: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|label| label.contains("second line")),
+            "a copy lists its first line: {labels:?}"
+        );
+
+        // Pinned, it survives clearing the history.
+        pin_and_clear_the_history(&mut session, &key);
+    }
+
+    // A new session — the person's next login — still has it: the history is
+    // in this device's settings, not in the session's memory.
+    let mut session = session_reading_a_device();
+    let mut client = mapped(&mut session, "org.example.Terminal");
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keyboard_focused
+    });
+    open_clipboard(&mut session);
+    pump(&mut session, &mut [], |session, _| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label.contains("meeting notes"))
+    });
+
+    // Pasting it puts the bytes back on the clipboard and tells the terminal
+    // to paste, with the chord a terminal pastes with.
+    session
+        .invoke(
+            tilo_session::QUICK_SETTINGS,
+            QsEffect::PASTE_COPY.id,
+            &arguments(serde_json::json!({ "copy": key })),
+        )
+        .expect("paste the copy");
+    pump(&mut session, &mut [&mut client], |session, clients| {
+        clients[0]
+            .seen
+            .keys
+            .iter()
+            .any(|(keycode, pressed)| *keycode == 47 && *pressed)
+            && !session.quick_settings_open()
+    });
+    let seen: Vec<(u32, bool)> = client.seen.keys.clone();
+    assert!(
+        seen.contains(&(29, true)) && seen.contains(&(42, true)),
+        "a terminal pastes with Ctrl+Shift+V: {seen:?}"
+    );
+    assert!(
+        seen.contains(&(47, true)) && seen.contains(&(47, false)),
+        "the chord is released again: {seen:?}"
+    );
+    let mut reader = session
+        .compositor()
+        .receive_selection(Selection::Clipboard, TEXT_MIME)
+        .expect("the copy is on the clipboard");
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut reader, &mut bytes).expect("read the copy");
+    assert_eq!(bytes, text);
 }

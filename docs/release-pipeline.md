@@ -166,6 +166,15 @@ not create a tagged package release, but a manual desktop run from `main`
 
 App collection or desktop payload publication does not release an OS version.
 
+## Building the OS on one machine
+
+`tools/ci/build-os.sh` builds a commit's OS on one x86_64 or aarch64 machine with podman, such
+as a remote build machine: the OS image (`image`, every layer of os/image/layers.toml), the
+installer medium (`medium`), the development image (`dev-image`) and a board's sealed image
+(`board <name>`), each after what it needs, with the stores, build directories and compiler
+cache kept in the directory it is given. It is the only definition of these steps:
+`tools/ci/signin-e2e-builder.sh` takes the image and medium from it.
+
 ## OS releases
 
 An OS release is run on `stable` or a `vMAJOR.MINOR.PATCH` tag, one step of

@@ -1334,6 +1334,9 @@ session-displays = Displays
 session-displays-next = Next display arrangement
 session-displays-set = Arrange the displays
 session-param-displays-mode = How the displays are used together: extend, mirror, built-in or external
+session-clipboard = Clipboard
+session-clipboard-paste-files = Paste files here
+session-param-paste-destination = The folder the copied files are pasted into
 desktop-action-show-overview = Show the overview
 desktop-action-hide-overview = Hide the overview
 

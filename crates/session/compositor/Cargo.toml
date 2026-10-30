@@ -41,10 +41,14 @@ tilo-wayland-ext = { path = "../wayland-ext" }
 x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
 # Named pointer shapes from the XCursor theme.
 xcursor = "0.3"
+# A kept copy is known by its bytes.
+blake3.workspace = true
+# Reading a selection takes its pipe non-blocking, so an app that is slow to
+# answer holds up no frame.
+rustix = { workspace = true, features = ["fs"] }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-rustix = { workspace = true, features = ["fs"] }
 tempfile.workspace = true
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "renderer_pixman"] }
 wayland-client.workspace = true
