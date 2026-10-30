@@ -40,6 +40,8 @@ mod sync;
 mod task;
 mod task_door;
 mod tasks;
+#[cfg(feature = "room")]
+mod undo_own;
 mod unions;
 mod upgrade;
 mod views_migration;

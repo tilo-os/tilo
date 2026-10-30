@@ -927,6 +927,9 @@ pub fn short(hash: &ChangeHash) -> String {
     hash.to_string().chars().take(12).collect()
 }
 
+/// Take back `targets`' patches: each step's own change goes, and what
+/// somebody else set since stays theirs ([`revert_changes`]), so the step
+/// counts as undone either way.
 fn revert(
     doc: &mut AutoCommit,
     targets: &[Version],
@@ -937,32 +940,9 @@ fn revert(
         .iter()
         .map(|version| (version.hash, version.actor.clone()))
         .collect();
-    let outcomes = revert_changes(doc, &changes, words)
-        .map_err(|error| format!("could not {verb}: {error:?}"))?;
-    let kept: Vec<String> = targets
-        .iter()
-        .zip(&outcomes)
-        .filter(|(_, outcome)| !outcome.is_complete())
-        .map(|(version, outcome)| {
-            let by: Vec<String> = outcome
-                .blocked_by()
-                .into_iter()
-                .map(|author| author.name)
-                .collect();
-            format!(
-                "{} (changed since by {})",
-                step_label(version, words),
-                by.join(", ")
-            )
-        })
-        .collect();
-    if !kept.is_empty() {
-        return Err(format!(
-            "Nothing was {verb}ne: somebody else changed what {} touched. Restore the items you mean from a version instead.",
-            kept.join("; ")
-        ));
-    }
-    Ok(())
+    revert_changes(doc, &changes, words)
+        .map(drop)
+        .map_err(|error| format!("could not {verb}: {error:?}"))
 }
 
 /// The verified inverse action of a step, when it has one (it queued an
@@ -979,8 +959,8 @@ pub type Inverse = Box<dyn tilo_actions::Action>;
 ///
 /// # Errors
 /// Says why nothing was undone, in `words`: there is nothing of the scope's
-/// to undo, somebody else has since changed what a step touched, or an
-/// inverse cannot be applied.
+/// to undo, or an inverse cannot be applied. What somebody else changed
+/// since is never a reason: their newer value stays and the step is undone.
 pub fn undo(
     doc: &mut AutoCommit,
     scope: &Scope,
@@ -1650,3 +1630,7 @@ pub fn changed_items(
 #[cfg(test)]
 #[path = "steps_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "steps_undo_tests.rs"]
+mod undo_tests;

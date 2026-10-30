@@ -432,8 +432,8 @@ impl Hosted {
             match done {
                 Ok(done) => changed |= done,
                 Err(error) => {
-                    tracing::warn!(app = self.spec.app, ?asked, %error, "an undo was refused");
-                    self.instance.history_refused(error.to_string());
+                    tracing::warn!(app = self.spec.app, ?asked, %error, "an undo or redo failed");
+                    self.instance.history_failed(error.to_string());
                     changed = true;
                 }
             }

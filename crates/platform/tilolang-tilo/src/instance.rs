@@ -1259,9 +1259,10 @@ impl Instance {
         self.flush();
     }
 
-    /// The undo or redo the person asked for was refused, for `why` (somebody else changed what
-    /// it would take back since): the window says so.
-    pub fn history_refused(&mut self, why: String) {
+    /// The undo or redo the person asked for failed, for `why` (an inverse could not be applied,
+    /// or the room refused the change for good): the window says so. Somebody else having changed
+    /// the record since is never a failure: undo leaves their newer value and takes back the rest.
+    pub fn history_failed(&mut self, why: String) {
         self.notice(Words::Plain(why), ui::NoticeKind::Error);
         self.flush();
     }
