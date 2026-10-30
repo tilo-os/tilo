@@ -21,7 +21,7 @@ use crate::input::{BTN_LEFT, GestureEvent};
 use crate::state::State;
 
 /// A client surface and its origin in the logical layout.
-type Focus = Option<(WlSurface, Point<f64, Logical>)>;
+pub(crate) type Focus = Option<(WlSurface, Point<f64, Logical>)>;
 
 /// Where each finger on the screen went down.
 #[derive(Debug, Default)]
@@ -29,11 +29,21 @@ pub(crate) struct Touches {
     /// Fingers on a hosted surface, by slot: the host's index and where
     /// the finger is.
     hosts: Vec<(u32, usize, Point<f64, Logical>)>,
-    /// Fingers on client surfaces, by slot: the surface and its origin in
-    /// the logical layout as the finger went down.
-    clients: Vec<(u32, Focus)>,
+    /// Fingers on client surfaces.
+    pub(crate) clients: Vec<Finger>,
     /// The gesture in flight belongs to the desktop.
     gesture_to_desktop: bool,
+}
+
+/// A finger on a client surface.
+#[derive(Debug)]
+pub(crate) struct Finger {
+    /// Its slot.
+    pub(crate) slot: u32,
+    /// The surface and its origin in the logical layout as it went down.
+    pub(crate) focus: Focus,
+    /// Where the finger is.
+    pub(crate) at: Point<f64, Logical>,
 }
 
 impl Touches {
@@ -69,8 +79,12 @@ impl State {
             self.surface_under(at)
                 .map(|(_, surface, origin)| (surface, origin))
         };
-        self.touch.clients.retain(|(held, _)| *held != slot);
-        self.touch.clients.push((slot, focus.clone()));
+        self.touch.clients.retain(|finger| finger.slot != slot);
+        self.touch.clients.push(Finger {
+            slot,
+            focus: focus.clone(),
+            at,
+        });
         let Some(touch) = self.seat.get_touch() else {
             return;
         };
@@ -84,6 +98,9 @@ impl State {
                 time,
             },
         );
+        // A finger on an X11 window is the press Xwayland runs its drags
+        // under, as the pointer's is.
+        self.x11_drag_motion(at);
     }
 
     pub(crate) fn touch_motion(&mut self, slot: u32, at: Point<f64, Logical>, time: u32) {
@@ -107,21 +124,25 @@ impl State {
         let focus = self
             .touch
             .clients
-            .iter()
-            .find(|(held, _)| *held == slot)
-            .and_then(|(_, focus)| focus.clone());
-        let Some(touch) = self.seat.get_touch() else {
-            return;
-        };
-        touch.motion(
-            self,
-            focus,
-            &MotionEvent {
-                slot: Some(slot).into(),
-                location: at,
-                time,
-            },
-        );
+            .iter_mut()
+            .find(|finger| finger.slot == slot)
+            .map(|finger| {
+                finger.at = at;
+                finger.focus.clone()
+            })
+            .unwrap_or_default();
+        if let Some(touch) = self.seat.get_touch() {
+            touch.motion(
+                self,
+                focus,
+                &MotionEvent {
+                    slot: Some(slot).into(),
+                    location: at,
+                    time,
+                },
+            );
+        }
+        self.x11_drag_motion(at);
     }
 
     pub(crate) fn touch_up(&mut self, slot: u32, serial: Serial, time: u32) {
@@ -142,18 +163,24 @@ impl State {
             }
             return;
         }
-        self.touch.clients.retain(|(held, _)| *held != slot);
-        let Some(touch) = self.seat.get_touch() else {
-            return;
-        };
-        touch.up(
-            self,
-            &UpEvent {
-                slot: Some(slot).into(),
-                serial,
-                time,
-            },
-        );
+        let at = self
+            .touch
+            .clients
+            .iter()
+            .position(|finger| finger.slot == slot)
+            .map_or(self.pointer, |index| self.touch.clients.remove(index).at);
+        if let Some(touch) = self.seat.get_touch() {
+            touch.up(
+                self,
+                &UpEvent {
+                    slot: Some(slot).into(),
+                    serial,
+                    time,
+                },
+            );
+        }
+        // The X11 drag the finger ran is over: its proxy comes down.
+        self.x11_drag_motion(at);
     }
 
     pub(crate) fn touch_frame(&mut self) {
@@ -169,6 +196,13 @@ impl State {
                 host.pointer_leave();
             }
         }
+        // A cancelled contact leaves no drag running: the proxy Xwayland
+        // raised for it comes down.
+        let at = self
+            .touch
+            .clients
+            .last()
+            .map_or(self.pointer, |finger| finger.at);
         self.touch.clients.clear();
         let finger = self.drag_finger();
         if let Some(touch) = self.seat.get_touch() {
@@ -177,6 +211,7 @@ impl State {
         if finger.is_some() {
             self.drag_cancelled();
         }
+        self.x11_drag_motion(at);
     }
 
     pub(crate) fn gesture(&mut self, gesture: GestureEvent, serial: Serial, time: u32) {
