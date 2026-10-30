@@ -77,7 +77,8 @@ pub use nodes::{
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use record_read::{
-    RECORD_READS_FOR_TASKS, RECORD_READS_UNAVAILABLE, RecordAddress, RecordCopy, RecordReads,
+    RECORD_READS_FOR_TASKS, RECORD_READS_UNAVAILABLE, RecordAddress, RecordChange, RecordChanges,
+    RecordCopy, RecordReads,
 };
 pub use search::stem_word;
 #[cfg(any(test, feature = "test-support"))]
@@ -1344,6 +1345,11 @@ pub trait ActionHost {
     /// Where an agent task reads its room's records outside their apps ([`RecordReads`]);
     /// `None` for a host without them.
     fn record_reads(&self) -> Option<std::sync::Arc<dyn RecordReads>> {
+        None
+    }
+
+    /// Where an agent task's changes go to their records' origin ([`RecordChanges`]).
+    fn record_changes(&self) -> Option<std::sync::Arc<dyn RecordChanges>> {
         None
     }
 }

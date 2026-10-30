@@ -9,6 +9,7 @@ mod local_app_records;
 mod personal_apps;
 mod room_binding;
 mod room_outbox;
+mod strip_commands;
 mod tree_handle;
 mod window_hosting;
 mod window_shares;
@@ -3818,53 +3819,6 @@ impl WorkspaceTree {
     pub fn may_rename_strip(&self, strip: StripId) -> bool {
         let salt = tilo_desktop_model::ids::peer_salt_of(strip.raw());
         salt == 0 || salt == self.local_salt()
-    }
-
-    /// Create, rename or move a strip of the active workspace, as a person at
-    /// this machine does it: the model's own
-    /// [`DesktopCommand::CreateStrip`](tilo_desktop_model::commands::DesktopCommand::CreateStrip),
-    /// `RenameStrip` and `MoveStrip` reductions on the cache, then the room document and
-    /// the restart snapshot. A created strip takes focus. Returns the strip
-    /// the command named or made.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when there is no active workspace, the name is
-    /// empty, too long or holds control characters, the strip is gone, or it
-    /// belongs to another topology owner.
-    pub fn commit_strip_command(
-        &mut self,
-        command: &tilo_desktop_model::commands::DesktopCommand,
-    ) -> Result<StripId, String> {
-        use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
-        let renamed = match command {
-            DesktopCommand::CreateStrip { .. } => None,
-            DesktopCommand::RenameStrip { strip, .. } | DesktopCommand::MoveStrip { strip, .. } => {
-                let strip = StripId(*strip);
-                if !self.may_rename_strip(strip) {
-                    return Err("target belongs to another topology owner".into());
-                }
-                Some(strip)
-            }
-            _ => return Err("not a strip command".into()),
-        };
-        self.desktop
-            .active_workspace()
-            .ok_or("there is no active workspace")?;
-        let salt = self.local_salt();
-        let made =
-            apply_to_active_workspace(&mut self.desktop, command, &mut || Ok(mint_under(salt)))?;
-        let strip = if let Some(strip) = renamed {
-            strip
-        } else {
-            let made = made.ok_or("the strip was not created")?;
-            // Made to put windows in: the others see it now, empty.
-            self.strips_to_retain.insert(made);
-            made
-        };
-        self.seed_doc_from_cache();
-        self.queue_save();
-        Ok(strip)
     }
 
     /// Commit `command` as this device's topology owner: the shared

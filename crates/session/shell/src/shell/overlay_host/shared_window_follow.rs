@@ -60,6 +60,11 @@ struct Seen {
 }
 
 impl SharedWindowFollow {
+    /// The session's broker's door, once it attached.
+    pub(crate) fn door(&self) -> Option<OpenDoor> {
+        self.door.clone()
+    }
+
     /// Open shared windows through `door`, the session's broker.
     pub(crate) fn attach(&mut self, door: OpenDoor) {
         self.door = Some(door);

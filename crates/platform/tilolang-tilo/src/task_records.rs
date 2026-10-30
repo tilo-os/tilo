@@ -114,6 +114,35 @@ impl RecordReads {
         self.with_host(app, |host| host.runtime().answer_read(&request))
     }
 
+    /// What the action `call` (`{app, resource, action, arguments}`) would write, planned with
+    /// the app's package over its record as this program read it, for `caller`: the preview the
+    /// record's origin compares its own run with. The origin runs the action again against
+    /// the record as it is then, so this decides nothing.
+    ///
+    /// # Errors
+    /// The record cannot be read, or the action does not run on it (a requirement fails).
+    pub fn plan(&self, call: &Json, caller: &crate::publish::Caller) -> Result<Json, String> {
+        let app = call["app"].as_str().ok_or("a call names its app")?;
+        let action = call["action"].as_str().ok_or("a call names its action")?;
+        let prefix = crate::publish::resource_id(app, "");
+        let resource = call["resource"]
+            .as_str()
+            .and_then(|id| id.strip_prefix(&prefix));
+        let empty = serde_json::Map::new();
+        let args = call["arguments"].as_object().unwrap_or(&empty);
+        self.with_host(app, |host| {
+            let planned = host.plan(&crate::publish::PlanRequest {
+                app,
+                kind: "",
+                action_id: action,
+                resource,
+                args,
+                caller: Some(caller),
+            })?;
+            serde_json::to_value(&planned).map_err(|error| error.to_string())
+        })
+    }
+
     fn with_host<T>(
         &self,
         app: &str,

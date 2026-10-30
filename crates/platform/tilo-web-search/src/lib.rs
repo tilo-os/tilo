@@ -2,7 +2,8 @@
 //!
 //! [`search`] asks several public search engines the same question at once,
 //! reads each one's ordinary result page and merges their rankings; [`fetch`]
-//! downloads one page and reduces it to readable text. Neither needs an
+//! downloads one page and reduces it to readable text, or hands a body that
+//! is not text (a PDF, an image) back whole. Neither needs an
 //! account, an API key or a hosted service: the device talks to the engines
 //! and pages directly, as a browser would.
 //!
@@ -28,7 +29,9 @@ mod search;
 pub mod urls;
 
 pub use engines::{Engine, EngineError, EngineResult, SafeMode};
-pub use fetch::{FetchError, FetchLimits, FetchedPage, fetch};
+#[cfg(feature = "fixture-servers")]
+pub use fetch::fetch_fixture;
+pub use fetch::{FetchError, FetchLimits, FetchedBody, FetchedPage, fetch};
 pub use guard::{Refusal, check_address, check_url};
 pub use merge::SearchResult;
 pub use search::{

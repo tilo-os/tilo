@@ -65,10 +65,19 @@ opens them. The task host is not an app, so it gets its own admission instead of
   host answers (`task_records.rs`), and builds the index `find` and `grep` search from records
   that passed the check. A revoked grant or a removed member cuts the next read and one under
   way. No app runs for a read, so whether its window is open never matters.
-- **Changes, never writes.** The task host gets no write custody. It runs the action's code
-  from the app's package provisionally (preview) and sends the invocation (action, arguments,
-  package version) to the record's origin, which orders and applies it like any device's
-  action (convergence.md). An app's own instance is never asked to act for the program.
+- **Changes, never writes.** The task host gets no write custody. It plans the action from the
+  app's package over the record it read, for the preview only, and sends the invocation
+  (action, arguments, the record it changes, the planned writes) to the door. The broker
+  decides it at the action's node for the agent acting for the person (`RecordChanges`): an
+  Ask answers that it asks the person first, a Deny never leaves the broker. The record's origin applies it:
+  the host of the app's author in that workspace, handed the app's collaboration connection
+  for that record as an instance's is, holds the record and the app's package with no
+  instance and no window (`hosted::Applier`). It runs the action's code against the record as
+  it is then, so requirements and invariants are decided on what others wrote since the
+  task's read, applies what it wrote as the invoker's step and hands it to the room; a
+  requirement that now fails refuses with its reason, and a result that differs from the
+  preview is applied and reported as differing. Undo goes the same way, by the app's id and
+  record. An app's own instance is never asked to act for the program.
 - **Native apps.** Their types and views come from the published catalogue the same way. Their
   action code is the app's Rust, so the origin routes the invocation to whatever executes it.
 

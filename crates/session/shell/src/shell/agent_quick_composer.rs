@@ -870,7 +870,7 @@ impl AgentQuickComposer {
         let submit = self.presses.submit.clone();
         let editor = TextInput::from_state(&self.draft)
             .with_id("agent-quick-editor")
-            .with_placeholder(t("agent-quick-placeholder-idle"))
+            .with_placeholder(self.placeholder_text())
             .with_accessible_name(t("agent-quick-editor-name"))
             .with_min_lines(2)
             .on_submit(move |_| submit.set(true));

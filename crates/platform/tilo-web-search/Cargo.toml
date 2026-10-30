@@ -28,8 +28,14 @@ base64.workspace = true
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
 
+[features]
+# `fetch_fixture`: a fetch that reaches a test's server on this machine,
+# which `fetch` refuses. Only test builds turn it on.
+fixture-servers = []
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }
+tilo-web-search = { path = ".", features = ["fixture-servers"] }
 
 [lints]
 workspace = true

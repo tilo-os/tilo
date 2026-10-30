@@ -169,6 +169,7 @@ impl Widget for ShellOverlayHost {
         }
         self.pump_room_activity();
         self.serve_activity();
+        self.serve_desktop_jobs();
         if let Some(chrome) = &self.chrome
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
         {
