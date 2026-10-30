@@ -150,7 +150,7 @@ impl Source for Jobs {
                     kind: jobs_kind(),
                     provider: self.id().into(),
                     id: format!("cancel{ID_SEPARATOR}{id}"),
-                    title: t_args("search-job-cancel", &[("job", job.label.as_str().into())]),
+                    title: t_args("search-job-cancel", &[("name", job.label.as_str().into())]),
                     subtitle: Some(t("search-job-cancel-detail")),
                     facts: Vec::new(),
                     score: score.saturating_sub(1).max(1),
