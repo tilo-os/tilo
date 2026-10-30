@@ -53,8 +53,8 @@ impl Default for SystemSounds {
 }
 
 /// Whether `event` may sound now, given the settings and what holds
-/// interruptions back. The audio service is not a screen, so nothing here is
-/// presenting: a device change is an interruption, not an answer to
+/// interruptions back. Nothing delivers these but this service, so delivery
+/// never holds one back; a device sound is an interruption, not an answer to
 /// something the person just did.
 #[must_use]
 pub fn plays(event: SystemSoundEvent, prefs: &SystemSoundPrefs, quiet: QuietState) -> bool {
