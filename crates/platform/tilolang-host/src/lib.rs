@@ -748,6 +748,16 @@ impl TilolangHost {
         changed || self.running.len() != before || self.appliers.len() != applying
     }
 
+    /// How long until the time a view of some instance read (`today` in a query) next reads
+    /// differently: the host's wait ends then, and that turn runs again the views that read it.
+    /// `None` when no view read the time: the host waits for nothing but its descriptors.
+    #[must_use]
+    pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        self.instances()
+            .filter_map(|hosted| hosted.instance().wakes_in())
+            .min()
+    }
+
     /// The windows whose instances ended since this was last asked: closed, or never opened.
     pub fn take_ended(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.ended)
