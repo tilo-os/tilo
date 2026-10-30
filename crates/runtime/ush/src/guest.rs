@@ -86,6 +86,13 @@ impl GuestUser {
     pub fn home(&self) -> PathBuf {
         PathBuf::from("/home").join(&self.name)
     }
+
+    /// The guest's `XDG_RUNTIME_DIR`: a tmpfs of its own, the user's alone
+    /// (0700), living as long as the guest, where programs keep their
+    /// sockets, locks and pid files (podman, gpg-agent, dbus).
+    pub fn runtime_dir(&self) -> PathBuf {
+        PathBuf::from("/run/user").join(self.uid.to_string())
+    }
 }
 
 /// A name safe to put in `passwd` and in a path: what `useradd` accepts.
@@ -144,24 +151,16 @@ pub struct GuestPlan {
     pub broker_socket: PathBuf,
     /// The compiled seccomp blob.
     pub seccomp_blob: PathBuf,
-    /// What to run. Empty means the interactive shell.
+    /// What to run.
     pub command: Vec<String>,
-    /// The shell to host when `command` is empty.
+    /// The shell the guest's `$SHELL` names: ush's own.
     pub shell: PathBuf,
-    /// The key the shell marks its command runs with ([`crate::runs`]):
-    /// its rc file then ends with the marks.
-    pub runs: Option<String>,
-    /// [`Self::write_shell_rc`] wrote the interactive `bash`'s rc file, which
-    /// the guest then has at [`crate::shell_start::GUEST_RC`].
-    pub shell_rc: bool,
     pub term: String,
     /// Extra environment, applied last.
     pub env: Vec<(String, String)>,
     /// The guest's `/etc/resolv.conf`: the session's DNS stub. `None` copies
     /// the machine's.
     pub resolver: Option<String>,
-    /// Optional qualified native producer, never requested via a guest path.
-    pub editor: Option<crate::editor::GuestEditor>,
     /// A served session's terminal, handed to the guest's first process at
     /// [`crate::setup::TERMINAL_FD`] ([`crate::setup`]).
     pub terminal: Option<std::sync::Arc<std::os::fd::OwnedFd>>,
@@ -185,43 +184,6 @@ impl GuestPlan {
     /// The generated tree stacked on top of the images' `/etc`.
     pub fn etc_overlay(&self) -> PathBuf {
         self.session_dir.join("root")
-    }
-
-    /// Write the rc file of the interactive shell, when it is `bash`: the
-    /// native editor's prelude (when [`Self::editor`] is set), then what a
-    /// login shell reads, then the marks when [`Self::runs`] names a key
-    /// ([`crate::shell_start::bash_rc`]). The Host's shell starts the same way.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file can't be written.
-    pub fn write_shell_rc(&mut self) -> std::io::Result<()> {
-        if !crate::runs::is_bash(&self.shell) {
-            return Ok(());
-        }
-        let prelude = self
-            .editor
-            .as_ref()
-            .map_or("", |editor| editor.prelude.as_str());
-        std::fs::create_dir_all(&self.session_dir)?;
-        std::fs::write(
-            self.session_dir.join("shell.bash"),
-            crate::shell_start::bash_rc(prelude, self.runs.is_some()),
-        )?;
-        self.shell_rc = true;
-        Ok(())
-    }
-
-    /// The interactive shell's argv: [`Self::shell`] as the session's login
-    /// shell ([`crate::shell_start::interactive_args`]).
-    #[must_use]
-    pub fn shell_argv(&self) -> Vec<OsString> {
-        let rc = self
-            .shell_rc
-            .then_some(Path::new(crate::shell_start::GUEST_RC));
-        let mut argv = vec![self.shell.clone().into_os_string()];
-        argv.extend(crate::shell_start::interactive_args(&self.shell, rc));
-        argv
     }
 
     /// Create what the plan refers to: the home, the environment's `/var`
@@ -361,7 +323,6 @@ fn build_guest_argv(
     push_symlinks(&mut a);
     push_pseudo_filesystems_and_var(&mut a, plan);
     push_runtime_and_broker(&mut a, plan, check.is_none());
-    push_shell_rc(&mut a, plan);
     push_home_and_grants(&mut a, plan);
     if let Some((checkout, build)) = check {
         a.extend([
@@ -497,6 +458,12 @@ fn push_pseudo_filesystems_and_var(a: &mut Vec<OsString>, plan: &GuestPlan) {
         a.push(flag.into());
         a.push(dest.into());
     }
+    a.extend([
+        "--perms".into(),
+        "0700".into(),
+        "--tmpfs".into(),
+        plan.user.runtime_dir().into_os_string(),
+    ]);
     for (target, link) in root_symlinks()
         .into_iter()
         .filter(|(_, link)| link.starts_with("/var"))
@@ -515,15 +482,6 @@ fn push_pseudo_filesystems_and_var(a: &mut Vec<OsString>, plan: &GuestPlan) {
 /// The runtime binary (read-only, with its command shims) and the broker
 /// socket the guest sends requests over.
 fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
-    if let Some(editor) = &plan.editor {
-        a.extend([
-            "--dir".into(),
-            crate::editor::GUEST_DIR.into(),
-            "--ro-bind".into(),
-            editor.module.clone().into_os_string(),
-            format!("{}/producer.so", crate::editor::GUEST_DIR).into(),
-        ]);
-    }
     a.push("--dir".into());
     a.push(crate::GUEST_BIN_DIR.into());
     a.push("--ro-bind".into());
@@ -574,17 +532,6 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool
     a.push("--bind".into());
     a.push(plan.broker_socket.clone().into_os_string());
     a.push(crate::GUEST_BROKER_SOCK.into());
-}
-
-/// The interactive shell's rc file, read-only at
-/// [`crate::shell_start::GUEST_RC`].
-fn push_shell_rc(a: &mut Vec<OsString>, plan: &GuestPlan) {
-    if !plan.shell_rc {
-        return;
-    }
-    a.push("--ro-bind".into());
-    a.push(plan.session_dir.join("shell.bash").into_os_string());
-    a.push(crate::shell_start::GUEST_RC.into());
 }
 
 /// The environment's home, then the grants at their host paths, then the
@@ -652,11 +599,13 @@ fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
     setenv("TERM", &plan.term, a);
     setenv("USER", &plan.user.name, a);
     setenv("LOGNAME", &plan.user.name, a);
+    setenv(
+        "XDG_RUNTIME_DIR",
+        &plan.user.runtime_dir().to_string_lossy(),
+        a,
+    );
     setenv("SHELL", &plan.shell.to_string_lossy(), a);
     setenv("TILO_USH_ENVIRONMENT", &plan.environment, a);
-    if let Some(key) = &plan.runs {
-        setenv(crate::runs::KEY_ENV, key, a);
-    }
     if broker {
         setenv("TILO_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
     }
@@ -695,12 +644,8 @@ fn push_seccomp_and_command(
     }
 
     a.push("--".into());
-    if plan.command.is_empty() {
-        a.extend(plan.shell_argv());
-    } else {
-        for arg in &plan.command {
-            a.push(arg.into());
-        }
+    for arg in &plan.command {
+        a.push(arg.into());
     }
 }
 
@@ -823,20 +768,6 @@ pub fn spawn(
     if let Some(netns) = netns {
         netns.enter(&mut cmd);
     }
-    if let Some(editor) = &plan.editor {
-        use std::os::fd::{AsFd, AsRawFd};
-        use std::os::unix::process::CommandExt;
-        let fd = editor.producer.as_fd().as_raw_fd();
-        // SAFETY: only the qualified producer endpoint crosses this trusted exec.
-        unsafe {
-            cmd.pre_exec(move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
     cmd.spawn()
 }
 
@@ -866,73 +797,6 @@ mod tests {
         assert!(argv.windows(2).any(|w| w == ["--seccomp", "42"]));
         assert!(!argv.iter().any(|s| s == crate::GUEST_BROKER_SOCK));
         assert!(!argv.iter().any(|s| s == plan.broker_socket.as_os_str()));
-    }
-
-    #[test]
-    fn native_editor_mounts_remain_read_only_with_broker_free_check_guests() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut plan = plan_in(dir.path());
-        let (_host, producer) = runtime_portal::editor::Socket::pair().unwrap();
-        let module = dir.path().join("producer.so");
-        plan.editor = Some(crate::editor::GuestEditor {
-            producer: std::sync::Arc::new(producer),
-            module: module.clone(),
-            prelude: String::new(),
-        });
-        let ordinary = build_argv(&plan, Some(42));
-        let check = build_check_argv(
-            &plan,
-            42,
-            Path::new("/private/source"),
-            Path::new("/private/build"),
-        );
-        for argv in [&ordinary, &check] {
-            assert!(argv.windows(3).any(|w| {
-                w[0] == "--ro-bind"
-                    && w[1] == module.as_os_str()
-                    && w[2] == "/run/ush-editor/producer.so"
-            }));
-        }
-        assert!(ordinary.iter().any(|s| s == crate::GUEST_BROKER_SOCK));
-        assert!(!check.iter().any(|s| s == crate::GUEST_BROKER_SOCK));
-        assert!(!check.iter().any(|s| s == plan.broker_socket.as_os_str()));
-    }
-
-    /// A guest's `bash` starts as the Host's does: on one rc file that runs
-    /// the native editor's prelude, then a login shell's startup files, then
-    /// the marks, mounted read-only where the argv names it.
-    #[test]
-    fn a_guest_bash_starts_on_the_same_rc_as_the_hosts() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut plan = plan_in(dir.path());
-        let (_host, producer) = runtime_portal::editor::Socket::pair().unwrap();
-        plan.editor = Some(crate::editor::GuestEditor {
-            producer: std::sync::Arc::new(producer),
-            module: dir.path().join("producer.so"),
-            prelude: "enable tilo_editable\n".into(),
-        });
-        plan.runs = Some("k3y0fth1ss3ss10n".into());
-        plan.write_shell_rc().unwrap();
-        let rc = std::fs::read_to_string(plan.session_dir.join("shell.bash")).unwrap();
-        assert_eq!(
-            rc,
-            crate::shell_start::bash_rc("enable tilo_editable\n", true)
-        );
-        let argv = strings(&build_argv(&plan, Some(9)));
-        let sep = argv.iter().position(|a| a == "--").unwrap();
-        assert_eq!(
-            &argv[sep + 1..],
-            &[
-                "/usr/bin/bash",
-                "--rcfile",
-                crate::shell_start::GUEST_RC,
-                "-i"
-            ]
-        );
-        let rc_path = plan.session_dir.join("shell.bash").display().to_string();
-        assert!(argv.windows(3).any(|w| {
-            w[0] == "--ro-bind" && w[1] == rc_path && w[2] == crate::shell_start::GUEST_RC
-        }));
     }
 
     fn plan_in(dir: &Path) -> GuestPlan {
@@ -973,12 +837,9 @@ mod tests {
             seccomp_blob: dir.join("store/sessions/s1/ush.bpf"),
             command: Vec::new(),
             shell: PathBuf::from("/usr/bin/bash"),
-            runs: None,
-            shell_rc: false,
             term: "xterm-256color".into(),
             env: Vec::new(),
             resolver: None,
-            editor: None,
             terminal: None,
             control: None,
         }
@@ -1208,16 +1069,12 @@ mod tests {
     fn the_command_line_ends_with_seccomp_and_the_guest_argv() {
         let dir = tempfile::tempdir().unwrap();
         let mut p = plan_in(dir.path());
+        p.command = vec!["/usr/bin/bash".into(), "-c".into(), "echo hi".into()];
         let argv = strings(&build_argv(&p, Some(9)));
         let sep = argv.iter().position(|a| a == "--").unwrap();
         let blob = argv.iter().position(|a| a == "--seccomp").unwrap();
         assert!(blob < sep);
         assert_eq!(argv[blob + 1], "9");
-        assert_eq!(&argv[sep + 1..], &["/usr/bin/bash", "-l"]);
-
-        p.command = vec!["/usr/bin/bash".into(), "-c".into(), "echo hi".into()];
-        let argv = strings(&build_argv(&p, Some(9)));
-        let sep = argv.iter().position(|a| a == "--").unwrap();
         assert_eq!(&argv[sep + 1..], &["/usr/bin/bash", "-c", "echo hi"]);
 
         let path_at = argv.iter().position(|a| a == "PATH").unwrap();

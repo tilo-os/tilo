@@ -97,7 +97,7 @@ pub struct McpServer<H> {
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
 }
 
-pub use agent::TaskHosts;
+pub use agent::{TaskHosts, TaskProgram};
 
 /// The tools a session offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -574,15 +574,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// One session of agent `agent_id`, which the host admitted itself into
-    /// `room` (a desktop's agent door, after the person said so). It acts as
-    /// that agent and nobody else: an agent holds no role of its own, so the
-    /// host's gate offers and runs only what the workspace grants it, and a
-    /// revoked membership ends both at once. Each session is its own fresh
-    /// execution, retired when the session drops.
+    /// `room` (a desktop's agent door, after `person` said so). It acts as
+    /// that agent, for the person who admitted it: the agent stays the
+    /// principal, and what it may do is the lesser of what the workspace
+    /// grants it and what the person may do, so a revoked membership ends
+    /// both at once. Each session is its own fresh execution, retired when
+    /// the session drops.
     #[must_use]
-    pub fn for_agent(host: H, room: String, agent_id: &str) -> Self {
+    pub fn for_agent(host: H, room: String, agent_id: &str, person: &str) -> Self {
         let caller = Caller::local_agent(agent_id)
             .in_room(room.clone())
+            .acting_for(person)
             .in_new_execution();
         Self::from_caller(host, room, format!("agent:{agent_id}"), caller)
             .with_surface(Surface::Agent)

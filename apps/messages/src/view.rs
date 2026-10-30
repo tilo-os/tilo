@@ -1298,6 +1298,68 @@ mod route_tests {
             },
         )
     }
+    /// The words left in a conversation are shown under the person it belongs
+    /// to, and a route re-reviewed into another identity is another
+    /// conversation whose words stay where they were typed.
+    #[test]
+    fn a_persons_row_carries_the_draft_of_the_route_it_belongs_to() {
+        let mut app = TestApp::<MessagesShell>::for_person("drafts-fixture").expect("headless app");
+        let directory = app
+            .shared_person::<ContactDirectory>()
+            .expect("shared directory");
+        directory
+            .invoke(&ContactDirectory::PROJECT_CONTACT.with((Id::from_raw(PERSON), "Alex".into())))
+            .expect("person");
+        let mut accounts = PersonAccounts::default();
+        accounts
+            .save_account(
+                "sender".into(),
+                "signal".into(),
+                "Personal".into(),
+                serde_json::json!({"messaging_scope":"signal-fixture"}),
+                true,
+                0,
+            )
+            .expect("metadata fixture");
+        let sources = Sources {
+            directory: Some(directory),
+            accounts: None,
+            record: None,
+            fixture: Rc::new(CapturePeople {
+                directory: ContactDirectory::default(),
+                accounts,
+            }),
+        };
+        let selection = LocalState::new(Selection {
+            person: PERSON.into(),
+            ..Selection::default()
+        });
+        let route = Choice {
+            service: "signal".into(),
+            account: "sender".into(),
+            recipient: "+12025550123".into(),
+            association: "association-1".into(),
+            scope: "signal-fixture".into(),
+            revision: "identity-1".into(),
+        };
+        review(&sources, &selection, PERSON, &route).expect("reviewed association");
+        let mut drafts = crate::drafts::MessageDrafts::default();
+        drafts.drafts.insert(
+            crate::drafts::key(&route),
+            "see you at 8\nand bring the keys".into(),
+        );
+        assert_eq!(
+            draft_for(&sources, &drafts, PERSON).as_deref(),
+            Some("Draft: see you at 8"),
+            "the first line, under the person it belongs to"
+        );
+        assert_eq!(draft_for(&sources, &drafts, "someone-else"), None);
+        let rereviewed = Choice {
+            revision: "identity-2".into(),
+            ..route.clone()
+        };
+        assert_ne!(crate::drafts::key(&route), crate::drafts::key(&rereviewed));
+    }
     #[test]
     fn selected_route_is_retired_by_revocation_identity_revision_and_account_disconnect() {
         let mut app = TestApp::<MessagesShell>::for_person("route-fixture").expect("headless app");

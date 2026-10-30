@@ -164,8 +164,8 @@ check on main is `sign-dev-<name>`.
 
 `{dir}` is `/target/publish/<name>`, `{out}` the build's directory (`{dir}`, or `{dir}/<arch>`
 per architecture), `{arch}` and `{platform}` (`linux/amd64`) the architecture built. Any other
-field of `[product.context]` and `[product.build]` (`requires`, `requirement`, `timeout_secs`,
-`needs`, `isolation`, …) goes to the check as written; the generator adds `arch=<arch>` to
+field of `[product.context]` and `[product.build]` (`requires`, `timeout_secs`, `needs`,
+`isolation`, …) goes to the check as written; the generator adds `arch=<arch>` to
 `requires` and `default = false`, and writes `on`, `id_token` and the signing environment itself, so a product can't
 publish from a working tree by mistake.
 
@@ -265,7 +265,17 @@ repository, which the registry takes from its owner (lib.sh `registry_login`). S
 t's identity token, so a check that signs runs on t; where its outputs were made another way,
 `--given CHECK` takes it as passed. A micro-VM step runs in a privileged container on the
 machine's own kernel, so os-dev-disk-<arch>, which installs onto a loop-mounted btrfs disk,
-needs a VM.
+needs a VM. So does dev-installer-medium-<arch> on a kernel without EROFS, btrfs or loop
+devices, such as an rcargo builder's: `tools/ci/medium-in-worker-vm.sh` runs its script in a
+worker VM booted from main's published dev disk.
+
+The one-password sign-in end to end (signin-e2e-<arch>) runs this way on either architecture,
+image and medium included, from a committed checkout on the builder:
+
+```sh
+bash tools/ci/signin-e2e-builder.sh --target /srv/rcargo/scratch/me/target --out /srv/rcargo/scratch/me/signin-e2e
+bash tools/ci/signin-e2e-builder.sh --target ... --out ... --variant rollback --pre-pam-tilo-image old.ociarchive
+```
 
 ## Mirrored images
 

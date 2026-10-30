@@ -81,17 +81,22 @@ other devices to undo.
 
 ## Direct collaboration
 
-`crates/session/network-actor/src/lib.rs` owns an Iroh endpoint and one `iroh-gossip` topic
-per workspace. An invite contains the inviter's authenticated `EndpointAddr`,
-workspace room, expiry, and an Ed25519 signature. Iroh chooses a direct path
-when possible and uses its encrypted relay path when NAT traversal cannot
-establish one.
+`crates/session/network-actor/src/lib.rs` owns an Iroh endpoint and holds
+every workspace's traffic on one protocol: the session a room host serves.
+Every device runs that host for its own rooms and its person's topics, so a
+device reaches the others that hold a workspace through any of them that
+store it, its person's own devices directly
+(`crates/session/network-actor/src/device_sessions.rs`). What is for one
+exact device (input, window streams, remote actions, the person's device
+fabric) goes directly to that device on the authenticated device plane. An
+invite contains the inviter's authenticated `EndpointAddr`, workspace room,
+expiry, and an Ed25519 signature. Iroh chooses a direct path when possible
+and uses its encrypted relay path when NAT traversal cannot establish one.
 
-Direct collaboration needs no workspace host. It is the fast path for an
-ad-hoc invitation and remains active when a workspace host is configured. It
-does use number 0's public iroh infrastructure — their DNS service for address
-lookup and their relays for NAT traversal — which sees endpoint ids and IP
-addresses but no content (`docs/architecture/security.md`, "What leaves the
+Two of a person's devices need no workspace host to reach each other. The
+endpoint does use number 0's public iroh infrastructure — their DNS service
+for address lookup and their relays for NAT traversal — which sees endpoint
+ids and IP addresses but no content (`docs/architecture/security.md`, "What leaves the
 device by default").
 
 An invite also signs the maximum role its bearer receives: Viewer,
@@ -159,15 +164,15 @@ copying that member's numeric session handle.
 ### Liveness without chatter
 
 A converged desktop that nobody is using sends no application message. The
-transport keeps liveness: a gossip neighbour is a member while its link is up,
-iroh sends a QUIC keep-alive after 5 s without traffic, and the collaboration
-endpoint ends a connection that hears nothing for 15 s, which takes the link
-down. A peer whose link went down is dropped 5 s later unless it returns, so a
-peer that leaves cleanly is gone within 5 s and one that vanishes (power,
-network) within 20 s (`DEPARTURE_GRACE`, `PEER_TIMEOUT` in `actor.rs`).
+transport keeps liveness: one of a person's devices is a member of their topic
+while a session between the two is up, iroh sends a QUIC keep-alive after 5 s
+without traffic, and the collaboration endpoint ends a connection that hears
+nothing for 15 s, which ends the session. A device that leaves cleanly is gone
+at once and one that vanishes (power, network) within 15 s (`PEER_TIMEOUT` in
+the network actor).
 
 Everything else is said when it changes or when someone new can hear it. A
-device announces its identity and codecs when a link comes up and again only
+device announces its identity and codecs when a session comes up and again only
 when they change; a new revocation is read from disk on the 5 s upkeep tick
 and announced at once, as before. Room changes are pushed when they land, and
 a repair pull follows 2 s after activity settles; a peer that sees a request
@@ -241,7 +246,17 @@ frame codec in `tilo-relay-client`.
 
 ## Wire boundaries
 
-- Direct fan-out: deterministic `iroh-gossip` topic derived from workspace id.
+- Exact-device traffic: the device plane, ALPN `tilo-surface-stream/1`,
+  between two devices that are members of the same workspace.
+- A person's two devices: ALPN `tilo-relay-sibling/1`, one connection per
+  pair that the device with the lower endpoint id dials (the other only
+  when it is not dialled within 5 s; of two at once, the lower id's is
+  kept). Its first stream carries the two devices' session: each first
+  sends its certificates and revocations (the endpoint id proves the device
+  key), then codec adverts, the person's workspace list and renewed hellos.
+  Every further stream carries one personal fabric frame, and nearby
+  transfers stream on it too, so an idle pair keeps one connection's
+  keep-alives, not one per direction.
 - Persistent host: the relay stream, ALPN `tilo-relay/1`, mutually
   authenticated with device certs. There is one framing on it, at the peer
   protocol version the handshake's first field names
@@ -323,15 +338,9 @@ frame codec in `tilo-relay-client`.
   gap from when the previous move was due rather than from when its writer
   got to it, and a pointer does not wait the 5 ms batching window for
   company, so moves that already arrive a gap apart are forwarded as they
-  arrive and a late write never adds to the next move's wait. The direct
-  (gossip) path paces the same way with the same `PointerPacer`, slot
-  classification (`pointer_pacing::slot_pacing`) and gap: the shell's network
-  actor hands every pointer move to the room's hosts at once (their writers
-  pace it) and holds it for gossip, broadcasting a slot at most every 50 ms,
-  the resting position always, carets and typing past a held move, and any
-  other message only after it. A peer-to-peer drag so costs each neighbour
-  20 packets a second instead of 30, and the acknowledgements they draw;
-  the actor arms no timer while nothing is held.
+  arrive and a late write never adds to the next move's wait. The shell's
+  network actor hands every pointer move to its sessions at once, its
+  person's devices' hosts among them, and their writers pace it.
 - Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
   A caller follows an invocation with one waiting request at a time —
   `wait_ms` on `Invoke`, or on `Observe` with the `seen` update — which the

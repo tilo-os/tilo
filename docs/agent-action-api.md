@@ -39,12 +39,23 @@ by a token:
   holds its primary device certificate
   (`tilo_identity_host::provisioning::active_identity_owns_device`). Another
   account on the machine, or the admin before first login, has no socket.
-- **Only the admin's own unconfined processes connect.** Each connection is
-  checked against the kernel's `SO_PEERCRED`: same uid as the session, same
-  user and mount namespaces (a sandboxed app has its own, and is never shown
-  the path), and not a process this session launched, confined or not. An app
-  acts through its own collaboration connection and grants, never with the
-  admin's. The socket is 0600 in a 0700 directory besides.
+- **The admin's own processes connect as the admin.** Each connection is
+  checked against the kernel's `SO_PEERCRED`: same uid as the session. A
+  process in the session's own user and mount namespaces that is not inside a
+  sandboxed app — the admin's login or ssh, a `systemd-run --user` unit, or an
+  unconfined host app such as a terminal launched "UNCONFINED — no Tilo
+  sandbox", and what runs in it — is served as the admin: it already holds the
+  admin's full authority over their files and this socket's path, so refusing
+  it would protect nothing.
+- **A Tilo Terminal tab gets its Terminal's grants.** A program in a Host
+  session a Terminal tab asked for — the person or an agent typing there — is
+  served with that Terminal's workspace scope, exactly as `tilo action` is
+  (listing and invoking; reaching beyond the workspace asks the person first),
+  never with the admin's whole authority. A tab the desktop no longer shows is
+  refused.
+- **A sandboxed app is refused**: its own namespaces or a confined launch. It
+  acts through its own collaboration connection and grants. The socket is
+  0600 in a 0700 directory besides.
 - **It serves the action model only**: enumerate, invoke, status, cancel,
   `windows`, `state_dump` and `foreign_frames`. Synthetic input, screenshots, grants,
   fixtures and agent seats are refused with `not_permitted`, naming the
@@ -72,13 +83,13 @@ tilo-control actions list markdown --files          # now the files too, after t
 
 On the wire these are `kinds` and `files` on `actions_enumerate`.
 
-### An agent in a terminal uses the agent door, not this socket
+### An agent in a terminal: the agent door for attributed work
 
-An AI agent running in a terminal inside the person's own session (Claude
-Code in Alacritty, say) is a descendant of an app this session launched, so
-this socket refuses it — rightly: it would carry the admin's whole authority,
-unattributed. It connects to the session's **agent door** instead
-(`$XDG_RUNTIME_DIR/tilo-session/agent.sock`), through
+An AI agent in an unconfined terminal (Claude Code in Alacritty launched as a
+host app, say) has the admin's whole authority over their account, so this
+socket serves it as the admin; in a Tilo Terminal tab it gets that Terminal's
+grants. For work attributed to the agent itself, it connects to the session's
+**agent door** instead (`$XDG_RUNTIME_DIR/tilo-session/agent.sock`), through
 `tilo-runtime-mcp --connect`, and acts as an agent member the person admits:
 attributed, limited to what the workspace grants that agent, and revoked with
 its membership. It is offered path-addressed tools (`tilo_ls`, `tilo_read`,

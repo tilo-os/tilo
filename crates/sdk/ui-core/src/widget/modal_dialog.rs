@@ -275,6 +275,11 @@ impl<'a> ModalSpec<'a> {
         self.close_focused = v;
         self
     }
+    #[must_use]
+    pub fn anchor(mut self, anchor: Option<Rect>) -> Self {
+        self.anchor = anchor;
+        self
+    }
 }
 
 /// Where every part of the modal landed. Pure geometry, computed without a
@@ -304,6 +309,10 @@ pub struct ModalLayout {
     /// The sheet stands beside a control ([`ModalSpec::anchor`]): the
     /// window behind it is not dimmed.
     pub anchored: bool,
+    /// The sheet rises from a compact window's foot, as tall as what it
+    /// holds ([`rise_from_foot`]): a [`super::BottomSheet`] over the dimmed
+    /// page rather than a page of its own.
+    pub foot: bool,
 }
 
 /// What a point landed on.
@@ -579,7 +588,35 @@ pub fn layout(
         primary,
         dismiss_on_scrim: spec.dismiss_on_scrim,
         anchored: anchor.is_some(),
+        foot: false,
     }
+}
+
+/// Raise `layout`, a compact window's full-window page, as a sheet from the
+/// window's foot that is as tall as what it holds: `content_h` of body, the
+/// title above it, the footer below it and a grip `grip` tall along its top.
+/// A form of a few fields asks from the foot, where the thumb is; one too
+/// tall for most of the window stays the whole page. Whether it rose.
+pub fn rise_from_foot(layout: &mut ModalLayout, content_h: f64, grip: f64) -> bool {
+    if layout.card != layout.scrim {
+        return false;
+    }
+    let window = layout.scrim;
+    let above = layout.body.y0 - layout.card.y0;
+    let below = layout.card.y1 - layout.body.y1;
+    let needed = grip + above + content_h.max(0.0) + below;
+    if needed > window.height() * 0.85 {
+        return false;
+    }
+    let card = Rect::new(window.x0, window.y1 - needed, window.x1, window.y1);
+    let shift = Vec2::new(0.0, card.y0 + grip - layout.card.y0);
+    layout.title = layout.title + shift;
+    layout.close = layout.close.map(|close| close + shift);
+    layout.body.y0 += shift.y;
+    layout.card = card;
+    layout.body_overflows = false;
+    layout.foot = true;
+    true
 }
 
 struct FooterGeometry {
@@ -746,7 +783,9 @@ pub fn paint_sheet(
     layout: &ModalLayout,
     spec: &ModalSpec<'_>,
 ) {
-    if layout.card == layout.scrim {
+    if layout.foot {
+        // The caller painted the sheet from the foot (`BottomSheet::paint`).
+    } else if layout.card == layout.scrim {
         // A full-window modal is the foreground page. It does not sample or
         // dim the displaced page and has no floating shadow or rounded edge.
         crate::floating_surface::paint_material(
@@ -1203,143 +1242,6 @@ struct LayoutKey {
     content_h: f64,
 }
 
-/// A footer action's place in the window's keyboard focus order and its
-/// button in the accessibility tree. The dialog paints the action and runs
-/// it; this node holds focus, so Tab moves from the content to the footer and
-/// on around inside the trap, and a reader lands on a named button. An
-/// activation it is sent lands where the action stands, so the dialog runs it
-/// as it would a press.
-struct FooterKey {
-    slot: Slot,
-    label: String,
-    /// The action's callback, shared with the dialog.
-    run: Option<Rc<RefCell<dyn FnMut()>>>,
-    /// The semantic address a reader or agent operates the action by.
-    action_target: String,
-    rect: Rect,
-    focused: bool,
-    enabled: bool,
-    /// The address a harness or `tilo-control` operates the action by:
-    /// `modal.primary`, or `<dialog test id>.primary`.
-    test_id: String,
-}
-
-impl FooterKey {
-    fn new(
-        slot: Slot,
-        action: Option<&DialogAction>,
-        dialog: Option<&str>,
-        target: String,
-    ) -> Self {
-        let name = match slot {
-            Slot::Primary => "primary",
-            Slot::Secondary => "secondary",
-            Slot::Tertiary => "tertiary",
-        };
-        Self {
-            slot,
-            label: action.map(|a| a.label.clone()).unwrap_or_default(),
-            run: action.map(|a| Rc::clone(&a.on_click)),
-            action_target: target,
-            rect: Rect::ZERO,
-            focused: false,
-            enabled: true,
-            test_id: format!("{}.{name}", dialog.unwrap_or("modal")),
-        }
-    }
-}
-
-impl Widget for FooterKey {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        // Out of flow and empty: the dialog places the action itself.
-        let style = Style {
-            position: taffy::Position::Absolute,
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    fn name(&self) -> &'static str {
-        "ModalAction"
-    }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        let mut state = AccessState::new().focusable(self.enabled);
-        state.focused = self.focused;
-        state.disabled = !self.enabled;
-        Some(
-            AccessNode::new(Role::Button)
-                .with_name(crate::i18n!(&self.label))
-                .with_semantic_key(&self.test_id)
-                .with_state(state)
-                .with_action_target(self.action_target.clone()),
-        )
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        _key_path: &[u64],
-        _: &mut crate::widget::Edits<'_>,
-        _: &ModelPath,
-    ) -> bool {
-        if !self.enabled || !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(run) = &self.run else { return false };
-        (run.borrow_mut())();
-        true
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        target == self.action_target && self.perform_action(action, &[], state, path)
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some(&self.test_id)
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.focused = focused;
-    }
-
-    fn is_focused(&self) -> bool {
-        self.focused
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        false
-    }
-
-    fn needs_redraw(&self) -> bool {
-        false
-    }
-}
-
 /// A modal dialog: a title, any content widget, and up to three footer
 /// actions, over a scrim that covers the window. Generic over the content
 /// type so callers pass any `Widget` without boxing.
@@ -1360,6 +1262,8 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     title: String,
     /// Leads the title ([`ModalSpec::icon`]).
     icon: Option<Icon>,
+    /// What assistive technology says about the dialog after its name.
+    description: Option<String>,
     primary_action: Option<DialogAction>,
     secondary_action: Option<DialogAction>,
     tertiary_action: Option<DialogAction>,
@@ -1424,6 +1328,12 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     layout_theme: Theme,
     /// Its arriving and leaving (`motion::Appear`, from the sheet's centre).
     appear: crate::motion::Appearing,
+    /// The control the sheet asks about: it stands beside it, the window
+    /// undimmed ([`Self::set_anchor`]).
+    anchor: Option<Rect>,
+    /// On a compact window the sheet rises from the foot when what it holds
+    /// fits ([`Self::with_foot_sheet`]).
+    foot: Option<super::BottomSheet>,
     /// Last, so a `ModalDialog<C>` coerces to `ModalDialog<dyn Widget>`, the
     /// one type the dialog's behaviour is compiled for.
     content: C,
@@ -1436,6 +1346,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             test_id: None,
             title: title.into(),
             icon: None,
+            description: None,
             content,
             primary_action: None,
             secondary_action: None,
@@ -1469,13 +1380,44 @@ impl<C: Widget + 'static> ModalDialog<C> {
             platform: PlatformConventions::default(),
             layout_theme: Theme::dark(),
             appear: crate::motion::Appearing::closed(),
+            anchor: None,
+            foot: None,
         }
+    }
+
+    /// Stand beside the control at `anchor` as a popover, the window
+    /// undimmed, rather than over the window's centre; `None` centres it.
+    /// A compact window shows it as a page (or from the foot) whatever.
+    pub fn set_anchor(&mut self, anchor: Option<Rect>) {
+        if self.anchor != anchor {
+            self.anchor = anchor;
+            self.invalidate_layout();
+        }
+    }
+
+    /// On a compact window, rise from the window's foot as a
+    /// [`super::BottomSheet`] as tall as what the sheet holds, over the dimmed
+    /// page, when that fits; else stay the whole page.
+    #[must_use]
+    pub fn with_foot_sheet(mut self) -> Self {
+        let mut sheet = super::BottomSheet::new();
+        sheet.snap_to(super::SheetDetent::Full);
+        self.foot = Some(sheet);
+        self
     }
 
     /// An icon before the title naming who asks.
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// What assistive technology says about the dialog after its title:
+    /// what is going on in it, and how its keys work.
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
         self
     }
 
@@ -1843,9 +1785,17 @@ impl ModalDialog<dyn Widget> {
             .platform_conventions(self.platform)
             .body_height(self.content_size.1)
             .max_width(self.max_width)
-            .closable(self.closable());
+            .closable(self.closable())
+            .anchor(self.anchor);
         let mut layout = layout(self.window, &spec, text_renderer, theme);
         drop(actions);
+        if self.foot.is_some() {
+            rise_from_foot(
+                &mut layout,
+                self.content_size.1,
+                f64::from(theme.tokens.metrics.min_pointer_target),
+            );
+        }
         if layout.body_overflows && self.trim > 0.0 {
             shorten(&mut layout, self.trim);
         }
@@ -2372,6 +2322,8 @@ impl Widget for ModalDialog<dyn Widget> {
         for key in &mut self.keys {
             key.enabled = key.slot != Slot::Primary || primary_enabled;
         }
+        // The sheet a compact window raises from its foot, painted under the title.
+        let mut foot = self.foot.clone().filter(|_| layout.foot);
         let focused = self.focused_slot();
         let (mut actions, slots) = self.actions();
         for ((action, rect), slot) in actions.iter_mut().zip(&layout.actions).zip(&slots) {
@@ -2390,7 +2342,9 @@ impl Widget for ModalDialog<dyn Widget> {
         // fades (it comes from nowhere in particular). The scrim fades with
         // it, cut out where the sheet is drawn.
         let mut pose = self.appear.pose(layout.card, layout.card.center());
-        if layout.card == layout.scrim {
+        // A sheet from the foot stands on the window's edge: it fades, as a
+        // page does, rather than growing from its centre.
+        if layout.card == layout.scrim || layout.foot {
             pose.transform = Affine::IDENTITY;
         }
         let scrim = crate::motion::Pose {
@@ -2404,6 +2358,19 @@ impl Widget for ModalDialog<dyn Widget> {
         let Some(transform) = pose.begin(scene, transform, layout.scrim) else {
             return;
         };
+        if let Some(sheet) = &mut foot {
+            sheet.place(
+                super::SheetFrame {
+                    area: layout.card,
+                    peek: 0.0,
+                    grip: f64::from(theme.tokens.metrics.min_pointer_target),
+                    least_half: 0.0,
+                },
+                1.0,
+                true,
+            );
+            sheet.paint(scene, transform, theme);
+        }
         paint_sheet(scene, transform, text_renderer, theme, &layout, &spec);
         paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
         drop(actions);
@@ -2667,6 +2634,7 @@ impl Widget for ModalDialog<dyn Widget> {
                 hidden: self.accessibility_hidden(),
                 ..Default::default()
             });
+        node.description.clone_from(&self.description);
         // Footer actions a host laid out are buttons of their own focus
         // nodes; a dialog no host has built names them itself.
         if self.open && self.keys.is_empty() {
@@ -2993,6 +2961,8 @@ fn theme_line(theme: &Theme) -> f32 {
     theme.text(TextRole::Body).line_height_px() * 3.0
 }
 mod close_control;
+mod footer_key;
+use footer_key::FooterKey;
 
 #[cfg(test)]
 #[path = "modal_dialog_tests.rs"]

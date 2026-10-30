@@ -151,7 +151,7 @@ enabled in a user shell. Arbitrary shells and TUIs remain unavailable.
 
 ## Production source candidate, 2026-10-08
 
-`crates/runtime/ush/native/bash_editor.c` is the actual Bash/Readline producer,
+`crates/runtime/ush/native/bash_editor.c` (removed 2026-10-29) was the actual Bash/Readline producer,
 not the feasibility fixture. It owns a private close-on-exec packet endpoint,
 uses the existing QPE1 executing-process proof, checks its compiled Bash and
 Readline versions, and publishes no buffer during startup configuration,
@@ -161,7 +161,23 @@ UTF-8 selection. It verifies the resulting buffer before acknowledging it.
 Undo restores the original selection; Redo remains undoable. Exact duplicate
 requests query/replay their receipt without applying another edit.
 
-The admitted ush launch negotiates protocol version 1. Its descriptor bundle is
+**Replaced by ush's line editor (2026-10-29).** An environment session now
+runs ush's own shell on the Tilo side instead of a guest Bash, and its line
+editor is the producer
+([`ush_shell::field`](../../crates/runtime/ush-shell/src/field.rs), served by
+[`ush::tilo_side`](../../crates/runtime/ush/src/tilo_side/field.rs)). It keeps
+the producer's contract above: the same lease (incarnation, generation,
+revision, exact expiry, selection at the cursor), Replace as literal text,
+Undo and Redo of the one replacement, receipts that a Query reads and a
+repeated request replays, Stale for an edit of a changed line, and
+Unavailable away from the prompt. The supervisor still negotiates protocol
+version 1 for an environment session on this device and hands the producer
+end to the session process it started itself, the process the line editor
+runs in; no guest program holds it, so no process proof is needed. The Bash
+module, its build and its packaging are removed. What follows describes the
+Bash design as it was qualified.
+
+The admitted ush launch negotiated protocol version 1. Its descriptor bundle is
 PTY first, native editor second; the original single-descriptor protocol stays
 valid. The app verifies both descriptor roles. The supervisor qualifies an
 OS-owned module through root-owned, non-writable ancestors, bounds its reads,
@@ -182,15 +198,15 @@ PTY input or document Undo. Ordinary IME failure has a persistent shared Banner
 and localized accessible announcement. Native redisplay preserves the lease;
 physical input revokes it before writing to the PTY.
 
-The existing OS component manifest carries the module at
-`/usr/lib/tilo/ush/bash-editor.so`. The native builder compiles it with the
-snapshot's Bash/Readline headers and hardened flags; the builder artifact
-manifest requires it. This is source packaging work only. No image was built,
+The OS component manifest carried the module at
+`/usr/lib/tilo/ush/bash-editor.so` (removed 2026-10-29). The native builder
+compiled it with the snapshot's Bash/Readline headers and hardened flags; the
+builder artifact manifest required it. This was source packaging work only. No image was built,
 module installed, compositor deployed, microphone enabled or permission granted.
 
 `dictation-bash-editor-production.json` records the privately built production
-module and actual Bash journeys. The explicit qualification executable is
-`runtime-portal/examples/bash_editor_journey.rs`. It uses the production codec,
+module and actual Bash journeys. The explicit qualification executable was
+`runtime-portal/examples/bash_editor_journey.rs` (removed with the module). It uses the production codec,
 packet socket and kernel process proof in an isolated namespace with a real
 controlling PTY. Seven checks cover protected startup, literal Unicode,
 selection restoration, exact expiry, receipt idempotence/query, Undo/Redo/Undo,

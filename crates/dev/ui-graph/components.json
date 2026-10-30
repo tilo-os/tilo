@@ -327,6 +327,12 @@
           }
         }
       ],
+      "events": [
+        {
+          "name": "submit",
+          "doc": "Enter was pressed: what was written is done (a composer's message is sent). With it, Enter sends rather than breaking the line; Shift+Enter still breaks it."
+        }
+      ],
       "bindings": [
         {
           "name": "value",
@@ -1523,8 +1529,9 @@
         },
         {
           "name": "drop",
-          "doc": "A card was dropped below the lane's last card: carries the card.",
-          "value": "resource"
+          "doc": "A card was dropped into the lane: carries the card and its place among the lane's other cards, from 0. A card that takes drops itself reports those that land just before it.",
+          "value": "resource",
+          "at": "int"
         }
       ],
       "semantics": {

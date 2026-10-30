@@ -1393,8 +1393,10 @@ impl OskWidget {
                 if self.shift == ShiftState::Shift {
                     self.shift = ShiftState::Off;
                 }
-                if !s.is_empty() && s.chars().all(char::is_alphabetic) {
-                    self.extend_word(s);
+                if (!s.is_empty() && s.chars().all(char::is_alphabetic))
+                    || self.apostrophe_continues_word(s)
+                {
+                    self.extend_word(&s.replace('\u{2019}', "'"));
                 } else {
                     self.finish_word(s);
                 }
@@ -1553,14 +1555,23 @@ impl OskWidget {
         self.current_word_overflowed = false;
         if !word.is_empty() && !self.is_secret_field() {
             let committed = word.to_lowercase();
-            if self.personalization_enabled
-                && let Some(learned) = self
-                    .predictor
-                    .learn_transition(self.prev_word.as_deref(), &committed)
-            {
-                self.lesson.transitions.push(learned);
+            // "l'homme" is learned, and followed, as "l'" then "homme".
+            let pieces = match self.predictor.split_elision(&committed) {
+                Some((elision, rest)) if !rest.is_empty() => {
+                    vec![elision.to_owned(), rest.to_owned()]
+                }
+                _ => vec![committed],
+            };
+            for piece in pieces {
+                if self.personalization_enabled
+                    && let Some(learned) = self
+                        .predictor
+                        .learn_transition(self.prev_word.as_deref(), &piece)
+                {
+                    self.lesson.transitions.push(learned);
+                }
+                self.prev_word = Some(piece);
             }
-            self.prev_word = Some(committed);
         }
         self.refresh_next_word_suggestions();
         if let Some(typed) = typed {
@@ -1573,6 +1584,20 @@ impl OskWidget {
                 tail: tail.to_string(),
             });
         }
+    }
+
+    /// Whether `s` is an apostrophe that continues the composing word into
+    /// a known one: an elision (`l'`, `qu'`) or a word like `aujourd'hui`.
+    fn apostrophe_continues_word(&self, s: &str) -> bool {
+        if !matches!(s, "'" | "\u{2019}") || self.current_word.is_empty() || self.word_from_swipe {
+            return false;
+        }
+        let stem = format!("{}'", self.current_word.to_lowercase());
+        self.predictor
+            .dictionary()
+            .iter_prefix(&stem)
+            .next()
+            .is_some()
     }
 
     /// Whether the focused field may be autocorrected: ordinary, non-secret
@@ -1591,6 +1616,15 @@ impl OskWidget {
             || self.predictor.has_learned(word)
         {
             return None;
+        }
+        // After an elision only the word itself is corrected: "l'hommr" ->
+        // "l'homme".
+        if let Some((elision, rest)) = self.predictor.split_elision(word) {
+            let (elision, rest) = (elision.to_owned(), rest.to_owned());
+            return (!rest.is_empty())
+                .then(|| self.correction_for(&rest))
+                .flatten()
+                .map(|fixed| format!("{elision}{fixed}"));
         }
         let adjacency = KeyAdjacency::from_layout(self.current_layout());
         let dict = self.predictor.dictionary();
@@ -1802,8 +1836,10 @@ impl OskWidget {
             return true;
         }
         self.current_word = s.word;
-        if self.word_from_swipe {
+        if self.word_from_swipe || self.current_word.ends_with('\'') {
+            // An elision ("l'") keeps composing: the next word joins it.
             self.emit(OskOutput::SetPreedit(self.current_word.clone()));
+            self.refresh_completion_suggestions();
         } else {
             self.finish_word(" ");
         }

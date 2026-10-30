@@ -30,6 +30,7 @@ tilolang-none-selected = Nichts ausgewählt
 tilolang-sort = Sortieren
 tilolang-more = Weitere Aktionen
 tilolang-undo = Rückgängig
+tilolang-typing-unplaced = Keine Eingabe hat übernommen, was du getippt hast: „{ $typed }“
 tilolang-did = { $action }: { $title }
 tilolang-replying-to = Antwort an
 tilolang-thread-replies = { $count ->
@@ -39,3 +40,4 @@ tilolang-thread-replies = { $count ->
 
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
+tilolang-form-cancel = Abbrechen

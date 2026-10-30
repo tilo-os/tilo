@@ -31,6 +31,7 @@ pub use broker_services::decide_receipt_against_surfaces;
 pub(crate) mod activity_provider;
 pub mod add_app_sheet;
 pub(crate) mod agent_quick_composer;
+pub(crate) mod answer_window;
 pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;
@@ -72,10 +73,10 @@ pub mod directory_sheet;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 pub(crate) mod disk_sync_guard;
-pub mod display_bars;
 pub mod display_confirm;
 pub(crate) mod display_control;
 pub mod display_identify;
+mod display_layouts;
 pub(crate) mod display_persistence;
 pub mod doc_open;
 pub mod document_import;
@@ -133,6 +134,7 @@ pub mod media_keys;
 pub(crate) mod membership;
 pub mod memory_report;
 pub mod mls_vault;
+pub(crate) mod mobile_data;
 pub mod mpris;
 pub(crate) mod native_media;
 pub(crate) mod native_workspace_owner;
@@ -165,7 +167,7 @@ pub mod pointer_readiness;
 pub mod portal_dialog;
 pub mod present;
 pub mod projection;
-mod projection_overlay;
+pub(crate) mod quick_settings_dispatch;
 pub mod quick_settings_refresh;
 pub mod realtime_session;
 pub mod recent_files;
@@ -204,6 +206,7 @@ pub mod storage_notice;
 pub mod system_sounds;
 pub(crate) mod system_update;
 pub mod tab_binding;
+pub(crate) mod task_programs;
 pub mod test_control;
 #[cfg(unix)]
 pub mod test_control_socket;
@@ -1080,19 +1083,21 @@ pub(crate) const WORK_AREA: tilo_desktop::composition::WorkArea =
         bottom: ui::tokens::Spacing::BASE.s3,
     };
 
-/// The native chrome the shared desktop surface is built with: the session's
-/// top bar and wallpaper, the collaboration launchpad for an empty
-/// workspace, and the strip's leading edge gutter.
+/// The native chrome the shared desktop surface is built with: the room of
+/// the session's top bar (the bar itself is an app the overlay host draws
+/// over the desktop), the wallpaper, the collaboration launchpad for an
+/// empty workspace, and the strip's leading edge gutter.
 pub(crate) fn workspace_surface_chrome(
     desktop: &state::DesktopTree,
     chrome: &chrome_state::Chrome,
 ) -> tilo_desktop::composition::SurfaceChrome {
-    let local = chrome
-        .borrow()
-        .explicit_local_user()
-        .map_or_else(crate::shell::state::local_user_id, str::to_owned);
-    let topbar = topbar_chrome::TopBarChrome::from_tree_with_local_user(desktop, local)
-        .with_chrome(topbar_chrome::native_source(chrome.clone()));
+    // The bar's room follows what the bar does: none under a fullscreen
+    // window over the primary display, none while it shows over the windows.
+    let standing = chrome.clone();
+    let topbar = tilo_desktop::topbar::BarSpace::new(std::rc::Rc::new(move || {
+        let state = standing.borrow();
+        (state.fullscreen_covers_primary(), state.top_bar_presence())
+    }));
     // Full-screen layer under the translucent top bar, so the bar picks up
     // the gradient tint behind it.
     let backdrop: Box<dyn Widget> = desktop.active_workspace().map_or_else(
@@ -1125,8 +1130,6 @@ pub(crate) fn workspace_surface_chrome(
         empty_workspace: Some(Box::new(
             tilo_desktop::launchpad::CollaborationLaunchpad::new(),
         )),
-        // Compact top bars of the displays other than the primary.
-        display_chrome: Some(Box::new(display_bars::DisplayBars::new(chrome.clone()))),
         // Wallpaper before the first window, panning with the strip; the
         // overlay host keeps it at this value every layout.
         leading_inset: overlay_host::STRIP_EDGE_GUTTER_PX,

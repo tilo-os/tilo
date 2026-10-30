@@ -174,6 +174,8 @@ imports! {
     (RichTime, "rich_time", "i", "i"),
     (Phrase, "phrase", "ii", "i"),
     (Dated, "dated", "ii", "i"),
+    (EventPart, "event_part", "i", "i"),
+    (CollMoveAmong, "coll_move_among", "iiili", ""),
     (UiActions, "ui_actions", "iii", ""),
     (SpaceI, "space_i", "i", "l"),
     (SpaceF, "space_f", "i", "f"),

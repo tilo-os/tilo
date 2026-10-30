@@ -16,6 +16,9 @@
 mod participant;
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use std::sync::Arc;
 
 use collab_types::DocumentMutation;
@@ -24,9 +27,7 @@ use tilo_browser_peer::{
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
-use support::{
-    admitted, enrol, next_document, ready, route, start_host, start_peer, wait_for, workspace,
-};
+use support::{admitted, enrol, next_document, ready, route, start_host, start_peer, wait_for};
 
 /// An edit published before the page holds its route's keys waits for
 /// them; a barrier called meanwhile waits with it until the host has made it
@@ -58,7 +59,7 @@ async fn a_barrier_covers_an_edit_held_for_the_rooms_replay() {
     )
     .unwrap();
     let receipt = peer.barrier().unwrap();
-    peer.join(workspace()).unwrap();
+    peer.join_placed(support::ROOM, "Workspace").unwrap();
     wait_for("the barrier", || async { receipt.try_recv().ok() })
         .await
         .unwrap();
@@ -106,7 +107,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         Arc::new(browser.key.clone()),
         store.clone(),
     );
-    peer.join(workspace()).unwrap();
+    peer.join_placed(support::ROOM, "Workspace").unwrap();
     peer.open_route(route()).unwrap();
     ready(&[&peer]).await;
     admitted(&peer).await;
@@ -145,13 +146,16 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     .unwrap();
     assert!(store.load().unwrap().outbox.is_empty());
 
+    support::place(&host.relay, &observer.cert).await;
     let observer_peer = start_peer(
         host.iroh(),
         observer.cert.clone(),
         host_device.cert.clone(),
         observer.key.clone(),
     );
-    observer_peer.join(workspace()).unwrap();
+    observer_peer
+        .join_placed(support::ROOM, "Workspace")
+        .unwrap();
     observer_peer.open_route(route()).unwrap();
     let mut events = Vec::new();
     for mutation in &offline {

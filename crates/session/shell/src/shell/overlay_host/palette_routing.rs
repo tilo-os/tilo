@@ -1,4 +1,4 @@
-//! Palette event routing and the fallthrough to the content.
+//! Search's event routing and the fallthrough to the content.
 
 #[allow(
     clippy::wildcard_imports,
@@ -7,96 +7,9 @@
 use super::*;
 
 impl ShellOverlayHost {
-    /// What the palette asked of its host while handling an event: a
-    /// confirmed field, a step backed out of, a scope token taken away.
-    pub(super) fn take_palette_requests(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
-        if let Some(text) = self.palette.take_submitted_argument() {
-            self.submit_param_field(text, doc, root);
-        }
-        if self.palette.take_argument_cancelled() {
-            self.palette_step_back();
-        }
-        if self.palette.take_scope_token_removed() {
-            self.widen_search_scope();
-        }
-    }
-
-    /// A header row is a filter: a click on "Files" shows only files.
-    pub(super) fn filter_by_clicked_header(
-        &mut self,
-        event: &WindowEvent,
-        doc: &automerge::AutoCommit,
-        root: &ObjId,
-    ) -> bool {
-        let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-            ..
-        } = event
-        else {
-            return false;
-        };
-        let Some(group) = self.last_cursor.and_then(|p| self.palette.header_at(p)) else {
-            return false;
-        };
-        if self.param_flow.is_some() || self.secondary_flow.is_some() {
-            return false;
-        }
-        if let Some(kind) = self
-            .present_kinds
-            .iter()
-            .find(|kind| kind.localized_label() == group)
-            .cloned()
-        {
-            self.active_kind_filter = vec![kind];
-            self.last_search_query.clear(); // force a refresh
-            self.refresh_search_results(doc, root);
-        }
-        true
-    }
-
-    /// A press at `p` on the search filters: "All", "More" or one kind's
-    /// chip. Returns whether it hit one.
-    fn click_palette_filter(
-        &mut self,
-        p: vello::kurbo::Point,
-        ctx: &ui::widget::EventCtx<'_>,
-    ) -> bool {
-        // A direct way to reach "nothing selected", not just
-        // untick every chip one at a time. Targets are the pointer
-        // rects (`selector_hit_rect`), the same ones the semantic
-        // nodes publish.
-        let all_hit = self.search_filters.search_all_chip_hit_rect();
-        if all_hit.area() > 0.0 && all_hit.contains(p) {
-            if !self.active_kind_filter.is_empty() {
-                self.active_kind_filter.clear();
-                self.last_search_query.clear(); // force a refresh
-                self.refresh_search_results(&ctx.state, ctx.path);
-            }
-            return true;
-        }
-        let more_hit = self.search_filters.search_more_hit_rect();
-        if more_hit.area() > 0.0 && more_hit.contains(p) {
-            self.search_filters.more_open = !self.search_filters.more_open;
-            return true;
-        }
-        let kinds: Vec<_> = self.search_filters.kinds().cloned().collect();
-        for idx in 0..self.search_filters.search_chip_rects.len() {
-            if self.search_filters.search_chip_hit_rect(idx).contains(p) {
-                if let Some(kind) = kinds.get(idx).cloned() {
-                    toggle_kind(&mut self.active_kind_filter, kind);
-                    self.last_search_query.clear(); // force a refresh
-                    self.refresh_search_results(&ctx.state, ctx.path);
-                }
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Palette-owned input, ahead of the switcher/content dispatch: kind
-    /// chips, a click on a result row, keyboard Enter, then everything
-    /// else the palette widget itself wants (typing, arrow selection).
+    /// Search's input, ahead of the switcher/content dispatch: the
+    /// launcher takes it itself (its field, its chips, its rows), and what
+    /// it asks is answered before the event returns.
     pub(super) fn route_palette_event(
         &mut self,
         event: &WindowEvent,
@@ -111,110 +24,26 @@ impl ShellOverlayHost {
                 crate::compositor::key_latency::KeyHandler::Surface("palette"),
             );
         }
-        // The launcher takes search's input itself: its field, its chips,
-        // its rows. What it asks is answered on the next settle.
         self.open_launcher_if_asked();
-        if let Some(launcher) = self.launcher.as_mut() {
-            let Some(palette_child) = palette_child else {
-                return false;
-            };
-            // Open search holds the keyboard: the launcher's field types.
-            if !launcher.app.is_focused() {
-                launcher.app.set_focus(true);
-            }
-            launcher
-                .app
-                .handle_event(event, &mut ctx.reborrow(ctx.path, palette_child));
-            // What the launcher asked, answered before the event returns:
-            // a keystroke's rows, a choice's run.
-            self.serve_launcher(&mut ctx.state, ctx.path);
-            if matches!(
-                event,
-                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-            ) {
-                *ctx.handled = true;
-            }
-            return *ctx.handled;
+        let (Some(launcher), Some(palette_child)) = (self.launcher.as_mut(), palette_child) else {
+            return false;
+        };
+        // Open search holds the keyboard: the launcher's field types.
+        if !launcher.app.is_focused() {
+            launcher.app.set_focus(true);
         }
-        // Before the row hit-test below so a chip click doesn't fall
-        // through to the top result.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-            ..
-        } = event
-            && let Some(p) = self.last_cursor
-            && self.click_palette_filter(p, ctx)
-        {
+        launcher
+            .app
+            .handle_event(event, &mut ctx.reborrow(ctx.path, palette_child));
+        // A keystroke's rows, a choice's run.
+        self.serve_launcher(&mut ctx.state, ctx.path);
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+        ) {
             *ctx.handled = true;
-            return true;
         }
-        // The selected row previews what a held modifier would do.
-        let held = ctx.modifiers.state();
-        self.palette.set_held_modifiers(held);
-        let modifier = ui::widget::command_palette::ActivationModifier::of(held);
-        if self.filter_by_clicked_header(event, &ctx.state, ctx.path) {
-            *ctx.handled = true;
-            return true;
-        }
-        // Before delegating to the palette, so a single click both
-        // selects and fires.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-            ..
-        } = event
-            && let Some(p) = self.last_cursor
-            && let Some(row) = self.palette.row_at(p)
-        {
-            self.palette.set_cursor(row);
-            self.activate_selected_result_with(&mut ctx.state, ctx.path, modifier);
-            *ctx.handled = true;
-            return true;
-        }
-        // One activation per press. A held Enter must not repeat a failed
-        // invocation while its recovery context stays open. A field step
-        // takes its own Enter, below.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Named(NamedKey::Enter),
-                    state: ElementState::Pressed,
-                    repeat,
-                    ..
-                },
-            ..
-        } = event
-            && !self.palette.in_argument_mode()
-        {
-            // Nothing is listed while the field stands alone.
-            if !repeat && !self.palette.shows_field_only() {
-                self.activate_selected_result_with(&mut ctx.state, ctx.path, modifier);
-            }
-            *ctx.handled = true;
-            return true;
-        }
-        // Let the palette own the character/backspace/arrow keys.
-        if let Some(palette_child) = palette_child {
-            let query_before = self.palette.query().to_string();
-            self.palette
-                .handle_event(event, &mut ctx.reborrow(ctx.path, palette_child));
-            self.take_palette_requests(&mut ctx.state, ctx.path);
-            if let Some((id, delta)) = self.palette.take_adjustment() {
-                self.step_result(&id, delta, &mut ctx.state, ctx.path);
-            }
-            // Recompute results when a character/backspace changes the query.
-            if self.palette.query() != query_before
-                && self.param_flow.is_none()
-                && self.secondary_flow.is_none()
-            {
-                self.refresh_search_results(&ctx.state, ctx.path);
-            }
-            if *ctx.handled {
-                return true;
-            }
-        }
-        false
+        *ctx.handled
     }
 
     /// ←/→ on a value row: step it in place and show the new value, or say
@@ -248,7 +77,7 @@ impl ShellOverlayHost {
                 self.refresh_search_results(doc, root);
             }
             Err(error) => {
-                self.palette
+                self.search
                     .set_selected_status(t("host-action-failed-status"), error.user_message());
             }
         }
@@ -312,6 +141,11 @@ impl ShellOverlayHost {
                 }
             }
         }
+        // The top bar stands over the desktop's own content: the pointer on
+        // a bar, and the keys while it holds the keyboard, are the bar's.
+        if self.route_topbar_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
+            return;
+        }
         if let Some(&content_child) = children.first() {
             self.content
                 .handle_event(event, &mut ctx.reborrow(ctx.path, content_child));
@@ -326,8 +160,6 @@ impl ShellOverlayHost {
             // open the menu in the same dispatch so it is on screen — and
             // in the accessibility tree — by the time this event returns.
             self.harvest_pending_tab_context_menus();
-            // So is a popover the bar asked for.
-            self.harvest_bar_popover_request();
             // `/` the app did not type opens search of that app, as Ctrl+K
             // does. A focused field or terminal takes `/` as text.
             if !*ctx.handled

@@ -12,17 +12,13 @@
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
-use ui::framework::{
-    EffectAnswer, EffectCx, LaunchInput, LiveRow, ResourceApp, ResourceSurface, RunMode, SurfaceCx,
-    ViewCx,
-};
+use ui::framework::{LaunchInput, Publishes, ResourceApp, RunMode, ViewCx};
 use ui::record::RecordId;
 use ui::tilo_resource::{
     self, ActionCx, Bytes, Id, Invoke, JsonSchema, ModelError, Refusal, SearchEntry, resource,
 };
 use ui::widget::Element;
 
-use crate::actions::PdfEffect;
 use crate::app::PdfApp;
 use crate::markup::{
     ImportedPage, MAX_IMPORTED_PAGES, PageOccurrence, PagePlanEntry, PdfMarkup, StoredSignature,
@@ -143,18 +139,28 @@ pub struct ExistingMarkup {
     pub adopted: Vec<crate::adopt::AdoptedEntry>,
 }
 
-/// Bring markup of an earlier version up to this one. Comment threads were
-/// kept in a shape of their own before they were the comment model every
-/// app shares; those are not carried over, the rest of the markup is.
-fn upgrade_markup(doc: &mut tilo_resource::Doc, _from: u32) -> Result<(), ModelError> {
-    tilo_resource::Slot::Key(&ui::automerge::ROOT, "comments").remove(doc)
+/// Bring markup of an earlier version up to this one. Before version 3,
+/// comment threads were kept in a shape of their own, before they were the
+/// comment model every app shares; those are not carried over, the rest of
+/// the markup is. Version 3 stored each mark's value in a comment's
+/// paragraphs flat beside its variant's name; it is stored by its variant
+/// now.
+fn upgrade_markup(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    let root = ui::automerge::ROOT;
+    match from {
+        1 | 2 => tilo_resource::Slot::Key(&root, "comments").remove(doc),
+        3 => tilo_document::annotation::store_bodies_by_variant(doc, &root, "comments"),
+        _ => Err(ModelError::invalid(format!(
+            "no PDF markup migration from {from}"
+        ))),
+    }
 }
 
 #[resource(
     kind = "pdf.document",
     label = "PDF",
     search = PdfMarkup::entries,
-    version = 3,
+    version = 4,
     migrate = upgrade_markup
 )]
 impl PdfMarkup {
@@ -799,7 +805,7 @@ fn check_text(text: &str, rich: &[tilo_document::ClipBlock]) -> Result<(), Refus
 }
 
 /// The PDF reader: one record per document holds its markup, and the
-/// reader is the surface over it.
+/// reader window is a view of it.
 pub struct PdfViewerShell;
 
 impl ResourceApp for PdfViewerShell {
@@ -827,7 +833,7 @@ impl ResourceApp for PdfViewerShell {
         // A search hit, or an agent's `open`, shows the page, markup or
         // thread it names.
         cx.on_open_item(app.opener());
-        cx.surface(app)
+        reader_view(cx, app)
     }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -889,74 +895,51 @@ impl ResourceApp for PdfViewerShell {
 /// The role of a document's markup record beside the document's own.
 const MARKUP_ROLE: &str = "annotations";
 
-impl ResourceSurface<PdfMarkup, PdfEffect> for PdfApp {
-    fn present(&mut self, state: &Rc<PdfMarkup>) {
-        self.adopt_resource_state(state);
+/// The reader window `app` as a view of the markup: it follows the record
+/// and the participant's permission to edit it, answers the reader's
+/// effects, and publishes the open document's rows and what it says.
+fn reader_view(cx: &ViewCx<PdfMarkup>, mut app: PdfApp) -> Element {
+    app.attach_framework(cx.dispatcher());
+    app.attach_people(cx.people());
+    app.attach_open_here(cx.opener());
+    // A capture shows the scenario's signature, never the person's.
+    if cx.mode().is_live()
+        && let Some(signature) = cx.person::<crate::signature::SignatureProfile>()
+    {
+        app.attach_signature(signature);
     }
-
-    /// What the open document says — its pages' text, its outline, the
-    /// current find hits — beside the markup the resource holds.
-    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        self.shown_search_entries()
-    }
-
-    /// The system's search reads the open document's every page, not only
-    /// the pages the reader has shown.
-    fn search_query(&mut self, _query: &ui::search::SearchQuery) {
-        self.read_text_for_search();
-    }
-
-    fn search_pending(&self) -> bool {
-        self.search_text_pending()
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<PdfMarkup>) {
-        self.attach_framework(cx.dispatcher());
-        self.attach_people(cx.people());
-        self.attach_open_here(cx.opener());
-        // A capture shows the scenario's signature, never the person's.
-        if cx.mode().is_live()
-            && let Some(signature) = cx.person::<crate::signature::SignatureProfile>()
-        {
-            self.attach_signature(signature);
-        }
-    }
-
-    fn read_only_changed(&mut self, read_only: bool) {
-        self.set_read_only(read_only);
-    }
-
+    app.follow(cx.live().clone(), cx.read_only_state());
+    app.publish();
+    let store = app.shared();
+    cx.window_effects(PdfApp::effect);
     #[cfg(feature = "samples")]
-    fn stage(&mut self, scenario: Option<&str>) {
-        PdfApp::stage(self, scenario);
+    {
+        let store = Rc::clone(&store);
+        cx.on_stage(move |scenario| store.borrow_mut().stage(scenario));
     }
-
-    fn effect(&mut self, effect: PdfEffect, cx: &mut EffectCx<PdfMarkup, Self>) -> EffectAnswer {
-        match effect {
-            PdfEffect::OpenPdf { path } => self.open_effect(path, cx),
-            PdfEffect::ReadText { from_page, to_page } => self
-                .read_text(from_page, to_page)
-                .map(ui::framework::Effected::value),
-            PdfEffect::LookPage { page, size } => self
-                .look_page(page, size)
-                .map(ui::framework::Effected::Done),
-            PdfEffect::ImportPdfContent { content, name } => self
-                .import_pdf_content(&content, name.as_deref(), cx)
-                .map(ui::framework::Effected::value),
-            PdfEffect::SelectText { .. } | PdfEffect::CopySelection => {
-                self.selection_effect(&effect, || cx.reply())
-            }
-            effect => self.answer_effect(&effect, || cx.reply()),
-        }
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.document_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.document_row(id)
-    }
+    let waker = cx.waker();
+    let (rows, row, entries, query) = (
+        Rc::clone(&store),
+        Rc::clone(&store),
+        Rc::clone(&store),
+        Rc::clone(&store),
+    );
+    cx.publishing(
+        Publishes::new()
+            .live_rows(move || rows.borrow().live_rows())
+            .live_row(move |id| row.borrow().live_row(id))
+            // What the open document says (its pages' text, its outline, the
+            // current find hits) beside the markup the resource holds.
+            .search_entries(move || entries.borrow().search_entries())
+            // The system's search reads the open document's every page, not
+            // only the pages the reader has shown.
+            .search_query(move |_| {
+                query.borrow_mut().ask_search();
+                waker.wake();
+            })
+            .search_pending(move || store.borrow().search_pending()),
+        Box::new(app),
+    )
 }
 
 #[cfg(test)]

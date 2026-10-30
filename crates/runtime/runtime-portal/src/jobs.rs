@@ -55,8 +55,9 @@ pub const MAX_LABEL: usize = 48;
 /// The largest message either side sends: a verb and a label, or an answer.
 pub const MAX_MESSAGE: usize = 1024;
 
-/// The most descriptors one message carries.
-const MAX_FDS: usize = 4;
+/// The most descriptors one message carries: a tilolang instance's five
+/// (`crate::tilolang_host::InstanceFds`).
+const MAX_FDS: usize = 5;
 
 /// A job's cgroup, ready for one process to join.
 #[derive(Debug)]
@@ -523,6 +524,7 @@ pub fn pid_of_pidfd(pidfd: BorrowedFd<'_>) -> io::Result<u32> {
 /// or one outside this pid namespace (`0`).
 #[must_use]
 pub fn pid_in_fdinfo(info: &str) -> Option<u32> {
+    // optional-decode: the kernel's own text; a line that is not a number reads as no process
     let pid: i64 = info
         .lines()
         .find_map(|line| line.strip_prefix("Pid:"))?

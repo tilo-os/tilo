@@ -226,19 +226,27 @@ fn effect_receipts(doc: &AutoCommit) -> Result<BTreeMap<String, serde_json::Valu
             Err(ProofError::Unknown)
         };
     };
-    for key in doc.keys(&object) {
-        let Some((Value::Scalar(value), _)) =
-            doc.get(&object, &key).map_err(|_| ProofError::Unknown)?
+    // Each member's own slice: `{person → {invocation → receipt}}`.
+    for person in doc.keys(&object) {
+        let Some((Value::Object(automerge::ObjType::Map), slice)) =
+            doc.get(&object, &person).map_err(|_| ProofError::Unknown)?
         else {
             return Err(ProofError::Unknown);
         };
-        let ScalarValue::Bytes(bytes) = value.as_ref() else {
-            return Err(ProofError::Unknown);
-        };
-        receipts.insert(
-            key,
-            serde_json::from_slice(bytes).map_err(|_| ProofError::Unknown)?,
-        );
+        for key in doc.keys(&slice) {
+            let Some((Value::Scalar(value), _)) =
+                doc.get(&slice, &key).map_err(|_| ProofError::Unknown)?
+            else {
+                return Err(ProofError::Unknown);
+            };
+            let ScalarValue::Bytes(bytes) = value.as_ref() else {
+                return Err(ProofError::Unknown);
+            };
+            receipts.insert(
+                format!("{person}/{key}"),
+                serde_json::from_slice(bytes).map_err(|_| ProofError::Unknown)?,
+            );
+        }
     }
     Ok(receipts)
 }

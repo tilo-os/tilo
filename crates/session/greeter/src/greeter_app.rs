@@ -600,22 +600,28 @@ struct ClockFace {
 
 impl ClockFace {
     fn now() -> Self {
-        let now = ui::clock::local_now();
+        Self::of(&ui::clock::local_now())
+    }
+
+    fn of(now: &chrono::DateTime<chrono::Local>) -> Self {
         Self {
-            time: ui::clock::time_of_day(&now),
+            time: ui::clock::time_of_day(now),
             date: ui::format::day_heading(now.date_naive(), false),
         }
     }
 }
 
-/// When the clock next changes: the start of the next minute.
-fn next_minute(now: Instant) -> Instant {
+/// The instant the minute shown at `wall` (read at the monotonic `now`)
+/// ends. Fixed once read: a deadline that moves with the clock is never
+/// due, and a host that serves due deadlines never redraws for it.
+fn minute_ends(wall: &chrono::DateTime<chrono::Local>, now: Instant) -> Instant {
     use chrono::Timelike;
-    let into_minute = chrono::Local::now().second();
-    now.checked_add(Duration::from_secs(u64::from(
-        60_u32.saturating_sub(into_minute),
-    )))
-    .unwrap_or(now)
+    // A leap second reads as a nanosecond count past one second.
+    let into = Duration::from_secs(u64::from(wall.second())).saturating_add(Duration::from_nanos(
+        u64::from(wall.nanosecond().min(999_999_999)),
+    ));
+    now.checked_add(Duration::from_secs(60).saturating_sub(into))
+        .unwrap_or(now)
 }
 
 /// Controls whose callbacks report back to the greeter on its next sync.
@@ -711,6 +717,8 @@ pub struct GreeterApp {
     sign_in_comforts: Option<crate::comforts::Changes>,
     /// The time and date the current composition shows. Shots pin it.
     clock: ClockFace,
+    /// When the minute `clock` shows ends: the wake the clock asks for.
+    clock_turns: Instant,
     clock_pinned: bool,
     /// Battery and Wi-Fi as the current composition shows them.
     device: DeviceStatus,
@@ -985,6 +993,7 @@ impl GreeterApp {
             screen_reader: false,
             sign_in_comforts: None,
             clock: ClockFace::now(),
+            clock_turns: minute_ends(&ui::clock::local_now(), ui::time::now()),
             clock_pinned: false,
             device: DeviceStatus::default(),
             direction: Direction::Column,
@@ -2262,11 +2271,18 @@ impl Widget for GreeterApp {
         // The minute turned over (the wake deadline brought us here), or the
         // machine's state changed: rebuild once to show it.
         if !self.clock_pinned {
-            let clock = ClockFace::now();
-            if clock != self.clock {
+            let (wall, now) = (ui::clock::local_now(), ui::time::now());
+            let clock = ClockFace::of(&wall);
+            let turned = clock != self.clock;
+            if turned {
                 self.clock = clock;
                 self.device = DeviceStatus::read();
                 self.dirty_structure = true;
+            }
+            // The next wake is the end of the minute now shown, also when
+            // the wake came and the wall clock had been set back under it.
+            if turned || self.clock_turns <= now {
+                self.clock_turns = minute_ends(&wall, now);
             }
         }
 
@@ -2679,7 +2695,7 @@ impl Widget for GreeterApp {
     /// The controls' own deadlines, and the next minute for the clock.
     fn next_wake_deadline(&self) -> Option<Instant> {
         let child = self.composed.element().and_then(Widget::next_wake_deadline);
-        let clock = (!self.clock_pinned).then(|| next_minute(Instant::now()));
+        let clock = (!self.clock_pinned).then_some(self.clock_turns);
         match (child, clock) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),

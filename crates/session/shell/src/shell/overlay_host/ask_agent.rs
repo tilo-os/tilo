@@ -329,7 +329,9 @@ impl ShellOverlayHost {
         };
         // The palette's question about what is focused: the chord's way to
         // the focused selection, already asked. The last one asked wins.
-        if let Some(query) = chrome.borrow_mut().take_agent_asks_in_place().pop() {
+        // Taken first: the chrome is borrowed only for the taking, not while it is bumped.
+        let asked_in_place = chrome.borrow_mut().take_agent_asks_in_place().pop();
+        if let Some(query) = asked_in_place {
             self.selection_requests.press_asking(query);
             self.bump_chrome();
         }
@@ -357,14 +359,17 @@ impl ShellOverlayHost {
             if !live && actions.start_once(Instant::now()) {
                 starts.push((ask.room, owner.agent.clone()));
             }
-            if actions.open_and_ask(
-                source,
-                &owner,
-                (&ask.title, &ask.body),
-                None,
-                ask.show,
-                ask.quick,
-            ) {
+            if actions
+                .open_and_ask(
+                    source,
+                    &owner,
+                    (&ask.title, &ask.body),
+                    None,
+                    ask.show,
+                    ask.quick,
+                )
+                .is_some()
+            {
                 asked = true;
             } else {
                 tracing::warn!(agent = %owner.agent, "work could not be handed to the agent");

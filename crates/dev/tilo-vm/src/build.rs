@@ -92,18 +92,11 @@ pub fn cargo_build(component: &Component, extra_features: &[String]) -> CommandL
 /// Build outputs a component ships that cargo does not make: where the file
 /// is installed, where the installer finds it under the profile directory,
 /// and the script the image build runs to make it (`os/Containerfile`).
-const NATIVE_OUTPUTS: &[(&str, &str, &str)] = &[
-    (
-        "/usr/lib/tilo/ush/bash-editor.so",
-        "ush-editor/bash-editor.so",
-        "crates/runtime/ush/native/build.py",
-    ),
-    (
-        "/usr/lib/tilo/ntfs-mount/fuse-handoff.so",
-        "ntfs-mount/fuse-handoff.so",
-        "crates/system/ntfs-mount/native/build.py",
-    ),
-];
+const NATIVE_OUTPUTS: &[(&str, &str, &str)] = &[(
+    "/usr/lib/tilo/ntfs-mount/fuse-handoff.so",
+    "ntfs-mount/fuse-handoff.so",
+    "crates/system/ntfs-mount/native/build.py",
+)];
 
 /// The non-cargo builds `component` needs before the installer can lay it
 /// out, each writing into `target_dir`'s profile directory.
@@ -473,16 +466,17 @@ mod tests {
             let manifest =
                 Manifest::parse(&std::fs::read_to_string(repo.join("os/components.toml")).unwrap())
                     .unwrap();
-            let ush = &manifest.components["ush"];
-            let builds: Vec<String> = native_builds(ush, "/t")
+            let ntfs = &manifest.components["ntfs-mount"];
+            let builds: Vec<String> = native_builds(ntfs, "/t")
                 .iter()
                 .map(CommandLine::display)
                 .collect();
             assert_eq!(
                 builds,
-                [
-                    "python3 crates/runtime/ush/native/build.py --out /t/release/ush-editor/bash-editor.so"
-                ]
+                [format!(
+                    "python3 crates/system/ntfs-mount/native/build.py --out /t/{}/ntfs-mount/fuse-handoff.so",
+                    ntfs.profile_dir()
+                )]
             );
             for (_, _, script) in NATIVE_OUTPUTS {
                 assert!(repo.join(script).is_file(), "{script}");

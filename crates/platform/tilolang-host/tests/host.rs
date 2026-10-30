@@ -217,6 +217,17 @@ fn running_with(
     bundle: Bundle,
     directory: Rc<RefCell<Directory>>,
 ) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
+    running_on(person, app, bundle, directory, automerge::AutoCommit::new())
+}
+
+/// [`running_with`], the record holding `doc` as the room handed it.
+fn running_on(
+    person: &str,
+    app: &str,
+    bundle: Bundle,
+    directory: Rc<RefCell<Directory>>,
+    doc: automerge::AutoCommit,
+) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let route = RouteSpec::app(app, uuid::Uuid::new_v4());
     let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
@@ -235,7 +246,7 @@ fn running_with(
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record = RoomRecord::new(automerge::AutoCommit::new(), manager, route.clone(), person);
+    let record = RoomRecord::new(doc, manager, route.clone(), person);
     let mut host = TilolangHost::new(None, wake());
     let kept = host.kept(app).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
@@ -288,6 +299,115 @@ fn documents_sent(sent: &Sent) -> usize {
         .iter()
         .filter(|request| matches!(request, CollabRequest::Document { .. }))
         .count()
+}
+
+/// A host whose counter instance opens its record as the host does, joined on a broker the test
+/// plays, from the copy `documents` keeps: no committed read, as a sealed room's record the room
+/// does not hold yet opens.
+fn opened_from_own_copy(
+    person: &str,
+    documents: &Rc<dyn durable_store::DurableStore>,
+) -> (TilolangHost, Window, Sent, RouteSpec) {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let sent: Sent = Rc::default();
+    let mut manager = CollaborationManager::with_peer_transport(Broker {
+        route: route.clone(),
+        sent: Rc::clone(&sent),
+        inbox: Rc::default(),
+        joined: None,
+        directory: Rc::default(),
+    });
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id,
+        record: None,
+        record_kind: None,
+        handle: Some(person.to_owned()),
+    }));
+    let _ = manager.poll();
+    let record = RoomRecord::open_read(manager, None, documents, person).unwrap();
+    let mut host = TilolangHost::new(None, wake());
+    let kept = host.kept(APP).unwrap();
+    let (ours, theirs) = Channel::pair().unwrap();
+    let watched = ours.as_fd().try_clone_to_owned().unwrap();
+    let hosted = Hosted::with_record(
+        Spec {
+            app: APP.to_owned(),
+            room: route.cluster_id.to_string(),
+            instance: 1,
+            person: person.to_owned(),
+        },
+        record,
+        Arc::new(counter()),
+        &kept,
+        Box::new(ChannelTransport::new(ours).unwrap()),
+        Rc::new(Phrases::new("en-US")),
+        wake(),
+    );
+    host.add(hosted, Some(watched));
+    let window = Window {
+        transport: ChannelTransport::new(theirs).unwrap(),
+        root: None,
+        detail: None,
+        detail_target: None,
+        activated: false,
+    };
+    (host, window, sent, route)
+}
+
+/// What the room holds of the record: every change the instance sent on its connection, and
+/// nothing else, as a sealed room's channel keeps it.
+fn room_copy(sent: &Sent) -> automerge::AutoCommit {
+    let mut room = automerge::AutoCommit::new();
+    for request in sent.borrow().iter() {
+        if let CollabRequest::Document { mutation, .. } = request {
+            let bytes = match mutation {
+                collab_types::DocumentMutation::Incremental(bytes)
+                | collab_types::DocumentMutation::Snapshot(bytes) => bytes,
+            };
+            tilo_automerge::ApplyIncoming::load_incoming(&mut room, bytes).unwrap();
+        }
+    }
+    room
+}
+
+#[test]
+fn a_record_made_from_the_hosts_own_copy_reopens_from_what_its_room_holds() {
+    // A record the room did not hold opens from the host's own copy, whose making (its schema
+    // stamp) is a change of this replica's. A press is the instance's first change to the room.
+    let documents: Rc<dyn durable_store::DurableStore> =
+        Rc::new(durable_store::MemoryStore::default());
+    let (mut host, mut window, sent, _route) = opened_from_own_copy("ada", &documents);
+    settle(&mut host, &mut window);
+    let (key, event) = window.increment();
+    window.send(&[ToApp::Fire {
+        lane: Lane::Root,
+        key,
+        event,
+        value: None,
+    }]);
+    settle(&mut host, &mut window);
+    assert_eq!(value_of(host.instances().next().unwrap()), 1);
+
+    // The room's copy alone is the whole record: nothing it holds builds on a change that never
+    // reached it, so a reader that has only the room's writes can read it back.
+    let room = room_copy(&sent);
+    assert_eq!(
+        automerge::ReadDoc::get_missing_deps(&room, &[]),
+        Vec::new(),
+        "every change the room's writes build on reached the room"
+    );
+
+    // A fresh host, opened on the room's copy as a reopen reads it, shows the press.
+    let (mut reopened, mut window, _sent, _inbox, _route) =
+        running_on("ada", APP, counter(), Rc::default(), room);
+    settle(&mut reopened, &mut window);
+    assert_eq!(
+        value_of(reopened.instances().next().unwrap()),
+        1,
+        "the reopened instance shows the record as it was"
+    );
 }
 
 #[test]
@@ -709,6 +829,132 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
     assert_eq!(host.instances().count(), 2);
 }
 
+/// How many of `rounds` waits of the host's loop would end at once, nothing written to its wake:
+/// each a wait that asks whether anything has something for the host, without waiting.
+fn wakeups(host: &TilolangHost, rounds: usize) -> usize {
+    let wake = tilolang_host::wait::Wake::new().unwrap();
+    (0..rounds)
+        .filter(|_| {
+            tilolang_host::wait::wait(None, wake.fd(), host, 0)
+                .unwrap()
+                .any()
+        })
+        .count()
+}
+
+#[test]
+fn the_hosts_wake_ends_one_wait_per_writing_once_consumed() {
+    let (mut host, mut window, _sent, _inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let wake = tilolang_host::wait::Wake::new().unwrap();
+    let waker = wake.waker();
+    let woken = |wake: &tilolang_host::wait::Wake| {
+        (0..100)
+            .filter(|_| {
+                tilolang_host::wait::wait(None, wake.fd(), &host, 0)
+                    .unwrap()
+                    .wake
+            })
+            .count()
+    };
+    assert_eq!(woken(&wake), 0, "an unwritten wake ended a wait");
+    for _ in 0..1000 {
+        waker();
+    }
+    assert!(woken(&wake) > 0, "a written wake did not end the wait");
+    wake.consume().unwrap();
+    assert_eq!(woken(&wake), 0, "the consumed wake still ended waits");
+}
+
+#[test]
+fn an_idle_hosts_loop_does_not_wake_until_a_window_has_something() {
+    let (mut host, mut window, _sent, _inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    assert_eq!(
+        wakeups(&host, 100),
+        0,
+        "an idle running instance woke its host"
+    );
+
+    // A second instance whose workspace has not answered its join, its window sending before
+    // the instance runs: what it sent waits for the instance, and the loop sleeps meanwhile.
+    let answer = Rc::new(std::cell::Cell::new(false));
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let mut manager = CollaborationManager::with_peer_transport(SlowBroker {
+        route: route.clone(),
+        answer: Rc::clone(&answer),
+        asked: false,
+    });
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id,
+        record: None,
+        record_kind: None,
+        handle: Some("grace".to_owned()),
+    }));
+    let (ours, theirs) = Channel::pair().unwrap();
+    host.open(
+        Spec {
+            app: APP.to_owned(),
+            room: route.cluster_id.to_string(),
+            instance: 2,
+            person: "grace".to_owned(),
+        },
+        Arc::new(counter()),
+        manager,
+        ours,
+    );
+    let mut second = Window {
+        transport: ChannelTransport::new(theirs).unwrap(),
+        root: None,
+        detail: None,
+        detail_target: None,
+        activated: false,
+    };
+    second.send(&[ToApp::Fire {
+        lane: Lane::Root,
+        key: "early".to_owned(),
+        event: "pressed before it opened".to_owned(),
+        value: None,
+    }]);
+    host.turn();
+    assert_eq!(host.opening(), 1);
+    assert_eq!(
+        wakeups(&host, 100),
+        0,
+        "what an opening instance's window sent woke its host before the instance could read it"
+    );
+
+    // What a running window sends wakes the loop, and its frame takes it.
+    let (key, event) = window.increment();
+    window.send(&[ToApp::Fire {
+        lane: Lane::Root,
+        key,
+        event,
+        value: None,
+    }]);
+    assert_eq!(
+        wakeups(&host, 1),
+        1,
+        "a press in a running window did not wake its host"
+    );
+    host.turn();
+    window.take();
+    assert_eq!(wakeups(&host, 100), 0, "the frame left the press unread");
+
+    // An opening instance's window closing wakes the loop, which ends that opening.
+    drop(second);
+    assert_eq!(
+        wakeups(&host, 1),
+        1,
+        "an opening window's closing did not wake its host"
+    );
+    host.turn();
+    assert_eq!(host.opening(), 0);
+    assert_eq!(host.take_ended(), vec![2]);
+    assert_eq!(wakeups(&host, 100), 0);
+}
+
 /// Ask the instance's directory `query`, as the broker does, and take its answer.
 fn page(
     host: &mut TilolangHost,
@@ -1011,21 +1257,21 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
 
 #[test]
 fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook() {
-    // A note's body is read by no label: typing it publishes nothing, with one note or with
-    // two hundred, rather than the whole notebook's surface on every frame.
+    // A new note's title is empty, so its body's first text is its label until it has a
+    // title: each key of the body publishes that label alone, with one note or with two
+    // hundred, never the whole notebook's surface.
     for held in [1, 200] {
         let body = typing(held, "Write something", "draft");
         assert_eq!(
             (body.built, body.relabeled),
-            (0, 0),
+            (0, 5),
             "typing a body published the surface (whole, labels) with {held} notes"
         );
     }
     // A note's title is its label: each key publishes that label alone, the same work with one
-    // note as with two hundred, and never the whole surface. Typed at the start of the title
-    // the note was made with.
+    // note as with two hundred, and never the whole surface.
     for held in [1, 200] {
-        let title = typing(held, "Title", "abc");
+        let title = typing(held, "Untitled", "abc");
         assert_eq!(
             title.built, 0,
             "typing a title built the whole surface with {held} notes"
@@ -1036,16 +1282,16 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
             title.relabeled
         );
         assert!(
-            title.labels.iter().any(|label| label == "abcUntitled"),
+            title.labels.iter().any(|label| label == "abc"),
             "the instance names the note by its new title with {held} notes: {:?}",
             title.labels
         );
         assert!(
-            title.broker.iter().any(|label| label == "abcUntitled"),
+            title.broker.iter().any(|label| label == "abc"),
             "the broker's copy names the note by its new title with {held} notes"
         );
         assert!(
-            title.found.iter().any(|label| label == "abcUntitled"),
+            title.found.iter().any(|label| label == "abc"),
             "the instance's directory finds the note by its new title with {held} notes: {:?}",
             title.found
         );
@@ -1053,7 +1299,7 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
             !title
                 .broker
                 .iter()
-                .any(|label| label == "aUntitled" || label == "abUntitled"),
+                .any(|label| label == "a" || label == "ab"),
             "the broker's copy still names the note by an earlier title with {held} notes"
         );
     }
@@ -1097,7 +1343,7 @@ fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it
         .detail_target
         .clone()
         .expect("the first note is open");
-    let title = node_with(window.detail.as_ref().unwrap(), "placeholder", "Title")
+    let title = node_with(window.detail.as_ref().unwrap(), "placeholder", "Untitled")
         .expect("the note has its title field")
         .key
         .clone();
@@ -1121,12 +1367,86 @@ fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it
     assert_ne!(first, second, "the press opened the second note");
     assert_eq!(
         title_of(&host, &first),
-        "Plan Untitled",
+        "Plan ",
         "the typing landed in the note it was typed into"
     );
     assert_eq!(
         title_of(&host, &second),
-        "Untitled",
+        "",
         "and none of it in the note shown when it arrived"
+    );
+}
+
+#[test]
+fn the_instance_answers_a_late_joiners_snapshot_request_with_its_record() {
+    let (mut host, mut window, sent, inbox, route) = running("ada");
+    settle(&mut host, &mut window);
+    let snapshots = |sent: &Sent| {
+        sent.borrow()
+            .iter()
+            .filter(|request| {
+                matches!(
+                    request,
+                    CollabRequest::Document {
+                        mutation: collaboration::DocumentMutation::Snapshot(_),
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    let before = snapshots(&sent);
+    inbox
+        .borrow_mut()
+        .push_back(CollabEvent::DocumentSnapshotRequested { route });
+    settle(&mut host, &mut window);
+    assert_eq!(
+        snapshots(&sent),
+        before + 1,
+        "the record went to the late joiner"
+    );
+}
+
+#[test]
+fn the_instance_answers_every_handoff_step_the_shell_asks() {
+    use collaboration::handoff::{HandoffReport, HandoffRequest, Successor};
+    let (mut host, mut window, sent, inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let reports = |sent: &Sent| -> Vec<HandoffReport> {
+        sent.borrow()
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::ReportHandoff { message, .. } => HandoffReport::decode(message),
+                _ => None,
+            })
+            .collect()
+    };
+    inbox.borrow_mut().push_back(CollabEvent::Handoff {
+        request: HandoffRequest::Checkpoint { token: 7 },
+    });
+    inbox.borrow_mut().push_back(CollabEvent::Handoff {
+        request: HandoffRequest::Retire {
+            token: 8,
+            successor: Successor {
+                room: uuid::Uuid::new_v4().to_string(),
+                record: "elsewhere".to_owned(),
+                by: "ada".to_owned(),
+            },
+        },
+    });
+    settle(&mut host, &mut window);
+    let reports = reports(&sent);
+    assert!(
+        reports
+            .iter()
+            .any(|report| matches!(report, HandoffReport::Done { token: 7, .. })),
+        "a checkpoint is done: {reports:?}"
+    );
+    assert!(
+        reports.iter().any(|report| matches!(
+            report,
+            HandoffReport::Failed { token: 8, reason } if !reason.is_empty()
+        )),
+        "a retirement is refused with why: {reports:?}"
     );
 }

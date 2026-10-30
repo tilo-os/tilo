@@ -79,6 +79,25 @@ pub enum LayoutInfo {
     Section(SectionLayout),
     Field(FieldLayout),
     Manual(ManualLayout),
+    Scroll(ScrollLayout),
+}
+
+/// Which way a scroll view lets its content go on past its own box.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollDirection {
+    /// Down: content taller than the view (a column's body).
+    Vertical,
+    /// Sideways: content wider than the view (a board's lanes).
+    Horizontal,
+    /// Both ways (a canvas).
+    Both,
+}
+
+/// A scroll view's axis, so a layout audit tells content that scrolls by
+/// design from content that overflows.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrollLayout {
+    pub direction: ScrollDirection,
 }
 
 /// Actual region allocation, requested child extent, and overflowing content.

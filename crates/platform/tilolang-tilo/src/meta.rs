@@ -22,6 +22,48 @@ pub const fn action_kind(class: EffectClass) -> tilo_actions::ActionKind {
     }
 }
 
+/// Every type `meta` names that the platform reads (each field's, enum case field's, action
+/// parameter's and search filter's) and that does not parse, each as where it is, the type and
+/// why. A package that has any is refused where it is loaded ([`crate::bundle`]), so what is
+/// derived from a loaded package's metadata (schemas, columns, the surface) parses every type it
+/// reads.
+#[must_use]
+pub fn unreadable_types(meta: &Meta) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut check = |at: String, ty: &str| {
+        if let Err(why) = parse_ty(ty.trim(), &meta.app) {
+            out.push(format!("{at}: {why}"));
+        }
+    };
+    for ty in &meta.types {
+        for field in &ty.fields {
+            check(format!("{}.{}", ty.name, field.name), &field.ty);
+        }
+        for filter in &ty.search.filters {
+            // A boolean or predicate filter is a yes/no column: its type is not read.
+            if !matches!(filter.kind, FilterKind::Bool | FilterKind::Predicate) {
+                check(format!("{} filter {}", ty.name, filter.key), &filter.ty);
+            }
+        }
+    }
+    for declared in &meta.enums {
+        for variant in &declared.variants {
+            for field in &variant.fields {
+                check(
+                    format!("{}.{}.{}", declared.name, variant.name, field.name),
+                    &field.ty,
+                );
+            }
+        }
+    }
+    for action in &meta.actions {
+        for param in &action.params {
+            check(format!("{}({})", action.name, param.name), &param.ty);
+        }
+    }
+    out
+}
+
 /// Derived facts of a package's metadata.
 pub trait MetaExt {
     /// The declared type named `name` (a qualified name's last segment), or whose id is `name`.
@@ -49,6 +91,9 @@ pub trait MetaExt {
 }
 
 fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
+    // A loaded package's field types all parse (`unreadable_types`, checked where it is
+    // loaded); a hand-built one that does not is kept whole, as a composite register.
+    // optional-decode: checked where the package is loaded
     let Ok(ty) = parse_ty(&field.ty, &meta.app) else {
         return FieldSchema::new(&field.id, MergeKind::Register).composite();
     };
@@ -137,6 +182,7 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
         {
             continue;
         }
+        // optional-decode: a loaded package's filter types all parse (`unreadable_types`).
         let parsed = parse_ty(&f.ty, &meta.app).ok();
         let (kind, cases) = match f.kind {
             FilterKind::Bool | FilterKind::Predicate => (ColumnKind::Bool, Vec::new()),
@@ -170,6 +216,7 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
             MergeKind::Counter => true,
             _ => false,
         };
+        // optional-decode: a loaded package's field types all parse (`unreadable_types`).
         let Some((kind, cases)) = parse_ty(&field.ty, &meta.app)
             .ok()
             .filter(|_| columned)

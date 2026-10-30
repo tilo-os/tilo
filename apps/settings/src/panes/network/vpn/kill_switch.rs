@@ -12,17 +12,17 @@ use settings_store::device_vpn::{self, PROFILE_KILL_SWITCHES, ProfileKillSwitch}
 use ui::LocalState;
 use ui::widget::Toggle;
 
-use super::super::{Begun, NetworkModel, VpnInfo};
+use super::super::{Begun, NetworkModel, Page, VpnInfo};
 use super::VpnEffect;
 use crate::effects::effect;
 use crate::i18n::t;
 use crate::prefs::DeviceVpnPrefs;
-use crate::widgets::{Item, error_caption, row, setting_row_described};
+use provider_settings_ui::widgets::{Item, error_caption, row, setting_row_described};
 
 impl NetworkModel {
     /// The kill switch of the profile `uuid`, while it is on.
     pub(super) fn kill_switch(&self, uuid: &str) -> Option<ProfileKillSwitch> {
-        let document = self.cx.storage().settings_document();
+        let document = self.reach.storage.settings_document();
         PROFILE_KILL_SWITCHES
             .from_section(&document.section(device_vpn::SECTION))
             .remove(uuid)
@@ -62,8 +62,9 @@ impl NetworkModel {
         if next == previous {
             return Ok(Begun::Done);
         }
-        self.cx
-            .invoke_section(DeviceVpnPrefs::SET_PROFILE_KILL_SWITCH.with((
+        self.reach
+            .sections
+            .invoke(DeviceVpnPrefs::SET_PROFILE_KILL_SWITCH.with((
                 vpn.uuid.clone(),
                 on,
                 allow_local,
@@ -81,8 +82,9 @@ impl NetworkModel {
         if self.kill_switch(uuid).is_none() {
             return Ok(());
         }
-        self.cx
-            .invoke_section(DeviceVpnPrefs::RELEASE_PROFILE.with(uuid.to_owned()))
+        self.reach
+            .sections
+            .invoke(DeviceVpnPrefs::RELEASE_PROFILE.with(uuid.to_owned()))
     }
 
     /// Show the profile `uuid` as no longer blocking until the session
@@ -107,8 +109,9 @@ impl NetworkModel {
             if self.kill_switch(uuid).is_none() {
                 return Ok(());
             }
-            self.cx
-                .invoke_section(DeviceVpnPrefs::SET_PROFILE_KILL_SWITCH.with((
+            self.reach
+                .sections
+                .invoke(DeviceVpnPrefs::SET_PROFILE_KILL_SWITCH.with((
                     uuid.to_owned(),
                     false,
                     None,
@@ -118,7 +121,9 @@ impl NetworkModel {
         }
         self.unblock(uuid);
     }
+}
 
+impl Page<'_> {
     /// The profile page's kill switch, and while it is on whether the local
     /// network stays reachable, and the session's failure to block.
     pub(super) fn kill_switch_rows(
@@ -128,7 +133,7 @@ impl NetworkModel {
     ) -> Vec<Item> {
         let switch = self.kill_switch(&vpn.uuid);
         let label = t("net-vpn-kill-switch");
-        let toggle = self.cx.bind_on_row(
+        let toggle = self.bind_on_row(
             live,
             Toggle::from_state(&LocalState::new(switch.is_some()))
                 .with_id(&format!("settings.network.vpn.kill-switch.{}", vpn.uuid))
@@ -147,7 +152,7 @@ impl NetworkModel {
             return out;
         };
         let local = t("net-vpn-allow-local");
-        let toggle = self.cx.bind_on_row(
+        let toggle = self.bind_on_row(
             live,
             Toggle::from_state(&LocalState::new(switch.allow_local))
                 .with_id(&format!("settings.network.vpn.allow-local.{}", vpn.uuid))
@@ -173,7 +178,9 @@ impl NetworkModel {
         }
         out
     }
+}
 
+impl NetworkModel {
     /// The sample tunnel `uuid` with its kill switch on, for a capture: up,
     /// or dropped with its block holding (and the local network let
     /// through).
@@ -182,7 +189,7 @@ impl NetworkModel {
             allow_local: blocking,
         };
         // A capture's fixture: written as it would be stored.
-        let document = self.cx.storage().settings_document();
+        let document = self.reach.storage.settings_document();
         let mut switches =
             PROFILE_KILL_SWITCHES.from_section(&document.section(device_vpn::SECTION));
         switches.insert(uuid.to_owned(), switch);

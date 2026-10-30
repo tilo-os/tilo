@@ -2,25 +2,18 @@
 //! live rows are published on.
 //!
 //! Settings edits no document of its own. The person's and the device's
-//! preferences are the session's settings records, which every effect reads
-//! and writes through the app's settings document; this device's hardware
-//! and services are its own. So the resource holds nothing: it names
-//! Settings to the palette, agents and scripts, and every change is a
-//! [`SettingsEffect`].
-
-use std::rc::Rc;
+//! preferences are the session's settings sections, records of their own
+//! that the panes bind; this device's hardware and services are its own,
+//! changed through a [`SettingsEffect`]. So the resource holds nothing: it
+//! names Settings to the palette, agents and scripts.
 
 use ui::application::ComponentBehaviour;
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
-    ResourceSurface, SurfaceCx, ViewCx,
-};
+use ui::framework::{Fixture, LaunchInput, ResourceApp, ViewCx};
 use ui::tilo_resource::{self, Invoke, Model, resource};
 use ui::widget::Element;
 
 use crate::categories::Category;
 use crate::effects::{NavigationEffect, SettingsEffect};
-use crate::host::PaneCx;
 use crate::settings_app::SettingsApp;
 use ui::tilo_resource::Effect as _;
 
@@ -129,7 +122,7 @@ fn pane_alias(pane: &str) -> &str {
     }
 }
 
-/// Framework app: the settings widget is the surface over [`Settings`].
+/// Framework app: the Settings window is the view of [`Settings`].
 pub struct SettingsShell;
 
 impl ResourceApp for SettingsShell {
@@ -157,9 +150,7 @@ impl ResourceApp for SettingsShell {
             ui::storage::SettingsDocument::Session => SettingsApp::new(),
             ui::storage::SettingsDocument::Profile(root) => SettingsApp::with_config_root(root),
         };
-        // A pane search hit, or an agent's `open`, shows the pane it names.
-        cx.on_open(app.opener());
-        cx.surface(app)
+        crate::window::window(cx, app)
     }
 
     /// `settings://models/<id>` opens Agent Models at that model's card and
@@ -208,49 +199,6 @@ impl ResourceApp for SettingsShell {
     }
 }
 
-impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
-    fn present(&mut self, _state: &Rc<Settings>) {}
-
-    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
-        self.areas()
-            .iter()
-            .find_map(crate::area::PaneArea::take_host_intent)
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Settings>) {
-        let accounts = cx.shared_person::<accounts::person::PersonAccounts>();
-        self.attach_host(PaneCx::attached(&cx), accounts);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scene(crate::scenarios::staged(scenario));
-    }
-
-    fn effect(
-        &mut self,
-        effect: SettingsEffect,
-        cx: &mut EffectCx<Settings, Self>,
-    ) -> EffectAnswer {
-        crate::effects::answer(self, effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        crate::effects::statuses(self)
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        crate::effects::rows(self)
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        crate::effects::row(self, id)
-    }
-
-    fn live_row_pending(&self, id: &str) -> bool {
-        crate::effects::row_pending(self, id)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,7 +211,7 @@ mod tests {
         let mut app = TestApp::<SettingsShell>::launched(&["settings://updates"])
             .expect("the actual framework launch");
         assert_eq!(
-            app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            app.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
             Some(Category::Updates),
             "the launch link opens its named pane"
         );
@@ -274,7 +222,7 @@ mod tests {
         for _ in 0..3 {
             app.harness().relayout();
             assert_eq!(
-                app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+                app.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
                 Some(Category::Power),
                 "later host frames must not replay the consumed Updates launch"
             );
@@ -283,20 +231,20 @@ mod tests {
             .reopen()
             .expect("reopen the same profile without arguments");
         assert_eq!(
-            reopened.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            reopened.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
             Some(Category::Power),
             "the reopened window shows the page it showed, not the consumed launch's"
         );
         let mut other = TestApp::<SettingsShell>::new().expect("another ordinary window");
         assert_eq!(
-            other.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            other.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
             Some(Category::DEFAULT),
             "a launch belongs to its window, not a global pane mailbox"
         );
         let mut invalid = TestApp::<SettingsShell>::launched(&["--shots"])
             .expect("an argument that is not a Settings link");
         assert_eq!(
-            invalid.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            invalid.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
             Some(Category::DEFAULT),
             "the original non-link argument never selects a pane"
         );

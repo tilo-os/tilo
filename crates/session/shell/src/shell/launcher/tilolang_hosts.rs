@@ -223,11 +223,19 @@ fn hand_over_now(
         )
         .filter(|id| *id != app.package_id),
     };
+    // An app whose types hold an outside service's resources reaches its connector, which
+    // holds the network and custody the host has none of.
+    let origin = super::origin_connectors::connection(app, room).map_err(|error| {
+        refused(format!(
+            "the app's origin connector cannot be reached: {error}"
+        ))
+    })?;
     let fds = InstanceFds {
         broker,
         identity,
         module,
         window: patch,
+        origin,
     };
     let started = send_to_host(&key, &request, &fds)?;
     tracing::info!(
@@ -256,6 +264,7 @@ pub(super) fn start_task(room: RoomId, task: &str) -> std::io::Result<OwnedFd> {
     let refused = |what: String| std::io::Error::new(std::io::ErrorKind::NotFound, what);
     let apps = super::installed_apps().map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut modules = Vec::new();
+    let mut records_under = std::collections::BTreeMap::new();
     let mut runtimes: Option<(String, String)> = None;
     for app in apps.iter().filter(|app| runs_in_host(app)) {
         let verified = super::installed_copy(app).and_then(|installed| {
@@ -281,6 +290,12 @@ pub(super) fn start_task(room: RoomId, task: &str) -> std::io::Result<OwnedFd> {
             Some(_) => {}
             None => runtimes = Some(pair),
         }
+        let under = super::installed_earlier_ids()
+            .records_under(&app.package_id)
+            .to_owned();
+        if under != app.package_id {
+            records_under.insert(app.package_id.clone(), under);
+        }
         modules.push(verified.module);
     }
     let (runtime, app_runtime) =
@@ -297,6 +312,7 @@ pub(super) fn start_task(room: RoomId, task: &str) -> std::io::Result<OwnedFd> {
         room: room.to_string(),
         person: Some(crate::shell::state::local_user_id_for_room(&room)),
         modules_len: encoded.len() as u64,
+        records_under,
     };
     let modules = tilo_render_protocol::shm::sealed_blob("tilolang-modules", &encoded)?;
     let (door_end, host_end) = std::os::unix::net::UnixStream::pair()?;
@@ -437,15 +453,38 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
     std::thread::Builder::new()
         .name("tilolang-host".into())
         .spawn(move || {
+            use runtime_portal::tilolang_host::{FromHost, receive_from_host};
+            // Why the host says it exits; none when it ended without saying (killed, crashed).
+            let mut reason: Option<String> = None;
             loop {
-                match runtime_portal::tilolang_host::receive_ended(&followed) {
-                    Ok(Some(instance)) => ended(&key, generation, instance),
+                match receive_from_host(&followed) {
+                    Ok(Some(FromHost::Ended(instance))) => ended(&key, generation, instance),
+                    Ok(Some(FromHost::Exiting(why))) => reason = Some(why),
                     Ok(None) => break,
-                    Err(error) => tracing::warn!(%error, "a tilolang host said something unreadable"),
+                    // The packet was taken: the door carries the next one.
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                        tracing::error!(%error, workspace = %key.workspace, author = %key.author, "a tilolang host said something unreadable");
+                    }
+                    // The door failed: it carries nothing more; the host is waited for.
+                    Err(error) => {
+                        tracing::error!(%error, workspace = %key.workspace, author = %key.author, "a tilolang host's door failed");
+                        break;
+                    }
                 }
             }
             let status = child.wait();
-            tracing::info!(workspace = %key.workspace, author = %key.author, ?status, "tilolang host ended");
+            let clean = status.as_ref().is_ok_and(std::process::ExitStatus::success);
+            let reason = reason.unwrap_or_else(|| "it ended without saying why".to_owned());
+            if clean {
+                tracing::info!(workspace = %key.workspace, author = %key.author, ?status, reason, "tilolang host ended");
+            } else {
+                tracing::error!(workspace = %key.workspace, author = %key.author, ?status, reason, "tilolang host ended");
+                // Every end of a process, clean or not, is on the session's log of app exits.
+                eprintln!(
+                    "app-exit: tilolang-host workspace={} author={} status={status:?} reason={reason}",
+                    key.workspace, key.author
+                );
+            }
             // A task keeps nothing: its storage goes with it.
             if key.author.starts_with(TASK_KEY) {
                 let _ = std::fs::remove_dir_all(&kept);

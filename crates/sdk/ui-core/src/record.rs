@@ -18,7 +18,7 @@
 //! [`RecordSet`] owns the open records and hands the active one to the
 //! toolkit; [`tick`] parks the outgoing document and checks the named one
 //! in each frame. Not all app state is a record — a theme or account stays
-//! in the package-level document ([`crate::persist`]) instead.
+//! in the package-level document (the room index) instead.
 
 pub mod bootstrap;
 /// A record's identity, as it travels on the collaboration wire.
@@ -594,7 +594,7 @@ struct Reserved {
 impl RecordSet {
     /// The launch-environment set: per-record documents under this package's
     /// state directory. The host's package id always wins over `manifest_id`
-    /// (as in [`crate::persist::open_room`]) — resolving it differently here would
+    /// (as the room index is) — resolving it differently here would
     /// split a package's records from its room index.
     ///
     /// The process environment names the package and room, and the native
@@ -1009,7 +1009,7 @@ impl RecordSet {
     fn load(
         &self,
         want: &RecordCheckout,
-    ) -> Result<(AutoCommit, Option<crate::persist::DocWriter>), RecordOpenError> {
+    ) -> Result<(AutoCommit, Option<app_state::DocWriter>), RecordOpenError> {
         if self.persistent && self.home.is_empty() {
             return Err(RecordOpenError::IdentityMismatch);
         }
@@ -1104,7 +1104,7 @@ impl RecordSet {
         &self,
         want: &RecordCheckout,
         doc: &mut AutoCommit,
-    ) -> Result<Option<crate::persist::DocWriter>, RecordOpenError> {
+    ) -> Result<Option<app_state::DocWriter>, RecordOpenError> {
         let id = &want.id;
         if !self.persistent {
             return Ok(None);
@@ -1121,7 +1121,7 @@ impl RecordSet {
                     error = %e,
                     "record store unavailable; writes refused"
                 );
-                return Ok(Some(crate::persist::DocWriter::disabled(format!(
+                return Ok(Some(app_state::DocWriter::disabled(format!(
                     "record {id} store unavailable: {e}"
                 ))));
             }
@@ -1134,7 +1134,7 @@ impl RecordSet {
                     error = %e,
                     "stored record could not be read; original bytes retained and writes refused"
                 );
-                return Ok(Some(crate::persist::DocWriter::disabled(format!(
+                return Ok(Some(app_state::DocWriter::disabled(format!(
                     "stored record {id} could not be read: {e}"
                 ))));
             }
@@ -1152,7 +1152,7 @@ impl RecordSet {
                 }
                 Err(e) => {
                     tracing::error!(record = %id, error = %e, "former record could not be read; writes refused");
-                    return Ok(Some(crate::persist::DocWriter::disabled(format!(
+                    return Ok(Some(app_state::DocWriter::disabled(format!(
                         "former record of {id} could not be read: {e}"
                     ))));
                 }
@@ -1166,7 +1166,7 @@ impl RecordSet {
             && let Err(error) = merged.merge_incoming(stored)
         {
             tracing::error!(record = %id, %error, "record merge refused; original stored bytes retained");
-            return Ok(Some(crate::persist::DocWriter::disabled(format!(
+            return Ok(Some(app_state::DocWriter::disabled(format!(
                 "stored record {id} could not be merged: {error}"
             ))));
         }
@@ -1342,7 +1342,7 @@ impl RecordSet {
             // is decoded to be validated first, never decoded again only to read them.
             let creation_heads: std::cell::RefCell<Option<Vec<automerge::ChangeHash>>> =
                 std::cell::RefCell::default();
-            let (mut doc, autosave) = crate::persist::finish_canonical_created(
+            let (mut doc, autosave) = canonical_read::finish_created(
                 store,
                 read,
                 |doc| validate_identity(doc, want, &self.home).map_err(|error| error.to_string()),
@@ -3470,7 +3470,7 @@ impl RecordStore {
                     let shared: Vec<automerge::ChangeHash> = heads
                         .iter()
                         .copied()
-                        .filter(|head| local.get_change_by_hash(head).is_some())
+                        .filter(|head| local.get_change_meta_by_hash(head).is_some())
                         .collect();
                     if shared.len() == heads.len() {
                         candidate = local.clone();
@@ -3484,10 +3484,12 @@ impl RecordStore {
                             .load_incoming(&incoming.save_after(&[]))
                             .map_err(|error| error.to_string())?;
                     } else {
-                        let unshared = local.save_after(&shared);
+                        // Merging walks back to what both sides hold. Saving
+                        // after the shared heads alone would re-encode the
+                        // whole local history when the snapshot is ahead.
                         incoming.set_actor(local.get_actor().clone());
                         incoming
-                            .load_incoming(&unshared)
+                            .merge_incoming(&mut local)
                             .map_err(|error| error.to_string())?;
                         candidate = incoming;
                     }
@@ -3918,6 +3920,7 @@ pub fn tick(
 mod identity_tests;
 
 mod arrival;
+mod canonical_read;
 mod opening;
 pub use opening::RecordOpening;
 #[cfg(test)]
@@ -4636,20 +4639,24 @@ mod tests {
             let b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
             let entry = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
 
-            let (mut room_a, mut saver_a) =
-                crate::persist::open_room_in(Rc::clone(&documents), package, a);
-            assert!(room::reference(&mut room_a.doc, &entry.id, &entry.kind));
-            saver_a.request(&mut room_a.doc);
+            let open_room = |room: &str| {
+                ::collaboration::record::save::open_stored(
+                    ::collaboration::record::save::room_document(&documents, package, room)
+                        .expect("room index"),
+                )
+            };
+            let (mut room_a, mut saver_a) = open_room(a);
+            assert!(room::reference(&mut room_a, &entry.id, &entry.kind));
+            saver_a.request(&mut room_a);
             saver_a.flush();
 
-            let (room_b, _) = crate::persist::open_room_in(Rc::clone(&documents), package, b);
+            let (room_b, _) = open_room(b);
             let mut set_b = RecordSet::open_in(Rc::clone(&documents), package, b);
-            assert!(set_b.discover_room(&room_b.doc).is_empty());
+            assert!(set_b.discover_room(&room_b).is_empty());
 
-            let (room_a_restarted, _) =
-                crate::persist::open_room_in(Rc::clone(&documents), package, a);
+            let (room_a_restarted, _) = open_room(a);
             let mut set_a = RecordSet::open_in(Rc::clone(&documents), package, a);
-            assert_eq!(set_a.discover_room(&room_a_restarted.doc), vec![entry]);
+            assert_eq!(set_a.discover_room(&room_a_restarted), vec![entry]);
             assert!(set_a.open_records().is_empty());
         }
 

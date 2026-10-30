@@ -10,7 +10,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 
 use serde::{Deserialize, Serialize};
 
@@ -634,11 +634,11 @@ fn absolute_path(path: &Path) -> io::Result<PathBuf> {
     Ok(std::env::current_dir()?.join(path))
 }
 
-/// Set directory permissions to 0o700 on Unix systems.
+/// Restrict the directory to its owner. Leaves one already restricted
+/// untouched: loading the registry must not announce a change to everyone
+/// watching the identity directory.
 fn set_private_dir_mode(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
+    tilo_files::native::private::restrict_directory(path)
 }
 
 fn short_fingerprint(hex: &str) -> String {
@@ -648,6 +648,8 @@ fn short_fingerprint(hex: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
     use threshold_identity::ThresholdIdentity;
     use tilo_identity_ceremony::IdentityRecord;
 

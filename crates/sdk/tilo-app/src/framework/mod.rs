@@ -221,9 +221,9 @@
 //!   included.
 //!   An effect whose harm depends on its arguments (formatting the system
 //!   disk) classifies each invocation (`#[effect(risk = "…")]`), and asks
-//!   for confirmation only when it is destructive. A surface withholds one
+//!   for confirmation only when it is destructive. A view withholds one
 //!   of the resource's own actions while its live state forbids it
-//!   ([`ResourceSurface::availability`]). Effects never run in History mode. A variant
+//!   ([`Publishes::availability`]). Effects never run in History mode. A variant
 //!   that only changes what its caller sees (open, reveal, show) is
 //!   `#[effect(view)]`, published as a View operation and answered by the
 //!   same handler.
@@ -260,7 +260,6 @@
 //!   playhead, the folder shown — are typed builders of the resource's
 //!   action ([`ActionDecl`](tilo_resource::ActionDecl)), published on the
 //!   resource beside its declarations:
-//!   [`ResourceSurface::bound_declarations`] from a surface's view state,
 //!   [`ViewCx::bind_declarations`] from a view's local state, and
 //!   `Resource::bound_declarations` from the resource state itself.
 //! * **Live external rows** — processes, devices, containers, journal
@@ -270,15 +269,15 @@
 //!   (an effect bound to the row with `LiveRow::effect`) and may say how
 //!   its entity stands right now (`LiveRow::presentation`). An edit of the
 //!   resource bound to a row (rename *this* file) is one of
-//!   [`ResourceSurface::row_declarations`], published on the row.
+//!   [`Publishes::row_edits`], published on the row.
 //!   Neither rows nor children need to be published whole: a bounded page is
 //!   published and the rest resolve by id (`ResourceSurface::live_row`,
 //!   `Resource::child`).
 //! * **One search source** — what the app's search finds is the resource's
 //!   entries ([`Resource::search`](tilo_resource::Resource::search)) and,
-//!   for what a surface shows that the resource does not hold (a page's
-//!   text, a book's outline, processes), the surface's own
-//!   ([`ResourceSurface::search_entries`]), indexed together. An entry says
+//!   for what a view shows that the resource does not hold (a page's
+//!   text, a book's outline, processes), the view's own
+//!   ([`Publishes::search_entries`]), indexed together. An entry says
 //!   how its hit reads — its result group, subtitle, icon and the action it
 //!   invokes — so the app needs no search provider beside it.
 //! * **One published tree** — the palette, agents and scripts see the
@@ -362,6 +361,7 @@ mod switch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod testing;
 mod text;
+mod upkeep;
 mod view;
 pub mod views;
 mod workspace;
@@ -415,7 +415,8 @@ pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use ui_core::record::{chain_of_resource_id, chain_resource_id};
-pub use view::{Bindable, EffectsHandle, ViewCx};
+pub use upkeep::Upkeep;
+pub use view::{Bindable, EffectsHandle, Mounts, ViewCx};
 pub use workspace::WorkspaceRecord;
 
 /// Record content, canonical hashing and picture headers. Use the store

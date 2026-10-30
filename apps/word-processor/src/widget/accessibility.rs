@@ -12,7 +12,7 @@ use ui::widget::Widget;
 use vello::kurbo::Rect;
 
 use super::panels::swatch_names;
-use super::{A11yTreeNode, PanelHit, WordProcessorWidget};
+use super::{A11yTreeNode, Editor, PanelHit};
 
 impl A11yTreeNode {
     fn leaf(node: ui::a11y::AccessNode) -> Self {
@@ -120,7 +120,7 @@ fn review_action_a11y_label(
     }
 }
 
-impl WordProcessorWidget {
+impl Editor {
     /// The 1-based heading level for a heading block (defaults to 1 when the
     /// `level` attr is absent or non-positive).
     fn block_heading_level(b: &BlockView) -> u8 {

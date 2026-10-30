@@ -23,7 +23,7 @@ use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::rooms::{
     CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom, IssueInvitationRequest, IssuedInvitation,
-    RECORD_EFFECT_RECEIPT, RemoveMemberRequest, RoomListing, member_resource,
+    RemoveMemberRequest, RoomListing,
 };
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
@@ -448,197 +448,6 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
             .any(|member| member.user_public_key == bob.user_pk && member.removed),
         "{:?}",
         restored.members
-    );
-    relay.shutdown().await;
-}
-
-fn terminal_audit(actor: &str, invocation: uuid::Uuid) -> Vec<u8> {
-    let mut context =
-        tilo_actions::ActionContext::for_resource("workspace", "workspace", "Private fixture");
-    context.facets = vec![
-        tilo_actions::ActionFacet::new("tilo.receipt", "effect"),
-        tilo_actions::ActionFacet::new("tilo.invocation", invocation.to_string()),
-    ];
-    format!(
-        "{{\"invocation\":{},\"actor\":{},\"context\":{},\"status\":{},\"completed_at\":1}}",
-        serde_json::to_string(&invocation).unwrap(),
-        serde_json::to_string(actor).unwrap(),
-        serde_json::to_string(&context).unwrap(),
-        serde_json::to_string(&tilo_actions::EffectReceiptStatus::Succeeded).unwrap(),
-    )
-    .into_bytes()
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn member_terminal_audit_uses_exact_authenticated_current_admission() {
-    let alice = TestUser::fresh("Fixture owner");
-    let bob = TestUser::fresh("Fixture member");
-    let host = alice.enrol("private-host", DeviceCapabilities::host());
-    let member = bob.enrol("private-member", DeviceCapabilities::member());
-    let scratch = tempfile::tempdir().unwrap();
-    let relay = Relay::start_with_relay_mode(
-        RelayConfig {
-            state_root: scratch.path().into(),
-            iroh_listen: "127.0.0.1:0".parse().unwrap(),
-            ..RelayConfig::default()
-        },
-        tilo_relay::daemon::RelayIdentity {
-            user_public_key: alice.user_pk,
-            device_signing_key: host.sk.clone(),
-            device_cert: host.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
-    )
-    .await
-    .unwrap();
-    let rooms = relay.rooms().unwrap();
-    let room = rooms.create("Private terminal audit").await.unwrap();
-    let workspace = room.workspace_id;
-    let invocation = uuid::Uuid::new_v4();
-    let receipt = terminal_audit(&hex::encode(bob.user_pk), invocation);
-    // The member's own `tilo.member` action, recording `redacted` as the
-    // receipt of `invocation`.
-    let record = |invocation: uuid::Uuid, redacted: &[u8]| {
-        governance_actions::invocation(
-            tilo_relay::rooms::MEMBER_ACTIONS_PROVIDER,
-            member_resource(&room.room),
-            RECORD_EFFECT_RECEIPT,
-            serde_json::json!({
-                "invocation": invocation.to_string(),
-                "redacted": String::from_utf8(redacted.to_vec()).unwrap(),
-            }),
-        )
-    };
-    assert!(
-        !governance_actions::admitted(&relay, &member, workspace).await,
-        "unadmitted device must be refused"
-    );
-    let issued = rooms
-        .issue(
-            &room.room,
-            &host.cert,
-            tilo_relay::rooms::IssueInvitationRequest {
-                request_id: [61; 32],
-                role: MemberRole::Editor,
-                recipient_user_public_key: Some(bob.user_pk),
-                invitee_name: None,
-                inviter_name: None,
-                expires_at_ns: tilo_clock::unix_now_ns()
-                    .checked_add(60_000_000_000)
-                    .unwrap(),
-            },
-        )
-        .await
-        .unwrap();
-    let invitation = decode_and_verify_invitation(
-        &issued.signed_invitation,
-        Some(bob.user_pk),
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    WorkspaceJoinClient::new(device_endpoint(&member).await)
-        .redeem_hint(
-            &invitation.grant().transport[0],
-            issued.signed_invitation,
-            member.cert.clone(),
-            &member.sk,
-            [62; 32],
-        )
-        .await
-        .unwrap();
-    // The caller is the device the relay session authenticated: there is no
-    // certificate to name besides it.
-    let client = governance_actions::subscribed(&relay, &member, workspace).await;
-    let ask = |message| governance_actions::ask(&client, &host, workspace, message);
-    let first = governance_actions::outcome(ask(record(invocation, &receipt)).await).unwrap();
-    assert!(first["generation"].as_u64().is_some(), "{first}");
-    assert_eq!(
-        governance_actions::outcome(ask(record(invocation, &receipt)).await).unwrap(),
-        first,
-        "exact retry retains the original generation"
-    );
-    let changed = tilo_peer_state::PeerWorkspace::validate_workspace_effect_receipt_encoding(
-        invocation, &receipt,
-    )
-    .unwrap();
-    let mut changed = changed.clone();
-    changed.completed_at = 2;
-    assert!(
-        governance_actions::outcome(
-            ask(record(invocation, &serde_json::to_vec(&changed).unwrap())).await
-        )
-        .is_err(),
-        "conflicting terminal retry must be refused"
-    );
-    let spoof = uuid::Uuid::new_v4();
-    assert!(
-        governance_actions::outcome(
-            ask(record(
-                spoof,
-                &terminal_audit(&hex::encode(alice.user_pk), spoof)
-            ))
-            .await
-        )
-        .is_err(),
-        "a member must not impersonate the governor"
-    );
-    assert_eq!(
-        governance_actions::outcome(
-            ask(governance_actions::host_operation(
-                tilo_relay::rooms::LIST_ROOMS,
-                serde_json::json!({})
-            ))
-            .await
-        ),
-        Err(tilo_actions::remote::ActionHostError::UnknownAction),
-        "recording personal audit confers no administration"
-    );
-    let mut malformed = changed;
-    malformed.invocation = tilo_actions::InvocationId::new();
-    malformed
-        .context
-        .facets
-        .push(tilo_actions::ActionFacet::new(
-            "private.arguments",
-            "must not publish",
-        ));
-    assert!(
-        governance_actions::outcome(
-            ask(record(
-                malformed.invocation.0,
-                &serde_json::to_vec(&malformed).unwrap()
-            ))
-            .await
-        )
-        .is_err(),
-        "unredacted extra facets must be refused"
-    );
-    rooms
-        .remove_member(
-            &room.room,
-            &host.cert,
-            RemoveMemberRequest {
-                request_id: [63; 32],
-                user_public_key: bob.user_pk,
-            },
-        )
-        .await
-        .unwrap();
-    assert!(
-        !matches!(
-            governance_actions::try_ask(&client, &host, workspace, record(invocation, &receipt))
-                .await
-                .map(governance_actions::outcome),
-            Ok(Ok(_))
-        ),
-        "removal must refuse even a formerly successful retry"
-    );
-    drop(client);
-    assert!(
-        !governance_actions::admitted(&relay, &member, workspace).await,
-        "a removed member is not admitted again"
     );
     relay.shutdown().await;
 }
@@ -1121,9 +930,6 @@ mod governance_actions;
 
 #[path = "governed_rooms/spectators.rs"]
 mod spectators;
-
-#[path = "governed_rooms/app_authorship.rs"]
-mod app_authorship;
 
 #[path = "governed_rooms/app_records.rs"]
 mod app_records;

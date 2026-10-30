@@ -37,10 +37,25 @@ path = "tests/interaction.rs"
 name = "mentions"
 path = "tests/mentions.rs"
 
+# Views: an agent's answer drawn live over other apps' resources, in a package of its own.
+[[test]]
+name = "views"
+path = "tests/views.rs"
+
 # The Board package with cards on it: its window's bindings, actions and card menus.
 [[test]]
 name = "board"
 path = "tests/board.rs"
+
+# Tasks' actions that ask for more: their forms, as a person fills them in.
+[[test]]
+name = "forms"
+path = "tests/forms.rs"
+
+# The Tasks package on a project's board: cards dragged within and between its lanes.
+[[test]]
+name = "tasks_board"
+path = "tests/tasks_board.rs"
 
 # A hosted app's window, as a person uses it, against the tilolang host running its instance.
 [[test]]
@@ -60,10 +75,9 @@ tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
 # The IMAP and SMTP protocol code of native Mail, and the settings' account store, behind the
 # mail origin of packages whose types hold a mail server's resources (`src/mail`).
 mail = { path = "../mail" }
-# Whether the device is online: an unreachable mail server is tried again when the network
-# comes back, followed on a thread of its own.
-tilo-net = { path = "../../crates/platform/tilo-net" }
-tokio = { workspace = true, features = ["rt"] }
+# The mail origin: in the window's process outside a host, and the connector process the
+# system runs for a hosted Mail.
+tilolang-mail = { path = "../../crates/platform/tilolang-mail" }
 tilo-content = { path = "../../crates/system/content" }
 # The UI host's half of the window, and the patch protocol between it and the instance.
 tilo-ui-host = { path = "../../crates/platform/tilo-ui-host" }

@@ -31,6 +31,10 @@ use super::*;
 /// The record the launcher is mounted on: one per session, never a tab's.
 const LAUNCHER_INSTANCE: u64 = u64::MAX - 1;
 
+/// The card's height less its list until the launcher measured it: a field
+/// and its padding.
+const SEARCH_CHROME_HEIGHT: f64 = 72.0;
+
 /// The launcher the shell shows, and its side of the link.
 pub(crate) struct LauncherHost {
     link: Link,
@@ -114,14 +118,60 @@ impl LauncherSource for Serving<'_, '_> {
 }
 
 impl ShellOverlayHost {
-    /// Whether search shows through the launcher app.
-    pub(super) fn launcher_shown(&self) -> bool {
-        self.launcher.is_some()
+    /// Where the launcher's card stands, in this host's coordinates;
+    /// nothing while there is no launcher.
+    pub(crate) fn search_card(&self) -> Rect {
+        let Some(launcher) = self.launcher.as_ref() else {
+            return Rect::ZERO;
+        };
+        let origin = launcher.app.get_rect().origin();
+        launcher
+            .link
+            .fit()
+            .map_or(Rect::ZERO, |fit| on_screen(fit.card, origin))
+    }
+
+    /// The place laid out for the launcher: its card, and the room below it
+    /// its list and its filters' menus may take.
+    pub(super) fn search_place(&self) -> Rect {
+        self.launcher
+            .as_ref()
+            .map_or(Rect::ZERO, |launcher| launcher.app.get_rect())
+    }
+
+    /// The row of the launcher's card at `point`, by id.
+    pub(super) fn search_row_at(&self, point: Point) -> Option<String> {
+        let launcher = self.launcher.as_ref().filter(|_| self.palette_visible)?;
+        let origin = launcher.app.get_rect().origin();
+        launcher
+            .link
+            .fit()?
+            .shown
+            .into_iter()
+            .find(|(_, rect)| on_screen(*rect, origin).contains(point))
+            .map(|(id, _)| id)
+    }
+
+    /// The modifiers held changed: the launcher's selected row previews
+    /// what choosing it with them does. Whether that needs a new frame.
+    pub fn note_held_modifiers(&mut self, modifiers: winit::keyboard::ModifiersState) -> bool {
+        self.launcher
+            .as_ref()
+            .is_some_and(|launcher| launcher.link.hold_modifiers(modifiers))
+            && self.palette_visible
+    }
+
+    /// The height of the card less its list, as the launcher measured it.
+    pub(super) fn search_chrome_height(&self) -> f64 {
+        self.launcher
+            .as_ref()
+            .and_then(|launcher| launcher.link.fit())
+            .map_or(SEARCH_CHROME_HEIGHT, |fit| fit.chrome_height)
     }
 
     /// Mount the launcher once the session lends the apps it mounts in its
-    /// own process. A host without them (a bare test host) shows the
-    /// palette it draws itself.
+    /// own process. A host without them (a bare test host) keeps search's
+    /// state and shows no card.
     pub(super) fn mount_launcher(&mut self) {
         if self.launcher.is_some() || self.launcher_unavailable {
             return;
@@ -199,6 +249,13 @@ impl ShellOverlayHost {
             return;
         };
         let link = launcher.link.clone();
+        // The rows a full list holds decide how many each group shows.
+        if let Some(fit) = link.fit()
+            && self.search.set_row_capacity(fit.rows)
+        {
+            self.last_search_revision.clear();
+            self.palette_layout_dirty = true;
+        }
         self.serve_launcher(edits, root);
         let Some(launcher) = self.launcher.as_mut() else {
             return;
@@ -259,9 +316,8 @@ impl ShellOverlayHost {
                     self.open_palette_with_scope(scope);
                 }
                 if let Some(query) = query {
-                    self.palette.set_query(&query);
+                    self.search.set_query(&query);
                 }
-                self.palette.set_focus(true);
                 self.refresh_search_results(edits, root);
             }
             Ask::Search(search) => {
@@ -272,19 +328,18 @@ impl ShellOverlayHost {
                     self.active_kind_filter = search.kinds;
                     self.last_search_query.clear();
                 }
-                self.palette.set_query(&search.query);
+                self.search.set_query(&search.query);
                 self.refresh_search_results(edits, root);
             }
             Ask::Choose { row, modifier } => {
-                let at = self
-                    .palette
-                    .visible_entries()
-                    .iter()
-                    .position(|entry| entry.id == row);
-                if let Some(at) = at {
-                    self.palette.set_cursor(at);
+                if self.search.select(&row) {
                     self.activate_selected_result_with(edits, root, modifier);
                 }
+            }
+            Ask::Select { row } => {
+                // The person's choice: rows changing under it keep it on
+                // the same result.
+                self.search.select(&row);
             }
             Ask::Adjust { row, delta } => self.step_result(&row, delta, edits, root),
             Ask::Argument(text) => self.submit_param_field(text, edits, root),
@@ -293,7 +348,7 @@ impl ShellOverlayHost {
             Ask::Dismissed => {
                 if self.palette_visible {
                     self.palette_visible = false;
-                    self.palette.close();
+                    self.search.close();
                 }
             }
         }
@@ -307,14 +362,14 @@ impl ShellOverlayHost {
     /// keeps. The query is given only when it is not the one the launcher
     /// last searched for or was given: what the person types stays theirs.
     fn launcher_view(&mut self) -> Answer {
-        let palette = &self.palette;
-        let query = palette.query().to_owned();
+        let search = &self.search;
+        let query = search.query().to_owned();
         let asked = self
             .launcher
             .as_ref()
             .map(|launcher| launcher.asked_query.as_str());
-        let query = (palette.argument_step().is_none()
-            && palette.bypasses_fuzzy()
+        let query = (search.argument_step().is_none()
+            && search.bypasses_fuzzy()
             && asked != Some(query.as_str()))
         .then_some(query);
         if let (Some(launcher), Some(query)) = (self.launcher.as_mut(), &query) {
@@ -325,24 +380,26 @@ impl ShellOverlayHost {
             .as_ref()
             .map(|chrome| chrome.borrow().search_scope)
             .unwrap_or_default();
-        let palette = &self.palette;
+        let search = &self.search;
         Answer {
-            rows: palette.entries().to_vec(),
-            narrows: !palette.bypasses_fuzzy(),
-            kinds: self.search_filter_inputs().kinds,
-            band: palette.filter_band_shown(),
+            rows: search.entries().to_vec(),
+            narrows: !search.bypasses_fuzzy(),
+            kinds: self.search_kinds(),
+            band: search.filter_band_shown(),
             scope,
-            scope_token: palette.scope_token().map(str::to_owned),
-            scope_token_action: palette.scope_token_action().map(str::to_owned),
-            placeholder: palette.query_placeholder().to_owned(),
-            field: palette
+            scope_token: search.scope_token().map(str::to_owned),
+            scope_token_action: search.scope_token_action().map(str::to_owned),
+            placeholder: search.query_placeholder().to_owned(),
+            field: search
                 .argument_step()
                 .map(|(id, spec)| (id.to_owned(), spec.clone())),
             query,
-            select: palette.selected_id().map(str::to_owned),
-            status: None,
-            searching: palette.more_coming(),
-            field_only: palette.field_only_while_empty(),
+            select: search.selected_id().map(str::to_owned),
+            status: search
+                .selected_status()
+                .map(|(title, detail)| (title.to_owned(), detail.to_owned())),
+            searching: false,
+            field_only: search.field_only_while_empty(),
             closed: !self.palette_visible,
         }
     }
@@ -381,6 +438,7 @@ fn digest(answer: &Answer) -> u64 {
     }
     answer.query.hash(&mut hasher);
     answer.select.hash(&mut hasher);
+    answer.status.hash(&mut hasher);
     answer.searching.hash(&mut hasher);
     answer.field_only.hash(&mut hasher);
     hasher.finish()
@@ -398,16 +456,17 @@ impl ShellOverlayHost {
         list_max: f64,
     ) -> NodeId {
         self.mount_launcher();
-        if self.launcher.is_none() {
-            return self.palette.build_layout(taffy, theme, node_map);
-        }
         // Closed, the launcher keeps its place, unseen and out of the
         // focus order ([`Widget::children`] leaves it out): opening it then
         // changes no layout, and the first key finds its field.
         let (frame, _) = self.palette_place(theme);
-        let height = self.palette.chrome_height() + list_max;
+        let height = self.search_chrome_height() + list_max;
         let Some(launcher) = self.launcher.as_mut() else {
-            return self.palette.build_layout(taffy, theme, node_map);
+            // No launcher: an empty place keeps the host's children where
+            // they are.
+            return taffy
+                .new_leaf(Style::default())
+                .unwrap_or_else(|_| NodeId::new(0));
         };
         launcher.link.set_room(frame.width(), list_max);
         let node = launcher.app.build_layout(taffy, theme, node_map);
@@ -437,4 +496,36 @@ impl ShellOverlayHost {
             launcher.app.get_rect(),
         ))
     }
+}
+
+#[cfg(test)]
+impl ShellOverlayHost {
+    /// Put `ask` to search as the launcher puts it, and answer it.
+    pub(crate) fn ask_as_launcher(&mut self, ask: Ask) {
+        let mut doc = AutoCommit::new();
+        let mut edits = ui::widget::Edits::lend(&mut doc);
+        self.answer_launcher(ask, &mut edits, &automerge::ROOT);
+    }
+
+    /// Choose the selected row with `modifier` held, as Enter in the
+    /// launcher does.
+    pub(crate) fn choose_selected_as_launcher(
+        &mut self,
+        modifier: Option<launcher_app::source::ActivationModifier>,
+    ) {
+        if let Some(row) = self.search.selected_id().map(str::to_owned) {
+            self.ask_as_launcher(Ask::Choose { row, modifier });
+        }
+    }
+}
+
+/// `rect`, laid out in the launcher's own space, where it shows on screen
+/// with the launcher placed at `origin`.
+fn on_screen(rect: Rect, origin: Point) -> Rect {
+    Rect::new(
+        rect.x0 + origin.x,
+        rect.y0 + origin.y,
+        rect.x1 + origin.x,
+        rect.y1 + origin.y,
+    )
 }

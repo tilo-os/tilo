@@ -188,6 +188,8 @@ imports! {
     RichTime = "rich_time" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
     Dated = "dated" ([H, H] -> [H]);
+    EventPart = "event_part" ([I32] -> [H]);
+    CollMoveAmong = "coll_move_among" ([H, H, H, I64, H] -> []);
     UiActions = "ui_actions" ([H, H, H] -> []);
 
     SpaceI = "space_i" ([H] -> [I64]);

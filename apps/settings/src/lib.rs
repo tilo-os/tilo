@@ -4,11 +4,12 @@
 //! contextual Workspace Settings surface; cross-cutting domains share a
 //! resolver instead of letting either UI write the other's state.
 //!
-//! `SettingsApp` (in [`settings_app`]) is the root widget: a categorized
-//! sidebar plus a content pane per category, responsive between a two-pane
-//! desktop layout and a single-pane narrow layout. The binary in `main.rs`
-//! runs [`SettingsShell`] on the app framework: the live window, or one of
-//! the screenshot [`scenarios`].
+//! The window ([`window`]) is the view of the [`Settings`] resource: a
+//! categorized sidebar plus a content pane per category, responsive between
+//! a two-pane desktop layout and a single-pane narrow layout, over the
+//! [`SettingsApp`] it shares with its effects and rows. The binary in
+//! `main.rs` runs [`SettingsShell`] on the app framework: the live window,
+//! or one of the screenshot [`scenarios`].
 //!
 //! ## Module map
 //!
@@ -66,38 +67,43 @@ pub mod area;
 pub mod categories;
 pub mod channel;
 pub mod resource;
-pub mod row;
 pub mod scenarios;
 pub use os_actions::codec_pack;
 pub use os_actions::windows_compat;
 pub mod continuity;
 pub mod device_read;
 pub mod effects;
-pub mod host;
 pub mod i18n;
+pub mod on_row;
 pub mod pages;
-pub mod pane_model;
 pub mod prefs;
 pub mod radios;
+pub mod replies;
+pub(crate) mod reveal;
 pub mod search;
 pub mod secrets;
+pub mod sections;
 pub mod setting;
 pub mod settings_app;
 pub mod sidebar;
 #[cfg(test)]
 pub(crate) mod stall;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod watch;
-pub mod widgets;
+pub mod window;
 
 pub mod account_probe;
 pub mod device_fleet;
 pub mod dispatcher;
 pub(crate) mod input_sources;
 pub mod keyboard_preview;
+pub(crate) mod keyboard_watch;
 pub mod panes;
 pub mod speaker_setup;
 
 pub use settings_app::SettingsApp;
+pub use window::Inspected;
 
 pub use resource::{Settings, SettingsShell, parse_settings_uri};
 

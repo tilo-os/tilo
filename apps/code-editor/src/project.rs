@@ -900,41 +900,25 @@ impl SourceEdit {
     /// The one smallest contextual splice turning `base` into `next`.
     #[must_use]
     pub fn between(base: &str, next: &str) -> Self {
-        let base_chars: Vec<char> = base.chars().collect();
-        let next_chars: Vec<char> = next.chars().collect();
-        let prefix = base_chars
-            .iter()
-            .zip(&next_chars)
-            .take_while(|(left, right)| left == right)
-            .count();
-        let base_tail = base_chars.get(prefix..).unwrap_or_default();
-        let next_tail = next_chars.get(prefix..).unwrap_or_default();
-        let suffix = base_tail
-            .iter()
+        let (start, end) = tilo_resource::text::common_text_ends(base, next);
+        let (before, deleted) = base.split_at(start);
+        let (deleted, after) = deleted.split_at(deleted.len().saturating_sub(end));
+        let (_, insert) = next.split_at(start);
+        let (insert, _) = insert.split_at(insert.len().saturating_sub(end));
+        let context = before
+            .char_indices()
             .rev()
-            .zip(next_tail.iter().rev())
-            .take_while(|(left, right)| left == right)
-            .count();
-        let deleted: String = base_tail
-            .iter()
-            .take(base_tail.len().saturating_sub(suffix))
-            .collect();
-        let end = prefix + deleted.chars().count();
+            .nth(CONTEXT_CHARS.saturating_sub(1))
+            .map_or(0, |(byte, _)| byte);
+        let (_, before_context) = before.split_at(context);
         Self::Contextual {
             expected_base_digest: text_digest(base),
-            start_chars: prefix,
+            start_chars: before.chars().count(),
             delete_chars: deleted.chars().count(),
-            insert: next_tail
-                .iter()
-                .take(next_tail.len().saturating_sub(suffix))
-                .collect(),
-            before_context: base_chars
-                .iter()
-                .skip(prefix.saturating_sub(CONTEXT_CHARS))
-                .take(prefix.min(CONTEXT_CHARS))
-                .collect(),
-            deleted_text: deleted,
-            after_context: base_chars.iter().skip(end).take(CONTEXT_CHARS).collect(),
+            insert: insert.to_owned(),
+            before_context: before_context.to_owned(),
+            deleted_text: deleted.to_owned(),
+            after_context: after.chars().take(CONTEXT_CHARS).collect(),
         }
     }
 
@@ -1106,7 +1090,7 @@ impl Model for Source {
                     delete: *delete,
                     insert: insert.clone(),
                 }
-                .apply_under(doc, &object)
+                .apply_to(doc, &object, &current)
                 .map_err(refused)?;
             }
             return Ok(());
@@ -1192,7 +1176,7 @@ impl Model for Source {
             )));
         }
         tilo_resource::TextEdit::Splice { at, delete, insert }
-            .apply_under(doc, &object)
+            .apply_to(doc, &object, &text)
             .map_err(refused)
     }
 

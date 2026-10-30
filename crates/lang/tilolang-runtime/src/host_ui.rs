@@ -223,6 +223,7 @@ impl Core {
         let target = match self.val(a.h(0)?)? {
             Value::Ref(target) => Value::Ref(target),
             Value::Event => Value::Event,
+            Value::EventPart(part) => Value::EventPart(part),
             other => {
                 return trap(format!(
                     "expected a resource reference, got {}",

@@ -2,12 +2,9 @@
 //! until the room's document carries it, survives a restart, and a refusal
 //! is said: a sandbox capability taken back, and an effect receipt for the
 //! room's history.
-use std::sync::Arc;
-
 use automerge::transaction::Transactable as _;
 use collab_types::caps::{Access, Scope, Subject};
 
-use super::governance_requests::LocalGovernor;
 use crate::shell::state::{
     CapOverride, RoomChange, RoomId, Standing, Workspace, WorkspaceEffectReceipt, WorkspaceTree,
     WorkspaceTreeHandle,
@@ -30,8 +27,14 @@ fn document_of(
     tilo_desktop_model::projection::project_room_policy(&mut document, &workspace.policy)
         .expect("policy");
     tilo_desktop_model::projection::project_room_sandbox(&mut document, sandbox).expect("sandbox");
-    tilo_desktop_model::projection::project_effect_receipts(&mut document, receipts)
+    for receipt in receipts {
+        tilo_desktop_model::projection::project_effect_receipts(
+            &mut document,
+            &receipt.actor,
+            std::slice::from_ref(receipt),
+        )
         .expect("receipts");
+    }
     document
 }
 
@@ -71,36 +74,6 @@ fn workspace_of(handle: &WorkspaceTreeHandle, room: RoomId) -> Workspace {
         .find(|workspace| workspace.room() == room)
         .cloned()
         .expect("the room's workspace")
-}
-
-/// This device's own host, taking whatever it is asked.
-struct Taking {
-    room: RoomId,
-}
-
-impl LocalGovernor for Taking {
-    fn governs(&self, room: RoomId) -> bool {
-        room == self.room
-    }
-
-    fn record_receipt(&self, _: RoomId, _: &WorkspaceEffectReceipt) -> Result<(), String> {
-        Ok(())
-    }
-}
-
-/// This device's own host, refusing whatever it is asked.
-struct Refusing {
-    room: RoomId,
-}
-
-impl LocalGovernor for Refusing {
-    fn governs(&self, room: RoomId) -> bool {
-        room == self.room
-    }
-
-    fn record_receipt(&self, _: RoomId, _: &WorkspaceEffectReceipt) -> Result<(), String> {
-        Err("not in this room".into())
-    }
 }
 
 #[test]
@@ -268,15 +241,14 @@ fn a_receipt_made_before_a_crash_is_still_shown_and_sent_after_the_restart() {
     assert_eq!(shown(&loaded), 1, "still shown after the restart");
     let handle = loaded.shared();
     let (network, _commands) = super::shell_network_for_test(handle.clone(), 1);
-    network.install_local_governor(Arc::new(Taking { room }));
     network.send_outbox_off_loop();
     assert!(
         matches!(
             handle.read().room_outbox.as_slice(),
-            [entry] if entry.standing == Standing::Accepted
+            [entry] if entry.standing == Standing::Asking
                 && entry.change == RoomChange::Receipt(Box::new(receipt.clone()))
         ),
-        "it is sent, and waits for the room's document"
+        "it waits to be written until this device holds the room to write it to"
     );
     handle.write().admit_room_document_for_test(
         room,
@@ -287,7 +259,7 @@ fn a_receipt_made_before_a_crash_is_still_shown_and_sent_after_the_restart() {
 }
 
 #[test]
-fn a_receipt_the_rooms_host_refuses_is_said_and_no_longer_shown() {
+fn a_receipt_the_room_refuses_is_said_and_no_longer_shown() {
     let (chrome, _guard) = crate::shell::native_workspace_owner::test_chrome_governing_its_room();
     let handle = chrome.borrow().tree_handle();
     let room = handle
@@ -301,8 +273,9 @@ fn a_receipt_the_rooms_host_refuses_is_said_and_no_longer_shown() {
     let receipt = receipt();
     assert!(handle.write().record_in_room(room, receipt.clone()));
 
+    // This device cannot write it: here it holds no custody of the room to
+    // sign it with.
     let (network, _commands) = super::shell_network_for_test(handle.clone(), 1);
-    network.install_local_governor(Arc::new(Refusing { room }));
     network.send_outbox_off_loop();
     assert!(handle.read().room_outbox.is_empty());
     assert!(
@@ -310,7 +283,7 @@ fn a_receipt_the_rooms_host_refuses_is_said_and_no_longer_shown() {
             .effect_receipts
             .iter()
             .any(|held| held.invocation == receipt.invocation),
-        "the room's history does not show what its host refused"
+        "the room's history does not show what the room refused"
     );
     assert!(
         crate::shell::workspace_governance::report_governance_refusals(&mut chrome.borrow_mut())
@@ -328,7 +301,7 @@ fn a_receipt_the_rooms_host_refuses_is_said_and_no_longer_shown() {
         .iter()
         .find(|notice| notice.title == title)
         .expect("the refusal is said");
-    assert_eq!(said.body, "not in this room");
+    assert!(said.body.contains("custody"), "why: {}", said.body);
 }
 
 /// The grant `agent-notes`: the agent `claude-code` may read and write Notes in

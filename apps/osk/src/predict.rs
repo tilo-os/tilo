@@ -112,6 +112,18 @@ impl Predictor {
         &self.dict
     }
 
+    /// Split `word` after a leading elision (`l'homme` -> `l'`, `homme`;
+    /// `l'` -> `l'`, empty) unless the whole starts a word of its own, as
+    /// `aujourd'hui` does. Elisions are the dictionary words that end in an
+    /// apostrophe.
+    pub fn split_elision<'a>(&self, word: &'a str) -> Option<(&'a str, &'a str)> {
+        let at = word.find('\'')? + 1;
+        let (elision, rest) = word.split_at(at);
+        (self.dict.contains(elision)
+            && (rest.is_empty() || self.dict.iter_prefix(word).next().is_none()))
+        .then_some((elision, rest))
+    }
+
     /// Number of distinct preceding-words with bigram successors.
     pub fn bigram_contexts(&self) -> usize {
         self.bigrams.len()
@@ -119,10 +131,13 @@ impl Predictor {
 
     /// The transition a committed `word` after `previous` teaches, as the
     /// predictor keeps it: the context (empty at a start) and the word, both
-    /// lower case. `None` for a word that is not all letters.
+    /// lower case. `None` for a word that is not all letters, apart from
+    /// the apostrophes of an elision (`l'`) or of a word like `aujourd'hui`.
     pub fn transition(previous: Option<&str>, word: &str) -> Option<(String, String)> {
         let word = word.trim().to_lowercase();
-        if word.is_empty() || !word.chars().all(char::is_alphabetic) {
+        if !word.starts_with(char::is_alphabetic)
+            || !word.chars().all(|c| c.is_alphabetic() || c == '\'')
+        {
             return None;
         }
         Some((previous.map(str::to_lowercase).unwrap_or_default(), word))
@@ -212,6 +227,9 @@ impl Predictor {
         prefix: &str,
     ) -> NextKeyDistribution {
         let prefix = prefix.to_lowercase();
+        if let Some((elision, rest)) = self.split_elision(&prefix) {
+            return self.next_key_distribution(Some(elision), rest);
+        }
         let lexicon = NextKeyDistribution::from_weights(self.dict.next_char_weights(&prefix));
         let Some(successors) = prev_word.and_then(|p| self.bigrams.get(&p.to_lowercase())) else {
             return lexicon;
@@ -255,6 +273,14 @@ impl Predictor {
             return Vec::new();
         }
         let prefix = prefix.to_lowercase();
+        if let Some((elision, rest)) = self.split_elision(&prefix) {
+            // "l'hom" completes "hom" after "l'" and keeps the elision.
+            return self
+                .predict_next_n(Some(elision), rest, n)
+                .into_iter()
+                .map(|(word, score)| (format!("{elision}{word}"), score))
+                .collect();
+        }
         let prev = prev_word.map(str::to_lowercase);
 
         // Accumulate the best score per candidate word.
@@ -489,6 +515,24 @@ mod tests {
                 Some("très"),
                 "{tres:?}"
             );
+            // Apostrophes: lexicalised words complete whole, elisions keep
+            // their prefix and complete the word after it.
+            let aujou = p.predict_next(None, "aujou");
+            assert_eq!(aujou.first().map(|(w, _)| w.as_str()), Some("aujourd'hui"));
+            let words =
+                |preds: Vec<(String, f32)>| preds.into_iter().map(|(w, _)| w).collect::<Vec<_>>();
+            assert!(words(p.predict_next(None, "l")).contains(&"l'".to_owned()));
+            assert_eq!(p.split_elision("l'homme"), Some(("l'", "homme")));
+            assert_eq!(p.split_elision("aujourd'hui"), None);
+            assert_eq!(p.split_elision("l'"), Some(("l'", "")));
+            let lhom = words(p.predict_next(None, "l'hom"));
+            assert_eq!(
+                lhom.first().map(String::as_str),
+                Some("l'homme"),
+                "{lhom:?}"
+            );
+            let quil = words(p.predict_next(Some("parce"), "qu'i"));
+            assert!(quil.contains(&"qu'il".to_owned()), "{quil:?}");
             let dict = p.dictionary();
             for (w1, successors) in &p.bigrams {
                 assert!(dict.contains(w1), "bigram context {w1:?} not in dictionary");

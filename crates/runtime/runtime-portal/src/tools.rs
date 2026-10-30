@@ -536,8 +536,23 @@ pub fn tool_intent_from_env() -> Option<ToolIntent> {
     if raw.len() > MAX_WIRE_BYTES {
         return None;
     }
-    let intent: ToolIntent = serde_json::from_str(&raw).ok()?;
-    intent.validate().ok()?;
+    // The launcher wrote this context; one that does not read is its error,
+    // reported here, and the tool opens without it.
+    let intent: ToolIntent = match serde_json::from_str(&raw) {
+        Ok(intent) => intent,
+        Err(error) => {
+            eprintln!(
+                "tilo-portal: the launcher's tool context does not decode, the tool opens without it: {error}"
+            );
+            return None;
+        }
+    };
+    if let Err(error) = intent.validate() {
+        eprintln!(
+            "tilo-portal: the launcher's tool context is not valid, the tool opens without it: {error}"
+        );
+        return None;
+    }
     Some(intent)
 }
 

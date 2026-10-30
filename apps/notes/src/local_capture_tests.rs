@@ -7,8 +7,8 @@ fn notes_capture_framework() -> (
     AutoCommit,
 ) {
     let mut framework = ui::prelude::TestApp::<crate::NotesShell>::new().unwrap();
-    // The framework hosts NotesApp as a ResourceSurface; its main panel is
-    // not the root widget exposed by with_widget. Read the attached surface
+    // NotesApp is the window the notebook's view lays out; its main panel is
+    // not the root widget exposed by with_widget. Read the attached window
     // directly, just as the framework's input tests do.
     let dispatcher = framework
         .surface_mut::<crate::app::NotesApp>()

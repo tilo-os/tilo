@@ -10,28 +10,26 @@
 //! history). An app is chosen with the shell's app chooser, never typed.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
+use provider_settings_ui::bound::{SettingRows as _, record_item};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use settings_store::keyboard_shortcuts::{ShortcutCategory, ShortcutEntry, catalogue};
-use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, Effected};
-use ui::theme::Theme;
+use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::tilo_resource;
-use ui::widget::{AppModel, ModelPath, ShortcutRecorder, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use ui::widget::{Element, ShortcutRecorder, Widget};
 
-use crate::effects::effect;
-use crate::host::{Followed, PaneCx};
+use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
 pub use crate::prefs::DesktopControls;
 use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::shortcut_settings::ShortcutPrefs;
-use crate::widgets::{Item, SettingsSection, note, rows, section, section_action, setting_row};
+use provider_settings_ui::widgets::{
+    Item, SettingsSection, note, page_of, rows, section, section_action, setting_row,
+};
 use settings_store::paste_shortcut::{PasteShortcut, default_for};
 use ui::shell_choosers::ChosenApp;
 
@@ -57,29 +55,32 @@ pub enum ShortcutEffect {
     reason = "the signature every effect family answers with"
 )]
 pub(crate) fn answer(
-    _app: &SettingsApp,
+    app: &SettingsApp,
     effect: ShortcutEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     match effect {
         ShortcutEffect::ChoosePasteApp => {
             let purpose = t("settings-paste-choose-purpose");
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 move || choose_app(&purpose),
-                |app: &mut SettingsApp, chosen: Result<Option<ChosenApp>, String>, _| {
+                |app: &SettingsApp, chosen: Result<Option<ChosenApp>, String>, _| {
                     // Chose none: nothing changes.
                     let Some(chosen) = chosen? else {
                         return Ok(Effected::done());
                     };
                     remember_app_name(&chosen);
-                    let settings = app.host().settings::<InputPrefs>();
-                    let mut input = settings.get();
-                    add_paste_app(&mut input, &chosen)?;
-                    settings
-                        .set(&input)
-                        .map(|()| Effected::done())
-                        .map_err(|error| format!("the input settings could not be saved: {error}"))
+                    let input = app.storage().settings::<InputPrefs>().get();
+                    match paste_app(&input, &chosen) {
+                        Some(shortcut) => app
+                            .sections()
+                            .invoke::<InputPrefs>(
+                                InputPrefs::PASTE_WITH.with((chosen.id, shortcut.id().to_owned())),
+                            )
+                            .map(|()| Effected::done()),
+                        None => Ok(Effected::done()),
+                    }
                 },
             ))
         }
@@ -99,22 +100,21 @@ fn choose_app(purpose: &str) -> Result<Option<ChosenApp>, String> {
     chosen.recv().map_err(|_| t("settings-paste-no-chooser"))?
 }
 
-/// Set how the shell pastes in `app`, chosen to paste differently from
-/// what its id suggests: the other of Ctrl+V and Ctrl+Shift+V. One already
-/// set keeps its choice.
-fn add_paste_app(input: &mut InputPrefs, app: &ChosenApp) -> Result<(), String> {
+/// How the shell is to paste in `app`, chosen to paste differently from
+/// what its id suggests: the other of Ctrl+V and Ctrl+Shift+V. `None` for
+/// one `input` already sets, which keeps its choice.
+fn paste_app(input: &InputPrefs, app: &ChosenApp) -> Option<PasteShortcut> {
     if input
         .paste_shortcuts
         .keys()
         .any(|id| id.eq_ignore_ascii_case(&app.id))
     {
-        return Ok(());
+        return None;
     }
-    let other = match default_for(&app.id) {
+    Some(match default_for(&app.id) {
         PasteShortcut::CtrlV => PasteShortcut::CtrlShiftV,
         PasteShortcut::CtrlShiftV => PasteShortcut::CtrlV,
-    };
-    input.set_paste_shortcut(&app.id, other.id())
+    })
 }
 
 thread_local! {
@@ -204,293 +204,194 @@ fn chord_caps(chords: &[KeyChord]) -> Box<dyn Widget> {
     ))
 }
 
-pub struct ShortcutPane {
-    cx: PaneCx,
-    /// The person's `shortcuts` section, and the table it holds.
-    shortcuts: Followed<ShortcutPrefs>,
-    config: ShortcutConfig,
-    controls: Followed<DesktopControls>,
-    /// The chord each rebindable shortcut's recorder shows.
-    chords: HashMap<ShortcutAction, LocalState<String>>,
-    /// The last chord refused, and why.
-    refused: LocalState<Option<ui::framework::Refused>>,
-    refusal_shown: Option<String>,
-    /// The person's input preferences: how the shell pastes in each app.
-    input: Followed<InputPrefs>,
-    structure_dirty: bool,
-    composed: ui::widget::Composed,
+/// The Keyboard shortcuts page as view code over the person's `shortcuts`
+/// section, their desktop controls and how the shell pastes in their apps:
+/// every recorder rebinds through the section's `rebind`, which checks a
+/// chord against every other; a refused chord shows the stored one again,
+/// and the page says why.
+pub(crate) fn view(cx: &ViewCx<Settings>, _app: &Rc<SettingsApp>) -> Option<Element> {
+    ui::keycaps::set_active(active_keycaps(cx.storage().settings_document()));
+    let actions = cx.actions();
+    let shortcuts = cx.settings::<ShortcutPrefs>();
+    let catalogue = cx.record(&shortcuts, |cx| {
+        let config = cx.value(ShortcutPrefs::config);
+        let refused = cx.dispatcher().refused();
+        cx.switch(&config, move |cx, config| {
+            let config = config.clone();
+            cx.switch(&refused, move |cx, refused| {
+                let refusal = refused
+                    .as_ref()
+                    .filter(|refused| refused.action == REBIND)
+                    .map(|refused| refused.reason.clone());
+                page_of(shortcut_cards(cx, &config, refusal.as_deref()))
+            })
+        })
+    })?;
+    let input = cx.settings::<InputPrefs>();
+    let paste = cx.record(&input, move |cx| {
+        let apps = cx.value(|input: &InputPrefs| input.paste_shortcuts.clone());
+        cx.switch(&apps, move |cx, _| paste_card(cx, &actions).into_element())
+    })?;
+    Some(page_of(vec![catalogue, paste]))
 }
 
-impl ShortcutPane {
-    /// The pane over `cx`'s shortcut bindings.
-    pub fn new(cx: PaneCx) -> Self {
-        let document = cx.storage().settings_document().clone();
-        ui::keycaps::set_active(active_keycaps(&document));
-        let shortcuts = cx.follow::<ShortcutPrefs>();
-        let config = shortcuts.get().config();
-        let controls = cx.follow::<DesktopControls>();
-        let input = cx.follow::<InputPrefs>();
-        let chords = rebindable()
-            .map(|action| (action, LocalState::new(String::new())))
+/// One group per category of the catalogue `config` makes, the refusal of
+/// the last chord (`refusal`) opening the navigation group beside the
+/// switch that may have caused it; then the desktop's bound actions.
+fn shortcut_cards(
+    cx: &ViewCx<ShortcutPrefs>,
+    config: &ShortcutConfig,
+    refusal: Option<&str>,
+) -> Vec<Element> {
+    let entries = catalogue(config);
+    let controls = cx.settings::<DesktopControls>();
+    let mut cards: Vec<Element> = ShortcutCategory::ALL
+        .into_iter()
+        .map(|category| {
+            let mut body: Vec<Item> = Vec::new();
+            if category == ShortcutCategory::Navigation {
+                if let Some(reason) = refusal {
+                    body.push(note(reason));
+                }
+                body.extend(record_item(cx, &controls, vim_mode));
+                body.push(note(&app_tab_chords_note()));
+            }
+            body.extend(
+                entries
+                    .iter()
+                    .filter(|entry| entry.category == category)
+                    .map(|entry| entry_row(cx, config, entry)),
+            );
+            section(&t(&category.label_key()), rows(body)).into_element()
+        })
+        .collect();
+    if !config.actions.is_empty() {
+        let mut actions: Vec<Item> = config
+            .actions
+            .iter()
+            .map(|bound| setting_row(&bound.label, chord_caps(std::slice::from_ref(&bound.chord))))
             .collect();
-        let pane = Self {
-            refused: cx.refused(),
-            cx,
-            shortcuts,
-            config,
-            controls,
-            chords,
-            refusal_shown: None,
-            input,
-            structure_dirty: false,
-            composed: ui::widget::Composed::default(),
-        };
-        pane.show();
-        pane
+        actions.push(note(&t("settings-shortcuts-actions-caption")));
+        cards.push(section(&t("settings-shortcuts-actions"), rows(actions)).into_element());
     }
+    cards
+}
 
-    fn show(&self) {
-        for (action, state) in &self.chords {
-            state.set(
-                self.config
+/// The row of `entry`: a recorder of its chord where it can be rebound,
+/// else the chords it has.
+fn entry_row(cx: &ViewCx<ShortcutPrefs>, config: &ShortcutConfig, entry: &ShortcutEntry) -> Item {
+    let label = t(&entry.label_key);
+    match entry.action.filter(|_| entry.rebindable) {
+        Some(action) => {
+            let id = action.id();
+            let chord = LocalState::new(
+                config
                     .bindings
-                    .get(action)
+                    .get(&action)
                     .map(KeyChord::display)
                     .unwrap_or_default(),
             );
+            let recorder = ShortcutRecorder::new(
+                &format!("shortcuts.{}", id.replace('-', "_")),
+                &chord,
+                &entry
+                    .defaults
+                    .first()
+                    .map(KeyChord::display)
+                    .unwrap_or_default(),
+            );
+            let recorder = cx.actions().bind(
+                recorder,
+                ShortcutPrefs::REBIND.map(move |chord: String| (id.to_owned(), chord)),
+            );
+            setting_row(&label, Box::new(recorder))
         }
-    }
-
-    fn entry_row(&self, entry: &ShortcutEntry) -> Item {
-        let label = t(&entry.label_key);
-        let recorder = entry
-            .action
-            .filter(|_| entry.rebindable)
-            .and_then(|action| Some((action, self.chords.get(&action)?)));
-        match recorder {
-            Some((action, chord)) => {
-                let id = action.id();
-                let recorder = ShortcutRecorder::new(
-                    &format!("shortcuts.{}", id.replace('-', "_")),
-                    chord,
-                    &entry
-                        .defaults
-                        .first()
-                        .map(KeyChord::display)
-                        .unwrap_or_default(),
-                );
-                let recorder = self.cx.bind_verb(
-                    recorder,
-                    ShortcutPrefs::REBIND.map(move |chord: String| (id.to_owned(), chord)),
-                );
-                setting_row(&label, Box::new(recorder))
-            }
-            None if entry.chords.is_empty() => {
-                crate::widgets::value_row(&label, &t("settings-shortcut-unassigned"))
-            }
-            None => setting_row(&label, chord_caps(&entry.chords)),
+        None if entry.chords.is_empty() => {
+            provider_settings_ui::widgets::value_row(&label, &t("settings-shortcut-unassigned"))
         }
+        None => setting_row(&label, chord_caps(&entry.chords)),
     }
+}
 
-    fn composition(&self) -> Box<dyn Widget> {
-        let entries = catalogue(&self.config);
-        let mut cards: Vec<SettingsSection> = ShortcutCategory::ALL
-            .into_iter()
-            .map(|category| {
-                let mut body: Vec<Item> = Vec::new();
-                if category == ShortcutCategory::Navigation {
-                    // The refusal opens the section so it is seen next to the
-                    // switch that caused it, not after a long list of rows.
-                    if let Some(reason) = &self.refusal_shown {
-                        body.push(note(reason));
-                    }
-                    body.push(vim_mode(&self.cx, &self.controls));
-                    body.push(note(&app_tab_chords_note()));
-                }
-                body.extend(
-                    entries
-                        .iter()
-                        .filter(|entry| entry.category == category)
-                        .map(|entry| self.entry_row(entry)),
-                );
-                section(&t(&category.label_key()), rows(body))
-            })
-            .collect();
-        if !self.config.actions.is_empty() {
-            let mut actions: Vec<Item> = self
-                .config
-                .actions
-                .iter()
-                .map(|bound| {
-                    setting_row(&bound.label, chord_caps(std::slice::from_ref(&bound.chord)))
-                })
-                .collect();
-            actions.push(note(&t("settings-shortcuts-actions-caption")));
-            cards.push(section(&t("settings-shortcuts-actions"), rows(actions)));
-        }
-        cards.push(self.paste_card());
-        crate::widgets::page(cards)
-    }
-
-    /// "Paste in apps": a row per app the person set, choosing Ctrl+V or
-    /// Ctrl+Shift+V, and the app chooser to add one.
-    fn paste_card(&self) -> SettingsSection {
-        let shortcuts = [PasteShortcut::CtrlV, PasteShortcut::CtrlShiftV];
-        let label = |shortcut: PasteShortcut| {
-            t(match shortcut {
-                PasteShortcut::CtrlV => "input-paste-ctrl-v",
-                PasteShortcut::CtrlShiftV => "input-paste-ctrl-shift-v",
-            })
-        };
-        let mut body = vec![note(&t("input-paste-caption"))];
-        let mut apps: Vec<(String, String)> = self
-            .input
-            .get()
-            .paste_shortcuts
-            .iter()
-            .map(|(id, shortcut)| (id.clone(), shortcut.clone()))
-            .collect();
-        apps.sort_by_cached_key(|(id, _)| app_name(id).to_lowercase());
-        for (index, (id, stored)) in apps.into_iter().enumerate() {
-            let name = app_name(&id);
-            let current = PasteShortcut::parse(&stored).unwrap_or(PasteShortcut::CtrlV);
-            let app = id.clone();
-            let segments = ui::widget::ToggleGroup::from_state(
-                shortcuts
+/// "Paste in apps": a row per app the person set, choosing Ctrl+V or
+/// Ctrl+Shift+V through the input section's `set-paste-shortcut`, and the
+/// app chooser to add one.
+fn paste_card(cx: &ViewCx<InputPrefs>, actions: &Actions<Settings>) -> SettingsSection {
+    let shortcuts = [PasteShortcut::CtrlV, PasteShortcut::CtrlShiftV];
+    let label = |shortcut: PasteShortcut| {
+        t(match shortcut {
+            PasteShortcut::CtrlV => "input-paste-ctrl-v",
+            PasteShortcut::CtrlShiftV => "input-paste-ctrl-shift-v",
+        })
+    };
+    let mut body = vec![note(&t("input-paste-caption"))];
+    let mut apps: Vec<(String, String)> = cx.read(|input| {
+        input
+            .map(|input| {
+                input
+                    .paste_shortcuts
                     .iter()
-                    .map(|shortcut| (*shortcut, ui::widget::Segment::new(label(*shortcut))))
-                    .collect(),
-                &LocalState::new(current),
-            )
-            .with_id(format!("shortcuts.paste.{index}"))
-            .with_accessible_name(t_args(
-                "settings-paste-shortcut-for",
-                &[("app", name.as_str().into())],
-            ));
-            let segments = self.cx.bind(
-                segments,
-                effect(crate::panes::mouse_keyboard::InputEffect::SET_PASTE_SHORTCUT).map(
-                    move |chosen: usize| {
-                        let shortcut = shortcuts.get(chosen).copied().unwrap_or(current);
-                        (app.clone(), shortcut.id().to_owned())
-                    },
-                ),
-            );
-            let remove = self.cx.bind_invocation(
-                ui::widget::primitives::IconButton::regular(
-                    &format!("shortcuts.paste.{index}.remove"),
-                    ui::icons::Icon::X,
-                    &t_args("settings-paste-remove", &[("app", name.as_str().into())]),
-                ),
-                crate::panes::mouse_keyboard::InputEffect::SetPasteShortcut {
-                    app: id,
-                    shortcut: "default".into(),
-                },
-            );
-            body.push(setting_row(
-                &name,
-                Box::new(
-                    ui::widget::Row::new()
-                        .no_wrap()
-                        .with_align_items(taffy::AlignItems::Center)
-                        .with_rhythm(ui::tokens::Rhythm::Related)
-                        .push(Box::new(segments))
-                        .push(Box::new(remove)),
-                ),
-            ));
-        }
-        let choose = self.cx.bind_invocation(
-            ui::widget::Button::new("shortcuts.paste.choose", &t("settings-paste-choose"))
-                .with_icon(ui::icons::Icon::Plus),
-            ShortcutEffect::ChoosePasteApp,
+                    .map(|(id, shortcut)| (id.clone(), shortcut.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    apps.sort_by_cached_key(|(id, _)| app_name(id).to_lowercase());
+    for (index, (id, stored)) in apps.into_iter().enumerate() {
+        let name = app_name(&id);
+        let current = PasteShortcut::parse(&stored).unwrap_or(PasteShortcut::CtrlV);
+        let app = id.clone();
+        let segments = ui::widget::ToggleGroup::from_state(
+            shortcuts
+                .iter()
+                .map(|shortcut| (*shortcut, ui::widget::Segment::new(label(*shortcut))))
+                .collect(),
+            &LocalState::new(current),
+        )
+        .with_id(format!("shortcuts.paste.{index}"))
+        .with_accessible_name(t_args(
+            "settings-paste-shortcut-for",
+            &[("app", name.as_str().into())],
+        ));
+        let segments = cx.actions().bind(
+            segments,
+            InputPrefs::PASTE_WITH.map(move |chosen: usize| {
+                let shortcut = shortcuts.get(chosen).copied().unwrap_or(current);
+                (app.clone(), shortcut.id().to_owned())
+            }),
         );
-        section_action(&t("settings-paste-title"), choose, rows(body))
+        let remove = cx.actions().bind_invocation(
+            ui::widget::primitives::IconButton::regular(
+                &format!("shortcuts.paste.{index}.remove"),
+                ui::icons::Icon::X,
+                &t_args("settings-paste-remove", &[("app", name.as_str().into())]),
+            ),
+            InputPrefs::PASTE_WITH.with((id, "default".to_owned())),
+        );
+        body.push(setting_row(
+            &name,
+            Box::new(
+                ui::widget::Row::new()
+                    .no_wrap()
+                    .with_align_items(taffy::AlignItems::Center)
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .push(Box::new(segments))
+                    .push(Box::new(remove)),
+            ),
+        ));
     }
+    let choose = actions.bind_effect_invocation(
+        ui::widget::Button::new("shortcuts.paste.choose", &t("settings-paste-choose"))
+            .with_icon(ui::icons::Icon::Plus),
+        &SettingsEffect::from(ShortcutEffect::ChoosePasteApp),
+    );
+    section_action(&t("settings-paste-title"), choose, rows(body))
 }
 
-pub(crate) fn vim_mode(cx: &PaneCx, controls: &Followed<DesktopControls>) -> Item {
-    cx.row(t("settings-shortcuts-vim"))
+pub(crate) fn vim_mode(cx: &ViewCx<DesktopControls>) -> Item {
+    cx.setting(t("settings-shortcuts-vim"))
         .id("shortcuts.vim_mode")
-        .of(controls, DesktopControls::paths().vim_mode)
-        .toggle()
-}
-
-impl Widget for ShortcutPane {
-    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        if self.shortcuts.refresh() {
-            let config = self.shortcuts.get().config();
-            if config != self.config {
-                self.config = config;
-                self.structure_dirty = true;
-            }
-        }
-        // A refused chord is not kept: the recorder shows the stored one
-        // again, and the pane says why it was refused.
-        let refusal = self
-            .refused
-            .get()
-            .filter(|refused| refused.action == REBIND)
-            .map(|refused| refused.reason);
-        if refusal != self.refusal_shown {
-            self.refusal_shown = refusal;
-            self.structure_dirty = true;
-        }
-        if self.structure_dirty {
-            self.show();
-        }
-        self.controls.refresh();
-        if self.input.refresh() {
-            self.structure_dirty = true;
-        }
-        self.composed.sync(state, root);
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut c = self.composition();
-        let child = c.build_layout(taffy, theme, node_map);
-        self.composed.replace(c);
-        crate::panes::pane_node(taffy, child, node_map, self)
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.composed.apply_layout(taffy, node, origin);
-    }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = self.composed.element_mut() {
-            c.draw(scene, transform, text, theme, presence);
-        }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.composed.handle_event(event, ctx);
-    }
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.children()
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed.children_mut()
-    }
-    fn name(&self) -> &'static str {
-        "ShortcutPane"
-    }
-    fn get_rect(&self) -> Rect {
-        self.composed.rect()
-    }
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.composed.take_structure_dirty();
-        own || child
-    }
+        .toggle(DesktopControls::paths().vim_mode)
 }
 
 #[cfg(test)]
@@ -500,7 +401,7 @@ mod tests {
     use ui::prelude::TestApp;
 
     fn bind(app: &mut TestApp<SettingsShell>, shortcut: &str, chord: &str) -> bool {
-        crate::host::testing::invoke_section(
+        crate::testing::invoke_section(
             app,
             "settings.shortcuts",
             REBIND,
@@ -589,45 +490,45 @@ mod tests {
             "Super+Shift+l"
         );
 
-        crate::host::testing::edit_field(&mut app, "settings.desktop-controls", "vim_mode", true)
+        crate::testing::edit_field(&mut app, "settings.desktop-controls", "vim_mode", true)
             .unwrap();
         assert!(app.settings::<DesktopControls>().get().vim_mode);
     }
 
-    /// The pane shows the stored chords and follows a change made elsewhere.
+    /// The page shows the stored chords and follows a change made
+    /// elsewhere.
     #[test]
-    fn the_pane_follows_the_bindings() {
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
-        let mut pane = ShortcutPane::new(cx.clone());
+    fn the_page_follows_the_bindings() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.harness().resize((1400, 6000)).unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::KeyboardShortcuts);
+        app.settle();
+        let chord = |app: &mut TestApp<SettingsShell>| {
+            ui::widget::find_test_id(app.harness().root_widget(), "shortcuts.search")
+                .and_then(Widget::accessibility)
+                .and_then(|node| node.value)
+                // Spoken as "Super + Space": compared without the spacing
+                // or case speech adds.
+                .map(|chord| chord.replace(' ', "").to_lowercase())
+        };
         assert_eq!(
-            pane.chords[&ShortcutAction::Search].get(),
-            "Super+Space",
+            chord(&mut app).as_deref(),
+            Some("super+space"),
             "the default binding"
         );
         let mut config = ShortcutConfig::default();
         config
             .set(ShortcutAction::Search, KeyChord::parse("Super+J").unwrap())
             .unwrap();
-        cx.settings::<ShortcutPrefs>()
+        app.settings::<ShortcutPrefs>()
             .set(&ShortcutPrefs::of(&config))
             .unwrap();
-        let doc = ui::automerge::AutoCommit::new();
-        pane.sync(&doc, &ui::automerge::ROOT);
-        assert_eq!(pane.chords[&ShortcutAction::Search].get(), "Super+j");
+        app.settle();
+        assert_eq!(chord(&mut app).as_deref(), Some("super+j"));
     }
 
     #[test]
     fn an_app_is_chosen_for_its_paste_shortcut_never_typed() {
-        fn find<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-            if widget.test_id() == Some(id) {
-                return Some(widget);
-            }
-            widget
-                .children()
-                .into_iter()
-                .find_map(|child| find(child, id))
-        }
         fn named(widget: &dyn Widget, name: &str) -> usize {
             usize::from(widget.name() == name)
                 + widget
@@ -636,28 +537,27 @@ mod tests {
                     .map(|child| named(child, name))
                     .sum::<usize>()
         }
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
-        let settings = cx.storage().settings::<InputPrefs>();
-        let mut input = settings.get();
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let mut input = app.settings::<InputPrefs>().get();
         input
             .set_paste_shortcut("org.example.Writer", "ctrl_shift_v")
             .unwrap();
-        settings.set(&input).unwrap();
-        let pane = ShortcutPane::new(cx);
-        let composed = pane.composition();
-        let said = crate::widgets::announced_text(composed.as_ref());
-        assert!(said.iter().any(|line| line == "Paste in apps"), "{said:#?}");
+        app.settings::<InputPrefs>().set(&input).unwrap();
+        app.harness().resize((1400, 6000)).unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::KeyboardShortcuts);
+        app.settle();
+        assert!(app.harness().a11y_node_named("Paste in apps").is_some());
         assert!(
-            find(composed.as_ref(), "shortcuts.paste.choose").is_some(),
+            ui::widget::find_test_id(app.harness().root_widget(), "shortcuts.paste.choose")
+                .is_some(),
             "an app is added with the app chooser"
         );
+        assert!(app.harness().a11y_node_named("Writer").is_some());
         assert_eq!(
-            named(composed.as_ref(), "TextInput"),
+            named(app.harness().root_widget(), "TextInput"),
             0,
             "no app id is typed"
         );
-        assert!(said.iter().any(|line| line == "Writer"), "{said:#?}");
 
         let mut input = InputPrefs::default();
         let terminal = ChosenApp {
@@ -665,24 +565,14 @@ mod tests {
             name: "Terminal".into(),
             window_ids: vec!["org.example.Terminal".into()],
         };
-        add_paste_app(&mut input, &terminal).unwrap();
-        assert_eq!(
-            input
-                .paste_shortcuts
-                .get("org.example.Terminal")
-                .map(String::as_str),
-            Some("ctrl_v")
-        );
+        assert_eq!(paste_app(&input, &terminal), Some(PasteShortcut::CtrlV));
         input
             .set_paste_shortcut("org.example.Terminal", "ctrl_shift_v")
             .unwrap();
-        add_paste_app(&mut input, &terminal).unwrap();
         assert_eq!(
-            input
-                .paste_shortcuts
-                .get("org.example.Terminal")
-                .map(String::as_str),
-            Some("ctrl_shift_v")
+            paste_app(&input, &terminal),
+            None,
+            "one already set keeps its choice"
         );
     }
 }

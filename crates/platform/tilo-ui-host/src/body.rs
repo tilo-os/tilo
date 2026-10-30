@@ -47,7 +47,7 @@ impl BodyEditor {
             }) as PresenceKeyFn
         });
         Self {
-            editor: editor_of(&shown, hint, presence.as_ref()),
+            editor: editor_of(key, &shown, hint, presence.as_ref()),
             value: value.clone(),
             shown,
             sink: Rc::clone(sink),
@@ -68,9 +68,7 @@ impl BodyEditor {
         }
         self.shown.clone_from(&markdown);
         self.value.set(markdown.clone());
-        self.sink
-            .borrow_mut()
-            .push(UiEvent::Edit(self.key.clone(), markdown));
+        self.sink.push(UiEvent::Edit(self.key.clone(), markdown));
         true
     }
 
@@ -80,16 +78,23 @@ impl BodyEditor {
         if value == self.shown || self.editor.is_focused() {
             return false;
         }
-        self.editor = editor_of(&value, &self.hint, self.presence.as_ref());
+        self.editor = editor_of(&self.key, &value, &self.hint, self.presence.as_ref());
         self.shown = value;
         true
     }
 }
 
-/// The block editor showing `markdown`.
-fn editor_of(markdown: &str, hint: &str, presence: Option<&PresenceKeyFn>) -> BlockEditor {
+/// The block editor of the bound input `key` showing `markdown`: it answers to the input's key,
+/// as every bound control of the window does, so the window can give it the keyboard.
+fn editor_of(
+    key: &str,
+    markdown: &str,
+    hint: &str,
+    presence: Option<&PresenceKeyFn>,
+) -> BlockEditor {
     // As native Notes edits a note: lines wrap at the column, paragraphs sit close.
     let mut editor = BlockEditor::from_markdown(markdown)
+        .with_id(key)
         .with_empty_hint(hint)
         .with_wrap_lines(true)
         .with_compact_paragraph_spacing(true);
@@ -168,6 +173,6 @@ mod tests {
             body.editor.to_markdown().trim(),
             "Changed by a collaborator"
         );
-        assert!(sink.borrow().is_empty(), "showing a value reports no edit");
+        assert!(sink.is_empty(), "showing a value reports no edit");
     }
 }

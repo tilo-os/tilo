@@ -46,21 +46,26 @@ pub struct Document {
 pub type Comment = tilo_document::annotation::Comment<TextAnchor>;
 pub use tilo_document::annotation::Reply;
 
-/// Bring a document of version 1 up to this one: a reply's formatted
-/// paragraphs were one JSON string, and are a list of paragraphs now.
+/// Bring a document of an older version up to this one. Version 1 kept a
+/// reply's formatted paragraphs as one JSON string; they are a list of
+/// paragraphs now. Versions 1 and 2 stored each mark's value in a comment's
+/// paragraphs flat beside its variant's name; it is stored by its variant
+/// now.
 fn upgrade(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
     use ui::tilo_resource::evolution::{collection_items, retype_json};
-    if from != 1 {
+    if !(1..=2).contains(&from) {
         return Err(ModelError::invalid(format!(
             "no document migration from {from}"
         )));
     }
-    for comment in collection_items(doc, &ROOT, "comments")? {
-        for reply in collection_items(doc, &comment, "replies")? {
-            retype_json::<Vec<ClipBlock>>(doc, &reply, "body")?;
+    if from == 1 {
+        for comment in collection_items(doc, &ROOT, "comments")? {
+            for reply in collection_items(doc, &comment, "replies")? {
+                retype_json::<Vec<ClipBlock>>(doc, &reply, "body")?;
+            }
         }
     }
-    Ok(())
+    tilo_document::annotation::store_bodies_by_variant(doc, &ROOT, "comments")
 }
 
 impl Document {
@@ -90,7 +95,7 @@ impl Document {
     lands = Document::lands,
     answer = Document::answer,
     search = Document::search_entries,
-    version = 2,
+    version = 3,
     migrate = upgrade,
 )]
 impl Document {
@@ -1023,12 +1028,9 @@ mod tests {
         (replica, block)
     }
 
-    /// A document from before a reply's formatted paragraphs were a list:
-    /// they were one JSON string. Opened now, the reply reads with its
-    /// paragraphs, formatting included.
-    #[test]
-    fn a_reply_kept_as_a_json_string_migrates_to_its_paragraphs() {
-        use ui::tilo_resource::evolution::{self, collection_items};
+    /// A document with a comment and a reply to it written in
+    /// `paragraphs`: a strong word, and a checked item.
+    fn replied() -> (Replica<Document>, Vec<ClipBlock>) {
         let (mut replica, block) = written("The budget doubled this year.", "ada");
         replica
             .apply(Document::ADD_COMMENT.with(document::AddComment {
@@ -1058,7 +1060,10 @@ mod tests {
             level: None,
             ordered: None,
             align: None,
-            attrs: std::collections::BTreeMap::new(),
+            attrs: std::collections::BTreeMap::from([(
+                "checked".to_owned(),
+                tilo_document::ClipAttr::Bool(true),
+            )]),
         }];
         replica
             .apply(Document::REPLY_TO_COMMENT.with(document::ReplyToComment {
@@ -1067,6 +1072,16 @@ mod tests {
                 body: Some(paragraphs.clone()),
             }))
             .unwrap();
+        (replica, paragraphs)
+    }
+
+    /// A document from before a reply's formatted paragraphs were a list:
+    /// they were one JSON string. Opened now, the reply reads with its
+    /// paragraphs, formatting included.
+    #[test]
+    fn a_reply_kept_as_a_json_string_migrates_to_its_paragraphs() {
+        use ui::tilo_resource::evolution::{self, collection_items};
+        let (mut replica, paragraphs) = replied();
         // Back to the old shape: the paragraphs as one JSON string, version 1.
         let doc = replica.doc_mut();
         let comment = collection_items(doc, &ROOT, "comments").unwrap()[0].clone();
@@ -1091,6 +1106,55 @@ mod tests {
         let migrated = evolution::read_checked::<Document>(&old).unwrap();
         let thread = migrated.comments.values().next().unwrap();
         assert_eq!(thread.replies.values().next().unwrap().body, paragraphs);
+    }
+
+    /// A document of version 2 stored each mark's value and block attribute
+    /// in a reply's paragraphs flat beside its variant's name. Opened now,
+    /// the reply reads with the same formatting, stored by its variant, and
+    /// the document is marked as the version a reader of version 2 refuses
+    /// as newer rather than misreading.
+    #[test]
+    fn a_reply_kept_with_flat_mark_values_migrates_to_values_stored_by_variant() {
+        use automerge::ReadDoc as _;
+        use ui::tilo_resource::Model as _;
+        use ui::tilo_resource::evolution::{self, collection_items};
+        let (mut replica, paragraphs) = replied();
+        let doc = replica.doc_mut();
+        let comment = collection_items(doc, &ROOT, "comments").unwrap()[0].clone();
+        let reply = collection_items(doc, &comment, "replies").unwrap()[0].clone();
+        ui::tilo_resource::Slot::Key(&reply, "body")
+            .remove(doc)
+            .unwrap();
+        evolution::fixture(
+            doc,
+            &reply,
+            &serde_json::json!({ "body": paragraphs.to_json() }),
+        )
+        .unwrap();
+        ui::tilo_resource::Slot::Key(&ROOT, evolution::VERSION_KEY)
+            .put_scalar(doc, automerge::ScalarValue::Uint(2))
+            .unwrap();
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(evolution::migrate::<Document>(&mut old).unwrap());
+        assert_eq!(evolution::stored_version(&old), 3);
+        let migrated = evolution::read_checked::<Document>(&old).unwrap();
+        let thread = migrated.comments.values().next().unwrap();
+        assert_eq!(thread.replies.values().next().unwrap().body, paragraphs);
+        let (_, body) = old.get(&reply, "body").unwrap().unwrap();
+        let (_, block) = old.get(&body, 0).unwrap().unwrap();
+        let (_, marks) = old.get(&block, "marks").unwrap().unwrap();
+        let (_, mark) = old.get(&marks, 0).unwrap().unwrap();
+        let (_, value) = old.get(&mark, "value").unwrap().unwrap();
+        let (_, attrs) = old.get(&block, "attrs").unwrap().unwrap();
+        let (_, checked) = old.get(&attrs, "checked").unwrap().unwrap();
+        for value in [value, checked] {
+            assert!(
+                old.keys(&value)
+                    .all(|key| key == "$variant" || key.starts_with("$field/")),
+                "a value is stored by its variant"
+            );
+        }
     }
 
     #[test]

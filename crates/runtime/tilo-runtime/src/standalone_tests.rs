@@ -44,11 +44,12 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         return;
     }
 
-    let (joined, directory) = Joined::test_empty().await;
+    let placed = RoomId::new();
+    let (joined, directory) = Joined::test_hosting(placed).await;
     let actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
         joined.test_certificate().user_public_key,
     );
-    let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
+    let mut workspace = Workspace::in_room(WorkspaceId(41), placed, "Execution isolation");
     workspace.set_owner(actor.clone());
     let room = workspace.room().to_string();
     let mut tree = WorkspaceTree {
@@ -58,7 +59,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
     let (_origin, time) = execution_policy_clock().unwrap();
-    let admission = joined.admit_mcp_execution(&room, &room, &actor).unwrap();
+    let admission = joined.admit_mcp_execution(&room, &actor).unwrap();
     let mut services = membership.services();
     services.native_certificates = Some(Arc::new(joined::admission_tests::FixtureAuthority {
         room: uuid::Uuid::parse_str(&room).unwrap(),
@@ -361,31 +362,15 @@ const WRITER_KIND: &str = "dev.tilo.writer.note";
 const WRITER_RECORD: &str = "0b7d9a3e-5c1f-4a8e-9d2b-7f6e5a4c3b21";
 const WRITTEN: &str = "written by an SDK app";
 
-/// What the runtime's own room owner holds of the writer's record, read
-/// from the profile as a fresh owner restores it.
-fn written(profile: &Path) -> Option<String> {
+/// What the room host this session runs keeps of the writer's record in the
+/// profile's own room, opened with the channel's keys.
+fn written(session: &Standalone) -> Option<String> {
     use automerge::ReadDoc as _;
-    let workspace = Arc::new(ProfileWorkspace::open(profile).ok()?);
-    let room = workspace.room();
-    let owner = owner::RoomOwner::open(
-        profile,
-        &room,
-        tilo_identity_host::broker::trusted_current_device(&room).ok()?,
-        owner::RecordCreation {
-            declared_kinds: Box::new(|_| None),
-            dev: true,
-        },
-        workspace,
-        tilo_action_broker::channel_encryption::ChannelKeyProvider::default(),
-    )
-    .ok()?;
+    let room = RoomId::parse(session.room())?;
     let record = ui::record::RecordId::for_file_record(uuid::Uuid::parse_str(WRITER_RECORD).ok()?);
-    assert!(
-        owner.document(WRITER_APP, record.as_str()).is_none()
-            || owner.encrypted(WRITER_APP, record.as_str()),
-        "the SDK's write arrived sealed"
-    );
-    let bytes = owner.document(WRITER_APP, record.as_str())?;
+    let bytes = session
+        .joined
+        .test_kept_document(room, WRITER_APP, record.as_str())?;
     let doc = automerge::AutoCommit::load(&bytes).ok()?;
     doc.get(automerge::ROOT, "text")
         .ok()?
@@ -442,7 +427,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_room_is_durable_across_restart()
     let mut child = session.launch(WRITER_APP, command).unwrap();
     let deadline = tilo_test_env::hang_deadline();
     let stored = loop {
-        let stored = written(&root);
+        let stored = written(&session);
         if stored.is_some() || Instant::now() >= deadline {
             break stored;
         }
@@ -454,12 +439,12 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_room_is_durable_across_restart()
     assert_eq!(
         stored.as_deref(),
         Some(WRITTEN),
-        "the sealed write reaches the owner: {logs}"
+        "the sealed write reaches the room's host: {logs}"
     );
     drop(session);
-    // Served again, the profile's owner still holds the write.
-    drop(Standalone::start_in_dev_mode(&root, &mut |_| {}).unwrap());
-    assert_eq!(written(&root).as_deref(), Some(WRITTEN));
+    // Served again, the profile's room host still keeps the write.
+    let reopened = Standalone::start_in_dev_mode(&root, &mut |_| {}).unwrap();
+    assert_eq!(written(&reopened).as_deref(), Some(WRITTEN));
 }
 
 const OFFLOAD_TEST: &str =

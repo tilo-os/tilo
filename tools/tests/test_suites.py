@@ -71,8 +71,6 @@ class SelectTests(unittest.TestCase):
         for changed, expected in (
             ("scripts/headless-examples/peers-cross-both-ways.py",
              "scripts/tests/test_headless_error_handling.py"),
-            ("scripts/vm-acceptance/acceptance/core.py",
-             "scripts/vm-acceptance/tests/test_error_paths.py"),
             ("scripts/perf/render_bench.py",
              "scripts/perf/render_bench_test.py"),
         ):

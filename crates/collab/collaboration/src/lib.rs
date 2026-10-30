@@ -121,7 +121,8 @@ pub mod state;
 // the toolkit names them by (`ui::time`, `ui::background`, `ui::wake`,
 // `ui::host`), without the toolkit's host services.
 pub(crate) mod time {
-    #[cfg(test)]
+    // The broker's tests stamp records with it.
+    #[cfg(all(test, feature = "broker-transport"))]
     pub use tilo_clock::SystemTime;
     pub use tilo_clock::{Duration, Instant, now, wall};
 }
@@ -1365,13 +1366,18 @@ impl CollaborationManager {
         if transport.committed_document_required(&witness.route.channel_id()) {
             return transport.private_window_binding(&witness.route);
         }
-        witness
+        let instance = witness
             .route
             .record
             .as_deref()?
-            .strip_prefix("continuation:")?
-            .parse::<u64>()
-            .ok()
+            .strip_prefix("continuation:")?;
+        match instance.parse::<u64>() {
+            Ok(instance) => Some(instance),
+            Err(error) => {
+                tracing::warn!(instance, %error, "collab: continuation record names no window instance");
+                None
+            }
+        }
     }
 
     /// Whether requests currently reach peers: [`Self::state`] is
@@ -2143,11 +2149,16 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
                 .clone()
         });
 
+    // No workspace named is the nil room; one named that does not parse
+    // is the same, and logged, since the app then reaches no workspace.
     let cluster_id = identity
         .workspace_id
-        .clone()
-        .and_then(|s| Uuid::parse_str(&s).ok())
-        .unwrap_or_else(Uuid::nil);
+        .as_deref()
+        .map_or(Ok(Uuid::nil()), Uuid::parse_str)
+        .unwrap_or_else(|error| {
+            tracing::warn!(workspace = ?identity.workspace_id, %error, "collab: launch workspace id does not parse");
+            Uuid::nil()
+        });
 
     (app_id, cluster_id)
 }

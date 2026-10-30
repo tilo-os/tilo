@@ -141,188 +141,214 @@ fn assert_xrgb_pixels_eq(
     clippy::arithmetic_side_effects,
     reason = "fixed test dimensions are bounded by their literal fixture values"
 )]
+fn tracked_full_swizzle_rejects_truncated_source_without_mutating_destination() {
+    let source_bytes = [0x51_u8; 15];
+    let source = MappedXrgbSource {
+        bytes: &source_bytes,
+        padded_bytes_per_row: 8,
+        width: 2,
+        height: 2,
+    };
+    let mut destination = [0xA7_u8; 16];
+    let before = destination;
+    let result = VelloDrmBridge::swizzle_mapped_xrgb8888_with_plan(
+        source,
+        &mut destination,
+        8,
+        false,
+        XrgbWritePlan::Full,
+        true,
+    );
+    assert!(matches!(result, Err(BridgeError::InvalidSize(_))));
+    assert_eq!(
+        destination, before,
+        "tracked source rejection must be atomic"
+    );
+}
+
+#[test]
 #[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    clippy::arithmetic_side_effects,
+    reason = "fixed test dimensions are bounded by their literal fixture values"
 )]
-fn tracked_swizzle_validates_before_writing_and_unmaps_on_error() {
-    // Phase `tracked_full_swizzle_rejects_truncated_source_without_mutating_destination`.
-    {
-        let source_bytes = [0x51_u8; 15];
-        let source = MappedXrgbSource {
-            bytes: &source_bytes,
-            padded_bytes_per_row: 8,
-            width: 2,
-            height: 2,
-        };
-        let mut destination = [0xA7_u8; 16];
-        let before = destination;
-        let result = VelloDrmBridge::swizzle_mapped_xrgb8888_with_plan(
-            source,
-            &mut destination,
-            8,
-            false,
-            XrgbWritePlan::Full,
-            true,
-        );
-        assert!(matches!(result, Err(BridgeError::InvalidSize(_))));
-        assert_eq!(
-            destination, before,
-            "tracked source rejection must be atomic"
-        );
-    }
-
-    // Phase `tracked_partial_swizzle_validates_every_rect_before_mutating_destination`.
-    {
-        let source_bytes = [0x51_u8; 16];
-        let source = MappedXrgbSource {
-            bytes: &source_bytes,
-            padded_bytes_per_row: 16,
-            width: 4,
+fn tracked_partial_swizzle_validates_every_rect_before_mutating_destination() {
+    let source_bytes = [0x51_u8; 16];
+    let source = MappedXrgbSource {
+        bytes: &source_bytes,
+        padded_bytes_per_row: 16,
+        width: 4,
+        height: 1,
+    };
+    let rects = [
+        vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: 1,
             height: 1,
-        };
-        let rects = [
-            vello::FineDamageRect {
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 1,
-            },
-            vello::FineDamageRect {
-                x: 3,
-                y: 0,
-                width: 2,
-                height: 1,
-            },
-        ];
-        let mut destination = [0xA7_u8; 16];
-        let before = destination;
-        let result = VelloDrmBridge::swizzle_mapped_xrgb8888_with_plan(
-            source,
-            &mut destination,
-            16,
-            false,
-            XrgbWritePlan::Rects(&rects),
-            true,
-        );
-        assert!(matches!(result, Err(BridgeError::InvalidSize(_))));
-        assert_eq!(
-            destination, before,
-            "later invalid rect must not expose an earlier write"
-        );
-    }
+        },
+        vello::FineDamageRect {
+            x: 3,
+            y: 0,
+            width: 2,
+            height: 1,
+        },
+    ];
+    let mut destination = [0xA7_u8; 16];
+    let before = destination;
+    let result = VelloDrmBridge::swizzle_mapped_xrgb8888_with_plan(
+        source,
+        &mut destination,
+        16,
+        false,
+        XrgbWritePlan::Rects(&rects),
+        true,
+    );
+    assert!(matches!(result, Err(BridgeError::InvalidSize(_))));
+    assert_eq!(
+        destination, before,
+        "later invalid rect must not expose an earlier write"
+    );
+}
 
-    // Phase `tracked_short_destination_and_prepared_damage_mismatch_abort_without_writes`.
-    {
-        let (width, height) = (32_u32, 24_u32);
-        let mut bridge = required_bridge(width, height);
-        let pitch = usize::try_from(width).expect("test width") * 4;
-        let scene = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
-        let left = [vello::FineDamageRect {
-            x: 2,
-            y: 3,
-            width: 5,
-            height: 4,
-        }];
-        let right = [vello::FineDamageRect {
-            x: 16,
-            y: 8,
-            width: 5,
-            height: 4,
-        }];
-        let identity = bridge
-            .xrgb_history_identity(pitch, 1)
-            .expect("test bridge identity");
-        let mut history = XrgbTargetHistory::new(1);
-        let damage = SceneDamage {
+#[test]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "fixed test dimensions are bounded by their literal fixture values"
+)]
+fn tracked_short_destination_and_prepared_damage_mismatch_abort_without_writes() {
+    let (width, height) = (32_u32, 24_u32);
+    let mut bridge = required_bridge(width, height);
+    let pitch = usize::try_from(width).expect("test width") * 4;
+    let scene = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
+    let left = [vello::FineDamageRect {
+        x: 2,
+        y: 3,
+        width: 5,
+        height: 4,
+    }];
+    let right = [vello::FineDamageRect {
+        x: 16,
+        y: 8,
+        width: 5,
+        height: 4,
+    }];
+    let identity = bridge
+        .xrgb_history_identity(pitch, 1)
+        .expect("test bridge identity");
+    let mut history = XrgbTargetHistory::new(1);
+    let damage = SceneDamage {
+        revision: 1,
+        previous_revision: None,
+        regions: Some(&left),
+    };
+    let transaction = history.prepare(
+        0,
+        Some(identity),
+        damage.revision,
+        damage.previous_revision,
+        damage.regions,
+        &[],
+    );
+    let mut short = vec![0xA7; pitch * usize::try_from(height).expect("test height") - 1];
+    let short_before = short.clone();
+    let result = bridge.paint_damage_into_xrgb8888_with_history(
+        &scene,
+        damage,
+        &transaction,
+        &mut short,
+        pitch,
+    );
+    assert!(matches!(result, Err(BridgeError::InvalidSize(_))));
+    assert_eq!(
+        short, short_before,
+        "short tracked output must remain untouched"
+    );
+    transaction.abort();
+
+    let transaction = history.prepare(0, Some(identity), 1, None, Some(&left), &[]);
+    let mismatch = SceneDamage {
+        revision: 1,
+        previous_revision: None,
+        regions: Some(&right),
+    };
+    let mut destination = vec![0xB8; pitch * usize::try_from(height).expect("test height")];
+    let before = destination.clone();
+    let result = bridge.paint_damage_into_xrgb8888_with_history(
+        &scene,
+        mismatch,
+        &transaction,
+        &mut destination,
+        pitch,
+    );
+    assert!(matches!(result, Err(BridgeError::XrgbHistoryMismatch)));
+    assert_eq!(
+        destination, before,
+        "mismatched prepared damage must not write"
+    );
+    transaction.abort();
+
+    let transaction = history.prepare(0, Some(identity), 1, None, Some(&right), &[]);
+    bridge
+        .paint_damage_into_xrgb8888_with_history(
+            &scene,
+            SceneDamage {
+                revision: 1,
+                previous_revision: None,
+                regions: Some(&right),
+            },
+            &transaction,
+            &mut destination,
+            pitch,
+        )
+        .expect("next tracked paint after aborted errors");
+    transaction.commit(XrgbHistoryCommit::FullBoundary);
+}
+
+#[test]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "fixed test dimensions are bounded by their literal fixture values"
+)]
+fn tracked_swizzle_error_unmaps_before_the_next_paint() {
+    let (width, height) = (32_u32, 24_u32);
+    let mut bridge = required_bridge(width, height);
+    let pitch = usize::try_from(width).expect("test width") * 4;
+    let scene = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
+    let damage = [vello::FineDamageRect {
+        x: 2,
+        y: 3,
+        width: 5,
+        height: 4,
+    }];
+    let identity = bridge
+        .xrgb_history_identity(pitch, 1)
+        .expect("test bridge identity");
+    let mut history = XrgbTargetHistory::new(1);
+    let mut destination = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
+    let before = destination.clone();
+    let transaction = history.prepare(0, Some(identity), 1, None, Some(&damage), &[]);
+    bridge.inject_next_tracked_swizzle_failure_for_test();
+    let failed = bridge.paint_damage_into_xrgb8888_with_history(
+        &scene,
+        SceneDamage {
             revision: 1,
             previous_revision: None,
-            regions: Some(&left),
-        };
-        let transaction = history.prepare(
-            0,
-            Some(identity),
-            damage.revision,
-            damage.previous_revision,
-            damage.regions,
-            &[],
-        );
-        let mut short = vec![0xA7; pitch * usize::try_from(height).expect("test height") - 1];
-        let short_before = short.clone();
-        let result = bridge.paint_damage_into_xrgb8888_with_history(
-            &scene,
-            damage,
-            &transaction,
-            &mut short,
-            pitch,
-        );
-        assert!(matches!(result, Err(BridgeError::InvalidSize(_))));
-        assert_eq!(
-            short, short_before,
-            "short tracked output must remain untouched"
-        );
-        transaction.abort();
+            regions: Some(&damage),
+        },
+        &transaction,
+        &mut destination,
+        pitch,
+    );
+    assert!(matches!(failed, Err(BridgeError::InvalidSize(_))));
+    assert_eq!(
+        destination, before,
+        "injected post-map swizzle error must be atomic"
+    );
+    transaction.abort();
 
-        let transaction = history.prepare(0, Some(identity), 1, None, Some(&left), &[]);
-        let mismatch = SceneDamage {
-            revision: 1,
-            previous_revision: None,
-            regions: Some(&right),
-        };
-        let mut destination = vec![0xB8; pitch * usize::try_from(height).expect("test height")];
-        let before = destination.clone();
-        let result = bridge.paint_damage_into_xrgb8888_with_history(
-            &scene,
-            mismatch,
-            &transaction,
-            &mut destination,
-            pitch,
-        );
-        assert!(matches!(result, Err(BridgeError::XrgbHistoryMismatch)));
-        assert_eq!(
-            destination, before,
-            "mismatched prepared damage must not write"
-        );
-        transaction.abort();
-
-        let transaction = history.prepare(0, Some(identity), 1, None, Some(&right), &[]);
-        bridge
-            .paint_damage_into_xrgb8888_with_history(
-                &scene,
-                SceneDamage {
-                    revision: 1,
-                    previous_revision: None,
-                    regions: Some(&right),
-                },
-                &transaction,
-                &mut destination,
-                pitch,
-            )
-            .expect("next tracked paint after aborted errors");
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
-    }
-
-    // Phase `tracked_swizzle_error_unmaps_before_the_next_paint`.
-    {
-        let (width, height) = (32_u32, 24_u32);
-        let mut bridge = required_bridge(width, height);
-        let pitch = usize::try_from(width).expect("test width") * 4;
-        let scene = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
-        let damage = [vello::FineDamageRect {
-            x: 2,
-            y: 3,
-            width: 5,
-            height: 4,
-        }];
-        let identity = bridge
-            .xrgb_history_identity(pitch, 1)
-            .expect("test bridge identity");
-        let mut history = XrgbTargetHistory::new(1);
-        let mut destination = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
-        let before = destination.clone();
-        let transaction = history.prepare(0, Some(identity), 1, None, Some(&damage), &[]);
-        bridge.inject_next_tracked_swizzle_failure_for_test();
-        let failed = bridge.paint_damage_into_xrgb8888_with_history(
+    let transaction = history.prepare(0, Some(identity), 1, None, Some(&damage), &[]);
+    bridge
+        .paint_damage_into_xrgb8888_with_history(
             &scene,
             SceneDamage {
                 revision: 1,
@@ -332,30 +358,9 @@ fn tracked_swizzle_validates_before_writing_and_unmaps_on_error() {
             &transaction,
             &mut destination,
             pitch,
-        );
-        assert!(matches!(failed, Err(BridgeError::InvalidSize(_))));
-        assert_eq!(
-            destination, before,
-            "injected post-map swizzle error must be atomic"
-        );
-        transaction.abort();
-
-        let transaction = history.prepare(0, Some(identity), 1, None, Some(&damage), &[]);
-        bridge
-            .paint_damage_into_xrgb8888_with_history(
-                &scene,
-                SceneDamage {
-                    revision: 1,
-                    previous_revision: None,
-                    regions: Some(&damage),
-                },
-                &transaction,
-                &mut destination,
-                pitch,
-            )
-            .expect("staging must be unmapped for the next tracked paint");
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
-    }
+        )
+        .expect("staging must be unmapped for the next tracked paint");
+    transaction.commit(XrgbHistoryCommit::FullBoundary);
 }
 
 #[test]
@@ -363,190 +368,179 @@ fn tracked_swizzle_validates_before_writing_and_unmaps_on_error() {
     clippy::arithmetic_side_effects,
     reason = "fixed test dimensions are bounded by their literal fixture values"
 )]
+fn saturated_bridge_history_epoch_disables_tracking_but_not_full_paint() {
+    let mut bridge = required_bridge(16, 12);
+    bridge.xrgb_history_epoch = Some(u64::MAX);
+    bridge.set_base_color(Color::from_rgb8(0x20, 0x30, 0x40));
+    assert!(!bridge.xrgb_history_available());
+    let mut destination = vec![0xA7; 16 * 12 * 4];
+    bridge
+        .paint_into_xrgb8888(&Scene::new(), &mut destination, 16 * 4)
+        .expect("ordinary full paint remains available after tracking epoch saturation");
+}
+
+#[test]
 #[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    clippy::arithmetic_side_effects,
+    reason = "fixed test dimensions are bounded by their literal fixture values"
 )]
-fn history_bridge_treats_saturation_gaps_and_scanout_epochs_as_full_boundaries() {
-    // Phase `saturated_bridge_history_epoch_disables_tracking_but_not_full_paint`.
-    {
-        let mut bridge = required_bridge(16, 12);
-        bridge.xrgb_history_epoch = Some(u64::MAX);
-        bridge.set_base_color(Color::from_rgb8(0x20, 0x30, 0x40));
-        assert!(!bridge.xrgb_history_available());
-        let mut destination = vec![0xA7; 16 * 12 * 4];
-        bridge
-            .paint_into_xrgb8888(&Scene::new(), &mut destination, 16 * 4)
-            .expect("ordinary full paint remains available after tracking epoch saturation");
-    }
+fn history_bridge_accepts_gap_and_oversized_damage_as_real_full_boundaries() {
+    let (width, height) = (32_u32, 24_u32);
+    let mut bridge = required_bridge(width, height);
+    let pitch = usize::try_from(width).expect("test width") * 4 + 16;
+    let mut destination = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
+    let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
+    let small = [vello::FineDamageRect {
+        x: 3,
+        y: 4,
+        width: 6,
+        height: 5,
+    }];
+    let identity = bridge
+        .xrgb_history_identity(pitch, 1)
+        .expect("test bridge identity");
+    let mut history = XrgbTargetHistory::new(1);
 
-    // Phase `history_bridge_accepts_gap_and_oversized_damage_as_real_full_boundaries`.
-    {
-        let (width, height) = (32_u32, 24_u32);
-        let mut bridge = required_bridge(width, height);
-        let pitch = usize::try_from(width).expect("test width") * 4 + 16;
-        let mut destination = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
-        let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
-        let small = [vello::FineDamageRect {
-            x: 3,
-            y: 4,
-            width: 6,
-            height: 5,
-        }];
-        let identity = bridge
-            .xrgb_history_identity(pitch, 1)
-            .expect("test bridge identity");
-        let mut history = XrgbTargetHistory::new(1);
+    let seed = SceneDamage {
+        revision: 1,
+        previous_revision: None,
+        regions: Some(&small),
+    };
+    let transaction = history.prepare(
+        0,
+        Some(identity),
+        seed.revision,
+        seed.previous_revision,
+        seed.regions,
+        &[],
+    );
+    let write = bridge
+        .paint_damage_into_xrgb8888_with_history(
+            &scene,
+            seed,
+            &transaction,
+            &mut destination,
+            pitch,
+        )
+        .expect("seed full boundary");
+    assert_eq!(write.mode, XrgbCpuWriteMode::Full);
+    transaction.commit(XrgbHistoryCommit::FullBoundary);
 
-        let seed = SceneDamage {
-            revision: 1,
-            previous_revision: None,
-            regions: Some(&small),
-        };
-        let transaction = history.prepare(
-            0,
-            Some(identity),
-            seed.revision,
-            seed.previous_revision,
-            seed.regions,
-            &[],
-        );
-        let write = bridge
-            .paint_damage_into_xrgb8888_with_history(
-                &scene,
-                seed,
-                &transaction,
-                &mut destination,
-                pitch,
-            )
-            .expect("seed full boundary");
-        assert_eq!(write.mode, XrgbCpuWriteMode::Full);
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
+    // This is a legitimate model gap, not an identity mismatch. It must render densely and
+    // establish the new revision rather than reject before the bridge can recover.
+    let gap = SceneDamage {
+        revision: 4,
+        previous_revision: Some(2),
+        regions: Some(&small),
+    };
+    let transaction = history.prepare(
+        0,
+        Some(identity),
+        gap.revision,
+        gap.previous_revision,
+        gap.regions,
+        &[],
+    );
+    let write = bridge
+        .paint_damage_into_xrgb8888_with_history(&scene, gap, &transaction, &mut destination, pitch)
+        .expect("gap full boundary");
+    assert_eq!(write.mode, XrgbCpuWriteMode::Full);
+    transaction.commit(XrgbHistoryCommit::FullBoundary);
 
-        // This is a legitimate model gap, not an identity mismatch. It must render densely and
-        // establish the new revision rather than reject before the bridge can recover.
-        let gap = SceneDamage {
-            revision: 4,
-            previous_revision: Some(2),
-            regions: Some(&small),
-        };
-        let transaction = history.prepare(
-            0,
-            Some(identity),
-            gap.revision,
-            gap.previous_revision,
-            gap.regions,
-            &[],
-        );
-        let write = bridge
-            .paint_damage_into_xrgb8888_with_history(
-                &scene,
-                gap,
-                &transaction,
-                &mut destination,
-                pitch,
-            )
-            .expect("gap full boundary");
-        assert_eq!(write.mode, XrgbCpuWriteMode::Full);
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
+    let oversized = vec![small[0]; 65];
+    let oversized_damage = SceneDamage {
+        revision: 5,
+        previous_revision: Some(4),
+        regions: Some(&oversized),
+    };
+    let transaction = history.prepare(
+        0,
+        Some(identity),
+        oversized_damage.revision,
+        oversized_damage.previous_revision,
+        oversized_damage.regions,
+        &[],
+    );
+    let write = bridge
+        .paint_damage_into_xrgb8888_with_history(
+            &scene,
+            oversized_damage,
+            &transaction,
+            &mut destination,
+            pitch,
+        )
+        .expect("oversized damage must be a full boundary, not a mismatch");
+    assert_eq!(write.mode, XrgbCpuWriteMode::Full);
+    transaction.commit(XrgbHistoryCommit::FullBoundary);
+}
 
-        let oversized = vec![small[0]; 65];
-        let oversized_damage = SceneDamage {
-            revision: 5,
-            previous_revision: Some(4),
-            regions: Some(&oversized),
-        };
-        let transaction = history.prepare(
-            0,
-            Some(identity),
-            oversized_damage.revision,
-            oversized_damage.previous_revision,
-            oversized_damage.regions,
-            &[],
-        );
-        let write = bridge
-            .paint_damage_into_xrgb8888_with_history(
-                &scene,
-                oversized_damage,
-                &transaction,
-                &mut destination,
-                pitch,
-            )
-            .expect("oversized damage must be a full boundary, not a mismatch");
-        assert_eq!(write.mode, XrgbCpuWriteMode::Full);
-        transaction.commit(XrgbHistoryCommit::FullBoundary);
-    }
+#[test]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "fixed test dimensions are bounded by their literal fixture values"
+)]
+fn history_bridge_accepts_nonzero_scanout_epoch_across_two_targets() {
+    let (width, height) = (32_u32, 24_u32);
+    let mut bridge = required_bridge(width, height);
+    let pitch = usize::try_from(width).expect("test width") * 4;
+    let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
+    let damage = [vello::FineDamageRect {
+        x: 3,
+        y: 4,
+        width: 6,
+        height: 5,
+    }];
+    let identity = bridge
+        .xrgb_history_identity(pitch, 2)
+        .expect("test bridge identity")
+        .with_scanout_epoch(7);
+    let mut history = XrgbTargetHistory::new(2);
+    let mut left = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
+    let mut right = left.clone();
 
-    // Phase `history_bridge_accepts_nonzero_scanout_epoch_across_two_targets`.
-    {
-        let (width, height) = (32_u32, 24_u32);
-        let mut bridge = required_bridge(width, height);
-        let pitch = usize::try_from(width).expect("test width") * 4;
-        let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
-        let damage = [vello::FineDamageRect {
-            x: 3,
-            y: 4,
-            width: 6,
-            height: 5,
-        }];
-        let identity = bridge
-            .xrgb_history_identity(pitch, 2)
-            .expect("test bridge identity")
-            .with_scanout_epoch(7);
-        let mut history = XrgbTargetHistory::new(2);
-        let mut left = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
-        let mut right = left.clone();
+    let first = SceneDamage {
+        revision: 1,
+        previous_revision: None,
+        regions: Some(&damage),
+    };
+    let transaction = history.prepare(
+        0,
+        Some(identity),
+        first.revision,
+        first.previous_revision,
+        first.regions,
+        &[],
+    );
+    let write = bridge
+        .paint_damage_into_xrgb8888_with_history(&scene, first, &transaction, &mut left, pitch)
+        .expect("nonzero scanout epoch seed");
+    transaction.commit(if write.damage_admitted {
+        XrgbHistoryCommit::DamageAccepted
+    } else {
+        XrgbHistoryCommit::FullBoundary
+    });
 
-        let first = SceneDamage {
-            revision: 1,
-            previous_revision: None,
-            regions: Some(&damage),
-        };
-        let transaction = history.prepare(
-            0,
-            Some(identity),
-            first.revision,
-            first.previous_revision,
-            first.regions,
-            &[],
-        );
-        let write = bridge
-            .paint_damage_into_xrgb8888_with_history(&scene, first, &transaction, &mut left, pitch)
-            .expect("nonzero scanout epoch seed");
-        transaction.commit(if write.damage_admitted {
-            XrgbHistoryCommit::DamageAccepted
-        } else {
-            XrgbHistoryCommit::FullBoundary
-        });
-
-        let second = SceneDamage {
-            revision: 2,
-            previous_revision: Some(1),
-            regions: Some(&damage),
-        };
-        let transaction = history.prepare(
-            1,
-            Some(identity),
-            second.revision,
-            second.previous_revision,
-            second.regions,
-            &[],
-        );
-        let write = bridge
-            .paint_damage_into_xrgb8888_with_history(
-                &scene,
-                second,
-                &transaction,
-                &mut right,
-                pitch,
-            )
-            .expect("nonzero scanout epoch must not mismatch bridge identity");
-        transaction.commit(if write.damage_admitted {
-            XrgbHistoryCommit::DamageAccepted
-        } else {
-            XrgbHistoryCommit::FullBoundary
-        });
-    }
+    let second = SceneDamage {
+        revision: 2,
+        previous_revision: Some(1),
+        regions: Some(&damage),
+    };
+    let transaction = history.prepare(
+        1,
+        Some(identity),
+        second.revision,
+        second.previous_revision,
+        second.regions,
+        &[],
+    );
+    let write = bridge
+        .paint_damage_into_xrgb8888_with_history(&scene, second, &transaction, &mut right, pitch)
+        .expect("nonzero scanout epoch must not mismatch bridge identity");
+    transaction.commit(if write.damage_admitted {
+        XrgbHistoryCommit::DamageAccepted
+    } else {
+        XrgbHistoryCommit::FullBoundary
+    });
 }
 
 #[test]
@@ -895,329 +889,396 @@ fn native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets(
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn versioned_damage_copies_dirty_regions_until_invalidated() {
-    // Phase `versioned_damage_copies_exactly_the_dirty_region`.
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
+fn versioned_damage_copies_exactly_the_dirty_region() {
     {
-        {
-            // A QS popover overlapping a full-width top bar is the common case that made a bounding
-            // union look like a near-full frame. Keep both copies precise; Vello unions their tiles.
-            let damage = [
-                vello::FineDamageRect {
-                    x: 0,
-                    y: 0,
-                    width: 1920,
-                    height: 68,
-                },
-                vello::FineDamageRect {
-                    x: 1440,
-                    y: 40,
-                    width: 480,
-                    height: 800,
-                },
-            ];
-            let normalized = VelloDrmBridge::normalize_damage(&damage, (1920, 1080))
-                .expect("the precise L shape is sparse eligible");
-            assert_eq!(
-                normalized.as_slice(),
-                &damage,
-                "partial overlap stays as exact copies"
-            );
-            let copied_pixels = normalized.iter().fold(0_u64, |pixels, rect| {
-                pixels + u64::from(rect.width) * u64::from(rect.height)
-            });
-            assert_eq!(copied_pixels, 514_560);
-            let bounding_pixels = 1920_u64 * 840;
-            assert!(
-                bounding_pixels > u64::from(1920_u32) * u64::from(1080_u32) / 2,
-                "the old bounding box would have forced a full fallback"
-            );
-        }
-
-        {
-            let full = [vello::FineDamageRect {
+        // A QS popover overlapping a full-width top bar is the common case that made a bounding
+        // union look like a near-full frame. Keep both copies precise; Vello unions their tiles.
+        let damage = [
+            vello::FineDamageRect {
                 x: 0,
                 y: 0,
-                width: 64,
-                height: 48,
-            }];
-            assert!(
-                VelloDrmBridge::normalize_damage(&full, (64, 48)).is_none(),
-                "ordinary sparse damage must retain its full-frame profitability fallback"
-            );
-            assert_eq!(
-                VelloDrmBridge::validate_diagnostic_damage(&full, (64, 48))
-                    .expect("the diagnostic must compare full native damage")
-                    .as_slice(),
-                &full,
-            );
+                width: 1920,
+                height: 68,
+            },
+            vello::FineDamageRect {
+                x: 1440,
+                y: 40,
+                width: 480,
+                height: 800,
+            },
+        ];
+        let normalized = VelloDrmBridge::normalize_damage(&damage, (1920, 1080))
+            .expect("the precise L shape is sparse eligible");
+        assert_eq!(
+            normalized.as_slice(),
+            &damage,
+            "partial overlap stays as exact copies"
+        );
+        let copied_pixels = normalized.iter().fold(0_u64, |pixels, rect| {
+            pixels + u64::from(rect.width) * u64::from(rect.height)
+        });
+        assert_eq!(copied_pixels, 514_560);
+        let bounding_pixels = 1920_u64 * 840;
+        assert!(
+            bounding_pixels > u64::from(1920_u32) * u64::from(1080_u32) / 2,
+            "the old bounding box would have forced a full fallback"
+        );
+    }
 
-            let invalid = [vello::FineDamageRect {
-                x: 63,
-                y: 0,
-                width: 2,
-                height: 1,
-            }];
-            assert!(
-                VelloDrmBridge::validate_diagnostic_damage(&invalid, (64, 48)).is_none(),
-                "diagnostic rendering must still reject out-of-bounds rectangles"
-            );
-        }
+    {
+        let full = [vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: 64,
+            height: 48,
+        }];
+        assert!(
+            VelloDrmBridge::normalize_damage(&full, (64, 48)).is_none(),
+            "ordinary sparse damage must retain its full-frame profitability fallback"
+        );
+        assert_eq!(
+            VelloDrmBridge::validate_diagnostic_damage(&full, (64, 48))
+                .expect("the diagnostic must compare full native damage")
+                .as_slice(),
+            &full,
+        );
 
-        {
-            let (width, height) = (64_u32, 48_u32);
-            let mut bridge = required_bridge(width, height);
-            let pitch = width as usize * 4 + 16;
-            let first = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
-            let damage = [vello::FineDamageRect {
-                x: 7,
-                y: 9,
-                width: 13,
-                height: 11,
-            }];
-            let second = layered_scene(
-                width,
-                height,
-                Color::from_rgb8(0x11, 0x22, 0x33),
-                &[(damage[0], Color::from_rgb8(0xC0, 0x50, 0x20))],
-            );
+        let invalid = [vello::FineDamageRect {
+            x: 63,
+            y: 0,
+            width: 2,
+            height: 1,
+        }];
+        assert!(
+            VelloDrmBridge::validate_diagnostic_damage(&invalid, (64, 48)).is_none(),
+            "diagnostic rendering must still reject out-of-bounds rectangles"
+        );
+    }
 
-            bridge.set_phase_timing_enabled(true);
-            let mut first_destination = vec![0xD1; pitch * height as usize];
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &first,
-                    SceneDamage {
-                        revision: 1,
-                        previous_revision: None,
-                        regions: Some(&damage),
-                    },
-                    &mut first_destination,
-                    pitch,
-                )
-                .expect("first versioned paint is dense");
-            assert_eq!(
-                bridge.last_phase_timing().expect("timing").readback_bytes,
-                u64::from(width) * u64::from(height) * 4,
-                "a first versioned paint must not use stale sparse backing"
-            );
+    {
+        let (width, height) = (64_u32, 48_u32);
+        let mut bridge = required_bridge(width, height);
+        let pitch = width as usize * 4 + 16;
+        let first = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
+        let damage = [vello::FineDamageRect {
+            x: 7,
+            y: 9,
+            width: 13,
+            height: 11,
+        }];
+        let second = layered_scene(
+            width,
+            height,
+            Color::from_rgb8(0x11, 0x22, 0x33),
+            &[(damage[0], Color::from_rgb8(0xC0, 0x50, 0x20))],
+        );
 
-            let sparse_supported = bridge.target.renderer.sparse_fine_supported();
-            let mut alternating_destination = vec![0xA7; pitch * height as usize];
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &second,
-                    SceneDamage {
-                        revision: 2,
-                        previous_revision: Some(1),
-                        regions: Some(&damage),
-                    },
-                    &mut alternating_destination,
-                    pitch,
-                )
-                .expect("second versioned paint");
-
-            let mut oracle = required_bridge(width, height);
-            let mut expected = vec![0x4E; pitch * height as usize];
-            oracle
-                .paint_into_xrgb8888(&second, &mut expected, pitch)
-                .expect("dense oracle");
-            assert_xrgb_pixels_eq(
-                &alternating_destination,
-                &expected,
-                width as usize,
-                height as usize,
+        bridge.set_phase_timing_enabled(true);
+        let mut first_destination = vec![0xD1; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &first,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: Some(&damage),
+                },
+                &mut first_destination,
                 pitch,
-            );
-            if sparse_supported {
-                let timing = bridge.last_phase_timing().expect("timing");
-                assert_eq!(
-                    timing.readback_bytes,
-                    u64::from(damage[0].width) * u64::from(damage[0].height) * 4,
-                    "profiled bytes are the submitted dirty copy, not a whole staging frame"
-                );
-                assert_eq!(
-                    timing.cpu_output_bytes,
-                    u64::from(width) * u64::from(height) * 4,
-                    "alternating DRM destinations still receive a complete CPU XRGB image"
-                );
-                assert_eq!(bridge.last_sparse_render_attempts(), 1);
-                assert_eq!(bridge.last_full_render_attempts(), 0);
-                assert_eq!(bridge.last_render_attempts(), 1);
-            }
-            for row in 0..height as usize {
-                assert_eq!(
-                    alternating_destination[row * pitch + width as usize * 4],
-                    0xA7,
-                    "destination padding remains outside the XRGB image"
-                );
-            }
-        }
+            )
+            .expect("first versioned paint is dense");
+        assert_eq!(
+            bridge.last_phase_timing().expect("timing").readback_bytes,
+            u64::from(width) * u64::from(height) * 4,
+            "a first versioned paint must not use stale sparse backing"
+        );
 
-        {
-            let (width, height) = (64_u32, 48_u32);
-            let mut bridge = required_bridge(width, height);
-            let pitch = width as usize * 4 + 32;
-            let first = rect_scene(width, height, Color::from_rgb8(0x08, 0x18, 0x28));
-            let damage = [
-                vello::FineDamageRect {
-                    x: 0,
-                    y: 0,
-                    width: 7,
-                    height: 9,
+        let sparse_supported = bridge.target.renderer.sparse_fine_supported();
+        let mut alternating_destination = vec![0xA7; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &second,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&damage),
                 },
-                vello::FineDamageRect {
-                    x: 5,
-                    y: 6,
-                    width: 12,
-                    height: 10,
-                },
-                vello::FineDamageRect {
-                    x: 48,
-                    y: 31,
-                    width: 16,
-                    height: 17,
-                },
-            ];
-            let second = layered_scene(
-                width,
-                height,
-                Color::from_rgb8(0x08, 0x18, 0x28),
-                &[
-                    (damage[0], Color::from_rgb8(0xCC, 0x11, 0x22)),
-                    (damage[1], Color::from_rgb8(0x22, 0xCC, 0x11)),
-                    (damage[2], Color::from_rgb8(0x11, 0x22, 0xCC)),
-                ],
-            );
-            let mut initial = vec![0; pitch * height as usize];
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &first,
-                    SceneDamage {
-                        revision: 20,
-                        previous_revision: None,
-                        regions: Some(&damage),
-                    },
-                    &mut initial,
-                    pitch,
-                )
-                .expect("dense seed");
-            let mut actual = vec![0xE2; pitch * height as usize];
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &second,
-                    SceneDamage {
-                        revision: 21,
-                        previous_revision: Some(20),
-                        regions: Some(&damage),
-                    },
-                    &mut actual,
-                    pitch,
-                )
-                .expect("damage paint");
+                &mut alternating_destination,
+                pitch,
+            )
+            .expect("second versioned paint");
 
-            let mut oracle = required_bridge(width, height);
-            let mut expected = vec![0; pitch * height as usize];
-            oracle
-                .paint_into_xrgb8888(&second, &mut expected, pitch)
-                .expect("dense oracle");
-            assert_xrgb_pixels_eq(&actual, &expected, width as usize, height as usize, pitch);
-        }
-
-        {
-            let (width, height) = (32_u32, 24_u32);
-            let mut bridge = required_bridge(width, height);
-            bridge.set_phase_timing_enabled(true);
-            let pitch = width as usize * 4;
-            let rect = [vello::FineDamageRect {
-                x: 2,
-                y: 3,
-                width: 5,
-                height: 7,
-            }];
-            let mut destination = vec![0; pitch * height as usize];
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &rect_scene(width, height, Color::from_rgb8(1, 2, 3)),
-                    SceneDamage {
-                        revision: 100,
-                        previous_revision: None,
-                        regions: Some(&rect),
-                    },
-                    &mut destination,
-                    pitch,
-                )
-                .expect("seed");
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &rect_scene(width, height, Color::from_rgb8(4, 5, 6)),
-                    SceneDamage {
-                        revision: 102,
-                        previous_revision: Some(101),
-                        regions: Some(&rect),
-                    },
-                    &mut destination,
-                    pitch,
-                )
-                .expect("revision gap uses full render");
+        let mut oracle = required_bridge(width, height);
+        let mut expected = vec![0x4E; pitch * height as usize];
+        oracle
+            .paint_into_xrgb8888(&second, &mut expected, pitch)
+            .expect("dense oracle");
+        assert_xrgb_pixels_eq(
+            &alternating_destination,
+            &expected,
+            width as usize,
+            height as usize,
+            pitch,
+        );
+        if sparse_supported {
+            let timing = bridge.last_phase_timing().expect("timing");
             assert_eq!(
-                bridge.last_phase_timing().expect("timing").readback_bytes,
-                u64::from(width) * u64::from(height) * 4
+                timing.readback_bytes,
+                u64::from(damage[0].width) * u64::from(damage[0].height) * 4,
+                "profiled bytes are the submitted dirty copy, not a whole staging frame"
             );
-
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &rect_scene(width, height, Color::from_rgb8(7, 8, 9)),
-                    SceneDamage {
-                        revision: 103,
-                        previous_revision: Some(102),
-                        regions: Some(&[]),
-                    },
-                    &mut destination,
-                    pitch,
-                )
-                .expect("empty damage uses full render");
             assert_eq!(
-                bridge.last_phase_timing().expect("timing").readback_bytes,
-                u64::from(width) * u64::from(height) * 4
+                timing.cpu_output_bytes,
+                u64::from(width) * u64::from(height) * 4,
+                "alternating DRM destinations still receive a complete CPU XRGB image"
+            );
+            assert_eq!(bridge.last_sparse_render_attempts(), 1);
+            assert_eq!(bridge.last_full_render_attempts(), 0);
+            assert_eq!(bridge.last_render_attempts(), 1);
+        }
+        for row in 0..height as usize {
+            assert_eq!(
+                alternating_destination[row * pitch + width as usize * 4],
+                0xA7,
+                "destination padding remains outside the XRGB image"
             );
         }
     }
 
-    // Phase `failed_paint_base_color_and_resize_invalidate_sparse_backing`.
     {
-        {
-            let (width, height) = (32_u32, 24_u32);
-            let mut bridge = required_bridge(width, height);
-            bridge.set_phase_timing_enabled(true);
-            let pitch = width as usize * 4;
-            let damage = [vello::FineDamageRect {
-                x: 4,
-                y: 5,
-                width: 8,
-                height: 7,
-            }];
-            let scene = rect_scene(width, height, Color::from_rgb8(0x12, 0x23, 0x34));
-            let mut destination = vec![0; pitch * height as usize];
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &scene,
-                    SceneDamage {
-                        revision: 1,
-                        previous_revision: None,
-                        regions: Some(&damage),
-                    },
-                    &mut destination,
-                    pitch,
-                )
-                .expect("seed complete retained frame");
+        let (width, height) = (64_u32, 48_u32);
+        let mut bridge = required_bridge(width, height);
+        let pitch = width as usize * 4 + 32;
+        let first = rect_scene(width, height, Color::from_rgb8(0x08, 0x18, 0x28));
+        let damage = [
+            vello::FineDamageRect {
+                x: 0,
+                y: 0,
+                width: 7,
+                height: 9,
+            },
+            vello::FineDamageRect {
+                x: 5,
+                y: 6,
+                width: 12,
+                height: 10,
+            },
+            vello::FineDamageRect {
+                x: 48,
+                y: 31,
+                width: 16,
+                height: 17,
+            },
+        ];
+        let second = layered_scene(
+            width,
+            height,
+            Color::from_rgb8(0x08, 0x18, 0x28),
+            &[
+                (damage[0], Color::from_rgb8(0xCC, 0x11, 0x22)),
+                (damage[1], Color::from_rgb8(0x22, 0xCC, 0x11)),
+                (damage[2], Color::from_rgb8(0x11, 0x22, 0xCC)),
+            ],
+        );
+        let mut initial = vec![0; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &first,
+                SceneDamage {
+                    revision: 20,
+                    previous_revision: None,
+                    regions: Some(&damage),
+                },
+                &mut initial,
+                pitch,
+            )
+            .expect("dense seed");
+        let mut actual = vec![0xE2; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &second,
+                SceneDamage {
+                    revision: 21,
+                    previous_revision: Some(20),
+                    regions: Some(&damage),
+                },
+                &mut actual,
+                pitch,
+            )
+            .expect("damage paint");
 
-            let valid_dev_id = bridge.dev_id;
-            bridge.dev_id = usize::MAX;
-            let failed = bridge.paint_damage_into_xrgb8888(
+        let mut oracle = required_bridge(width, height);
+        let mut expected = vec![0; pitch * height as usize];
+        oracle
+            .paint_into_xrgb8888(&second, &mut expected, pitch)
+            .expect("dense oracle");
+        assert_xrgb_pixels_eq(&actual, &expected, width as usize, height as usize, pitch);
+    }
+
+    {
+        let (width, height) = (32_u32, 24_u32);
+        let mut bridge = required_bridge(width, height);
+        bridge.set_phase_timing_enabled(true);
+        let pitch = width as usize * 4;
+        let rect = [vello::FineDamageRect {
+            x: 2,
+            y: 3,
+            width: 5,
+            height: 7,
+        }];
+        let mut destination = vec![0; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &rect_scene(width, height, Color::from_rgb8(1, 2, 3)),
+                SceneDamage {
+                    revision: 100,
+                    previous_revision: None,
+                    regions: Some(&rect),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("seed");
+        bridge
+            .paint_damage_into_xrgb8888(
+                &rect_scene(width, height, Color::from_rgb8(4, 5, 6)),
+                SceneDamage {
+                    revision: 102,
+                    previous_revision: Some(101),
+                    regions: Some(&rect),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("revision gap uses full render");
+        assert_eq!(
+            bridge.last_phase_timing().expect("timing").readback_bytes,
+            u64::from(width) * u64::from(height) * 4
+        );
+
+        bridge
+            .paint_damage_into_xrgb8888(
+                &rect_scene(width, height, Color::from_rgb8(7, 8, 9)),
+                SceneDamage {
+                    revision: 103,
+                    previous_revision: Some(102),
+                    regions: Some(&[]),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("empty damage uses full render");
+        assert_eq!(
+            bridge.last_phase_timing().expect("timing").readback_bytes,
+            u64::from(width) * u64::from(height) * 4
+        );
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
+fn failed_paint_base_color_and_resize_invalidate_sparse_backing() {
+    {
+        let (width, height) = (32_u32, 24_u32);
+        let mut bridge = required_bridge(width, height);
+        bridge.set_phase_timing_enabled(true);
+        let pitch = width as usize * 4;
+        let damage = [vello::FineDamageRect {
+            x: 4,
+            y: 5,
+            width: 8,
+            height: 7,
+        }];
+        let scene = rect_scene(width, height, Color::from_rgb8(0x12, 0x23, 0x34));
+        let mut destination = vec![0; pitch * height as usize];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: Some(&damage),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("seed complete retained frame");
+
+        let valid_dev_id = bridge.dev_id;
+        bridge.dev_id = usize::MAX;
+        let failed = bridge.paint_damage_into_xrgb8888(
+            &scene,
+            SceneDamage {
+                revision: 2,
+                previous_revision: Some(1),
+                regions: Some(&damage),
+            },
+            &mut destination,
+            pitch,
+        );
+        assert!(
+            matches!(failed, Err(BridgeError::InvalidDevice(_))),
+            "test-only invalid device must exercise a post-gate paint failure"
+        );
+        assert!(
+            !bridge.target.retained_target_valid
+                && !bridge.retained_staging_valid
+                && bridge.target.last_successful_revision.is_none(),
+            "a failed paint must invalidate the previously compatible retained frame before retry"
+        );
+        bridge.dev_id = valid_dev_id;
+
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 3,
+                    previous_revision: Some(1),
+                    regions: Some(&damage),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("retry after failed paint");
+        assert_eq!(
+            bridge.last_phase_timing().expect("timing").readback_bytes,
+            u64::from(width) * u64::from(height) * 4,
+            "failed paint must erase the sparse retained revision"
+        );
+        assert_eq!(bridge.last_sparse_render_attempts(), 0);
+        assert_eq!(bridge.last_full_render_attempts(), 1);
+    }
+
+    {
+        let (width, height) = (32_u32, 24_u32);
+        let mut bridge = required_bridge(width, height);
+        bridge.set_phase_timing_enabled(true);
+        let pitch = width as usize * 4;
+        let damage = [vello::FineDamageRect {
+            x: 3,
+            y: 4,
+            width: 6,
+            height: 5,
+        }];
+        let mut destination = vec![0; pitch * height as usize];
+        let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: Some(&damage),
+                },
+                &mut destination,
+                pitch,
+            )
+            .expect("seed");
+
+        bridge.set_base_color(Color::from_rgb8(0x10, 0x20, 0x30));
+        bridge
+            .paint_damage_into_xrgb8888(
                 &scene,
                 SceneDamage {
                     revision: 2,
@@ -1226,115 +1287,43 @@ fn versioned_damage_copies_dirty_regions_until_invalidated() {
                 },
                 &mut destination,
                 pitch,
-            );
-            assert!(
-                matches!(failed, Err(BridgeError::InvalidDevice(_))),
-                "test-only invalid device must exercise a post-gate paint failure"
-            );
-            assert!(
-                !bridge.target.retained_target_valid
-                    && !bridge.retained_staging_valid
-                    && bridge.target.last_successful_revision.is_none(),
-                "a failed paint must invalidate the previously compatible retained frame before retry"
-            );
-            bridge.dev_id = valid_dev_id;
+            )
+            .expect("base-color boundary");
+        assert_eq!(
+            bridge.last_phase_timing().expect("timing").readback_bytes,
+            u64::from(width) * u64::from(height) * 4,
+            "base color change must refresh the complete retained staging image"
+        );
 
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &scene,
-                    SceneDamage {
-                        revision: 3,
-                        previous_revision: Some(1),
-                        regions: Some(&damage),
-                    },
-                    &mut destination,
-                    pitch,
-                )
-                .expect("retry after failed paint");
-            assert_eq!(
-                bridge.last_phase_timing().expect("timing").readback_bytes,
-                u64::from(width) * u64::from(height) * 4,
-                "failed paint must erase the sparse retained revision"
-            );
-            assert_eq!(bridge.last_sparse_render_attempts(), 0);
-            assert_eq!(bridge.last_full_render_attempts(), 1);
-        }
-
-        {
-            let (width, height) = (32_u32, 24_u32);
-            let mut bridge = required_bridge(width, height);
-            bridge.set_phase_timing_enabled(true);
-            let pitch = width as usize * 4;
-            let damage = [vello::FineDamageRect {
-                x: 3,
-                y: 4,
-                width: 6,
-                height: 5,
-            }];
-            let mut destination = vec![0; pitch * height as usize];
-            let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &scene,
-                    SceneDamage {
-                        revision: 1,
-                        previous_revision: None,
-                        regions: Some(&damage),
-                    },
-                    &mut destination,
-                    pitch,
-                )
-                .expect("seed");
-
-            bridge.set_base_color(Color::from_rgb8(0x10, 0x20, 0x30));
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &scene,
-                    SceneDamage {
-                        revision: 2,
-                        previous_revision: Some(1),
-                        regions: Some(&damage),
-                    },
-                    &mut destination,
-                    pitch,
-                )
-                .expect("base-color boundary");
-            assert_eq!(
-                bridge.last_phase_timing().expect("timing").readback_bytes,
-                u64::from(width) * u64::from(height) * 4,
-                "base color change must refresh the complete retained staging image"
-            );
-
-            let (resized_width, resized_height) = (width + 8, height + 4);
-            bridge
-                .resize(resized_width, resized_height)
-                .expect("different-mode resize boundary");
-            assert_eq!(bridge.size(), (resized_width, resized_height));
-            let resized_pitch = resized_width as usize * 4;
-            let mut resized_destination = vec![0; resized_pitch * resized_height as usize];
-            let resized_scene = rect_scene(
-                resized_width,
-                resized_height,
-                Color::from_rgb8(0x20, 0x30, 0x40),
-            );
-            bridge
-                .paint_damage_into_xrgb8888(
-                    &resized_scene,
-                    SceneDamage {
-                        revision: 3,
-                        previous_revision: Some(2),
-                        regions: Some(&damage),
-                    },
-                    &mut resized_destination,
-                    resized_pitch,
-                )
-                .expect("resize boundary");
-            assert_eq!(
-                bridge.last_phase_timing().expect("timing").readback_bytes,
-                u64::from(resized_width) * u64::from(resized_height) * 4,
-                "resize must not retain a sparse backing frame"
-            );
-        }
+        let (resized_width, resized_height) = (width + 8, height + 4);
+        bridge
+            .resize(resized_width, resized_height)
+            .expect("different-mode resize boundary");
+        assert_eq!(bridge.size(), (resized_width, resized_height));
+        let resized_pitch = resized_width as usize * 4;
+        let mut resized_destination = vec![0; resized_pitch * resized_height as usize];
+        let resized_scene = rect_scene(
+            resized_width,
+            resized_height,
+            Color::from_rgb8(0x20, 0x30, 0x40),
+        );
+        bridge
+            .paint_damage_into_xrgb8888(
+                &resized_scene,
+                SceneDamage {
+                    revision: 3,
+                    previous_revision: Some(2),
+                    regions: Some(&damage),
+                },
+                &mut resized_destination,
+                resized_pitch,
+            )
+            .expect("resize boundary");
+        assert_eq!(
+            bridge.last_phase_timing().expect("timing").readback_bytes,
+            u64::from(resized_width) * u64::from(resized_height) * 4,
+            "resize must not retain a sparse backing frame"
+        );
     }
 }
 

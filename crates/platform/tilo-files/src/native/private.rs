@@ -40,6 +40,16 @@ mod platform {
                 "identity directory is not user-owned",
             ));
         }
+        restrict(path, &metadata)
+    }
+
+    /// Mode `0700`, set only when the directory has another: a chmod that
+    /// changes nothing still tells every watcher of the directory that its
+    /// attributes changed, so a caller that only reads must not make one.
+    pub fn restrict(path: &Path, metadata: &std::fs::Metadata) -> io::Result<()> {
+        if metadata.permissions().mode() & 0o7777 == 0o700 {
+            return Ok(());
+        }
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
     }
 
@@ -79,12 +89,12 @@ pub fn owner_only(options: &mut OpenOptions) -> &mut OpenOptions {
 }
 
 /// Restrict an existing directory to its owner (mode `0700` on Unix; a no-op
-/// on platforms without permission bits).
+/// on platforms without permission bits). A directory that already has that
+/// mode is left untouched, so restricting it is not a change its watchers see.
 pub fn restrict_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        platform::restrict(path, &std::fs::metadata(path)?)
     }
     #[cfg(not(unix))]
     {
@@ -571,5 +581,28 @@ mod tests {
             io::ErrorKind::AlreadyExists
         );
         assert_eq!(std::fs::read(&file).unwrap(), b"keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restricting_a_restricted_directory_leaves_its_attributes_alone() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("identity");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        restrict_directory(&dir).unwrap();
+        let restricted = std::fs::metadata(&dir).unwrap();
+        assert_eq!(restricted.permissions().mode() & 0o7777, 0o700);
+        // A chmod, even to the mode it has, moves the change time and wakes
+        // every watcher of the directory.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        restrict_directory(&dir).unwrap();
+        directory(&dir).unwrap();
+        let again = std::fs::metadata(&dir).unwrap();
+        assert_eq!(
+            (again.ctime(), again.ctime_nsec()),
+            (restricted.ctime(), restricted.ctime_nsec())
+        );
     }
 }

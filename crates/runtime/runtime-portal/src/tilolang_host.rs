@@ -13,7 +13,9 @@
 //! 2. its identity-service connection;
 //! 3. its verified module, in a sealed memfd ([`Module`]);
 //! 4. its window: the patch connection to the window's process, which shows
-//!    what the instance sends and reports what the person did.
+//!    what the instance sends and reports what the person did;
+//! 5. for an app whose types hold an outside service's resources, its connection
+//!    to the app's origin connector (`crate::origin_connector`).
 //!
 //! A message is one `SOCK_SEQPACKET` packet in the framing of `jobs`: the verb
 //! [`INSTANCE_VERB`] and the request ([`InstanceRequest`], JSON), with the four
@@ -55,6 +57,19 @@ pub const TASK_VERB: &[u8] = b"task";
 /// ended; the host names no app.
 pub const ENDED_VERB: &[u8] = b"ended";
 
+/// The verb the host says on its door last, as it exits: why, in words its supervisor logs and
+/// shows. A host gone without saying it ended unheard (killed, or crashed).
+pub const EXITING_VERB: &[u8] = b"exiting";
+
+/// What a host says on its door.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FromHost {
+    /// The instance of this window ended (its window closed, or it never opened).
+    Ended(u64),
+    /// The host exits, for this reason.
+    Exiting(String),
+}
+
 /// The largest request: a few names and numbers.
 pub const MAX_MESSAGE: usize = 4096;
 
@@ -95,6 +110,11 @@ pub struct TaskRequest {
     pub person: Option<String>,
     /// The length of the modules in their memfd ([`encode_modules`]).
     pub modules_len: u64,
+    /// The id whose records an app keeps, by the app's id, for each app that keeps another's:
+    /// an app renamed keeps using the record of its earliest id
+    /// ([`InstanceRequest::records_under`]).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub records_under: std::collections::BTreeMap<String, String>,
 }
 
 /// The descriptors a task arrives with, in the order the door carries them.
@@ -245,6 +265,8 @@ pub struct InstanceFds {
     pub identity: Descriptor,
     pub module: Descriptor,
     pub window: Descriptor,
+    /// The connection to the app's origin connector, for an app with one.
+    pub origin: Option<Descriptor>,
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -270,7 +292,13 @@ pub fn take_door() -> Option<Descriptor> {
     #[cfg(target_os = "linux")]
     {
         static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        let fd: i32 = std::env::var(DOOR_FD_ENV).ok()?.parse().ok()?;
+        let raw = std::env::var(DOOR_FD_ENV).ok()?;
+        let Ok(fd) = raw.parse::<i32>() else {
+            eprintln!(
+                "tilo-portal: the session's door descriptor {raw:?} is not a number; this host has no door"
+            );
+            return None;
+        };
         if fd < 0 || TAKEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return None;
         }
@@ -307,7 +335,10 @@ pub fn send_instance(
                 fds.identity.as_fd(),
                 fds.module.as_fd(),
                 fds.window.as_fd(),
-            ],
+            ]
+            .into_iter()
+            .chain(fds.origin.as_ref().map(std::os::fd::AsFd::as_fd))
+            .collect::<Vec<_>>(),
         )
     }
     #[cfg(not(target_os = "linux"))]
@@ -401,8 +432,16 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
         }
         let request: InstanceRequest = serde_json::from_slice(request)
             .map_err(|_| invalid("an instance request that does not decode"))?;
-        let [broker, identity, module, window] = <[Descriptor; 4]>::try_from(fds)
-            .map_err(|_| invalid("an instance without its four connections"))?;
+        let mut fds = fds.into_iter();
+        let (Some(broker), Some(identity), Some(module), Some(window)) =
+            (fds.next(), fds.next(), fds.next(), fds.next())
+        else {
+            return Err(invalid("an instance without its four connections"));
+        };
+        let origin = fds.next();
+        if fds.next().is_some() {
+            return Err(invalid("an instance with more connections than it has"));
+        }
         if request.module_len > MAX_MODULE {
             return Err(invalid("a module over the door's limit"));
         }
@@ -413,6 +452,7 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
                 identity,
                 module,
                 window,
+                origin,
             },
         )))
     }
@@ -441,16 +481,42 @@ pub fn send_ended(door: &Descriptor, instance: u64) -> io::Result<()> {
     }
 }
 
-/// The next instance the host behind the session's `door` says ended; `None` at end of file,
-/// when the host is gone.
+/// Say on the host's end of `door`, last, why the host exits.
 ///
 /// # Errors
-/// The socket's error, or a message that is no ended instance.
-pub fn receive_ended(door: &Descriptor) -> io::Result<Option<u64>> {
+/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
+pub fn send_exiting(door: &Descriptor, reason: &str) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
-        let mut buffer = [0_u8; 64];
+        // Cut on a character boundary to what the door carries.
+        let room = MAX_MESSAGE.saturating_sub(EXITING_VERB.len().saturating_add(1));
+        let end = (0..=reason.len().min(room))
+            .rev()
+            .find(|end| reason.is_char_boundary(*end))
+            .unwrap_or(0);
+        // A NUL separates the door's fields.
+        let reason = reason.get(..end).unwrap_or_default().replace('\0', " ");
+        crate::jobs::send(door.as_fd(), &[EXITING_VERB, reason.as_bytes()], &[])
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (door, reason);
+        Err(unsupported())
+    }
+}
+
+/// The next thing the host behind the session's `door` says; `None` at end of file, when the
+/// host is gone.
+///
+/// # Errors
+/// The socket's error, or a message that is neither an ended instance nor an exit.
+pub fn receive_from_host(door: &Descriptor) -> io::Result<Option<FromHost>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsFd as _;
+        let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
+        let mut buffer = [0_u8; MAX_MESSAGE];
         let Some((length, _fds)) = crate::jobs::receive(door.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
@@ -459,11 +525,13 @@ pub fn receive_ended(door: &Descriptor) -> io::Result<Option<u64>> {
             [verb, instance] if verb == ENDED_VERB => std::str::from_utf8(instance)
                 .ok()
                 .and_then(|instance| instance.parse().ok())
-                .map(Some)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no instance")),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "the host said something other than an ended instance",
+                .map(|instance| Some(FromHost::Ended(instance)))
+                .ok_or_else(|| invalid("an ended instance that is no instance")),
+            [verb, reason] if verb == EXITING_VERB => std::str::from_utf8(reason)
+                .map(|reason| Some(FromHost::Exiting(reason.to_owned())))
+                .map_err(|_| invalid("an exit whose reason is no text")),
+            _ => Err(invalid(
+                "the host said something other than an ended instance or its exit",
             )),
         }
     }
@@ -500,10 +568,23 @@ mod tests {
             identity: connection(),
             module: connection(),
             window: connection(),
+            origin: None,
         };
         send_instance(&shell, &request, &fds).unwrap();
-        let (received, _fds) = receive_instance(&host).unwrap().unwrap();
+        let (received, received_fds) = receive_instance(&host).unwrap().unwrap();
         assert_eq!(received, request);
+        assert!(
+            received_fds.origin.is_none(),
+            "an app without an origin has no connection"
+        );
+        // An app with an origin brings its connection to the connector as the fifth.
+        let fds = InstanceFds {
+            origin: Some(connection()),
+            ..fds
+        };
+        send_instance(&shell, &request, &fds).unwrap();
+        let (_, received_fds) = receive_instance(&host).unwrap().unwrap();
+        assert!(received_fds.origin.is_some());
         drop(shell);
         assert!(
             receive_instance(&host).unwrap().is_none(),
@@ -515,9 +596,19 @@ mod tests {
     fn an_ended_instance_crosses_the_door_back() {
         let (shell, host) = pair().unwrap();
         send_ended(&host, 42).unwrap();
-        assert_eq!(receive_ended(&shell).unwrap(), Some(42));
+        assert_eq!(
+            receive_from_host(&shell).unwrap(),
+            Some(FromHost::Ended(42))
+        );
+        send_exiting(&host, "the session closed its door and no instance runs").unwrap();
+        assert_eq!(
+            receive_from_host(&shell).unwrap(),
+            Some(FromHost::Exiting(
+                "the session closed its door and no instance runs".into()
+            ))
+        );
         drop(host);
-        assert_eq!(receive_ended(&shell).unwrap(), None, "the host is gone");
+        assert_eq!(receive_from_host(&shell).unwrap(), None, "the host is gone");
     }
 
     #[test]
@@ -540,6 +631,7 @@ mod tests {
             room: "7a110d00-0000-4000-8000-000000000001".into(),
             person: Some("ada".into()),
             modules_len: 3,
+            records_under: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
         };
         let fds = TaskFds {
             program: connection(),

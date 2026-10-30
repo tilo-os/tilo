@@ -20,7 +20,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use iroh::endpoint::{Endpoint, RecvStream, SendStream};
+use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler};
 use tilo_clock::unix_now_ns;
 use tilo_lock::RwLockRecover as _;
@@ -883,8 +883,18 @@ fn policy_roots(policy: &TrustPolicy, own_user: [u8; 32]) -> HashSet<[u8; 32]> {
     let mut roots = HashSet::from([own_user]);
     if let TrustPolicy::AllowList { users } = policy {
         roots.extend(users.iter().filter_map(|encoded| {
-            let bytes = hex::decode(encoded).ok()?;
-            <[u8; 32]>::try_from(bytes).ok()
+            let key = hex::decode(encoded)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| {
+                    <[u8; 32]>::try_from(bytes).map_err(|_| "not 32 bytes".to_owned())
+                });
+            match key {
+                Ok(key) => Some(key),
+                Err(error) => {
+                    tracing::error!(user = %encoded, %error, "a trusted user in the host's allow list is not a key; it is not trusted");
+                    None
+                }
+            }
         }));
     }
     roots
@@ -990,7 +1000,15 @@ impl std::fmt::Debug for RelayProtocol {
 }
 
 impl ProtocolHandler for RelayProtocol {
-    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        self.accept_streams(connection).await
+    }
+}
+
+impl RelayProtocol {
+    /// Take `connection`'s first stream and serve its sessions on a task of
+    /// their own, so the iroh router can accept the next connection.
+    async fn accept_streams(&self, connection: Connection) -> Result<(), AcceptError> {
         if self
             .autobind
             .as_ref()
@@ -1000,39 +1018,53 @@ impl ProtocolHandler for RelayProtocol {
                 "home peer is decommissioned",
             )));
         }
-        let this = self.clone();
-        let (send, recv) = connection.accept_bi().await?;
-        // Run the whole session in a separate task so we return
-        // promptly and the iroh router can accept the next
-        // connection.
-        tokio::spawn(async move {
-            if let Err(e) = Box::pin(handle_conn(this, connection, send, recv)).await {
-                tracing::debug!("relay conn ended: {e}");
-            }
-        });
+        let first = connection.accept_bi().await?;
+        tokio::spawn(serve_streams(self.clone(), connection, first));
         Ok(())
     }
 }
 
-async fn handle_conn(
+/// Serve every session `connection` carries, `first` (already accepted)
+/// first, each on a stream of its own, until the connection closes.
+async fn serve_streams(
     ctx: RelayProtocol,
-    connection: iroh::endpoint::Connection,
-    send: SendStream,
-    recv: RecvStream,
-) -> Result<(), HostError> {
-    let closed = connection.clone();
-    let result = serve_session(ctx, recv, send, async move {
-        closed.closed().await;
-    })
-    .await;
-    connection.close(0u32.into(), b"relay session ended");
-    result
+    connection: Connection,
+    first: (SendStream, RecvStream),
+) {
+    let sessions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut first = Some(first);
+    loop {
+        let (send, recv) = match first.take() {
+            Some(streams) => streams,
+            None => match connection.accept_bi().await {
+                Ok(streams) => streams,
+                Err(_) => return,
+            },
+        };
+        sessions.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let (ctx, connection) = (ctx.clone(), connection.clone());
+        let sessions = Arc::clone(&sessions);
+        tokio::spawn(async move {
+            let closed = connection.clone();
+            let result = Box::pin(serve_session(ctx, recv, send, async move {
+                closed.closed().await;
+            }))
+            .await;
+            if let Err(error) = result {
+                tracing::debug!("relay session ended: {error}");
+            }
+            let last = sessions.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1;
+            if last {
+                connection.close(0u32.into(), b"relay session ended");
+            }
+        });
+    }
 }
 
 /// One member session over `recv`/`send`: the bounded shared handshake
 /// under the live policy (the owner and every user the host currently
 /// admits), then the peer loop until the stream ends or `closed` resolves.
-/// Every carrier runs this: an iroh connection, and an in-process stream.
+/// Every carrier runs this: an iroh stream, and an in-process stream.
 async fn serve_session<R, W>(
     ctx: RelayProtocol,
     mut recv: R,

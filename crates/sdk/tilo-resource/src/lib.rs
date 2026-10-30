@@ -958,10 +958,23 @@ pub mod __private {
         name: &'static str,
         optional: bool,
     ) -> Result<T, serde_json::Error> {
+        // Only the decode is per type: taking the argument out is compiled
+        // once for every parameter of every action.
+        T::deserialize(take_arg(args, name, optional)?)
+    }
+
+    /// The argument `name` taken from `args`: `null` for an absent optional
+    /// one, else missing.
+    #[inline(never)]
+    fn take_arg(
+        args: &mut serde_json::Map<String, serde_json::Value>,
+        name: &'static str,
+        optional: bool,
+    ) -> Result<serde_json::Value, serde_json::Error> {
         use serde::de::Error as _;
         match args.remove(name) {
-            Some(value) => T::deserialize(value),
-            None if optional => T::deserialize(serde_json::Value::Null),
+            Some(value) => Ok(value),
+            None if optional => Ok(serde_json::Value::Null),
             None => Err(serde_json::Error::missing_field(name)),
         }
     }

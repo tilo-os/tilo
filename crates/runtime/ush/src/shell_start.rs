@@ -1,29 +1,24 @@
-//! How a session's interactive shell starts: one path for the Host and for
-//! guests (docs/app-model/ush.md).
+//! How the Host's interactive shell starts (docs/app-model/ush.md). An
+//! environment session runs ush's own shell on the Tilo side
+//! ([`crate::tilo_side`]) instead.
 //!
 //! The shell is the session's interactive login shell. `bash` starts with
-//! one rc file ([`bash_rc`]): what must run before any of the person's files
-//! (the native editor's builtin, in a guest), then what `bash --login`
-//! reads, then the marks of [`crate::runs`] when Terminal asked for them.
-//! Any other shell starts with `-l`.
+//! one rc file ([`bash_rc`]): what `bash --login` reads, then the marks of
+//! [`crate::runs`] when Terminal asked for them. Any other shell starts with
+//! `-l`.
 
 use std::ffi::OsString;
 use std::path::Path;
 
-/// Where a guest's shell finds its rc file.
-pub const GUEST_RC: &str = "/run/ush/shell.bash";
-
-/// The rc file of a session's interactive `bash`. `prelude` runs first,
-/// before any of the person's files. Then what `bash --login` reads, which
+/// The rc file of a session's interactive `bash`: what `bash --login` reads, which
 /// `--rcfile` would otherwise skip: `/etc/profile` (and with it the system's
 /// completion setup in `/etc/profile.d`), then the first of the person's
 /// `~/.bash_profile`, `~/.bash_login` and `~/.profile`; a home with none of
 /// them still gets its `~/.bashrc`. The marks come last when `marks`, so
 /// nothing the person's files set replaces them.
 #[must_use]
-pub fn bash_rc(prelude: &str, marks: bool) -> String {
+pub fn bash_rc(marks: bool) -> String {
     let mut rc = String::from("# ush: the session's interactive login shell\n");
-    rc.push_str(prelude);
     rc.push_str(LOGIN);
     if marks {
         rc.push_str(crate::runs::MARKS);
@@ -71,12 +66,11 @@ mod tests {
     }
 
     #[test]
-    fn the_prelude_runs_before_the_persons_files_and_the_marks_after() {
-        let rc = bash_rc("enable tilo_editable\n", true);
-        let prelude = rc.find("enable tilo_editable").unwrap();
+    fn the_marks_come_after_the_persons_files() {
+        let rc = bash_rc(true);
         let profile = rc.find(". /etc/profile").unwrap();
         let marks = rc.find("__ush_runs_key").unwrap();
-        assert!(prelude < profile && profile < marks, "{rc}");
-        assert!(!bash_rc("", false).contains("__ush_runs_key"));
+        assert!(profile < marks, "{rc}");
+        assert!(!bash_rc(false).contains("__ush_runs_key"));
     }
 }

@@ -46,6 +46,7 @@ impl Lease {
 
 /// Request IDs correlate delivery; transaction IDs correlate the original edit.
 /// A query is not permission to retry a lost edit or redirect it to a new field.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Request {
     Inspect,
     Replace {
@@ -246,6 +247,111 @@ pub fn decode(frame: &[u8]) -> io::Result<Reply> {
     })
 }
 
+fn take_lease(frame: &[u8]) -> io::Result<Lease> {
+    Ok(Lease {
+        incarnation: read(frame, 16)?,
+        generation: u64::from_le_bytes(read(frame, 32)?),
+        revision: u64::from_le_bytes(read(frame, 40)?),
+        expires_ns: u64::from_le_bytes(read(frame, 48)?),
+        anchor: u32::from_le_bytes(read(frame, 56)?),
+        focus: u32::from_le_bytes(read(frame, 60)?),
+    })
+}
+
+/// The producer's half: decode one request as [`encode`] wrote it, with its
+/// request ID. The lease is taken as sent, for the producer to compare with
+/// its own; a zero transaction is the producer's to refuse as invalid.
+/// # Errors
+/// Rejects malformed framing, unknown operations, fields an Inspect or
+/// Revoke may not carry, text on anything but a Replace, and control text.
+pub fn decode_request(frame: &[u8]) -> io::Result<(u64, Request)> {
+    if frame.len() < HEADER_BYTES
+        || frame.len() > FRAME_BYTES
+        || read::<4>(frame, 0)? != *MAGIC
+        || read::<1>(frame, 4)? != [VERSION]
+        || read::<2>(frame, 6)? != [0, 0]
+        || read::<4>(frame, 76)? != [0; 4]
+    {
+        return Err(invalid());
+    }
+    let request = u64::from_le_bytes(read(frame, 8)?);
+    let bytes = usize::try_from(u32::from_le_bytes(read(frame, 72)?)).map_err(|_| invalid())?;
+    if request == 0 || HEADER_BYTES.checked_add(bytes) != Some(frame.len()) {
+        return Err(invalid());
+    }
+    let text = std::str::from_utf8(frame.get(HEADER_BYTES..).ok_or_else(invalid)?)
+        .map_err(|_| invalid())?;
+    let [op] = read::<1>(frame, 5)?;
+    if (op != 2 && !text.is_empty()) || text.chars().any(char::is_control) {
+        return Err(invalid());
+    }
+    let transaction = u64::from_le_bytes(read(frame, 64)?);
+    let fieldless = || {
+        frame
+            .get(16..72)
+            .is_some_and(|fields| fields.iter().all(|byte| *byte == 0))
+    };
+    let operation = match op {
+        1 if fieldless() => Request::Inspect,
+        6 if fieldless() => Request::Revoke,
+        2 => Request::Replace {
+            lease: take_lease(frame)?,
+            transaction,
+            text: text.to_owned(),
+        },
+        3 => Request::Undo {
+            lease: take_lease(frame)?,
+            transaction,
+        },
+        4 => Request::Redo {
+            lease: take_lease(frame)?,
+            transaction,
+        },
+        5 => Request::Query {
+            lease: take_lease(frame)?,
+            transaction,
+        },
+        _ => return Err(invalid()),
+    };
+    Ok((request, operation))
+}
+
+/// The producer's half: encode a reply [`decode`] reads. A Ready reply
+/// carries the lease and the field's text; any other carries neither.
+/// # Errors
+/// Rejects a Ready reply without a valid lease, a lease or text on any
+/// other, selections off the text's scalar boundaries and control text.
+pub fn encode_reply(reply: &Reply) -> io::Result<Vec<u8>> {
+    let ready = reply.status == Status::Ready;
+    if ready != reply.lease.is_some()
+        || (!ready && (!reply.text.is_empty() || reply.can_undo || reply.can_redo))
+        || reply.text.len() > TEXT_BYTES
+        || reply.text.chars().any(char::is_control)
+    {
+        return Err(invalid());
+    }
+    let mut frame = vec![0; HEADER_BYTES];
+    write(&mut frame, 0, MAGIC)?;
+    let flags = u8::from(reply.can_undo) | (u8::from(reply.can_redo) << 1);
+    if let Some(lease) = &reply.lease {
+        let boundary =
+            |at: u32| usize::try_from(at).is_ok_and(|at| reply.text.is_char_boundary(at));
+        if !boundary(lease.anchor) || !boundary(lease.focus) {
+            return Err(invalid());
+        }
+        put_lease(&mut frame, lease)?;
+        write(&mut frame, 4, &[VERSION, 0, reply.status as u8, flags | 4])?;
+    } else {
+        write(&mut frame, 4, &[VERSION, 0, reply.status as u8, 0])?;
+    }
+    write(&mut frame, 8, &reply.request.to_le_bytes())?;
+    write(&mut frame, 64, &reply.transaction.to_le_bytes())?;
+    let bytes = u32::try_from(reply.text.len()).map_err(|_| invalid())?;
+    write(&mut frame, 72, &bytes.to_le_bytes())?;
+    frame.extend_from_slice(reply.text.as_bytes());
+    Ok(frame)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +400,69 @@ mod tests {
                 "status {status} disclosed an unmarked buffer"
             );
         }
+    }
+
+    /// What a client encodes, a producer decodes, and what a producer
+    /// answers, a client decodes.
+    #[test]
+    fn the_producers_half_reads_requests_and_writes_replies() {
+        let replace = Request::Replace {
+            lease: lease(),
+            transaction: 7,
+            text: "héllo".into(),
+        };
+        let (id, decoded) = decode_request(&encode(3, &replace).unwrap()).unwrap();
+        assert_eq!(id, 3);
+        assert!(decoded == replace);
+        let (_, inspect) = decode_request(&encode(4, &Request::Inspect).unwrap()).unwrap();
+        assert!(inspect == Request::Inspect);
+        let mut fielded = encode(5, &Request::Inspect).unwrap();
+        fielded[20] = 1;
+        assert!(
+            decode_request(&fielded).is_err(),
+            "an Inspect carries no lease"
+        );
+
+        let ready = Reply {
+            request: 0,
+            status: Status::Ready,
+            lease: Some(Lease {
+                anchor: 3,
+                focus: 4,
+                ..lease()
+            }),
+            transaction: 0,
+            can_undo: true,
+            can_redo: false,
+            text: "héllo".into(),
+        };
+        let back = decode(&encode_reply(&ready).unwrap()).unwrap();
+        assert_eq!(back.text, "héllo");
+        assert_eq!(back.lease, ready.lease);
+        assert!(back.can_undo && !back.can_redo);
+        let applied = Reply {
+            request: 3,
+            status: Status::Applied,
+            lease: None,
+            transaction: 7,
+            can_undo: false,
+            can_redo: false,
+            text: String::new(),
+        };
+        let back = decode(&encode_reply(&applied).unwrap()).unwrap();
+        assert_eq!(
+            (back.request, back.status, back.transaction),
+            (3, Status::Applied, 7)
+        );
+        let split = Reply {
+            lease: Some(Lease {
+                focus: 2,
+                ..lease()
+            }),
+            text: "界".into(),
+            ..ready
+        };
+        assert!(encode_reply(&split).is_err(), "a selection inside a scalar");
     }
 
     #[test]

@@ -473,12 +473,16 @@ fn addressed(envelope: Envelope) -> Option<PeerEvent> {
 
 enum Command {
     Join(u64),
+    /// Join the room (its UUID) of this device's person, named as given,
+    /// once the host governs it ([`PeerHandle::join_placed`]).
+    JoinPlaced(String, String),
+    /// The host answered the placement of this workspace.
+    Placed(u64),
     OpenRecord(u64, DocumentRoute),
     Publish(DocumentRoute, Vec<Vec<u8>>),
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
     InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
     OpenRoute(DocumentRoute),
-    PinGovernor(String, [u8; 32]),
     LiveJoin(u64),
     Live(u64, Vec<u8>),
     SealLive(u64, Vec<u8>, LiveCompletion),
@@ -692,19 +696,16 @@ impl PeerHandle {
         let watching = config.watching;
         let mut channels = crate::channels::Channels::new(
             config.cert.device_public_key,
-            config.cert.user_public_key,
             store.channel_vault().unwrap_or_else(rand::random),
         );
-        channels.govern_by_host(&config.host_cert);
         let saved = store
             .load_channels()
             .and_then(|bytes| SavedPeerChannels::decode(&bytes))
             .unwrap_or_default();
         channels.restore(saved.channels);
         channels.restore_requests(saved.requests);
-        // Nothing to send yet: no route is open.
-        let _ = channels.note_revocations(config.revocations.iter().cloned(), 0);
         let task = Task {
+            replicas: crate::replica::Replicas::new(config.cert.device_public_key),
             commands: commands.downgrade(),
             watched: crate::watching::WatchedKeys::default(),
             config,
@@ -712,6 +713,7 @@ impl PeerHandle {
             store,
             shared: shared.clone(),
             rooms: BTreeSet::new(),
+            placing: BTreeMap::new(),
             live: BTreeSet::new(),
             outbox: record.outbox.iter().cloned().collect(),
             record,
@@ -733,7 +735,6 @@ impl PeerHandle {
             admission_since: None,
             delivered: BTreeMap::new(),
             received: BTreeSet::new(),
-            room_layouts: crate::room_layout::RoomLayouts::default(),
             compactions: BTreeMap::new(),
             voice: crate::voice::Participations::default(),
         };
@@ -772,6 +773,22 @@ impl PeerHandle {
     /// Subscribe to a room.
     pub fn join(&self, workspace_id: u64) -> Result<(), String> {
         self.send(Command::Join(workspace_id))
+    }
+
+    /// Join `room` (its UUID), a workspace of this device's person, named
+    /// `name`: the host is first asked to govern it
+    /// ([`tilo_relay_protocol::rooms::RoomsRequest::Place`]), creating it
+    /// unless it does, so the room has governance like every other; then it
+    /// is subscribed. Where the host places nothing for this device (a room
+    /// of another person's, a host reached without its rooms route), the
+    /// room is subscribed as it is, and its own admission decides.
+    ///
+    /// # Errors
+    ///
+    /// `room` is no room UUID, or the session is closed.
+    pub fn join_placed(&self, room: &str, name: &str) -> Result<(), String> {
+        tilo_relay_protocol::room_workspace_id(room).map_err(|error| error.to_string())?;
+        self.send(Command::JoinPlaced(room.to_owned(), name.to_owned()))
     }
 
     /// Open `route`, an on-demand record of the joined room `workspace_id`
@@ -836,12 +853,6 @@ impl PeerHandle {
     /// are also opened by publishing on them or receiving their documents.
     pub fn open_route(&self, route: DocumentRoute) -> Result<(), String> {
         self.send(Command::OpenRoute(route))
-    }
-
-    /// Name the device that governs `room` (a room id), as the room itself
-    /// says: a participant of every channel of the room.
-    pub fn pin_governor(&self, room: &str, governor: [u8; 32]) -> Result<(), String> {
-        self.send(Command::PinGovernor(room.to_owned(), governor))
     }
 
     /// Join a room's live plane (after [`Self::join`]).
@@ -1242,6 +1253,9 @@ struct Task {
     store: Arc<dyn PeerStore>,
     shared: Arc<Mutex<Shared>>,
     rooms: BTreeSet<u64>,
+    /// Rooms of this device's person joined once the host governs them:
+    /// each one's UUID and name, until the host answered its placement.
+    placing: BTreeMap<u64, (String, String)>,
     live: BTreeSet<u64>,
     outbox: VecDeque<OutboxEntry>,
     record: PeerRecord,
@@ -1287,8 +1301,8 @@ struct Task {
     /// subscription keeps them; a whole one asks for them again (a refresh
     /// wants the rooms whole), so it clears them.
     received: BTreeSet<[u8; 32]>,
-    /// The documents of the rooms joined, read for their layout scope.
-    room_layouts: crate::room_layout::RoomLayouts,
+    /// Each joined room as its governance admits it.
+    replicas: crate::replica::Replicas,
     /// Open compaction requests: room, route and the entries delivered when
     /// the request arrived.
     compactions: BTreeMap<[u8; 16], Compaction>,
@@ -1877,6 +1891,14 @@ impl Task {
         };
         match command {
             Command::Join(workspace_id) => self.join(workspace_id, client),
+            Command::JoinPlaced(room, name) => self.join_placed(room, name, client),
+            Command::Placed(workspace_id) => {
+                if self.placing.remove(&workspace_id).is_some() {
+                    self.join(workspace_id, client)
+                } else {
+                    true
+                }
+            }
             Command::OpenRecord(workspace_id, route) => {
                 self.open_record(workspace_id, route, client)
             }
@@ -1922,15 +1944,7 @@ impl Task {
                 true
             }
             Command::OpenRoute(route) => {
-                let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
-                self.absorb(changes);
-                true
-            }
-            Command::PinGovernor(room, governor) => {
-                let changes =
-                    self.channels
-                        .pin_governor(&room, governor, tilo_clock::unix_now_ms());
-                self.absorb(changes);
+                self.open_channel(&route);
                 true
             }
             Command::Publish(route, frames) => self.publish(route, frames, client).await,
@@ -1986,6 +2000,57 @@ impl Task {
         });
         self.received.clear();
         client.is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
+    }
+
+    /// Join `room` once the host governs it ([`PeerHandle::join_placed`]).
+    fn join_placed(&mut self, room: String, name: String, client: Option<&Link>) -> bool {
+        let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(&room) else {
+            return true;
+        };
+        if self.rooms.contains(&workspace_id) {
+            return true;
+        }
+        self.update(|status| {
+            status.rooms.entry(workspace_id).or_insert(false);
+        });
+        self.placing.insert(workspace_id, (room, name));
+        match client {
+            Some(client) => self.place(workspace_id, client),
+            None => true,
+        }
+    }
+
+    /// Ask the host to govern the room joined as `workspace_id`; it is
+    /// subscribed once the host answers, whatever it answers.
+    fn place(&self, workspace_id: u64, client: &Link) -> bool {
+        let Some((room, name)) = self.placing.get(&workspace_id).cloned() else {
+            return true;
+        };
+        let commands = self.commands.clone();
+        let placed = move || {
+            if let Some(commands) = commands.upgrade() {
+                let _ = commands.send(Command::Placed(workspace_id));
+            }
+        };
+        match client {
+            Link::Https(link) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let request = tilo_relay_protocol::rooms::RoomsRequest::Place { room, name };
+                    // Refused (not this person's host, a room governed
+                    // elsewhere) or unanswered: the room's admission decides.
+                    let _ =
+                        tilo_relay_client::https::rooms(http.as_ref(), &session, &request).await;
+                    placed();
+                });
+            }
+            // Rooms are administered over HTTPS only: a native peer joins
+            // rooms placed for it otherwise.
+            #[cfg(feature = "iroh")]
+            Link::Iroh(_) => placed(),
+        }
+        true
     }
 
     /// `command`, unless this page only watches and it would write: then
@@ -2050,6 +2115,9 @@ impl Task {
         }
         for workspace_id in &self.rooms {
             sent_ok &= client.send(self.subscribe(client, *workspace_id)).is_ok();
+        }
+        for workspace_id in self.placing.keys() {
+            sent_ok &= self.place(*workspace_id, client);
         }
         for (channel, (workspace_id, _)) in &self.opened_records {
             sent_ok &= client
@@ -2535,8 +2603,7 @@ impl Task {
             self.fail("protocol-rejected", "A document names an invalid room.");
             return true;
         };
-        let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
-        self.absorb(changes);
+        self.open_channel(&route);
         if !self.ciphers.contains_key(&route) {
             // Never in the clear: the frames wait for this device's keys.
             self.held_outbound.entry(route).or_default().extend(frames);
@@ -2608,8 +2675,7 @@ impl Task {
         client: Option<&Link>,
     ) -> bool {
         let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
-        let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
-        self.absorb(changes);
+        self.open_channel(&route);
         self.opened_records.insert(channel, (workspace_id, route));
         client.is_none_or(|client| {
             client
@@ -2675,7 +2741,21 @@ impl Task {
             Envelope::NotAuthorised { reason, .. } => {
                 self.fail("permission-required", reason);
             }
+            Envelope::RoomBootstrap {
+                workspace_id,
+                bootstrap,
+            } => {
+                match self
+                    .replicas
+                    .bootstrap(workspace_id, &bootstrap, web_time::SystemTime::now())
+                {
+                    Ok(true) => self.follow_governance(workspace_id),
+                    Ok(false) => {}
+                    Err(error) => self.fail("protocol-rejected", error),
+                }
+            }
             Envelope::Delta {
+                workspace_id,
                 author_device_public_key,
                 delta,
                 ..
@@ -2687,7 +2767,7 @@ impl Task {
                 else {
                     return;
                 };
-                self.inbound_body(body, author_device_public_key);
+                self.inbound_body(workspace_id, body, author_device_public_key);
             }
             Envelope::Position {
                 workspace_id,
@@ -2766,58 +2846,119 @@ impl Task {
         }
     }
 
-    /// One retained message from the host: channel governance, a member's
-    /// certificate, or a document.
-    /// A room's topology, for whether it shares its members' layout.
-    fn hear_layout(&mut self, room: String, changes: &[Vec<u8>]) {
-        let personal = self.room_layouts.hear(&room, changes).is_personal();
-        let members = self.room_layouts.members(&room);
-        if self.status().room_members.get(&room) != members.as_ref() {
-            self.update(|status| match members {
-                Some(members) => _ = status.room_members.insert(room.clone(), members),
-                None => _ = status.room_members.remove(&room),
-            });
+    /// Take this device into `route`'s channel, with the participants its
+    /// room's governance admits.
+    fn open_channel(&mut self, route: &DocumentRoute) {
+        let replicas = &self.replicas;
+        let changes = self.channels.open(
+            route,
+            &|route| replicas.participants(route),
+            tilo_clock::unix_now_ms(),
+        );
+        self.absorb(changes);
+    }
+
+    /// Follow what `workspace_id`'s governance says now: whether the room
+    /// shares its members' layout, who its members are, and the channel
+    /// commits that waited for a participant it now admits.
+    fn follow_governance(&mut self, workspace_id: u64) {
+        if let Some((room, layout, members)) = self.replicas.layout(workspace_id) {
+            let personal = layout.is_personal();
+            if self.status().room_members.get(&room) != members.as_ref() {
+                self.update(|status| match members {
+                    Some(members) => _ = status.room_members.insert(room.clone(), members),
+                    None => _ = status.room_members.remove(&room),
+                });
+            }
+            if self.status().personal_rooms.contains(&room) != personal {
+                self.update(|status| {
+                    if personal {
+                        status.personal_rooms.insert(room.clone());
+                    } else {
+                        status.personal_rooms.remove(&room);
+                    }
+                });
+                self.emit(&PeerEvent::RoomLayout { room, personal });
+            }
         }
-        if self.status().personal_rooms.contains(&room) != personal {
-            self.update(|status| {
-                if personal {
-                    status.personal_rooms.insert(room.clone());
-                } else {
-                    status.personal_rooms.remove(&room);
-                }
-            });
-            self.emit(&PeerEvent::RoomLayout { room, personal });
+        let replicas = &self.replicas;
+        let changes = self.channels.retry_early(
+            &|route| replicas.participants(route),
+            tilo_clock::unix_now_ms(),
+        );
+        self.absorb(changes);
+        // Writes held for a certificate or governance the room now has; the
+        // room's `Ready` decides those of its replay.
+        if lock(&self.shared).status.rooms.get(&workspace_id) == Some(&true) {
+            self.decide_held(workspace_id);
         }
     }
 
-    fn inbound_body(&mut self, body: Vec<u8>, author: [u8; 32]) {
-        let now = tilo_clock::unix_now_ms();
+    /// One retained or live message the host relayed to `workspace_id`:
+    /// the room's governance (a member's certificate, the room document)
+    /// is admitted through the room's replica; channel governance and
+    /// documents go on.
+    fn inbound_body(&mut self, workspace_id: u64, body: Vec<u8>, author: [u8; 32]) {
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
-            Ok(neighbour_wire::NeighbourMsg::IdentityHello {
-                cert, revocations, ..
-            }) => {
-                let mut changes = self.channels.note_revocations(revocations, now);
-                changes.extend(self.channels.note_cert(author, *cert, now));
+            Ok(
+                message @ (neighbour_wire::NeighbourMsg::IdentityHello { .. }
+                | neighbour_wire::NeighbourMsg::SyncResp { .. }),
+            ) => {
+                let retained = lock(&self.shared).status.rooms.get(&workspace_id) != Some(&true);
+                // Governance the room's replica refuses is not the room's.
+                let admitted = self.replicas.admit(
+                    workspace_id,
+                    author,
+                    retained,
+                    message,
+                    web_time::SystemTime::now(),
+                );
+                if admitted == Ok(true) {
+                    self.follow_governance(workspace_id);
+                }
+            }
+            Ok(message) => self.inbound_message(body, message, author),
+            Err(_) => {}
+        }
+    }
+
+    /// A held document, decided again.
+    fn held_body(&mut self, body: Vec<u8>, author: [u8; 32]) {
+        if let Ok(message) = postcard::from_bytes(&body) {
+            self.inbound_message(body, message, author);
+        }
+    }
+
+    /// Channel governance or a document `author` wrote.
+    fn inbound_message(
+        &mut self,
+        body: Vec<u8>,
+        message: neighbour_wire::NeighbourMsg,
+        author: [u8; 32],
+    ) {
+        let now = tilo_clock::unix_now_ms();
+        match message {
+            neighbour_wire::NeighbourMsg::MlsGovernance { room, frame, .. } => {
+                let replicas = &self.replicas;
+                let changes = self.channels.receive_frame(
+                    &room,
+                    *frame,
+                    &|route| replicas.participants(route),
+                    now,
+                );
                 self.absorb(changes);
             }
-            Ok(neighbour_wire::NeighbourMsg::MlsGovernance { room, frame, .. }) => {
-                let changes = self.channels.receive_frame(author, &room, *frame, now);
-                self.absorb(changes);
-            }
-            Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, room }) => {
-                self.hear_layout(room, &changes);
-            }
-            Ok(neighbour_wire::NeighbourMsg::AppDocument {
-                app_id,
-                cluster_id,
-                record_id,
-                envelope,
+            ref message @ neighbour_wire::NeighbourMsg::AppDocument {
+                ref app_id,
+                ref cluster_id,
+                ref record_id,
+                ref envelope,
                 ..
-            }) => {
+            } => {
                 let route = DocumentRoute {
-                    app_id,
-                    cluster_id,
-                    record: record_id,
+                    app_id: app_id.clone(),
+                    cluster_id: cluster_id.clone(),
+                    record: record_id.clone(),
                 };
                 // A room the host resumes after it lagged can replay an entry
                 // its live deliveries already carried; the page takes it once.
@@ -2827,11 +2968,34 @@ impl Task {
                 {
                     return;
                 }
-                if !self.config.watching {
-                    let changes = self.channels.open(&route, now);
-                    self.absorb(changes);
+                let Ok(workspace_id) = route.workspace_id() else {
+                    return;
+                };
+                // The room's governance decides the write before any app
+                // sees it, and holds it while it cannot yet.
+                let retained = lock(&self.shared).status.rooms.get(&workspace_id) != Some(&true);
+                match self.replicas.decide_document(
+                    workspace_id,
+                    author,
+                    retained,
+                    message,
+                    web_time::SystemTime::now(),
+                ) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        self.hold_document(route, OpKey::of(envelope), body, author);
+                        return;
+                    }
+                    Err(error) => {
+                        self.refused = (self.refused.0.saturating_add(1), error.clone());
+                        self.emit(&PeerEvent::DocumentRejected(error));
+                        return;
+                    }
                 }
-                let waits = match envelope.encryption {
+                if !self.config.watching {
+                    self.open_channel(&route);
+                }
+                let waits = match &envelope.encryption {
                     Some(metadata) => self
                         .ciphers
                         .get(&route)
@@ -2862,7 +3026,7 @@ impl Task {
                     if self.config.watching {
                         self.watched.want(route.clone());
                     }
-                    let key = OpKey::of(&envelope);
+                    let key = OpKey::of(envelope);
                     self.hold_document(route, key, body, author);
                     return;
                 }
@@ -2894,7 +3058,7 @@ impl Task {
             // The count stands until each document is decided again: one
             // still sealed is held again, and only what opened stops it.
             for (_, (body, author)) in held {
-                self.inbound_body(body, author);
+                self.held_body(body, author);
             }
             let waiting = self.held_inbound.get(&route).map_or(0, InboundHold::len);
             self.update(|status| {
@@ -3054,7 +3218,9 @@ impl Task {
                 && self.channel_changes.is_empty()
             {
                 self.persist_channels(false);
-                let mut channels = self.channels.describe();
+                let mut channels = self.replicas.describe();
+                channels.push('\n');
+                channels.push_str(&self.channels.describe());
                 for ((route, from), count) in &self.opened {
                     let _ = write!(
                         channels,
@@ -3094,7 +3260,7 @@ impl Task {
                 // Open what waited first: a reader that sees the route no
                 // longer awaiting keys has its documents among the events.
                 for (_, (body, author)) in held {
-                    self.inbound_body(body, author);
+                    self.held_body(body, author);
                 }
                 let waiting = self.held_inbound.get(&route).map_or(0, InboundHold::len);
                 self.update(|status| {

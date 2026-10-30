@@ -45,7 +45,10 @@ mod nodes;
 pub mod own_device;
 mod pending;
 mod providers;
+mod record_read;
 mod search;
+mod shared_host;
+pub mod task_programs;
 #[cfg(any(test, feature = "test-support"))]
 mod test_host;
 mod wait;
@@ -73,6 +76,9 @@ pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
+pub use record_read::{
+    RECORD_READS_FOR_TASKS, RECORD_READS_UNAVAILABLE, RecordAddress, RecordCopy, RecordReads,
+};
 pub use search::stem_word;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_host::TestHost;
@@ -175,6 +181,10 @@ pub struct Caller {
     execution: Option<ExecutionLease>,
     // The person a non-person principal acts for, as the host admitted it.
     acting_for: Option<String>,
+    // The person's own device handed this connection to the agent
+    // (`Self::delegated_to`), rather than the agent being admitted as a member
+    // in its own right and acting for them (`Self::acting_for`).
+    session_delegated: bool,
     // The Shortcut whose run this person's invocation is a step of.
     shortcut: Option<String>,
     // How far the invocation this caller's requests continue was admitted
@@ -195,6 +205,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
         }
@@ -212,6 +223,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
         }
@@ -228,6 +240,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
         }
@@ -246,6 +259,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
         }
@@ -269,6 +283,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
         }
@@ -291,6 +306,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: Some(hex::encode(user_public_key)),
+            session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
         }
@@ -371,8 +387,18 @@ impl Caller {
             return self;
         };
         self.acting_for = Some(person.clone());
+        self.session_delegated = true;
         self.principal = CallerPrincipal::Agent(agent_id.into());
         self
+    }
+
+    /// Whether this agent is one the person's own device handed its session to
+    /// ([`Self::delegated_to`]): it carries the delegation a device gives its
+    /// agents. An agent admitted as a member that acts for a person
+    /// ([`Self::acting_for`]) carries only what the room grants it.
+    #[must_use]
+    pub fn is_session_delegated(&self) -> bool {
+        self.session_delegated
     }
 
     /// The person this caller acts for, when it is not that person.
@@ -1314,53 +1340,11 @@ pub trait ActionHost {
     fn content_puts(&self) -> Option<std::sync::Arc<dyn ContentPuts>> {
         None
     }
-}
 
-/// A shared host is the host: what lets one be handed to [`serve`], which
-/// keeps a handle for answers that wait.
-impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
-    fn retire_execution(&self, caller: &Caller) {
-        (**self).retire_execution(caller);
-    }
-
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        (**self).query(caller, query)
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        (**self).invoke(caller, request)
-    }
-
-    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        (**self).observe(caller, id)
-    }
-
-    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        (**self).next_change(caller, id)
-    }
-
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
-        (**self).cancel(caller, id)
-    }
-
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
-        (**self).confirm(caller, request)
-    }
-
-    fn content_puts(&self) -> Option<std::sync::Arc<dyn ContentPuts>> {
-        (**self).content_puts()
+    /// Where an agent task reads its room's records outside their apps ([`RecordReads`]);
+    /// `None` for a host without them.
+    fn record_reads(&self) -> Option<std::sync::Arc<dyn RecordReads>> {
+        None
     }
 }
 

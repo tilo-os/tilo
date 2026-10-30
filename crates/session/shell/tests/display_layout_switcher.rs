@@ -17,7 +17,7 @@ use shell::shell::overlay_host::OutputGeometry;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::WorkspaceTree;
 use taffy::{NodeId, TaffyTree};
-use ui::a11y::{AccessNode, Role};
+use ui::a11y::AccessNode;
 use vello::kurbo::Rect;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -93,7 +93,8 @@ fn publish_laptop_with_monitor() {
     );
 }
 
-/// Route a pressed logical key through the host dispatcher.
+/// Route a pressed logical key through the host dispatcher, then run the
+/// frame that carries out what it asked.
 pub(crate) fn press(
     host: &mut ShellOverlayHost,
     layout: &(TaffyTree<()>, NodeId),
@@ -103,6 +104,18 @@ pub(crate) fn press(
     let what = format!("{key:?}");
     let consumed = press_key(host, &layout.0, layout.1, key, mods);
     assert!(consumed, "{what} must be consumed by the shell");
+    frame(host);
+}
+
+/// One frame of the host: the sheets' apps carry out what they were asked
+/// and show what the shell told them, laid out and drawn.
+pub(crate) fn frame(host: &mut ShellOverlayHost) {
+    let doc = automerge::AutoCommit::new();
+    for _ in 0..2 {
+        host.update(&doc, &automerge::ROOT);
+    }
+    let _ = layout_host(host);
+    paint(host);
 }
 
 fn super_p(host: &mut ShellOverlayHost, layout: &(TaffyTree<()>, NodeId)) {
@@ -195,14 +208,14 @@ fn begin_display_action(
     ticket
 }
 
-/// The display sheet in the host's semantic tree.
+/// The display sheet in the host's semantic tree: the dialog, with what a
+/// reader meets in it after it.
 fn display_sheet(host: &ShellOverlayHost) -> AccessNode {
-    host.accessibility()
-        .expect("the host publishes a semantic tree")
-        .children
-        .into_iter()
-        .find(|node| node.role == Role::Dialog && node.name.as_deref() == Some("Display"))
-        .expect("the open display sheet is in the semantic tree")
+    let sheet = host
+        .display_sheet_accessibility()
+        .expect("the open display sheet is in the semantic tree");
+    assert_eq!(sheet.name.as_deref(), Some("Display"));
+    sheet
 }
 
 fn highlighted_layout(host: &ShellOverlayHost) -> String {
@@ -260,8 +273,7 @@ fn super_p_arrow_enter_stages_a_mirror_transaction() {
 
     // The compositor tick: the host update takes the stored change into the
     // sheet; painting only draws what it took.
-    host.update(&automerge::AutoCommit::new(), &automerge::ROOT);
-    paint(&mut host);
+    frame(&mut host);
     let sheet = display_sheet(&host);
     for name in ["Keep", "Revert"] {
         assert!(
@@ -355,7 +367,7 @@ fn a_sheet_choice_is_refused_where_the_published_action_is() {
         ModifiersState::empty(),
     );
     shell::shell::durable_writer::global().flush();
-    host.update(&automerge::AutoCommit::new(), &automerge::ROOT);
+    frame(&mut host);
     assert!(
         DisplayTransaction::load().is_none(),
         "the sheet stages nothing the action would refuse"
@@ -378,7 +390,7 @@ fn painting_the_open_sheet_reads_no_storage() {
     let layout = layout_host(&mut host);
     super_p(&mut host, &layout);
     // The compositor tick takes the open-time state; it may read settings.
-    host.update(&automerge::AutoCommit::new(), &automerge::ROOT);
+    frame(&mut host);
     std::fs::remove_file(settings_store::hardware::display_snapshot_path().unwrap())
         .expect("the published snapshot file");
     let before = settings_store::published::file_reads_on_this_thread();
@@ -534,15 +546,11 @@ fn updates_keep_the_sheet(
     }
 }
 
-fn assert_sheet_gone(host: &ShellOverlayHost, chrome: &shell::shell::chrome_state::Chrome) {
+fn assert_sheet_gone(host: &mut ShellOverlayHost, chrome: &shell::shell::chrome_state::Chrome) {
     assert!(!sheet_open(chrome), "the display sheet closed");
+    frame(host);
     assert!(
-        !host
-            .accessibility()
-            .expect("the host publishes a semantic tree")
-            .children
-            .iter()
-            .any(|node| node.role == Role::Dialog && node.name.as_deref() == Some("Display")),
+        host.display_sheet_accessibility().is_none(),
         "no display dialog is left to take the keyboard"
     );
 }
@@ -555,6 +563,7 @@ fn mirror_through_the_action(
 ) {
     let ticket = begin_mirror(chrome);
     assert!(sheet_open(chrome), "the layout action shows its change");
+    frame(host);
     complete(&ticket);
     compositor_moves_to(DisplayTransactionState::AwaitingConfirmation);
     assert!(
@@ -580,7 +589,7 @@ fn an_action_opened_sheet_closes_when_the_revert_action_answers_it() {
         updates_close_the_sheet(&mut host, &chrome),
         "an answered change leaves no modal sheet behind"
     );
-    assert_sheet_gone(&host, &chrome);
+    assert_sheet_gone(&mut host, &chrome);
 }
 
 #[test]
@@ -594,7 +603,7 @@ fn an_action_opened_sheet_closes_once_the_kept_change_is_confirmed() {
     complete(&begin_display_action(&chrome, "display.change.keep"));
     compositor_moves_to(DisplayTransactionState::Confirmed);
     assert!(updates_close_the_sheet(&mut host, &chrome));
-    assert_sheet_gone(&host, &chrome);
+    assert_sheet_gone(&mut host, &chrome);
 }
 
 #[test]
@@ -614,7 +623,7 @@ fn an_action_opened_sheet_closes_when_its_change_times_out_or_is_refused() {
             updates_close_the_sheet(&mut host, &chrome),
             "a change that is {settled:?} with nobody answering closes its sheet"
         );
-        assert_sheet_gone(&host, &chrome);
+        assert_sheet_gone(&mut host, &chrome);
     }
 }
 
@@ -631,7 +640,7 @@ fn an_action_opened_sheet_closes_by_escape_and_by_the_close_action() {
         Key::Named(NamedKey::Escape),
         ModifiersState::empty(),
     );
-    assert_sheet_gone(&host, &chrome);
+    assert_sheet_gone(&mut host, &chrome);
 
     compositor_moves_to(DisplayTransactionState::Reverted);
     mirror_through_the_action(&mut host, &chrome);
@@ -643,7 +652,7 @@ fn an_action_opened_sheet_closes_by_escape_and_by_the_close_action() {
         &shell::shell::search::action_api::ActionArgs::none(),
     )
     .expect("closing the display sheet is an action, not only a click");
-    assert_sheet_gone(&host, &chrome);
+    assert_sheet_gone(&mut host, &chrome);
 }
 
 #[test]

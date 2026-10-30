@@ -12,6 +12,11 @@ pub struct NativeAuthorityStorage {
     pub(crate) pending: BTreeMap<RoomId, StoredPendingEnrollment>,
 }
 impl NativeAuthorityStorage {
+    /// Raised by every publication of the record.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
     #[must_use]
     pub fn requires(&self, room: RoomId) -> bool {
         self.rooms.contains_key(&room) || self.pending.contains_key(&room)
@@ -29,13 +34,14 @@ impl NativeAuthorityStorage {
     #[must_use]
     pub fn hosted_on(&self, room: RoomId, device: &[u8; 32]) -> bool {
         if let Some(stored) = self.rooms.get(&room) {
-            return stored.enrollment.as_ref().is_some_and(|enrollment| {
-                crate::session::hosted_by(&enrollment.transport_hint, device)
-            });
+            return stored
+                .enrollment
+                .as_ref()
+                .is_some_and(|enrollment| crate::hosted_by(&enrollment.transport_hint, device));
         }
         self.pending.get(&room).is_some_and(|pending| {
             crate::VerifiedNativeEnrollmentIntent::restore(&pending.intent)
-                .is_ok_and(|intent| crate::session::hosted_by(intent.transport_hint(), device))
+                .is_ok_and(|intent| crate::hosted_by(intent.transport_hint(), device))
         })
     }
     /// Whether this device holds `room`: its replica is installed, not

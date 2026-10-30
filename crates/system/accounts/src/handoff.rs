@@ -391,6 +391,31 @@ mod tests {
         std::env::temp_dir().join(format!("tilo-accounts-handoff-{}", uuid::Uuid::new_v4()))
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_wedged_credential_helper_is_ended_at_the_refresher_deadline() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        std::fs::write(&helper, "#!/bin/sh\nsleep 3600\n").unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut refresher = CommandRefresher::new(None).with_program(&helper);
+        refresher.timeout = Duration::from_millis(100);
+        let began = std::time::Instant::now();
+        assert_eq!(
+            refresher.refresh(&AccountId::from("drive-a"), false),
+            Err(RefreshError::Failed),
+            "a helper that outlives its deadline did not publish"
+        );
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "the refresher returned instead of waiting on the helper"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn each_account_is_its_own_sealed_file() {
         let root = temp_root();

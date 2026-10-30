@@ -314,7 +314,7 @@ fn history_names_what_was_made_and_changed_by_title_never_by_id() {
     assert!(
         sentences
             .iter()
-            .any(|sentence| sentence == "New note: Untitled"),
+            .any(|sentence| sentence == "New note: Note"),
         "the person's action reads by its label, on the note it made by its title: {sentences:?}"
     );
     for sentence in &sentences {
@@ -379,12 +379,12 @@ fn an_agent_reads_what_a_record_holds_and_each_item_it_names() {
         .as_str()
         .unwrap_or_else(|| panic!("the note is named by the id a read takes: {content:#}"))
         .to_owned();
-    assert_eq!(notes["items"][0]["label"], json!("Untitled"), "{content:#}");
+    assert_eq!(notes["items"][0]["label"], json!("Note"), "{content:#}");
 
     let content = read(&mut app, &note);
     assert_eq!(content["item"], json!(note));
     assert_eq!(content["kind"], json!(format!("tl.{NOTES}.Note")));
-    assert_eq!(content["fields"]["title"], json!("Untitled"), "{content:#}");
+    assert_eq!(content["fields"]["title"], json!(""), "{content:#}");
     assert_eq!(content["fields"]["body"], json!(""), "{content:#}");
     assert_eq!(content["fields"]["pinned"], json!(false), "{content:#}");
 

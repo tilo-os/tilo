@@ -43,6 +43,22 @@ mod initialization_tests;
 #[path = "committed_document/service_session_tests.rs"]
 mod service_session_tests;
 impl NativeDocumentReadContext {
+    /// A read of `route` by an agent task acting for the person whose device certificate is
+    /// `certificate` (`record_read`): no launcher custody and no creation, only `revalidate`,
+    /// which decides the task's read of the record again. Only the broker can make one.
+    pub(super) fn for_task(
+        route: CrdtRoute,
+        certificate: tilo_user_identity::DeviceCert,
+        revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    ) -> Self {
+        Self {
+            route,
+            certificate,
+            record_kind: None,
+            creation: None,
+            revalidate,
+        }
+    }
     /// Bind a read to a source record while retaining the original channel's
     /// launcher custody and live admission check. Only the broker can do so.
     pub(super) fn for_source(mut self, app: &str, record: &str) -> Self {
@@ -717,8 +733,9 @@ impl CapnpChannelHandle {
         self.route()
             .record_id
             .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-            .ok_or_else(|| "continuation requires a durable shell tab id".into())
+            .ok_or_else(|| "continuation requires a durable shell tab id".to_owned())?
+            .parse::<u64>()
+            .map_err(|error| format!("continuation names no durable shell tab id: {error}"))
     }
 
     /// For an Open of a record another device creates (the host governing

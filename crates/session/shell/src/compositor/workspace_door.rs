@@ -1,10 +1,11 @@
 //! Actions for a program running in an app, with that app's workspace scope.
 //!
 //! `tilo action`, `tilo do` and `tilo open` typed in a terminal reach the
-//! session's agent door (`agent_door`) in the control protocol. The admin
-//! control socket refuses them: they run inside an app. The door hands such
-//! a connection here, once the kernel's account of the process has named
-//! the app it runs in and that app's workspace ([`attribute`]):
+//! session's agent door (`agent_door`) in the control protocol; from a Tilo
+//! Terminal tab, `tilo-control` on the admin control socket does too. The
+//! door and the socket hand such a connection here, once the kernel's
+//! account of the process has named the app it runs in and that app's
+//! workspace ([`attribute`]):
 //!
 //! - **A tab of Tilo's Terminal.** Its shell is `tilo-ush`'s child, not the
 //!   Terminal's, so the process tree alone ends at the shell runtime. The

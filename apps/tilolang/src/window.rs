@@ -108,7 +108,11 @@ impl Platform for InProcess {
     }
 
     fn surface_changed(&self, app: &str, bundle: &tilolang_tilo::bundle::Bundle) {
-        ui::app_surface::register_package(app, &bundle.surface());
+        match bundle.surface() {
+            Ok(surface) => ui::app_surface::register_package(app, &surface),
+            // The surface registered before stays: receivers keep deciding against it.
+            Err(error) => tracing::error!(app, %error, "the updated package's surface is unusable"),
+        }
     }
 
     /// The platform's phrases, which the standard library's frames say.

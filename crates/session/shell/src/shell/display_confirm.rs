@@ -7,145 +7,20 @@
 //! the previous layout unless they keep it. The question itself is an app
 //! ([`tilo_sheets::display_confirm`]); this is what the shell holds for it:
 //! the transaction, its deadline, and the answer recorded for it.
-//!
-//! The Keep/Revert band the Super+P sheet paints lives here too
-//! (`paint_keep_revert_band`).
 
 use std::time::{Duration, Instant};
 
 use settings_store::display_tools::DisplayTool;
 use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect};
-use vello::peniko::Fill;
-
 use ui::i18n::ArgValue;
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
 
 use crate::shell::i18n::{t, t_args};
-use ui::TextRole;
-use ui::widget::ButtonRole;
 
 /// How often a shown prompt re-reads the transaction, so it follows the
 /// backend (applied elsewhere, restored on timeout) without per-frame I/O.
 const POLL: Duration = Duration::from_millis(250);
 
-/// Height of the Keep/Revert band: a title line and a status line with the
-/// two buttons beside them.
-pub(crate) fn band_height() -> f64 {
-    76.0
-}
-
-/// Which button of a Keep/Revert band has keyboard focus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BandFocus {
-    Keep,
-    Revert,
-}
-
-/// Where a painted band put its buttons.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct BandButtons {
-    pub keep: Rect,
-    pub revert: Rect,
-}
-
-/// Where Keep and Revert sit in `band`.
-pub(crate) fn band_buttons(band: Rect) -> BandButtons {
-    let revert = Rect::new(
-        band.x1 - 86.0,
-        band.y0 + 20.0,
-        band.x1 - 12.0,
-        band.y1 - 20.0,
-    );
-    let keep = Rect::new(
-        revert.x0 - 82.0,
-        band.y0 + 20.0,
-        revert.x0 - 8.0,
-        band.y1 - 20.0,
-    );
-    BandButtons { keep, revert }
-}
-
-/// State shared by the prompt and projection sheet's standard button faces.
-#[derive(Clone, Copy)]
-pub(crate) struct BandState {
-    pub focus: Option<BandFocus>,
-    /// The button under the pointer, if any: it lifts, as every button does.
-    pub hover: Option<BandFocus>,
-    pub disabled: bool,
-}
-
-/// Paint a Keep/Revert band into `band`: `title` over `status` on the left,
-/// Keep and Revert on the right.
-pub(crate) fn paint_keep_revert_band(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    band: Rect,
-    title: &str,
-    status: &str,
-    state: BandState,
-) -> BandButtons {
-    let colors = &theme.tokens.colors;
-    let type_scale = &theme.tokens.typography;
-    let radius = ui::chrome::ChromeRole::Control.radius(theme, band.height());
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        colors.lift(0.35),
-        None,
-        &RoundedRect::from_rect(band, radius),
-    );
-    let text_width = width_f32(band.width() - 190.0);
-    text_renderer.draw_style(
-        scene,
-        title,
-        colors.text_primary,
-        transform.pre_translate((band.x0 + 14.0, band.y0 + 12.0).into()),
-        Some(text_width),
-        &type_scale
-            .style(TextRole::Caption)
-            .with_weight(TextWeight::Medium),
-    );
-    text_renderer.draw_style(
-        scene,
-        status,
-        colors.text_dim,
-        transform.pre_translate((band.x0 + 14.0, band.y0 + 42.0).into()),
-        Some(text_width),
-        &type_scale.style(TextRole::Caption),
-    );
-    let BandButtons { keep, revert } = band_buttons(band);
-    let keep_label = t("display-confirm-keep");
-    let revert_label = t("display-confirm-revert");
-    ui::widget::Button::paint(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        &ui::widget::ButtonFace::new(keep, &keep_label)
-            .role(ButtonRole::Primary)
-            .focused(state.focus == Some(BandFocus::Keep))
-            .hovered(state.hover == Some(BandFocus::Keep))
-            .disabled(state.disabled),
-    );
-    ui::widget::Button::paint(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        &ui::widget::ButtonFace::new(revert, &revert_label)
-            .focused(state.focus == Some(BandFocus::Revert))
-            .hovered(state.hover == Some(BandFocus::Revert))
-            .disabled(state.disabled),
-    );
-    BandButtons { keep, revert }
-}
-
-/// The countdown line under a band's title.
+/// The countdown under a Keep/Revert question.
 pub(crate) fn countdown_status(seconds_left: Option<u64>) -> String {
     seconds_left.map_or_else(
         || t("display-confirm-applying"),
@@ -157,14 +32,6 @@ pub(crate) fn countdown_status(seconds_left: Option<u64>) -> String {
             )
         },
     )
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "a card-sized text width fits f32"
-)]
-fn width_f32(width: f64) -> f32 {
-    width.max(0.0) as f32
 }
 
 struct Pending {

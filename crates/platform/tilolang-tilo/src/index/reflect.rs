@@ -116,7 +116,19 @@ pub fn stamp_of(change: &automerge::Change) -> Option<(Stamp, Vec<String>)> {
     if encoded.type_id != ACTION_TYPE {
         return None;
     }
-    let action = serde_json::from_slice::<DynAction>(&encoded.payload).ok()?;
+    let action = match serde_json::from_slice::<DynAction>(&encoded.payload) {
+        Ok(action) => action,
+        Err(error) => {
+            // A tilolang action's change whose action does not read: the change is still the
+            // record's, but no version stamps it.
+            tracing::warn!(
+                change = %change.hash(),
+                %error,
+                "a tilolang action's change carries an action that does not decode"
+            );
+            return None;
+        }
+    };
     let at = action
         .authorship
         .at

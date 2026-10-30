@@ -50,7 +50,7 @@
 //! the source) runs.
 //!
 //! A native app without records keeps one document for itself in the room
-//! ([`ui::persist`]); that document is what its window carries, arriving as
+//! (its room index); that document is what its window carries, arriving as
 //! a record the new instance opens by its saved presentation.
 //!
 //! An app that keeps its state only in its running process (an X11 or plain
@@ -544,7 +544,7 @@ fn instance_of(
 
 /// What `instance` of `app_id` shows in the profile at `directory`, when it
 /// can travel: the record its saved presentation names, else the document
-/// the app keeps for itself in the room ([`ui::persist`]), with the
+/// the app keeps for itself in the room (its room index), with the
 /// presentation it carries along.
 fn shown(
     local: Option<&LocalShown>,

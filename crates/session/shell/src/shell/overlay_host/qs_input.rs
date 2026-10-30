@@ -1,4 +1,5 @@
-//! Quick settings clicks, keyboard, sliders and the actions they dispatch.
+//! What Quick Settings' effects do to the device: radios, levels, VPNs and
+//! accessories, each through the OS dispatcher, read back afterwards.
 
 #[allow(
     clippy::wildcard_imports,
@@ -7,113 +8,17 @@
 use super::*;
 
 impl ShellOverlayHost {
-    /// Clicks inside the open quick-settings popover: dismiss outside
-    /// the panel, or route to the drill-in sub-page vs. the root page.
-    /// Reached only once `flags.quick_settings` is true, at which point
-    /// every path absorbs the click.
-    pub(super) fn handle_shell_quick_settings_click(&mut self, p: Point, handled: &mut bool) {
-        let p = self.untransform_quick_settings_pointer(p, Instant::now());
-        let qs_rect = self.quick_settings_rect();
-        if self.handle_now_playing_click(p) {
-            *handled = true;
-            return;
-        }
-        if !qs_rect.contains(p) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.overlays.quick_settings = false;
-                // Next open starts at root, not the last drill-in.
-                st.quick_settings.nav_stack = vec![tilo_quick_settings::QsLevel::Root];
-                st.bump();
-            }
-            *handled = true;
-            return;
-        }
-        let current_level = self
-            .chrome
-            .as_ref()
-            .map_or(tilo_quick_settings::QsLevel::Root, |c| {
-                c.borrow().quick_settings.current_level().clone()
-            });
-        if matches!(current_level, tilo_quick_settings::QsLevel::Root) {
-            self.handle_shell_quick_settings_root_click(p);
-        } else {
-            self.handle_shell_quick_settings_drill_in_click(p, &current_level);
-        }
-        *handled = true;
-    }
-
-    /// Clicks on a quick-settings drill-in sub-page (Wi-Fi, VPN,
-    /// Bluetooth, notifications): back, the passphrase prompt, or a
-    /// row. Split out of `handle_shell_quick_settings_click`, which
-    /// always treats the click as absorbed regardless of what this
-    /// does.
-    pub(super) fn handle_shell_quick_settings_drill_in_click(
+    /// Connect or disconnect an accessory, then read the accessories back.
+    pub(super) fn apply_qs_bluetooth_intent(
         &mut self,
-        p: Point,
-        current_level: &tilo_quick_settings::QsLevel,
+        chrome: &Chrome,
+        address: &str,
+        connect: bool,
     ) {
-        let back = if matches!(current_level, tilo_quick_settings::QsLevel::Notifications) {
-            self.qs_notification_back_rect()
-        } else {
-            self.qs_back_chevron_rect()
-        };
-        match current_level {
-            tilo_quick_settings::QsLevel::BluetoothDetails(address) => {
-                self.handle_qs_bluetooth_details_click(p, address);
-            }
-            tilo_quick_settings::QsLevel::Notifications => {
-                self.handle_qs_notifications_click(p);
-            }
-            tilo_quick_settings::QsLevel::Root if back.contains(p) => {
-                self.pop_quick_settings_level();
-            }
-            tilo_quick_settings::QsLevel::Root => {}
-        }
-    }
-
-    /// Carry out a press in the Wi-Fi section.
-    pub(super) fn apply_qs_wifi_intent(&mut self, chrome: &Chrome, intent: WifiIntent) {
-        match intent {
-            WifiIntent::Join(ssid) => {
-                {
-                    let mut state = chrome.borrow_mut();
-                    state.quick_settings.wifi_password = None;
-                    state.quick_settings.wifi_joining = Some(ssid.clone());
-                    state.bump();
-                }
-                self.sync_wifi_password_input();
-                self.qs_refresh.kick_wifi_join(ssid, None, false);
-            }
-            WifiIntent::AskPassword(ssid) => {
-                self.begin_wifi_password(&ssid);
-                // A password another of the person's devices shares joins
-                // without asking.
-                let _ = self.try_connect_with_shared_wifi_password();
-            }
-        }
-    }
-
-    /// Carry out a press in the Bluetooth section: connect or disconnect an
-    /// accessory, or open its use on the person's other devices.
-    pub(super) fn apply_qs_bluetooth_intent(&mut self, chrome: &Chrome, intent: BluetoothIntent) {
-        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
+        let actions = crate::shell::quick_settings_dispatch::ValidatedQsActions::new(
             self.qs_actions.as_ref(),
         );
-        let (address, connect) = match intent {
-            BluetoothIntent::Details(address) => {
-                let mut state = chrome.borrow_mut();
-                state
-                    .quick_settings
-                    .push_level(tilo_quick_settings::QsLevel::BluetoothDetails(address));
-                self.qs_device_fabric_start = 0;
-                self.qs_device_fabric_wheel_remainder = 0.0;
-                state.bump();
-                return;
-            }
-            BluetoothIntent::Connect(address) => (address, true),
-            BluetoothIntent::Disconnect(address) => (address, false),
-        };
+        let address = address.to_owned();
         let result = if connect {
             actions.connect_bluetooth(&address)
         } else {
@@ -175,7 +80,7 @@ impl ShellOverlayHost {
         let result = match device_route {
             #[cfg(target_os = "linux")]
             Some(device) => crate::shell::device_vpn::choose(&device, enabled),
-            _ => crate::shell::search::providers::actions::ValidatedQsActions::new(
+            _ => crate::shell::quick_settings_dispatch::ValidatedQsActions::new(
                 self.qs_actions.as_ref(),
             )
             .set_vpn_connection(name, enabled),
@@ -246,240 +151,102 @@ impl ShellOverlayHost {
             .and_then(|at| at.checked_add(QS_WIFI_RESCAN))
     }
 
-    pub(super) fn handle_qs_notifications_click(&mut self, p: Point) {
-        let Some(chrome) = self.chrome.clone() else {
+    /// The slider shows where it was let go until the device answers.
+    fn show_released_level(&self, change: &super::quick_settings::QsLevelChange) {
+        use super::quick_settings::QsLevelChange;
+        let Some(chrome) = self.chrome.as_ref() else {
             return;
         };
-        let layout = self.qs_notification_layout();
-        let outcome = self.notification_center.click(
-            &ChromeNotifications::new(&chrome).with_agents(&self.room_activity),
-            &layout,
-            p,
-        );
-        self.apply_notification_center_outcome(outcome);
-    }
-
-    pub(super) fn pop_quick_settings_level(&self) {
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().quick_settings_back();
-        }
-    }
-
-    /// Routes a click through the root-page component, then applies the
-    /// resulting shell-wide navigation or side effect after hit-testing.
-    pub(super) fn handle_shell_quick_settings_root_click(&mut self, p: Point) {
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        let panel = self.quick_settings_rect();
-        let action = {
-            let mut st = chrome.borrow_mut();
-            self.qs_root.handle_click(p, panel, &mut st.quick_settings)
-        };
-        // A press that changes what is under the pointer (a page, a section
-        // opening) owns its release.
-        self.qs_navigation_release_pending |=
-            matches!(action, RootAction::Enter(_) | RootAction::SectionOpened(_));
-        self.apply_quick_settings_root_action(action, &chrome);
-    }
-
-    /// Keyboard parity for the immediate-mode quick-settings root. Tab uses
-    /// paint order, Enter/Space route through the same action dispatcher as a
-    /// pointer click, and arrows adjust the two range controls in small steps.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Keyboard focus and control adjustments intentionally use the same immediate-mode action path as pointer input."
-    )]
-    pub(super) fn handle_quick_settings_keyboard(
-        &mut self,
-        logical_key: &Key,
-        backwards: bool,
-        control_down: bool,
-        handled: &mut bool,
-    ) -> bool {
-        let Some(chrome) = self.chrome.clone() else {
-            return false;
-        };
-        let history_level = {
-            let state = chrome.borrow();
-            state
-                .overlays
-                .quick_settings
-                .then(|| state.quick_settings.current_level().clone())
-        };
-        if matches!(
-            history_level,
-            Some(tilo_quick_settings::QsLevel::Notifications)
-        ) {
-            let consumed = self.handle_qs_notification_keyboard_with_shift(logical_key, backwards);
-            *handled = consumed;
-            return consumed;
-        }
-        if self.qs_clipboard_takes_key(&chrome, logical_key, control_down) {
-            let consumed = self.handle_qs_clipboard_keyboard(logical_key, control_down);
-            *handled = consumed;
-            return consumed;
-        }
-        if matches!(
-            history_level,
-            Some(tilo_quick_settings::QsLevel::BluetoothDetails(_))
-        ) {
-            let consumed = self.handle_qs_device_fabric_keyboard(logical_key);
-            *handled = consumed;
-            return consumed;
-        }
-        let at_root = {
-            let state = chrome.borrow();
-            state.overlays.quick_settings
-                && matches!(
-                    state.quick_settings.current_level(),
-                    tilo_quick_settings::QsLevel::Root
-                )
-        };
-        if !at_root {
-            return false;
-        }
-
-        // Edit mode shares the same keyboard contract as every reorderable
-        // Tilo list: Ctrl+Up/Down moves the focused control, while ordinary
-        // arrows retain their range-adjustment meaning outside edit mode.
-        if control_down
-            && matches!(
-                logical_key,
-                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
-            )
-        {
-            let direction = if matches!(logical_key, Key::Named(NamedKey::ArrowUp)) {
-                -1
-            } else {
-                1
-            };
-            let changed = {
-                let state = chrome.borrow();
-                self.qs_root
-                    .reorder_focused(&state.quick_settings, direction)
-            };
-            if changed {
-                chrome.borrow_mut().bump();
+        let mut state = chrome.borrow_mut();
+        let qs = &mut state.quick_settings;
+        match change {
+            QsLevelChange::Brightness(level) => qs.brightness = level_of(*level),
+            QsLevelChange::Display(connector, level) => {
+                if let Some(display) = qs
+                    .displays
+                    .iter_mut()
+                    .find(|display| display.connector == *connector)
+                {
+                    display.level = level_of(*level);
+                }
             }
-            *handled = changed;
-            return changed;
+            QsLevelChange::Volume(level) => qs.set_volume_level(level_of(*level)),
         }
-
-        if matches!(logical_key, Key::Named(NamedKey::Tab)) {
-            if self.handle_now_playing_tab(backwards) {
-                *handled = true;
-                return true;
-            }
-            let mut state = chrome.borrow_mut();
-            self.qs_root.focus_next(&state.quick_settings, backwards);
-            state.bump();
-            *handled = true;
-            return true;
-        }
-
-        let card_key = match logical_key {
-            Key::Named(NamedKey::Enter | NamedKey::Space) => Some((true, true)),
-            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => Some((false, true)),
-            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => Some((false, false)),
-            _ => None,
-        };
-        if let Some((activate, forward)) = card_key
-            && self.handle_now_playing_key(activate, forward)
-        {
-            *handled = true;
-            return true;
-        }
-
-        if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
-            let panel = self.quick_settings_rect();
-            let action = {
-                let mut state = chrome.borrow_mut();
-                self.qs_root
-                    .activate_focused(panel, &mut state.quick_settings)
-            };
-            self.apply_quick_settings_root_action(action, &chrome);
-            *handled = true;
-            return true;
-        }
-
-        let direction = if matches!(
-            logical_key,
-            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown)
-        ) {
-            -1.0
-        } else if matches!(
-            logical_key,
-            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp)
-        ) {
-            1.0
-        } else {
-            return false;
-        };
-        let commit = {
-            let mut state = chrome.borrow_mut();
-            let commit = self
-                .qs_root
-                .adjust_focused_slider(&mut state.quick_settings, direction);
-            if commit.is_some() {
-                state.bump();
-            }
-            commit
-        };
-        let Some(commit) = commit else {
-            return false;
-        };
-        self.commit_quick_settings_slider(commit);
-        *handled = true;
-        true
     }
 
     /// Commit one level change through the same truthful feedback path as a
     /// hardware key. A positive volume adjustment intentionally unmutes an
     /// already-muted sink; otherwise the slider moves while sound stays off.
-    pub(super) fn commit_quick_settings_slider(&mut self, commit: SliderCommit) {
-        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
+    pub(super) fn commit_quick_settings_level(
+        &mut self,
+        change: super::quick_settings::QsLevelChange,
+    ) {
+        use super::quick_settings::QsLevelChange;
+        let actions = crate::shell::quick_settings_dispatch::ValidatedQsActions::new(
             self.qs_actions.as_ref(),
         );
-        let (field, result) = match commit {
-            SliderCommit::Brightness(value_pct) => (
-                QsField::Brightness,
-                actions
-                    .set_brightness(value_pct)
-                    .map(|()| crate::shell::osd::Osd::brightness(value_pct / 100.0)),
-            ),
-            SliderCommit::DisplayBrightness(index, value_pct) => {
-                // The readout names the display whenever more than one can
-                // be dimmed.
+        self.show_released_level(&change);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a level in 0..=1 as a percentage the OS takes in f32"
+        )]
+        let percent = |level: f64| (level.clamp(0.0, 1.0) * 100.0) as f32;
+        let (field, result) = match change {
+            QsLevelChange::Brightness(level) => {
+                let value_pct = percent(level);
+                (
+                    QsField::Brightness,
+                    actions
+                        .set_brightness(value_pct)
+                        .map(|()| crate::shell::osd::Osd::brightness(value_pct / 100.0)),
+                )
+            }
+            QsLevelChange::Display(connector, level) => {
+                let value_pct = percent(level);
+                // The readout shows on the display that changed as well as
+                // on the one the panel is open on, and names the display
+                // whenever more than one can be dimmed or it is not the one
+                // in use.
                 let target = self.chrome.as_ref().and_then(|chrome| {
                     let state = chrome.borrow();
+                    let focused = self.focused_connector_of(&state);
                     let displays = &state.quick_settings.displays;
-                    displays.get(index).map(|display| {
-                        (
-                            display.connector.clone(),
-                            (displays.len() > 1).then(|| display.name.clone()),
-                        )
-                    })
+                    displays
+                        .iter()
+                        .find(|display| display.connector == connector)
+                        .map(|display| {
+                            let named = crate::shell::media_keys::brightness_names_display(
+                                displays.len(),
+                                focused.as_deref(),
+                                &display.connector,
+                            );
+                            (
+                                display.connector.clone(),
+                                named.then(|| display.name.clone()),
+                            )
+                        })
                 });
                 let result = target.map_or_else(
                     || Err("that monitor is no longer connected".to_owned()),
                     |(connector, name)| {
                         actions
                             .set_display_brightness(&connector, value_pct)
-                            .map(|()| name)
+                            .map(|()| (connector, name))
                     },
                 );
                 (
                     QsField::Brightness,
-                    result.map(|name| {
+                    result.map(|(connector, name)| {
                         crate::shell::osd::Osd::display_brightness(
                             value_pct / 100.0,
                             name.as_deref(),
                         )
+                        .on_displays(crate::shell::osd::OsdDisplays::of([connector.as_str()]))
                     }),
                 )
             }
-            SliderCommit::Volume(value_pct) => {
+            QsLevelChange::Volume(level) => {
+                let value_pct = percent(level);
                 let bridge = self.status_bridge.as_ref();
                 let previous = bridge.and_then(|bridge| bridge.snapshot().volume);
                 (
@@ -522,20 +289,21 @@ impl ShellOverlayHost {
         self.qs_refresh.kick_field(field);
     }
 
-    /// The volume icon: flip mute on the sink the panel shows, at its level.
-    /// The bar and the panel read the same status, so both answer at once.
-    pub(super) fn toggle_quick_settings_mute(&mut self, chrome: &Chrome) {
+    /// The volume icon: mute or unmute the sink the panel shows, at its
+    /// level. The bar and the panel read the same status, so both answer at
+    /// once.
+    pub(super) fn set_quick_settings_muted(&mut self, chrome: &Chrome, muted: bool) {
         let Some(previous) = chrome.borrow().quick_settings.status.volume else {
             return;
         };
-        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
+        let actions = crate::shell::quick_settings_dispatch::ValidatedQsActions::new(
             self.qs_actions.as_ref(),
         );
         let result = crate::shell::media_keys::commit_mute(
             &crate::shell::media_keys::DispatcherAudio(&actions),
             self.status_bridge.as_ref(),
             previous,
-            !previous.muted,
+            muted,
         );
         {
             let mut st = chrome.borrow_mut();
@@ -584,214 +352,12 @@ impl ShellOverlayHost {
         (self.app_launcher)(chrome, settings_sections::APP_ID, "Settings");
     }
 
-    /// A section opened in place on the root page: what it lists is read as
-    /// it opens.
-    fn open_qs_section(&mut self, section: tilo_quick_settings::QsSection, chrome: &Chrome) {
-        match section {
-            tilo_quick_settings::QsSection::Wifi => {
-                // The first scan starts now; the section keeps
-                // scanning while it is open.
-                self.qs_wifi_scanned_at = None;
-                self.rescan_open_wifi_section(Instant::now());
-            }
-            tilo_quick_settings::QsSection::Bluetooth => {
-                self.qs_refresh.kick_bt_devices();
-            }
-            tilo_quick_settings::QsSection::Vpn => {
-                self.qs_refresh.kick_field(QsField::Vpn);
-            }
-            tilo_quick_settings::QsSection::Battery | tilo_quick_settings::QsSection::PowerMode => {
-                self.qs_refresh.kick_field(QsField::Power);
-            }
-            tilo_quick_settings::QsSection::Sound => {
-                if let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) {
-                    chrome.borrow_mut().quick_settings.sound_outputs = sound_outputs_of(&view);
-                }
-            }
-            tilo_quick_settings::QsSection::Clipboard | tilo_quick_settings::QsSection::Devices => {
-                self.refresh_qs_hosted_rows();
-            }
-        }
-        chrome.borrow_mut().bump();
-    }
-
-    pub(super) fn apply_quick_settings_root_action(&mut self, action: RootAction, chrome: &Chrome) {
-        match action {
-            RootAction::None => {}
-            RootAction::Enter(level) => {
-                let mut st = chrome.borrow_mut();
-                st.quick_settings.push_level(level);
-                st.bump();
-            }
-            RootAction::SectionOpened(section) => self.open_qs_section(section, chrome),
-            RootAction::Wifi(intent) => self.apply_qs_wifi_intent(chrome, intent),
-            RootAction::Bluetooth(intent) => self.apply_qs_bluetooth_intent(chrome, intent),
-            RootAction::Vpn { name, enabled } => self.apply_qs_vpn_change(chrome, &name, enabled),
-            RootAction::Hosted {
-                section,
-                index,
-                point,
-            } => match section {
-                tilo_quick_settings::QsSection::Devices => {
-                    self.press_qs_device_row(index, point);
-                }
-                tilo_quick_settings::QsSection::Clipboard => {
-                    self.press_qs_clipboard_row(index, point);
-                }
-                _ => {}
-            },
-            RootAction::ClearClipboard => self.clear_qs_clipboard(),
-            RootAction::SoundOutput(node_id) => {
-                // The same route the Devices page takes; its answer is the
-                // outputs as they stand now.
-                match self.device_fabric_call(DeviceFabricUiAction::RouteLocalAudio { node_id }) {
-                    Ok(view) => {
-                        let mut st = chrome.borrow_mut();
-                        st.quick_settings.sound_outputs = sound_outputs_of(&view);
-                        st.bump();
-                    }
-                    Err(error) => {
-                        let mut st = chrome.borrow_mut();
-                        st.push_notification(t("host-fabric-action-failed"), error);
-                        st.bump();
-                    }
-                }
-            }
-            RootAction::Changed(pending) => {
-                {
-                    let mut st = chrome.borrow_mut();
-                    if let Some(on) = pending.do_not_disturb {
-                        st.set_dnd(on);
-                    }
-                    st.bump();
-                }
-                self.dispatch_quick_settings_toggle_actions(pending);
-                if let Some(locked) = pending.rotation_lock {
-                    Self::save_rotation_lock(locked);
-                }
-            }
-            RootAction::LayoutChanged => {
-                chrome.borrow_mut().bump();
-            }
-            RootAction::OpenSettings(link) => {
-                // This is the device settings affordance, not workspace
-                // sharing settings. Without a link Settings opens on the
-                // page the person used last.
-                self.open_settings(chrome, link);
-            }
-            RootAction::Lock => {
-                {
-                    let mut st = chrome.borrow_mut();
-                    st.overlays.quick_settings = false;
-                    st.quick_settings.nav_stack = vec![tilo_quick_settings::QsLevel::Root];
-                    st.bump();
-                }
-                self.execute_session_action(os_actions::SessionAction::Lock);
-            }
-            RootAction::ToggleMute => self.toggle_quick_settings_mute(chrome),
-            RootAction::OpenPowerMenu => {
-                self.open_power_menu();
-                let mut st = chrome.borrow_mut();
-                st.overlays.quick_settings = false;
-                st.quick_settings.nav_stack = vec![tilo_quick_settings::QsLevel::Root];
-                st.bump();
-            }
-        }
-    }
-
     /// Persist the rotation lock; the compositor's accelerometer worker
     /// reads it from the same settings document.
     pub(super) fn save_rotation_lock(locked: bool) {
         let origin = settings_store::ChangeOrigin::local("qs.rotation-lock");
         if let Err(e) = settings_store::hardware::ROTATION_LOCK.set_by(locked, &origin) {
             tracing::warn!(error = %e, "rotation lock preference save failed");
-        }
-    }
-
-    /// Shells out to the OS for changes returned by the root component.
-    /// Do-not-disturb and rotation lock are applied by the caller.
-    pub(super) fn dispatch_quick_settings_toggle_actions(
-        &mut self,
-        pending: tilo_quick_settings::root::PendingRootActions,
-    ) {
-        if let Some(v) = pending.wifi {
-            self.dispatch_quick_settings_radio(os_actions::RadioChange::Wifi(v));
-        }
-        if let Some(v) = pending.bluetooth {
-            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            )
-            .set_bluetooth(v);
-            self.finish_quick_settings_action(
-                QsField::Bluetooth,
-                "set_bluetooth",
-                t("host-qs-change-failed-bluetooth"),
-                result,
-            );
-        }
-        if let Some(v) = pending.wired {
-            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            )
-            .set_wired(v);
-            self.finish_quick_settings_action(
-                QsField::Wired,
-                "set_wired",
-                t("host-qs-change-failed-wired"),
-                result,
-            );
-        }
-        if let Some(v) = pending.airplane {
-            self.dispatch_quick_settings_radio(os_actions::RadioChange::Airplane(v));
-        }
-        if let Some(v) = pending.hotspot {
-            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            )
-            .set_hotspot(v);
-            self.finish_quick_settings_action(
-                QsField::Hotspot,
-                "set_hotspot",
-                t("host-qs-change-failed-hotspot"),
-                result,
-            );
-        }
-        if let Some(v) = pending.mobile {
-            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            )
-            .set_mobile_broadband(v);
-            self.finish_quick_settings_action(
-                QsField::Mobile,
-                "set_mobile_broadband",
-                t("host-qs-change-failed-mobile"),
-                result,
-            );
-        }
-        if let Some(v) = pending.night_light {
-            let origin = settings_store::ChangeOrigin::local("qs.night-light");
-            if let Err(e) = settings_store::hardware::NIGHT_LIGHT.set_by(v, &origin) {
-                tracing::warn!(error = %e, "night light preference save failed");
-            }
-        }
-        if let Some(p) = pending.power {
-            use tilo_quick_settings::PowerProfile as UiPP;
-            use tilo_quick_settings::actions::PowerProfile as ActPP;
-            let mapped = match p {
-                UiPP::Saver => ActPP::Saver,
-                UiPP::Balanced => ActPP::Balanced,
-                UiPP::Performance => ActPP::Performance,
-            };
-            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            )
-            .set_power_profile(mapped);
-            self.finish_quick_settings_action(
-                QsField::Power,
-                "set_power_profile",
-                t("host-qs-change-failed-power"),
-                result,
-            );
         }
     }
 
@@ -870,4 +436,13 @@ impl ShellOverlayHost {
         // only that; completion wakes paint.
         self.qs_refresh.kick_field(field);
     }
+}
+
+/// A level as chrome state keeps it.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a level in 0..=1 kept at f32 precision"
+)]
+fn level_of(level: f64) -> f32 {
+    level.clamp(0.0, 1.0) as f32
 }

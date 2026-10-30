@@ -410,6 +410,35 @@ impl Runtime {
         self.core.complete_args(action, given)
     }
 
+    /// The default of the parameter `at` of `action`, computed now over the arguments before
+    /// it: what its form starts filled in with. `None` when it has none.
+    ///
+    /// # Errors
+    ///
+    /// A default that traps.
+    pub fn default_argument(
+        &self,
+        action: &str,
+        at: usize,
+        before: &[Value],
+    ) -> Result<Option<Value>, RuntimeError> {
+        self.core.default_argument(action, at, before)
+    }
+
+    /// The workspace's members as the host last gave them ([`Self::set_members`]).
+    #[must_use]
+    pub fn members(&self) -> Vec<crate::members::Member> {
+        self.core.members.borrow().list().to_vec()
+    }
+
+    /// When `text` says something is due ("tomorrow 9"), read now in the person's zone.
+    #[must_use]
+    pub fn dated(&self, text: &str) -> tilolang::natural::Dated {
+        let now = tilolang::calendar::instant(&self.core.clock_now()).unwrap_or(0);
+        let offset = self.core.zone.borrow().as_ref().map_or(0, |zone| zone());
+        tilolang::natural::dated(text, now, offset)
+    }
+
     /// Run a flow. It finishes, or suspends on a suggestion waiting for a decision.
     ///
     /// # Errors
@@ -642,7 +671,6 @@ impl Runtime {
             return Err(RuntimeError::Package("no outside sink is set".into()));
         }
         for entry in pending {
-            let held = (entry.doc.clone(), entry.id.clone());
             match &entry.state {
                 OutboxState::Sending { by } if by != token => {
                     let settle = note(&entry, "$settle");
@@ -653,17 +681,17 @@ impl Runtime {
                     )?;
                     report.unknown = report.unknown.saturating_add(1);
                 }
+                // This process's: handed over, or asked again what became of it. The sink
+                // answers for one it already has rather than carrying it out twice.
                 OutboxState::Sending { .. } => {
-                    // Marked by another runtime of this process: that one carries it on.
-                    if !self.core.in_flight.borrow().contains(&held) {
-                        continue;
-                    }
                     let delivered = match self.core.sink.borrow_mut().as_mut() {
                         Some(sink) => sink.deliver(&entry.capability, &entry.payload),
                         None => return Err(RuntimeError::Package("no outside sink is set".into())),
                     };
                     let mut store = self.core.store.borrow_mut();
                     match delivered {
+                        // Stays handed over: the sink settles it again once answered
+                        // (`Delivery::Pending`).
                         Delivery::Pending => {}
                         Delivery::Delivered => {
                             store.outbox_settle(
@@ -671,23 +699,22 @@ impl Runtime {
                                 &Settled::Done,
                                 &note(&entry, "$settle"),
                             )?;
-                            self.core.in_flight.borrow_mut().remove(&held);
                             report.delivered = report.delivered.saturating_add(1);
                         }
                         Delivery::Rejected(reason) => {
                             let outcome = Settled::Rejected(reason.clone());
                             store.outbox_settle(&entry, &outcome, &note(&entry, "$settle"))?;
-                            self.core.in_flight.borrow_mut().remove(&held);
                             report.failed.push((entry.id.clone(), reason));
                         }
                         Delivery::Offline(reason) => {
                             let waiting = OutboxState::Waiting { reason };
                             store.outbox_mark(&entry, &waiting, &note(&entry, "$wait"))?;
-                            self.core.in_flight.borrow_mut().remove(&held);
                             report.waiting = report.waiting.saturating_add(1);
                         }
                     }
                 }
+                // Resolved by `retry_waiting`, which the origin calls when its service is
+                // reachable again.
                 OutboxState::Waiting { .. } if !retry => {}
                 OutboxState::Queued | OutboxState::Waiting { .. } => {
                     let sending = OutboxState::Sending {
@@ -698,7 +725,6 @@ impl Runtime {
                         &sending,
                         &note(&entry, "$send"),
                     )?;
-                    self.core.in_flight.borrow_mut().insert(held);
                     report.marked = report.marked.saturating_add(1);
                 }
             }

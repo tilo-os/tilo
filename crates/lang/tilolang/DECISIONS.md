@@ -50,8 +50,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - **`Principal`** is a type whose values come only from the host. It can be a field
   (register), a `fn` or view parameter, and compared with `==`; `.name()` and string
   interpolation give its id as `Text`. There is no constructor and no conversion from `Text`.
-  Actions and flows may not take one as a parameter (E048): they are what callers invoke, and a
-  caller could pass anyone.
+  An action may take one as a parameter: a person it acts on (`share(n, with: Principal)`,
+  `assign(t, to: Principal)`), never who acts, which is always `invoker`; its form asks for one
+  of the workspace's members. Flows may not (E048): they run on their own, and a caller could
+  pass anyone.
 - **`invoker`** (E049 outside actions) reads the principal the runtime authenticated for the
   running invocation: for a person's press, that person; for a call through the door, the
   caller; for an approved suggestion, the principal who first invoked it.

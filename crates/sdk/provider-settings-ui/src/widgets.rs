@@ -19,10 +19,8 @@
 //! - **sibling** — a note under a group's rows, a block among them;
 //! - **group** — one group to the next.
 
-use std::cell::Cell;
-
 use ui::icons::Icon;
-use ui::tokens::{Metrics, Rhythm, Spacing, SpacingStep, TextRole};
+use ui::tokens::{Rhythm, Spacing, SpacingStep, TextRole};
 pub use ui::widget::Tone as StatusTone;
 use ui::widget::{
     Badge, Button, ChipStyle, Column, Container, ControlSize, IconSize, IconWidget, ListRow, Row,
@@ -63,6 +61,43 @@ enum ItemKind {
     Row(El),
     Block(El),
     Note(String),
+}
+
+/// Whether an entry joins the rows around it into one list or stands as a
+/// block ([`Item::into_parts`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemShape {
+    Row,
+    Block,
+}
+
+impl Item {
+    /// The entry's element and how it stands in its group: what a part of
+    /// a view over another record builds and hands back
+    /// ([`crate::bound::record_item`]). A note becomes its caption.
+    #[must_use]
+    pub fn into_parts(self) -> (ItemShape, El) {
+        match self.0 {
+            ItemKind::Row(element) => (ItemShape::Row, element),
+            ItemKind::Block(element) => (ItemShape::Block, element),
+            ItemKind::Note(text) => (ItemShape::Block, caption(&text)),
+        }
+    }
+
+    /// The entry of `element`, standing as `shape` says.
+    #[must_use]
+    pub fn from_parts(shape: ItemShape, element: El) -> Self {
+        match shape {
+            ItemShape::Row => row(element),
+            ItemShape::Block => block(element),
+        }
+    }
+
+    /// The entry's element, as a whole group's part of a view.
+    #[must_use]
+    pub fn into_element(self) -> El {
+        self.into_parts().1
+    }
 }
 
 /// The entries of one group: what [`rows`] collects.
@@ -140,6 +175,14 @@ impl SettingsSection {
     }
 }
 
+impl SettingsSection {
+    /// The group as an element of a page ([`page_of`]).
+    #[must_use]
+    pub fn into_element(self) -> El {
+        Box::new(self.into_section())
+    }
+}
+
 fn notes_block(notes: &[String]) -> El {
     let mut column = Column::new()
         .with_no_padding()
@@ -161,6 +204,20 @@ pub fn page(sections: Vec<SettingsSection>) -> El {
                 .with_intrinsic_height()
                 .with_rhythm(Rhythm::Group),
             |page, section| page.push(Box::new(section.into_section())),
+        ),
+    )
+}
+
+/// A page of groups built as elements ([`SettingsSection::into_element`]),
+/// each a part of a view over its own record: one `group` apart.
+pub fn page_of(groups: Vec<El>) -> El {
+    Box::new(
+        groups.into_iter().fold(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(Rhythm::Group),
+            Column::push,
         ),
     )
 }
@@ -446,57 +503,6 @@ pub fn error_row(label: &str, message: &str) -> Item {
             ))
             .push(error_caption(message)),
     ))
-}
-
-thread_local! {
-    static COMPOSE_TEXT_GROWTH: Cell<f32> = const { Cell::new(1.0) };
-}
-
-/// Record the live theme's [`ui::Theme::text_growth`] before a pane
-/// composes. Compact choosers are authored at 1×; large type has to grow
-/// that pin or option labels clip inside the chooser.
-pub fn set_compose_text_growth(growth: f32) {
-    let growth = if growth.is_finite() {
-        growth.clamp(1.0, 4.0)
-    } else {
-        1.0
-    };
-    COMPOSE_TEXT_GROWTH.set(growth);
-}
-
-fn compose_text_growth() -> f32 {
-    COMPOSE_TEXT_GROWTH.get()
-}
-
-/// The width of a compact right-aligned chooser (dropdown, segmented
-/// picker): the toolkit's utility-panel width grown for the current
-/// compose-time text scale, so a short-option control reads as a trailing
-/// chooser rather than a full-width form field.
-pub fn compact_chooser_width() -> f32 {
-    Metrics::BASE.panel_width_utility * compose_text_growth()
-}
-
-/// Pin a trailing control to the compact chooser width so it aligns to the
-/// row's right edge instead of stretching across the whole group.
-pub fn compact_control(control: El) -> El {
-    compact_control_w(compact_chooser_width(), control)
-}
-
-/// [`compact_control`] with an explicit width, for controls that need more
-/// (long device names) or less room.
-pub fn compact_control_w(width: f32, control: El) -> El {
-    Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_width(width)
-            .with_child(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_align_items(taffy::AlignItems::Center)
-                    .with_justify(taffy::JustifyContent::FlexEnd)
-                    .push(control),
-            )),
-    )
 }
 
 /// The width of a slider on a row's trailing edge: one for every slider of

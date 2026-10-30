@@ -461,14 +461,12 @@ impl ShellNetwork {
         }
     }
 
-    /// Enter, on the peer-sync worker, the rooms the configured workspace
-    /// host `host` (each, when `None`) lists: nothing for a session
-    /// configured with none.
+    /// Enter, on the peer-sync worker, the rooms the person's host `host`
+    /// lists, or each configured workspace host when `None`: nothing for a
+    /// session configured with none
+    /// ([`Self::enter_configured_host_rooms`]).
     pub(super) fn enter_configured_host_rooms_off_loop(&self, host: Option<iroh::EndpointId>) {
-        let configured = super::configured_host_addrs();
-        if configured.is_empty()
-            || host.is_some_and(|host| !configured.iter().any(|addr| addr.id == host))
-        {
+        if host.is_none() && super::configured_host_addrs().is_empty() {
             return;
         }
         let unsent = match self.peer_sync_worker.worker.get() {

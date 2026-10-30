@@ -28,7 +28,7 @@ use ui::widget::{
 };
 
 use super::{
-    StoreApp, Theme, View, action_code, format_size, full_publisher, remote_state_label,
+    StoreState, Theme, View, action_code, format_size, full_publisher, remote_state_label,
     visible_operation_status,
 };
 use crate::bindings;
@@ -70,7 +70,7 @@ pub(super) const PAGE: usize = 48;
 /// The width of one screenshot in the gallery, in lines of body text.
 const SCREENSHOT_LINES: u8 = 14;
 
-impl StoreApp {
+impl StoreState {
     /// Compose the whole tree. Called from `build_layout`; also used by tests
     /// to inspect the composition graph directly.
     pub(super) fn compose(&self, theme: &Theme) -> Element {
@@ -1638,7 +1638,7 @@ fn whats_new(releases: &[catalogue::Release]) -> Element {
 /// What the app may do on this device, in plain words, the broad ones first.
 fn permissions_section(item: &StoreItem, permissions: Option<&[Permission]>) -> Element {
     let rows: Vec<Element> = match permissions {
-        Some([]) => vec![StoreApp::prose(&ui::i18n!("store-permissions-none"))],
+        Some([]) => vec![StoreState::prose(&ui::i18n!("store-permissions-none"))],
         Some(permissions) => {
             let mut ordered: Vec<&Permission> = permissions.iter().collect();
             ordered.sort_by_key(|permission| !permission.is_broad());
@@ -1657,11 +1657,11 @@ fn permissions_section(item: &StoreItem, permissions: Option<&[Permission]>) -> 
                 .collect()
         }
         None if matches!(item.source, StoreSource::Tilo { .. }) => {
-            vec![StoreApp::prose(&ui::i18n!(
+            vec![StoreState::prose(&ui::i18n!(
                 "store-permissions-tilo-sandbox"
             ))]
         }
-        None => vec![StoreApp::prose(&ui::i18n!("store-permissions-unknown"))],
+        None => vec![StoreState::prose(&ui::i18n!("store-permissions-unknown"))],
     };
     Box::new(Section::titled(ui::i18n!("store-permissions-title"), rows))
 }

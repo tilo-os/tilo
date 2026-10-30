@@ -134,6 +134,9 @@ struct FnState {
     /// The resource the view being lowered shows: its first parameter, when that is one. What
     /// the system's parts of its controls are about (a rich input's `@` drawer).
     subject: Option<(LocalId, Ty)>,
+    /// The locals holding a scalar an event carries (`at` of `on drop(moved: T, at: Int)`),
+    /// boxed until the event puts the value there.
+    event_scalars: std::collections::HashSet<LocalId>,
 }
 
 /// Where the UI being lowered stands, saved and restored around each block.

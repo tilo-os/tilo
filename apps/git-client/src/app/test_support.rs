@@ -1,6 +1,6 @@
 //! The drivers integration tests press: thin pass-throughs to the production action each one names, so a test drives the exact path the window does.
 
-use super::{BranchAction, ChangeArea, Confirm, ConfirmChoice, GitClientApp, change_list};
+use super::{BranchAction, ChangeArea, Confirm, ConfirmChoice, GitClientApp};
 
 impl GitClientApp {
     // --- Test-facing drivers --------------------------------------------
@@ -11,74 +11,79 @@ impl GitClientApp {
     /// Drive the production "stage/unstage this file" action by path.
     #[doc(hidden)]
     pub fn test_toggle_stage(&mut self, area: ChangeArea, idx: usize) {
-        self.toggle_stage(area, idx);
+        self.state().toggle_stage(area, idx);
     }
     /// Drive the production "stage all" action.
     #[doc(hidden)]
     pub fn test_stage_all(&mut self) {
-        self.stage_all();
+        self.state().stage_all();
     }
     /// Set the commit message and drive the production commit action.
     #[doc(hidden)]
     pub fn test_commit(&mut self, message: &str) {
-        self.commit_input.set_text(message);
-        self.do_commit();
+        let mut state = self.state();
+        state.commit_input.set_text(message);
+        state.do_commit();
     }
     /// Drive the production per-hunk stage/unstage action for the selected file.
     #[doc(hidden)]
     pub fn test_stage_hunk(&mut self, hunk: usize) {
-        self.stage_hunk(hunk);
+        self.state().stage_hunk(hunk);
     }
     /// Drive the production branch action (checkout / delete / stash-apply).
     #[doc(hidden)]
     pub fn test_branch_action(&mut self, action: BranchAction) {
-        self.apply_branch_action(action);
+        self.state().apply_branch_action(action);
     }
     /// Drive the production "create branch" action from a name.
     #[doc(hidden)]
     pub fn test_create_branch(&mut self, name: &str) {
-        self.branch_input.set_text(name);
-        self.create_new_branch();
+        let mut state = self.state();
+        state.branch_input.set_text(name);
+        state.create_new_branch();
     }
     /// Drive the production "discard file" action by area + index.
     #[doc(hidden)]
     pub fn test_discard_file(&mut self, area: ChangeArea, idx: usize) {
-        self.discard_file(area, idx);
+        self.state().discard_file(area, idx);
     }
     /// Whether the app is showing the empty "open a repository" state.
     #[doc(hidden)]
     pub fn test_awaiting_repo(&self) -> bool {
-        self.awaiting_repo
+        self.state().awaiting_repo
     }
     /// Drive the empty-state "open this path" action.
     #[doc(hidden)]
     pub fn test_open_path(&mut self, path: &str) {
-        self.open_input.set_text(path);
-        self.open_repo_from_input();
+        let mut state = self.state();
+        state.open_input.set_text(path);
+        state.open_repo_from_input();
     }
     /// Select a file in a given area + index (mirrors a list click).
     #[doc(hidden)]
     pub fn test_select(&mut self, area: ChangeArea, idx: usize) {
-        self.selected_change = Some((area, idx));
+        self.state().selected_change = Some((area, idx));
     }
     /// The current `head` shorthand from the live model.
     #[doc(hidden)]
-    pub fn test_head(&self) -> &str {
-        &self.model.head
+    pub fn test_head(&self) -> String {
+        self.state().model.head.clone()
     }
     /// Counts of (staged, unstaged, untracked) entries in the live model.
     #[doc(hidden)]
     pub fn test_change_counts(&self) -> (usize, usize, usize) {
+        let state = self.state();
         (
-            self.model.staged.len(),
-            self.model.unstaged.len(),
-            self.model.untracked.len(),
+            state.model.staged.len(),
+            state.model.unstaged.len(),
+            state.model.untracked.len(),
         )
     }
     /// The live model's commit summaries, newest first.
     #[doc(hidden)]
     pub fn test_commit_summaries(&self) -> Vec<String> {
-        self.model
+        self.state()
+            .model
             .commits
             .iter()
             .map(|c| c.summary.clone())
@@ -87,23 +92,28 @@ impl GitClientApp {
     /// The live model's local + remote branch names.
     #[doc(hidden)]
     pub fn test_branch_names(&self) -> Vec<String> {
-        self.model.branches.iter().map(|b| b.name.clone()).collect()
+        self.state()
+            .model
+            .branches
+            .iter()
+            .map(|b| b.name.clone())
+            .collect()
     }
     /// The last action error message, if any.
     #[doc(hidden)]
-    pub fn test_last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
+    pub fn test_last_error(&self) -> Option<String> {
+        self.state().last_error.clone()
     }
     /// What the last action did, as the banner says it.
     #[doc(hidden)]
-    pub fn test_notice(&self) -> Option<&str> {
-        self.notice.as_deref()
+    pub fn test_notice(&self) -> Option<String> {
+        self.state().notice.clone()
     }
     /// The branch whose switch is waiting for an answer, if any.
     #[doc(hidden)]
-    pub fn test_pending_switch(&self) -> Option<&str> {
-        match &self.confirm {
-            Some(Confirm::SwitchBranch { name, .. }) => Some(name.as_str()),
+    pub fn test_pending_switch(&self) -> Option<String> {
+        match &self.state().confirm {
+            Some(Confirm::SwitchBranch { name, .. }) => Some(name.clone()),
             _ => None,
         }
     }
@@ -114,18 +124,20 @@ impl GitClientApp {
             crate::repo::CheckoutPlan::Carry => ConfirmChoice::SwitchCarrying,
             crate::repo::CheckoutPlan::Stash => ConfirmChoice::SwitchStashing,
         };
-        self.perform_confirmed(choice);
+        self.state().perform_confirmed(choice);
     }
     /// Show commit `index` and read its changed files, as opening History does.
     #[doc(hidden)]
     pub fn test_commit_files(&mut self, index: usize) -> Vec<String> {
-        self.select_commit(index);
-        let Some(commit) = self.model.commits.get(index) else {
+        let mut state = self.state();
+        state.select_commit(index);
+        let Some(commit) = state.model.commits.get(index) else {
             return Vec::new();
         };
         let id = commit.id.clone();
-        self.load_commit_files(&id);
-        self.commit_files
+        state.load_commit_files(&id);
+        state
+            .commit_files
             .get(&id)
             .map(|files| files.iter().map(|file| file.path.clone()).collect())
             .unwrap_or_default()
@@ -133,33 +145,21 @@ impl GitClientApp {
     /// Open the diff of file `index` in the selected commit.
     #[doc(hidden)]
     pub fn test_open_commit_file(&mut self, index: usize) {
-        self.open_commit_file(index);
+        self.state().open_commit_file(index);
     }
     /// The commit diff on screen, as `(commit, file)`.
     #[doc(hidden)]
     pub fn test_commit_diff(&self) -> Option<(String, String)> {
-        self.commit_diff.clone()
+        self.state().commit_diff.clone()
     }
     /// Select the first conflicted file, as choosing its row does.
     #[doc(hidden)]
     pub fn test_select_conflicted_file(&mut self) {
-        for area in [
-            crate::model::ChangeArea::Unstaged,
-            crate::model::ChangeArea::Staged,
-            crate::model::ChangeArea::Untracked,
-        ] {
-            let found = change_list(&self.model, area)
-                .iter()
-                .position(|file| file.kind == crate::model::ChangeKind::Conflicted);
-            if let Some(index) = found {
-                self.selected_change = Some((area, index));
-                return;
-            }
-        }
+        self.state().select_conflicted_file();
     }
     /// Keep one side of the selected conflicted file, as `o` and `t` do.
     #[doc(hidden)]
     pub fn test_resolve_conflict(&mut self, side: crate::repo::ConflictSide) {
-        self.resolve_conflict(side);
+        self.state().resolve_conflict(side);
     }
 }

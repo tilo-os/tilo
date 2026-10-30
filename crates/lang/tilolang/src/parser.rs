@@ -555,6 +555,17 @@ impl<'a> Parser<'a> {
             && matches!(self.peek_at(1), Tok::Kw("view"))
     }
 
+    /// `x` or `x: T`: a value an event carries, named, with its type when written.
+    fn event_param(&mut self, what: &str) -> Result<crate::ast::EventParam, Abort> {
+        let name = self.ident(what)?;
+        let ty = if self.eat(&Tok::Colon) {
+            Some(self.type_expr()?)
+        } else {
+            None
+        };
+        Ok(crate::ast::EventParam { name, ty })
+    }
+
     fn recover_item(&mut self) {
         let mut depth = 0usize;
         let mut first = true;
@@ -2212,24 +2223,22 @@ impl<'a> Parser<'a> {
             {
                 self.bump();
                 let event = self.ident("an event name")?;
-                // `on select(x: Note): ...`: the value the event carries, named.
-                let param = if self.eat(&Tok::LParen) {
-                    let name = self.ident("the name of the value the event carries")?;
-                    let ty = if self.eat(&Tok::Colon) {
-                        Some(self.type_expr()?)
-                    } else {
-                        None
-                    };
+                // `on select(x: Note): ...`: the value the event carries, named; and where it
+                // lands, when the event says (`on drop(moved: Task, at: Int): ...`).
+                let (mut param, mut at) = (None, None);
+                if self.eat(&Tok::LParen) {
+                    param = Some(self.event_param("the name of the value the event carries")?);
+                    if self.eat(&Tok::Comma) {
+                        at = Some(self.event_param("the name of where the value lands")?);
+                    }
                     self.expect(&Tok::RParen)?;
-                    Some(crate::ast::EventParam { name, ty })
-                } else {
-                    None
-                };
+                }
                 self.expect(&Tok::Colon)?;
                 let action = self.expr()?;
                 UiKind::On {
                     event,
                     param,
+                    at,
                     action,
                 }
             }

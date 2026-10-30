@@ -22,6 +22,7 @@
 pub mod hosted;
 pub mod phrases;
 pub mod task;
+pub mod wait;
 
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;
@@ -115,6 +116,9 @@ struct Opening {
     /// The window's connection, until the instance runs.
     window: Option<Channel>,
     identity: Option<OwnedFd>,
+    /// The connection to the app's origin connector, for an app whose types hold an outside
+    /// service's resources.
+    origin: Option<OwnedFd>,
     /// When the host was handed the instance, and the stages it reached since, with how long
     /// after: what an instance's launch spends in the host.
     received: std::time::Instant,
@@ -289,6 +293,7 @@ impl TilolangHost {
         std::thread::Builder::new()
             .name("tilolang-module".into())
             .spawn(move || {
+                // Only an opening that already ended dropped the receiver: nobody waits on it.
                 let _ = sender.send(module_bundle(&module, len));
                 wake();
             })
@@ -303,6 +308,7 @@ impl TilolangHost {
             },
             window: Some(window),
             identity: Some(fds.identity),
+            origin: fds.origin,
             received: std::time::Instant::now(),
             reached: Vec::new(),
         });
@@ -329,6 +335,7 @@ impl TilolangHost {
             },
             window: Some(window),
             identity: None,
+            origin: None,
             received: std::time::Instant::now(),
             reached: Vec::new(),
         });
@@ -366,8 +373,9 @@ impl TilolangHost {
                     bundle,
                     mut manager,
                 } => {
-                    // Nothing is delivered on a route before it is joined.
-                    let _ = manager.poll();
+                    // Nothing is delivered on a route before it is joined: what does come is
+                    // said, as nothing answers it.
+                    said_early(&spec.app, manager.poll());
                     if let Some(refused) = manager.join_refusal() {
                         return Err(AdmitError::Join(refused.to_owned()));
                     }
@@ -387,11 +395,20 @@ impl TilolangHost {
                     let Some(reader) = PrimaryRead::of(&manager).map_err(AdmitError::Join)? else {
                         return self.run(opening, spec, bundle, manager, None);
                     };
+                    // The read waits for as long as the broker takes: say that it does, so an
+                    // instance that never opens shows where it waits.
+                    tracing::info!(
+                        app = opening.app,
+                        instance = opening.instance,
+                        "a tilolang instance reads its record's committed history"
+                    );
                     let (sender, read) = std::sync::mpsc::channel();
                     let wake = Arc::clone(&self.wake);
                     std::thread::Builder::new()
                         .name("tilolang-read".into())
                         .spawn(move || {
+                            // Only an opening that already ended dropped the receiver:
+                            // nobody waits on it.
                             let _ = sender.send(reader.read().map(|read| (reader, read)));
                             wake();
                         })
@@ -497,14 +514,17 @@ impl TilolangHost {
     ) -> Result<Step, AdmitError> {
         // Receivers decide each change against the app's surface: its package's own, as the
         // launcher names it for a launched app.
-        collaboration::app_surface::register_package(&bundle.meta.app, &bundle.surface());
+        let surface = bundle
+            .surface()
+            .map_err(|error| AdmitError::Module(error.to_string()))?;
+        collaboration::app_surface::register_package(&bundle.meta.app, &surface);
         // The records the route names: the app's own, or those of the id it had before, kept
         // where that app kept them. The changes made there name the app's surface too.
         let records = manager
             .primary_route()
             .map_or_else(|| spec.app.clone(), |joined| joined.route().app_id.clone());
         if records != bundle.meta.app {
-            collaboration::app_surface::register_package(&records, &bundle.surface());
+            collaboration::app_surface::register_package(&records, &surface);
         }
         let kept = self
             .kept(&records)
@@ -529,10 +549,27 @@ impl TilolangHost {
             Rc::clone(&self.phrases),
             Arc::clone(&self.wake),
         );
-        let hosted = match opening.identity.take() {
+        let mut hosted = match opening.identity.take() {
             Some(identity) => hosted.holding_identity(identity),
             None => hosted,
         };
+        // Its types with a mail server as origin are kept in step through the app's connector,
+        // which holds the network and the credentials this process has none of.
+        if let Some(origin) = opening.origin.take() {
+            if tilolang_tilo::origin::uses_origin(&hosted.bundle().meta, "imap") {
+                let origin = tilolang_mail::remote_origin(
+                    std::os::unix::net::UnixStream::from(origin),
+                    Arc::clone(&self.wake),
+                )
+                .map_err(|error| AdmitError::Join(format!("its mail connector: {error}")))?;
+                hosted.add_origin(origin);
+            } else {
+                tracing::warn!(
+                    app = opening.app,
+                    "a connection to a connector the app has no origin for"
+                );
+            }
+        }
         opening.reached("opened");
         let stages: Vec<String> = opening
             .reached
@@ -596,16 +633,20 @@ impl TilolangHost {
         changed
     }
 
-    /// The window connections to watch: one closing ends its instance.
+    /// The running instances' window connections, to wait on: what one sends is its instance's
+    /// next frame's, and one closing ends its instance.
     pub fn windows(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
         self.running
             .iter()
             .filter_map(|running| running.window.as_ref().map(OwnedFd::as_fd))
-            .chain(
-                self.opening
-                    .iter()
-                    .filter_map(|open| open.window.as_ref().map(AsFd::as_fd)),
-            )
+    }
+
+    /// The window connections of the instances being opened, to wait on for closing only: what
+    /// one sends stays in it until its instance runs, and one closing ends its opening.
+    pub fn opening_windows(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
+        self.opening
+            .iter()
+            .filter_map(|open| open.window.as_ref().map(AsFd::as_fd))
     }
 
     /// One frame of every instance; an instance whose window closed ends, its record written
@@ -647,6 +688,25 @@ impl TilolangHost {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.running.is_empty() && self.opening.is_empty() && self.task.is_none()
+    }
+}
+
+/// Say each request in `events`, which reached the instance of `app` before its route was
+/// joined: nothing answers it.
+fn said_early(app: &str, events: Vec<collaboration::CollabEvent>) {
+    for early in events {
+        if matches!(
+            early,
+            collaboration::CollabEvent::Invocation { .. }
+                | collaboration::CollabEvent::Handoff { .. }
+                | collaboration::CollabEvent::DocumentSnapshotRequested { .. }
+        ) {
+            tracing::warn!(
+                app,
+                event = ?early,
+                "a request reached an instance before its route was joined"
+            );
+        }
     }
 }
 

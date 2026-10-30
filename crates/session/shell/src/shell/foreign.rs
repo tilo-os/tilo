@@ -4257,6 +4257,13 @@ impl ForeignFrameStore {
         });
     }
 
+    /// How far the canvas the window stands on is zoomed (`1.0` off a
+    /// canvas, or for a surface this store does not know).
+    pub fn canvas_zoom(&self, id: SurfaceId) -> f64 {
+        let guard = self.entries.lock_recover();
+        guard.get(&id).map_or(1.0, |e| e.canvas_zoom)
+    }
+
     /// Whether [`Self::pin_placement`] currently holds this surface.
     pub fn is_pinned(&self, id: SurfaceId) -> bool {
         let guard = self.entries.lock_recover();
@@ -5886,9 +5893,8 @@ mod tests {
     }
 
     #[test]
-    fn a_held_buffer_goes_back_once_after_its_last_frame() {
+    fn a_re_attached_buffer_is_held_by_each_frame() {
         let mut holds = BufferHolds::new();
-        // Phase `a_re_attached_buffer_is_held_by_each_frame`.
         holds.hold("a");
         holds.hold("a");
         holds.hold("b");
@@ -5897,7 +5903,16 @@ mod tests {
             holds.give_back().is_empty(),
             "the newer frame still draws it"
         );
-        // Phase `the_last_frame_gives_it_back_once`.
+    }
+
+    #[test]
+    fn the_last_frame_gives_it_back_once() {
+        let mut holds = BufferHolds::new();
+        holds.hold("a");
+        holds.hold("a");
+        holds.hold("b");
+        holds.returned.push("a");
+        assert!(holds.give_back().is_empty());
         holds.returned.extend(["a", "b"]);
         assert_eq!(holds.give_back(), vec!["a", "b"]);
         holds.returned.push("a");
@@ -5909,240 +5924,228 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn capture_commits_publish_only_their_own_latest_frame() {
-        fn pending_capture_queue_keeps_only_the_latest_frame_per_surface() {
-            let mut pending = LatestJobs::default();
-            assert_eq!(pending.push(10, "old"), None);
-            assert_eq!(pending.push(20, "other surface"), None);
-            assert_eq!(pending.push(10, "new"), Some("old"));
+    fn pending_capture_queue_keeps_only_the_latest_frame_per_surface() {
+        let mut pending = LatestJobs::default();
+        assert_eq!(pending.push(10, "old"), None);
+        assert_eq!(pending.push(20, "other surface"), None);
+        assert_eq!(pending.push(10, "new"), Some("old"));
 
-            assert_eq!(pending.jobs.len(), 2, "a burst is bounded by surface count");
-            assert_eq!(pending.jobs.get(&10), Some(&"new"));
-            assert_eq!(pending.remove(10), Some("new"));
-            assert_eq!(pending.jobs.len(), 1);
-            let drained: Vec<_> = std::iter::from_fn(|| pending.pop()).collect();
-            assert_eq!(drained.len(), 1);
-            assert!(drained.contains(&"other surface"));
-        }
+        assert_eq!(pending.jobs.len(), 2, "a burst is bounded by surface count");
+        assert_eq!(pending.jobs.get(&10), Some(&"new"));
+        assert_eq!(pending.remove(10), Some("new"));
+        assert_eq!(pending.jobs.len(), 1);
+        let drained: Vec<_> = std::iter::from_fn(|| pending.pop()).collect();
+        assert_eq!(drained.len(), 1);
+        assert!(drained.contains(&"other surface"));
+    }
 
-        #[cfg(target_os = "linux")]
-        fn capture_barrier_release_is_visible_across_clones() {
-            let barrier = Barrier::new(false);
-            signal_capture_barrier(&barrier);
-            assert!(barrier.is_signaled());
-        }
-
-        fn worker_result_is_published_only_when_its_blocked_commit_applies() {
-            let frames = ForeignFrameStore::default();
-            let id = sid(100);
-            frames.with_entry(id, |entry| {
-                entry.capture_tokens.push_back(2);
-            });
-
-            let mut stale = vec![1, 2, 3, 4];
-            frames.stage_dmabuf_capture(
-                id,
-                1,
-                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-                &mut stale,
-                None,
-            );
-            assert!(frames.snapshot(id).is_none());
-
-            let mut latest = vec![5, 6, 7, 8];
-            frames.stage_dmabuf_capture(
-                id,
-                2,
-                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-                &mut latest,
-                None,
-            );
-            assert!(
-                frames.snapshot(id).is_none(),
-                "pending pixels must not become current before commit application"
-            );
-            assert!(matches!(
-                frames.activate_dmabuf_capture(id),
-                Some(CaptureOutcome::Dmabuf { .. })
-            ));
-            assert_eq!(
-                frames.snapshot(id).expect("latest frame").rgba,
-                vec![5, 6, 7, 8]
-            );
-            assert_eq!(
-                frames.import_count(),
-                1,
-                "only published work counts as an import"
-            );
-        }
-
-        fn superseded_commit_applies_without_stealing_the_newer_capture() {
-            let frames = ForeignFrameStore::default();
-            let id = sid(102);
-            frames.with_entry(id, |entry| {
-                entry.capture_tokens.extend([3, 4]);
-            });
-            let mut newest = vec![9, 8, 7, 6];
-            frames.stage_dmabuf_capture(
-                id,
-                4,
-                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-                &mut newest,
-                None,
-            );
-
-            assert!(
-                frames.activate_dmabuf_capture(id).is_none(),
-                "the superseded earlier commit has no pixels"
-            );
-            assert!(matches!(
-                frames.activate_dmabuf_capture(id),
-                Some(CaptureOutcome::Dmabuf { .. })
-            ));
-            assert_eq!(
-                frames.snapshot(id).expect("newest frame").rgba,
-                vec![9, 8, 7, 6]
-            );
-        }
-
-        fn commit_token_mismatch_cannot_consume_a_later_capture() {
-            let frames = ForeignFrameStore::default();
-            let id = sid(103);
-            frames.with_entry(id, |entry| entry.capture_tokens.push_back(42));
-            let mut pixels = vec![7, 7, 7, 7];
-            assert!(frames.stage_dmabuf_capture(
-                id,
-                42,
-                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-                &mut pixels,
-                None,
-            ));
-
-            assert!(
-                frames.activate_dmabuf_capture_token(id, 41).is_none(),
-                "an unrelated commit must not pop the next buffer's token"
-            );
-            assert!(matches!(
-                frames.activate_dmabuf_capture_token(id, 42),
-                Some(CaptureOutcome::Dmabuf { .. })
-            ));
-        }
-
-        fn late_worker_completion_cannot_resurrect_a_destroyed_surface() {
-            let frames = ForeignFrameStore::default();
-            let id = sid(101);
-            frames.with_entry(id, |entry| {
-                entry.capture_tokens.push_back(7);
-            });
-            frames.forget(id);
-
-            let mut pixels = vec![1, 2, 3, 4];
-            frames.stage_dmabuf_capture(
-                id,
-                7,
-                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-                &mut pixels,
-                None,
-            );
-            assert!(frames.snapshot(id).is_none());
-            assert_eq!(frames.frame_seq(id), 0);
-        }
-
-        pending_capture_queue_keeps_only_the_latest_frame_per_surface();
-        #[cfg(target_os = "linux")]
-        capture_barrier_release_is_visible_across_clones();
-        worker_result_is_published_only_when_its_blocked_commit_applies();
-        superseded_commit_applies_without_stealing_the_newer_capture();
-        commit_token_mismatch_cannot_consume_a_later_capture();
-        late_worker_completion_cannot_resurrect_a_destroyed_surface();
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn capture_barrier_release_is_visible_across_clones() {
+        let barrier = Barrier::new(false);
+        signal_capture_barrier(&barrier);
+        assert!(barrier.is_signaled());
     }
 
     #[test]
-    fn snapshots_composite_children_and_convert_pixel_orders() {
-        fn snapshot_composites_positioned_children_with_alpha_and_clipping() {
-            let frames = ForeignFrameStore::default();
-            let root = sid(70);
-            let child = sid(71);
-            frames.publish_rgba(root, &[10, 20, 30, 255].repeat(9), 3, 3);
-            frames.publish_rgba(
-                child,
-                &[
-                    250, 0, 0, 255, 0, 250, 0, 128, 0, 0, 250, 255, 250, 250, 0, 255,
-                ],
-                2,
-                2,
-            );
-            frames.set_children(
-                root,
-                vec![ChildFrame {
-                    surface: child,
-                    x: 2,
-                    y: 1,
-                }],
-            );
+    fn worker_result_is_published_only_when_its_blocked_commit_applies() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(100);
+        frames.with_entry(id, |entry| {
+            entry.capture_tokens.push_back(2);
+        });
 
-            let snapshot = frames.snapshot(root).expect("composited root frame");
-            let pixel = |x: usize, y: usize| &snapshot.rgba[(y * 3 + x) * 4..][..4];
-            assert_eq!(pixel(0, 0), &[10, 20, 30, 255]);
-            assert_eq!(pixel(2, 1), &[250, 0, 0, 255]);
-            assert_eq!(pixel(2, 2), &[0, 0, 250, 255]);
-            assert_eq!(snapshot.rgba.len(), 3 * 3 * 4, "child is clipped to root");
-            let first_seq = frames.frame_seq(root);
-            frames.publish_rgba(child, &[1, 2, 3, 255].repeat(4), 2, 2);
-            assert_ne!(
-                frames.frame_seq(root),
-                first_seq,
-                "child damage repaints root"
-            );
-            assert_eq!(frames.child_at(root, 2.25, 1.5), Some((child, 0.25, 0.5)));
-            assert_eq!(frames.child_at(root, 0.5, 0.5), None);
-        }
+        let mut stale = vec![1, 2, 3, 4];
+        frames.stage_dmabuf_capture(
+            id,
+            1,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut stale,
+            None,
+        );
+        assert!(frames.snapshot(id).is_none());
 
-        #[cfg(any(test, target_os = "linux"))]
-        fn swizzle_row_bgra_swaps_red_and_blue() {
-            // Memory bytes for DRM_FORMAT_ARGB8888 are [B, G, R, A].
-            let src = [10u8, 20, 30, 200, 1, 2, 3, 4];
-            let mut out = Vec::new();
-            swizzle_row(PixelOrder::Bgra { opaque: false }, &src, 2, &mut out);
-            assert_eq!(out, vec![30, 20, 10, 200, 3, 2, 1, 4]);
-        }
+        let mut latest = vec![5, 6, 7, 8];
+        frames.stage_dmabuf_capture(
+            id,
+            2,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut latest,
+            None,
+        );
+        assert!(
+            frames.snapshot(id).is_none(),
+            "pending pixels must not become current before commit application"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture(id),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+        assert_eq!(
+            frames.snapshot(id).expect("latest frame").rgba,
+            vec![5, 6, 7, 8]
+        );
+        assert_eq!(
+            frames.import_count(),
+            1,
+            "only published work counts as an import"
+        );
+    }
 
-        #[cfg(any(test, target_os = "linux"))]
-        fn swizzle_row_opaque_variant_forces_alpha() {
-            let src = [10u8, 20, 30, 0x00];
-            let mut out = Vec::new();
-            swizzle_row(PixelOrder::Bgra { opaque: true }, &src, 1, &mut out);
-            assert_eq!(out, vec![30, 20, 10, 0xFF]);
-        }
+    #[test]
+    fn superseded_commit_applies_without_stealing_the_newer_capture() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(102);
+        frames.with_entry(id, |entry| {
+            entry.capture_tokens.extend([3, 4]);
+        });
+        let mut newest = vec![9, 8, 7, 6];
+        frames.stage_dmabuf_capture(
+            id,
+            4,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut newest,
+            None,
+        );
 
-        #[cfg(any(test, target_os = "linux"))]
-        fn swizzle_row_rgba_passes_channels_through() {
-            // DRM_FORMAT_ABGR8888 is already [R, G, B, A] in memory.
-            let src = [10u8, 20, 30, 40];
-            let mut out = Vec::new();
-            swizzle_row(PixelOrder::Rgba { opaque: false }, &src, 1, &mut out);
-            assert_eq!(out, vec![10, 20, 30, 40]);
-        }
+        assert!(
+            frames.activate_dmabuf_capture(id).is_none(),
+            "the superseded earlier commit has no pixels"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture(id),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+        assert_eq!(
+            frames.snapshot(id).expect("newest frame").rgba,
+            vec![9, 8, 7, 6]
+        );
+    }
 
-        #[cfg(target_os = "linux")]
-        fn pixel_order_rejects_non_rgba_fourcc() {
-            assert!(PixelOrder::for_fourcc(Fourcc::Nv12).is_none());
-            assert!(PixelOrder::for_fourcc(Fourcc::Argb8888).is_some());
-        }
+    #[test]
+    fn commit_token_mismatch_cannot_consume_a_later_capture() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(103);
+        frames.with_entry(id, |entry| entry.capture_tokens.push_back(42));
+        let mut pixels = vec![7, 7, 7, 7];
+        assert!(frames.stage_dmabuf_capture(
+            id,
+            42,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut pixels,
+            None,
+        ));
 
-        snapshot_composites_positioned_children_with_alpha_and_clipping();
-        #[cfg(any(test, target_os = "linux"))]
-        swizzle_row_bgra_swaps_red_and_blue();
-        #[cfg(any(test, target_os = "linux"))]
-        swizzle_row_opaque_variant_forces_alpha();
-        #[cfg(any(test, target_os = "linux"))]
-        swizzle_row_rgba_passes_channels_through();
-        #[cfg(target_os = "linux")]
-        pixel_order_rejects_non_rgba_fourcc();
+        assert!(
+            frames.activate_dmabuf_capture_token(id, 41).is_none(),
+            "an unrelated commit must not pop the next buffer's token"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture_token(id, 42),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+    }
+
+    #[test]
+    fn late_worker_completion_cannot_resurrect_a_destroyed_surface() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(101);
+        frames.with_entry(id, |entry| {
+            entry.capture_tokens.push_back(7);
+        });
+        frames.forget(id);
+
+        let mut pixels = vec![1, 2, 3, 4];
+        frames.stage_dmabuf_capture(
+            id,
+            7,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut pixels,
+            None,
+        );
+        assert!(frames.snapshot(id).is_none());
+        assert_eq!(frames.frame_seq(id), 0);
+    }
+
+    #[test]
+    fn snapshot_composites_positioned_children_with_alpha_and_clipping() {
+        let frames = ForeignFrameStore::default();
+        let root = sid(70);
+        let child = sid(71);
+        frames.publish_rgba(root, &[10, 20, 30, 255].repeat(9), 3, 3);
+        frames.publish_rgba(
+            child,
+            &[
+                250, 0, 0, 255, 0, 250, 0, 128, 0, 0, 250, 255, 250, 250, 0, 255,
+            ],
+            2,
+            2,
+        );
+        frames.set_children(
+            root,
+            vec![ChildFrame {
+                surface: child,
+                x: 2,
+                y: 1,
+            }],
+        );
+
+        let snapshot = frames.snapshot(root).expect("composited root frame");
+        let pixel = |x: usize, y: usize| &snapshot.rgba[(y * 3 + x) * 4..][..4];
+        assert_eq!(pixel(0, 0), &[10, 20, 30, 255]);
+        assert_eq!(pixel(2, 1), &[250, 0, 0, 255]);
+        assert_eq!(pixel(2, 2), &[0, 0, 250, 255]);
+        assert_eq!(snapshot.rgba.len(), 3 * 3 * 4, "child is clipped to root");
+        let first_seq = frames.frame_seq(root);
+        frames.publish_rgba(child, &[1, 2, 3, 255].repeat(4), 2, 2);
+        assert_ne!(
+            frames.frame_seq(root),
+            first_seq,
+            "child damage repaints root"
+        );
+        assert_eq!(frames.child_at(root, 2.25, 1.5), Some((child, 0.25, 0.5)));
+        assert_eq!(frames.child_at(root, 0.5, 0.5), None);
+    }
+
+    #[cfg(any(test, target_os = "linux"))]
+    #[test]
+    #[cfg(any(test, target_os = "linux"))]
+    fn swizzle_row_bgra_swaps_red_and_blue() {
+        // Memory bytes for DRM_FORMAT_ARGB8888 are [B, G, R, A].
+        let src = [10u8, 20, 30, 200, 1, 2, 3, 4];
+        let mut out = Vec::new();
+        swizzle_row(PixelOrder::Bgra { opaque: false }, &src, 2, &mut out);
+        assert_eq!(out, vec![30, 20, 10, 200, 3, 2, 1, 4]);
+    }
+
+    #[cfg(any(test, target_os = "linux"))]
+    #[test]
+    #[cfg(any(test, target_os = "linux"))]
+    fn swizzle_row_opaque_variant_forces_alpha() {
+        let src = [10u8, 20, 30, 0x00];
+        let mut out = Vec::new();
+        swizzle_row(PixelOrder::Bgra { opaque: true }, &src, 1, &mut out);
+        assert_eq!(out, vec![30, 20, 10, 0xFF]);
+    }
+
+    #[cfg(any(test, target_os = "linux"))]
+    #[test]
+    #[cfg(any(test, target_os = "linux"))]
+    fn swizzle_row_rgba_passes_channels_through() {
+        // DRM_FORMAT_ABGR8888 is already [R, G, B, A] in memory.
+        let src = [10u8, 20, 30, 40];
+        let mut out = Vec::new();
+        swizzle_row(PixelOrder::Rgba { opaque: false }, &src, 1, &mut out);
+        assert_eq!(out, vec![10, 20, 30, 40]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn pixel_order_rejects_non_rgba_fourcc() {
+        assert!(PixelOrder::for_fourcc(Fourcc::Nv12).is_none());
+        assert!(PixelOrder::for_fourcc(Fourcc::Argb8888).is_some());
     }
 
     #[test]
@@ -6207,112 +6210,112 @@ mod tests {
     }
 
     #[test]
-    fn hdr_frames_keep_a_full_precision_plane() {
+    fn ten_bit_pq_rows_keep_their_codes_red_low() {
         use tilo_color_pipeline::hdr_surface::{HdrTexelFormat, SignalTransfer};
         let pq = neighbour_wire::colorimetry::Colorimetry::hdr10();
         let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
+        // XR30: blue in the low bits; blue 100, green 512, red 900.
+        let word: u32 = 0x064 | (0x200 << 10) | (0x384 << 20);
+        let row = [word.to_le_bytes(), word.to_le_bytes()].concat();
+        let layout = CpuLayout::Rgb10 {
+            red_low: false,
+            opaque: true,
+        };
+        let mut rgba = Vec::new();
+        let plane = convert_rows(layout, [row.as_slice()].into_iter(), (2, 1), pq, &mut rgba)
+            .expect("a PQ description keeps its plane");
+        assert_eq!(rgba.len(), 8, "the SDR rendition is still produced");
+        assert_eq!(plane.format(), HdrTexelFormat::Rgb10a2);
+        assert_eq!(plane.signal().transfer, SignalTransfer::Pq);
+        let [r, g, b] = plane.signal_at(1, 0);
+        assert!((r - 900.0 / 1023.0).abs() < 1e-6, "red {r}");
+        assert!((g - 512.0 / 1023.0).abs() < 1e-6, "green {g}");
+        assert!((b - 100.0 / 1023.0).abs() < 1e-6, "blue {b}");
+        let first = u32::from_le_bytes(plane.bytes()[..4].try_into().expect("a word"));
+        assert_eq!(first >> 30, 3, "padding reads as opaque alpha");
+        let mut rgba = Vec::new();
+        assert!(
+            convert_rows(layout, [row.as_slice()].into_iter(), (2, 1), sdr, &mut rgba).is_none(),
+            "an SDR description needs no plane"
+        );
+    }
 
-        // Phase `ten_bit_pq_rows_keep_their_codes_red_low`.
-        {
-            // XR30: blue in the low bits; blue 100, green 512, red 900.
-            let word: u32 = 0x064 | (0x200 << 10) | (0x384 << 20);
-            let row = [word.to_le_bytes(), word.to_le_bytes()].concat();
-            let layout = CpuLayout::Rgb10 {
-                red_low: false,
-                opaque: true,
-            };
-            let mut rgba = Vec::new();
-            let plane = convert_rows(layout, [row.as_slice()].into_iter(), (2, 1), pq, &mut rgba)
-                .expect("a PQ description keeps its plane");
-            assert_eq!(rgba.len(), 8, "the SDR rendition is still produced");
-            assert_eq!(plane.format(), HdrTexelFormat::Rgb10a2);
-            assert_eq!(plane.signal().transfer, SignalTransfer::Pq);
-            let [r, g, b] = plane.signal_at(1, 0);
-            assert!((r - 900.0 / 1023.0).abs() < 1e-6, "red {r}");
-            assert!((g - 512.0 / 1023.0).abs() < 1e-6, "green {g}");
-            assert!((b - 100.0 / 1023.0).abs() < 1e-6, "blue {b}");
-            let first = u32::from_le_bytes(plane.bytes()[..4].try_into().expect("a word"));
-            assert_eq!(first >> 30, 3, "padding reads as opaque alpha");
-            let mut rgba = Vec::new();
-            assert!(
-                convert_rows(layout, [row.as_slice()].into_iter(), (2, 1), sdr, &mut rgba)
-                    .is_none(),
-                "an SDR description needs no plane"
-            );
-        }
+    #[test]
+    fn half_float_rows_keep_their_values() {
+        use tilo_color_pipeline::hdr_surface::{HdrTexelFormat, SignalTransfer};
+        let pq = neighbour_wire::colorimetry::Colorimetry::hdr10();
+        let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
+        let px: Vec<u8> = [0x4400_u16, 0x3C00, 0x3800, 0x0000]
+            .iter()
+            .flat_map(|h| h.to_le_bytes())
+            .collect();
+        let scrgb = scrgb();
+        let mut rgba = Vec::new();
+        let plane = convert_rows(
+            CpuLayout::Half { opaque: true },
+            [px.as_slice()].into_iter(),
+            (1, 1),
+            scrgb,
+            &mut rgba,
+        )
+        .expect("scRGB keeps its plane");
+        assert_eq!(plane.format(), HdrTexelFormat::Rgba16Float);
+        assert_eq!(plane.signal_at(0, 0), [4.0, 1.0, 0.5]);
+        assert_eq!(&plane.bytes()[6..8], &0x3C00_u16.to_le_bytes());
+        assert_eq!(
+            &rgba[..3],
+            &[255, 255, 188],
+            "linear light clips at SDR white"
+        );
+    }
 
-        // Phase `half_float_rows_keep_their_values`.
-        {
-            let px: Vec<u8> = [0x4400_u16, 0x3C00, 0x3800, 0x0000]
-                .iter()
-                .flat_map(|h| h.to_le_bytes())
-                .collect();
-            let scrgb = scrgb();
-            let mut rgba = Vec::new();
-            let plane = convert_rows(
-                CpuLayout::Half { opaque: true },
-                [px.as_slice()].into_iter(),
-                (1, 1),
-                scrgb,
-                &mut rgba,
-            )
-            .expect("scRGB keeps its plane");
-            assert_eq!(plane.format(), HdrTexelFormat::Rgba16Float);
-            assert_eq!(plane.signal_at(0, 0), [4.0, 1.0, 0.5]);
-            assert_eq!(&plane.bytes()[6..8], &0x3C00_u16.to_le_bytes());
-            assert_eq!(
-                &rgba[..3],
-                &[255, 255, 188],
-                "linear light clips at SDR white"
-            );
-        }
+    #[test]
+    fn snapshots_carry_the_plane_cropped_and_drop_it_under_subsurfaces() {
+        let pq = neighbour_wire::colorimetry::Colorimetry::hdr10();
+        let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
+        let frames = ForeignFrameStore::default();
+        let root = sid(80);
+        let signal = tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(
+            pq,
+            tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
+        )
+        .expect("PQ");
+        let plane = tilo_color_pipeline::hdr_surface::HdrPlane::from_signal_rgb(
+            4,
+            4,
+            (0..16_u8).map(|i| [f32::from(i) / 16.0; 3]),
+            signal,
+        )
+        .expect("plane");
+        frames.publish_hdr_frame(root, &[9; 64], plane);
+        let snapshot = frames.snapshot(root).expect("frame");
+        let hdr = snapshot.hdr.expect("the plane travels with the frame");
+        assert_eq!((hdr.width(), hdr.height()), (4, 4));
 
-        // Phase `snapshots_carry_the_plane_cropped_and_drop_it_under_subsurfaces`.
-        {
-            let frames = ForeignFrameStore::default();
-            let root = sid(80);
-            let signal = tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(
-                pq,
-                tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
-            )
-            .expect("PQ");
-            let plane = tilo_color_pipeline::hdr_surface::HdrPlane::from_signal_rgb(
-                4,
-                4,
-                (0..16_u8).map(|i| [f32::from(i) / 16.0; 3]),
-                signal,
-            )
-            .expect("plane");
-            frames.publish_hdr_frame(root, &[9; 64], plane);
-            let snapshot = frames.snapshot(root).expect("frame");
-            let hdr = snapshot.hdr.expect("the plane travels with the frame");
-            assert_eq!((hdr.width(), hdr.height()), (4, 4));
+        frames.note_window_geometry(root, Some(geometry(1, 1, 2, 2)));
+        let snapshot = frames.snapshot(root).expect("frame");
+        let hdr = snapshot.hdr.expect("a cropped window keeps its plane");
+        assert_eq!((hdr.width(), hdr.height()), (2, 2));
+        assert_eq!((snapshot.width, snapshot.height), (2, 2));
+        assert_eq!(hdr.signal_at(0, 0)[0], 5.0 / 16.0, "cut at the window");
 
-            frames.note_window_geometry(root, Some(geometry(1, 1, 2, 2)));
-            let snapshot = frames.snapshot(root).expect("frame");
-            let hdr = snapshot.hdr.expect("a cropped window keeps its plane");
-            assert_eq!((hdr.width(), hdr.height()), (2, 2));
-            assert_eq!((snapshot.width, snapshot.height), (2, 2));
-            assert_eq!(hdr.signal_at(0, 0)[0], 5.0 / 16.0, "cut at the window");
-
-            let child = sid(81);
-            frames.publish_rgba(child, &[1, 2, 3, 255], 1, 1);
-            frames.set_children(
-                root,
-                vec![ChildFrame {
-                    surface: child,
-                    x: 0,
-                    y: 0,
-                }],
-            );
-            assert!(
-                frames.snapshot(root).expect("frame").hdr.is_none(),
-                "subsurfaces exist only in the SDR rendition"
-            );
-            frames.set_children(root, Vec::new());
-            frames.publish_rgba(root, &[9; 64], 4, 4);
-            assert!(frames.snapshot(root).expect("frame").hdr.is_none());
-        }
+        let child = sid(81);
+        frames.publish_rgba(child, &[1, 2, 3, 255], 1, 1);
+        frames.set_children(
+            root,
+            vec![ChildFrame {
+                surface: child,
+                x: 0,
+                y: 0,
+            }],
+        );
+        assert!(
+            frames.snapshot(root).expect("frame").hdr.is_none(),
+            "subsurfaces exist only in the SDR rendition"
+        );
+        frames.set_children(root, Vec::new());
+        frames.publish_rgba(root, &[9; 64], 4, 4);
+        assert!(frames.snapshot(root).expect("frame").hdr.is_none());
     }
 
     fn scrgb() -> neighbour_wire::colorimetry::Colorimetry {

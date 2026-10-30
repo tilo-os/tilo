@@ -6,25 +6,12 @@ tab-controls-desktop = Controls your desktop
 tab-dev-build = Dev build by { $installer }
 tab-shared-with = Shared with { $place }
 standalone-search-title = Search
-standalone-history-title = History
-standalone-history-close = Close history
-standalone-history-select-hint = Select a change to see details.
-standalone-history-select = Select changes
-standalone-history-compare = Compare selected changes
-standalone-history-entry-ids = Changes
-standalone-history-selected-details = Selected changes
-standalone-history-restore = Restore this version…
-standalone-history-restore-title = Restore this version?
-standalone-history-restore-body = The document goes back to how it was after “{ $version }”. This adds a new change: later versions stay in History, and Undo reverses the restore.
-standalone-history-restore-confirm = Restore version
-standalone-history-restore-cancel = Cancel
-standalone-history-restore-action = Restore version
-standalone-history-restore-done = Version restored. Undo reverses it.
-standalone-history-restore-stale = The document changed while you were reviewing. Select the version again to restore it.
-standalone-history-restore-pending = Finish the current edit, then restore the version.
-standalone-history-restore-denied = Only editors can restore a version.
-standalone-history-restore-unavailable = This version can't be restored here.
-standalone-history-preview-resource = Document
+history-mode-title = History
+history-mode-close = Close history
+history-mode-select-hint = Select a change to see details.
+history-mode-entry-ids = Changes
+history-mode-selected-details = Selected changes
+history-mode-preview-resource = Document
 host-search = Search…
 host-search-placeholder = Search
 dropdown-search-placeholder = Search choices
@@ -38,10 +25,8 @@ host-zoom-out = Zoom out
 host-zoom-reset = Actual size
 host-history-show = Show History
 host-history-hide = Hide History
-host-history-compare = Compare Selection
 host-history-recent = { $author } · { $change } — { $when }
 host-history-unavailable = There is no document to show History for.
-host-history-compare-unavailable = Select two or more changes to compare them.
 host-menu-file = File
 host-menu-edit = Edit
 host-menu-view = View
@@ -81,22 +66,7 @@ window-stop-sharing-in = Stop sharing in { $place }
 history-loading = Loading History…
 lazy-loading = Loading…
 history-genesis = Created
-history-edited-field = { $more ->
-    [0] Edited { $path }
-   *[other] Edited { $path } and { $more } more
-}
-history-removed-field = { $more ->
-    [0] Removed { $path }
-   *[other] Removed { $path } and { $more } more
-}
-history-edited-fields = { $count ->
-    [one] Edited 1 field
-   *[other] Edited { $count } fields
-}
-history-removed-fields = { $count ->
-    [one] Removed 1 field
-   *[other] Removed { $count } fields
-}
+history-moved = Moved between workspaces
 history-review-title = Restore { $resource }
 history-review-confirm = Restore version
 history-review-refresh = Refresh review
@@ -111,7 +81,6 @@ history-restore-unsupported = This version cannot be restored safely with this a
 history-preview-description = { $resource } as of this version
 
 # The History host's own controls and status, beside the live app.
-history-mode-title = History
 history-mode-unavailable = History unavailable
 history-mode-content-unavailable = Historical content unavailable
 history-mode-back-to-activity = Back to activity
@@ -635,30 +604,6 @@ interaction-cancelled = Cancelled
 interaction-progress = { $label } - { $done }/{ $total }
 participant-unknown-agent = Unknown agent
 
-# History as published actions, for the palette, scripts, agents and assistive technology.
-history-action-resource = Document history
-history-action-open = Open history
-history-action-list = List changes
-history-action-view-at = Preview a version
-history-action-compare = Compare changes
-history-action-close = Close preview
-history-action-restore = Restore a version
-history-action-name = Name changes
-history-action-param-resource = The document whose history to use, as History lists it. Defaults to the open document.
-history-action-param-cursor = Where the previous page ended.
-history-action-param-entry = One change, as History lists it.
-history-action-param-entries = Changes, as History lists them.
-history-action-param-session = A preview opened by Preview a version.
-history-action-param-heads = The live heads the preview reported. Restore is refused if the document changed since.
-history-action-param-first = The first change of the run, as History lists it.
-history-action-param-last = The last change of the run, as History lists it.
-history-action-param-label = The run's name. Leave it empty to remove the name.
-history-action-denied = You don't have permission for this part of the document's history.
-history-action-stale-document = That document is no longer open.
-history-action-stale-cursor = The history changed since this page. List it again from the start.
-history-action-unknown-entry = That change isn't in this document's history.
-history-action-unknown-session = That preview isn't open.
-history-action-invalid = That History request isn't valid.
 
 # Command palette chrome: footer key hints, result count and empty states.
 palette-name = Command palette
@@ -974,6 +919,16 @@ text-menu-numbered-list = Numbered list
 
 # A reference to something another app keeps, shown as a chip; $label is its name.
 reference-open = Open { $label }
+
+# One step of an agent's task: the program it ran, what it answered, what it
+# changed and what it proposes.
+program-step-program = Program the agent ran
+program-step-show-all = Show all { $count } lines
+program-step-undo = Undo
+program-step-approve = Approve
+program-step-decline = Decline
+program-step-waits = Waits for you to confirm it.
+program-step-planned = Nothing changed yet. Once confirmed, this changes:
 
 # A signal meter's name, by how strong the signal is (a Wi-Fi or mobile network).
 signal-meter-unknown = Signal strength unknown

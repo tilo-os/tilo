@@ -175,6 +175,10 @@ impl Checker<'_> {
                 );
             }
         }
+        // A rich input's `@` drawer offers the conversation's people however it is written.
+        if d.name == "RichInput" && !given.contains("speakers") && !given.contains("people") {
+            self.drawer_props(n);
+        }
         if let Some(block) = &c.block {
             self.component_block(n, d, block, span);
         }
@@ -528,10 +532,11 @@ impl Checker<'_> {
                 UiKind::On {
                     event,
                     param,
+                    at,
                     action,
                 } => {
                     if let Some(e) = d.event(&event.name) {
-                        let act = self.event_action(d, e, param.as_ref(), action);
+                        let act = self.event_action(d, e, (param.as_ref(), at.as_ref()), action);
                         if !act.ty.is_error() {
                             self.emit(host(
                                 Imp::UiOn,
@@ -581,12 +586,13 @@ impl Checker<'_> {
     /// What an event does: an action reference. An event that carries a value names it
     /// (`on select(x: Note): open(x)`), and the action takes it as one of its arguments as it
     /// is: the reference holds its place, and the host puts the value there when the event
-    /// happens. It is data still, never a closure.
+    /// happens. An event that also says where the value lands names that second (`on
+    /// drop(moved: Task, at: Int): place(moved, at)`). It is data still, never a closure.
     fn event_action(
         &mut self,
         d: &Description,
         e: &tilo_ui_graph::component::Event,
-        param: Option<&ast::EventParam>,
+        (param, at): (Option<&ast::EventParam>, Option<&ast::EventParam>),
         action: &ast::Expr,
     ) -> Ex {
         let Some(param) = param else {
@@ -605,33 +611,108 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
-        let ty = match &param.ty {
-            Some(te) => {
-                let types = self.st.types.clone();
-                self.type_in(te, &types)
-            }
-            None => lang_type(carried),
-        };
-        if ty.is_error() && param.ty.is_none() {
+        if let Some(at) = at
+            && e.at.is_none()
+        {
             self.err(
                 "E063",
-                param.name.span,
+                at.name.span,
                 format!(
-                    "{}'s `{}` carries {}; name its type: `on {}({}: T): ...`",
+                    "{}'s `{}` carries one value and says nothing of where it lands; write `on {}({}): ...`",
                     shown(d),
                     e.name,
-                    carried.show(),
                     e.name,
                     param.name.name
                 ),
             );
             return Ex::error();
         }
+        // An event that says where its value lands carries `[value, at]`: each name takes
+        // its part. One that does not carries the value alone.
+        let mut named = vec![(param, carried)];
+        if let (Some(at), Some(where_)) = (at, &e.at) {
+            named.push((at, where_));
+        }
+        let parts = e.at.is_some();
+        self.push_sink();
+        for (i, (p, carried)) in named.into_iter().enumerate() {
+            let Some(ty) = self.event_param_ty(d, e, p, carried) else {
+                self.pop_sink();
+                return Ex::error();
+            };
+            if !passed_as_is(action, &p.name.name) {
+                self.err(
+                    "E063",
+                    action.span,
+                    format!(
+                        "the value `{}` carries is passed to the action as it is, as one of its arguments: `{}(...)` with `{}` among them",
+                        e.name, "action", p.name.name
+                    ),
+                );
+                self.pop_sink();
+                return Ex::error();
+            }
+            // A scalar is boxed until the event puts it in place, as view state read at the
+            // event is (`Self::arg_at_press`).
+            let scalar = ty.is_scalar();
+            let ty = if scalar { Ty::Option(Box::new(ty)) } else { ty };
+            let local = self.declare(&p.name.name, ty.clone());
+            if scalar {
+                self.st.event_scalars.insert(local);
+            }
+            let value = if parts {
+                let part = i32::try_from(i).unwrap_or(0);
+                Ex::host(
+                    Imp::EventPart,
+                    vec![Ex::new(crate::ir::Ek::I32(part), Ty::Bool)],
+                    ty,
+                )
+            } else {
+                Ex::host(Imp::EventValue, Vec::new(), ty)
+            };
+            self.emit(Stmt::Set(local, value));
+        }
+        let act = self.expr_as(action, &Ty::Action);
+        let stmts = self.pop_sink();
+        Ex::new(crate::ir::Ek::Seq(stmts, Box::new(act)), Ty::Action)
+    }
+
+    /// The type of the value `p` names, of the type `carried` the event gives: as written,
+    /// or the event's own; `None` once an error is reported.
+    fn event_param_ty(
+        &mut self,
+        d: &Description,
+        e: &tilo_ui_graph::component::Event,
+        p: &ast::EventParam,
+        carried: &Type,
+    ) -> Option<Ty> {
+        let ty = match &p.ty {
+            Some(te) => {
+                let types = self.st.types.clone();
+                self.type_in(te, &types)
+            }
+            None => lang_type(carried),
+        };
+        if ty.is_error() && p.ty.is_none() {
+            self.err(
+                "E063",
+                p.name.span,
+                format!(
+                    "{}'s `{}` carries {}; name its type: `on {}({}: T): ...`",
+                    shown(d),
+                    e.name,
+                    carried.show(),
+                    e.name,
+                    p.name.name
+                ),
+            );
+            return None;
+        }
         if !fits(carried, &ty) && !ty.is_error() {
             let t = self.show(&ty);
             self.err(
                 "E020",
-                param.name.span,
+                p.name.span,
                 format!(
                     "{}'s `{}` carries {}, not {t}",
                     shown(d),
@@ -639,25 +720,9 @@ impl Checker<'_> {
                     carried.show()
                 ),
             );
-            return Ex::error();
+            return None;
         }
-        if !passed_as_is(action, &param.name.name) {
-            self.err(
-                "E063",
-                action.span,
-                format!(
-                    "the value `{}` carries is passed to the action as it is, as one of its arguments: `{}(...)` with `{}` among them",
-                    e.name, "action", param.name.name
-                ),
-            );
-            return Ex::error();
-        }
-        self.push_sink();
-        let local = self.declare(&param.name.name, ty.clone());
-        self.emit(Stmt::Set(local, Ex::host(Imp::EventValue, Vec::new(), ty)));
-        let act = self.expr_as(action, &Ty::Action);
-        let stmts = self.pop_sink();
-        Ex::new(crate::ir::Ek::Seq(stmts, Box::new(act)), Ty::Action)
+        Some(ty)
     }
 
     /// `name: { ... }`: a `slot` node of `n`, named, holding the content.

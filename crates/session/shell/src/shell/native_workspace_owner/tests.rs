@@ -18,12 +18,17 @@ struct Fixture {
 }
 /// The state tree the owner publishes into.
 pub(crate) fn tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
-    let store: Arc<dyn std::any::Any + Send + Sync> = tilo_joined_room::testing::store(owner);
-    store
-        .downcast::<TreeStore>()
+    let host: Arc<dyn std::any::Any + Send + Sync> =
+        tilo_joined_room::testing::file_host(owner).expect("the owner keeps its own file");
+    host.downcast::<TreeHost>()
         .expect("a desktop owner publishes into its state tree")
         .tree
         .clone()
+}
+/// The owner's record as the file beside the state file at `path` holds
+/// it, empty while there is none.
+fn record(path: &std::path::Path) -> Vec<u8> {
+    std::fs::read(owner_file(path)).unwrap_or_default()
 }
 /// Enroll into the slot that already shows the invitation's room.
 pub(super) fn prepare_enrollment(
@@ -78,7 +83,7 @@ fn publications_and_encodes<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
 }
 
 #[test]
-fn native_owner_publication_encodes_the_state_file_once_and_keeps_the_live_document() {
+fn native_owner_publication_writes_only_its_own_file_and_keeps_the_live_document() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let tree = tree_at(&path);
@@ -93,20 +98,19 @@ fn native_owner_publication_encodes_the_state_file_once_and_keeps_the_live_docum
         publications_and_encodes(|| prepare_enrollment(&owner, &intent, now));
     let pending = pending.unwrap();
     assert!(publications > 0, "a pending enrollment is published");
-    assert_eq!(
-        encodes, publications,
-        "each publication encodes the state file once"
-    );
+    assert_eq!(encodes, 0, "a publication does not encode the state file");
     let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
     let (installed, publications, encodes) =
         publications_and_encodes(|| owner.install(&enrollment, now));
     installed.unwrap();
     assert!(publications > 0, "an install is published");
-    assert_eq!(
-        encodes, publications,
-        "each publication encodes the state file once"
-    );
+    assert_eq!(encodes, 0, "a publication does not encode the state file");
+    persist::wait_for_saves();
+    let stored = tilo_joined_room::read_file(&owner_file(&path)).unwrap();
+    assert_eq!(stored.revision(), owner.revision());
+    assert!(stored.holds(RoomId::parse(ROOM).unwrap()));
     let tree = tree.read();
+    assert_eq!(tree.native_authority.revision(), owner.revision());
     assert!(
         heads_before
             .iter()
@@ -115,13 +119,13 @@ fn native_owner_publication_encodes_the_state_file_once_and_keeps_the_live_docum
     );
 }
 
-/// The state file is written with its owner record encoded once; it is still
-/// exactly the tree pretty-printed, the file on disk is those bytes, and the
-/// digest that pass computed is the one the writer checks the file against.
+/// The state file is exactly the tree pretty-printed, without the owner's
+/// record, which its own file holds.
 #[test]
-fn native_owner_state_file_encoded_once_is_the_pretty_tree_and_its_digest() {
+fn native_owner_state_file_is_the_pretty_tree_without_the_record() {
     let (directory, owner, _room, _now, _key) = test_enrolled_owner();
     let tree = tree_of(&owner);
+    persist::save_shared_tree_to(&tree, &directory.path().join("state.json")).unwrap();
     let tree = tree.read();
     assert!(
         !tree.native_authority.is_empty(),
@@ -130,24 +134,17 @@ fn native_owner_state_file_encoded_once_is_the_pretty_tree_and_its_digest() {
     let encoded = persist::encode_tree(&tree).unwrap();
     let oracle = serde_json::to_vec_pretty(&persist::DurableTree::of(&tree)).unwrap();
     assert_eq!(
-        String::from_utf8_lossy(&encoded.bytes),
+        String::from_utf8_lossy(&encoded),
         String::from_utf8_lossy(&oracle),
         "the state file keeps its exact bytes"
     );
     assert_eq!(
         std::fs::read(directory.path().join("state.json")).unwrap(),
         oracle,
-        "the last publication wrote exactly those bytes"
+        "the save wrote exactly those bytes"
     );
-    assert_eq!(
-        encoded.authority,
-        store::digest(&tree.native_authority).unwrap()
-    );
-    assert_eq!(
-        tree.native_runtime.expected_digest(),
-        Some(encoded.authority),
-        "the writer expects the record the file holds"
-    );
+    let file: serde_json::Value = serde_json::from_slice(&oracle).unwrap();
+    assert!(file.get("native_authority").is_none());
     tilo_joined_room::preflight_storage(&tree.native_authority).unwrap();
 }
 
@@ -291,7 +288,7 @@ fn native_pending_not_published_failure_returns_no_send_authority() {
     let path = directory.path().join("state.json");
     let tree = tree_at(&path);
     let owner = open(tree).unwrap();
-    let before = std::fs::read(&path).unwrap();
+    let before = record(&path);
     let (intent, _, _, _, now) = raw_fixture();
     assert!(
         with_failure(Checkpoint::BeforePublish, || prepare_enrollment(
@@ -299,7 +296,7 @@ fn native_pending_not_published_failure_returns_no_send_authority() {
         ))
         .is_err()
     );
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(record(&path), before);
     assert!(owner.pending_enrollment(intent.room()).unwrap().is_none());
     assert!(!owner.contains_room(intent.room()));
     prepare_enrollment(&owner, &intent, now).unwrap();
@@ -314,7 +311,7 @@ fn native_admission_not_published_keeps_previous_committed_chat_and_disk() {
     let owner = open(tree).unwrap();
     let fixture = fixture(&owner);
     owner.install(&fixture.enrollment, fixture.now).unwrap();
-    let before = std::fs::read(&path).unwrap();
+    let before = record(&path);
     let room = RoomId::parse(ROOM).unwrap();
     assert!(
         with_failure(Checkpoint::BeforePublish, || owner.receive(
@@ -325,7 +322,7 @@ fn native_admission_not_published_keeps_previous_committed_chat_and_disk() {
         ))
         .is_err()
     );
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(record(&path), before);
     owner
         .with_current(room, |view| {
             assert!(view.peer().validated_media_policy().is_err());
@@ -379,9 +376,9 @@ fn native_uncertain_publication_fences_owner_ui_and_live_listener_until_reopen()
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(owner.with_current(room, |_| Ok(())).is_err());
-        let published = std::fs::read(&path).unwrap();
-        assert!(persist::save_tree_to(&tree.read(), &path).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), published);
+        let published = record(&path);
+        persist::save_tree_to(&tree.read(), &path).unwrap();
+        assert_eq!(record(&path), published);
         drop(owner);
         drop(tree);
         let mut restored = persist::load_tree_from(&path).unwrap();
@@ -415,9 +412,9 @@ fn native_stale_ui_snapshot_cannot_erase_admitted_state() {
             )
             .unwrap();
     }
-    let committed = std::fs::read(&path).unwrap();
-    assert!(persist::save_tree_to(&stale, &path).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), committed);
+    let committed = record(&path);
+    persist::save_tree_to(&stale, &path).unwrap();
+    assert_eq!(record(&path), committed);
     persist::save_tree_to(&tree.read(), &path).unwrap();
 }
 
@@ -428,6 +425,7 @@ fn native_v1_hidden_records_and_future_files_are_preserved_and_refused() {
     let tree = tree_at(&path);
     let owner = open(tree.clone()).unwrap();
     let _fixture = fixture(&owner);
+    persist::wait_for_saves();
     let mut raw: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     drop(owner);
@@ -548,7 +546,7 @@ fn native_bootstrap_floor_requires_exact_governor_ack_and_survives_stale_save_an
     owner
         .finish_bootstrap(pending, &response, fixture.now)
         .unwrap();
-    assert!(persist::save_tree_to(&stale, &path).is_err());
+    persist::save_tree_to(&stale, &path).unwrap();
     let continuity = owner.with_current(room, |v| Ok(v.continuity())).unwrap();
     let same = owner
         .begin_bootstrap(room, &hint, &key, fixture.now)
@@ -641,6 +639,7 @@ fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_di
     let owner = open(tree.clone()).unwrap();
     let fixture = fixture(&owner);
     owner.install(&fixture.enrollment, fixture.now).unwrap();
+    persist::save_shared_tree_to(&tree, &path).unwrap();
     let mut independently_loaded = persist::load_tree_from(&path).unwrap();
     independently_loaded.persist_path = Some(path.clone());
     assert!(open(independently_loaded.shared()).is_err());
@@ -650,16 +649,6 @@ fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_di
     assert!(persist::save_tree_to(&oversized, &path).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), committed);
     drop(oversized);
-    let mut oversized_authority = tree.read().clone();
-    // Malformed oversized bytes must be refused before any generic tree clone or publication.
-    // A cap's worth of peer bytes encodes as a third more base64 text than the cap.
-    tilo_joined_room::testing::set_stored_peer(
-        &mut oversized_authority.native_authority,
-        RoomId::parse(ROOM).unwrap(),
-        vec![0; store::MAX_AUTHORITY_BYTES],
-    );
-    assert!(persist::save_tree_to(&oversized_authority, &path).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), committed);
     persist::save_tree_to(&tree.read(), &path).unwrap();
 }
 
@@ -715,14 +704,14 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
     };
     let receipt = owner.commit_document(request.clone(), fixture.now).unwrap();
     assert_eq!(receipt.binding, request.binding().unwrap());
-    let committed = std::fs::read(&path).unwrap();
+    let committed = record(&path);
     let retry = owner
         .commit_document(request, fixture.now + std::time::Duration::from_secs(3600))
         .unwrap();
     assert_eq!(retry.generation, receipt.generation);
     assert_eq!(retry.aggregate_hash, receipt.aggregate_hash);
     assert_eq!(
-        std::fs::read(&path).unwrap(),
+        record(&path),
         committed,
         "exact retry must not rewrite or manufacture a new admission"
     );
@@ -744,7 +733,7 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
             )
             .is_err()
     );
-    assert_eq!(std::fs::read(&path).unwrap(), committed);
+    assert_eq!(record(&path), committed);
 }
 
 pub(crate) fn test_enrolled_owner() -> (
@@ -770,6 +759,7 @@ pub(crate) fn test_enrolled_owner() -> (
             )
             .unwrap();
     }
+    persist::save_shared_tree_to(&tree_of(&owner), &path).unwrap();
     (
         directory,
         owner,
@@ -903,10 +893,10 @@ fn native_enrollment_target_slot_failed_barrier_preserves_previous_binding() {
         .prepare_enrollment_into(&intent, Some(local), now)
         .unwrap();
     let enrolled = tilo_joined_room::testing::finalize(intent, pending.clone(), bootstrap).unwrap();
-    let before = std::fs::read(&path).unwrap();
+    let before = record(&path);
     assert!(with_failure(Checkpoint::BeforePublish, || owner.install(&enrolled, now)).is_err());
     assert_eq!(tree.read().room_of(local), Some(previous));
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(record(&path), before);
     assert_eq!(
         owner
             .pending_enrollment(pending.room())
@@ -1011,11 +1001,10 @@ fn native_reopen_refuses_each_partial_acknowledged_descriptor_pair() {
         owner.finish_bootstrap(pending, &response, now).unwrap();
         let path = directory.path().join("state.json");
         drop(owner);
-        let mut raw: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        raw["native_authority"]["rooms"][ROOM][removed] = serde_json::Value::Null;
+        let mut raw: serde_json::Value = serde_json::from_slice(&record(&path)).unwrap();
+        raw["rooms"][ROOM][removed] = serde_json::Value::Null;
         let bytes = serde_json::to_vec(&raw).unwrap();
-        std::fs::write(&path, &bytes).unwrap();
+        std::fs::write(owner_file(&path), &bytes).unwrap();
         let mut loaded = persist::load_tree_from(&path).unwrap();
         loaded.persist_path = Some(path.clone());
         let tree = loaded.shared();
@@ -1023,7 +1012,7 @@ fn native_reopen_refuses_each_partial_acknowledged_descriptor_pair() {
             open(tree.clone()).is_err(),
             "partial {removed} cannot reset an acknowledged floor or skip descriptor validation"
         );
-        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(record(&path), bytes);
     }
 }
 
@@ -1058,12 +1047,12 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     let observed_acl = directory.path().join("published-acl.json");
     let observed_state = directory.path().join("published-state.json");
     let publisher = directory.path().join("publisher.sh");
-    std::fs::write(&publisher, "#!/bin/sh\ncp \"$3\" \"$TILO_NATIVE_OWNER_ACL_OBSERVED\"\ncp \"$TILO_NATIVE_OWNER_STATE\" \"$TILO_NATIVE_OWNER_STATE_OBSERVED\"\n").unwrap();
+    std::fs::write(&publisher, "#!/bin/sh\ncp \"$3\" \"$TILO_NATIVE_OWNER_ACL_OBSERVED\"\ncp \"$TILO_NATIVE_OWNER_STATE\" \"$TILO_NATIVE_OWNER_STATE_OBSERVED\" 2>/dev/null\ntrue\n").unwrap();
     std::fs::set_permissions(&publisher, std::fs::Permissions::from_mode(0o700)).unwrap();
     let values = [
         ("TILO_FS_AUTHORITY_PUBLISHER", publisher),
         ("TILO_NATIVE_OWNER_ACL_OBSERVED", observed_acl.clone()),
-        ("TILO_NATIVE_OWNER_STATE", path.clone()),
+        ("TILO_NATIVE_OWNER_STATE", owner_file(&path)),
         ("TILO_NATIVE_OWNER_STATE_OBSERVED", observed_state.clone()),
         ("TILO_IDENTITY_ROOT", directory.path().join("identity")),
         ("XDG_CONFIG_HOME", directory.path().join("config")),
@@ -1104,10 +1093,11 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
         .unwrap();
     let complete = tilo_joined_room::testing::finalize(intent, id, bootstrap).unwrap();
     let stale = tree.read().clone();
-    let before = std::fs::read(&path).unwrap();
+    let before = record(&path);
     std::fs::remove_file(&observed_acl).unwrap();
-    std::fs::remove_file(&observed_state).unwrap();
-    // The first actual publication must be state.json, never a candidate ACL export.
+    let _ = std::fs::remove_file(&observed_state);
+    // The first actual publication must be the owner's record, never a
+    // candidate ACL export.
     let failed = with_failure_on_nth(Checkpoint::BeforePublish, 1, || {
         owner.install(&complete, now)
     });
@@ -1117,7 +1107,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     );
     settle_publication("failed install must leave publication idle");
     assert_eq!(tree.read().room_of(local), Some(previous));
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(record(&path), before);
     assert_eq!(std::fs::read(&acl).unwrap(), baseline_acl);
     assert!(
         !observed_acl.exists(),
@@ -1131,7 +1121,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     let published_state: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&observed_state).unwrap()).unwrap();
     assert!(
-        published_state["native_authority"]["rooms"][ROOM].is_object(),
+        published_state["rooms"][ROOM].is_object(),
         "actual publisher must observe acknowledged final owner state"
     );
     std::fs::remove_file(&observed_acl).unwrap();

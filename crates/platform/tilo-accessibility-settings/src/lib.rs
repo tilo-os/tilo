@@ -31,7 +31,7 @@ pub const SWITCH_SCAN_RANGE_MS: RangeInclusive<u16> = 500..=5_000;
 /// Defines `AccessibilitySettings`, the person's assists, in the calling
 /// crate: the shell's plain copy here, and Settings' copy that adds its
 /// record attributes (`$record` on the type, `$readonly` on the keys only
-/// the screen reader's own controls change). One definition for both keeps
+/// the record's verbs change). One definition for both keeps
 /// them from disagreeing about a key, a default or a range, and Settings'
 /// copy keeps the record's generated code inside the one app that edits it.
 /// The caller has the field types in scope by their own names
@@ -98,10 +98,8 @@ macro_rules! accessibility_settings {
             /// Automatic scan period in milliseconds; zero means manual two-switch scanning.
             pub switch_scan_ms: u16,
             /// Normalised screen-reader speech rate, where 100 is the engine default.
-            $(#[$readonly])*
             pub screen_reader_rate: u16,
             /// Backend-neutral voice/language preset.
-            $(#[$readonly])*
             pub screen_reader_voice: ScreenReaderVoice,
             /// Personal recognition language; selecting it never grants microphone access.
             pub dictation_language: DictationLanguage,

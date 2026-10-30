@@ -85,6 +85,13 @@ pub enum EngineRequest {
         account: AccountConfig,
         message: Box<Message>,
     },
+    /// Keep a draft in the account's Drafts folder (`APPEND`), under the
+    /// `Message-ID` its wire ids name.
+    SaveDraft {
+        request_id: EngineRequestId,
+        account: AccountConfig,
+        draft: Box<Draft>,
+    },
     /// Submit a draft via SMTP.
     Send {
         request_id: EngineRequestId,
@@ -157,6 +164,13 @@ impl EngineRequest {
             message,
         }
     }
+    pub fn save_draft(account: AccountConfig, draft: Box<Draft>) -> Self {
+        Self::SaveDraft {
+            request_id: next_request_id(),
+            account,
+            draft,
+        }
+    }
     pub fn send(account: AccountConfig, draft: Box<Draft>) -> Self {
         Self::Send {
             request_id: next_request_id(),
@@ -197,6 +211,7 @@ impl EngineRequest {
             | Self::StoreFlag { request_id, .. }
             | Self::Move { request_id, .. }
             | Self::Purge { request_id, .. }
+            | Self::SaveDraft { request_id, .. }
             | Self::Send { request_id, .. }
             | Self::Watch { request_id, .. }
             | Self::Search { request_id, .. }
@@ -211,6 +226,7 @@ impl EngineRequest {
             | Self::StoreFlag { account, .. }
             | Self::Move { account, .. }
             | Self::Purge { account, .. }
+            | Self::SaveDraft { account, .. }
             | Self::Send { account, .. }
             | Self::Watch { account, .. }
             | Self::Search { account, .. } => &account.email,
@@ -229,6 +245,7 @@ impl EngineRequest {
             Self::StoreFlag { .. } => EngineRequestKind::StoreFlag,
             Self::Move { .. } => EngineRequestKind::Move,
             Self::Purge { .. } => EngineRequestKind::Purge,
+            Self::SaveDraft { .. } => EngineRequestKind::SaveDraft,
             Self::Send { .. } => EngineRequestKind::Send,
             Self::Watch { .. } => EngineRequestKind::Watch,
             Self::Search { .. } => EngineRequestKind::Search,
@@ -247,6 +264,7 @@ pub enum EngineRequestKind {
     StoreFlag,
     Move,
     Purge,
+    SaveDraft,
     Send,
     Watch,
     Search,
@@ -406,7 +424,8 @@ impl MailEngine for StubEngine {
             }
             EngineRequest::StoreFlag { .. }
             | EngineRequest::Move { .. }
-            | EngineRequest::Purge { .. } => {
+            | EngineRequest::Purge { .. }
+            | EngineRequest::SaveDraft { .. } => {
                 // Local CRDT changes remain available offline, but the user
                 // must be told that the remote IMAP write was not performed.
                 let _ = out.send(EngineEvent::Error {
@@ -798,6 +817,51 @@ pub mod live {
             })
         }
 
+        /// Carry out a write a server is told: a flag, a move, a deletion or
+        /// a draft kept; what it was, for an error to name.
+        fn handle_write(&mut self, write: EngineRequest) -> (&'static str, Result<(), String>) {
+            match write {
+                EngineRequest::StoreFlag {
+                    account, message, ..
+                } => ("flag", self.handle_store(&account, &message)),
+                EngineRequest::Move {
+                    account,
+                    message,
+                    to,
+                    ..
+                } => ("move", self.handle_move(&account, &message, to)),
+                EngineRequest::Purge {
+                    account, message, ..
+                } => ("purge", self.handle_purge(&account, &message)),
+                EngineRequest::SaveDraft { account, draft, .. } => {
+                    ("save-draft", self.handle_save_draft(&account, &draft))
+                }
+                _ => ("write", Err("not a write a server is told".into())),
+            }
+        }
+
+        /// `APPEND` `draft` to the account's Drafts folder, marked a draft
+        /// and read.
+        fn handle_save_draft(
+            &mut self,
+            account: &AccountConfig,
+            draft: &Draft,
+        ) -> Result<(), String> {
+            let places = self.places_of(account)?;
+            let from = crate::model::Addr::new(account.display_name.clone(), account.email.clone());
+            let mime = build_mime(&self.content, &from, draft)?;
+            let folder = places.name(Folder::Drafts).to_owned();
+            self.run(account, move |session| {
+                let (mime, folder) = (mime.clone(), folder.clone());
+                Box::pin(async move {
+                    session
+                        .append(&folder, Some("(\\Seen \\Draft)"), None, &mime)
+                        .await
+                        .map_err(|e| format!("the draft was not kept in {folder}: {e}"))
+                })
+            })
+        }
+
         fn handle_purge(
             &mut self,
             account: &AccountConfig,
@@ -969,43 +1033,12 @@ pub mod live {
                         });
                     }
                 },
-                EngineRequest::StoreFlag {
-                    account, message, ..
-                } => {
-                    if let Err(e) = self.handle_store(&account, &message) {
-                        let _ = out.send(EngineEvent::Error {
-                            request_id,
-                            kind,
-                            context: "flag".into(),
-                            message: e,
-                        });
-                    }
-                }
-                EngineRequest::Move {
-                    account,
-                    message,
-                    to,
-                    ..
-                } => {
-                    if let Err(e) = self.handle_move(&account, &message, to) {
-                        let _ = out.send(EngineEvent::Error {
-                            request_id,
-                            kind,
-                            context: "move".into(),
-                            message: e,
-                        });
-                    }
-                }
-                EngineRequest::Purge {
-                    account, message, ..
-                } => {
-                    super::report_engine_error(
-                        out,
-                        request_id,
-                        kind,
-                        "purge",
-                        self.handle_purge(&account, &message),
-                    );
+                write @ (EngineRequest::StoreFlag { .. }
+                | EngineRequest::Move { .. }
+                | EngineRequest::Purge { .. }
+                | EngineRequest::SaveDraft { .. }) => {
+                    let (context, result) = self.handle_write(write);
+                    super::report_engine_error(out, request_id, kind, context, result);
                 }
                 EngineRequest::Send { account, draft, .. } => {
                     self.process_send(request_id, kind, &account, &draft, out);

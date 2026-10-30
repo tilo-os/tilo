@@ -157,7 +157,7 @@ impl HistoryRegistration {
     #[cfg(feature = "native")]
     pub(crate) fn installed_app_state(
         definition: &'static HistoryDefinition,
-        autosave: Option<&crate::persist::DocWriter>,
+        autosave: Option<&app_state::DocWriter>,
         lifetime: uuid::Uuid,
     ) -> Result<Self, HistoryRegistrationError> {
         if definition

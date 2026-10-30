@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use neighbour_wire::NeighbourMsg;
 use serde::{Deserialize, Serialize};
@@ -36,7 +37,7 @@ use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceH
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::{JoinBootstrap, TransportHint};
 use tilo_peer_state::{GovernedAccess, StatePeer, TransportOrigin};
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::DeviceCert;
 use tokio::task::JoinHandle;
 use web_time::SystemTime;
 
@@ -205,10 +206,18 @@ impl Hosting {
             return Err("only its own person's devices ask a host to stop serving a room".into());
         }
         let path = self.record_path(room);
-        let workspace_id = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<HostedRecord>(&text).ok())
-            .map(|record| record.workspace_id);
+        // No record: the room was not hosted here. One that does not read
+        // is an error, never "not hosted": that would forget the room while
+        // it went on being served.
+        let workspace_id = match std::fs::read_to_string(&path) {
+            Ok(text) => Some(
+                serde_json::from_str::<HostedRecord>(&text)
+                    .map_err(|error| format!("the room's hosting record does not read: {error}"))?
+                    .workspace_id,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("the room's hosting record does not read: {error}")),
+        };
         let served = self.served.lock_recover().remove(room).is_some();
         if let Some(workspace_id) = workspace_id {
             stop_serving(&self.services, workspace_id).await?;
@@ -272,12 +281,17 @@ impl Hosting {
             .cloned()
             .ok_or("the room's workspace did not open")?;
         let (tap, notices) = tokio::sync::mpsc::channel(NOTICES);
+        let replica = Arc::new(HostedReplica {
+            peer: std::sync::Mutex::new(peer.clone()),
+            generation: request.bootstrap.generation,
+        });
         {
             let mut runtime = workspace.lock().await;
             if runtime.room_authority.is_some() {
                 return Err("this host governs that room itself".into());
             }
             runtime.governor_tap = Some(tap);
+            runtime.hosted_replica = Some(Arc::clone(&replica));
             // The governor is a host this workspace federates with from the
             // start: the session it answers this host's with keeps all of
             // the room, on-demand records included, whichever of the two
@@ -313,6 +327,7 @@ impl Hosting {
             governor: authority.device_public_key,
             record: self.record_path(&request.room),
             peer,
+            replica,
         };
         let task = tokio::spawn(follower.run(notices, AbortOnDrop(dialer)));
         self.served
@@ -351,24 +366,16 @@ fn own_hint(
 /// governance admitted from the bootstrap's signed messages. Record writes
 /// are not this replica's to follow.
 fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, String> {
-    let mut revocations = RevocationList::new();
-    for entry in &bootstrap.revocations {
-        revocations
-            .insert(entry.clone())
-            .map_err(|error| error.to_string())?;
-    }
-    let mut peer = StatePeer::joined(
+    let mut peer = StatePeer::from_join(
         &bootstrap.room,
         bootstrap.authority.clone(),
         bootstrap.certified_roster.clone(),
-        revocations,
+        &bootstrap.revocations,
         now,
     )?;
     // This host's copy: it writes under the host's own actor, never the
     // one its device's replica of the room writes under.
     peer.write_as_room_host();
-    peer.select_admission_v5()
-        .map_err(|error| error.to_string())?;
     let origin = TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key);
     for bytes in &bootstrap.governance_messages {
         let message: NeighbourMsg =
@@ -387,8 +394,12 @@ fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, Stri
 /// Take `body`, a change the governor published, into `peer` when it is
 /// governance. Whether governance changed.
 fn follow(peer: &mut StatePeer, governor: [u8; 32], body: &[u8], now: SystemTime) -> bool {
-    let Ok(message) = postcard::from_bytes::<NeighbourMsg>(body) else {
-        return false;
+    let message = match postcard::from_bytes::<NeighbourMsg>(body) {
+        Ok(message) => message,
+        Err(error) => {
+            tracing::warn!(room = %peer.room(), %error, "a change the governor published does not decode");
+            return false;
+        }
     };
     if matches!(message, NeighbourMsg::AppDocument { .. }) {
         return false;
@@ -433,7 +444,25 @@ async fn admit(
 async fn stop_following(services: &RoomServices, workspace_id: u64) {
     let workspace = services.workspaces.lock().await.get(&workspace_id).cloned();
     if let Some(workspace) = workspace {
-        workspace.lock().await.governor_tap = None;
+        let mut runtime = workspace.lock().await;
+        runtime.governor_tap = None;
+        runtime.hosted_replica = None;
+    }
+}
+
+/// This host's replica of a hosted room as subscribing devices see it,
+/// current with each governance change the room's governor published.
+pub(crate) struct HostedReplica {
+    peer: std::sync::Mutex<StatePeer>,
+    generation: u64,
+}
+
+impl HostedReplica {
+    /// The membership answer `device` builds its replica of the room from
+    /// ([`crate::rooms::member_bootstrap`]).
+    pub(crate) fn bootstrap(&self, workspace_id: u64, device: &DeviceCert) -> Option<Vec<u8>> {
+        let peer = self.peer.lock_recover();
+        crate::rooms::member_bootstrap(&peer, workspace_id, self.generation, device)
     }
 }
 
@@ -466,6 +495,8 @@ struct Follower {
     governor: [u8; 32],
     record: PathBuf,
     peer: StatePeer,
+    /// What subscribing devices are answered from.
+    replica: Arc<HostedReplica>,
 }
 
 impl Follower {
@@ -484,6 +515,7 @@ impl Follower {
             if !follow(&mut self.peer, author, &body, now) {
                 continue;
             }
+            *self.replica.peer.lock_recover() = self.peer.clone();
             match admit(&self.services, self.workspace_id, &self.peer, now).await {
                 Ok(()) => {}
                 Err(error) if self.dropped(now) => {

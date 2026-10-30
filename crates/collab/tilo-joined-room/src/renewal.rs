@@ -5,9 +5,9 @@
 //! room held, and the room's record here follows. The device stays the same
 //! member, with its role and everything it wrote.
 use crate::{NativeWorkspaceOwner, RoomId};
-use std::time::SystemTime;
 use tilo_peer_state::join::JoinBootstrap;
 use tilo_user_identity::DeviceCert;
+use web_time::SystemTime;
 
 /// Whether `renewed` is a later certificate of `held`'s device from the same
 /// person's root. The certificates' signatures are checked where each is

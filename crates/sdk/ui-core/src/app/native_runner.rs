@@ -251,6 +251,17 @@ impl AppHandler {
     }
 }
 
+impl AppHandler {
+    /// Tell the app how far the compositor's input reached it: what the person did in the
+    /// window's bar after that input runs now, in its place among the window's own input.
+    fn follow_handled_input(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(serial) = winit::platform::wayland::delivered_input_serial() {
+            self.app.input_handled(serial);
+        }
+    }
+}
+
 #[cfg(any(target_os = "macos", windows))]
 impl AppHandler {
     /// Hand the host chrome fresh commands when anything they show changed.
@@ -2129,11 +2140,7 @@ impl AppHandler {
             other => other,
         };
         let app = &mut self.app;
-        let Some(root_node) = app
-            .history_layout
-            .map(|layout| layout.app)
-            .or(app.layout.root_node)
-        else {
+        let Some(root_node) = app.layout.root_node else {
             return;
         };
         let mut handled = false;
@@ -2488,7 +2495,6 @@ impl AppHandler {
                 .history
                 .as_ref()
                 .is_none_or(|history| history.live_interactive())
-            && app.history_layout.is_none()
             && app.close_admission.dialog.is_none())
         .then(|| crate::damage::widget_boxes(app.root_widget.as_ref()));
         let layout_before = (app.layout.rebuilds, app.layout.last_layout_logical);
@@ -2541,7 +2547,7 @@ impl AppHandler {
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
         // independent native floating surfaces.
-        floating_content_changed |= app.root_widget.needs_redraw() || app.history_needs_redraw();
+        floating_content_changed |= app.root_widget.needs_redraw();
 
         // Admission reserved this pair before state updates. Taking it cannot
         // wait on GPU work; aborted layouts retain it in the handle for retry.
@@ -2585,7 +2591,6 @@ impl AppHandler {
         let culls = !full_redraw_required
             && !self.top_layer_drawn
             && app.history.is_none()
-            && app.history_layout.is_none()
             && !crate::render_thread::remote::requested();
         // While a view pans, the frame is drawn as layers instead of culled:
         // its worker copies what the pan keeps of the view and rasterises
@@ -3745,6 +3750,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        // What the person did in the window's bar before this input runs first.
+        self.follow_handled_input();
         // Wheel deltas reported in one wake route as one event; anything
         // else routes the waiting sum first.
         for (window_id, event) in self.wheel_batch.push(window_id, event) {
@@ -3903,6 +3910,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.app.layout.layout_dirty = true;
             request_primary_redraw();
         }
+        // The wake's input is all handled: what the person did in the bar after it runs.
+        self.follow_handled_input();
         if self.apply_floating_host_messages(event_loop) {
             self.app.invalidate_widget_resource_cache();
             request_primary_redraw();

@@ -39,11 +39,6 @@ pub(super) fn certified_device(
     (peer, key)
 }
 
-// In an unoptimized build, polling this scenario through the persistence
-// owner nests deeper than the default 2 MiB test-thread stack (it needs
-// more than 4 MiB when it runs alone). Run it on its own thread with an
-// explicit stack instead of depending on RUST_MIN_STACK.
-
 async fn activation_failure_fences_original_sessions_and_retry(operation: &'static str) {
     use crate::store::test_support::replay_frames;
     use tilo_relay_shell::selection::fixtures::{
@@ -2092,10 +2087,17 @@ impl crate::app_serving::AppServingPlane for CountingPlane {
         &self,
         _workspace_id: u64,
         _caller: &tilo_actions::remote::Caller,
-        _message: tilo_actions::remote::RemoteActionMessage,
+        message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        None
+        // A request is always answered: this plane counts it and refuses it.
+        tilo_actions::remote::refuse(
+            &message,
+            tilo_actions::remote::ActionHostError::Refused {
+                reason: "counted".into(),
+            },
+        )
+        .map(tilo_actions::remote::Pending::ready)
     }
 }
 

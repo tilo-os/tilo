@@ -153,42 +153,104 @@ else
   bad "install-config accepts a malformed owner or UUID"
 fi
 
-# --- boot decision without a usable store ---------------------------------------
-# Every fallback must still tell fs.service to serve FUSE explicitly.
+# --- who the local person is ----------------------------------------------------
+# A device with several accounts: the person is the account that proves it
+# holds the key of the identity the device is bound to (`tilo-identity
+# local-person`, whose verification has its own tests), never the greeter's
+# configuration, an account count, or an account merely naming the identity.
 ensure_env() {
   local root="$1"
   TILO_STORE_ETC="$root/etc" TILO_STORE_RUNTIME="$root/run" \
     TILO_STORE_MOUNT="$root/store" TILO_STORE_IMAGE="$root/image-dir/store.img" \
+    TILO_STORE_IDENTITY="$root/identity" TILO_STORE_PASSWD="$root/passwd" \
+    TILO_STORE_IDENTITY_TOOL="$root/tilo-identity" \
+    TILO_STORE_LOGINCTL="${LOGINCTL_STUB:-/bin/false}" \
     TILO_STORE_SYSTEMCTL=/bin/false "$helper" ensure > "$root/log" 2>&1
 }
 me="$(id -un)"
+device_id=61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241
+# A root with accounts ada (1000), bob (1001), cy (1002) and dee (1003), each
+# of whose identity registries names the device's identity, and an identity
+# tool answering "$2" with status "$3" (no tool when "$3" is "none").
 new_root() {
-  local root="$tmp/$1"
-  mkdir -p "$root/etc/tilo" "$root/etc/greetd" "$root/image-dir"
-  printf '[initial_session]\ncommand = "shell"\nuser = "%s"\n' "$2" > "$root/etc/greetd/config.toml"
+  local root="$tmp/$1" name uid=1000
+  mkdir -p "$root/etc/tilo" "$root/image-dir" "$root/identity" "$root/home"
+  : > "$root/passwd"
+  for name in ada bob cy dee; do
+    printf '%s:x:%s:%s::%s:/bin/bash\n' "$name" "$uid" "$uid" "$root/home/$name" >> "$root/passwd"
+    mkdir -p "$root/home/$name/.config/tilo/identity"
+    printf '{"default_identity": "%s", "identities": {"%s": {"id": "%s"}}}\n' \
+      "$device_id" "$device_id" "$device_id" > "$root/home/$name/.config/tilo/identity/registry.json"
+    uid=$((uid + 1))
+  done
+  printf 'svc:x:990:990::%s:/sbin/nologin\n' "$root/home/svc" >> "$root/passwd"
+  if [ "${3:-1}" != none ]; then
+    printf '#!/bin/bash\n[ "$1" = local-person ] && [ "$3" = "%s" ] && [ "$5" = "%s" ] || exit 9\nprintf "%%s\\n" "%s" >&%s\nexit %s\n' \
+      "$root/identity" "$root/passwd" "$2" "$([ "${3:-1}" = 0 ] && echo 1 || echo 2)" "${3:-1}" > "$root/tilo-identity"
+    chmod 0755 "$root/tilo-identity"
+  fi
   printf '%s\n' "$root"
 }
+fuse_for() { printf 'TILO_FS_DATA_PLANE_ARGS="--data-plane=fuse --native-owner=%s"' "$1"; }
 fuse_line='TILO_FS_DATA_PLANE_ARGS="--data-plane=fuse"'
 
-r="$(new_root off "$me")"
+r="$(new_root proven "cy 1002:1002" 0)"
 printf 'kind=none\n' > "$r/etc/tilo/store-volume.conf"
-if ensure_env "$r" && [ "$(cat "$r/run/fs.env")" = "$fuse_line" ] && grep -Fq 'kind=none' "$r/log"; then
-  ok "kind=none keeps FUSE and says why"
+if ensure_env "$r" && [ "$(cat "$r/run/fs.env")" = "$(fuse_for 1002:1002)" ] && grep -Fq 'kind=none' "$r/log"; then
+  ok "of four accounts naming the device's identity, the one proving it holds the key owns the files"
 else
-  bad "kind=none did not publish FUSE: $(cat "$r/log" 2>/dev/null)"
+  bad "the proven person was not chosen: $(cat "$r/run/fs.env" 2>/dev/null) $(cat "$r/log" 2>/dev/null)"
 fi
 
-r="$(new_root nobody-home no-such-person-here)"
-if ensure_env "$r" && [ "$(cat "$r/run/fs.env")" = "$fuse_line" ] && grep -Fq 'no local person' "$r/log"; then
-  ok "without a local person the store is left alone and FUSE serves"
+r="$(new_root configured "cy 1002:1002" 0)"
+printf 'kind=none\nowner=dee\n' > "$r/etc/tilo/store-volume.conf"
+if ensure_env "$r" && [ "$(cat "$r/run/fs.env")" = "$(fuse_for 1003:1003)" ]; then
+  ok "owner= in store-volume.conf names the person outright"
 else
-  bad "a store without an owner was not refused: $(cat "$r/log" 2>/dev/null)"
+  bad "owner= was not honoured: $(cat "$r/run/fs.env" 2>/dev/null) $(cat "$r/log" 2>/dev/null)"
 fi
+
+r="$(new_root several "several accounts hold this device's identity: ada, bob" 2)"
+printf 'kind=none\n' > "$r/etc/tilo/store-volume.conf"
+if ! ensure_env "$r" && [ "$(cat "$r/run/fs.env")" = "$fuse_line" ] \
+   && grep -Fq 'several accounts hold' "$r/log" && grep -Fq 'owner=<account>' "$r/log"; then
+  ok "two accounts proving they hold the key fail loudly and say what to configure"
+else
+  bad "two proven holders were guessed between: $(cat "$r/run/fs.env" 2>/dev/null) $(cat "$r/log" 2>/dev/null)"
+fi
+
+cat > "$tmp/loginctl" <<'SH'
+#!/bin/bash
+case "$1 $2" in
+  "show-seat seat0") echo c7 ;;
+  "show-session c7") echo bob ;;
+  *) exit 1 ;;
+esac
+SH
+chmod 0755 "$tmp/loginctl"
+r="$(new_root signed-in "no account here proves it holds this device's identity" 1)"
+printf 'kind=none\n' > "$r/etc/tilo/store-volume.conf"
+if LOGINCTL_STUB="$tmp/loginctl" ensure_env "$r" && [ "$(cat "$r/run/fs.env")" = "$(fuse_for 1001:1001)" ]; then
+  ok "claims without a proof are ignored and the person signed in at the login screen owns the files"
+else
+  bad "the signed-in person was not chosen: $(cat "$r/run/fs.env" 2>/dev/null) $(cat "$r/log" 2>/dev/null)"
+fi
+
+for tool in 1 none; do
+  r="$(new_root "nobody-$tool" "no account here proves it holds this device's identity" "$tool")"
+  if ! ensure_env "$r" && [ "$(cat "$r/run/fs.env")" = "$fuse_line" ] \
+     && grep -Fq 'no local person' "$r/log" && grep -Fq "owner=<account> in $r/etc/tilo/store-volume.conf" "$r/log" \
+     && [ ! -e "$r/image-dir/store.img" ]; then
+    ok "with no proven or signed-in person ($tool) the unit fails loudly, says what to configure, and FUSE serves"
+  else
+    bad "a device without a person was not refused loudly ($tool): $(cat "$r/log" 2>/dev/null)"
+  fi
+done
 
 if [ "$(id -u)" -ge 1000 ]; then
-  r="$(new_root partition-missing "$me")"
-  printf 'kind=partition\n' > "$r/etc/tilo/store-volume.conf"
-  if ensure_env "$r" && [ "$(cat "$r/run/fs.env")" = "$fuse_line" ] && grep -Fq 'is not mounted' "$r/log" \
+  r="$(new_root partition-missing "" none)"
+  printf 'kind=partition\nowner=ada\n' > "$r/etc/tilo/store-volume.conf"
+  if ensure_env "$r" && [ "$(cat "$r/run/fs.env")" = "$(fuse_for 1000:1000)" ] && grep -Fq 'is not mounted' "$r/log" \
      && [ ! -e "$r/image-dir/store.img" ]; then
     ok "a configured partition that did not mount falls back to FUSE without creating an image"
   else
@@ -377,8 +439,8 @@ r="$tmp/existing"
 mkdir -p "$r/fs"
 run_root mount "$root_loop" "$r/fs"
 cleanup_steps+=("run_root umount -l '$r/fs'")
-run_root install -d -m 0755 "$r/fs/etc/tilo" "$r/fs/etc/greetd" "$r/fs/var-lib-tilo" "$r/fs/store"
-printf '[initial_session]\ncommand = "shell"\nuser = "%s"\n' "$me" | run_root tee "$r/fs/etc/greetd/config.toml" >/dev/null
+run_root install -d -m 0755 "$r/fs/etc/tilo" "$r/fs/var-lib-tilo" "$r/fs/store"
+printf 'owner=%s\n' "$me" | run_root tee "$r/fs/etc/tilo/store-volume.conf" >/dev/null
 # systemctl stand-in: `start <mount>` does what the fstab line does at boot.
 cat > "$tmp/systemctl" <<SH
 #!/bin/bash

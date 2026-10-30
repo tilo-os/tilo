@@ -205,13 +205,7 @@ fn project_home_peer_workspaces(bytes: &[u8], selected_ids: &[u64]) -> anyhow::R
         .workspaces
         .first_mut()
         .context("home-peer bundle has no global Files workspace")?;
-    let governor = workspace
-        .authority
-        .as_ref()
-        .context("home-peer workspace is missing signed authority")?
-        .governor;
     let mut projected = selected_ids.to_vec();
-    projected.push(tilo_relay::personal_continuity_workspace_id(&governor));
     projected.sort_unstable();
     projected.dedup();
     if projected.len() > 4096 {
@@ -867,30 +861,18 @@ mod tests {
             };
             let original = toml::to_string_pretty(&bundle).unwrap();
             tilo_files::native::atomic::write(&home, original.as_bytes()).unwrap();
-            let continuity =
-                tilo_relay::personal_continuity_workspace_id(&governor.verifying_key().to_bytes());
 
             let added = project_home_peer_workspaces(original.as_bytes(), &[8, 9]).unwrap();
             commit_transaction(&relay, b"relay-add", &home, Some(&added), || Ok(())).unwrap();
             let after_add: fs::full_replica::HomePeerSet =
                 toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
-            assert_eq!(after_add.workspaces[0].relay_workspace_ids, {
-                let mut expected = vec![8, 9, continuity];
-                expected.sort_unstable();
-                expected.dedup();
-                expected
-            });
+            assert_eq!(after_add.workspaces[0].relay_workspace_ids, vec![8, 9]);
 
             let removed = project_home_peer_workspaces(&added, &[9]).unwrap();
             commit_transaction(&relay, b"relay-remove", &home, Some(&removed), || Ok(())).unwrap();
             let after_remove: fs::full_replica::HomePeerSet =
                 toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
-            assert_eq!(after_remove.workspaces[0].relay_workspace_ids, {
-                let mut expected = vec![9, continuity];
-                expected.sort_unstable();
-                expected.dedup();
-                expected
-            });
+            assert_eq!(after_remove.workspaces[0].relay_workspace_ids, vec![9]);
         }
     }
 }

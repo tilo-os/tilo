@@ -287,9 +287,6 @@ impl FrameHarness {
                 .as_ref()
                 .is_some_and(|history| !history.live_visible())
             || self
-                .history_layout
-                .is_some_and(|layout| !layout.app_visible)
-            || self
                 .action_palette
                 .as_deref()
                 .is_some_and(|palette| palette.is_presented()))

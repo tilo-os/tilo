@@ -132,27 +132,6 @@ impl PeerPublisher {
         Ok(receipt)
     }
 
-    /// Retain the certified member at the installed governor's original ledger.
-    ///
-    /// # Errors
-    /// Refuses unavailable governor custody or a receipt for a different request.
-    pub async fn commit_member_effect_receipt(
-        &self,
-        request: tilo_owner_commit::OwnerCommitRequest,
-        caller: tilo_user_identity::DeviceCert,
-    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
-        let owner = self
-            .owner_commit
-            .as_ref()
-            .ok_or("effect governor unsupported")?;
-        owner.health()?;
-        let receipt = owner
-            .commit_member_effect_receipt(request.clone(), caller)
-            .await?;
-        receipt.validate_for(&request)?;
-        Ok(receipt)
-    }
-
     /// A publisher with nowhere to publish. Every call is a no-op,
     /// announced once.
     pub fn disabled() -> Arc<Self> {
