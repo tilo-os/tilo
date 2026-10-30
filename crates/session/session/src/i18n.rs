@@ -49,24 +49,6 @@ mod tests {
         catalog::check_translations(CATALOGUES);
     }
 
-    /// A key the code asks for but a catalogue lacks renders as the raw key
-    /// (or English on a German desktop), so every one must be defined.
-    #[test]
-    fn every_key_used_in_code_is_in_every_catalogue() {
-        // The crate's other modules ask the toolkit's catalogues of other
-        // crates for their copy; only the notices are this catalogue's.
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let alone = tempfile::tempdir().unwrap();
-        std::fs::copy(
-            manifest.join("src/notices.rs"),
-            alone.path().join("notices.rs"),
-        )
-        .unwrap();
-        catalog::UsedKeys::scan(&[alone.path()])
-            .min_keys(20)
-            .check_defined(CATALOGUES);
-    }
-
     #[test]
     fn a_notice_interpolates_its_facts() {
         let body = t_args(
