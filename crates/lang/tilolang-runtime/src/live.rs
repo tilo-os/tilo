@@ -54,6 +54,9 @@ pub(crate) struct Bound {
     pub space_reads: Vec<(String, f64)>,
     pub state_reads: Vec<(StateKey, u64)>,
     pub state_seen: Vec<(StateKey, Value)>,
+    /// When the time it read next reads differently (seconds since 1970, UTC): it runs again
+    /// then. `None` when it read no time.
+    pub changes_at: Option<i64>,
     pub retained: Vec<Retained>,
 }
 
@@ -75,6 +78,7 @@ impl Bound {
             space_reads: Vec::new(),
             state_reads: Vec::new(),
             state_seen: Vec::new(),
+            changes_at: None,
             retained: Vec::new(),
         }
     }
@@ -122,6 +126,9 @@ struct Index {
     docs: FastMap<String, HashSet<BoundId>>,
     states: HashMap<StateKey, HashSet<BoundId>>,
     space: HashSet<BoundId>,
+    /// The boundaries that read the time, by when it next reads differently for them: the
+    /// first is when the view next needs to run without anything else changing.
+    times: BTreeSet<(i64, BoundId)>,
 }
 
 impl Index {
@@ -169,6 +176,9 @@ impl Index {
         if !b.space_reads.is_empty() {
             self.space.insert(id);
         }
+        if let Some(at) = b.changes_at {
+            self.times.insert((at, id));
+        }
     }
 
     fn remove(&mut self, id: BoundId, b: &Bound) {
@@ -206,6 +216,9 @@ impl Index {
             drop_from(&mut self.states, key, id);
         }
         self.space.remove(&id);
+        if let Some(at) = b.changes_at {
+            self.times.remove(&(at, id));
+        }
     }
 
     fn of(&mut self, read: Read) -> &mut FastMap<String, Vec<(String, BoundId)>> {
@@ -388,6 +401,7 @@ impl Live {
             space_reads: Vec::new(),
             state_reads: Vec::new(),
             state_seen: Vec::new(),
+            changes_at: None,
             retained: Vec::new(),
         };
         let mut live = Self {
@@ -628,6 +642,30 @@ impl Live {
         self.dirty.extend(hit);
     }
 
+    /// When the time some boundary read next reads differently, in seconds since 1970 (UTC):
+    /// the view runs again then ([`Self::pass_time`]). `None` when no boundary read the time,
+    /// and then nothing ever wakes the view for it.
+    pub fn wakes_at(&self) -> Option<i64> {
+        self.index.times.first().map(|(at, _)| *at)
+    }
+
+    /// The clock reads `now` (seconds since 1970, UTC): mark the boundaries for which the time
+    /// they read reads differently by now, and only those. Each is taken off the times it waits
+    /// for: it waits again for what its next run reads, and a run that fails leaves it waiting
+    /// for nothing rather than due forever.
+    pub fn pass_time(&mut self, now: i64) {
+        while let Some(&(at, id)) = self.index.times.first() {
+            if at > now {
+                break;
+            }
+            self.index.times.remove(&(at, id));
+            if let Some(b) = self.bound_mut(id) {
+                b.changes_at = None;
+            }
+            self.dirty.insert(id);
+        }
+    }
+
     /// Mark every boundary: what views show without reading it changed.
     pub fn mark_all(&mut self) {
         let all: Vec<BoundId> = self
@@ -720,6 +758,7 @@ impl Live {
             retained,
             state_reads,
             state_seen,
+            changes_at,
         } = rendered;
         // A view over a list reads each item's fields once per expression that uses them (a
         // count and a filter), tens of thousands of reads: duplicates go by hash, not a sort.
@@ -734,6 +773,7 @@ impl Live {
             b.space_reads = space_reads;
             b.state_reads = state_reads;
             b.state_seen = state_seen;
+            b.changes_at = changes_at;
             b.retained = retained;
             b.rendered = true;
             self.index.add(id, &b);
@@ -800,6 +840,7 @@ impl Live {
             b.loops.clear();
             b.space_reads.clear();
             b.state_reads.clear();
+            b.changes_at = None;
             b.rendered = false;
             if let Some(slot) = self.bounds.get_mut(id) {
                 *slot = Some(b);

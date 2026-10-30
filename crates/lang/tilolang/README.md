@@ -189,13 +189,16 @@ Int, Float, Text, Bool, Date or Time keys, and `desc` for the largest or latest 
 
 **Reflection.** The log records who made every change, when and by which action, so code reads
 it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
-`Option<host.Version>` (`.who`, `.at`, `.what`), `history(r)` all of them, oldest first. A
-version also says which task run made it (`.task`, a `host.TaskRun`), what it did (`.kind`:
-`created`, `changed` or `removed`; a removed resource keeps its versions) and which `.fields`
-it changed. `changes(of: run)` is every version a run made, of every resource, and `unseen(r)`
-the versions of `r` an agent's run made that the person looking has not seen yet. The UI host
-marks those where views show them, with no code of the app's; `ui.ChangeMark(r)` places the
-mark where the default spot is wrong (task-legibility.md).
+`Option<host.Version>` (`.who`, `.at`, `.what`, the action's label), `history(r)` all of them,
+oldest first. `v.is(edit)` asks whether the action `edit` made it, by the action itself, never
+its label: `history(m).any(v -> v.is(edit))`. An offered `host.Action` answers the same:
+`actions(m).any(a -> a.is(edit))`. A version also says which task run made it (`.task`, a
+`host.TaskRun`), what it did (`.kind`: `created`, `changed` or `removed`; a removed resource
+keeps its versions) and which `.fields` it changed. `changes(of: run)` is every version a run
+made, of every resource, and `unseen(r)` the versions of `r` an agent's run made that the
+person looking has not seen yet. The UI host marks those where views show them, with no code
+of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
+(task-legibility.md).
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
 `workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`
@@ -204,7 +207,10 @@ those of them the workspace's grants let read `r`. A principal says what it is: 
 workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view
 that reads them runs again when membership or grants change. Every `rich_input`'s `@` drawer
 offers who spoke last in the resource its view shows, then `members(r)` of it (the workspace's
-members in a view of no resource), without the view declaring anything.
+members in a view of no resource), without the view declaring anything. A primitive the
+toolkit draws takes that component's events in its block, as `ui.RichInput` written out does:
+`rich_input(bind: draft) { on submit: send(c, draft) }` sends on Enter (Shift+Enter breaks the
+line).
 
 **Collections.** An item is its id: a reference to it names its document and id
 (`@board.Card:root-x/i3`), wherever the item is. `items.remove(x)` removes an item with
@@ -399,7 +405,8 @@ print(xs, fields: [.title, .due])
   `action pin(n: Note) (label: if n.pinned { "Unpin" } else { "Pin" }, on: n.pinned)`. A label
   may interpolate its arguments, `label: "Move to {col.title}"`: over the subject it follows
   the subject as an `if` does; over another argument it is read where the action is applied
-  with it, `button(move_to(b, card, col))`.
+  with it, `button(move_to(b, card, col))`. `button(pin(n))` reads its `label:`, `icon:` and
+  `on:` with the arguments it applies, as the view draws: Pin turns into Unpin, toggled.
 - A slot that holds a component (`ui.BoardLane` holds `ui.BoardCard`s) takes a view of the
   package whose body is that component: views are components.
 - `require <condition> "<reason>"` lines head an action's body: when the action is available

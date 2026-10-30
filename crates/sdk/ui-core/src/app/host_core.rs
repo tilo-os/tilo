@@ -84,6 +84,7 @@ impl crate::host_core::HostCore for App {
             node_map: &mut self.layout.node_map,
             bindings: &mut self.bindings,
             close_reports: &mut self.component_close_reports,
+            interaction: self.input.interaction,
         }
     }
 

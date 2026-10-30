@@ -314,9 +314,9 @@ impl Core {
         }
     }
 
-    /// A version as the language holds it: who, when, by which action.
     /// A version of `of` as a `host.Version`: who, when, what, the task run, its kind, the
-    /// fields it changed by name, and the resource.
+    /// fields it changed by name, and the resource; then the id of the action that made it,
+    /// which `v.is(edit)` compares (`tilolang::host::action_id_at`).
     fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> Value {
         let task = v.task.map(|run| {
             let task = run.task().to_owned();
@@ -346,6 +346,7 @@ impl Core {
             Value::Text(v.kind.word().to_owned()),
             Value::List(fields),
             Value::resource(of),
+            Value::Text(v.action),
         ])
     }
 
@@ -601,6 +602,20 @@ impl Core {
         Ok(())
     }
 
+    /// Record, in a view's frame, that what it read of the time reads differently at
+    /// `changes_at` (seconds since 1970, UTC): it runs again then. Outside a view nothing
+    /// follows the time: an action reads one time throughout.
+    pub(crate) fn note_time(&self, changes_at: Option<i64>) -> HResult<()> {
+        if changes_at.is_none() {
+            return Ok(());
+        }
+        let mut frames = self.frames.borrow_mut();
+        if let FrameKind::View(vs) = &mut frames.top_mut()?.kind {
+            vs.changes_at = crate::render::earliest(vs.changes_at, changes_at);
+        }
+        Ok(())
+    }
+
     /// What the platform shows of the type `ty`, and of the resource `r` of it when there is
     /// one: a `host.Meta`.
     fn type_meta(&self, ty: &str, r: Option<&RefValue>) -> HResult<Value> {
@@ -808,6 +823,9 @@ impl Core {
                 args: shown.args.clone(),
                 author,
             }),
+            // After its fields, the action's id, which `a.is(edit)` compares
+            // (`tilolang::host::action_id_at`).
+            Value::Text(action.id.clone()),
         ])))
     }
 
@@ -837,6 +855,7 @@ impl Core {
             .render_at(&target, &[Value::Ref(subject.clone())], offer, None)
             .map_err(|e| e.to_string())?;
         self.note_reads(rendered.reads.iter().cloned())?;
+        self.note_time(rendered.changes_at)?;
         {
             let mut frames = self.frames.borrow_mut();
             if let FrameKind::View(vs) = &mut frames.top_mut()?.kind {

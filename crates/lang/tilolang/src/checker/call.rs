@@ -1490,6 +1490,13 @@ impl Checker<'_> {
             (Ty::Record(k), "group") if k.app == crate::host::HOST_APP && k.name == "Match" => {
                 self.match_group(r, args, span)
             }
+            (Ty::Record(k), "is")
+                if k.app == crate::host::HOST_APP
+                    && crate::host::NAMES_AN_ACTION.contains(&k.name.as_str()) =>
+            {
+                let name = k.name.clone();
+                self.names_action(r, &name, args, span)
+            }
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
