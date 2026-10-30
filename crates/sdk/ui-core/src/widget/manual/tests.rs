@@ -34,7 +34,8 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
         );
         let snapshot = harness.inspection();
         let button = find(&snapshot.root, "action");
-        assert_eq!(button.rect, [10.25, 20.75, 120.5, 40.25]);
+        // The fractional allocation, its edges rounded onto the display's pixels (1x).
+        assert_eq!(button.rect, [10.0, 21.0, 121.0, 40.0]);
         assert!(button.focusable);
         let node_id = harness.a11y_node_named("A very long action title").unwrap();
         let accessible = harness
@@ -45,7 +46,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
             .1;
         assert_eq!(
             accessible.bounds().unwrap(),
-            accesskit::Rect::new(10.25, 20.75, 130.75, 61.0)
+            accesskit::Rect::new(10.0, 21.0, 131.0, 61.0)
         );
         harness.click_at(70.0, 40.0);
         assert_eq!(crate::testing::clicks("clicked"), 1);
@@ -99,7 +100,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
             let harness =
                 FrameHarness::new(crate::State::new(), Box::new(fixed(child)), (400, 300));
             let snapshot = harness.inspection();
-            assert_eq!(snapshot.root.children[0].rect, [10.25, 20.75, 120.5, 40.25]);
+            assert_eq!(snapshot.root.children[0].rect, [10.0, 21.0, 121.0, 40.0]);
             let info = serde_json::to_value(snapshot).unwrap();
             assert!(
                 info["root"]["layout"]["Manual"]["overflow"]
@@ -342,8 +343,9 @@ fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
         let harness = FrameHarness::new(crate::State::new(), Box::new(form), (800, 500));
         let snapshot = harness.inspection();
         let nested = find(&snapshot.root, "nested");
-        assert_eq!(nested.rect[0], 20.5);
-        assert_eq!(nested.rect[2], 120.5);
+        // 10.25 inside 10.25, on whole pixels.
+        assert_eq!(nested.rect[0], 20.0);
+        assert_eq!(nested.rect[2], 120.0);
         assert!(find(&snapshot.root, "auto-input").rect[2] > 300.0);
         let json = serde_json::to_value(snapshot).unwrap();
         assert_eq!(
