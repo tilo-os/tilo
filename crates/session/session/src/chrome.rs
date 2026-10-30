@@ -38,8 +38,9 @@ pub(crate) struct SessionChrome {
     /// plane: the bar's trees carry them as the active workspace's
     /// collaborators.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
-    /// `(tree revision, minute)` the snapshot revision was last bumped for.
-    seen: Cell<(u64, i64)>,
+    /// `(tree revision, minute, the last wave heard)` the snapshot revision
+    /// was last bumped for.
+    seen: Cell<(u64, i64, Option<String>)>,
     revision: Cell<u64>,
 }
 
@@ -59,7 +60,7 @@ impl SessionChrome {
             signals,
             notifications_only,
             sync,
-            seen: Cell::new((u64::MAX, 0)),
+            seen: Cell::new((u64::MAX, 0, None)),
             revision: Cell::new(0),
         }
     }
@@ -68,13 +69,19 @@ impl SessionChrome {
 impl DesktopChromeSource for SessionChrome {
     fn snapshot(&self) -> DesktopChromeSnapshot {
         let clock = ClockSnapshot::now();
-        let seen = (self.handle.revision(), clock.unix_seconds.div_euclid(60));
-        if self.seen.replace(seen) != seen {
+        let waved = self.sync.as_ref().and_then(|sync| sync.wave_notice());
+        let seen = (
+            self.handle.revision(),
+            clock.unix_seconds.div_euclid(60),
+            waved.as_ref().map(|notice| notice.from.clone()),
+        );
+        if self.seen.replace(seen.clone()) != seen {
             self.revision.set(self.revision.get().wrapping_add(1));
         }
         DesktopChromeSnapshot {
             revision: self.revision.get(),
             clock,
+            waved,
             own: Some(OwnChip {
                 name: self.person.clone(),
                 rgb: ui::presence::user_color(&self.person),

@@ -92,6 +92,16 @@ pub enum PeerPresencePayload {
         seq: u32,
         emoji: String,
     },
+    /// The sender waved at `target`, another member's live publisher; a new
+    /// `seq` is a new wave, and restating the same one is the same wave.
+    /// Desktop presence: a greeting, never an instruction.
+    ///
+    /// Appended so new decoders continue to read every older postcard frame;
+    /// older peers reject only this greeting.
+    Wave {
+        seq: u32,
+        target: String,
+    },
 }
 
 #[cfg(test)]
@@ -132,6 +142,10 @@ mod tests {
             PeerPresencePayload::Reaction {
                 seq: 3,
                 emoji: "\u{1f389}".into(),
+            },
+            PeerPresencePayload::Wave {
+                seq: 4,
+                target: "peer@8".into(),
             },
         ]
     }

@@ -28,7 +28,8 @@ use collab_types::presence::{Availability, PointerSpace, PresenceKey};
 use collab_types::{PeerPresence, PeerPresencePayload};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
-use tilo_desktop::here::{Here, LiveMember};
+use tilo_desktop::chrome::WaveNotice;
+use tilo_desktop::here::{Here, LiveMember, Wave};
 use tilo_desktop_model::{DesktopTree, TabId};
 use tilo_network_actor::{HostIdentity, NetCmd, NetEvent, WorkspaceId, room_topic_id};
 
@@ -73,6 +74,8 @@ struct Peer {
     availability: Availability,
     /// Whose view they follow, by that member's publisher.
     following: Option<String>,
+    /// The last wave they sent at someone here.
+    wave: Option<Wave>,
     /// Where their pointer is: the tab of this room its tile shows, and the
     /// position on that tile in logical pixels from its corner.
     pointer: Option<(u64, f64, f64)>,
@@ -89,6 +92,7 @@ impl Peer {
             status: None,
             availability: Availability::default(),
             following: None,
+            wave: None,
             pointer: None,
             here: false,
         }
@@ -104,7 +108,7 @@ impl Peer {
             activity: self.status.clone(),
             place: None,
             user: self.user.clone(),
-            wave: None,
+            wave: self.wave.clone(),
             layout: None,
             following: self.following.clone(),
         }
@@ -159,6 +163,12 @@ impl Room {
                     }
                     PeerPresencePayload::Following { target } => {
                         peer.following.clone_from(target);
+                    }
+                    PeerPresencePayload::Wave { seq, target } => {
+                        peer.wave = Some(Wave {
+                            seq: *seq,
+                            target: target.clone(),
+                        });
                     }
                     _ => {}
                 });
@@ -355,6 +365,12 @@ pub struct Client {
     here: Here,
     /// When this person last said again where they are here.
     said_at: Cell<Instant>,
+    /// The count this person's last wave carried here.
+    wave_seq: Cell<u32>,
+    /// The wave this person sent last, for their own row to say sent.
+    sent_wave: RefCell<Option<Wave>>,
+    /// The last wave at this person, for the bar to say.
+    notice: RefCell<Option<WaveNotice>>,
     outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
     arrived: std::sync::mpsc::Receiver<NetEvent>,
     /// The thread running the peer actor, stopped when this drops.
@@ -423,6 +439,9 @@ impl Client {
             own: RefCell::new(own),
             here: Here::default(),
             said_at: Cell::new(Instant::now()),
+            wave_seq: Cell::new(0),
+            sent_wave: RefCell::new(None),
+            notice: RefCell::new(None),
             outgoing,
             arrived,
             thread: Some(thread),
@@ -530,6 +549,25 @@ impl Client {
     fn hear(&self, event: NetEvent) {
         self.plane.borrow_mut().apply(event);
         self.show_here();
+        self.show_waves();
+    }
+
+    /// Take the waves at this person heard since the last call: the bar
+    /// says who waved, for a moment.
+    fn show_waves(&self) {
+        let heard = self.here.borrow_mut().take_waves();
+        if let Some(last) = heard.last() {
+            *self.notice.borrow_mut() = Some(WaveNotice {
+                from: last.name.clone(),
+                at: ui::time::now(),
+            });
+        }
+    }
+
+    /// The last wave at this person, for the bar to say.
+    #[must_use]
+    pub fn wave_notice(&self) -> Option<WaveNotice> {
+        self.notice.borrow().clone()
     }
 
     /// Hand the desktop this person and whoever is here with them in the
@@ -583,6 +621,12 @@ impl Client {
         if own.following.is_some() {
             payloads.push(PeerPresencePayload::Following {
                 target: own.following,
+            });
+        }
+        if let Some(wave) = self.sent_wave.borrow().clone() {
+            payloads.push(PeerPresencePayload::Wave {
+                seq: wave.seq,
+                target: wave.target,
             });
         }
         for payload in payloads {
@@ -648,6 +692,59 @@ impl Client {
         });
     }
 
+    /// Whether `publisher` is this person: this device, or any device of
+    /// the person this session runs for.
+    fn is_own_person(&self, publisher: &str) -> bool {
+        let here = self.here.borrow();
+        here.own_id() == Some(publisher)
+            || self
+                .own
+                .borrow()
+                .user
+                .clone()
+                .filter(|user| !user.is_empty())
+                .is_some_and(|user| here.user_of(publisher) == Some(user.as_str()))
+    }
+
+    /// Wave at `target`, a member here by their live publisher: said in the
+    /// room in front, where the person it is for hears it once.
+    pub fn wave(&self, target: &str) {
+        if target.is_empty() || self.is_own_person(target) {
+            return;
+        }
+        let seq = self.wave_seq.get().wrapping_add(1);
+        self.wave_seq.set(seq);
+        let wave = Wave {
+            seq,
+            target: target.to_owned(),
+        };
+        *self.sent_wave.borrow_mut() = Some(wave.clone());
+        let plane = self.plane.borrow();
+        let Some(ws) = plane.active else {
+            return;
+        };
+        let Some(room) = plane.rooms.iter().find(|room| room.ws == ws) else {
+            return;
+        };
+        let msg = NeighbourMsg::AppPresenceV2 {
+            peer: tilo_network_actor::behaviour::peer_liveness_handle(&plane.publisher),
+            app_id: DESKTOP_PRESENCE_APP.into(),
+            cluster_id: room.id.clone(),
+            presence: PeerPresence {
+                key: room_key(&room.id),
+                payload: PeerPresencePayload::Wave {
+                    seq: wave.seq,
+                    target: wave.target,
+                },
+            },
+            colour: None,
+        };
+        let _ = self.outgoing.send(Outgoing::Publish {
+            ws,
+            msg: Box::new(msg),
+        });
+    }
+
     /// Everyone whose pointer is over `tab` of `room` now, by publisher. The
     /// desktop draws each over its own tile for that tab, above the windows.
     #[must_use]
@@ -667,7 +764,7 @@ impl Client {
             activity: own.status,
             place: None,
             user: own.user,
-            wave: None,
+            wave: self.sent_wave.borrow().clone(),
             layout: None,
             following: own.following,
         }
@@ -720,6 +817,9 @@ impl Client {
                 own: RefCell::new(own),
                 here: Here::default(),
                 said_at: Cell::new(Instant::now()),
+                wave_seq: Cell::new(0),
+                sent_wave: RefCell::new(None),
+                notice: RefCell::new(None),
                 outgoing,
                 arrived,
                 thread: None,
@@ -1165,6 +1265,75 @@ mod tests {
 
         sync.hear(pointer_cleared(1, ROOM, 3));
         assert!(sync.pointers(ROOM, 3).is_empty());
+    }
+
+    #[test]
+    fn a_wave_reaches_the_person_it_is_for() {
+        let (sync, _said) = session("Quinten", Some(0x04));
+        sync.hear(hello(1, 0xaa, "Framework 16"));
+        sync.hear(here(1));
+        let me = device(0xf0).to_string();
+        sync.hear(presence(
+            1,
+            ROOM,
+            PeerPresencePayload::Wave {
+                seq: 1,
+                target: me.clone(),
+            },
+        ));
+        assert!(
+            sync.here().borrow_mut().take_waves().is_empty(),
+            "the client takes the wave and hands it to the bar"
+        );
+        let notice = sync.wave_notice().expect("the bar has a wave to say");
+        assert_eq!(notice.from, "Framework 16");
+
+        // A wave at someone else here is not this person's news: the bar
+        // keeps saying the wave at this person.
+        sync.hear(hello(2, 0xbb, "Desktop"));
+        sync.hear(here(2));
+        sync.hear(presence(
+            2,
+            ROOM,
+            PeerPresencePayload::Wave {
+                seq: 1,
+                target: device(9).to_string(),
+            },
+        ));
+        assert_eq!(
+            sync.wave_notice().map(|notice| notice.from),
+            Some("Framework 16".to_owned()),
+            "a wave at someone else here is not this person's news"
+        );
+    }
+
+    #[test]
+    fn waving_says_a_new_wave_each_time() {
+        let (sync, mut said) = session("Quinten", None);
+        sent(&mut said);
+        let target = device(1).to_string();
+        sync.wave(&target);
+        sync.wave(&target);
+        let waves: Vec<(u32, String)> = payloads(&mut said)
+            .into_iter()
+            .filter_map(|payload| match payload {
+                PeerPresencePayload::Wave { seq, target } => Some((seq, target)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(waves, vec![(1, target.clone()), (2, target)]);
+        assert_eq!(
+            sync.own_member().wave.map(|wave| wave.seq),
+            Some(2),
+            "this person's row reads their last wave as sent"
+        );
+
+        // Waving at this person says nothing: there is no one to greet.
+        sync.wave(&device(0xf0).to_string());
+        assert!(
+            payloads(&mut said).is_empty(),
+            "a wave at this person goes nowhere"
+        );
     }
 
     #[test]
