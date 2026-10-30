@@ -85,6 +85,7 @@ mod registry;
 registry::scenario_modules! {
     Perf;
     dashboard_perf_bench, "dashboard_perf_bench.rs", "dashboard stress benchmark";
+    material_bench, "material_bench.rs", "every surface finish over a real backdrop, shot and timed";
     perf_scenario, "perf_scenario.rs", "headless pass-level profiling";
     widget_perf_bench, "widget_perf_bench.rs", "widget construction and rendering benchmark";
 }

@@ -1105,6 +1105,39 @@ impl TopBarChrome {
         );
     }
 
+    /// The docked bar's own body, where the theme gives the bar one
+    /// (`material.bar`): the width of the display in the bar role's finish
+    /// over the desktop, with the theme's border, or the panel hairline,
+    /// along its foot.
+    fn draw_bar_body(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let body = vello::kurbo::RoundedRect::from_rect(self.rect, 0.0);
+        ui::backdrop::fill_role(
+            scene,
+            transform,
+            &body,
+            ui::tokens::SurfaceRole::Bar,
+            theme,
+            ui::chrome::panel_ground(theme),
+        );
+        let (width, ink) = ui::surface::border(theme).unwrap_or_else(|| {
+            (
+                1.0,
+                if theme.finish(ui::tokens::SurfaceRole::Bar).hairline() {
+                    ui::chrome::chrome_hairline(theme)
+                } else {
+                    vello::peniko::Color::TRANSPARENT
+                },
+            )
+        });
+        let rule = Rect::new(
+            self.rect.x0,
+            self.rect.y1 - width,
+            self.rect.x1,
+            self.rect.y1,
+        );
+        scene.fill(Fill::NonZero, transform, ink, None, &rule);
+    }
+
     /// A window maximizing over the bar's display (`shown` false) or
     /// restoring (`shown` true), moved by `source`: the bar leaves or comes
     /// back with it, over the window's own motion. A key's lands.
@@ -1749,6 +1782,8 @@ impl TopBarChrome {
             let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
             if self.presence() == TopBarPresence::Shown {
                 self.draw_overlay_surface(scene, transform, theme);
+            } else if theme.tokens.finishes.bar.is_some() {
+                self.draw_bar_body(scene, transform, theme);
             }
 
             // The workspace's name leads, after the mark when there is one:

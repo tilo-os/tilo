@@ -240,8 +240,8 @@ impl Theme {
             base_size: f64::from(document.type_.base_size),
             distinct_letters: document.type_.distinct_letters,
             motion: f64::from(document.motion.character),
-            blur: f64::from(document.material.blur),
-            tint_opacity: f64::from(document.material.tint_opacity),
+            blur: f64::from(document.material.floating.blur()),
+            tint_opacity: f64::from(document.material.floating.tint()),
             frosted_strip: document.material.selector.strip == StripMaterial::Floating,
             rim_span: f64::from(document.material.selector.rim_span),
             rim_alpha: f64::from(document.material.selector.rim_alpha),
@@ -296,6 +296,7 @@ impl Theme {
             ),
             shape: ThemeShape {
                 window_radius: narrow(self.window_radius),
+                border: ui::tokens::Border::STOCK,
             },
             density: ThemeDensity {
                 spacing: narrow(self.density),
@@ -305,13 +306,23 @@ impl Theme {
                 reading: ThemeType::default_reading(),
                 base_size: narrow(self.base_size),
                 distinct_letters: self.distinct_letters,
+                contrast: ThemeType::STOCK_CONTRAST,
+                weights: ui::theme::ThemeWeights::STOCK,
             },
             motion: ThemeMotion {
                 character: narrow(self.motion),
+                ..ThemeMotion::STOCK
             },
             material: ThemeMaterial {
-                blur: narrow(self.blur),
-                tint_opacity: narrow(self.tint_opacity),
+                floating: if self.blur > 0.0 {
+                    ui::tokens::Finish::Translucent {
+                        blur: narrow(self.blur),
+                        tint: narrow(self.tint_opacity),
+                        saturation: 1.0,
+                    }
+                } else {
+                    ui::tokens::Finish::Solid
+                },
                 selector: SelectorFinish {
                     strip: if self.frosted_strip {
                         StripMaterial::Floating
@@ -322,7 +333,9 @@ impl Theme {
                     rim_alpha: narrow(self.rim_alpha),
                     hover_alpha: narrow(self.hover_alpha),
                 },
+                ..ThemeMaterial::STOCK
             },
+            depth: ui::tokens::Depth::STOCK,
         }
     }
 
