@@ -15,6 +15,7 @@
 )]
 
 use std::cell::RefCell;
+use std::io::BufRead as _;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::rc::Rc;
@@ -31,6 +32,7 @@ use tilo_quick_settings::device::Device;
 use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::host::FixtureHost;
 use tilo_quick_settings::scenarios;
+use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{DeviceHost, Options, QuickSettings, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
@@ -2700,4 +2702,168 @@ fn a_copy_is_listed_pinned_across_a_restart_and_pasted_into_the_app_in_front() {
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut reader, &mut bytes).expect("read the copy");
     assert_eq!(bytes, text);
+}
+
+// =====================================================================
+// Notifications from an app
+// =====================================================================
+
+/// A session bus of its own, as `dbus-run-session` starts one, stopped on
+/// drop.
+struct SessionBus {
+    daemon: std::process::Child,
+    address: String,
+    _directory: tempfile::TempDir,
+}
+
+impl SessionBus {
+    fn start() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let mut daemon = std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .arg(format!(
+                "--address=unix:path={}",
+                directory.path().join("bus").display()
+            ))
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the session bus needs dbus-daemon, which the builder image installs");
+        let mut address = String::new();
+        std::io::BufReader::new(daemon.stdout.take().unwrap())
+            .read_line(&mut address)
+            .unwrap();
+        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
+        Self {
+            daemon,
+            address: address.trim().to_owned(),
+            _directory: directory,
+        }
+    }
+}
+
+impl Drop for SessionBus {
+    fn drop(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+    }
+}
+
+/// Send one notification over the freedesktop interface on `address`, as an
+/// app of the session would, and name the id the daemon gave it.
+async fn notify(address: &str, summary: &str, body: &str, timeout: i32) -> u32 {
+    let app = zbus::connection::Builder::address(address)
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let proxy = zbus::Proxy::new(
+        &app,
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+    )
+    .await
+    .unwrap();
+    let reply = proxy
+        .call_method(
+            "Notify",
+            &(
+                "Mail",
+                0_u32,
+                "",
+                summary,
+                body,
+                Vec::<&str>::new(),
+                std::collections::HashMap::<String, zbus::zvariant::OwnedValue>::new(),
+                timeout,
+            ),
+        )
+        .await
+        .unwrap();
+    reply.body().deserialize().unwrap()
+}
+
+/// An app's notification over the freedesktop interface, from the process
+/// whose window the session shows: a banner and a centre entry named after
+/// that app, and the bar's bell counting it. Letting the banner run out
+/// keeps it in the centre.
+#[test]
+fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
+    let _settled = ui::motion::testing::settled();
+    let bus = SessionBus::start();
+    let wake = tilo_service::LoopWake::default();
+    let (side, link) = tilo_session::portal_link::channel(wake.handle());
+    let desktop = Rc::new(
+        DesktopServices::start(
+            &Buses {
+                session: Bus::Address(bus.address.clone()),
+                system: Bus::None,
+            },
+            &wake.handle(),
+            std::sync::Arc::new(tilo_portal::NoCapture),
+            &side,
+            None,
+        )
+        .expect("desktop services"),
+    );
+    let portal = desktop
+        .portal()
+        .map(|serving| link.with_captures(serving.input_captures().clone()));
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            services: desktop.services(),
+            wake,
+            desktop: Some(Rc::clone(&desktop)),
+            portal,
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+
+    // The app the session knows by its window; the sender's process is the
+    // one that window's client runs in.
+    let mut client = mapped(&mut session, "so.tilo.mail");
+
+    let runtime = desktop.runtime();
+    let id = runtime.block_on(notify(bus.address.as_str(), "New mail", "From Ada", 300));
+
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session.notifications().unread() == 1
+    });
+    let centre = session.notifications();
+    let banners = centre.log();
+    assert_eq!(banners.active().len(), 1, "the notification is a banner");
+    let banner = banners.active()[0].clone();
+    drop(banners);
+    assert_eq!(banner.title, "New mail");
+    assert_eq!(
+        banner.app_id.as_deref(),
+        Some("so.tilo.mail"),
+        "named after the app whose window sent it"
+    );
+    assert_eq!(banner.sender_id, Some(id));
+
+    // The bar's bell counts what is unread.
+    let bell = session.accessible_labels();
+    assert!(
+        bell.iter().any(|label| label == "Notifications, 1 unread"),
+        "the bell says what is unread: {bell:?}"
+    );
+
+    // Run out, it is kept in the centre, named after the same app.
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session.banners().shown().banners.is_empty()
+    });
+    let centre = session.notifications();
+    let history = centre.log();
+    let kept = history
+        .history()
+        .iter()
+        .find(|shown| shown.title == "New mail")
+        .expect("the centre keeps it");
+    assert_eq!(kept.app_id.as_deref(), Some("so.tilo.mail"));
+    assert_eq!(centre.unread(), 1, "and it stays unread until read");
 }

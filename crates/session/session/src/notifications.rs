@@ -26,9 +26,10 @@ use tilo_desktop_surface::notifications::{
 use tilo_desktop_surface::{DesktopNotifications, NotificationOutcome};
 use tilo_lock::MutexRecover as _;
 use tilo_notification_banners::{Ask, Link};
-use tilo_notifications_service::{Arrival, CloseReason, Notifications};
+use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifications, Sender};
 
 use crate::app_icons;
+use crate::portal_link::PortalSide;
 use crate::system_sounds::SystemSounds;
 
 /// The most unread notifications one app's icon counts to.
@@ -166,6 +167,56 @@ impl NoticeSignals {
     /// off.
     pub(crate) fn badge(&self, app_id: &str) -> u32 {
         self.badges.borrow().get(app_id).copied().unwrap_or(0)
+    }
+}
+
+/// Who a notification came from: the app the session sees in the sender's
+/// process (the one it shows a window for), or, for a sender with no window
+/// of its own, the app its process is named by — its systemd unit, the
+/// installed entry it runs, or its program — as the portal names one.
+/// Nothing the sender says about itself is believed.
+pub(crate) struct AppCallers {
+    /// The apps the session sees run, by process.
+    running: Arc<Mutex<BTreeMap<u32, String>>>,
+    /// The desk: which workspace an app runs in.
+    side: PortalSide,
+    /// Where a process with no window of its own is named from.
+    requesters: tilo_portal::Requesters,
+    /// What a process was already named: naming one reads its cgroup, its
+    /// program and the installed entries.
+    named: Mutex<BTreeMap<u32, Option<String>>>,
+}
+
+impl AppCallers {
+    pub(crate) fn new(running: Arc<Mutex<BTreeMap<u32, String>>>, side: PortalSide) -> Self {
+        Self {
+            running,
+            side,
+            requesters: tilo_portal::Requesters::host(),
+            named: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// The app the process `pid` belongs to, as the session knows it.
+    fn app_of(&self, pid: u32) -> Option<String> {
+        if let Some(app_id) = self.running.lock_recover().get(&pid) {
+            return Some(app_id.clone());
+        }
+        let mut named = self.named.lock_recover();
+        named
+            .entry(pid)
+            .or_insert_with(|| self.requesters.identify(pid).map(|caller| caller.app_id))
+            .clone()
+    }
+}
+
+impl Callers for AppCallers {
+    fn caller(&self, sender: Sender<'_>) -> Option<Caller> {
+        let app_id = self.app_of(sender.pid?)?;
+        Some(Caller {
+            workspace: self.side.workspace_of(&app_id),
+            app_id,
+        })
     }
 }
 
@@ -321,6 +372,12 @@ impl SessionNotifications {
     /// The settings document could not be written.
     pub(crate) fn set_do_not_disturb(on: bool) -> std::io::Result<()> {
         NotificationPolicy::save_do_not_disturb(on)
+    }
+
+    /// The desk's log of what it shows: the live banners and the centre
+    /// kept behind them.
+    pub(crate) fn desktop(&self) -> DesktopNotifications {
+        self.desktop.clone()
     }
 
     /// The targets of scheduled notifications the person chose since the

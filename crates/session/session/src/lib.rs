@@ -1584,6 +1584,13 @@ impl Session {
         &self.banners
     }
 
+    /// The desk's notifications: the banners it is showing now and the
+    /// centre it keeps behind them.
+    #[must_use]
+    pub fn notifications(&self) -> tilo_desktop_surface::DesktopNotifications {
+        self.shared.notifications.borrow().desktop()
+    }
+
     /// Reach `surface` (a service the session runs in its process) through
     /// the session's door from now on: its resources are published beside
     /// the desktop's, and keys that ask for its actions reach it.
@@ -1851,6 +1858,7 @@ impl Session {
         };
         for (window, _) in self.compositor.windows() {
             if let (Some(pid), Some(app_id)) = (window.pid, window.app_id) {
+                desktop.note_running_app(pid, &app_id);
                 self.pids.insert(pid, app_id);
             }
         }
