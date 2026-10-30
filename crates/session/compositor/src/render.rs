@@ -40,6 +40,8 @@ smithay::backend::renderer::element::render_elements! {
     /// A window drawn moved, scaled or faded, or pictured by a hosted
     /// surface.
     Transformed=crate::effects::TransformedElement<R>,
+    /// A closed window's last frame, drawn moved, scaled or faded.
+    Snapshot=crate::effects::SnapshotElement<R::TextureId>,
     /// A window's shadow and edge, behind it.
     Frame=crate::effects::FrameElement<R>,
 }
@@ -167,7 +169,7 @@ where
             elements.extend(crate::effects::with_effect(
                 renderer,
                 framing,
-                window,
+                crate::effects::Content::Window(window),
                 location.to_f64() - origin,
                 &effect,
                 (bounds, scale),
@@ -181,6 +183,9 @@ where
             Scale::from(scale),
             1.0,
         ));
+        // What the window drew is kept while it stands, so its close has a
+        // frame to animate even once its surface is gone.
+        state.record_snapshot(renderer, window);
     }
     for gone in closing.get(len).into_iter().flatten() {
         elements.extend(closing_elements(
@@ -212,11 +217,17 @@ where
     let framing = crate::effects::Framing {
         frame: closing.frame,
         images: &state.frame_images,
+        snapshots: &state.snapshots,
+    };
+    // The frame the window last drew, kept before its surface went: the
+    // desktop animates that away.
+    let Some(snapshot) = closing.snapshot.as_ref() else {
+        return Vec::new();
     };
     crate::effects::with_effect(
         renderer,
         framing,
-        &closing.window,
+        crate::effects::Content::Snapshot(snapshot),
         closing.rect.loc.to_f64() - origin,
         &effect,
         (bounds, scale),

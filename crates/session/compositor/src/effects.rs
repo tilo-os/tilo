@@ -27,6 +27,7 @@
 use smithay::backend::renderer::element::AsRenderElements as _;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::backend::renderer::element::texture::TextureRenderElement;
 use smithay::backend::renderer::element::utils::{CropRenderElement, RescaleRenderElement};
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
@@ -80,12 +81,45 @@ pub(crate) struct Framing<'a> {
     pub(crate) frame: WindowFrame,
     /// The frames drawn so far, by window size and output scale.
     pub(crate) images: &'a FrameImages,
+    /// The frames the windows last drew, kept for their close.
+    pub(crate) snapshots: &'a crate::snapshot::Snapshots,
+}
+
+/// What a window's effect draws: its live surfaces, or the last frame it
+/// drew, kept so it can be animated away after it closed.
+#[derive(Clone, Copy)]
+pub(crate) enum Content<'a> {
+    /// A window as it stands.
+    Window(&'a Window),
+    /// A closed window's last frame.
+    Snapshot(&'a crate::snapshot::Snapshot),
+}
+
+impl Content<'_> {
+    /// Its logical size.
+    fn size(self) -> Size<i32, Logical> {
+        match self {
+            Self::Window(window) => window.geometry().size,
+            Self::Snapshot(snapshot) => snapshot.size(),
+        }
+    }
+
+    /// The top left of its content, logical, from its own geometry's.
+    fn origin(self) -> Point<i32, Logical> {
+        match self {
+            Self::Window(window) => window.geometry().loc,
+            Self::Snapshot(_) => Point::from((0, 0)),
+        }
+    }
 }
 
 /// One drawn piece of a window moved, scaled and clipped, its corners cut
 /// to the desktop's rounding.
 pub type TransformedElement<R> =
     RoundedElement<RescaleRenderElement<WaylandSurfaceRenderElement<R>>>;
+
+/// A closed window's last frame, drawn where the window stood.
+pub type SnapshotElement<T> = RoundedElement<RescaleRenderElement<TextureRenderElement<T>>>;
 
 /// A window's shadow and edge, drawn where the window is drawn.
 pub type FrameElement<R> =
@@ -252,12 +286,12 @@ struct Placement {
     radius: f64,
 }
 
-/// `window`'s content and frame placed as `placement` says on an output of
+/// `content` and its frame placed as `placement` says on an output of
 /// `output_scale`, front first.
 fn placed<R>(
     renderer: &mut R,
     framing: Framing<'_>,
-    window: &Window,
+    content: Content<'_>,
     output_scale: f64,
     placement: &Placement,
 ) -> Vec<OutputRenderElement<R>>
@@ -265,29 +299,54 @@ where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Clone + Send + 'static,
 {
-    let geometry = window.geometry();
-    let origin = (placement.at - geometry.loc.to_f64()).to_physical_precise_round(output_scale);
+    let size = content.size();
+    let origin = (placement.at - content.origin().to_f64()).to_physical_precise_round(output_scale);
     let unscaled = Rectangle::<i32, Physical>::new(
         placement.at.to_physical_precise_round(output_scale),
-        geometry.size.to_physical_precise_round(output_scale),
+        size.to_physical_precise_round(output_scale),
     );
     let radius = placement.radius * placement.scale * output_scale;
-    let mut elements: Vec<OutputRenderElement<R>> = window
-        .render_elements::<WaylandSurfaceRenderElement<R>>(
-            renderer,
-            origin,
-            Scale::from(output_scale),
-            placement.opacity,
-        )
-        .into_iter()
-        .map(|element| {
-            let scaled =
-                RescaleRenderElement::from_element(element, placement.pivot, placement.scale);
-            OutputRenderElement::Transformed(RoundedElement::new(scaled, radius, placement.clip))
-        })
-        .collect();
+    let mut elements: Vec<OutputRenderElement<R>> = match content {
+        Content::Window(window) => {
+            let elements = window.render_elements::<WaylandSurfaceRenderElement<R>>(
+                renderer,
+                origin,
+                Scale::from(output_scale),
+                placement.opacity,
+            );
+            // What the window drew is kept while it stands, so its close
+            // has a frame to animate even once its surface is gone.
+            if let Some(id) = crate::state::window_id(window) {
+                framing.snapshots.record(id, renderer, window);
+            }
+            elements
+                .into_iter()
+                .map(|element| {
+                    let scaled = RescaleRenderElement::from_element(
+                        element,
+                        placement.pivot,
+                        placement.scale,
+                    );
+                    OutputRenderElement::Transformed(RoundedElement::new(
+                        scaled,
+                        radius,
+                        placement.clip,
+                    ))
+                })
+                .collect()
+        }
+        Content::Snapshot(snapshot) => snapshot
+            .element(renderer, unscaled.loc.to_f64(), placement.opacity)
+            .map(|element| {
+                let scaled =
+                    RescaleRenderElement::from_element(element, placement.pivot, placement.scale);
+                OutputRenderElement::Snapshot(RoundedElement::new(scaled, radius, placement.clip))
+            })
+            .into_iter()
+            .collect(),
+    };
     // The shadow and the edge sit under the window, so they come after it.
-    let unscaled_size = geometry.size.to_f64();
+    let unscaled_size = size.to_f64();
     let image = framing.images.image(
         &framing.frame,
         (unscaled_size.w, unscaled_size.h),
@@ -324,13 +383,13 @@ where
     elements
 }
 
-/// `window`, standing at `location` (its geometry's top left, output-local
+/// `content`, standing at `location` (its geometry's top left, output-local
 /// logical) drawn with `effect` on an output of `output` (physical size,
 /// scale).
 pub(crate) fn with_effect<R>(
     renderer: &mut R,
     framing: Framing<'_>,
-    window: &Window,
+    content: Content<'_>,
     location: Point<f64, Logical>,
     effect: &WindowEffect,
     output: (Rectangle<i32, Physical>, f64),
@@ -343,13 +402,13 @@ where
     if effect.opacity <= 0.0 || effect.scale <= 0.0 {
         return Vec::new();
     }
-    let size = window.geometry().size.to_f64();
+    let size = content.size().to_f64();
     let at = location + Point::from(effect.offset);
     let centre = at + Point::from((size.w / 2.0, size.h / 2.0));
     placed(
         renderer,
         framing,
-        window,
+        content,
         output_scale,
         &Placement {
             at,
@@ -420,7 +479,7 @@ where
     placed(
         renderer,
         framing,
-        window,
+        Content::Window(window),
         output_scale,
         &Placement {
             at,
