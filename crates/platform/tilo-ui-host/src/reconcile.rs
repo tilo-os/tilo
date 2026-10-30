@@ -1556,6 +1556,27 @@ mod tests {
             .collect()
     }
 
+    /// A component that does not build is shown as an empty caption in its place, and said:
+    /// whoever checks the view (layout-check, a test) reads why, never only a log line.
+    #[test]
+    fn a_component_that_does_not_build_is_recorded_with_why() {
+        let mut reconciler = reconciler();
+        // `ui.Text` requires its value; an unknown component is not described at all.
+        let view = stack("s", vec![node("ui.Text", "t"), node("ui.Nothing", "n")]);
+        let _ = reconciler.build(&view);
+        let broken = reconciler.broken();
+        assert_eq!(broken.len(), 2, "both are recorded: {broken:?}");
+        assert!(
+            broken
+                .iter()
+                .any(|b| b.contains("ui.Text (t)") && b.contains("value"))
+        );
+        assert!(broken.iter().any(|b| b.contains("ui.Nothing (n)")));
+        // Every reconciler of the same view records into the one list.
+        let rows = Reconciler::sharing(&reconciler);
+        assert_eq!(rows.broken().len(), 2);
+    }
+
     #[test]
     fn a_changed_value_keeps_the_widget_that_shows_it() {
         let mut reconciler = reconciler();
