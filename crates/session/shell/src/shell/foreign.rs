@@ -5483,12 +5483,23 @@ fn collect_foreign_tabs(ws: &crate::shell::state::Workspace, out: &mut Vec<Forei
     }
 }
 
-/// Whether `surface_id` is the active tab of its group in the active workspace — i.e. whether its pixels are on screen.
+/// Whether `surface_id` is the active tab of its group on the shown strip of
+/// the active workspace — i.e. whether its pixels are on screen. A window on
+/// another strip is not: an agent laying out eight strips leaves most of
+/// its windows there, and each would otherwise be handed a frame callback
+/// on every tick and redraw as fast as the loop turns.
 pub fn is_visible_tab(tree: &WorkspaceTree, surface_id: SurfaceId) -> bool {
     let Some(ws) = tree.desktop.active_workspace() else {
         return false;
     };
-    for strip in &ws.strips {
+    let shown = tree
+        .desktop
+        .active_strip
+        .get(&ws.id)
+        .copied()
+        .filter(|strip| ws.strips.iter().any(|candidate| candidate.id == *strip))
+        .or_else(|| ws.strips.first().map(|strip| strip.id));
+    for strip in ws.strips.iter().filter(|strip| Some(strip.id) == shown) {
         for group in &strip.window_groups {
             for tab in &group.tabs {
                 if matches!(
@@ -8278,6 +8289,46 @@ mod tests {
                 !is_visible_tab(&tree, 999),
                 "unknown surfaces are not visible"
             );
+
+            // A window on a strip that is not shown is off screen, and on
+            // screen once that strip is shown.
+            let workspace = tree.desktop.active;
+            let shown = tree.desktop.active_strip.get(&workspace).copied().unwrap();
+            let other = crate::shell::state::StripId(tree.mint_id());
+            let (group, tab) = (tree.mint_id(), tree.mint_id());
+            tree.desktop.workspaces[0]
+                .strips
+                .push(crate::shell::state::Strip {
+                    id: other,
+                    name: "Grace Hopper".into(),
+                    window_groups: vec![crate::shell::state::WindowGroup {
+                        id: group,
+                        tabs: vec![crate::shell::state::Tab {
+                            id: tab,
+                            title: "CV".into(),
+                            tile: ShellTile::Foreign {
+                                app_id: "so.tilo.word-processor".into(),
+                                surface_id: 21,
+                            },
+                            app_title: None,
+                        }],
+                        active_tab: tab,
+                        width: crate::shell::state::WindowWidth::Normal,
+                        maximized: false,
+                        focus_history: Vec::new(),
+                    }],
+                });
+            assert!(
+                !is_visible_tab(&tree, 21),
+                "a window on a strip that is not shown is off screen"
+            );
+            tree.desktop.active_strip.insert(workspace, other);
+            assert!(is_visible_tab(&tree, 21));
+            assert!(
+                !is_visible_tab(&tree, 13),
+                "the strip left is off screen now"
+            );
+            tree.desktop.active_strip.insert(workspace, shown);
         }
 
         deterministic_layout_lifecycle_survives_interleaved_mutations();

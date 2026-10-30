@@ -770,6 +770,13 @@ pub(crate) fn open(
         .find(|workspace| workspace.id == workspace_id)
         .cloned()
         .ok_or("this workspace is not open on this device")?;
+    // A document has one writer: content already open in a window here is
+    // that window, not a second process contending for its record.
+    if let Target::Content(_) = target
+        && let Some(opened) = already_open(state, room, &target.address())
+    {
+        return Ok(opened);
+    }
     let launch = resolve(state, room, &mut workspace, target, publisher)?;
     let label = crate::shell::launcher::display_name_for_package_id(&launch.app);
     let kept = background.then(|| KeptFocus::of(state, workspace_id));
@@ -797,6 +804,44 @@ pub(crate) fn open(
     let Some((strip, group)) = held else {
         crate::shell::launcher::clear_pending_placement(&launch.app);
         return Err("the window's place could not be held".into());
+    };
+    // What the launch carries is the workspace's accepted policy, as a
+    // document opened from Files is: a read of the content it opens is
+    // granted in the tree itself (with this device's provenance for it), and
+    // the launch takes the workspace as it stands after that, so the
+    // launch's authority gate finds every grant it was handed.
+    let workspace = {
+        let mut tree = state.tree_mut();
+        if let Some(path) = &launch.document {
+            let granted = crate::shell::doc_open::grant_document_read(
+                &mut tree,
+                workspace_id,
+                &launch.app,
+                path,
+            );
+            if granted != Some(true) {
+                drop(tree);
+                if let Err(gone) = crate::shell::window_actions::close_tab(state, tab) {
+                    tracing::debug!(
+                        tab,
+                        ?gone,
+                        "the place held for refused content was already gone"
+                    );
+                }
+                return Err(format!(
+                    "{} could not be handed {}",
+                    label,
+                    target.address()
+                ));
+            }
+        }
+        tree.queue_save();
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == workspace_id)
+            .cloned()
+            .unwrap_or(workspace)
     };
     if let Err(error) = crate::shell::launcher::queue_package_open(
         launch.app.clone(),
@@ -835,6 +880,35 @@ pub(crate) fn open(
         strip,
         app: launch.app,
     })
+}
+
+/// The window an earlier [`open`] made for `address` in `room`, while it
+/// is still there.
+fn already_open(state: &ChromeState, room: RoomId, address: &str) -> Option<Opened> {
+    let tree = state.tree();
+    let found = tree
+        .desktop
+        .workspaces
+        .iter()
+        .filter(|workspace| workspace.room() == room)
+        .flat_map(|workspace| &workspace.strips)
+        .find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .find(|tab| state.desktop_layout.opened_with(tab.id) == Some(address))
+                    .map(|tab| Opened {
+                        tab: tab.id,
+                        group: group.id,
+                        strip: strip.id,
+                        app: tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                            .unwrap_or_default(),
+                    })
+            })
+        });
+    drop(tree);
+    found
 }
 
 /// One window of a workspace, as [`list_windows`] tells it.
