@@ -14,7 +14,7 @@ use vello::peniko::Color;
 
 /// The colour a surface draws on: nothing, so the desktop shows through
 /// wherever the app painted nothing.
-const TRANSPARENT: Color = Color::new([0.0, 0.0, 0.0, 0.0]);
+const TRANSPARENT: Color = Color::TRANSPARENT;
 
 /// One hosted surface's frames: what it drew last, and what draws its next.
 pub(crate) struct Frames {

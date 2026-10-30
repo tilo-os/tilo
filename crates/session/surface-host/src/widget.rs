@@ -23,7 +23,7 @@ use crate::{Placement, key_event, modifiers_state, mouse_input};
 
 /// The colour a widget tree draws on: nothing, so the desktop shows through
 /// wherever it painted nothing.
-const TRANSPARENT: Color = Color::new([0.0, 0.0, 0.0, 0.0]);
+const TRANSPARENT: Color = Color::TRANSPARENT;
 
 /// One widget tree shown on a rectangle of the desktop.
 pub struct WidgetHost {

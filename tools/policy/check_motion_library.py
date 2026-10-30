@@ -76,6 +76,7 @@ EXEMPT = {
     "crates/media/": "paint, brush and media physics simulate the medium, not UI motion",
     "apps/canvas/src/brushes.rs": "brush dynamics are part of the stroke the person paints",
     "crates/sdk/ui-core/src/theme.rs": "blends two themes' tokens, spring presets included",
+    "crates/session/compositor/src/a11y.rs": "the visual alert is the compositor's own overlay, faded in its render pass from the frame clock no UI runs on",
     "vendor/": "vendored upstream code",
 }
 

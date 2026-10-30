@@ -50,15 +50,12 @@ const fn reason_label(reason: StopReason) -> &'static str {
     }
 }
 
-/// A record's facts as its resource's presentation.
+/// A record's facts as its resource's presentation: when it happened, and
+/// what stopped the computer as its badge.
 fn present(record: &CrashRecord) -> ResourcePresentation {
-    let when = ui::format::timestamp(&ui::format::UnixSecs(record.at));
     ResourcePresentation {
-        detail: Some(match record.reason {
-            Some(reason) => format!("{when} · {}", reason_label(reason)),
-            None => when,
-        }),
-        badge: None,
+        detail: Some(ui::format::timestamp(&ui::format::UnixSecs(record.at))),
+        badge: record.reason.map(|reason| reason_label(reason).to_owned()),
         preview: record.build.as_ref().map(|build| format!("build {build}")),
     }
 }
@@ -197,18 +194,16 @@ mod tests {
         let service = CrashRecords::in_dir(dir.path());
         let children = service.resources().remove(0).children;
         assert_eq!(children[0].label, "Computer stopped");
-        let detail = children[0]
+        let presentation = children[0]
             .presentation
-            .as_ref()
-            .and_then(|presentation| presentation.detail.clone())
-            .expect("a record says when it happened");
+            .clone()
+            .expect("a record says when it happened and what stopped it");
         let at =
             ui::format::NaiveDateTime::parse_from_str("2026-10-24 22:52:01", "%Y-%m-%d %H:%M:%S")
                 .expect("the record's time");
-        assert_eq!(
-            detail,
-            format!("{} · emergency restart", ui::format::timestamp(&at))
-        );
+        let when = ui::format::timestamp(&at);
+        assert_eq!(presentation.detail.as_deref(), Some(when.as_str()));
+        assert_eq!(presentation.badge.as_deref(), Some("emergency restart"));
     }
 
     #[test]
