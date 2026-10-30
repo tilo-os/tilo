@@ -23,13 +23,37 @@ impl MailApp {
         )
         .expect("the test engine starts");
         let (tx, rx) = crate::engine::spawn_with(Box::new(engine));
-        self.state().engine = Some(EngineHandle { tx, rx });
+        let mut room = self.state();
+        // What the window asked the engine it replaces is never answered:
+        // that engine is gone, and it is asked again of this one.
+        room.pending_engine_requests.clear();
+        room.awaiting_engine = false;
+        room.resource_refresh_invocation = None;
+        room.engine = Some(EngineHandle { tx, rx });
+        drop(room);
+        self.shared.borrow_mut().sync_error = None;
+        // Server updates and sends no window here could carry out before
+        // are offered again.
+        for projection in [&self.projection, &self.delivery].into_iter().flatten() {
+            projection.outside_changed();
+        }
     }
 
     /// Reach no server: what the window answers comes from what this device
     /// keeps.
     pub fn reach_no_server(&mut self) {
-        self.state().engine = None;
+        let mut room = self.state();
+        room.pending_engine_requests.clear();
+        room.awaiting_engine = false;
+        room.resource_refresh_invocation = None;
+        room.engine = None;
+    }
+
+    /// Whether the window waits on the server for something it asked.
+    #[must_use]
+    pub fn awaiting_server(&self) -> bool {
+        let room = self.state();
+        room.awaiting_engine || room.resource_refresh_invocation.is_some()
     }
 
     /// How many messages of `account` this device keeps.

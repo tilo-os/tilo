@@ -597,7 +597,7 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
             let clean = status.as_ref().is_ok_and(std::process::ExitStatus::success);
             // Its error output ends with it: what it said last is all read by now.
             let last = said
-                .and_then(|reading| reading.ok())
+                .and_then(Result::ok)
                 .and_then(|reading| reading.join().ok())
                 .unwrap_or_default();
             let reason = reason.unwrap_or_else(|| seen_end(&status, &last));

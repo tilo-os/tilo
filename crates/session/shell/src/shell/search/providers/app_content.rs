@@ -175,12 +175,11 @@ impl OpenDoor {
         self.broker.window_peer(instance)
     }
 
-    /// The app publishing `resource` in `room`, running or retained:
-    /// the one naming it exactly, else one publishing its kind (the part
-    /// before its first `:`), else the one app whose kinds are in the
-    /// kind's namespace (the part before its first `.`): an app answers for
-    /// an item it shows on demand (Mail's `mail.message:<id>`, among the
-    /// `mail.mailbox` it publishes) without listing every one.
+    /// The app for `resource` in `room`: the one publishing it exactly,
+    /// running or retained; else the installed app whose manifest declares
+    /// it opens its kind (the part before its first `:`), as Mail declares
+    /// `mail.message` for the messages it shows on demand; else one
+    /// publishing that kind.
     pub(crate) fn publisher_of(&self, room: &str, resource: &str) -> Option<String> {
         let kind = resource.split_once(':').map_or(resource, |(kind, _)| kind);
         let surfaces: Vec<PublishedSurface> = self
@@ -196,28 +195,8 @@ impl OpenDoor {
                 .map(|surface| surface.app_id.clone())
         };
         publishes(&|action| action.resource == resource)
+            .or_else(|| crate::shell::launcher::app_opening_resource_kind(kind))
             .or_else(|| publishes(&|action| action.resource_kind == kind))
-            .or_else(|| {
-                let namespace = kind.split_once('.').map(|(namespace, _)| namespace)?;
-                let mut apps = surfaces
-                    .iter()
-                    .filter(|surface| {
-                        surface.actions.iter().any(|action| {
-                            action
-                                .resource_kind
-                                .split_once('.')
-                                .is_some_and(|(of, _)| of == namespace)
-                        })
-                    })
-                    .map(|surface| surface.app_id.as_str())
-                    .collect::<Vec<_>>();
-                apps.sort_unstable();
-                apps.dedup();
-                match apps.as_slice() {
-                    [app] => Some((*app).to_owned()),
-                    _ => None,
-                }
-            })
     }
 }
 

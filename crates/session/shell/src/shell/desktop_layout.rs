@@ -116,12 +116,13 @@ pub(crate) enum Layout {
 }
 
 /// A window an [`open`] made, where it is, and the app it opens in.
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Opened {
     pub tab: TabId,
     pub group: GroupId,
     pub strip: StripId,
     pub app: String,
+    /// The launch's startup, which says whether it failed.
+    pub startup: tilo_action_broker::services::LaunchReadiness,
 }
 
 /// Who changed the layout, and the run the change belongs to.
@@ -828,24 +829,33 @@ pub(crate) fn open(
         crate::shell::launcher::clear_pending_placement(&launch.app);
         return Err("the window's place could not be held".into());
     };
-    if let Err(error) = crate::shell::launcher::queue_package_open(
-        launch.app.clone(),
-        Some(label),
-        &workspace,
-        launch.document,
-        launch.uri,
-        launch.visitor,
-    ) {
-        // Nothing will arrive for the place: it goes, as a refused launch's does.
-        if let Err(gone) = crate::shell::window_actions::close_tab(state, tab) {
-            tracing::debug!(
-                tab,
-                ?gone,
-                "the place held for a refused launch was already gone"
-            );
+    // This launch's own startup is observed: its failure is this open's,
+    // whatever another launch of the same app does.
+    let started = crate::shell::launch_readiness::observe(|| {
+        crate::shell::launcher::queue_package_open(
+            launch.app.clone(),
+            Some(label),
+            &workspace,
+            launch.document,
+            launch.uri,
+            launch.visitor,
+        )
+        .map_err(|error| error.user_message())
+    });
+    let startup = match started {
+        Ok(startup) => startup,
+        Err(error) => {
+            // Nothing will arrive for the place: it goes, as a refused launch's does.
+            if let Err(gone) = crate::shell::window_actions::close_tab(state, tab) {
+                tracing::debug!(
+                    tab,
+                    ?gone,
+                    "the place held for a refused launch was already gone"
+                );
+            }
+            return Err(error);
         }
-        return Err(error.user_message());
-    }
+    };
     let journal = &mut state.desktop_layout;
     journal.opened.insert(tab, target.address());
     if let Some(resource) = launch.resource {
@@ -864,7 +874,23 @@ pub(crate) fn open(
         group,
         strip,
         app: launch.app,
+        startup,
     })
+}
+
+/// `tab`'s launch failed with `why`: its place goes, it is not opened at a
+/// resource, and the open that held it is told so.
+pub(crate) fn launch_failed(state: &mut ChromeState, tab: TabId, why: &str) -> String {
+    state.desktop_layout.opened_at(tab);
+    state.desktop_layout.opened.remove(&tab);
+    if let Err(gone) = crate::shell::window_actions::close_tab(state, tab) {
+        tracing::debug!(
+            tab,
+            ?gone,
+            "the place held for a failed launch was already gone"
+        );
+    }
+    format!("the window did not open: {why}")
 }
 
 /// One window of a workspace, as [`list_windows`] tells it.

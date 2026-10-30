@@ -220,6 +220,9 @@ impl ShellOverlayHost {
         if in_flight {
             scene.pop_layer();
         }
+        // What it painted is the card as this draw laid it out: typing
+        // grows the card, and the place read above is the last frame's.
+        let card = self.search_card();
         let shadow = ui::widget::floating_surface::card_shadow(theme);
         let edge = card.inflate(2.0, 2.0);
         let painted =
