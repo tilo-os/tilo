@@ -172,21 +172,23 @@ fn start(
     let (capture, captures) =
         tilo_session::capture::channel_to(tilo_session::capture::directory(), wake.handle());
     // The portal's side of the desktop, which the session answers.
-    let (portal_side, link) = tilo_session::portal_link::channel(wake.handle());
+    let (portal_side, portal_link) = tilo_session::portal_link::channel(wake.handle());
     let desktop = desktop_services(
         &buses,
         &wake,
         Arc::new(capture),
         &portal_side,
         &mut services,
-        power.as_ref().map(|link| link.registry().clone()),
+        power
+            .as_ref()
+            .map(|power_link| power_link.registry().clone()),
     );
     // Where input captures and the shared screens are is the portal's: its
     // capture broker tells them what the session's seat and outputs are.
     let portal = desktop
         .as_ref()
         .and_then(|desktop| desktop.portal())
-        .map(|serving| link.with_captures(serving.input_captures().clone()));
+        .map(|serving| portal_link.with_captures(serving.input_captures().clone()));
     tell_the_person(backend, desktop.as_deref());
     // The apps this session opens start from its own displays and the
     // person's variables, once the compositor has bound its socket.
