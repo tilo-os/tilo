@@ -681,19 +681,23 @@ fn generic_edit_schema(ops: &[(String, serde_json::Value)]) -> serde_json::Value
     {
         // A field type's own vocabulary (rich text's) can outweigh the
         // whole listing: it is summarised by its operations and their
-        // arguments, and checked when the edit applies.
-        let alternatives = ops
+        // arguments, and checked when the edit applies. The summaries only
+        // describe, so they are one alternative: several describing
+        // alternatives (two drafts' bodies) would each match any edit.
+        let description = ops
             .into_iter()
             .map(|(path, schema)| {
-                serde_json::json!({
-                    "description": format!(
-                        "An edit of `{path}` in its own vocabulary, one of: {}",
-                        crate::schema::summary(&schema)
-                    ),
-                })
+                format!(
+                    "An edit of `{path}` in its own vocabulary, one of: {}",
+                    crate::schema::summary(&schema)
+                )
             })
-            .collect();
-        properties.insert("rich".into(), crate::schema::one_of(alternatives));
+            .collect::<Vec<_>>()
+            .join("\n");
+        properties.insert(
+            "rich".into(),
+            crate::schema::one_of(vec![serde_json::json!({ "description": description })]),
+        );
     }
     schema
 }

@@ -140,6 +140,14 @@ pub enum SoundAction {
         #[param("Whether the microphone is muted")]
         muted: bool,
     },
+    /// Unmute the microphone when it is muted, and mute it when it is not.
+    #[effect(
+        own_device,
+        label = "Mute or unmute the microphone",
+        icon = "mic-off",
+        keywords = "microphone, mic mute, mikrofon"
+    )]
+    ToggleInputMuted,
 }
 
 /// The sound resource reading `sound`.
@@ -164,12 +172,9 @@ pub fn resource(sound: &Sound) -> ResourceSpec {
         }
     }
     if sound.input.is_none() {
-        unavailable(
-            &mut resource,
-            "set-input-muted",
-            "no_input",
-            "There is no sound input",
-        );
+        for action in ["set-input-muted", "toggle-input-muted"] {
+            unavailable(&mut resource, action, "no_input", "There is no sound input");
+        }
     }
     let outputs = sound.outputs.iter().map(|device| {
         ResourceSpec::new(

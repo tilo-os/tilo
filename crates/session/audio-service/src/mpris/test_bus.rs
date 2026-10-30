@@ -12,18 +12,18 @@ use zbus::zvariant::OwnedValue;
 
 use super::MPRIS_PATH;
 
-pub(super) const PROBE: &str = "org.mpris.MediaPlayer2.probe";
+pub(crate) const PROBE: &str = "org.mpris.MediaPlayer2.probe";
 
 /// A session bus of its own, as `dbus-run-session` starts one, stopped
 /// on drop. The observer under test never sees the caller's real bus.
-pub(super) struct PrivateBus {
+pub(crate) struct PrivateBus {
     daemon: std::process::Child,
-    pub(super) address: String,
+    pub(crate) address: String,
     _directory: tempfile::TempDir,
 }
 
 impl PrivateBus {
-    pub(super) fn start() -> Self {
+    pub(crate) fn start() -> Self {
         use std::io::BufRead;
         let directory = tempfile::tempdir().unwrap();
         let mut daemon = std::process::Command::new("dbus-daemon")
@@ -47,7 +47,7 @@ impl PrivateBus {
         }
     }
 
-    pub(super) async fn connect(&self) -> zbus::Connection {
+    pub(crate) async fn connect(&self) -> zbus::Connection {
         zbus::connection::Builder::address(self.address.as_str())
             .unwrap()
             .build()
@@ -63,8 +63,8 @@ impl Drop for PrivateBus {
     }
 }
 
-pub(super) struct FakeRoot {
-    pub(super) identity: String,
+pub(crate) struct FakeRoot {
+    pub(crate) identity: String,
 }
 
 #[zbus::interface(name = "org.mpris.MediaPlayer2")]
@@ -78,14 +78,14 @@ impl FakeRoot {
 /// A player that reports what its fields say, and signals only when the
 /// test makes it.
 #[derive(Default)]
-pub(super) struct FakePlayer {
-    pub(super) status: String,
-    pub(super) title: String,
-    pub(super) url: String,
-    pub(super) position_us: i64,
-    pub(super) controllable: bool,
+pub(crate) struct FakePlayer {
+    pub(crate) status: String,
+    pub(crate) title: String,
+    pub(crate) url: String,
+    pub(crate) position_us: i64,
+    pub(crate) controllable: bool,
     /// Every method called on it, in order.
-    pub(super) called: Vec<String>,
+    pub(crate) called: Vec<String>,
 }
 
 #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
@@ -165,7 +165,7 @@ impl FakePlayer {
 
 /// Every method call `sender` makes on the bus, in order, as
 /// `dbus-monitor` would see them.
-pub(super) async fn record_calls(bus: &PrivateBus, sender: &str) -> Arc<Mutex<Vec<String>>> {
+pub(crate) async fn record_calls(bus: &PrivateBus, sender: &str) -> Arc<Mutex<Vec<String>>> {
     let monitor = bus.connect().await;
     let mut messages = zbus::MessageStream::from(&monitor);
     let rule = zbus::MatchRule::builder()
@@ -194,7 +194,7 @@ pub(super) async fn record_calls(bus: &PrivateBus, sender: &str) -> Arc<Mutex<Ve
     calls
 }
 
-pub(super) async fn eventually(what: &str, mut condition: impl FnMut() -> bool + Send) {
+pub(crate) async fn eventually(what: &str, mut condition: impl FnMut() -> bool + Send) {
     let deadline = Instant::now()
         .checked_add(tilo_test_env::hang_bound())
         .unwrap();
@@ -205,7 +205,7 @@ pub(super) async fn eventually(what: &str, mut condition: impl FnMut() -> bool +
 }
 
 /// The probe player on `bus`, playing "Song" at 12 s.
-pub(super) async fn serve_playing_probe(bus: &PrivateBus) -> zbus::Connection {
+pub(crate) async fn serve_playing_probe(bus: &PrivateBus) -> zbus::Connection {
     zbus::connection::Builder::address(bus.address.as_str())
         .unwrap()
         .name(PROBE)
@@ -235,7 +235,7 @@ pub(super) async fn serve_playing_probe(bus: &PrivateBus) -> zbus::Connection {
 
 /// Pause the probe player and announce it the way MPRIS players do: one
 /// `PropertiesChanged`, no `Position`.
-pub(super) async fn pause_and_signal(player: &zbus::Connection) {
+pub(crate) async fn pause_and_signal(player: &zbus::Connection) {
     let player_iface = player
         .object_server()
         .interface::<_, FakePlayer>(MPRIS_PATH)
@@ -248,4 +248,17 @@ pub(super) async fn pause_and_signal(player: &zbus::Connection) {
         .playback_status_changed(player_iface.signal_emitter())
         .await
         .unwrap();
+}
+
+/// Every method the fake player at `player` was called with, in order.
+pub(crate) async fn called(player: &zbus::Connection) -> Vec<String> {
+    player
+        .object_server()
+        .interface::<_, FakePlayer>(MPRIS_PATH)
+        .await
+        .unwrap()
+        .get()
+        .await
+        .called
+        .clone()
 }
