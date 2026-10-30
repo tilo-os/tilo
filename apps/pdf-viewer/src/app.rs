@@ -445,6 +445,8 @@ pub struct PdfApp {
     worker_plan_blobs: Vec<ContentState>,
     pending_save: Option<SaveRequest>,
     pending_import: Option<ImportRequest>,
+    /// The insert-pages effect waiting on [`Self::pending_import`].
+    asked_import: Option<insert_pages::AskedImport>,
     /// False until a file has been loaded — drives the empty state.
     has_document: bool,
     /// The PDF the record's markup is made against, as last presented.
@@ -1094,6 +1096,7 @@ impl PdfApp {
             worker_plan_blobs: Vec::new(),
             pending_save: None,
             pending_import: None,
+            asked_import: None,
             has_document: false,
             record_source: None,
             reopen_requested: false,
@@ -2306,20 +2309,24 @@ impl PdfApp {
     /// Import content-addressed PDF/image bytes as a shared, replayable page
     /// plan action. The bytes live in the app's content store, never in Automerge.
     pub fn import_file(&mut self, path: &std::path::Path) -> bool {
-        self.import_from(|handle, document, at, after| {
+        self.import_from(self.current_page, |handle, document, at, after| {
             handle.import_path(document, path, at, after)
         })
     }
 
     /// Import the pages of a file the host's chooser delivered by contents.
     fn import_picked(&mut self, file: ui::portal::PickedContents) -> bool {
-        self.import_from(move |handle, document, at, after| {
+        self.import_from(self.current_page, move |handle, document, at, after| {
             handle.import_contents(document, &file.name, file.bytes, at, after)
         })
     }
 
+    /// Start importing a file's pages after the first `at` pages of the
+    /// document: the one import the rail's Add, a dropped file and the
+    /// insert-pages effect share.
     fn import_from(
         &mut self,
+        at: usize,
         submit: impl FnOnce(
             &RasterHandle,
             u64,
@@ -2338,8 +2345,10 @@ impl PdfApp {
             self.dirty = true;
             return false;
         };
-        let at = self.current_page;
-        let after = self.resource_page_ids.get(at.saturating_sub(1)).cloned();
+        let after = at
+            .checked_sub(1)
+            .and_then(|last| self.resource_page_ids.get(last))
+            .cloned();
         match self
             .raster_handle
             .as_ref()
@@ -4539,42 +4548,14 @@ impl PdfApp {
                     .is_some_and(|doc| doc.id == request.document_id)
                     && self.pending_import.as_ref() == Some(&request) =>
                 {
-                    let pages_before = self.doc.page_count();
-                    let imported = sizes.len();
-                    let pages = sizes
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, (width, height))| PagePlanEntry {
-                            id: format!("import-{}", uuid::Uuid::new_v4()),
-                            source_page: index + 1,
-                            imported: Some(crate::markup::ImportedPage {
-                                hash: hash.clone(),
-                                kind: kind.clone(),
-                                page: index + 1,
-                                width_milli: (width * 1000.0).round() as u32,
-                                height_milli: (height * 1000.0).round() as u32,
-                            }),
-                            rotation: 0,
-                        })
-                        .collect();
                     self.pending_import = None;
-                    self.submit(crate::actions::import_pages_action(
-                        request.after.as_deref(),
-                        pages,
-                    ));
-                    self.reconcile_shared_page_plan(state);
-                    self.go_to_page(request.at + 1);
-                    self.status_note.show(crate::t_args(
-                        "pdf-note-imported",
-                        &[("count", imported.into())],
-                    ));
-                    self.pages_dirty = self.doc.page_count() != pages_before;
-                    self.dirty = true;
+                    self.imported(state, &request, &hash, &kind, &sizes);
                 }
                 RasterEvent::ImportFailed { request, error }
                     if self.pending_import.as_ref() == Some(&request) =>
                 {
                     self.pending_import = None;
+                    self.import_failed(&request, &error);
                     tracing::warn!(%error, "importing pages failed");
                     self.show_failure(
                         crate::t("pdf-note-import-failed"),
@@ -5709,6 +5690,8 @@ impl PdfApp {
             | PdfEffect::SelectText { .. }
             | PdfEffect::CopySelection
             | PdfEffect::ReadText { .. }
+            | PdfEffect::ReadFormFields
+            | PdfEffect::InsertPages { .. }
             | PdfEffect::LookPage { .. }
             | PdfEffect::ImportPdfContent { .. } => {
                 return false;
@@ -5946,6 +5929,8 @@ fn open_error(path: &std::path::Path, reason: &str) -> String {
 }
 
 mod content_import;
+mod form_read;
+mod insert_pages;
 mod note_action;
 mod scroll_damage;
 mod selection;
