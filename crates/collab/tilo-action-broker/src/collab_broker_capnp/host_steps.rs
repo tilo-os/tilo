@@ -873,6 +873,51 @@ mod identity_admin_tests {
         clippy::significant_drop_tightening,
         reason = "the test keeps its fixture and guards alive through its assertions"
     )]
+    /// Asking only who publishes (`max_results: 0`, how an agent's paths
+    /// find an app) lists the host's own services beside apps' windows, and
+    /// builds no row; asking a service for its rows still gets them.
+    #[test]
+    fn a_host_service_is_listed_when_only_publishers_are_asked() {
+        let host = Arc::new(Host::default());
+        let (state, owner, room) = broker(host);
+        let caller = Caller::local_person(owner).in_room(room.clone());
+        let ask = |query: tilo_actions::remote::CatalogueQuery| {
+            state
+                .action_query(&caller, &query)
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .expect("the catalogue answers at once")
+                .expect("the room's owner may ask")
+        };
+        let publishers = ask(tilo_actions::remote::CatalogueQuery {
+            max_results: 0,
+            ..Default::default()
+        });
+        assert!(publishers.rows.is_empty(), "{:?}", publishers.rows);
+        assert!(
+            publishers.providers.iter().any(|provider| {
+                provider.provider == identity_admin::PROVIDER
+                    && provider.app_id == "so.tilo.settings"
+                    && provider.room == room
+                    && provider.browsable
+            }),
+            "{:?}",
+            publishers.providers
+        );
+        let rows = ask(tilo_actions::remote::CatalogueQuery {
+            provider: Some(identity_admin::PROVIDER.into()),
+            ..Default::default()
+        });
+        assert!(
+            rows.rows
+                .iter()
+                .any(|row| row.provider == identity_admin::PROVIDER),
+            "{:?}",
+            rows.rows
+        );
+    }
+
     #[test]
     fn certified_host_steps_admit_only_nonforeign_local_custody() {
         for pairing in [false, true] {

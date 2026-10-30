@@ -1165,11 +1165,11 @@ impl CapnpBrokerState {
                 });
             }
             if caller.room() == Some(room.as_str()) {
-                for steps in host_steps.iter().filter(|steps| {
-                    scope.wants(steps.provider()) && scope.wants_app(steps.app_id())
-                }) {
+                for steps in &host_steps {
                     // The host's own services are publishers like an app's
-                    // window: listed, so a caller finds them by their app.
+                    // window: listed whatever rows were asked for (a query
+                    // asking only who publishes builds none), so a caller
+                    // finds them by their app.
                     providers.push(CatalogueProvider {
                         provider: steps.provider().to_owned(),
                         app_id: steps.app_id().to_owned(),
@@ -1177,7 +1177,9 @@ impl CapnpBrokerState {
                         record_id: String::new(),
                         browsable: true,
                     });
-                    Self::host_step_rows((&workspace, &policy, now), steps.as_ref(), &mut rows);
+                    if scope.wants(steps.provider()) && scope.wants_app(steps.app_id()) {
+                        Self::host_step_rows((&workspace, &policy, now), steps.as_ref(), &mut rows);
+                    }
                 }
             }
             let provider = workspace_provider(&room);

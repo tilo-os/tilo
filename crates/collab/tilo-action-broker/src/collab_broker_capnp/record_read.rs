@@ -168,11 +168,6 @@ impl RecordReads for BrokerRecordReads {
                 tilo_actions::remote::RECORD_READS_UNAVAILABLE.into(),
             ));
         };
-        if owner.record_read(room, &address.app, &address.record) == RecordRead::Own {
-            return Err(unavailable(
-                "this device holds none of the room's records outside their apps".into(),
-            ));
-        }
         let certificate = people.certificate(room, person).map_err(unavailable)?;
         let checked = (Arc::downgrade(&state), caller.clone(), address.clone());
         drop(state);
@@ -192,6 +187,29 @@ impl RecordReads for BrokerRecordReads {
         context
             .revalidate()
             .map_err(|reason| ActionHostError::Refused { reason })?;
+        if owner.record_read(room, &address.app, &address.record) == RecordRead::Own {
+            // A record a sealed room holds nothing of may still arrive in its host's replay;
+            // once that landed, one this device holds nothing of is one the room has none of.
+            // This read runs on a thread of its own, which the wait holds.
+            if let Some(history) = owner.await_sealed_history(&context) {
+                futures::executor::block_on(history);
+            }
+            if owner.record_read(room, &address.app, &address.record) == RecordRead::Own {
+                if !owner.seals_records(room) {
+                    return Err(unavailable(
+                        "this device holds none of the room's records outside their apps".into(),
+                    ));
+                }
+                if owner.holds_record(room, &address.app, &address.record) {
+                    return Err(unavailable(
+                        "the writes this device holds of the record build on changes it does \
+                         not hold"
+                            .into(),
+                    ));
+                }
+                return Ok(RecordCopy::Absent);
+            }
+        }
         match owner
             .capture(&context, None, MAX_DOCUMENT_BYTES)
             .map_err(|reason| ActionHostError::Refused { reason })?
