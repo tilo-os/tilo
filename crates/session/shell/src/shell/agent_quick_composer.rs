@@ -481,12 +481,17 @@ pub(crate) enum AskBlocker {
 }
 
 impl AskBlocker {
-    fn text(self) -> String {
-        t(match self {
+    /// The message that says it, as the composer and the canvas say it.
+    pub(crate) const fn message_key(self) -> &'static str {
+        match self {
             Self::NoRuntime => "agent-quick-blocked-no-runtime",
             Self::NoModel => "agent-quick-blocked-no-model",
             Self::Offline => "agent-quick-blocked-offline",
-        })
+        }
+    }
+
+    fn text(self) -> String {
+        t(self.message_key())
     }
 }
 

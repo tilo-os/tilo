@@ -74,7 +74,7 @@ pub use launch_records::{
 };
 pub(crate) use launch_records::{
     authenticated_window_launch, register_in_process_window, register_tilolang_change,
-    register_tilolang_instance, withdraw_in_process_launch,
+    register_tilolang_instance, register_windowless_launch, withdraw_in_process_launch,
 };
 
 use crate::shell::action_authority;

@@ -182,6 +182,8 @@ impl NativeLaunch {
             .values()
             .filter(|surface| {
                 surface.live
+                    // Opening the app shows it: never an instance with no window.
+                    && state.shows(surface.peer_id, tilo_actions::remote::APPLICATION_OPEN_ACTION)
                     && surface.app_id == self.app
                     && surface.route.cluster_id == self.run.cluster_id
                     && subscribers.contains_key(&surface.peer_id)

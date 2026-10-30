@@ -501,6 +501,7 @@ impl ShellOverlayHost {
             directory_sheet: Box::default(),
             arrival_pulses: Vec::new(),
             banners: banners::BannerHost::default(),
+            windowless: windowless_apps::WindowlessApps::default(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
             osd_painted: std::cell::RefCell::new(Vec::new()),
             osd_pin: std::cell::Cell::new(None),
