@@ -75,3 +75,27 @@ fn the_shells_buttons_grow_to_a_fingers_target_on_touch() {
         }
     }
 }
+
+/// Actions an app hands the shell after the window told it a finger reaches it (the header
+/// of a page a press opened) are a finger's target as the first ones were.
+#[test]
+fn actions_handed_over_on_a_touchscreen_are_a_fingers_target() {
+    let touch = f64::from(InteractionEnvironment::TOUCH.minimum_target());
+    let mut harness = harness(shell(), 1024, 768, Theme::light());
+    harness.set_interaction_environment(InteractionEnvironment::TOUCH);
+    settle(&mut harness, 1024, 768);
+    let discard = Box::new(Button::icon_only(
+        "discard",
+        crate::icons::Icon::Trash,
+        "Discard",
+    )) as Element;
+    harness
+        .root_mut::<NavShell>()
+        .set_content_header("New message", vec![discard]);
+    settle(&mut harness, 1024, 768);
+    let rect = rect_of(&harness.inspection().root, "discard").expect("the new action shows");
+    assert!(
+        (rect.width() - touch).abs() < 0.5 && (rect.height() - touch).abs() < 0.5,
+        "the new action is {touch}×{touch}: {rect:?}"
+    );
+}
