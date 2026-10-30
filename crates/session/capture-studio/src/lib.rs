@@ -39,6 +39,10 @@ pub use surface::StudioSurface;
 /// The studio's package id.
 pub const APP_ID: &str = "so.tilo.capture-studio";
 
+/// The resource the studio's actions are published on, which a key that
+/// takes a screenshot addresses.
+pub const RESOURCE: &str = <Capture as ui::tilo_resource::Resource>::KIND;
+
 /// The studio's toolkit definition, the one every host mounts, carrying its
 /// committed surface.
 #[must_use]

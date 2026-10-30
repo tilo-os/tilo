@@ -5,8 +5,8 @@
 //! window or panel gets it ([`SurfaceHost::claim_key`]). A press that is a
 //! chord of the desktop's one shortcut table ([`tilo_desktop::shortcuts`])
 //! or a hardware key (volume, brightness, airplane mode, the touchpad,
-//! playback) is taken, and becomes an invocation of a published action:
-//! the chord's `desktop:chrome/shortcut`, quick settings' `volume-up`, the
+//! playback, Print) is taken, and becomes an invocation of a published
+//! action: the chord's `desktop:chrome/shortcut`, quick settings' `volume-up`, the
 //! media service's `play-pause`. The session runs those through the same
 //! door every other caller uses; nothing here performs anything itself.
 
@@ -84,6 +84,8 @@ pub const KEYBOARD_BACKLIGHT: &str = tilo_system_service::KEYBOARD_BACKLIGHT;
 const DISPLAYS: &str = crate::controls::DISPLAYS_RESOURCE;
 /// The machine's power policy, the power service's: what the power key does.
 pub const SLEEP: &str = tilo_session_power::SLEEP;
+/// The capture studio, whose `screenshot` action the Print key is.
+const CAPTURE_STUDIO: &str = tilo_capture_studio::RESOURCE;
 
 /// `XF86XK_RFKill`, which the keysym tables predate: laptops send it for
 /// the airplane-mode key; `XF86WLAN` is the older spelling.
@@ -170,6 +172,9 @@ fn classify(keysym: u32) -> Option<Hardware> {
         // The power key works on the lock screen too: a press there that the
         // policy resolves to lock turns the display off instead.
         keysyms::XF86_PowerOff => hardware(SLEEP, "power-key", false, true),
+        // The Print key takes the whole screen, as the studio's own bar
+        // does; the lock screen shows no desktop to take.
+        keysyms::Print => hardware(CAPTURE_STUDIO, "screenshot", false, false),
         _ => return None,
     })
 }
@@ -340,6 +345,20 @@ mod tests {
             keys.resolve(&play, true).map(|(invocation, _)| invocation),
             Some(Invocation::new(MEDIA, "play-pause").showing(OsdKind::Play))
         );
+    }
+
+    #[test]
+    fn the_print_key_takes_a_screenshot_unless_the_screen_is_locked() {
+        let keys = keys();
+        let print = key(keysyms::Print, None, KeyModifiers::default());
+        assert_eq!(
+            keys.resolve(&print, false),
+            Some((
+                Invocation::new(CAPTURE_STUDIO, "screenshot"),
+                KeyClaim::Take
+            ))
+        );
+        assert_eq!(keys.resolve(&print, true), None);
     }
 
     #[test]
