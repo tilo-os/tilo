@@ -257,6 +257,40 @@ fn a_typed_endpoint_takes_the_location_its_address_has() {
     }
 }
 
+/// Test `provider`'s connection through its row's action, and require the
+/// answer to be the result the action declares.
+fn list_models_through_the_door(
+    app: &mut TestApp<ProviderSettingsApp>,
+    provider: &str,
+) -> ui::tilo_actions::ActionOutput {
+    let row = format!("settings.agent-provider:{provider}");
+    let listed = app
+        .call_by(
+            ui::tilo_actions::ActionInvoker::actor("provider-administrator"),
+            &row,
+            ProviderEffect::LIST_PROVIDER_MODELS.id(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+    let declared = with_panel(app, |panel| {
+        panel
+            .rows()
+            .into_iter()
+            .find(|candidate| candidate.id() == row)
+            .unwrap()
+            .into_resource()
+            .actions
+            .into_iter()
+            .find(|spec| spec.id == ProviderEffect::LIST_PROVIDER_MODELS.id())
+            .unwrap()
+            .contract
+            .result
+            .clone()
+    });
+    declared.validate(&listed).unwrap();
+    listed
+}
+
 /// An agent says what a model can do, through the action on its provider,
 /// and is refused a model that calls no tools for an agent.
 #[test]
@@ -281,15 +315,11 @@ fn agents_set_model_capabilities_and_cannot_plan_with_a_model_without_tools() {
     );
     app.settle();
     assert_private(&mut app);
-    // The provider lists its models; one is taken, and is said to call no
-    // tools.
-    run(
-        &mut app,
-        ProviderEffect::ListProviderModels {
-            provider: provider.clone(),
-        },
-    );
+    // The provider lists its models, answered as the action declares.
+    let listed = list_models_through_the_door(&mut app, &provider);
+    assert_eq!(listed.value.as_ref().unwrap()[0]["id"], "listed-a");
     app.settle();
+    // One is taken, and is said to call no tools.
     run(
         &mut app,
         ProviderEffect::SetModelCapabilities {

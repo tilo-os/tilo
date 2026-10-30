@@ -81,7 +81,7 @@ jobs:
     # The bounded wait for an executing window, plus the API calls around it.
     timeout-minutes: 50
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     outputs:
       superseded: ${{ steps.window.outputs.superseded }}
       base: ${{ steps.window.outputs.base }}

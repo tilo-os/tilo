@@ -614,6 +614,12 @@ impl ShellOverlayHost {
             }
             arrangement.places.insert(*group, place);
             placed = true;
+            if anchor.is_none() && !self.on_screen_place(place) {
+                // A window the person opened is the one they look for:
+                // where the screen had no room for it, this device's lens
+                // takes in every window rather than leave it off screen.
+                self.fit_lens_to(arrangement, place);
+            }
         }
         placed
     }
@@ -661,7 +667,8 @@ impl ShellOverlayHost {
     }
 
     /// Where a window nobody placed goes: beside the window in front, else
-    /// centred in what is on screen.
+    /// centred in what is on screen, whichever is on screen; else beside
+    /// the others, for the lens to take in ([`Self::fit_lens_to`]).
     fn default_place(
         &self,
         chrome: &crate::shell::chrome_state::Chrome,
@@ -680,9 +687,6 @@ impl ShellOverlayHost {
                 })
                 .and_then(|group| arrangement.place_of(group))
         };
-        if let Some(front) = front {
-            return arrangement.free_place_beside(front, width, height, None);
-        }
         let middle = self
             .canvas_frame()
             .and_then(|frame| self.to_canvas(frame.center()))
@@ -691,7 +695,74 @@ impl ShellOverlayHost {
             middle.x - f64::from(width) / 2.0,
             middle.y - f64::from(height) / 2.0,
         );
-        arrangement.free_place_near(canvas_point(corner), width, height, None)
+        let centred = arrangement.free_place_near(canvas_point(corner), width, height, None);
+        let beside = front.map(|front| arrangement.free_place_beside(front, width, height, None));
+        // Beside the window in front while that is on screen; else the free
+        // place nearest the middle of what is on screen, when it is; else
+        // the free place nearest the middle of every window, so they stay
+        // together for the lens to take in.
+        if let Some(beside) = beside.filter(|place| self.on_screen_place(*place)) {
+            return beside;
+        }
+        if self.on_screen_place(centred) {
+            return centred;
+        }
+        let all: Vec<GroupId> = arrangement.places.keys().copied().collect();
+        arrangement.bounds_of(&all).map_or(centred, |bounds| {
+            let middle = place_rect(bounds).center();
+            let corner = Point::new(
+                middle.x - f64::from(width) / 2.0,
+                middle.y - f64::from(height) / 2.0,
+            );
+            arrangement.free_place_near(canvas_point(corner), width, height, None)
+        })
+    }
+
+    /// What of the canvas the deck shows, in canvas pixels.
+    fn visible_canvas(&self) -> Option<Rect> {
+        let frame = self.canvas_frame()?;
+        let view = self.canvas_lens().view(HashMap::new());
+        Some(view.rect_to_canvas(frame.origin(), frame))
+    }
+
+    /// Whether `place` is wholly on screen.
+    fn on_screen_place(&self, place: CanvasPlace) -> bool {
+        self.visible_canvas().is_some_and(|visible| {
+            let rect = place_rect(place);
+            rect.x0 >= visible.x0
+                && rect.y0 >= visible.y0
+                && rect.x1 <= visible.x1
+                && rect.y1 <= visible.y1
+        })
+    }
+
+    /// Bring this device's lens to every window on the canvas, `place`
+    /// among them: zoomed out only as far as they need (never in), down to
+    /// [`ui::widget::CANVAS_ZOOM_MIN`], and centred on them; where even
+    /// that cannot hold them all, centred on `place`.
+    fn fit_lens_to(&mut self, arrangement: &Arrangement, place: CanvasPlace) {
+        let (Some(workspace), Some(frame)) = (self.canvas.shown, self.canvas_frame()) else {
+            return;
+        };
+        let all: Vec<GroupId> = arrangement.places.keys().copied().collect();
+        let gap = f64::from(CANVAS_GAP);
+        let bounds = arrangement
+            .bounds_of(&all)
+            .map_or_else(|| place_rect(place), place_rect)
+            .inflate(gap, gap);
+        let lens = self.canvas.lenses.entry(workspace).or_default();
+        let fits = (frame.width() / bounds.width()).min(frame.height() / bounds.height());
+        lens.zoom = fits
+            .min(lens.zoom)
+            .clamp(ui::widget::CANVAS_ZOOM_MIN, ui::widget::CANVAS_ZOOM_MAX);
+        let (shown_w, shown_h) = (frame.width() / lens.zoom, frame.height() / lens.zoom);
+        let centre = if bounds.width() <= shown_w && bounds.height() <= shown_h {
+            bounds.center()
+        } else {
+            place_rect(place).center()
+        };
+        lens.origin = Point::new(centre.x - shown_w / 2.0, centre.y - shown_h / 2.0);
+        self.bump_chrome();
     }
 
     /// The windows the person carried to new places on the canvas, kept.

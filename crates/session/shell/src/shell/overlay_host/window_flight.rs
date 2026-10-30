@@ -243,10 +243,13 @@ impl ShellOverlayHost {
         let output = self.overview_output_rect();
         // In flight the pictures cross the whole display; at rest they keep
         // to where the overview shows them.
+        let shift = Affine::translate(origin);
         let clip = if p < 1.0 {
             output
         } else {
-            flight.clip().map_or(output, |clip| clip + origin)
+            flight
+                .clip()
+                .map_or(output, |clip| shift.transform_rect_bbox(clip))
         };
         scene.push_clip_layer(Fill::NonZero, transform, &clip);
         let g = GridMetrics::for_theme(theme);
@@ -255,12 +258,12 @@ impl ShellOverlayHost {
             let Some(window) = listed.get(&picture.tab) else {
                 continue;
             };
-            let rest = picture.rect + origin;
+            let at_rest = shift.transform_rect_bbox(picture.rect);
             if picture.lifted {
                 ui::surface::shadow(
                     scene,
                     transform,
-                    rest,
+                    at_rest,
                     picture.radius,
                     &theme.tokens.elevation.floating,
                 );
@@ -269,7 +272,7 @@ impl ShellOverlayHost {
                     transform,
                     theme,
                     PreviewWell {
-                        rect: rest,
+                        rect: at_rest,
                         radius: picture.radius,
                         icon,
                     },
@@ -284,12 +287,12 @@ impl ShellOverlayHost {
                 .flatten();
             let (rect, radius, alpha) = match source {
                 Some(from) => (
-                    ui::motion::Zoom::rect_at(from, rest, p),
+                    ui::motion::Zoom::rect_at(from, at_rest, p),
                     ui::motion::Zoom::radius_at(g.window_radius, picture.radius, p),
                     picture.alpha,
                 ),
                 None => (
-                    rest,
+                    at_rest,
                     picture.radius,
                     picture.alpha * ui::motion::unit_opacity(p),
                 ),

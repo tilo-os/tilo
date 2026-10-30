@@ -10,8 +10,10 @@
 //!
 //! A record is fetched once per program and kept for that program only: the next program
 //! fetches it again, so each read is decided anew and a grant revoked in the middle of a task
-//! cuts what follows. What the record's origin applied for the program is taken into the record
-//! it read ([`RecordReads::take_in`]), so the program reads its own changes at once.
+//! cuts what follows. What the record's origin applied for the task is taken into the record
+//! it read ([`RecordReads::take_in`]) and kept for the task's life: the program reads its own
+//! changes at once, and every later program of the task reads them too, whether or not the copy
+//! the door hands over holds them yet.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -45,6 +47,13 @@ pub struct RecordReads {
     source: Rc<dyn RecordSource>,
     /// The records this program read, by app, each with a host of its own over it.
     open: RefCell<HashMap<String, (tilo_resource::Doc, Host)>>,
+    /// The apps whose record this program read as none: what the program saw of it (its root,
+    /// say) was made by the read alone, never written anywhere.
+    read_none: RefCell<std::collections::HashSet<String>>,
+    /// What the records' origins applied for this task, by app, in order: kept for the task's
+    /// life and put into every record the task reads, so each of its programs reads its own
+    /// earlier changes while the copy the door hands over still lags the origin.
+    written: RefCell<HashMap<String, Vec<Vec<u8>>>>,
 }
 
 impl RecordReads {
@@ -66,6 +75,8 @@ impl RecordReads {
             records_under,
             source,
             open: RefCell::default(),
+            read_none: RefCell::default(),
+            written: RefCell::default(),
         }
     }
 
@@ -87,23 +98,38 @@ impl RecordReads {
         Some((under, record))
     }
 
-    /// Forget every record read: a new program reads them again.
+    /// Forget every record read: a new program reads them again, with what the task wrote.
     pub fn forget(&self) {
         self.open.borrow_mut().clear();
+        self.read_none.borrow_mut().clear();
     }
 
     /// Forget the record of the app `app`: the program changed it.
     pub fn forget_app(&self, app: &str) {
         self.open.borrow_mut().remove(app);
+        self.read_none.borrow_mut().remove(app);
     }
 
-    /// Take in `change`, what the record's origin applied for this program to the record of the
-    /// app `app`: what the program reads next holds it, without waiting for the room. A record
-    /// this program has not read is read whole when it is next read.
+    /// Take in `change`, what the record's origin applied for this task to the record of the
+    /// app `app`: what this program and every later one of the task reads holds it, without
+    /// waiting for the room. A record this program has not read is read whole when it is next
+    /// read, with the change in it.
     ///
     /// # Errors
     /// The change does not apply to the record.
     pub fn take_in(&self, app: &str, change: &[u8]) -> Result<(), String> {
+        self.written
+            .borrow_mut()
+            .entry(app.to_owned())
+            .or_default()
+            .push(change.to_vec());
+        // A record read as none holds only what the read made of it; the origin, which made the
+        // record for the change, answers it whole, and that is the record from now on.
+        if self.read_none.borrow_mut().remove(app) {
+            let opened = self.host_over(app, Some(change))?;
+            self.open.borrow_mut().insert(app.to_owned(), opened);
+            return Ok(());
+        }
         let mut open = self.open.borrow_mut();
         let Some((doc, host)) = open.get_mut(app) else {
             return Ok(());
@@ -177,18 +203,49 @@ impl RecordReads {
 
     /// A host of the app `app`'s package over its record, as the door hands it now.
     fn open_host(&self, app: &str) -> Result<(tilo_resource::Doc, Host), String> {
+        let (under, record) = self
+            .address(app)
+            .ok_or_else(|| format!("{app} is not installed"))?;
+        let bytes = self.source.record(&under, &record)?;
+        let written = self.written.borrow();
+        let wrote = written.get(app).map_or(&[][..], Vec::as_slice);
+        if bytes.is_none() && wrote.is_empty() {
+            self.read_none.borrow_mut().insert(app.to_owned());
+        }
+        self.host_over_with(app, bytes.as_deref(), wrote)
+    }
+
+    /// A host of the app `app`'s package over its record `bytes` (none: an empty record).
+    fn host_over(
+        &self,
+        app: &str,
+        bytes: Option<&[u8]>,
+    ) -> Result<(tilo_resource::Doc, Host), String> {
+        self.host_over_with(app, bytes, &[])
+    }
+
+    /// [`Self::host_over`], the record holding what the task wrote to it (`wrote`, the changes
+    /// its origin answered, in order) whether or not `bytes` holds it yet.
+    fn host_over_with(
+        &self,
+        app: &str,
+        bytes: Option<&[u8]>,
+        wrote: &[Vec<u8>],
+    ) -> Result<(tilo_resource::Doc, Host), String> {
         let bundle = self
             .bundles
             .get(app)
             .ok_or_else(|| format!("{app} is not installed"))?;
-        let (under, record) = self
-            .address(app)
-            .ok_or_else(|| format!("{app} is not installed"))?;
-        let doc = match self.source.record(&under, &record)? {
-            Some(bytes) => tilo_resource::Doc::load(&bytes)
+        let mut doc = match bytes {
+            Some(bytes) => tilo_resource::Doc::load(bytes)
                 .map_err(|error| format!("{app}'s record does not read: {error}"))?,
             None => tilo_resource::Doc::new(),
         };
+        for change in wrote {
+            tilo_automerge::ApplyIncoming::load_incoming(&mut doc, change).map_err(|error| {
+                format!("what the task wrote to {app}'s record does not apply to it: {error}")
+            })?;
+        }
         let viewer = Principal::new(self.person.clone().unwrap_or_default());
         let host = Host::new(&doc, viewer, || None).map_err(|error| error.to_string())?;
         self.load(&host, bundle, &mut Vec::new())?;

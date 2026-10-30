@@ -94,13 +94,16 @@ profile_args() {
 # Each line of a build's output carries its name, as the builds interleave.
 label() { sed -u "s/^/$1: /"; }
 host_profile=nested
-host_bins=(shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
+# tilo-runtime-mcp is the agent's end of the session's agent door
+# (`tilo-runtime-mcp --connect`), so a check that drives the session as an
+# admitted agent runs against the staged build without building its own.
+host_bins=(shell tilo-runtime-mcp tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
            tilo-model-gateway tilo-ush tilo-control tilolang-host tilolang nested-session-bus)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
     cargo build --locked --timings "${args[@]}" \
-        -p shell --bin shell --example packaged_native_governor --features shell/dev-overrides \
+        -p shell --bin shell --bin tilo-runtime-mcp --example packaged_native_governor --features shell/dev-overrides \
         -p launcher --bin tilo-launcher --features launcher/dev-overrides \
         -p install --bin tilo-install --features install/dev-overrides \
         -p tilo-app-package-cli --bin tilo-app-package \

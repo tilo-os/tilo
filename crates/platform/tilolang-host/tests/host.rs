@@ -308,8 +308,16 @@ fn opened_from_own_copy(
     person: &str,
     documents: &Rc<dyn durable_store::DurableStore>,
 ) -> (TilolangHost, Window, Sent, RouteSpec) {
+    opened_from_own_copy_in(person, documents, RouteSpec::app(APP, uuid::Uuid::new_v4()))
+}
+
+/// [`opened_from_own_copy`], on `route`.
+fn opened_from_own_copy_in(
+    person: &str,
+    documents: &Rc<dyn durable_store::DurableStore>,
+    route: RouteSpec,
+) -> (TilolangHost, Window, Sent, RouteSpec) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
     let sent: Sent = Rc::default();
     let mut manager = CollaborationManager::with_peer_transport(Broker {
         route: route.clone(),
@@ -1618,4 +1626,137 @@ fn a_change_the_record_cannot_take_is_refused_with_why() {
         .unwrap_or_else(|| panic!("{answer}"));
     assert!(!why.is_empty());
     assert_eq!(documents_sent(&sent), 0, "nothing was written");
+}
+
+#[test]
+fn a_change_of_the_root_no_window_made_yet_makes_it_first() {
+    let (address, _window_record) = increment();
+    assert!(address.resource.contains(":root-"), "{}", address.resource);
+    // No window ever opened the app here: its record holds no root.
+    let (mut applier, connection, sent) = applier("ada", automerge::AutoCommit::new());
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: address.resource,
+            action: address.action,
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: None,
+        },
+    );
+    assert!(answer.get("ok").is_some(), "{answer}");
+    let wrote = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(answer["change"].as_str().unwrap())
+            .unwrap()
+    };
+    let mut read = automerge::AutoCommit::new();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut read, &wrote).unwrap();
+    assert!(
+        read.get_missing_deps(&[]).is_empty(),
+        "what it says it wrote holds the root it made, for a task that read no record"
+    );
+    assert!(
+        documents_sent(&sent) > 0,
+        "the root and the change went to the room"
+    );
+}
+
+/// A change its room refuses is taken back out of the record at its origin, and the task is
+/// answered why: the record is never left holding, building on and keeping a change the room
+/// has none of. Here the surface the room decides the record's changes by publishes the
+/// counter's record but none of its actions.
+#[test]
+fn a_change_the_room_refuses_is_never_kept() {
+    let (address, doc) = increment();
+    collaboration::app_surface::register_package(
+        APP,
+        b"[[resources]]\nkind = \"tl.so.tilo.lang.counter.Counter\"\nlabel = \"Counter\"\nversion = 1\n",
+    );
+    let before = doc.clone().get_heads();
+    let (mut applier, connection, sent) = applier("ada", doc);
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: address.resource,
+            action: address.action,
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: None,
+        },
+    );
+    let why = answer["failed"]
+        .as_str()
+        .unwrap_or_else(|| panic!("refused, with why: {answer}"));
+    assert!(why.contains("publishes no"), "{why}");
+    assert_eq!(
+        applier.record().doc().clone().get_heads(),
+        before,
+        "the record holds nothing of the refused change"
+    );
+    assert_eq!(documents_sent(&sent), 0, "nothing was handed to the room");
+}
+
+/// A record an older store wrote, whose first change is its schema stamp committed with no
+/// message, is handed to its room whole on the next send, every change of it claimed: the
+/// stamp, a root change with no deps that only sets the schema version, as the record's
+/// genesis. No change is rewritten and no id changes.
+#[test]
+fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_room_whole() {
+    let documents: Rc<dyn durable_store::DurableStore> =
+        Rc::new(durable_store::MemoryStore::default());
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    // The record as the store wrote it before a record's first change named itself.
+    let stamp = {
+        let mut store = collaboration::record::save::room_document(
+            &documents,
+            APP,
+            &route.cluster_id.to_string(),
+        )
+        .unwrap();
+        let mut doc = store.new_document();
+        let stamp = doc.commit().unwrap();
+        store.save(&mut doc).unwrap();
+        stamp
+    };
+    let (mut host, mut window, sent, _route) = opened_from_own_copy_in("ada", &documents, route);
+    settle(&mut host, &mut window);
+    let (key, event) = window.increment();
+    window.send(&[ToApp::Fire {
+        lane: Lane::Root,
+        key,
+        event,
+        value: None,
+    }]);
+    settle(&mut host, &mut window);
+    assert_eq!(value_of(host.instances().next().unwrap()), 1);
+    let room = room_copy(&sent);
+    assert!(
+        automerge::ReadDoc::get_change_by_hash(&room, &stamp).is_some(),
+        "the stamp, unchanged, reached the room"
+    );
+    assert_eq!(
+        automerge::ReadDoc::get_missing_deps(&room, &[]),
+        Vec::new(),
+        "the room holds the whole record"
+    );
+    for request in sent.borrow().iter() {
+        if let CollabRequest::Document { mutation, .. } = request {
+            let claims =
+                collaboration::app_surface::claims_of(APP, mutation).unwrap_or_else(|error| {
+                    panic!("every change the room is handed is claimed: {error}")
+                });
+            if let Some(claim) = claims.iter().find(|claim| claim.change == stamp.0) {
+                assert_eq!(
+                    claim.action,
+                    collab_types::ClaimedAction::Framework(collab_types::FrameworkChange::Genesis)
+                );
+            }
+        }
+    }
 }

@@ -16,7 +16,7 @@ use ui::control_hints::Quiet;
 
 impl ShellOverlayHost {
     /// What this frame shows the hints.
-    fn control_hint_frame(&mut self, now: Instant) -> HintFrame {
+    fn control_hint_frame(&self, now: Instant) -> HintFrame {
         let row = self
             .active_strip_id()
             .and_then(|id| self.group_row_ptrs.get(&id).copied())

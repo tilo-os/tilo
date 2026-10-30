@@ -3,7 +3,7 @@
 //! app or a headless agent reaches content through the toolkit rather than
 //! through the store's own crates.
 
-pub use tilo_content::{ContentStore, valid_hash};
+pub use tilo_content::{ContentStore, opened_as, valid_hash};
 pub use tilo_content_device::{PublicCopy, PublicState};
 
 /// The device's one copy of the public file `name` (a catalogue the

@@ -29,14 +29,24 @@ class Failing(unittest.TestCase):
 
 
 class RunUnitTests(unittest.TestCase):
-    def run_on(self, files: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    def run_on(self, files: dict[str, str], *, excepted: tuple[str, ...] = ()) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as directory:
             tests = Path(directory) / "tests"
             tests.mkdir()
             for name, text in files.items():
                 (tests / name).write_text(text, encoding="utf-8")
-            return subprocess.run([sys.executable, str(RUNNER), "--jobs", "2", str(tests)],
+            leave_out = [word for name in excepted for word in ("--except", str(tests / name))]
+            return subprocess.run([sys.executable, str(RUNNER), "--jobs", "2", *leave_out, str(tests)],
                                   capture_output=True, text=True, check=False)
+
+    def test_a_file_left_out_does_not_run_and_a_stale_exclusion_is_an_error(self):
+        done = self.run_on({"helper.py": "VALUE = 1\n", "test_a.py": PASSING, "test_b.py": FAILING},
+                           excepted=("test_b.py",))
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("Ran 1 tests in 1 files", done.stdout)
+        done = self.run_on({"helper.py": "VALUE = 1\n", "test_a.py": PASSING}, excepted=("test_gone.py",))
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("--except names a file the directories do not hold", done.stderr)
 
     def test_every_file_passing_passes_and_counts_its_tests(self):
         done = self.run_on({"helper.py": "VALUE = 1\n", "test_a.py": PASSING, "test_b.py": PASSING})

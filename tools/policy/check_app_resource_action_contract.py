@@ -136,7 +136,7 @@ CONTROL_CALLBACKS = frozenset(
         "on_rename", "on_retry",
         "on_revert", "on_row_action", "on_row_click", "on_save",
         "on_section_action", "on_seek", "on_select", "on_station", "on_submit",
-        "on_toggle", "on_undo_band",
+        "on_toggle", "on_undo", "on_undo_band", "on_confirm", "on_decline",
     }
 )
 # The toolkit's other closure-taking `on_*` builders, and why none is a
@@ -166,6 +166,10 @@ NOT_CONTROL_CALLBACKS = {
     "open, under the person's grants",
     "on_stage": "stages view state for a screenshot scenario",
     "on_screen_reader_chord": "the host's observer of the screen reader chord, not a control",
+    "on_close": "a query view's observer of the window search closing: the view goes back to "
+    "what it showed, no edit",
+    "on_sync": "a view's upkeep hook run on every sync of its window, not a control",
+    "on_presented": "a view's upkeep hook run after each frame it draws, not a control",
 }
 # Buttons a toolkit composite draws itself and runs a closure for: a row's
 # and a property's actions, a row's swipe actions, a card's hover action, a

@@ -1009,6 +1009,9 @@ pub struct Applier {
     resource: (String, String),
     connection: std::os::unix::net::UnixStream,
     applying: Applying,
+    /// Whether the answer carries the whole record: the root this change needed was made for
+    /// it.
+    whole: bool,
 }
 
 impl Applier {
@@ -1053,6 +1056,7 @@ impl Applier {
             surface,
             connection,
             applying: Applying::Awaiting(Vec::new()),
+            whole: false,
         })
     }
 
@@ -1060,6 +1064,12 @@ impl Applier {
     #[must_use]
     pub fn spec(&self) -> &Spec {
         &self.spec
+    }
+
+    /// The record it changes, as it holds it.
+    #[must_use]
+    pub fn record(&self) -> &RoomRecord {
+        &self.record
     }
 
     /// The change's connection, to wait on.
@@ -1100,7 +1110,12 @@ impl Applier {
             }
             Applying::Arrived(change) => {
                 changed = true;
-                Applying::Ran(self.apply(&change))
+                match self.make_root(&change) {
+                    // The root it made publishes first; the change resolves against it then.
+                    Ok(true) => Applying::Arrived(change),
+                    Ok(false) => Applying::Ran(self.apply(&change)),
+                    Err(why) => Applying::Ran(serde_json::json!({ "failed": why })),
+                }
             }
             other => other,
         };
@@ -1143,6 +1158,59 @@ impl Applier {
             .map_err(|error| format!("the session said a change that does not decode: {error}"))
     }
 
+    /// Make the app's root when `change` addresses it and the record does not hold it yet: the
+    /// one per-room resource of the package's root type is made the first time it is wanted,
+    /// here as in a window that opens it, and a task reads it from the package whether or not
+    /// any window ever made it. It is applied as the change's invoker's step, before the
+    /// change. Whether it made it.
+    fn make_root(
+        &mut self,
+        change: &runtime_portal::tilolang_host::Change,
+    ) -> Result<bool, String> {
+        let prefix = tilolang_tilo::publish::resource_id(&self.spec.app, "");
+        // The resource's record: an item's path starts with it.
+        let Some(doc) = change
+            .resource
+            .strip_prefix(&prefix)
+            .and_then(|path| path.split('/').next())
+        else {
+            return Ok(false);
+        };
+        if !doc.starts_with("root-") || self.host.store().contains(doc) {
+            return Ok(false);
+        }
+        let made = self
+            .host
+            .root_of(&self.spec.app)
+            .map_err(|error| error.to_string())?;
+        if made.doc != doc {
+            return Err(format!(
+                "{} is not the root of {}",
+                change.resource, self.spec.app
+            ));
+        }
+        let invoker: ActionInvoker = serde_json::from_value(change.invoker.clone())
+            .map_err(|error| format!("the change's invoker does not decode: {error}"))?;
+        let ambient: Option<ActionContext> = change
+            .context
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("the change's context does not decode: {error}"))?;
+        let ambient = ambient.map(|context| context.with_invoker(invoker.clone()));
+        // A record without its root is one the task read as none, or as what an app's window
+        // never shared: the answer carries the whole record, which is small then.
+        self.whole = true;
+        for committed in self.host.take_committed() {
+            self.record
+                .apply_change(&committed.action, invoker.clone(), ambient.as_ref())
+                .map_err(|error| error.to_string())?;
+        }
+        self.host.sync_from(self.record.doc());
+        self.surface.update();
+        Ok(true)
+    }
+
     /// Run `change` against the record as it is now and apply what it wrote: its answer.
     fn apply(&mut self, change: &runtime_portal::tilolang_host::Change) -> serde_json::Value {
         let invoker: ActionInvoker = match serde_json::from_value(change.invoker.clone()) {
@@ -1151,10 +1219,17 @@ impl Applier {
                 return serde_json::json!({"failed": format!("the change's invoker does not decode: {error}")});
             }
         };
-        let ambient: Option<ActionContext> = change
+        let ambient: Option<ActionContext> = match change
             .context
             .clone()
-            .and_then(|context| serde_json::from_value(context).ok());
+            .map(serde_json::from_value)
+            .transpose()
+        {
+            Ok(ambient) => ambient,
+            Err(error) => {
+                return serde_json::json!({"failed": format!("the change's context does not decode: {error}")});
+            }
+        };
         // The record as the room holds it now: requirements are decided on what others wrote.
         self.host.sync_from(self.record.doc());
         let address = ActionAddress::new(change.resource.clone(), change.action.clone());
@@ -1168,7 +1243,17 @@ impl Applier {
                 return serde_json::json!({"failed": String::from_utf8_lossy(&encoded.payload)});
             }
             Ok(encoded) => encoded,
-            Err(error) => return serde_json::json!({"failed": error.to_string()}),
+            Err(error) => {
+                tracing::warn!(
+                    app = self.spec.app,
+                    resource = address.resource,
+                    action = address.action,
+                    offered = resources.len(),
+                    %error,
+                    "the record's origin does not offer the change it was handed"
+                );
+                return serde_json::json!({"failed": error.to_string()});
+            }
         };
         let ambient = ambient.map(|context| context.with_invoker(invoker.clone()));
         if encoded.type_id == EDIT_TYPE {
@@ -1176,6 +1261,7 @@ impl Applier {
                 Ok(edit) => edit,
                 Err(error) => return serde_json::json!({"failed": error.to_string()}),
             };
+            let before = self.record.heads();
             return match self.record.history_at_origin(
                 &edit,
                 &address.resource,
@@ -1185,7 +1271,13 @@ impl Applier {
             ) {
                 Ok(value) => {
                     self.host.sync_from(self.record.doc());
-                    serde_json::json!({"ok": {"value": value, "resources": []}})
+                    // What it wrote, for the task to read back at once, as a change's answer.
+                    let wrote = {
+                        use base64::Engine as _;
+                        base64::engine::general_purpose::STANDARD
+                            .encode(self.record.changes_since(&before))
+                    };
+                    serde_json::json!({"ok": {"value": value, "resources": []}, "change": wrote})
                 }
                 Err(error) => serde_json::json!({"failed": error.to_string()}),
             };
@@ -1200,7 +1292,12 @@ impl Applier {
             Ok(action) => action,
             Err(error) => return serde_json::json!({"failed": error.to_string()}),
         };
-        let before = self.record.heads();
+        // What it wrote includes the root it made for it, which the task's read lacks.
+        let before = if std::mem::take(&mut self.whole) {
+            Vec::new()
+        } else {
+            self.record.heads()
+        };
         if let Err(error) = self.record.apply_change(&action, invoker, ambient.as_ref()) {
             return serde_json::json!({"failed": error.to_string()});
         }

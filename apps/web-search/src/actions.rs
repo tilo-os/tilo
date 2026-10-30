@@ -502,7 +502,7 @@ pub fn bind(resource: &str, action: &str, argument: Option<&str>) -> Result<Call
 pub async fn run(
     client: &tilo_net::Client,
     state: &SearchState,
-    content: Option<&tilo_content::ContentStore>,
+    content: Option<&ui::content::ContentStore>,
     call: Call,
 ) -> Result<ActionOutput, Failure> {
     let value = match call {
@@ -651,7 +651,7 @@ fn fetch_failure(error: FetchError) -> Failure {
 /// no content store, or it refused the bytes.
 pub fn answer_fetched(
     page: FetchedPage,
-    content: Option<&tilo_content::ContentStore>,
+    content: Option<&ui::content::ContentStore>,
     offset: usize,
     max_chars: usize,
 ) -> Result<Value, Failure> {
@@ -689,7 +689,7 @@ pub fn answer_fetched(
             let media = if page.content_type.is_empty()
                 || page.content_type == "application/octet-stream"
             {
-                tilo_content::opened_as(&bytes).1.to_owned()
+                ui::content::opened_as(&bytes).1.to_owned()
             } else {
                 page.content_type.clone()
             };

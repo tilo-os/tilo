@@ -382,9 +382,9 @@ pub enum AgentModelsEffect {
         preset: String,
     },
     /// Ask the provider which models it offers, with its stored key or
-    /// sign-in: shows whether the connection works, and the models to
-    /// choose from.
-    #[effect(job, row, label = "Test connection")]
+    /// sign-in: shows whether the connection works, and answers the models
+    /// to choose from with what each can do.
+    #[effect(job, row, returns, label = "Test connection")]
     ListProviderModels {
         #[param("The provider's id")]
         provider: String,
@@ -520,7 +520,7 @@ pub enum AgentModelsEffect {
     AddGoogleVertex,
     /// Sign in with Google in the browser for Vertex AI: for the provider
     /// being added, or again for an existing one whose sign-in ended.
-    #[effect(row, label = "Sign in with Google")]
+    #[effect(label = "Sign in with Google")]
     SignInWithGoogle {
         #[param("The provider's id; omit for the one being added")]
         provider: Option<String>,
@@ -531,7 +531,7 @@ pub enum AgentModelsEffect {
     /// Sign in to `ChatGPT`, GitHub Copilot or `OpenRouter`: for a provider
     /// to add, or again for an existing one. Finishes once the
     /// person has signed in and the provider is saved.
-    #[effect(attended, job, row, label = "Sign in")]
+    #[effect(attended, job, label = "Sign in")]
     SignInToProvider {
         #[param("`chatgpt`, `github-copilot` or `openrouter`")]
         service: String,
@@ -1888,22 +1888,20 @@ impl AgentModelsModel {
             actions,
             body,
             package,
-            (
-                "agent-models-confirm-install",
-                "agent-models-cancel-install",
-            ),
+            "install",
             AgentModelsEffect::ReviewModelDownload { show: false },
         );
     }
 
     /// The download, storage, source, revision and licence a person accepts,
-    /// with the accept and cancel controls (widget ids `controls`); cancel
-    /// invokes `cancel`.
+    /// with the accept and cancel controls (widget ids
+    /// `agent-models-confirm-{widget}` and `agent-models-cancel-{widget}`);
+    /// cancel invokes `cancel_effect`.
     fn push_confirm(
         actions: &Actions<Settings>,
         body: &mut Vec<Item>,
         package: &LocalModelPackage,
-        controls: (&str, &str),
+        widget: &str,
         cancel_effect: AgentModelsEffect,
     ) {
         let download = t("agent-download");
@@ -1930,7 +1928,7 @@ impl AgentModelsModel {
                 Row::new()
                     .push(Box::new(invoking(
                         actions,
-                        Button::new(controls.0, &accept_btn),
+                        Button::new(&format!("agent-models-confirm-{widget}"), &accept_btn),
                         AgentModelsEffect::InstallModel {
                             model: package.id.clone(),
                             revision: package.revision.clone(),
@@ -1938,7 +1936,7 @@ impl AgentModelsModel {
                     )))
                     .push(Box::new(invoking(
                         actions,
-                        Button::new(controls.1, &cancel),
+                        Button::new(&format!("agent-models-cancel-{widget}"), &cancel),
                         cancel_effect,
                     ))),
             )),
@@ -2043,13 +2041,11 @@ impl AgentModelsModel {
             .reviewing_local
             .with(|reviewing| reviewing.as_deref() == Some(package.id.as_str()));
         if confirming && model.installable() {
-            let confirm_id = format!("agent-models-inprocess-confirm-{widget_token}");
-            let cancel_id = format!("agent-models-inprocess-cancel-{widget_token}");
             Self::push_confirm(
                 actions,
                 &mut body,
                 package,
-                (&confirm_id, &cancel_id),
+                &format!("inprocess-{widget_token}"),
                 AgentModelsEffect::ReviewLocalModel {
                     model: package.id.clone(),
                     show: false,
