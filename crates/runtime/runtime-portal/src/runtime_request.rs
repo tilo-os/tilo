@@ -76,17 +76,14 @@ pub enum Response {
     Refused { message: String },
 }
 
+/// Every message is a big-endian length prefix and a JSON body; none is empty.
+const FRAMING: wire_frame::Framing =
+    wire_frame::Framing::big_endian(MAX_MESSAGE_BYTES).reject_empty();
+
 pub fn write_message<W: Write, T: Serialize>(writer: &mut W, message: &T) -> io::Result<()> {
-    let bytes = serde_json::to_vec(message).map_err(io::Error::other)?;
-    if bytes.len() > MAX_MESSAGE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "message too long",
-        ));
-    }
-    let length = u32::try_from(bytes.len()).map_err(io::Error::other)?;
-    writer.write_all(&length.to_be_bytes())?;
-    writer.write_all(&bytes)?;
+    let bytes = serde_json::to_vec(message)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    FRAMING.write(writer, &bytes).map_err(framing)?;
     writer.flush()
 }
 
@@ -94,24 +91,22 @@ pub fn write_message<W: Write, T: Serialize>(writer: &mut W, message: &T) -> io:
 pub fn read_message<R: Read, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> io::Result<Option<T>> {
-    let mut prefix = [0_u8; 4];
-    match reader.read_exact(&mut prefix) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error),
-    }
-    let length = usize::try_from(u32::from_be_bytes(prefix)).map_err(io::Error::other)?;
-    if length == 0 || length > MAX_MESSAGE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "bad message length",
-        ));
-    }
-    let mut bytes = vec![0_u8; length];
-    reader.read_exact(&mut bytes)?;
+    let Some(bytes) = FRAMING.read(reader).map_err(framing)? else {
+        return Ok(None);
+    };
     serde_json::from_slice(&bytes)
         .map(Some)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+/// A frame too long or cut short reads as the malformed message it is.
+fn framing(error: wire_frame::FrameError) -> io::Error {
+    let kind = match error {
+        wire_frame::FrameError::Io(io) => return io,
+        wire_frame::FrameError::Truncated => io::ErrorKind::UnexpectedEof,
+        _ => io::ErrorKind::InvalidData,
+    };
+    io::Error::new(kind, error)
 }
 
 /// The app side: one connection to the host's `app-host` service. The type
