@@ -245,6 +245,7 @@ impl CheckRun for NativeTaskActionRequirement {
             epoch: 1,
             starter: binding.starter.clone().unwrap_or_default(),
             active: true,
+            finished_by_agent: false,
             paused_through: None,
             budget: None,
             subject: None,

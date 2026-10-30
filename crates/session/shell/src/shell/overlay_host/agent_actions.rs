@@ -293,6 +293,12 @@ pub(super) struct AgentActions {
     /// the run they would be refused as made for a task that ended. The
     /// tracker's change wakes the pump that moves them on.
     awaiting: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)>,
+    /// The task agents launched for their issues, by issue, and the run of
+    /// it each was last launched for: a later run of the issue by the same
+    /// agent (a message after its last run ended, which carries its task's
+    /// delegation) launches it again, since a task agent leaves once its run
+    /// ends.
+    launched_tasks: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>, u64)>,
     /// Requests that could not become a task, and why.
     refused: Vec<(ComposerRequest, String)>,
     /// How asks handed out ended, until the host takes them.
@@ -631,13 +637,22 @@ impl AgentActions {
     /// [`Self::launches`]; one whose run shows ended is not launched.
     /// Whether any moved.
     fn launch_shown_runs(&mut self, room: &str, runs: Option<&dyn RunSource>) -> bool {
-        let Some(source) = runs.filter(|_| !self.awaiting.is_empty()) else {
+        let Some(source) =
+            runs.filter(|_| !self.awaiting.is_empty() || !self.launched_tasks.is_empty())
+        else {
             return false;
         };
         // Armed before the read, so a change after it wakes the next pump;
-        // still stale for `read_runs`, which reads its own way.
-        self.fresh.take();
-        self.fresh.mark();
+        // still stale for `read_runs`, which reads its own way. Agents waiting
+        // for their first run are looked for on every pump; a later run of
+        // a launched one only when the tracker changed.
+        let changed = self.fresh.take();
+        if changed {
+            self.fresh.mark();
+        }
+        if self.awaiting.is_empty() && !changed {
+            return false;
+        }
         let shown = source.runs(room);
         let mut moved = false;
         for (issue, minted) in std::mem::take(&mut self.awaiting) {
@@ -647,6 +662,8 @@ impl AgentActions {
                 .find(|run| run.issue == issue && run.agent == agent)
             {
                 Some(run) if run.phase.active() => {
+                    self.launched_tasks
+                        .push((issue.clone(), Arc::clone(&minted), run.epoch));
                     self.launches.push((room.to_owned(), minted));
                     moved = true;
                 }
@@ -655,6 +672,20 @@ impl AgentActions {
                     moved = true;
                 }
                 None => self.awaiting.push((issue, minted)),
+            }
+        }
+        // A later run of an issue whose agent was made here, going: its agent
+        // left when the run before ended, so it is launched again for this one.
+        for (issue, minted, launched) in &mut self.launched_tasks {
+            let agent = format!("agent:{}", minted.agent_id);
+            if let Some(run) = shown
+                .iter()
+                .find(|run| run.issue == *issue && run.agent == agent && run.epoch > *launched)
+                && run.phase.active()
+            {
+                *launched = run.epoch;
+                self.launches.push((room.to_owned(), Arc::clone(minted)));
+                moved = true;
             }
         }
         moved

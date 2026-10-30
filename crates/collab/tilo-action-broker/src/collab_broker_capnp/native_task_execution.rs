@@ -377,7 +377,20 @@ impl CapnpBrokerState {
             return self.native_host_observation(run, target, caller, invocation);
         };
         let requirement = caller.authorize_retained_task(self, (&record, &run.native.actor()?))?;
-        self.authorize_task_action(run, &requirement)?;
+        // The agent hears how its own report ending the run went: that
+        // report is what made the run inactive, so it is not judged again
+        // against the run it ended.
+        let current = self.tracker_run_of(run)?;
+        let own_ending = !current.active
+            && current.finished_by_agent
+            && super::tracker_runs::reports_on_own_issue(
+                &run.task_id,
+                (&requirement.app, &requirement.resource),
+                target.argument,
+            );
+        if !own_ending {
+            self.authorize_task_action(run, &requirement)?;
+        }
         let (app, record_id) = if target.provider.is_empty() {
             let offered = self
                 .surfaces

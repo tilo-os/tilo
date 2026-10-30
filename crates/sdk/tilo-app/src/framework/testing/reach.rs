@@ -7,7 +7,8 @@ use crate::framework::app::ResourceApp;
 
 /// Drive every `shares`th scenario `A` stages from the `share`th, and each
 /// of the `long` ones, and ask each drive for the actions it could not
-/// invoke ([`unreachable_actions`]). A `long` scenario is walked by every
+/// invoke ([`unreachable_actions`]) and those an agent is never shown
+/// ([`tilo_actions::hidden_from_agents`]). A `long` scenario is walked by every
 /// share, each asking its own part of what it publishes
 /// ([`unreachable_actions_in_share`]); the shares together ask everything.
 ///
@@ -32,6 +33,17 @@ pub fn check_scenarios_reach_every_action<A: ResourceApp>(
                 continue;
             }
         };
+        // An action on a resource disclosed only through a private view is
+        // never offered to an agent: asked once per scenario, by the first
+        // share of a long one.
+        if !long || share == 0 {
+            let hidden = tilo_actions::hidden_from_agents(&app.harness().resources());
+            if !hidden.is_empty() {
+                failures.push(format!(
+                    "{scenario}: published actions an agent is never shown: {hidden:#?}"
+                ));
+            }
+        }
         let unreachable = if long {
             unreachable_actions_in_share(&mut app, share, shares)
         } else {
