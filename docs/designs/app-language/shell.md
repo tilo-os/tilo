@@ -86,6 +86,8 @@ view frame_classic(p: Place) {
 
 ## 5. What a person sees of a task
 
+The mechanism (the record, marks, seen, watching and contained) is task-legibility.md.
+
 An agent's or script's changes are recorded with their task: what was created, changed and
 deleted, in which steps. The system presents them from that record:
 
