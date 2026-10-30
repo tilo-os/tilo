@@ -167,11 +167,11 @@ impl SurfaceHost for Popover {
         self.host.key(key);
     }
 
-    fn prepare_frame(&mut self) {
+    fn prepare_frame(&mut self) -> bool {
         // Kept current while hidden too: what it offers follows the
         // readings it was lent, open or not. Nothing is drawn unless
         // something changed.
-        self.host.prepare_frame();
+        self.host.prepare_frame()
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {
@@ -275,8 +275,8 @@ impl SurfaceHost for Banners {
         self.host.key(key);
     }
 
-    fn prepare_frame(&mut self) {
-        self.host.prepare_frame();
+    fn prepare_frame(&mut self) -> bool {
+        self.host.prepare_frame()
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {
@@ -362,8 +362,8 @@ impl SurfaceHost for Readout {
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
-    fn prepare_frame(&mut self) {
-        self.host.prepare_frame();
+    fn prepare_frame(&mut self) -> bool {
+        self.host.prepare_frame()
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {
@@ -455,8 +455,8 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
         self.0.borrow_mut().key(key);
     }
 
-    fn prepare_frame(&mut self) {
-        self.0.borrow_mut().prepare_frame();
+    fn prepare_frame(&mut self) -> bool {
+        self.0.borrow_mut().prepare_frame()
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {

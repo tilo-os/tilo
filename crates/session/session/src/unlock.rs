@@ -34,6 +34,11 @@ pub enum Verdict {
 /// session's loop.
 pub trait PasswordVerifier: Send + Sync {
     fn verify(&self, user: &str, password: &str) -> Verdict;
+
+    /// Whether a password can be checked at all here.
+    fn available(&self) -> bool {
+        true
+    }
 }
 
 /// The helper as a verifier: `program[0]` the executable, then leading
@@ -91,6 +96,10 @@ pub struct Unavailable;
 impl PasswordVerifier for Unavailable {
     fn verify(&self, _user: &str, _password: &str) -> Verdict {
         Verdict::Unavailable
+    }
+
+    fn available(&self) -> bool {
+        false
     }
 }
 

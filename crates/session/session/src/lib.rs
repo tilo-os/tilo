@@ -185,6 +185,9 @@ pub struct Options {
     /// The surface apps the session runs as its own processes, each a client
     /// of its compositor.
     pub surfaces: Vec<surfaces::Surface>,
+    /// It runs in a window of a desktop it did not start: that desktop owns
+    /// idle, blanking, locking and suspend, so this one runs none of them.
+    pub hosted: bool,
     /// The machine's power: the policy the person's settings resolved, the
     /// service over logind that acts on it and what holds it awake. Without
     /// one, this session runs no idle, lid, key or battery policy — it is a
@@ -281,6 +284,7 @@ impl Default for Options {
             questions: None,
             portal: None,
             surfaces: Vec::new(),
+            hosted: false,
             power: None,
             state: None,
             collab: true,
@@ -318,6 +322,9 @@ struct Shared {
     /// The system services, reached for their readings; their actions go
     /// through the door like every other.
     services: Rc<RefCell<Services>>,
+    /// It runs in a window of a desktop it did not start (see
+    /// [`Options::hosted`]).
+    hosted: bool,
     /// The device behind quick settings, when the session reads one.
     device: Option<DeviceHost>,
     /// The power menu, workspace settings, and the questions the session
@@ -1269,6 +1276,7 @@ impl Session {
             commands,
             readings,
             services,
+            hosted: options.hosted,
             device,
             power,
             workspace_settings,

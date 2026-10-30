@@ -87,6 +87,18 @@ pub struct IdleConfig {
     pub suspend_timeout: Option<Duration>,
 }
 
+impl IdleConfig {
+    /// No idle policy at all: nothing blanks, locks or suspends on its own.
+    #[must_use]
+    pub const fn never() -> Self {
+        Self {
+            blank_timeout: None,
+            lock_timeout: None,
+            suspend_timeout: None,
+        }
+    }
+}
+
 impl Default for IdleConfig {
     fn default() -> Self {
         Self {

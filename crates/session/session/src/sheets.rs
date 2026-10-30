@@ -151,10 +151,8 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         self.host.key(key);
     }
 
-    fn prepare_frame(&mut self) {
-        if self.drawn() {
-            self.host.prepare_frame();
-        }
+    fn prepare_frame(&mut self) -> bool {
+        self.drawn() && self.host.prepare_frame()
     }
 
     fn cursor(&self) -> tilo_compositor::CursorIcon {
