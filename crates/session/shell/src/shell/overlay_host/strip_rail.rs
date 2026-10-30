@@ -255,7 +255,12 @@ impl ShellOverlayHost {
             // The card's field and band, and the window's own inset under
             // it: the list takes what is left of the window.
             let inset = f64::from(theme.tokens.spacing.s2);
-            let fits = (window.y1 - origin.y - self.search_chrome_height() - inset).max(160.0);
+            // Until the launcher measured its chrome, the list keeps its
+            // own cap; the next layout fits it to the window.
+            let Some(chrome) = self.search_chrome_height() else {
+                return (frame, list_max);
+            };
+            let fits = (window.y1 - origin.y - chrome - inset).max(160.0);
             return (frame, list_max.min(fits));
         }
         (self.palette_frame(theme.text_scale), list_max)
