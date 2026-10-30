@@ -496,6 +496,8 @@ pub(crate) struct Core {
     show_pane: Option<NavPane>,
     /// The first feed's sidebar row (its lift), as last painted.
     pub(crate) first_feed_row: Option<(Id, Rect)>,
+    /// What the window's controls and effects asked of the window.
+    pub(crate) requests: Requests,
 }
 
 /// Mark the article at `id` read or unread.
@@ -508,6 +510,7 @@ impl Core {
         Self {
             live: None,
             presented: None,
+            requests: Rc::default(),
             store: Rc::new(store),
             filter: Filter::All,
             selected: None,
@@ -1633,28 +1636,30 @@ impl FeedsApp {
     /// The live app: starts empty on the person's subscriptions and never
     /// fabricates feeds.
     pub fn new() -> Self {
-        Self::build(Library::new())
+        Self::build(Library::new(), None)
     }
 
     /// The sample library, on its richest unread article, for tests.
     #[cfg(feature = "samples")]
     pub fn new_demo() -> Self {
-        let app = Self::build(sample::store());
+        let app = Self::build(sample::store(), None);
         app.core.borrow_mut().select_featured();
         app
     }
 
-    fn build(store: Library) -> Self {
+    /// The window over `store`; with the library's `actions`, its controls
+    /// run the published effects.
+    fn build(store: Library, actions: Option<&ui::framework::Actions<Library>>) -> Self {
         let core: Shared = Rc::new(RefCell::new(Core::new(store)));
 
-        let requests: Requests = Rc::default();
+        let requests = Rc::clone(&core.borrow().requests);
         // The reader's commands are the window bar's slots
         // ([`Self::declare_window_toolbar`]): the shell draws no header row.
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Reading)
             .with_id("feeds.shell")
             .with_window_toolbar()
-            .sidebar(Box::new(SidebarNav::new(&core, &requests)))
+            .sidebar(Box::new(SidebarNav::new(&core, &requests, actions)))
             .overview(Box::new(ListPane::new(&core)))
             .content(Box::new(ReaderPane::new(&core)));
         Self {
@@ -2131,15 +2136,19 @@ impl ui::widget::Decorator for FeedsApp {
         &mut self.shell
     }
 
-    // While a dialog is open it is the window's one live part: what its
-    // controls run reaches it, not the shell behind its scrim.
+    // While a dialog is open its controls are the window's only live ones,
+    // not the shell's behind its scrim. What the window publishes and the
+    // operations addressed to it stay with whichever part publishes them,
+    // shell or dialog, so a published action never goes unanswered.
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ui::undo::LocalUndo>() {
             request.provide::<dyn ui::undo::LocalUndo>(self);
         } else if request.wants::<dyn ui::undo::UndoControl>() {
             request.provide::<dyn ui::undo::UndoControl>(self);
         } else if let Some(modal) = &self.modal {
-            Widget::provide(&modal.dialog, request);
+            if request.wants::<dyn ui::widget::controls::ActionControls>() {
+                Widget::provide(&modal.dialog, request);
+            }
         } else {
             Widget::provide(&self.shell, request);
         }
@@ -2150,7 +2159,9 @@ impl ui::widget::Decorator for FeedsApp {
         } else if request.wants::<dyn ui::undo::UndoControl>() {
             request.provide::<dyn ui::undo::UndoControl>(self);
         } else if let Some(modal) = &mut self.modal {
-            Widget::provide_mut(&mut modal.dialog, request);
+            if request.wants::<dyn ui::widget::controls::ActionControls>() {
+                Widget::provide_mut(&mut modal.dialog, request);
+            }
         } else {
             Widget::provide_mut(&mut self.shell, request);
         }
@@ -2661,6 +2672,7 @@ impl Core {
                 return Ok(Effected::Pending);
             }
             FeedsEffect::ImportOpml => self.request_import(),
+            FeedsEffect::NewFolderForm => self.requests.borrow_mut().push(Request::NewFolder),
             FeedsEffect::ExportOpml => self.export_opml(),
             FeedsEffect::RevealTag { tag } => {
                 if !self.store.has_tag(&tag) {
@@ -2717,7 +2729,7 @@ impl FeedsApp {
 /// hit or an agent's `open` names, answers [`FeedsEffect`] and stages the
 /// captures.
 pub(crate) fn window(cx: &ViewCx<Library>) -> ui::widget::Element {
-    let app = FeedsApp::new();
+    let app = FeedsApp::build(Library::new(), Some(&cx.actions()));
     {
         let mut core = app.core.borrow_mut();
         core.live = Some(cx.live().clone());

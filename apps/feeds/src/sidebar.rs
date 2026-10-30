@@ -14,7 +14,8 @@ use ui::widget::{NavAction, NavItem, NavList, NavSection, RowStatus, Widget};
 use vello::kurbo::Point;
 
 use crate::app::{Core, Request, Requests, Shared};
-use crate::model::{FeedKind, Filter, Id, TagKey};
+use crate::model::{FeedKind, Filter, Id, Library, TagKey};
+use crate::resource::FeedsEffect;
 use crate::search::feed_icon;
 
 /// The sidebar item id of a place.
@@ -168,32 +169,29 @@ pub(crate) struct SidebarNav {
 }
 
 impl SidebarNav {
-    pub(crate) fn new(core: &Shared, requests: &Requests) -> Self {
-        let list = {
+    /// The sidebar over `core`; with the library's `actions`, the Feeds
+    /// heading's New folder runs its published effect.
+    pub(crate) fn new(
+        core: &Shared,
+        requests: &Requests,
+        actions: Option<&ui::framework::Actions<Library>>,
+    ) -> Self {
+        let mut list = {
             let show = Rc::clone(requests);
             let menu = Rc::clone(requests);
             let fold = Rc::clone(requests);
             let follow = Rc::clone(core);
-            let section_action = Rc::clone(requests);
             NavList::new(Vec::new())
                 .with_accessible_name("Subscriptions")
                 // Headings and a New folder are what a growing library
                 // needs: the sidebar is a list from the start, never a rail.
                 .with_headings()
-                .on_section_action(move |section, action| {
-                    if section == FEEDS_SECTION && action == NEW_FOLDER {
-                        section_action.borrow_mut().push(Request::NewFolder);
-                    }
-                })
                 .on_view("feeds.sidebar", move |id| {
                     if let Some(filter) = filter_of(&id) {
                         show.borrow_mut().push(Request::Show(filter));
                     }
                 })
-                .item_actions(
-                    vec![NavAction::new("more", Icon::MoreHorizontal, "More").opens_context_menu()],
-                    |_, _| {},
-                )
+                .item_menu(NavAction::new("more", Icon::MoreHorizontal, "More"))
                 // A feed's actions open from its More button, a right click,
                 // a long press or the Menu key, in a menu that marks its row.
                 .on_context_menu(move |id, lift, at| {
@@ -214,6 +212,11 @@ impl SidebarNav {
                     Some((core.nav_sections(), Some(nav_id(&core.filter))))
                 })
         };
+        if let Some(new_folder) = actions.and_then(|actions| {
+            actions.effect_binding(FeedsEffect::NEW_FOLDER_FORM.map(|_section: String| ()))
+        }) {
+            list = list.section_action(NEW_FOLDER, new_folder);
+        }
         Self {
             list,
             core: Rc::clone(core),
