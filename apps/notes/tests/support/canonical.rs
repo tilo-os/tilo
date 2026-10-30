@@ -13,7 +13,7 @@ use ui::{
 use uuid::Uuid;
 
 pub const PACKAGE: &str = "so.tilo.notes";
-pub const ROOM: &str = "fixture-room";
+pub const WORKSPACE: &str = "fixture-workspace";
 pub const LAUNCH_BODY: &str = "# Heading **one**\n\n## Heading *two*\n\n### Heading three\n\né **bold** *ital* `λ` [[Projects]] [[Empty]]\n\n- bullet\n\n  - nested\n\n1. numbered\n\n  1. nested number\n\n- [ ] todo\n\n  - [x] done\n\n```rust\nlet x = 1;\nlet y = 2;\n```\n\n```\nplain code\n```\n\n---\n";
 
 /// A notebook of three notes — Projects, its child Launch, and an Empty
@@ -37,7 +37,7 @@ impl NotebookFixture {
         let temp = tempfile::tempdir().unwrap();
         let state_root = temp.path().join("state");
         let mut owners = RecordOwners::new(state_root.clone());
-        let records = owners.open(PACKAGE, ROOM).unwrap();
+        let records = owners.open(PACKAGE, WORKSPACE).unwrap();
         let root = Uuid::from_u128(0x1001);
         let child = Uuid::from_u128(0x1002);
         let empty = Uuid::from_u128(0x1003);
@@ -132,7 +132,7 @@ impl NotebookFixture {
         out
     }
 
-    /// Write the notebook into its record, the room's default, once, and
+    /// Write the notebook into its record, the workspace's default, once, and
     /// make it durable.
     pub fn write_notebook(&self) -> RecordCheckout {
         let checkout =
@@ -157,7 +157,7 @@ impl NotebookFixture {
 
     pub fn reopen(mut self) -> Self {
         drop(self.records);
-        self.records = self.owners.open(PACKAGE, ROOM).unwrap();
+        self.records = self.owners.open(PACKAGE, WORKSPACE).unwrap();
         self
     }
 }

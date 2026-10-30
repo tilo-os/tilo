@@ -21,7 +21,7 @@ pub(super) enum BarCommand {
 }
 
 impl NotesApp {
-    /// Whether this person may make a note in the notebook, as the room
+    /// Whether this person may make a note in the notebook, as the workspace
     /// decides it: someone who may only look (a Viewer, or a person an
     /// item was shared with alone) is not offered New note.
     pub(super) fn may_add_notes(&self) -> bool {

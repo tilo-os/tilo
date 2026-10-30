@@ -1,4 +1,4 @@
-//! One notebook per room: every Notes window in a room shows the same
+//! One notebook per workspace: every Notes window in a workspace shows the same
 //! pages, and the notebooks Notes kept per window before are brought into
 //! it exactly once.
 
@@ -33,7 +33,7 @@ fn a_new_window_shows_the_pages_an_earlier_window_wrote() {
     assert_eq!(body(&app, later), ["Read the paper"]);
 }
 
-/// Two Notes windows open at once in one room show one notebook, and what
+/// Two Notes windows open at once in one workspace show one notebook, and what
 /// one window writes appears in the other as it is written: in the note it
 /// has open and in its page tree, without closing or reopening anything.
 #[test]
@@ -45,7 +45,7 @@ fn a_second_open_window_updates_live_with_what_the_first_writes() {
     assert_eq!(
         second.record(),
         first.record(),
-        "both windows show the room's notebook"
+        "both windows show the workspace's notebook"
     );
     open(&mut second, inbox);
 
@@ -77,7 +77,7 @@ fn a_second_open_window_updates_live_with_what_the_first_writes() {
 }
 
 #[test]
-fn the_room_notebook_adopts_each_window_notebook_exactly_once() {
+fn the_workspace_notebook_adopts_each_window_notebook_exactly_once() {
     ui::i18n::I18nManager::init("en-US");
     let inbox = PageId::new_v4();
     let child = PageId::new_v4();

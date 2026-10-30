@@ -59,8 +59,6 @@ mod paste_image;
 mod read_content;
 #[path = "responsive_drawer.rs"]
 mod responsive_drawer;
-#[path = "room_notebook.rs"]
-mod room_notebook;
 #[path = "scroll_damage.rs"]
 mod scroll_damage;
 #[path = "scroll_stability.rs"]
@@ -87,6 +85,8 @@ mod typing_damage;
 mod typing_order;
 #[path = "welcome_page_renders_all_block_kinds.rs"]
 mod welcome_page_renders_all_block_kinds;
+#[path = "workspace_notebook.rs"]
+mod workspace_notebook;
 #[path = "workspace_persistence.rs"]
 mod workspace_persistence;
 
