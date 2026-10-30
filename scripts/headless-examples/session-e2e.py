@@ -20,7 +20,8 @@ unit tests and found only by starting a session by hand:
            y = 788 on a 752 px high frame).
   repl     through the session's door (`tilolang repl`): a note and a chat channel written,
            `find` and `grep` return them, `tasks.add` makes a task the running Tasks instance
-           lists, and `undo` takes it back out of that instance.
+           lists, and `undo` takes it back out of that instance; the open Tasks window draws
+           each, with nothing else waking it (a new frame of its window after each change).
            Catches the door not forwarding record changes (fixed in 71382cec3d7): before the
            fix every change answered "this desktop applies no task's changes at a record's
            origin". No build has the deadlock fix without this one, so on 08636f201d9 the run
@@ -197,7 +198,9 @@ class Session:
         return env
 
     def bin(self, name: str) -> Path:
-        return self.state / "bin" / name
+        # A read-only (shared) build runs from the session's own copy of its programs.
+        own = self.state / "bin" / name
+        return own if own.exists() else self.build / "bin" / name
 
     def script(self, extra: list) -> list:
         return [SESSION_SH, "--no-build", "--headless", "--software", "--apps", NATIVE,
@@ -333,6 +336,11 @@ def read_content(session: Session, name: str) -> str | None:
             return None
         raise
     return "\n".join(parts)
+
+
+def window_frame(session: Session, name: str) -> int | None:
+    """The last frame the window of tilolang `name` presented, by its sequence number."""
+    return next((f["frame_seq"] for f in session.frames() if f.get("app_id") == app_id(name)), None)
 
 
 def holds(session: Session, name: str, text: str) -> bool | None:
@@ -485,15 +493,21 @@ def check_repl(session: Session, out: Path) -> dict:
         in_chat = repl("grep(/Tide/, in: chat)")
         if CHANNEL not in in_chat:
             raise Failed(f"grep over Chat did not return the channel: {in_chat!r}")
+        drawn = window_frame(session, "tasks")
         added = repl(f'tasks.add(tasks.tasks, "{TASK_TITLE}")')
         if "1 change in tasks" not in added:
             raise Failed(f"tasks.add changed nothing: {added!r}")
         wait_for("the new task in the Tasks instance", lambda: holds(session, "tasks", TASK_TITLE))
+        # The open Tasks window draws what its instance took in, with nothing else waking it.
+        drawn = wait_for("a frame of the Tasks window showing the new task",
+                         lambda: (window_frame(session, "tasks") or 0) > drawn and window_frame(session, "tasks"))
         undone = repl("undo")
         if "undone" not in undone:
             raise Failed(f"undo took nothing back: {undone!r}")
         wait_for("the task gone from the Tasks instance",
                  lambda: holds(session, "tasks", TASK_TITLE) is False)
+        wait_for("a frame of the Tasks window without the undone task",
+                 lambda: (window_frame(session, "tasks") or 0) > drawn)
         # The room admitted every change the apps and the REPL made: a change the sealed
         # channel refuses (the first, unnamed change of a tilolang app's record) is dropped
         # with only this line to say so, and its record is missing wherever the room is read.
@@ -577,8 +591,11 @@ def prepare(build: Path, state: Path, out: Path) -> list[Path]:
     runtime = (state / "runtimes/.version").read_text().strip()
     built = out / "build"
     tapps = []
+    # A read-only (shared) build runs from the session's own copy of its programs; a writable
+    # one from where it was built.
+    tilolang = next(p for p in (state / "bin/tilolang", build / "bin/tilolang") if p.exists())
     for name in TL_APPS:
-        run([state / "bin/tilolang", "build", REPO / "apps/tl" / name, "--search", REPO / "apps/tl",
+        run([tilolang, "build", REPO / "apps/tl" / name, "--search", REPO / "apps/tl",
              "--out", built, "--tilo-runtime", f"tilo-runtime/{runtime}"])
         tapps.append(built / f"{name}.tapp")
     return tapps
