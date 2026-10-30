@@ -8,6 +8,8 @@
     reason = "smithay geometry: logical coordinates of windows and outputs, far from i32 limits"
 )]
 
+use std::time::Instant;
+
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
@@ -16,9 +18,10 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle};
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
 use smithay::wayland::input_method::{InputMethodHandler, InputMethodManagerState, PopupSurface};
-use smithay::wayland::text_input::TextInputManagerState;
+use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 
+use crate::input::{InputEvent, Switch};
 use crate::render::OutputRenderElement;
 use crate::state::{ClientState, State};
 
@@ -28,11 +31,27 @@ fn trusted(client: &Client) -> bool {
         .is_some_and(ClientState::trusted)
 }
 
+/// Whether a text field waits for typing, and whether the person is typing
+/// on the glass: what the on-screen keyboard follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TextEntry {
+    /// A text field has the focus and has asked for typing.
+    pub wants_typing: bool,
+    /// The last typing was a touch on the screen: a hardware key since then
+    /// hands back to the keyboard the person is holding.
+    pub on_the_glass: bool,
+}
+
 pub(crate) struct TextInput {
     popups: Vec<PopupSurface>,
     _text_inputs: TextInputManagerState,
     _input_method: InputMethodManagerState,
     _virtual_keyboard: VirtualKeyboardManagerState,
+    /// When a key was last typed, and the screen last touched.
+    last_key: Option<Instant>,
+    last_touch: Option<Instant>,
+    /// A convertible folded into tablet shape: the screen is the keyboard.
+    tablet_mode: bool,
 }
 
 impl TextInput {
@@ -43,7 +62,50 @@ impl TextInput {
             // Only the session's own input methods may read and type text.
             _input_method: InputMethodManagerState::new::<State, _>(display, trusted),
             _virtual_keyboard: VirtualKeyboardManagerState::new::<State, _>(display, trusted),
+            last_key: None,
+            last_touch: None,
+            tablet_mode: false,
         }
+    }
+
+    /// What the keyboard follows, at `now`.
+    pub(crate) fn entry(&self, typing: bool) -> TextEntry {
+        TextEntry {
+            wants_typing: typing,
+            on_the_glass: self.tablet_mode
+                || match (self.last_touch, self.last_key) {
+                    (Some(touch), Some(key)) => touch > key,
+                    (Some(_), None) => true,
+                    _ => false,
+                },
+        }
+    }
+}
+
+impl State {
+    /// Note what the person is typing with: a touch on the screen or a key.
+    pub(crate) fn note_typing(&mut self, event: &InputEvent, now: Instant) {
+        match event {
+            InputEvent::Key { .. } => self.text_input.last_key = Some(now),
+            InputEvent::TouchDown { .. } | InputEvent::TouchMotion { .. } => {
+                self.text_input.last_touch = Some(now);
+            }
+            InputEvent::Switch {
+                switch: Switch::TabletMode,
+                on,
+            } => self.text_input.tablet_mode = *on,
+            _ => {}
+        }
+    }
+
+    /// What a text field and the person's own typing ask the on-screen
+    /// keyboard to do.
+    pub(crate) fn text_entry(&self) -> TextEntry {
+        let mut typing = false;
+        self.seat
+            .text_input()
+            .with_active_text_input(|_, _| typing = true);
+        self.text_input.entry(typing)
     }
 }
 

@@ -358,6 +358,7 @@ pub(super) fn dispatch(
         }
     };
     for event in events {
+        state.note_typing(&event, Instant::now());
         state.handle_input(event);
     }
     show_alert(input, state, Instant::now());
@@ -438,6 +439,7 @@ pub(super) fn arm_ticker(input: &Rc<RefCell<Input>>, handle: &LoopHandle<'static
     let token = handle.insert_source(Timer::from_deadline(deadline), move |now, (), data| {
         let mut this = ticking.borrow_mut();
         for event in this.access.tick(now) {
+            data.state.note_typing(&event, now);
             data.state.handle_input(event);
         }
         if this.access.take_alert() {

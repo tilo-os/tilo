@@ -50,12 +50,21 @@ use wayland_protocols::wp::tablet::zv2::client::{
     zwp_tablet_tool_v2::ZwpTabletToolV2,
     zwp_tablet_v2::ZwpTabletV2,
 };
+use wayland_protocols::wp::text_input::zv3::client::{
+    zwp_text_input_manager_v3::ZwpTextInputManagerV3, zwp_text_input_v3,
+    zwp_text_input_v3::ZwpTextInputV3,
+};
 use wayland_protocols::xdg::dialog::v1::client::{
     xdg_dialog_v1::XdgDialogV1, xdg_wm_dialog_v1::XdgWmDialogV1,
 };
 use wayland_protocols::xdg::shell::client::{
     xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
     xdg_wm_base::XdgWmBase,
+};
+use wayland_protocols_misc::zwp_input_method_v2::client::{
+    zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2,
+    zwp_input_method_manager_v2::ZwpInputMethodManagerV2, zwp_input_method_v2,
+    zwp_input_method_v2::ZwpInputMethodV2,
 };
 
 const BTN_LEFT: u32 = 0x110;
@@ -75,6 +84,20 @@ struct Seen {
     shm: Option<WlShm>,
     wm_base: Option<XdgWmBase>,
     seat: Option<WlSeat>,
+    text_input_manager: Option<ZwpTextInputManagerV3>,
+    text_input: Option<ZwpTextInputV3>,
+    /// Whether the field has the focus and has asked for typing, as the
+    /// compositor told it.
+    field_entered: bool,
+    /// The strings the field was made to contain.
+    committed: Vec<String>,
+    input_method_manager: Option<ZwpInputMethodManagerV2>,
+    input_method: Option<ZwpInputMethodV2>,
+    /// How many times the compositor applied the input method's state: what
+    /// its next commit is numbered.
+    ime_done: u32,
+    /// Whether the compositor asked the input method to type.
+    ime_activated: bool,
     pointer: Option<WlPointer>,
     keyboard: Option<WlKeyboard>,
     touch: Option<WlTouch>,
@@ -111,7 +134,21 @@ struct TestClient {
 
 impl TestClient {
     fn connect(compositor: &mut Compositor) -> Self {
-        let socket = compositor.connect_client().expect("client socket");
+        Self::connect_as(compositor, false)
+    }
+
+    /// Connect as a client the session started, which may be its input
+    /// method.
+    fn connect_trusted(compositor: &mut Compositor) -> Self {
+        Self::connect_as(compositor, true)
+    }
+
+    fn connect_as(compositor: &mut Compositor, trusted: bool) -> Self {
+        let socket = if trusted {
+            compositor.connect_trusted_client().expect("client socket")
+        } else {
+            compositor.connect_client().expect("client socket")
+        };
         let connection = Connection::from_socket(socket).expect("connection");
         let queue = connection.new_event_queue();
         connection.display().get_registry(&queue.handle(), ());
@@ -184,6 +221,51 @@ impl TestClient {
         surface.frame(&qh, ());
         surface.commit();
         pool.destroy();
+    }
+
+    /// Give the window a text field: a `text-input-v3` object on its
+    /// surface, waiting for typing.
+    fn own_text_field(&mut self) {
+        let qh = self.queue.handle();
+        let manager = self
+            .seen
+            .text_input_manager
+            .as_ref()
+            .expect("zwp_text_input_manager_v3");
+        let seat = self.seen.seat.as_ref().expect("wl_seat");
+        let field = manager.get_text_input(seat, &qh, ());
+        field.enable();
+        field.commit();
+        self.seen.text_input = Some(field);
+    }
+
+    /// Stop the field from asking for typing.
+    fn release_text_field(&self) {
+        if let Some(field) = self.seen.text_input.as_ref() {
+            field.disable();
+            field.commit();
+        }
+        self.connection.flush().expect("flush");
+    }
+
+    /// Serve the seat as its input method (the on-screen keyboard).
+    fn own_input_method(&mut self) {
+        let qh = self.queue.handle();
+        let manager = self
+            .seen
+            .input_method_manager
+            .as_ref()
+            .expect("zwp_input_method_manager_v2");
+        let seat = self.seen.seat.as_ref().expect("wl_seat");
+        self.seen.input_method = Some(manager.get_input_method(seat, &qh, ()));
+    }
+
+    /// Type `text` into the field the input method serves.
+    fn type_with_input_method(&self, text: &str) {
+        let method = self.seen.input_method.as_ref().expect("input method");
+        method.commit_string(text.to_owned());
+        method.commit(self.seen.ime_done);
+        self.connection.flush().expect("flush");
     }
 }
 
@@ -1243,6 +1325,12 @@ impl Dispatch<WlRegistry, ()> for Seen {
                     seen.tablet_manager = Some(registry.bind(name, 1, qh, ()));
                 }
                 "xdg_wm_dialog_v1" => seen.wm_dialog = Some(registry.bind(name, 1, qh, ())),
+                "zwp_text_input_manager_v3" => {
+                    seen.text_input_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zwp_input_method_manager_v2" => {
+                    seen.input_method_manager = Some(registry.bind(name, 1, qh, ()));
+                }
                 _ => {}
             }
         }
@@ -1484,6 +1572,44 @@ impl Dispatch<ZwpTabletPadV2, ()> for Seen {
     ]);
 }
 
+impl Dispatch<ZwpTextInputV3, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpTextInputV3,
+        event: zwp_text_input_v3::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_text_input_v3::Event::Enter { .. } => seen.field_entered = true,
+            zwp_text_input_v3::Event::Leave { .. } => seen.field_entered = false,
+            zwp_text_input_v3::Event::CommitString { text: Some(text) } => {
+                seen.committed.push(text);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpInputMethodV2, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpInputMethodV2,
+        event: zwp_input_method_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_input_method_v2::Event::Activate => seen.ime_activated = true,
+            zwp_input_method_v2::Event::Deactivate => seen.ime_activated = false,
+            zwp_input_method_v2::Event::Done => seen.ime_done += 1,
+            _ => {}
+        }
+    }
+}
+
 impl Dispatch<ZwpTabletPadGroupV2, ()> for Seen {
     fn event(
         seen: &mut Self,
@@ -1530,6 +1656,9 @@ delegate_noop!(Seen: ignore ZwpTabletPadStripV2);
 delegate_noop!(Seen: ignore ExtSessionLockManagerV1);
 delegate_noop!(Seen: ignore WlCompositor);
 delegate_noop!(Seen: ignore XdgWmDialogV1);
+delegate_noop!(Seen: ignore ZwpTextInputManagerV3);
+delegate_noop!(Seen: ignore ZwpInputMethodManagerV2);
+delegate_noop!(Seen: ignore ZwpInputMethodKeyboardGrabV2);
 delegate_noop!(Seen: ignore XdgDialogV1);
 delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlShmPool);
@@ -2272,6 +2401,105 @@ impl WindowPolicy for Monitors {
 }
 
 #[test]
+fn a_text_field_waiting_for_typing_is_told_apart_from_the_way_it_is_typed() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "form", (200, 100), [0, 255, 0, 255]);
+    // The window takes the keyboard with a click on it.
+    click(&mut compositor, 320.0, 240.0);
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.keyboard_focused
+    });
+    let entry = compositor.text_entry();
+    assert!(!entry.wants_typing, "nothing is being typed into yet");
+    assert!(!entry.on_the_glass, "no touch has happened at all");
+
+    // A hardware key first, then a touch on the screen: the glass is what
+    // they type on.
+    compositor
+        .input(InputEvent::Key {
+            keycode: KEY_A,
+            pressed: true,
+        })
+        .unwrap();
+    compositor
+        .input(InputEvent::TouchDown {
+            slot: 0,
+            x: 320.0,
+            y: 240.0,
+        })
+        .unwrap();
+    assert!(compositor.text_entry().on_the_glass);
+    compositor
+        .input(InputEvent::Key {
+            keycode: KEY_A,
+            pressed: true,
+        })
+        .unwrap();
+    assert!(
+        !compositor.text_entry().on_the_glass,
+        "a key hands typing back to the keyboard they hold"
+    );
+
+    // The on-screen keyboard is up, as a client the session trusts, and
+    // the window holds a field that asks for typing.
+    let mut keyboard = TestClient::connect_trusted(&mut compositor);
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |_, clients| {
+            clients[1].seen.input_method_manager.is_some() && clients[1].seen.seat.is_some()
+        },
+    );
+    keyboard.own_input_method();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |_, clients| clients[1].seen.input_method.is_some(),
+    );
+    client.own_text_field();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, clients| {
+            compositor.text_entry().wants_typing
+                && clients[0].seen.field_entered
+                && clients[1].seen.ime_activated
+        },
+    );
+    assert!(
+        !compositor.text_entry().on_the_glass,
+        "they are typing on the keyboard they hold"
+    );
+
+    // What the keyboard types lands in the field.
+    keyboard.type_with_input_method("hello");
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |_, clients| !clients[0].seen.committed.is_empty(),
+    );
+    assert_eq!(client.seen.committed, vec!["hello".to_owned()]);
+
+    // Reaching for the screen brings the keyboard over it back.
+    compositor
+        .input(InputEvent::TouchDown {
+            slot: 0,
+            x: 320.0,
+            y: 240.0,
+        })
+        .unwrap();
+    assert!(compositor.text_entry().on_the_glass);
+
+    // And it stops asking when it lets go of the focus.
+    client.release_text_field();
+    pump(
+        &mut compositor,
+        &mut [&mut client, &mut keyboard],
+        |compositor, _| !compositor.text_entry().wants_typing,
+    );
+}
+
+#[test]
 fn the_policy_knows_each_output_by_the_monitor_on_it() {
     let told = Rc::new(RefCell::new(Vec::new()));
     let mut compositor = Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).unwrap();
@@ -2524,16 +2752,22 @@ fn the_visual_alert_flashes_the_screen_and_fades() {
         "the alert is on screen: {lit:?}"
     );
 
-    // It fades frame by frame as the loop runs, and the frame that draws it
-    // gone is still due.
-    for _ in 0..40 {
+    // It fades out as time passes: once its run is over the frame is the
+    // desktop again.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut faded = false;
+    while std::time::Instant::now() < deadline {
         compositor
             .dispatch(Duration::from_millis(16))
             .expect("dispatch");
         compositor.render().expect("render");
+        let frame = compositor.screenshot("HEADLESS-1").expect("screenshot");
+        if frame.pixel(10, 10) == Some(BACKGROUND) {
+            faded = true;
+            break;
+        }
     }
-    let after = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    assert_eq!(after.pixel(10, 10), Some(BACKGROUND), "and it fades out");
+    assert!(faded, "and it fades out");
 }
 
 #[test]

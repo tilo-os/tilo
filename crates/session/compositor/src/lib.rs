@@ -77,6 +77,7 @@ use smithay::reexports::wayland_server::Display;
 use crate::backend::drm::access_keys::AccessKeys;
 use crate::output_management::Pending;
 use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::text_input::TextInputSeat;
 
 pub use a11y::{A11y, CursorA11y, Magnifier, MagnifierView};
 pub use backdrop::{BackdropImage, BackdropRequest};
@@ -108,6 +109,7 @@ pub use selection::Selection;
 pub use smithay::utils::Transform;
 pub use state::State;
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
+pub use text_input::TextEntry;
 pub use window_frame::{Edge, Shadow, WindowFrame};
 pub use x11_windows::{Icon, Identity as X11Identity};
 
@@ -402,8 +404,10 @@ impl Compositor {
         }
         dispatched?;
         self.data.state.repeat_keys();
-        let due = self.keys.tick(Instant::now());
+        let ticked = Instant::now();
+        let due = self.keys.tick(ticked);
         for event in due {
+            self.data.state.note_typing(&event, ticked);
             self.data.state.handle_input(event);
         }
         if self.keys.take_alert() {
@@ -413,6 +417,7 @@ impl Compositor {
             self.data.state.mark_redraw_all();
         }
         self.display.dispatch_clients(&mut self.data.state)?;
+        self.sync_text_input();
         self.data.state.refresh();
         if let Some(x11) = self.data.x11_windows.as_mut() {
             // The X server's own focus follows the session's, and X clients
@@ -487,6 +492,13 @@ impl Compositor {
     #[must_use]
     pub fn a11y(&self) -> &A11y {
         &self.a11y
+    }
+
+    /// Whether a text field waits for typing, and whether the person is
+    /// typing on the glass: what the on-screen keyboard follows.
+    #[must_use]
+    pub fn text_entry(&self) -> TextEntry {
+        self.data.state.text_entry()
     }
 
     /// Flash every output: a visual alert for what a person who cannot hear
@@ -1070,18 +1082,42 @@ impl Compositor {
     /// Route one input event (see [`InputEvent`]) through the person's
     /// assists and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
-        let events = self.keys.filter(event, Instant::now());
+        let now = Instant::now();
+        let events = self.keys.filter(event, now);
         for event in events {
+            self.data.state.note_typing(&event, now);
             self.data.state.handle_input(event);
         }
         if self.keys.take_alert() {
             self.flash();
         }
         self.start_asked_drags();
+        self.sync_text_input();
         // Input wakes blanked panels at once.
         self.sync_power();
         self.display.flush_clients()?;
         Ok(())
+    }
+
+    /// Keep the text fields the person can type into on the keyboard's
+    /// focus: clients hear about the field that has it and the input method
+    /// that serves it.
+    fn sync_text_input(&self) {
+        let seat = &self.data.state.seat;
+        let handle = seat.text_input();
+        let focused = seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        if handle.focus() == focused {
+            return;
+        }
+        handle.leave();
+        let enter = focused.is_some();
+        handle.set_focus(focused);
+        if enter {
+            handle.enter();
+        }
+        handle.done(false);
     }
 
     /// Draw a frame on every output that can take one and tell clients it
