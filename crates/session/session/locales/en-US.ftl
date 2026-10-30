@@ -30,7 +30,7 @@ system-update-restart-body = Your windows come back after the restart.
 power-restart = Restart
 
 ## The session's own resources: the input devices, the screen, the night light,
-## the magnifier and the displays.
+## the magnifier, the displays and the clipboard.
 session-input = Input devices
 session-toggle-touchpad = Turn the touchpad on or off
 session-param-touchpad-on = Whether the touchpad is on; leave out to switch it
@@ -49,3 +49,6 @@ session-displays = Displays
 session-displays-next = Next display arrangement
 session-displays-set = Arrange the displays
 session-param-displays-mode = How the displays are used together: extend, mirror, built-in or external
+session-clipboard = Clipboard
+session-clipboard-paste-files = Paste files here
+session-param-paste-destination = The folder the copied files are pasted into

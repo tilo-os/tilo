@@ -30,7 +30,7 @@ system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
 power-restart = Neu starten
 
 ## Die eigenen Ressourcen der Sitzung: die Eingabegeräte, der Bildschirm, das
-## Nachtlicht, die Lupe und die Bildschirme.
+## Nachtlicht, die Lupe, die Bildschirme und die Zwischenablage.
 session-input = Eingabegeräte
 session-toggle-touchpad = Touchpad ein- oder ausschalten
 session-param-touchpad-on = Ob das Touchpad an ist; weglassen zum Umschalten
@@ -49,3 +49,6 @@ session-displays = Bildschirme
 session-displays-next = Nächste Bildschirmanordnung
 session-displays-set = Bildschirme anordnen
 session-param-displays-mode = Wie die Bildschirme zusammen genutzt werden: erweitern, spiegeln, eingebaut oder extern
+session-clipboard = Zwischenablage
+session-clipboard-paste-files = Dateien hier einfügen
+session-param-paste-destination = Der Ordner, in den die kopierten Dateien eingefügt werden
