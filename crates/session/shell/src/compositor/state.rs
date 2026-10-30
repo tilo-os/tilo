@@ -8569,9 +8569,15 @@ smithay::reexports::wayland_server::delegate_dispatch!(State: [
 // Smithay's pads, which the shell never adds (it announces its own), are
 // still part of the tablet seat's protocol.
 smithay::reexports::wayland_server::delegate_dispatch!(State: [
-    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_v2::ZwpTabletPadV2: smithay::wayland::tablet_manager::TabletPadUserData,
-    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2: smithay::wayland::tablet_manager::TabletPadUserData,
-    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2: smithay::wayland::tablet_manager::TabletPadUserData,
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_v2::ZwpTabletPadV2: smithay::wayland::tablet_manager::TabletPadUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2: smithay::wayland::tablet_manager::TabletPadUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2: smithay::wayland::tablet_manager::TabletPadUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
     smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2: smithay::wayland::tablet_manager::TabletPadUserData
 ] => TabletManagerState);
 delegate_output!(State);
