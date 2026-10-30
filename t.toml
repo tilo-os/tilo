@@ -2453,6 +2453,7 @@ needs = ["rpm-snapshot", "image-rpms-x86_64", "os-assets"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
+git = true
 outputs = ["/target/publish/relay/image.oci.tar", "/target/publish/relay/digest", "/target/publish/relay/rpms-source"]
 default = false
 
@@ -2560,6 +2561,7 @@ run = "bash tools/ci/publish/env-runtime.sh image /target/publish/env-runtime/pr
 needs = ["env-runtime-preview"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 isolation = "vm"
+git = true
 default = false
 
 [[check]]
@@ -2577,6 +2579,7 @@ run = "bash tools/ci/publish/env-runtime.sh image /target/publish/env-runtime/se
 needs = ["seal-env-runtime"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 isolation = "vm"
+git = true
 outputs = ["/target/publish/env-runtime/image/image.oci.tar", "/target/publish/env-runtime/image/digest"]
 default = false
 
@@ -2656,6 +2659,7 @@ needs = ["signing-tools"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}"]
 isolation = "vm"
+git = true
 outputs = ["/target/publish/kernel-buildroot/{arch}/image.oci.tar", "/target/publish/kernel-buildroot/{arch}/digest"]
 default = false
 [check.matrix]
@@ -3100,6 +3104,7 @@ run = "bash tools/ci/publish/windows-compat.sh fex-buildroot /target/publish/fex
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=arm64"]
 isolation = "vm"
+git = true
 outputs = ["/target/publish/fex-buildroot/image.oci.tar", "/target/publish/fex-buildroot/digest"]
 timeout_secs = 5400
 default = false
@@ -3119,6 +3124,7 @@ run = "bash tools/ci/publish/windows-compat.sh fex-x86-sdk /target/publish/fex-x
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
+git = true
 outputs = ["/target/publish/fex-x86-sdk/image.oci.tar", "/target/publish/fex-x86-sdk/digest"]
 timeout_secs = 5400
 default = false
@@ -3184,6 +3190,7 @@ needs = ["os-assets"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
+git = true
 outputs = ["/target/publish/wine-tools/image.oci.tar", "/target/publish/wine-tools/digest"]
 timeout_secs = 3600
 default = false
