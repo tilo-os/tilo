@@ -775,7 +775,10 @@ mod tests {
             };
             store.save(std::slice::from_ref(&record)).unwrap();
             assert_eq!(store.load().unwrap(), vec![record]);
-            let text = std::fs::read_to_string(&document).unwrap();
+            // What the profile keeps, as any reader of it sees it: the
+            // peer's public record, never a private key or pairing code.
+            let text = serde_json::Value::Object(ui::storage::settings_at(&document)).to_string();
+            assert!(text.contains("public-key"), "the peer is kept: {text}");
             assert!(!text.contains("private"));
             assert!(!text.contains("pairingCode"));
             assert_eq!(
