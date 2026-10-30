@@ -61,7 +61,7 @@ async fn json_is_text_and_a_pdf_is_kept_as_workspace_content() {
         timeout: Duration::from_secs(10),
         ..FetchLimits::default()
     };
-    let store = tilo_content::ContentStore::memory();
+    let store = ui::content::ContentStore::memory();
 
     let repos = fetch_fixture(&client, &format!("{base}/repos"), &limits)
         .await
