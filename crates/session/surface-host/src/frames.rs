@@ -7,7 +7,6 @@
 //! frame there. Only what changed is drawn, so a moved cursor, a new time or
 //! a resized panel costs what it changed rather than the whole surface.
 
-use crate::canvas::{Canvas, RASTER_THREADS};
 use tilo_compositor::{HostFrame, Region};
 use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
@@ -17,6 +16,9 @@ use vello::peniko::Color;
 /// The colour a surface draws on: nothing, so the desktop shows through
 /// wherever the app painted nothing.
 const TRANSPARENT: Color = Color::TRANSPARENT;
+
+/// Cores the CPU rasterizer uses where it has them.
+const RASTER_THREADS: u16 = 2;
 
 /// One hosted surface's frames: what it drew last, and what draws its next.
 pub(crate) struct Frames {
@@ -78,7 +80,7 @@ impl Frames {
 /// rasterizer where the machine has no GPU to draw them on.
 enum Target {
     Gpu(Box<Gpu>),
-    Cpu(Box<Canvas>),
+    Cpu(Box<ui::offscreen::CpuSurface>),
 }
 
 impl Target {
@@ -89,7 +91,10 @@ impl Target {
             return Self::Gpu(Box::new(gpu));
         }
         tracing::info!("surface apps' frames are drawn on the CPU: no GPU to draw them on");
-        Self::Cpu(Box::new(Canvas::new(size, RASTER_THREADS)))
+        Self::Cpu(Box::new(
+            ui::offscreen::CpuSurface::new(size.0, size.1, RASTER_THREADS)
+                .unwrap_or_else(|| unreachable!("the native toolkit draws on the CPU")),
+        ))
     }
 
     /// The last frame drawn, premultiplied RGBA, `width * 4` bytes a row:
@@ -106,9 +111,17 @@ impl Target {
     fn draw(&mut self, scene: &Scene, damage: Option<&[Rect]>) -> Option<Vec<Region>> {
         match self {
             Self::Gpu(gpu) => gpu.draw(scene, damage),
-            Self::Cpu(canvas) => {
-                let changed = canvas.draw(scene, damage);
-                (!changed.is_empty()).then_some(changed)
+            Self::Cpu(cpu) => {
+                let (width, height) = cpu.size();
+                let changed = match damage {
+                    Some(rects) => regions(rects, width, height),
+                    None => vec![Region::new(0, 0, width, height)],
+                };
+                let rects: Vec<(u32, u32, u32, u32)> = changed
+                    .iter()
+                    .map(|region| (region.x, region.y, region.width, region.height))
+                    .collect();
+                cpu.draw(scene, &rects).then_some(changed)
             }
         }
     }

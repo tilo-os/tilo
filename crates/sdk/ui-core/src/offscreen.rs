@@ -54,6 +54,8 @@
 mod cpu;
 pub mod pixels;
 
+pub use cpu::CpuSurface;
+
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 

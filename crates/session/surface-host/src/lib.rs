@@ -9,7 +9,6 @@
 
 #![cfg(target_os = "linux")]
 
-mod canvas;
 mod desktop;
 mod door;
 mod frames;

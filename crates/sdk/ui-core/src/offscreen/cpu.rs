@@ -56,6 +56,93 @@ fn render_on_cpu(scene: &Scene, width: u32, height: u32, bg: Color) -> Result<Ve
     Ok(rgba)
 }
 
+
+/// A surface's frames kept in memory and drawn on the CPU: what a host
+/// shows on a machine where the toolkit has no GPU adapter to draw them on,
+/// exactly as it draws a normal app's frame there. Kept between frames, so
+/// damage costs only what it changed.
+pub struct CpuSurface {
+    rasterizer: tilo_cpu_raster::CpuRasterizer,
+    /// Premultiplied RGBA, `width * 4` bytes a row.
+    pixels: Vec<u8>,
+    size: (u32, u32),
+    /// The pixels hold a whole earlier frame, so damage can be drawn over
+    /// them.
+    valid: bool,
+}
+
+impl CpuSurface {
+    /// A surface of `width` x `height` pixels, rasterized with up to
+    /// `threads` cores, or `None` where this build has no CPU rasterizer.
+    #[must_use]
+    pub fn new(width: u32, height: u32, threads: u16) -> Option<Self> {
+        let length = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4);
+        Some(Self {
+            rasterizer: tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options {
+                threads,
+                ..tilo_cpu_raster::Options::default()
+            }),
+            pixels: vec![0; length],
+            size: (width, height),
+            valid: false,
+        })
+    }
+
+    /// Its size in pixels.
+    #[must_use]
+    pub const fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// The pixels drawn last, premultiplied RGBA, `width * 4` bytes a row.
+    #[must_use]
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    /// Draw `scene` (physical pixels) in the `regions` of the surface, as
+    /// `(x, y, width, height)`; the first draw covers all of it, and a
+    /// surface draws nothing outside its own pixels. `true` where pixels
+    /// were drawn.
+    pub fn draw(&mut self, scene: &vello::Scene, regions: &[(u32, u32, u32, u32)]) -> bool {
+        let (width, height) = self.size;
+        let drawn: Vec<tilo_cpu_raster::Region> = if self.valid {
+            regions
+                .iter()
+                .filter_map(|&(x, y, w, h)| {
+                    let x = x.min(width);
+                    let y = y.min(height);
+                    let w = w.min(width.saturating_sub(x));
+                    let h = h.min(height.saturating_sub(y));
+                    (w > 0 && h > 0).then(|| tilo_cpu_raster::Region::new(x, y, w, h))
+                })
+                .collect()
+        } else {
+            vec![tilo_cpu_raster::Region::new(0, 0, width, height)]
+        };
+        if drawn.is_empty() {
+            return false;
+        }
+        let stride = (width as usize).saturating_mul(4);
+        let Ok(mut target) = tilo_cpu_raster::Target::new(&mut self.pixels, width, height, stride)
+        else {
+            return false;
+        };
+        self.rasterizer.prepare(scene.encoding());
+        // Where the app draws nothing the surface stays transparent, so the
+        // desktop shows through.
+        self.rasterizer.render_prepared(
+            &mut target,
+            Some(&drawn),
+            tilo_cpu_raster::color::AlphaColor::new([0.0, 0.0, 0.0, 0.0]),
+        );
+        self.valid = true;
+        true
+    }
+}
+
 /// The CPU rasterizer [`render_on_cpu`] draws with, kept for the glyph
 /// outlines and images it has converted.
 static CPU_RASTERIZER: Mutex<Option<tilo_cpu_raster::CpuRasterizer>> = Mutex::new(None);
