@@ -2,101 +2,60 @@
 //! ([`ui::window_toolbar`]).
 //!
 //! The bar names the mode as its location and shows the modes as its view
-//! switcher (Calculator, Graph 2D, Graph 3D), a graph's formulas as its
-//! sidebar and the angle unit in its menu. Past calculations are the
-//! window's History, which the bar opens itself.
-//! The mode switcher and the sidebar toggle run the same semantic action an
-//! assistive technology runs on the calculator, so there is one state path
-//! for both.
+//! switcher (Calculator, Graph 2D, Graph 3D, Convert), a graph's formulas as
+//! its sidebar and the angle unit in its menu. Each slot is a binding of an
+//! effect of the window ([`CalculatorEffect`]), which the app answers where
+//! it answers every effect: the same door an assistive technology, the
+//! palette and an agent take, so there is one state path for all of them.
+//! Past calculations are the window's History, which the bar opens itself.
 
-use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar};
+use ui::framework::{Choice, WindowBar};
 
 use super::CalculatorApp;
-use crate::actions::GraphKind;
+use crate::actions::CalculatorEffect;
 use crate::model::Mode;
+use crate::resource::Calculator;
 
-/// The semantic target of the side panel of graph `kind`.
-fn panel_target(kind: GraphKind) -> &'static str {
-    match kind {
-        GraphKind::Curve2d => "calculator.graph.panel:2d",
-        GraphKind::Surface3d => "calculator.graph.panel:3d",
+/// What shows `mode`: the effect the mode's own semantic action runs.
+fn show(mode: Mode) -> CalculatorEffect {
+    match mode {
+        Mode::Calc => CalculatorEffect::ShowCalculator,
+        Mode::Convert => CalculatorEffect::ShowConvert,
+        Mode::Graph2d => CalculatorEffect::ShowGraph2d,
+        Mode::Graph3d => CalculatorEffect::ShowGraph3d,
     }
 }
 
 impl CalculatorApp {
-    /// The window bar's slots for the mode shown.
-    fn window_toolbar(&self) -> WindowToolbar {
+    /// The window bar's slots for the mode shown, binding each to the effect
+    /// that takes it.
+    pub(super) fn window_bar(&self) -> Option<WindowBar<Calculator>> {
+        let dispatch = self.dispatch.as_ref()?;
         let mode = self.model.mode;
-        let mut toolbar = WindowToolbar {
-            // The bar names what the window shows: its mode.
-            location: Some(ToolbarLocation {
-                label: mode.label().into(),
-                ..ToolbarLocation::default()
-            }),
-            views: Some(ToolbarViews {
-                name: "Mode".into(),
-                choices: Mode::all()
-                    .iter()
-                    .map(|choice| ToolbarView {
-                        id: format!("calculator.mode:{}", choice.index()),
-                        label: choice.label().into(),
-                    })
-                    .collect(),
-                chosen: format!("calculator.mode:{}", mode.index()),
-            }),
-            ..WindowToolbar::default()
-        };
+        let places = Mode::all();
+        let choices = places
+            .iter()
+            .map(|choice| Choice::new(choice.label(), &show(*choice)));
+        let mut bar = WindowBar::new(dispatch.clone()).label(mode.label()).views(
+            "Mode",
+            places
+                .iter()
+                .position(|choice| *choice == mode)
+                .unwrap_or_default(),
+            choices,
+        );
         if let Some(kind) = mode.graph() {
-            toolbar.sidebar = Some(self.panel(kind).side().is_open());
-        }
-        let units = &self.angle_units;
-        toolbar.actions.push(
-            units
-                .entry("ruler", "Radians", false)
-                .on(!self.model.deg)
-                .in_menu(),
-        );
-        toolbar.actions.push(
-            units
-                .entry("ruler", "Degrees", true)
-                .on(self.model.deg)
-                .in_menu(),
-        );
-        toolbar
-    }
-
-    pub(super) fn declare_window_toolbar(&self) {
-        ui::window_toolbar::declare(Some(self.window_toolbar()));
-    }
-
-    /// Run what the person did in the window's bar: the angle unit chosen,
-    /// or a mode or the sidebar, through the semantic actions assistive
-    /// technology runs.
-    pub(super) fn apply_window_toolbar(
-        &mut self,
-        edits: &mut ui::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) {
-        for event in ui::window_toolbar::take_events() {
-            if let Some(degrees) = self.angle_units.pressed(&event) {
-                self.set_degrees(degrees);
-                continue;
-            }
-            let target = match &event {
-                ToolbarEvent::ToggleSidebar => match self.model.mode.graph() {
-                    Some(kind) => panel_target(kind).to_owned(),
-                    None => continue,
-                },
-                ToolbarEvent::Action { id } if id.starts_with("calculator.") => id.clone(),
-                _ => continue,
-            };
-            ui::widget::Widget::perform_semantic_action(
-                self,
-                &target,
-                &ui::a11y::Action::Activate,
-                edits,
-                path,
+            bar = bar.sidebar(
+                self.panel(kind).side().is_open(),
+                &CalculatorEffect::TogglePanel,
             );
         }
+        for (name, effect, on) in [
+            ("Radians", CalculatorEffect::UseRadians, !self.model.deg),
+            ("Degrees", CalculatorEffect::UseDegrees, self.model.deg),
+        ] {
+            bar = bar.effect(&effect).named("ruler", name).on(on).in_menu();
+        }
+        Some(bar)
     }
 }

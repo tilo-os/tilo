@@ -2,28 +2,21 @@
 //! ([`ui::window_toolbar`]): the shell's sidebar toggle and Back, what the
 //! content shows as the location (the presets, or the theme's name), and
 //! the theme's commands: Apply and Copy as file while it is legible, with
-//! Duplicate, Reset and Delete theme in the bar's menu. The window draws no
-//! header row and no row of commands of its own.
+//! Duplicate, Reset and Delete theme in the bar's menu. Each is declared as
+//! a binding of the studio's effects or of what the editor shows
+//! ([`ui::framework::WindowBar`]). The window draws no header row and no row
+//! of commands of its own.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::framework::{BarActions, BarCommands};
+use ui::framework::WindowBar;
 use ui::prelude::*;
-use ui::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
+use ui::window_toolbar::ToolbarLocation;
 
 use super::{Editing, Page, Ui, t};
 use crate::effects::ThemesEffect;
 use crate::studio::Studio;
-
-/// What the bar's entries do that is no effect of the studio: they act on
-/// the theme the editor shows when pressed.
-#[derive(Clone, Copy, PartialEq)]
-enum Command {
-    Duplicate,
-    Reset,
-    Delete,
-}
 
 /// The theme the editor shows, for the bar's commands; none in the gallery.
 pub(super) type Shown = Rc<RefCell<Option<Editing>>>;
@@ -32,18 +25,15 @@ pub(super) type Shown = Rc<RefCell<Option<Editing>>>;
 pub(super) struct StudioWindow {
     shell: NavShell,
     ui: Ui,
-    actions: BarActions<Studio>,
-    commands: BarCommands<Command>,
+    /// The bar as it was declared last: the press heard now names one of its
+    /// slots, then the window declares the bar for what it shows now.
+    bar: WindowBar<Studio>,
 }
 
 impl StudioWindow {
     pub(super) fn new(shell: NavShell, ui: Ui) -> Self {
-        Self {
-            shell,
-            actions: BarActions::new(ui.dispatcher.clone()),
-            commands: BarCommands::new(),
-            ui,
-        }
+        let bar = WindowBar::new(ui.dispatcher.clone());
+        Self { shell, ui, bar }
     }
 
     fn editing(&self) -> Option<Editing> {
@@ -51,8 +41,7 @@ impl StudioWindow {
     }
 
     /// The window bar's slots for what the window shows now.
-    pub(crate) fn window_toolbar(&self) -> WindowToolbar {
-        let mut toolbar = self.shell.window_toolbar();
+    fn window_bar(&self) -> WindowBar<Studio> {
         let sidebar_in_front =
             self.shell.geometry().stack.len() > 1 && self.shell.front_pane() == NavPane::Sidebar;
         let editing = self
@@ -69,110 +58,55 @@ impl StudioWindow {
                     .unwrap_or_else(|| t("themes-untitled")),
             ),
         };
-        toolbar.location = label.map(|label| ToolbarLocation {
-            label,
-            ..ToolbarLocation::default()
-        });
-        let bar = &self.actions;
-        let commands = &self.commands;
-        let mut actions = vec![
-            ToolbarAction {
-                name: t("themes-import"),
-                icon: "upload".into(),
-                ..bar.effect(&ThemesEffect::Import)
-            }
-            .in_menu(),
-        ];
-        if let Some(editing) = editing {
-            let raw = editing.id.as_str().to_owned();
-            let legible = self
-                .ui
-                .live
-                .with(|studio| editing.read(studio, |theme| theme.findings(&raw).is_empty()))
-                .unwrap_or(false);
-            let theme = editing.reference();
-            let apply = bar.effect(&ThemesEffect::ApplyTheme {
+        let mut bar = WindowBar::new(self.ui.dispatcher.clone())
+            .over(&self.shell)
+            .place(label.map(|label| ToolbarLocation {
+                label,
+                ..ToolbarLocation::default()
+            }))
+            .effect(&ThemesEffect::Import)
+            .named("upload", t("themes-import"))
+            .in_menu();
+        let Some(editing) = editing else {
+            return bar;
+        };
+        let raw = editing.id.as_str().to_owned();
+        let legible = self
+            .ui
+            .live
+            .with(|studio| editing.read(studio, |theme| theme.findings(&raw).is_empty()))
+            .unwrap_or(false);
+        let theme = editing.reference();
+        bar = bar
+            .effect(&ThemesEffect::ApplyTheme {
                 theme: theme.clone(),
-            });
-            let enabled = apply.enabled && legible;
-            actions.push(
-                ToolbarAction {
-                    name: t("themes-apply"),
-                    icon: "check".into(),
-                    ..apply
-                }
-                .enabled(enabled),
-            );
-            let export = bar.effect(&ThemesEffect::Export { theme });
-            let enabled = export.enabled && legible;
-            actions.push(
-                ToolbarAction {
-                    name: t("themes-export"),
-                    icon: "download".into(),
-                    ..export
-                }
-                .enabled(enabled),
-            );
-            actions.push(
-                commands
-                    .entry("copy", t("themes-duplicate"), Command::Duplicate)
-                    .in_menu(),
-            );
-            actions.push(
-                commands
-                    .entry("rotate-ccw", t("themes-reset-button"), Command::Reset)
-                    .in_menu(),
-            );
-            actions.push(
-                commands
-                    .entry("trash-2", t("themes-delete-button"), Command::Delete)
-                    .in_menu(),
-            );
-        }
-        NavShell::push_window_actions(&mut toolbar, actions);
-        toolbar
+            })
+            .named("check", t("themes-apply"))
+            .enabled(legible)
+            .effect(&ThemesEffect::Export { theme })
+            .named("download", t("themes-export"))
+            .enabled(legible)
+            .effect(&ThemesEffect::DuplicateTheme {
+                theme: editing.reference(),
+            })
+            .named("copy", t("themes-duplicate"))
+            .in_menu()
+            .action(Studio::RESET.with(editing.id.clone()))
+            .named("rotate-ccw", t("themes-reset-button"))
+            .in_menu()
+            .effect(&ThemesEffect::DeleteTheme {
+                theme: editing.id.as_str().to_owned(),
+                sent: editing.sent(),
+            })
+            .named("trash-2", t("themes-delete-button"))
+            .in_menu();
+        bar
     }
 
-    /// Run what the person did in the window's bar: the shell's own slots,
-    /// then the theme's commands. Returns whether anything was asked.
-    fn take_window_toolbar_events(&mut self) -> bool {
-        let mut asked = false;
-        for event in ui::window_toolbar::take_events() {
-            asked = true;
-            if self.shell.window_toolbar_event(&event) {
-                continue;
-            }
-            if self.actions.press(&event) {
-                continue;
-            }
-            if let Some(command) = self.commands.pressed(&event)
-                && let Some(editing) = self.editing()
-            {
-                self.run(command, &editing);
-            }
-        }
-        asked
-    }
-
-    /// One of the theme's commands, as its control in the editor ran it.
-    fn run(&self, command: Command, editing: &Editing) {
-        let ui = &self.ui;
-        match command {
-            Command::Duplicate => ui.start_from(&editing.reference()),
-            Command::Reset => {
-                ui.dispatcher
-                    .submit(editing.invoke(Studio::RESET.with(editing.id.clone())));
-            }
-            Command::Delete => {
-                // A draft never sent has nothing to delete: leaving it is
-                // enough.
-                if editing.sent() {
-                    ui.dispatcher
-                        .submit(Studio::DELETE.with(editing.id.clone()));
-                }
-                ui.open(Page::Gallery);
-            }
-        }
+    /// Declare the slots of what the window shows now.
+    fn declare(&mut self) {
+        self.bar = self.window_bar();
+        self.bar.declare();
     }
 }
 
@@ -188,14 +122,14 @@ impl ui::widget::Decorator for StudioWindow {
     }
 
     fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
-        self.take_window_toolbar_events();
-        ui::window_toolbar::declare(Some(self.window_toolbar()));
+        self.bar.take_events();
+        self.declare();
         Widget::sync(&mut self.shell, state, path);
     }
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        let asked = self.take_window_toolbar_events();
-        ui::window_toolbar::declare(Some(self.window_toolbar()));
+        let asked = self.bar.take_events();
+        self.declare();
         Widget::update(&mut self.shell, state, path) || asked
     }
 

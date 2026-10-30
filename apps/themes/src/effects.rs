@@ -1,6 +1,6 @@
 //! The studio's platform effects, shared by controls and the resource door.
 use crate::Studio;
-use ui::framework::{Effected, ViewCx};
+use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::prelude::*;
 use ui::theme::{Preset, ThemeDocument};
 
@@ -28,6 +28,53 @@ pub enum ThemesEffect {
     /// Import a theme file through the host's consented file chooser.
     #[effect(attended, job, cancellable)]
     Import,
+    /// Duplicate a theme
+    ///
+    /// Open a draft of `theme` (a preset or a written theme), which its
+    /// first edit writes.
+    #[effect(view)]
+    DuplicateTheme {
+        #[param("Id of the preset or written theme")]
+        theme: String,
+    },
+    /// Delete a theme
+    ///
+    /// Delete `theme` from the studio and show the presets. Nothing to delete
+    /// where the studio never wrote it.
+    #[effect(view)]
+    DeleteTheme {
+        #[param("Id of the preset or written theme")]
+        theme: String,
+        #[param("Whether the studio holds the theme or is writing it")]
+        sent: bool,
+    },
+}
+
+/// What the theme's own edits from the window's bar do: open a draft of a
+/// theme, or delete one and show the presets. `None` for every other effect.
+fn theme_edit(
+    effect: &ThemesEffect,
+    cx: &EffectCx<Studio>,
+    notice: &LocalState<String>,
+    page: &LocalState<crate::view::Page>,
+    nav_pane: &LocalState<NavPane>,
+) -> Option<EffectAnswer> {
+    match effect {
+        ThemesEffect::DuplicateTheme { theme } => {
+            crate::view::start_from(page, nav_pane, notice, theme);
+            Some(Ok(Effected::done()))
+        }
+        ThemesEffect::DeleteTheme { theme, sent } => {
+            // A draft never written has nothing to delete: leaving it is
+            // enough.
+            if *sent {
+                cx.submit(Studio::DELETE.with(Id::from_raw(theme.clone())));
+            }
+            crate::view::open(page, nav_pane, notice, crate::view::Page::Gallery);
+            Some(Ok(Effected::done()))
+        }
+        _ => None,
+    }
 }
 
 fn document(studio: &Studio, id: &str) -> Result<ThemeDocument, String> {
@@ -69,6 +116,9 @@ pub(crate) fn install(
     let page = page.clone();
     let nav_pane = nav_pane.clone();
     cx.effects::<ThemesEffect>(move |effect, cx| {
+        if let Some(answer) = theme_edit(&effect, cx, &notice, &page, &nav_pane) {
+            return answer;
+        }
         if effect == ThemesEffect::Import {
             let notice = notice.clone();
             let page = page.clone();
@@ -124,7 +174,9 @@ pub(crate) fn install(
         }
         let id = match &effect {
             ThemesEffect::ApplyTheme { theme } | ThemesEffect::Export { theme } => theme,
-            ThemesEffect::Import => return Ok(Effected::done()),
+            ThemesEffect::Import
+            | ThemesEffect::DuplicateTheme { .. }
+            | ThemesEffect::DeleteTheme { .. } => return Ok(Effected::done()),
         };
         let document = cx.live().with(|studio| document(studio, id))?;
         crate::apply::ensure_legible(&document)?;
@@ -152,7 +204,9 @@ pub(crate) fn install(
                 notice.set("The theme is on the clipboard.".to_owned());
                 Ok(Effected::value(json))
             }
-            ThemesEffect::Import => Ok(Effected::done()),
+            ThemesEffect::Import
+            | ThemesEffect::DuplicateTheme { .. }
+            | ThemesEffect::DeleteTheme { .. } => Ok(Effected::done()),
         }
     });
 }

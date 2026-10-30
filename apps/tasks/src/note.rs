@@ -57,6 +57,30 @@ pub enum TasksEffect {
         #[param("The issue")]
         issue: Id,
     },
+
+    /// Show the list
+    ///
+    /// Show every issue, sub-issues under their parent.
+    #[effect(view, idempotent)]
+    ShowList,
+
+    /// Show the board
+    ///
+    /// Show a lane per status.
+    #[effect(view, idempotent)]
+    ShowBoard,
+
+    /// Show the tasks
+    ///
+    /// Show the tasks the tracker holds a run for.
+    #[effect(view, idempotent)]
+    ShowTasks,
+
+    /// Show the threads
+    ///
+    /// Show the tasks that have said something, as their conversations.
+    #[effect(view, idempotent)]
+    ShowThread,
 }
 
 /// Answer `effect`.
@@ -64,8 +88,14 @@ pub(crate) fn handle(effect: TasksEffect, cx: &mut EffectCx<Tracker>) -> EffectA
     match effect {
         TasksEffect::WriteNote { issue } => write_note(cx, issue),
         // The window answers these itself as they arrive (see `lib::router`):
-        // the form a project is made in, and the page an issue is shown on.
-        TasksEffect::NewProject | TasksEffect::OpenIssue { .. } => Ok(Effected::done()),
+        // the form a project is made in, the page an issue is shown on, and
+        // the place showing.
+        TasksEffect::NewProject
+        | TasksEffect::OpenIssue { .. }
+        | TasksEffect::ShowList
+        | TasksEffect::ShowBoard
+        | TasksEffect::ShowTasks
+        | TasksEffect::ShowThread => Ok(Effected::done()),
     }
 }
 

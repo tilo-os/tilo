@@ -582,6 +582,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.action_bindings.clone()
     }
 
+    /// The window's bar, its entries bound to the record's actions through
+    /// this view's dispatcher ([`super::WindowBar`]): the view declares what
+    /// the window shows and does, and the framework makes the slots of it.
+    #[must_use]
+    pub fn toolbar(&self) -> super::WindowBar<R> {
+        super::WindowBar::new(self.dispatcher())
+    }
+
     /// A value that follows `read` of the resource, for any toolkit control
     /// built from a [`LocalState`] (`Slider::from_state`, `Dropdown::from_state`).
     pub fn value<V>(&self, read: impl Fn(&T) -> V + 'static) -> LocalState<V>

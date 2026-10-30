@@ -67,14 +67,14 @@ fn history_lists_calculations_and_choosing_one_recalls_it() {
         }
     }
     let mut app = hosted();
-    press_bar(&mut app, "calculator.mode:0");
+    press_mode(&mut app, Mode::Calc);
     calculate(&mut app, "1+2");
     calculate(&mut app, "3*4");
-    press_bar(&mut app, "calculator.mode:1");
+    press_mode(&mut app, Mode::Graph2d);
     click(&mut app, "calculator.graph.field:2d:0");
     app.harness().type_text("x+1");
     app.settle();
-    press_bar(&mut app, "calculator.mode:0");
+    press_mode(&mut app, Mode::Calc);
     app.harness().type_text("9");
     app.settle();
     app.flush().unwrap();
@@ -122,10 +122,8 @@ fn history_lists_calculations_and_choosing_one_recalls_it() {
         "choosing a calculation closes History"
     );
     assert_eq!(
-        ui::window_toolbar::declared()
-            .and_then(|toolbar| toolbar.views)
-            .map(|views| views.chosen),
-        Some("calculator.mode:0".to_owned()),
+        chosen_view().as_deref(),
+        Some("Calculator"),
         "back in calculator mode"
     );
     assert_eq!(
@@ -142,7 +140,7 @@ fn history_lists_calculations_and_choosing_one_recalls_it() {
 #[test]
 fn a_second_window_lists_the_first_windows_calculations() {
     let mut app = hosted();
-    press_bar(&mut app, "calculator.mode:0");
+    press_mode(&mut app, Mode::Calc);
     calculate(&mut app, "6*7");
     app.harness().type_text("5");
     app.settle();
@@ -172,7 +170,7 @@ fn a_second_window_lists_the_first_windows_calculations() {
 #[test]
 fn the_history_button_opens_history() {
     let mut app = hosted();
-    press_bar(&mut app, "calculator.mode:0");
+    press_mode(&mut app, Mode::Calc);
     calculate(&mut app, "1+2");
     app.flush().unwrap();
 
@@ -204,7 +202,7 @@ fn a_long_formula_reaches_history_whole() {
     let formula = ["x"; 60].join("+");
     assert!(formula.chars().count() > 100);
     let mut app = hosted();
-    press_bar(&mut app, "calculator.mode:1");
+    press_mode(&mut app, Mode::Graph2d);
     click(&mut app, "calculator.graph.field:2d:0");
     app.harness().type_text(&formula);
     app.settle();
@@ -289,7 +287,7 @@ fn a_past_version_previews_the_graph_the_window_shows() {
         }
     }
     let mut app = hosted();
-    press_bar(&mut app, "calculator.mode:1");
+    press_mode(&mut app, Mode::Graph2d);
     click(&mut app, "calculator.graph.field:2d:0");
     app.harness().type_text("x+1");
     app.settle();
@@ -332,7 +330,7 @@ fn a_past_version_previews_the_graph_the_window_shows() {
 #[test]
 fn typing_a_formula_is_one_change() {
     let mut app = hosted();
-    press_bar(&mut app, "calculator.mode:1");
+    press_mode(&mut app, Mode::Graph2d);
     click(&mut app, "calculator.graph.field:2d:0");
     app.harness().type_text("3*x+sin(x)");
     app.settle();

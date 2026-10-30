@@ -221,6 +221,7 @@ impl ResourceApp for App {
             );
         Box::new(window_bar::TasksWindow::new(
             shell,
+            cx.toolbar(),
             nav,
             addresses,
             Box::new(dialog),
@@ -391,6 +392,21 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav) -> LocalState<Tracker> {
             }
             TasksEffect::OpenIssue { issue } => {
                 open.open(&issue);
+                Ok(Effected::done())
+            }
+            // The places are the window's views: choosing one shows it, in
+            // the bar or from the palette or an agent alike.
+            place @ (TasksEffect::ShowList
+            | TasksEffect::ShowBoard
+            | TasksEffect::ShowTasks
+            | TasksEffect::ShowThread) => {
+                open.place.set(match place {
+                    TasksEffect::ShowBoard => Place::Board,
+                    TasksEffect::ShowTasks => Place::Tasks,
+                    TasksEffect::ShowThread => Place::Thread,
+                    _ => Place::List,
+                });
+                open.open.set(None);
                 Ok(Effected::done())
             }
             effect @ TasksEffect::WriteNote { .. } => note::handle(effect, cx),

@@ -66,25 +66,50 @@ struct Ui {
 
 impl Ui {
     fn open(&self, page: Page) {
-        self.page.set(page);
-        self.pane.set(NavPane::Content);
-        self.notice.set(String::new());
+        open(&self.page, &self.pane, &self.notice, page);
     }
 
     /// Open a draft of a theme from `base` (a preset id or a theme id): its
     /// first edit writes it.
     fn start_from(&self, base: &str) {
-        let id = format!("t{}", uuid::Uuid::new_v4().simple());
-        self.open(Page::Draft {
-            id,
-            base: base.to_owned(),
-        });
+        start_from(&self.page, &self.pane, &self.notice, base);
     }
 
     fn apply(&self, theme: String) {
         self.dispatcher
             .effect(&crate::effects::ThemesEffect::ApplyTheme { theme });
     }
+}
+
+/// Show `to` in the window, its content in front of the sidebar.
+pub(crate) fn open(
+    content: &LocalState<Page>,
+    pane: &LocalState<NavPane>,
+    notice: &LocalState<String>,
+    to: Page,
+) {
+    content.set(to);
+    pane.set(NavPane::Content);
+    notice.set(String::new());
+}
+
+/// Open a draft of a theme from `base` (a preset id or a theme id): its first
+/// edit writes it.
+pub(crate) fn start_from(
+    content: &LocalState<Page>,
+    pane: &LocalState<NavPane>,
+    notice: &LocalState<String>,
+    base: &str,
+) {
+    open(
+        content,
+        pane,
+        notice,
+        Page::Draft {
+            id: format!("t{}", uuid::Uuid::new_v4().simple()),
+            base: base.to_owned(),
+        },
+    );
 }
 
 /// The theme the editor writes: one in the studio, or a draft whose first
