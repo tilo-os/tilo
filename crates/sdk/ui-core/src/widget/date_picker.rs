@@ -778,10 +778,11 @@ impl crate::widget::controls::ActionControls for DatePicker {
     }
 
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        self.choice
-            .iter()
-            .map(|choice| choice.choice.metadata(choice.choice.id().to_owned()))
-            .collect()
+        let mut bindings = crate::widget::controls::default_bindings(self);
+        if let Some(choice) = &self.choice {
+            bindings.push(choice.choice.metadata(choice.choice.id().to_owned()));
+        }
+        bindings
     }
 
     fn refresh_control_action_availability(
