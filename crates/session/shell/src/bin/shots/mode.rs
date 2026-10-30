@@ -173,10 +173,16 @@ pub mod offscreen {
         dir: &Path,
         viewport: (u32, u32),
         outputs: Option<&[shell::compositor::backend::Output]>,
+        cpu: bool,
     ) -> Result<(), String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("create offscreen output dir '{}': {e}", dir.display()))?;
-        let mut renderer = OffscreenRenderer::new(viewport.0, viewport.1);
+        // A CPU capture never looks for an adapter: the same scene is
+        // rasterized by vello_cpu, the rasterizer a CPU-drawing host uses.
+        if cpu {
+            ui::offscreen::disable_gpu();
+        }
+        let mut renderer = (!cpu).then(|| OffscreenRenderer::new(viewport.0, viewport.1));
         println!(
             "shots: offscreen scene-set ({} scenes) at {}x{} → {}",
             scenes.len(),
@@ -209,8 +215,28 @@ pub mod offscreen {
             }
             let scene = driver.paint_settled();
             let path = dir.join(format!("{name}.png"));
-            renderer.set_backdrop(driver.take_backdrop());
-            renderer.render_png(&scene, Color::TRANSPARENT, &path);
+            let backdrop = driver.take_backdrop();
+            // The ground the live compositor clears to before drawing the
+            // shell, so the capture is opaque and reads as the screen did.
+            let ground = driver.ground();
+            match renderer.as_mut() {
+                Some(renderer) => {
+                    renderer.set_backdrop(backdrop);
+                    renderer.render_png(&scene, ground, &path);
+                }
+                None => {
+                    let rgba =
+                        ui::offscreen::render_picture(&scene, viewport.0, viewport.1, ground)?;
+                    image::save_buffer(
+                        &path,
+                        &rgba,
+                        viewport.0,
+                        viewport.1,
+                        image::ColorType::Rgba8,
+                    )
+                    .map_err(|e| format!("write {}: {e}", path.display()))?;
+                }
+            }
             if !first_paint_seen {
                 // Mark AFTER render_png returns so the metric captures
                 // vello's ~30-pipeline cold compile, not just the
@@ -735,6 +761,7 @@ mod tests {
                 &dir,
                 viewport,
                 Some(&outputs),
+                false,
             )
             .expect("the scenes render");
             for scene in ["qs-wifi", "desktop"] {
