@@ -405,13 +405,40 @@ pub(super) use bool_control_api;
 /// [`BoolControl::handle_event`], a switch also lets its knob be dragged.
 macro_rules! bool_control_widget_methods {
     ($kind:literal) => {
-        crate::provides!(
-            dyn crate::widget::controls::ActionControls,
-            dyn crate::permissions::capability::PermissionGated,
-            dyn crate::presence::capability::PublishesPresence,
-            dyn crate::resources::PublishesResources,
-            dyn crate::widget::ResourceOperations
-        );
+        // What it publishes and answers only while it has a view action of
+        // its own, so a walk of the tree passes every other control by.
+        fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+            if request.wants::<dyn crate::widget::controls::ActionControls>() {
+                request.provide::<dyn crate::widget::controls::ActionControls>(self);
+            } else if request.wants::<dyn crate::permissions::capability::PermissionGated>() {
+                request.provide::<dyn crate::permissions::capability::PermissionGated>(self);
+            } else if request.wants::<dyn crate::presence::capability::PublishesPresence>() {
+                request.provide::<dyn crate::presence::capability::PublishesPresence>(self);
+            } else if self.control.view_resource.is_none() {
+            } else if request.wants::<dyn crate::resources::PublishesResources>() {
+                request.provide::<dyn crate::resources::PublishesResources>(self);
+            } else if request.wants::<dyn crate::widget::ResourceOperations>() {
+                request.provide::<dyn crate::widget::ResourceOperations>(self);
+            }
+        }
+
+        fn provide_mut<'a>(
+            &'a mut self,
+            request: &mut crate::widget::capability::RequestMut<'a, '_>,
+        ) {
+            if request.wants::<dyn crate::widget::controls::ActionControls>() {
+                request.provide::<dyn crate::widget::controls::ActionControls>(self);
+            } else if request.wants::<dyn crate::permissions::capability::PermissionGated>() {
+                request.provide::<dyn crate::permissions::capability::PermissionGated>(self);
+            } else if request.wants::<dyn crate::presence::capability::PublishesPresence>() {
+                request.provide::<dyn crate::presence::capability::PublishesPresence>(self);
+            } else if self.control.view_resource.is_none() {
+            } else if request.wants::<dyn crate::resources::PublishesResources>() {
+                request.provide::<dyn crate::resources::PublishesResources>(self);
+            } else if request.wants::<dyn crate::widget::ResourceOperations>() {
+                request.provide::<dyn crate::widget::ResourceOperations>(self);
+            }
+        }
 
         fn set_interaction_environment(
             &mut self,
