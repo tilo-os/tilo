@@ -10,8 +10,9 @@ description = "Environment images (env-runtime and tool tapps) fetched from the 
 # The package store's fetcher seam.
 tilo-app-package = { path = "../tilo-app-package" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+# Synchronous callers run their fetch on the process's one async runtime.
+tilo-rt = { path = "../../platform/tilo-rt" }
 reqwest.workspace = true
-tokio = { workspace = true, features = ["rt"] }
 # Layer digests, and the gzip'd tar layers that hold the tapps.
 sha2.workspace = true
 flate2.workspace = true

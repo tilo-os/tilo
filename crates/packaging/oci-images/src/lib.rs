@@ -238,21 +238,6 @@ impl OciImages {
         }
         Ok(unpacked)
     }
-
-    /// Run `work` on a private current-thread runtime, as the package store
-    /// calls in from synchronous code.
-    fn block_on<T>(work: impl std::future::Future<Output = Result<T>>) -> std::io::Result<T> {
-        if tokio::runtime::Handle::try_current().is_ok() {
-            return Err(std::io::Error::other(
-                "image fetch must not run on an async runtime thread",
-            ));
-        }
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(work)
-            .map_err(std::io::Error::other)
-    }
 }
 
 /// The package id a tapp's header claims, read from its first entry.
@@ -534,7 +519,9 @@ impl Session<'_> {
 
 impl PackageFetcher for OciImages {
     fn fetch_package(&self, id: &PackageId) -> std::io::Result<Option<Vec<u8>>> {
-        Self::block_on(self.fetch(id))
+        // The package store calls in from synchronous code.
+        let fetched = tilo_rt::block_on(self.fetch(id)).map_err(std::io::Error::other)?;
+        fetched.map_err(std::io::Error::other)
     }
 }
 

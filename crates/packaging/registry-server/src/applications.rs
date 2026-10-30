@@ -65,11 +65,7 @@ impl Default for NetworkProofs {
 
 impl ProofSource for NetworkProofs {
     fn txt_records(&self, name: &str) -> Result<Vec<String>, String> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())?;
-        runtime.block_on(async {
+        tilo_rt::block_on(async {
             let resolver = hickory_resolver::TokioResolver::builder_tokio()
                 .map_err(|error| error.to_string())?
                 .build()
@@ -95,6 +91,7 @@ impl ProofSource for NetworkProofs {
                 Err(error) => Err(error.to_string()),
             }
         })
+        .map_err(|error| error.to_string())?
     }
 
     fn https_text(&self, url: &str) -> Result<String, String> {
