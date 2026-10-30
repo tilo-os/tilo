@@ -4523,7 +4523,9 @@ mod tests {
             let (_, plain_height) = tr.measure_style(text, Some(width), &plain);
             let (hyphenated_width, hyphenated_height) =
                 tr.measure_style(text, Some(width), &hyphenated);
-            assert_eq!(plain_height, plain.line_height_px());
+            // A word wider than the line breaks either way: plain text anywhere, where the
+            // line runs out, and hyphenated text at a hyphenation point, with a hyphen.
+            assert_eq!(plain_height, plain.line_height_px() * 2.0);
             assert!(hyphenated_height >= hyphenated.line_height_px() * 2.0);
             assert!(
                 hyphenated_width <= width + 0.01,
