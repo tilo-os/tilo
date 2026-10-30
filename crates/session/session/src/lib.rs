@@ -1459,7 +1459,9 @@ impl Session {
         Ok(session)
     }
 
-    /// Warm the displays when the person left the night light on.
+    /// Warm the displays when the person left the night light on, and start
+    /// the surface apps: their windows wait for the outputs the session has
+    /// now added.
     fn warm(&mut self) -> Result<(), Error> {
         if self.night_light.0 {
             self.compositor.set_night_light(Some(NIGHT_LIGHT_WARMTH))?;
