@@ -2,16 +2,17 @@
 //!
 //! The top bar, the launcher and the panels are ordinary toolkit apps. An
 //! [`AppHost`] shows one of them on a rectangle of the desktop: it drives the
-//! app as any host does (input in, frames out), rasterizes each frame on the
-//! CPU where it changed, and hands the compositor the buffer as a
-//! [`SurfaceHost`] layer. The compositor knows nothing of the app; the app
-//! knows nothing of the compositor.
+//! app as any host does (input in, frames out), has each frame drawn where it
+//! changed the way the app's own frames are, and hands the compositor the
+//! buffer as a [`SurfaceHost`] layer. The compositor knows nothing of the app;
+//! the app knows nothing of the compositor.
 
 #![cfg(target_os = "linux")]
 
 mod canvas;
 mod desktop;
 mod door;
+mod frames;
 mod widget;
 
 pub use desktop::{DeskGesture, DesktopHost, StripPolicy, desktop, desktop_with};
@@ -38,10 +39,7 @@ use winit::event::{
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
-use canvas::Canvas;
-
-/// Cores the rasterizer uses for a large damaged region.
-const RASTER_THREADS: u16 = 2;
+use frames::Frames;
 
 /// The format files are dragged in.
 const URI_LIST: &str = "text/uri-list";
@@ -122,7 +120,7 @@ pub struct AppHost {
     app: App,
     placement: Placement,
     surface: Surface,
-    canvas: Canvas,
+    frames: Frames,
     buffer: MemoryRenderBuffer,
     scene: vello::Scene,
     damage: SurfaceDamage,
@@ -163,7 +161,7 @@ impl AppHost {
                 redraw: Cell::new(true),
                 cursor: Cell::new(CursorIcon::Default),
             },
-            canvas: Canvas::new((width, height), RASTER_THREADS),
+            frames: Frames::new((width, height)),
             buffer: buffer_for((width, height)),
             scene: vello::Scene::new(),
             damage: SurfaceDamage::default(),
@@ -221,7 +219,7 @@ impl AppHost {
         {
             self.surface.size = PhysicalSize::new(size.0, size.1);
             self.surface.scale = placement.scale;
-            self.canvas = Canvas::new(size, RASTER_THREADS);
+            self.frames.resize(size);
             self.buffer = buffer_for(size);
             self.app.surface_input(
                 &self.surface,
@@ -229,6 +227,8 @@ impl AppHost {
                 false,
             );
             self.surface.redraw.set(true);
+            // What the app draws now is not a change of what it drew before.
+            self.full = true;
         }
         self.placement = placement;
     }
@@ -318,7 +318,7 @@ impl SurfaceHost for AppHost {
             reason = "a non-negative point inside a surface on a screen"
         )]
         let (px, py) = (lx as u32, ly as u32);
-        self.canvas.alpha(px, py).is_some_and(|alpha| alpha > 0)
+        self.frames.alpha(px, py).is_some_and(|alpha| alpha > 0)
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
@@ -485,7 +485,7 @@ impl SurfaceHost for AppHost {
         } else {
             changed
         };
-        self.canvas
+        self.frames
             .present(&self.scene, changed.as_deref(), &mut self.buffer);
         self.door
             .publish_resources(Some(self.app.collect_resources()));

@@ -1,5 +1,6 @@
 //! An app's frame in ordinary memory, rasterized on the CPU where it
-//! changed.
+//! changed: what draws a surface's frames on a machine where the toolkit has
+//! no GPU to draw them on either.
 
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Buffer, Rectangle};
@@ -7,6 +8,9 @@ use tilo_cpu_raster::color::AlphaColor;
 use tilo_cpu_raster::{CpuRasterizer, Options, Region, Target};
 use vello::Scene;
 use vello::kurbo::Rect;
+
+/// Cores the rasterizer uses where it has them.
+pub(crate) const RASTER_THREADS: u16 = 2;
 
 pub(crate) struct Canvas {
     rasterizer: CpuRasterizer,
@@ -38,73 +42,6 @@ impl Canvas {
         &self.pixels
     }
 
-    pub(crate) const fn size(&self) -> (u32, u32) {
-        self.size
-    }
-
-    /// The alpha of one pixel, if it lies inside.
-    pub(crate) fn alpha(&self, x: u32, y: u32) -> Option<u8> {
-        if x >= self.size.0 || y >= self.size.1 {
-            return None;
-        }
-        let index = (y as usize)
-            .checked_mul(self.size.0 as usize)?
-            .checked_add(x as usize)?
-            .checked_mul(4)?
-            .checked_add(3)?;
-        self.pixels.get(index).copied()
-    }
-
-    /// Rasterize `scene` where `damage` says it changed (`None`: all of it)
-    /// and copy what was written into `buffer`, telling it what changed.
-    pub(crate) fn present(
-        &mut self,
-        scene: &Scene,
-        damage: Option<&[Rect]>,
-        buffer: &mut MemoryRenderBuffer,
-    ) {
-        let regions = self.draw(scene, damage);
-        if regions.is_empty() {
-            return;
-        }
-        let pixels = self.pixels();
-        let width = self.size().0 as usize;
-        let drawn = buffer.render().draw(|memory: &mut [u8]| {
-            for region in &regions {
-                for row in region.y..region.y.saturating_add(region.height) {
-                    let start = (row as usize)
-                        .saturating_mul(width)
-                        .saturating_add(region.x as usize)
-                        .saturating_mul(4);
-                    let end = start.saturating_add((region.width as usize).saturating_mul(4));
-                    if let (Some(to), Some(from)) =
-                        (memory.get_mut(start..end), pixels.get(start..end))
-                    {
-                        to.copy_from_slice(from);
-                    }
-                }
-            }
-            Ok::<_, std::convert::Infallible>(
-                regions
-                    .iter()
-                    .filter_map(|region| {
-                        Some(Rectangle::<i32, Buffer>::new(
-                            (i32::try_from(region.x).ok()?, i32::try_from(region.y).ok()?).into(),
-                            (
-                                i32::try_from(region.width).ok()?,
-                                i32::try_from(region.height).ok()?,
-                            )
-                                .into(),
-                        ))
-                    })
-                    .collect(),
-            )
-        });
-        if let Err(never) = drawn {
-            match never {}
-        }
-    }
-
     /// Rasterize `scene` where `damage` says it changed (`None`: all of it)
     /// and return the regions written.
     pub(crate) fn draw(&mut self, scene: &Scene, damage: Option<&[Rect]>) -> Vec<Region> {
@@ -132,9 +69,66 @@ impl Canvas {
     }
 }
 
+/// The alpha of one pixel of `pixels`, a `size` surface, if it lies inside.
+pub(crate) fn alpha_of(pixels: &[u8], size: (u32, u32), x: u32, y: u32) -> Option<u8> {
+    if x >= size.0 || y >= size.1 {
+        return None;
+    }
+    let index = (y as usize)
+        .checked_mul(size.0 as usize)?
+        .checked_add(x as usize)?
+        .checked_mul(4)?
+        .checked_add(3)?;
+    pixels.get(index).copied()
+}
+
+/// Copy the `regions` of `pixels` (premultiplied RGBA, `width * 4` bytes a
+/// row of a `size` surface) into `buffer`, telling it what changed.
+pub(crate) fn write_pixels(
+    pixels: &[u8],
+    size: (u32, u32),
+    regions: &[Region],
+    buffer: &mut MemoryRenderBuffer,
+) {
+    let width = size.0 as usize;
+    let drawn = buffer.render().draw(|memory: &mut [u8]| {
+        for region in regions {
+            for row in region.y..region.y.saturating_add(region.height) {
+                let start = (row as usize)
+                    .saturating_mul(width)
+                    .saturating_add(region.x as usize)
+                    .saturating_mul(4);
+                let end = start.saturating_add((region.width as usize).saturating_mul(4));
+                if let (Some(to), Some(from)) = (memory.get_mut(start..end), pixels.get(start..end))
+                {
+                    to.copy_from_slice(from);
+                }
+            }
+        }
+        Ok::<_, std::convert::Infallible>(
+            regions
+                .iter()
+                .filter_map(|region| {
+                    Some(Rectangle::<i32, Buffer>::new(
+                        (i32::try_from(region.x).ok()?, i32::try_from(region.y).ok()?).into(),
+                        (
+                            i32::try_from(region.width).ok()?,
+                            i32::try_from(region.height).ok()?,
+                        )
+                            .into(),
+                    ))
+                })
+                .collect(),
+        )
+    });
+    if let Err(never) = drawn {
+        match never {}
+    }
+}
+
 /// `rects` as whole-pixel regions of a `width` by `height` target: rounded
 /// out, clipped, and merged where they overlap so no pixel is drawn twice.
-fn regions(rects: &[Rect], width: u32, height: u32) -> Vec<Region> {
+pub(crate) fn regions(rects: &[Rect], width: u32, height: u32) -> Vec<Region> {
     let bounds = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
     let mut merged: Vec<Rect> = Vec::new();
     for rect in rects {
