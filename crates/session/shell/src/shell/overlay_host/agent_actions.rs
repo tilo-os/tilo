@@ -280,6 +280,12 @@ pub(super) struct AgentActions {
     started: Option<Instant>,
     /// Task agents whose task now exists, to launch in their room.
     launches: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)>,
+    /// Task agents whose ask Tasks took, by their issue's address, until the
+    /// room's tracker as this device holds it shows their run going: their
+    /// join is admitted against that tracker, so launched before it shows
+    /// the run they would be refused as made for a task that ended. The
+    /// tracker's change wakes the pump that moves them on.
+    awaiting: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)>,
     /// Requests that could not become a task, and why.
     refused: Vec<(ComposerRequest, String)>,
     /// How asks handed out ended, until the host takes them.
@@ -460,6 +466,7 @@ impl AgentActions {
                 changed = true;
             }
         }
+        changed |= self.launch_shown_runs(&owner.room, runs);
         if !active {
             self.fresh.mark();
             return changed;
@@ -589,6 +596,39 @@ impl AgentActions {
         Some(issued)
     }
 
+    /// Move the task agents whose run the tracker now shows going to
+    /// [`Self::launches`]; one whose run shows ended is not launched.
+    /// Whether any moved.
+    fn launch_shown_runs(&mut self, room: &str, runs: Option<&dyn RunSource>) -> bool {
+        let Some(source) = runs.filter(|_| !self.awaiting.is_empty()) else {
+            return false;
+        };
+        // Armed before the read, so a change after it wakes the next pump;
+        // still stale for `read_runs`, which reads its own way.
+        self.fresh.take();
+        self.fresh.mark();
+        let shown = source.runs(room);
+        let mut moved = false;
+        for (issue, minted) in std::mem::take(&mut self.awaiting) {
+            let agent = format!("agent:{}", minted.agent_id);
+            match shown
+                .iter()
+                .find(|run| run.issue == issue && run.agent == agent)
+            {
+                Some(run) if run.phase.active() => {
+                    self.launches.push((room.to_owned(), minted));
+                    moved = true;
+                }
+                Some(run) => {
+                    tracing::warn!(%issue, phase = ?run.phase, "the task ended before its agent was launched");
+                    moved = true;
+                }
+                None => self.awaiting.push((issue, minted)),
+            }
+        }
+        moved
+    }
+
     /// How the asks handed out by [`Self::open_and_ask`] ended since the
     /// last call.
     pub(super) fn take_ask_outcomes(&mut self) -> Vec<(AskTicket, AskOutcome)> {
@@ -710,12 +750,12 @@ impl AgentActions {
             } => {
                 let asked = asked_issue(operation);
                 // The task exists and its run carries the delegation: its
-                // agent can join now, under its own key.
+                // agent joins under its own key once the tracker shows it.
                 if let Some(task_agent) = task_agent
-                    && let Some(owner) = &self.owner
+                    && let Some(issue) = &asked
                 {
-                    self.launches
-                        .push((owner.room.clone(), Arc::clone(task_agent)));
+                    self.awaiting.push((issue.clone(), Arc::clone(task_agent)));
+                    self.fresh.mark();
                 }
                 if let Some(ticket) = ticket {
                     let outcome = asked.clone().map_or_else(

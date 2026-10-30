@@ -57,11 +57,16 @@ impl ShellOverlayHost {
             );
             return;
         };
+        // The record a launched window of the app opens and the room's
+        // readers read (Tasks' tracker): its package primary, the record
+        // whose route is the app's own channel. A tab's default record would
+        // be another document, which neither a Tasks window nor the tracker's
+        // readers ever see.
         let mounted = apps.borrow_mut().mount(
             definition,
             room,
             windowless::INSTANCE,
-            ui::record::RecordId::room_default(),
+            ui::record::RecordId::package_primary(),
             |_| {},
         );
         let component = match mounted {
