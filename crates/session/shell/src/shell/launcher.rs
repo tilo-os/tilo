@@ -3719,8 +3719,6 @@ fn launch_fitting(
     // Another window of an app already running in the room opens in its
     // process; the first one starts the process, reserving its door.
     #[cfg(target_os = "linux")]
-    tilo_startup_metrics::launch_phase(&app.package_id, "home");
-    #[cfg(target_os = "linux")]
     let Ok(door) = window_doors::route_or_reserve(
         &app,
         room,

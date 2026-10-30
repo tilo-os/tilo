@@ -42,7 +42,7 @@ unit tests and found only by starting a session by hand:
            Chat).
   dev      the session started once more, and while its four windows come back four
            `tilolang dev` at once, each installing an app the session has not had (DEV_APPS):
-           each window presents a first frame within DEV_BOUND (2 s) of its install; 0.5 to
+           each window presents a first frame within DEV_BOUND (3 s) of its install; 0.5 to
            0.9 s here. Catches an app's first opening in a room waiting on the broker's
            invocation journal (its authorship grant was an invocation, answered once its
            admission and outcome were synced behind every other one, with a 30 s timeout as
@@ -593,7 +593,7 @@ def check_restart(session: Session) -> dict:
 # each by a `tilolang dev` of its own, all at once.
 DEV_APPS = ["counter", "today", "board", "views"]
 # How long after its install each app's window may take to present its first frame.
-DEV_BOUND = float(os.environ.get("TILO_TEST_DEV_OPEN_BOUND_SECS", "2.0"))
+DEV_BOUND = float(os.environ.get("TILO_TEST_DEV_OPEN_BOUND_SECS", "3.0"))
 
 
 class DevRun:

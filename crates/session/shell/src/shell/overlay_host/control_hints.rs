@@ -199,11 +199,10 @@ mod tests {
         for _ in 0..3 {
             let _ = fixture.frame_of(&mut doc);
         }
-        let host = fixture.host();
-        (
-            host.control_hint_frame(ui::time::now()).row,
-            host.canvas_shown(),
-        )
+        let row = fixture.host().control_hint_frame(ui::time::now()).row;
+        let shown = fixture.host().canvas_shown();
+        drop(fixture);
+        (row, shown)
     }
 
     /// The demo's windows, every one its own group, on a strip or on the
@@ -231,7 +230,8 @@ mod tests {
                 places: (0_i32..)
                     .zip(&groups)
                     .map(|(index, group)| {
-                        (group.id, CanvasPlace::new(20 + 220 * index, 20, 200, 160))
+                        let x = index.saturating_mul(220).saturating_add(20);
+                        (group.id, CanvasPlace::new(x, 20, 200, 160))
                     })
                     .collect(),
             };

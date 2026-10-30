@@ -266,14 +266,14 @@ fn an_apps_first_opening_commits_its_authorship_without_the_invocation_journal()
             Ok(())
         })
         .unwrap();
+    let after = std::fs::read(&journal).ok();
+    drop(actions);
+    drop(fixture);
+    crate::shell::persist::wait_for_saves();
     assert_eq!(
-        std::fs::read(&journal).ok(),
-        before,
+        after, before,
         "the opening staged nothing in the broker's invocation journal"
     );
-    drop(actions);
-    drop(fixture.broker);
-    crate::shell::persist::wait_for_saves();
 }
 
 /// An app opened in a workspace this device holds before the room's
