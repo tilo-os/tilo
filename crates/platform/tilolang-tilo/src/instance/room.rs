@@ -356,7 +356,33 @@ impl RoomRecord {
             run: None,
             by: None,
             to: None,
+            step: None,
         };
+        let me = ActionInvoker::actor(self.person.clone());
+        self.history(instance, &edit, resource, kind, me, None)
+            .map(|_| true)
+    }
+
+    /// Carry out what the person asked of their history at the window (`asked`) through the
+    /// history verb `undo` or `redo` on `resource` (a resource `kind`), as a step of their own;
+    /// the instance is brought up to date. Whether anything was taken back or brought back.
+    ///
+    /// # Errors
+    /// The verb was refused, said in the record's words.
+    pub fn asked(
+        &mut self,
+        instance: &mut Instance,
+        asked: &crate::instance::HistoryAsk,
+        resource: &str,
+        kind: &str,
+    ) -> Result<bool, RoomError> {
+        use crate::instance::HistoryAsk;
+        match asked {
+            HistoryAsk::Undo => return self.undo(instance, resource, kind),
+            HistoryAsk::Redo => return self.redo(instance, resource, kind),
+            HistoryAsk::UndoStep(_) | HistoryAsk::UndoRun(_) => {}
+        }
+        let edit = asked.edit();
         let me = ActionInvoker::actor(self.person.clone());
         self.history(instance, &edit, resource, kind, me, None)
             .map(|_| true)
@@ -855,6 +881,26 @@ impl ResolveAuthor for HostWords {
 impl HistoryWords for HostWords {
     fn sentence(&self, entry: &ActionContext) -> String {
         tilo_history::Reader::new(&self.locale).sentence(entry)
+    }
+}
+
+impl crate::instance::HistoryAsk {
+    /// The history verb that carries it out on the record.
+    #[must_use]
+    pub fn edit(&self) -> HistoryEdit {
+        let undo = |run: Option<&String>, step: Option<&String>| HistoryEdit::Undo {
+            steps: None,
+            run: run.cloned(),
+            by: None,
+            to: None,
+            step: step.cloned(),
+        };
+        match self {
+            Self::Undo => undo(None, None),
+            Self::Redo => HistoryEdit::Redo { steps: None },
+            Self::UndoStep(change) => undo(None, Some(change)),
+            Self::UndoRun(run) => undo(Some(run), None),
+        }
     }
 }
 

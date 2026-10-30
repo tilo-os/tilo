@@ -1009,6 +1009,7 @@ impl<P: Chained> Chain<P> {
                 run: None,
                 by: None,
                 to: None,
+                step: None,
             },
         };
         let undone = self

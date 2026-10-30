@@ -18,6 +18,8 @@ mod columns;
 mod composer;
 mod engines;
 mod fixtures;
+#[cfg(feature = "room")]
+mod history_views;
 mod incremental;
 mod index;
 mod items;

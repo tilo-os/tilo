@@ -59,7 +59,7 @@ impl Described for Text {
 
 impl Text {
     /// Show `value` as content: it is never taken for a message of the app's catalogue.
-    fn show_content(&mut self, value: String) {
+    pub(crate) fn show_content(&mut self, value: String) {
         if self.source.is_none() {
             self.source = Some(TextSource::Local(Box::new(|| None)));
         }

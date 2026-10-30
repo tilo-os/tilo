@@ -295,6 +295,129 @@ impl Walk {
     }
 }
 
+/// What one change wrote to one property of an object: the value the
+/// property held before the change (at the change's dependencies) and after
+/// it (at the change itself), each as JSON, `null` where it held nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Written {
+    /// The property of the object: a field's key.
+    pub prop: String,
+    pub before: serde_json::Value,
+    pub after: serde_json::Value,
+}
+
+/// The keys of the map `obj` the change `hash` of `doc` reached, in the
+/// order it first reached each: a key it set or removed, or one holding an
+/// object it changed inside (the text of a field typed into, a list or map
+/// of it), read from the change's own operations. Empty for a change `doc`
+/// does not hold. A reader that decodes the values itself reads each key at
+/// the change's dependencies and at the change ([`written`] reads them as
+/// JSON).
+///
+/// # Errors
+/// An operation names an object the document does not hold.
+pub fn wrote(
+    doc: &automerge::Automerge,
+    hash: &ChangeHash,
+    obj: &automerge::ObjId,
+) -> Result<Vec<String>, ModelError> {
+    use automerge::ReadDoc as _;
+    let Some(change) = doc.get_change_by_hash(hash) else {
+        return Ok(Vec::new());
+    };
+    let after_heads = [*hash];
+    let mut keys: Vec<String> = Vec::new();
+    for op in change.decode().operations {
+        let target = op_obj(doc, &op.obj)?;
+        let key = if target == *obj {
+            match &op.key {
+                automerge::legacy::Key::Map(key) => Some(key.to_string()),
+                automerge::legacy::Key::Seq(_) => None,
+            }
+        } else {
+            // An operation inside an object under `obj`: the key of `obj` on its way up.
+            doc.parents_at(&target, &after_heads)?.find_map(|parent| {
+                match (parent.obj == *obj, parent.prop) {
+                    (true, automerge::Prop::Map(key)) => Some(key),
+                    _ => None,
+                }
+            })
+        };
+        if let Some(key) = key
+            && !keys.contains(&key)
+        {
+            keys.push(key);
+        }
+    }
+    Ok(keys)
+}
+
+/// What the change `hash` of `doc` wrote under the map `obj`, one entry per
+/// key of `obj` it reached ([`wrote`]), with the values before and after
+/// read as JSON from the document as of the change's dependencies and as of
+/// the change, in place. A key whose value reads the same on both sides (a
+/// write of what it held) is left out. Empty for a change `doc` does not
+/// hold.
+///
+/// # Errors
+/// A value the document holds cannot be read as JSON.
+pub fn written(
+    doc: &automerge::Automerge,
+    hash: &ChangeHash,
+    obj: &automerge::ObjId,
+) -> Result<Vec<Written>, ModelError> {
+    use automerge::ReadDoc as _;
+    let Some(change) = doc.get_change_by_hash(hash) else {
+        return Ok(Vec::new());
+    };
+    let before_heads = change.deps().to_vec();
+    let after_heads = [*hash];
+    let keys = wrote(doc, hash, obj)?;
+    let mut out = Vec::with_capacity(keys.len());
+    for key in keys {
+        let before = held_at(doc, obj, &key, &before_heads)?;
+        let after = held_at(doc, obj, &key, &after_heads)?;
+        if before != after {
+            out.push(Written {
+                prop: key,
+                before,
+                after,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// What the key `key` of the map `obj` held as of `heads`, as JSON, `null`
+/// where it held nothing (or `obj` did not exist yet), read in place: the
+/// cost of the value, not of the document.
+///
+/// # Errors
+/// The value cannot be read as JSON.
+pub fn held_at(
+    doc: &automerge::Automerge,
+    obj: &automerge::ObjId,
+    key: &str,
+    heads: &[ChangeHash],
+) -> Result<serde_json::Value, ModelError> {
+    use automerge::ReadDoc as _;
+    match doc.get_at(obj, key, heads)? {
+        Some((value, inner)) => crate::value::read_value_at(doc, &value, &inner, heads),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+/// The object a change's operation names, as the document addresses it.
+fn op_obj(
+    doc: &automerge::Automerge,
+    obj: &automerge::legacy::ObjectId,
+) -> Result<automerge::ObjId, ModelError> {
+    Ok(match obj {
+        automerge::legacy::ObjectId::Root => automerge::ROOT,
+        automerge::legacy::ObjectId::Id(id) => doc.import_obj(&id.to_string())?,
+    })
+}
+
 pub fn read_at<R: Resource>(doc: &mut Doc, heads: &[ChangeHash]) -> Result<R::State, ModelError> {
     let past = doc.fork_at(heads)?;
     R::read(&past)
@@ -319,6 +442,50 @@ mod tests {
         assert!(page.older.is_some());
         // Each listed change and the dependency that queues after it.
         assert!(read <= 51, "a page of 50 read {read} changes of 2,000");
+    }
+
+    #[test]
+    fn a_change_says_what_it_wrote_with_the_values_before_and_after() {
+        use automerge::transaction::Transactable as _;
+        use automerge::{ObjType, ScalarValue};
+        let mut doc = Doc::new();
+        let note = doc.put_object(ROOT, "note", ObjType::Map).unwrap();
+        let title = doc.put_object(&note, "title", ObjType::Text).unwrap();
+        doc.splice_text(&title, 0, 0, "Groceries").unwrap();
+        doc.put(&note, "due", "2026-10-30").unwrap();
+        doc.put(&note, "pinned", false).unwrap();
+        let first = commit_stamped_at(&mut doc, 1).unwrap();
+        // One step: the title typed into, the due day moved, `pinned` written as it was.
+        doc.splice_text(&title, 0, 9, "Shopping").unwrap();
+        doc.put(&note, "due", "2026-11-02").unwrap();
+        doc.put(&note, "pinned", ScalarValue::Boolean(false))
+            .unwrap();
+        let step = commit_stamped_at(&mut doc, 2).unwrap();
+        // A later step the earlier one's values do not see.
+        doc.put(&note, "due", "2026-12-24").unwrap();
+        commit_stamped_at(&mut doc, 3).unwrap();
+        let wrote = written(doc.document(), &step, &note).unwrap();
+        assert_eq!(
+            wrote,
+            vec![
+                Written {
+                    prop: "title".into(),
+                    before: "Groceries".into(),
+                    after: "Shopping".into(),
+                },
+                Written {
+                    prop: "due".into(),
+                    before: "2026-10-30".into(),
+                    after: "2026-11-02".into(),
+                },
+            ]
+        );
+        // The first step made everything it wrote: nothing before.
+        let made = written(doc.document(), &first, &ROOT).unwrap();
+        assert_eq!(made.len(), 1);
+        assert_eq!(made[0].prop, "note");
+        assert!(made[0].before.is_null());
+        assert_eq!(made[0].after["title"], "Groceries");
     }
 
     fn check_empty_commit_actor_transition(open_empty: bool) {

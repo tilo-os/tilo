@@ -290,6 +290,7 @@ impl ListedOnce {
 
 mod plan;
 mod versions;
+mod written;
 use versions::{NO_VERSIONS, note_versions};
 
 /// Gives the store the room record when it opened without it: for a write, or a field no index
@@ -323,6 +324,9 @@ struct Inner {
     /// Items filters were evaluated on one by one.
     evaluated: std::cell::Cell<u64>,
     listed: RefCell<Vec<ListedOnce>>,
+    /// What each change wrote to the fields of each resource it changed, by the change and the
+    /// resource, as [`Store::written`] read it: a change never changes, so it is read once.
+    written: RefCell<HashMap<(String, String), written::Written>>,
     txns: HashMap<u64, TxnState>,
     next_txn: u64,
     subs: Vec<Subscription>,
@@ -739,6 +743,7 @@ impl TiloStore {
                 snapshot: std::sync::Weak::new(),
                 nested: Nested::default(),
                 unshared: Arc::from(tilolang_runtime::rich::UNSHARED),
+                written: RefCell::default(),
             })),
         }
     }
@@ -2782,6 +2787,15 @@ impl Store for TiloStore {
             .field(&field.id)
             .ok_or_else(|| not_found(format!("field {}", field.id)))?;
         read_field(&before, &located, spec)
+    }
+
+    fn written(
+        &self,
+        at: &ResourceRef,
+        fields: &[FieldSpec],
+        change: &str,
+    ) -> Result<Vec<(FieldId, FieldValue, FieldValue)>, StoreError> {
+        self.written_by(at, fields, change)
     }
 
     fn version_end(&self, at: &ResourceRef, last: bool) -> Result<Option<Version>, StoreError> {

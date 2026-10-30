@@ -1024,6 +1024,34 @@ pub fn undo_since(
     take_back(doc, targets, compensate, words)
 }
 
+/// Take back the one step of `scope`'s in effect that the change `hash` is
+/// part of (with the rest of its gesture), wherever it stands in history, as
+/// one new change: a step a history list names. Returns the step's changes,
+/// newest first.
+///
+/// # Errors
+/// As [`undo`], and when the change is no step of `scope`'s in effect.
+pub fn undo_step(
+    doc: &mut AutoCommit,
+    scope: &Scope,
+    hash: &ChangeHash,
+    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    words: &dyn HistoryWords,
+) -> Result<Vec<Version>, String> {
+    doc.get_heads();
+    let targets = steps_in_effect(doc, &|version| scope.owns(version), usize::MAX)
+        .into_iter()
+        .find(|step| step.iter().any(|version| version.hash == *hash))
+        .unwrap_or_default();
+    if targets.is_empty() {
+        return Err(format!(
+            "The step {} is undone already, or is not one this undo may take back.",
+            short(hash)
+        ));
+    }
+    take_back(doc, targets, compensate, words)
+}
+
 fn take_back(
     doc: &mut AutoCommit,
     targets: Vec<Version>,

@@ -293,3 +293,94 @@ view thread_chip<T>(thread: T, count: Int) {
         on press: open(thread)
     }
 }
+
+/// What happened to `of`, newest first, as the platform folds its history (`steps`): each step,
+/// consecutive changes by one person or by one task run, is an entry saying who made it, what
+/// they did and how long ago. A step of one change shows each field it changed, what it held
+/// before beside what it holds now, each as the field's type shows it; a step of several opens
+/// to each of them. A step the person looking made offers Undo for it, and a run's step Undo
+/// for the whole run; each change of theirs in a longer step is undone on its own.
+view history<R>(of: R) {
+    lens open: Text = ""
+    let steps = steps(of)
+    if not steps.is_empty() {
+        section(phrase("tilolang-history")) {
+            for s in steps {
+                let key = "{s.at}/{s.who}"
+                let single = s.versions.len() == 1
+                let what = if let run = s.task { run.title } else if let v = s.versions.last() { if v.description == "" { v.what } else { v.description } } else { "" }
+                stack(gap: .related) {
+                    row(gap: .related, align: .center) {
+                        avatar(s.who)
+                        stack(gap: .tight) {
+                            ui.Text("{s.who}", role: .label)
+                            ui.Text(what, role: .caption, secondary: true)
+                            if not single {
+                                ui.Text(phrase("tilolang-history-changes", count: s.versions.len()), role: .caption, secondary: true)
+                            }
+                        }
+                        spacer()
+                        ui.Time(s.at, role: .caption, secondary: true)
+                        if let run = s.task {
+                            ui.Button(phrase("tilolang-history-undo-run")) {
+                                on press: undo(run)
+                            }
+                        } else if single and s.mine {
+                            if let v = s.versions.last() {
+                                ui.Button(phrase("tilolang-undo")) {
+                                    on press: undo(v)
+                                }
+                            }
+                        }
+                    }
+                    if single {
+                        if let v = s.versions.last() {
+                            std.version_changes(v)
+                        }
+                    } else if open == key {
+                        ui.Button(phrase("tilolang-history-hide")) {
+                            on press: set(open, "")
+                        }
+                        for v in s.versions {
+                            stack(gap: .tight) {
+                                row(gap: .related, align: .center) {
+                                    ui.Text(if v.description == "" { v.what } else { v.description }, role: .caption)
+                                    spacer()
+                                    ui.Time(v.at, role: .caption, secondary: true)
+                                    if v.mine {
+                                        ui.Button(phrase("tilolang-undo")) {
+                                            on press: undo(v)
+                                        }
+                                    }
+                                }
+                                std.version_changes(v)
+                            }
+                        }
+                    } else {
+                        ui.Button(phrase("tilolang-history-show")) {
+                            on press: set(open, key)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What a version did to each field it changed: the field's name, what it held before and what
+/// it holds after, each as the field's type shows it; or that it made or removed the resource.
+view version_changes(v: host.Version) {
+    if v.kind == "created" {
+        ui.Text(phrase("tilolang-history-made"), role: .caption, secondary: true)
+    } else if v.kind == "removed" {
+        ui.Text(phrase("tilolang-history-removed"), role: .caption, secondary: true)
+    } else if not v.changes.is_empty() {
+        grid(columns: 3, gap: .related) {
+            for c in v.changes {
+                ui.Text(c.label, role: .caption, secondary: true)
+                c.before
+                c.after
+            }
+        }
+    }
+}

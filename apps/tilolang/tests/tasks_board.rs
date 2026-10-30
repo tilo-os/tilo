@@ -20,6 +20,11 @@
     reason = "each test binary reads what it needs of the change marks"
 )]
 mod change_marks;
+#[allow(
+    dead_code,
+    reason = "each test binary reads what it needs of a window's history"
+)]
+mod history_window;
 mod support;
 
 use tilolang_app::app::TlApp;
@@ -225,6 +230,76 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     let _ = RUN;
 }
 
+/// A task's history in its window: who set its due day and when, the day it was due before and
+/// the day it is due now, each shown as a day, and an agent's run as one entry. With
+/// `TILO_HISTORY_SHOTS=<dir>` the window is written, light and dark, the run's entry closed and
+/// open.
+#[test]
+fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
+    use change_marks::{action_id, named, published_with, run, settle};
+    use history_window::{after, shoot, times};
+    let _settled = ui::motion::testing::settled();
+    let mut app =
+        ui::framework::testing::HostedApp::open(support::installed("tasks"), "ada").unwrap();
+    settle(&mut app);
+    let root = app
+        .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
+        .remove(0);
+    let tasks = format!("tl:so.tilo.lang.tasks:{root}");
+    let add = action_id(&mut app, &tasks, "Add");
+    let mut titled = serde_json::Map::new();
+    titled.insert("title".to_owned(), "Call the landlord".into());
+    app.invoke(None, None, &tasks, &add, &titled, false)
+        .unwrap();
+    settle(&mut app);
+    let task = published_with(&mut app, &tasks, "Set due date");
+    let schedule = action_id(&mut app, &task, "Set due date");
+    let due = |day: &str| {
+        let mut args = serde_json::Map::new();
+        args.insert("due".to_owned(), day.into());
+        args
+    };
+    app.invoke(None, None, &task, &schedule, &due("2026-11-02"), false)
+        .unwrap();
+    // The agent's run puts it off twice: one entry of two changes.
+    let (agent, ambient) = run();
+    for day in ["2026-11-04", "2026-11-05"] {
+        app.invoke(
+            Some(agent.clone()),
+            Some(&ambient),
+            &task,
+            &schedule,
+            &due(day),
+            false,
+        )
+        .unwrap();
+    }
+    let done = ui::time::SystemTime::now();
+    settle(&mut app);
+    ui::time::testing::with_wall(after(done, 1), || {
+        let row = named(&mut app, "SwipeRow", "Call the landlord");
+        app.harness()
+            .click_at(row[0] + row[2] / 4.0, row[1] + row[3] / 2.0);
+        settle(&mut app);
+        assert_eq!(
+            times(&mut app).len(),
+            2,
+            "the run's entry and Ada's own, each saying when"
+        );
+        shoot(&mut app, "tasks-history", settle);
+        let show = named(&mut app, "Button", "Show changes");
+        app.harness()
+            .click_at(show[0] + show[2] / 2.0, show[1] + show[3] / 2.0);
+        settle(&mut app);
+        assert_eq!(
+            times(&mut app).len(),
+            4,
+            "opened, each of the run's changes says when"
+        );
+        shoot(&mut app, "tasks-history-open", settle);
+    });
+}
+
 /// The wall clock at `hour:minute:second` on `day` of 2026, in the zone this process reads as
 /// the person's.
 fn local(month: u32, day: u32, (hour, minute, second): (u32, u32, u32)) -> ui::time::SystemTime {
@@ -305,16 +380,21 @@ fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
             !shows(&mut app, "Reply to Mia"),
             "tomorrow's task is not listed today"
         );
-        // The window sleeps until the person's midnight, and not before.
+        // The window sleeps until what it shows next reads differently, and not before: the
+        // moment the staged task was made, in its history, stops reading as just now before
+        // the person's midnight, a minute away, comes.
         let deadline = app
             .harness()
             .frame_schedule()
             .next_wake_deadline
             .expect("a window showing today waits for midnight");
         let wait = deadline.saturating_duration_since(ui::time::now());
+        let expected = wakes_after(before, before, local(7, 1, (0, 0, 0)));
         assert!(
-            wait > ui::time::Duration::from_secs(50) && wait <= ui::time::Duration::from_secs(60),
-            "the window wakes at midnight, a minute away: {wait:?}"
+            wait.abs_diff(expected) < ui::time::Duration::from_secs(1)
+                && wait <= ui::time::Duration::from_secs(60),
+            "the window wakes when the history's moment reads anew, before midnight: \
+             {wait:?}, not {expected:?}"
         );
         app
     });
@@ -331,17 +411,36 @@ fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
             shows(&mut app, "Reply to Mia"),
             "the task due on the new day is listed once midnight passed"
         );
-        // And the window waits for the next midnight.
+        // And the window waits again, for the next midnight or the history's moment reading
+        // anew, whichever comes first.
         let wait = app
             .harness()
             .frame_schedule()
             .next_wake_deadline
             .map(|deadline| deadline.saturating_duration_since(ui::time::now()));
+        let expected = wakes_after(before, after, local(7, 2, (0, 0, 0)));
         assert!(
-            wait.is_some_and(|wait| wait > ui::time::Duration::from_secs(23 * 3600)),
-            "the window waits for the next midnight: {wait:?}"
+            wait.is_some_and(|wait| wait.abs_diff(expected) < ui::time::Duration::from_secs(1)),
+            "the window waits for what it shows to read differently: {wait:?}, not {expected:?}"
         );
     });
+}
+
+/// How long after `now` a window showing a moment made at `made` and a day ending at
+/// `midnight` next shows something different: when the moment reads anew as the toolkit reads
+/// it, or midnight, whichever is first.
+fn wakes_after(
+    made: ui::time::SystemTime,
+    now: ui::time::SystemTime,
+    midnight: ui::time::SystemTime,
+) -> ui::time::Duration {
+    let secs = |at: ui::time::SystemTime| {
+        i64::try_from(at.duration_since(ui::time::UNIX_EPOCH).unwrap().as_secs()).unwrap()
+    };
+    let midnight = secs(midnight);
+    let at = ui::widget::next_change(secs(made), secs(now))
+        .map_or(midnight, |change| change.min(midnight));
+    ui::time::Duration::from_secs(u64::try_from(at.checked_sub(secs(now)).unwrap()).unwrap())
 }
 
 #[test]

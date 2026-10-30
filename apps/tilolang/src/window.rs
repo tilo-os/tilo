@@ -580,10 +580,22 @@ impl Widget for Window {
         let received = self.view.receive();
         // The person's Undo on a notice is the framework's undo of the record, as Ctrl+Z is here.
         for asked in self.instance.take_history() {
-            self.undo.request(match asked {
-                instance::HistoryAsk::Undo => ui::undo::UndoRequest::Undo,
-                instance::HistoryAsk::Redo => ui::undo::UndoRequest::Redo,
-            });
+            match asked {
+                instance::HistoryAsk::Undo => {
+                    self.undo.request(ui::undo::UndoRequest::Undo);
+                }
+                instance::HistoryAsk::Redo => {
+                    self.undo.request(ui::undo::UndoRequest::Redo);
+                }
+                // The framework's undo here takes back the person's last step only; a step or
+                // a run named from a view is taken back where a tilolang host runs the
+                // instance, on the record's own history verb.
+                instance::HistoryAsk::UndoStep(_) | instance::HistoryAsk::UndoRun(_) => {
+                    tracing::warn!(?asked, "an undo named from a view needs the tilolang host");
+                    self.instance
+                        .history_refused(crate::i18n::t("tilolang-undo-unavailable"));
+                }
+            }
         }
         let child = self.view.update(state, path);
         changed || received || child

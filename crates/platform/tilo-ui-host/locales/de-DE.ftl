@@ -42,3 +42,18 @@ tilolang-thread-replies = { $count ->
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
 tilolang-form-cancel = Abbrechen
+tilolang-none-value = Keine Angabe
+tilolang-empty-value = Leer
+tilolang-yes = Ja
+tilolang-no = Nein
+tilolang-undo-unavailable = Dieses Fenster kann keinen Schritt aus seinem Verlauf zurücknehmen.
+tilolang-history = Verlauf
+tilolang-history-changes = { $count ->
+    [one] 1 Änderung
+   *[other] { $count } Änderungen
+}
+tilolang-history-show = Änderungen zeigen
+tilolang-history-hide = Änderungen ausblenden
+tilolang-history-undo-run = Ausführung rückgängig machen
+tilolang-history-made = Erstellt
+tilolang-history-removed = Entfernt

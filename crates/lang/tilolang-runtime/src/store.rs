@@ -1092,6 +1092,26 @@ pub trait Store {
         )))
     }
 
+    /// What the change `change` (a [`Version::change`]) wrote to each of `fields` of `at`: the
+    /// field's value before the change and after it, read from the change itself, for each
+    /// field it changed, in the order of `fields`. A field it wrote with what the field held is
+    /// left out.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for a change the store does not hold; a store that keeps no log says so.
+    fn written(
+        &self,
+        at: &ResourceRef,
+        fields: &[FieldSpec],
+        change: &str,
+    ) -> Result<Vec<(FieldId, FieldValue, FieldValue)>, StoreError> {
+        let _ = (at, fields);
+        Err(StoreError::Invalid(format!(
+            "this store keeps no log to read what the change {change} wrote"
+        )))
+    }
+
     /// Who made the latest versions of `at`, newest first and each once: at most `limit` of
     /// them, from at most the last `window` changes of its document. What a rich input's `@`
     /// drawer offers first; its cost is bounded by `window`, never by how long the history is.

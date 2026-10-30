@@ -445,7 +445,7 @@ view step_row(s: Step) {
 }
 
 /// A task's window: whether it is done and its title, when it is due, its project, how much it
-/// matters, who is doing it, its steps and its notes.
+/// matters, who is doing it, its steps, its notes, and what happened to it.
 view task_page(t: Task) {
     lens step: Text
     std.document(t) {
@@ -506,6 +506,7 @@ view task_page(t: Task) {
             }
         }
         input(bind: t.notes, placeholder: "Add notes", lines: 6)
+        std.history(t)
     }
 }
 

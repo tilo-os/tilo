@@ -111,6 +111,8 @@ impl Checker<'_> {
                 return self.builtin_versions(name, args, span);
             }
             "unseen" => return self.builtin_unseen(args, span),
+            "undo" => return self.builtin_undo(args, span),
+            "steps" => return self.builtin_steps(args, span),
             "changes" => return self.builtin_changes(args, span),
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
