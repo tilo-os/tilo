@@ -14,6 +14,12 @@ pub trait PeerTransport {
         None
     }
     fn is_connected(&self) -> bool;
+    /// Whether this app is a surface of the desktop it speaks to, rather than
+    /// an app of a document: what it offers lives with that desktop, so no
+    /// document history custodies its actions.
+    fn hosts_surface(&self) -> bool {
+        false
+    }
     fn send(&mut self, request: CollabRequest) -> Result<(), String>;
     fn poll(&mut self) -> Vec<CollabEvent>;
     /// The real broker acknowledgement of the latest Hello, never an optimistic echo.
@@ -153,6 +159,11 @@ impl super::CollabTransport for PeerTransportAdapter {
         } else {
             super::TransportStatus::Connecting
         }
+    }
+
+    fn hosts_surface(&mut self) -> bool {
+        self.check_owner();
+        self.closed.is_none() && self.peer.hosts_surface()
     }
 
     fn submit(&mut self, command: super::TransportCommand) -> Result<(), super::TransportError> {

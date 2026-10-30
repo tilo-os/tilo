@@ -1737,6 +1737,15 @@ impl CollaborationManager {
         }
     }
 
+    /// Whether this app is one of the desktop's own surfaces: what it offers
+    /// lives with the desktop it speaks to, not in a document of its own.
+    pub fn hosts_surface(&mut self) -> bool {
+        match &mut self.backend {
+            Backend::Transport(transport) => transport.hosts_surface(),
+            Backend::Disabled(_) => false,
+        }
+    }
+
     pub fn finish_event_batch(&mut self) {
         if let Backend::Transport(transport) = &mut self.backend {
             transport.finish_event_batch();
