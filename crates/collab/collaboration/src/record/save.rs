@@ -142,6 +142,31 @@ pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
     (doc, autosave)
 }
 
+/// [`open_stored`] for a member's own record of an app (`member:<person>:…`),
+/// which may have kept its records in the workspace's record before: when this
+/// device holds no copy of the person's record yet and holds the workspace's
+/// record of the app (`workspace`), the person's record starts as that copy,
+/// its history and ids with it, so what they saw there is theirs from then on.
+/// The workspace's record is only read: nothing in it changes or goes. Once the
+/// person's record has a copy, it is opened as it is.
+pub fn open_stored_adopting(
+    mut store: DocStore,
+    workspace: Option<DocStore>,
+) -> (AutoCommit, DocWriter) {
+    let fresh = matches!(store.load_complete(), Ok(None)) && store.refusal().is_none();
+    if fresh
+        && let Some(mut workspace) = workspace
+        && let Ok(Some(mut doc)) = workspace.load_complete()
+    {
+        doc.set_actor(store.actor().clone());
+        let mut writer = store.writer();
+        // Nothing of it is on disk under the person's record yet: the first write keeps it.
+        writer.request(&mut doc);
+        return (doc, writer);
+    }
+    open_stored(store)
+}
+
 /// `doc`, with what a brand-new one starts with (the store's schema stamp)
 /// committed as its genesis, which names itself as such. Every change a
 /// record's channel carries names what it is, and a sealed room's channel

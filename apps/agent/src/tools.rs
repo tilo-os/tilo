@@ -764,8 +764,10 @@ fn finish_definition() -> ToolDefinition {
                         },
                         "source": {
                             "type": "string",
-                            "description": "The view: a tilolang view block over the apps \
-                                listed under \"Apps\", such as `column { ... }`."
+                            "description": "The view: one tilolang `view` declaration, as an \
+                                app declares one, over any app listed under \"Apps\" by its \
+                                name, such as `view unread(m: mail.Mail) { ... }` or \
+                                `view left() { column { ... } }`. It names no app with `use`."
                         }
                     },
                     "required": ["title", "source"],
@@ -786,7 +788,8 @@ pub const PARTS: &str = "parts";
 pub const VIEW: &str = "view";
 const VIEW_DESCRIPTION: &str = "Optional: answer with a view when the answer is about \
      resources the person will want to look at and act on (what is left, what changed, a \
-     comparison). It opens as a window beside what they pointed at and stays live as the \
+     comparison). It becomes one of the person's own views, which they keep or discard; it \
+     opens beside what they pointed at, shows them what they can see and stays live as the \
      resources change; keep `reply` to one sentence then. Buttons in it that run actions ask \
      the person first.";
 /// The property naming parts that cannot be done, with the reason.
@@ -920,7 +923,7 @@ pub struct Finish {
     pub view: Option<ViewAnswer>,
 }
 
-/// A view a task answers with: a tilolang view block and what it shows.
+/// A view a task answers with: a tilolang `view` declaration and what it shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewAnswer {
     pub title: String,

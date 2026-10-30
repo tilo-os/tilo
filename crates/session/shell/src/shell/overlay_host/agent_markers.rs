@@ -788,7 +788,7 @@ mod shots_release {
                 app: VIEWS_APP.into(),
                 record: None,
                 reference: ResourceRef::whole(
-                    format!("tl.{VIEWS_APP}.Answer"),
+                    format!("tl.{VIEWS_APP}.WrittenView"),
                     format!("tl:{VIEWS_APP}:release-left"),
                     t("agent-quick-shots-answer-title"),
                 ),

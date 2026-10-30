@@ -81,7 +81,7 @@ mod cases {
         let channels = build(app_source!("chat"), &[]);
         let today = build(app_source!("today"), &[&notes, &todo, &channels]);
         let board = build(app_source!("board"), &[]);
-        let views = build(app_source!("views"), &[&board, &todo, &channels, &notes]);
+        let views = build(app_source!("views"), &[&channels]);
         Apps {
             notes,
             todo,
@@ -1188,7 +1188,7 @@ mod cases {
     }
 
     #[test]
-    fn an_answer_draws_its_view_block_live_over_other_apps_as_its_task_wrote_it() {
+    fn an_answer_draws_its_written_view_live_over_other_apps_as_its_task_wrote_it() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let list = w.rt.create_root("Tasks").unwrap();
@@ -1199,7 +1199,7 @@ mod cases {
         add("Update the changelog");
         let frozen = add("Freeze the strings for translation");
         w.call(&apps.todo, "check", vec![res(&frozen)]);
-        let answers = w.rt.create_root("Answers").unwrap();
+        let answers = w.rt.create_root("Views").unwrap();
         // The agent's task answers; the answer records it as the block's author.
         let task = Principal::new("agent-task:release");
         let id = apps.views.action("answer");
@@ -1213,13 +1213,14 @@ mod cases {
                         Value::text("Left for the release"),
                         Value::text("what's left for the release?"),
                         Value::text(release_view()),
+                        Value::text(""),
                     ],
                 ),
             )
             .unwrap(),
         );
         assert_eq!(author_of(&w, &answer), "agent-task:release");
-        let mut view = w.view(&apps.views, "answer_page", vec![res(&answer)]);
+        let mut view = w.view(&apps.views, "view_page", vec![res(&answer)]);
         let found = embeds(view.tree());
         assert_eq!(found.len(), 1, "{}", dump(view.tree()));
         assert_eq!(state(found[0]), "view", "{}", dump(view.tree()));
@@ -1244,7 +1245,7 @@ mod cases {
         );
         // As a window draws it, with rows built as they are shown: the answer's rows are there.
         let lazy =
-            w.rt.open_view(&me(), &apps.views.view("answer_page"), vec![res(&answer)])
+            w.rt.open_view(&me(), &apps.views.view("view_page"), vec![res(&answer)])
                 .unwrap();
         let lazy_rows = of_kind(embeds(lazy.tree())[0], "ui.ListRow").len();
         assert_eq!(

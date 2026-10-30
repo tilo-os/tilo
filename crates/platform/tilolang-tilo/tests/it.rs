@@ -42,3 +42,4 @@ mod task_door;
 mod tasks;
 mod unions;
 mod upgrade;
+mod views_migration;

@@ -17,8 +17,9 @@ the task:
 - **steps**: the run records each program on its issue with what it answered: reads over
   Tasks, Notes and Chat, a note it writes, a step it undoes, a change to many tasks previewed
   and then confirmed.
-- **answer**: the run finishes with a view: a View in Views, written by the agent's task, which
-  the composer opens beside Tasks.
+- **answer**: the run finishes with a view: a `view` declaration kept among the person's own
+  views (Views, in their own record), written by the agent's task, which the composer opens
+  beside Tasks.
 - **shots**: PNGs of the session while it works and once it answered (OUT/*.png).
 
   scripts/headless-examples/agent-tilolang-e2e.py [--no-build] [--out DIR] [--keep]
@@ -209,7 +210,7 @@ def check_steps(session: Session) -> dict:
 
 
 def check_answer(session: Session) -> dict:
-    """The answer is a View in Views, open in a window."""
+    """The answer is one of the person's own views, open in a window."""
     windows = [w for w in session.windows() if w.get("app_id") == app_id("views")]
     if not windows:
         raise Failed("Views has no window open for the answer")
