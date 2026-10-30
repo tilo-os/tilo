@@ -16,6 +16,7 @@ use sctk::output::{OutputHandler, OutputState};
 use sctk::registry::{ProvidesRegistryState, RegistryState};
 use sctk::seat::pointer::ThemedPointer;
 use sctk::seat::SeatState;
+use sctk::shell::wlr_layer::{LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure};
 use sctk::shell::xdg::window::{Window, WindowConfigure, WindowHandler};
 use sctk::shell::xdg::XdgShell;
 use sctk::shell::WaylandSurface;
@@ -67,6 +68,11 @@ pub struct WinitState {
 
     /// The XDG shell that is used for windows.
     pub xdg_shell: XdgShell,
+
+    /// The layer shell, which is used for surfaces that place themselves on
+    /// a layer of an output. `None` when the compositor has no
+    /// `zwlr_layer_shell_v1`.
+    pub layer_shell: Option<LayerShell>,
 
     /// The currently present windows.
     pub windows: RefCell<AHashMap<WindowId, Arc<Mutex<WindowState>>>>,
@@ -215,6 +221,7 @@ impl WinitState {
             custom_cursor_pool,
 
             xdg_shell: XdgShell::bind(globals, queue_handle).map_err(WaylandError::Bind)?,
+            layer_shell: LayerShell::bind(globals, queue_handle).ok(),
             xdg_activation: XdgActivationState::bind(globals, queue_handle).ok(),
 
             windows: Default::default(),
@@ -367,6 +374,50 @@ impl WindowHandler for WinitState {
     }
 }
 
+impl LayerShellHandler for WinitState {
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        let window_id = super::make_wid(layer.wl_surface());
+        Self::queue_close(&mut self.window_compositor_updates, window_id);
+    }
+
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        layer: &LayerSurface,
+        configure: LayerSurfaceConfigure,
+        _serial: u32,
+    ) {
+        let window_id = super::make_wid(layer.wl_surface());
+
+        let Some(window_state) = self.windows.get_mut().get_mut(&window_id) else {
+            // The window is gone; nothing to configure.
+            return;
+        };
+        let resized = window_state.lock().unwrap().layer_configure(&configure);
+
+        let pos = if let Some(pos) = self
+            .window_compositor_updates
+            .iter()
+            .position(|update| update.window_id == window_id)
+        {
+            pos
+        } else {
+            self.window_compositor_updates
+                .push(WindowCompositorUpdate::new(window_id));
+            self.window_compositor_updates.len() - 1
+        };
+        self.window_compositor_updates[pos].resized |= resized;
+
+        // The configure is acked, but only a commit makes the surface show
+        // what it was configured for: ask for a redraw, as for a toplevel.
+        if let Some(requests) = self.window_requests.get_mut().get(&window_id) {
+            requests.redraw_requested.store(true, Ordering::Relaxed);
+        }
+        self.dispatched_events = true;
+    }
+}
+
 impl OutputHandler for WinitState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
@@ -500,5 +551,6 @@ sctk::delegate_compositor!(WinitState);
 sctk::delegate_output!(WinitState);
 sctk::delegate_registry!(WinitState);
 sctk::delegate_shm!(WinitState);
+sctk::delegate_layer!(WinitState);
 sctk::delegate_xdg_shell!(WinitState);
 sctk::delegate_xdg_window!(WinitState);

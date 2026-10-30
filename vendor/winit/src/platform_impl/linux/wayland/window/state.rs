@@ -22,9 +22,8 @@ use sctk::reexports::protocols::xdg::shell::client::xdg_toplevel::ResizeEdge as 
 
 use sctk::compositor::{CompositorState, Region, SurfaceData, SurfaceDataExt};
 use sctk::seat::pointer::{PointerDataExt, ThemedPointer};
-use sctk::shell::xdg::window::{DecorationMode, Window, WindowConfigure};
-use sctk::shell::xdg::XdgSurface;
-use sctk::shell::WaylandSurface;
+use sctk::shell::wlr_layer::LayerSurfaceConfigure;
+use sctk::shell::xdg::window::{DecorationMode, WindowConfigure};
 use sctk::shm::slot::SlotPool;
 use sctk::shm::Shm;
 use sctk::subcompositor::SubcompositorState;
@@ -43,6 +42,7 @@ use crate::platform_impl::wayland::seat::{
     PointerConstraintsState, WinitPointerData, WinitPointerDataExt, ZwpTextInputV3Ext,
 };
 use crate::platform_impl::wayland::state::{WindowCompositorUpdate, WinitState};
+use crate::platform_impl::wayland::window::Surface;
 
 #[cfg(feature = "sctk-adwaita")]
 pub type WinitFrame = sctk_adwaita::AdwaitaFrame<WinitState>;
@@ -160,8 +160,11 @@ pub struct WindowState {
     /// The value is the serial of the event triggered moved.
     has_pending_move: Option<u32>,
 
-    /// The underlying SCTK window.
-    pub window: Window,
+    /// The underlying surface: a toplevel, or a layer of an output.
+    pub window: Surface,
+
+    /// Whether the compositor sent the first configure of a layer surface.
+    layer_configured: bool,
 
     // NOTE: The spec says that destroying parent(`window` in our case), will unmap the
     // subsurfaces. Thus to achieve atomic unmap of the client, drop the decorations
@@ -190,7 +193,7 @@ impl WindowState {
         queue_handle: &QueueHandle<WinitState>,
         winit_state: &WinitState,
         initial_size: Size,
-        window: Window,
+        window: Surface,
         theme: Option<Theme>,
     ) -> Self {
         let compositor = winit_state.compositor_state.clone();
@@ -243,6 +246,7 @@ impl WindowState {
             size: initial_size.to_logical(1.),
             stateless_size: initial_size.to_logical(1.),
             initial_size: Some(initial_size),
+            layer_configured: false,
             text_inputs: Vec::new(),
             theme,
             title: String::default(),
@@ -373,13 +377,15 @@ impl WindowState {
             self.stateless_size = self.size;
         }
 
-        if let Some(subcompositor) = subcompositor.as_ref().filter(|_| {
-            configure.decoration_mode == DecorationMode::Client
-                && self.frame.is_none()
-                && !self.csd_fails
-        }) {
+        if let Some((toplevel, subcompositor)) =
+            self.window.toplevel().zip(subcompositor.as_ref().filter(|_| {
+                configure.decoration_mode == DecorationMode::Client
+                    && self.frame.is_none()
+                    && !self.csd_fails
+            }))
+        {
             match WinitFrame::new(
-                &self.window,
+                toplevel,
                 shm,
                 #[cfg(feature = "sctk-adwaita")]
                 self.compositor.clone(),
@@ -536,13 +542,15 @@ impl WindowState {
 
     /// Start interacting drag resize.
     pub fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), ExternalError> {
-        let xdg_toplevel = self.window.xdg_toplevel();
+        let Some(toplevel) = self.window.toplevel() else {
+            return Err(ExternalError::NotSupported(NotSupportedError::new()));
+        };
 
         // TODO(kchibisov) handle touch serials.
         self.apply_on_pointer(|_, data| {
             let serial = data.latest_button_serial();
             let seat = data.seat();
-            xdg_toplevel.resize(seat, serial, direction.into());
+            toplevel.resize(seat, serial, direction.into());
         });
 
         Ok(())
@@ -550,7 +558,9 @@ impl WindowState {
 
     /// Start the window drag.
     pub fn drag_window(&self) -> Result<(), ExternalError> {
-        let xdg_toplevel = self.window.xdg_toplevel();
+        let Some(xdg_toplevel) = self.window.toplevel().map(|window| window.xdg_toplevel()) else {
+            return Err(ExternalError::NotSupported(NotSupportedError::new()));
+        };
         // TODO(kchibisov) handle touch serials.
         self.apply_on_pointer(|_, data| {
             let serial = data.latest_button_serial();
@@ -708,7 +718,23 @@ impl WindowState {
     /// Whether the window received initial configure event from the compositor.
     #[inline]
     pub fn is_configured(&self) -> bool {
-        self.last_configure.is_some()
+        self.last_configure.is_some() || self.layer_configured
+    }
+
+    /// The compositor gave a layer surface its size. Takes the size and says
+    /// whether it changed.
+    pub fn layer_configure(&mut self, configure: &LayerSurfaceConfigure) -> bool {
+        self.layer_configured = true;
+        let (width, height) = configure.new_size;
+        // Zero on an axis lets the surface pick its own size there: keep the
+        // one it asked for.
+        let size = LogicalSize::new(
+            NonZeroU32::new(width).map_or(self.size.width, NonZeroU32::get),
+            NonZeroU32::new(height).map_or(self.size.height, NonZeroU32::get),
+        );
+        let resized = size != self.size;
+        self.resize(size);
+        resized
     }
 
     #[inline]
@@ -839,13 +865,16 @@ impl WindowState {
         // Reload the hint.
         self.reload_transparency_hint();
 
-        // Set the window geometry.
-        self.window.xdg_surface().set_window_geometry(
-            x,
-            y,
-            outer_size.width as i32,
-            outer_size.height as i32,
-        );
+        // Set the window geometry, which says which part of the surface is
+        // the window; a layer surface has none.
+        if let Some(xdg_surface) = self.window.xdg_surface() {
+            xdg_surface.set_window_geometry(
+                x,
+                y,
+                outer_size.width as i32,
+                outer_size.height as i32,
+            );
+        }
 
         // Update the target viewport, this is used if and only if fractional scaling is in use.
         if let Some(viewport) = self.viewport.as_ref() {
@@ -1143,20 +1172,19 @@ impl WindowState {
 
         self.decorate = decorate;
 
-        match self
-            .last_configure
-            .as_ref()
-            .map(|configure| configure.decoration_mode)
-        {
-            Some(DecorationMode::Server) if !self.decorate => {
-                // To disable decorations we should request client and hide the frame.
-                self.window
-                    .request_decoration_mode(Some(DecorationMode::Client))
+        if let Some(toplevel) = self.window.toplevel() {
+            match self
+                .last_configure
+                .as_ref()
+                .map(|configure| configure.decoration_mode)
+            {
+                Some(DecorationMode::Server) if !self.decorate => {
+                    // To disable decorations we should request client and hide the frame.
+                    toplevel.request_decoration_mode(Some(DecorationMode::Client))
+                }
+                _ if self.decorate => toplevel.request_decoration_mode(Some(DecorationMode::Server)),
+                _ => (),
             }
-            _ if self.decorate => self
-                .window
-                .request_decoration_mode(Some(DecorationMode::Server)),
-            _ => (),
         }
 
         if let Some(frame) = self.frame.as_mut() {
@@ -1262,7 +1290,7 @@ impl WindowState {
 
         // NOTE: When fractional scaling is not used update the buffer scale.
         if self.fractional_scale.is_none() {
-            let _ = self.window.set_buffer_scale(self.scale_factor as _);
+            self.window.set_buffer_scale(self.scale_factor as _);
         }
 
         if let Some(frame) = self.frame.as_mut() {

@@ -39,3 +39,7 @@ masks/group. It contains configuration for physical positions, never composed
 text or key history. Keymap, focus-enter and modifier events enqueue their exact
 snapshot before further state changes; unavailable keymaps revoke it. Other
 platforms do not invent a snapshot.
+
+A window can be a surface on a layer of an output instead of a toplevel
+(`with_layer_surface`). The role lives in `window/surface.rs`; the toplevel
+requests a layer surface has no notion of are ignored for it.

@@ -11,8 +11,8 @@ use sctk::reexports::client::{Proxy, QueueHandle};
 
 use sctk::compositor::{CompositorState, Region, SurfaceData};
 use sctk::reexports::protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1;
-use sctk::shell::xdg::window::{Window as SctkWindow, WindowDecorations};
-use sctk::shell::WaylandSurface;
+use sctk::shell::wlr_layer::LayerSurface;
+use sctk::shell::xdg::window::WindowDecorations;
 
 use tracing::warn;
 
@@ -34,14 +34,18 @@ use super::state::WinitState;
 use super::types::xdg_activation::XdgActivationTokenData;
 use super::{ActiveEventLoop, WaylandError, WindowId};
 
+pub(crate) mod layer;
 pub(crate) mod state;
+pub(crate) mod surface;
 
+use layer::LayerSurfaceAttributes;
 pub use state::WindowState;
+pub use surface::Surface;
 
 /// The Wayland window.
 pub struct Window {
-    /// Reference to the underlying SCTK window.
-    window: SctkWindow,
+    /// The underlying surface: a toplevel, or a layer of an output.
+    window: Surface,
 
     /// Window id.
     window_id: WindowId,
@@ -121,10 +125,15 @@ impl Window {
             WindowDecorations::RequestClient
         };
 
-        let window =
-            state
-                .xdg_shell
-                .create_window(surface.clone(), default_decorations, &queue_handle);
+        let window = match attributes.platform_specific.layer.as_ref() {
+            Some(layer) => Surface::Layer(new_layer_surface(&state, layer, surface.clone().into(), &queue_handle)?),
+            None => Surface::Toplevel(state.xdg_shell.create_window(
+                surface.clone(),
+                default_decorations,
+                &queue_handle,
+            )),
+        };
+        let is_layer = window.is_layer();
 
         let mut window_state = WindowState::new(
             event_loop_window_target.connection.clone(),
@@ -143,42 +152,48 @@ impl Window {
         // Set the decorations hint.
         window_state.set_decorate(attributes.decorations);
 
-        // Set the app_id.
-        if let Some(name) = attributes.platform_specific.name.map(|name| name.general) {
-            window.set_app_id(name);
+        // The requests below are the desktop's view of a toplevel; a layer
+        // surface says where it goes itself and has none of them.
+        if !is_layer {
+            // Set the app_id.
+            if let Some(name) = attributes.platform_specific.name.map(|name| name.general) {
+                if let Some(window) = window.toplevel() {
+                    window.set_app_id(name);
+                }
+            }
+
+            // Set the window title.
+            window_state.set_title(attributes.title);
+
+            // Set the min and max sizes. We must set the hints upon creating a window, so
+            // we use the default `1.` scaling...
+            let min_size = attributes.min_inner_size.map(|size| size.to_logical(1.));
+            let max_size = attributes.max_inner_size.map(|size| size.to_logical(1.));
+            window_state.set_min_inner_size(min_size);
+            window_state.set_max_inner_size(max_size);
+
+            // Non-resizable implies that the min and max sizes are set to the same value.
+            window_state.set_resizable(attributes.resizable);
+
+            // Set startup mode.
+            match attributes.fullscreen.map(Into::into) {
+                Some(Fullscreen::Exclusive(_)) => {
+                    warn!("`Fullscreen::Exclusive` is ignored on Wayland");
+                }
+                #[cfg_attr(not(x11_platform), allow(clippy::bind_instead_of_map))]
+                Some(Fullscreen::Borderless(monitor)) => {
+                    let output = monitor.and_then(|monitor| match monitor {
+                        PlatformMonitorHandle::Wayland(monitor) => Some(monitor.proxy),
+                        #[cfg(x11_platform)]
+                        PlatformMonitorHandle::X(_) => None,
+                    });
+
+                    window.set_fullscreen(output.as_ref())
+                }
+                _ if attributes.maximized => window.set_maximized(),
+                _ => (),
+            };
         }
-
-        // Set the window title.
-        window_state.set_title(attributes.title);
-
-        // Set the min and max sizes. We must set the hints upon creating a window, so
-        // we use the default `1.` scaling...
-        let min_size = attributes.min_inner_size.map(|size| size.to_logical(1.));
-        let max_size = attributes.max_inner_size.map(|size| size.to_logical(1.));
-        window_state.set_min_inner_size(min_size);
-        window_state.set_max_inner_size(max_size);
-
-        // Non-resizable implies that the min and max sizes are set to the same value.
-        window_state.set_resizable(attributes.resizable);
-
-        // Set startup mode.
-        match attributes.fullscreen.map(Into::into) {
-            Some(Fullscreen::Exclusive(_)) => {
-                warn!("`Fullscreen::Exclusive` is ignored on Wayland");
-            }
-            #[cfg_attr(not(x11_platform), allow(clippy::bind_instead_of_map))]
-            Some(Fullscreen::Borderless(monitor)) => {
-                let output = monitor.and_then(|monitor| match monitor {
-                    PlatformMonitorHandle::Wayland(monitor) => Some(monitor.proxy),
-                    #[cfg(x11_platform)]
-                    PlatformMonitorHandle::X(_) => None,
-                });
-
-                window.set_fullscreen(output.as_ref())
-            }
-            _ if attributes.maximized => window.set_maximized(),
-            _ => (),
-        };
 
         match attributes.cursor {
             Cursor::Icon(icon) => window_state.set_cursor(icon),
@@ -263,7 +278,8 @@ impl Window {
     }
 
     pub(crate) fn xdg_toplevel(&self) -> Option<NonNull<c_void>> {
-        NonNull::new(self.window.xdg_toplevel().id().as_ptr().cast())
+        let window = self.window.toplevel()?;
+        NonNull::new(window.xdg_toplevel().id().as_ptr().cast())
     }
 }
 
@@ -859,6 +875,36 @@ impl WindowRequests {
     pub fn take_redraw_requested(&self) -> bool {
         self.redraw_requested.swap(false, Ordering::Relaxed)
     }
+}
+
+/// Ask the compositor for a surface on a layer of an output, saying where
+/// it goes and what it reserves.
+fn new_layer_surface(
+    state: &WinitState,
+    attributes: &LayerSurfaceAttributes,
+    surface: sctk::compositor::Surface,
+    queue_handle: &QueueHandle<WinitState>,
+) -> Result<LayerSurface, RootOsError> {
+    let Some(shell) = state.layer_shell.as_ref() else {
+        return Err(os_error!(OsError::Misc(
+            "the compositor has no zwlr_layer_shell_v1 for a layer surface"
+        )));
+    };
+
+    let layer = shell.create_layer_surface(
+        queue_handle,
+        surface,
+        attributes.layer.into(),
+        Some(attributes.namespace.clone()),
+        None,
+    );
+    layer.set_size(attributes.size.width, attributes.size.height);
+    layer.set_anchor(attributes.anchor.into());
+    layer.set_exclusive_zone(attributes.exclusive_zone);
+    let (top, right, bottom, left) = attributes.margin;
+    layer.set_margin(top, right, bottom, left);
+    layer.set_keyboard_interactivity(attributes.keyboard_interactivity.into());
+    Ok(layer)
 }
 
 impl TryFrom<&str> for Theme {

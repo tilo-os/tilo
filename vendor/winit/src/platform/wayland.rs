@@ -208,7 +208,10 @@ pub trait WindowExtWayland {
 }
 
 #[cfg(wayland_platform)]
-pub use crate::platform_impl::wayland::{ClientBuffer, ClientBufferSource, DragData};
+pub use crate::platform_impl::wayland::{
+    Anchor, ClientBuffer, ClientBufferSource, DragData, KeyboardInteractivity, Layer,
+    LayerSurfaceAttributes,
+};
 
 impl WindowExtWayland for Window {
     fn set_ime_content_type(&self, content: Option<ImeContentType>) {
@@ -370,6 +373,21 @@ pub trait WindowAttributesExtWayland {
     /// For details about application ID conventions, see the
     /// [Desktop Entry Spec](https://specifications.freedesktop.org/desktop-entry-spec/desktop-entry-spec-latest.html#desktop-file-id)
     fn with_name(self, general: impl Into<String>, instance: impl Into<String>) -> Self;
+
+    /// Make this window a surface on a layer of its output instead of a
+    /// toplevel the desktop places.
+    ///
+    /// A session's own surfaces — a bar, a desk, a panel, a quick settings
+    /// sheet — say where they go themselves: which layer, which edges they
+    /// are anchored to, how much of the edge they reserve for the desktop
+    /// to keep windows out of. The compositor composites them like any
+    /// other client's surface.
+    ///
+    /// The attributes that only a toplevel has (a title, client side
+    /// decorations, minimizing, maximizing, fullscreen, moving, a window
+    /// menu) are ignored. The surface is configured with the size its
+    /// anchors give it, like any layer surface.
+    fn with_layer_surface(self, attributes: LayerSurfaceAttributes) -> Self;
 }
 
 impl WindowAttributesExtWayland for WindowAttributes {
@@ -379,6 +397,12 @@ impl WindowAttributesExtWayland for WindowAttributes {
             general.into(),
             instance.into(),
         ));
+        self
+    }
+
+    #[inline]
+    fn with_layer_surface(mut self, attributes: LayerSurfaceAttributes) -> Self {
+        self.platform_specific.layer = Some(attributes);
         self
     }
 }
