@@ -8,8 +8,8 @@
 //! ([`tilo_action_broker::services::LauncherServices::windowless`]), for every action but `open`:
 //! opening something is the one action that shows it, so `open` still launches a window.
 //!
-//! The instance is the app's own component, mounted in the session's process on the room's record
-//! as a tab of the app would be ([`crate::shell::in_process::InProcessApps::mount`]), with no
+//! The instance is the app's own component, mounted in the session's process on the record its
+//! windows open ([`record`]: the workspace's own record of Tasks) as a tab of the app would be ([`crate::shell::in_process::InProcessApps::mount`]), with no
 //! window and never drawn. Its collaboration connection is recorded as the app's in that room,
 //! and as one with no window ([`crate::shell::launcher::register_windowless_launch`]): the broker
 //! attests it as it attests a launched app's, delivers the app's actions on its records to it,
@@ -32,6 +32,20 @@ pub(crate) const INSTANCE: u64 = u64::MAX - 11;
 #[must_use]
 pub(crate) fn definition(app: &str) -> Option<&'static ui::application::ApplicationDefinition> {
     (app == tasks::APP_ID).then(tilo_app::framework::definition::<tasks::App>)
+}
+
+/// The record a windowless instance of `definition` opens: the one its windows open when
+/// nothing names another. For an app that keeps the workspace's one record (Tasks' tracker)
+/// that is the workspace's own record, which its windows, the room's readers (the broker's
+/// tracker runs) and every device share; a record of its own beside it would hold what was
+/// asked where nothing reads it.
+#[must_use]
+pub(crate) fn record(definition: &ui::application::ApplicationDefinition) -> ui::record::RecordId {
+    if definition.keeps_room_record() {
+        ui::record::RecordId::package_primary()
+    } else {
+        ui::record::RecordId::room_default()
+    }
 }
 
 /// Where one app's windowless instance in one room stands.
@@ -130,5 +144,14 @@ mod tests {
         // Said once: the next action tries again.
         assert_eq!(request(tasks::APP_ID, &room), Ok(true));
         assert_eq!(state(tasks::APP_ID, &room), Some(Instance::Asked));
+    }
+
+    /// Tasks without a window keeps the tracker its windows and the broker's
+    /// tracker runs read: the workspace's own record, not one of its own.
+    #[test]
+    fn tasks_without_a_window_opens_the_record_its_windows_open() {
+        let definition = definition(tasks::APP_ID).unwrap();
+        assert!(definition.keeps_room_record());
+        assert!(record(definition).is_package_primary());
     }
 }

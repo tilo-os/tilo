@@ -29,7 +29,11 @@ use crate::shell::certified_action_session::{ActionSessionSource, DesktopActionS
 use crate::shell::search::invocation_wake::{poll, waker, watch};
 use crate::shell::selection_agent::SelectionSeed;
 
-const TIMEOUT: Duration = Duration::from_secs(30);
+/// The most the composer waits for a call it did not see end: past the
+/// broker's own wait for an app to take an action (30 s), so the host's
+/// answer, with its reason, comes first; this ends only a host that never
+/// answers.
+const TIMEOUT: Duration = Duration::from_secs(45);
 /// A request's decision may take the agent's own decision budget
 /// (`tilo_agent::transform::RESPOND_TIMEOUT`), and a little more for the
 /// invocation to reach it and come back. The person is waiting in front of
@@ -280,6 +284,9 @@ pub(super) struct AgentActions {
     started: Option<Instant>,
     /// Task agents whose task now exists, to launch in their room.
     launches: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)>,
+    /// The chats to open, by room and address: the shell's desktop opens
+    /// each in a window of its own ([`Self::take_chats`]).
+    chats: Vec<(String, String)>,
     /// Requests that could not become a task, and why.
     refused: Vec<(ComposerRequest, String)>,
     /// How asks handed out ended, until the host takes them.
@@ -430,6 +437,11 @@ impl AgentActions {
         }
         for mut call in pending {
             if Instant::now() >= call.deadline {
+                tracing::warn!(
+                    action = %call.operation.action,
+                    app = %call.operation.app,
+                    "the composer's call had no answer in time"
+                );
                 self.refuse(&call.operation, composer, true);
                 changed = true;
                 continue;
@@ -473,9 +485,9 @@ impl AgentActions {
             changed = true;
         }
         if let Some(issue) = composer.take_open_chat()
-            && let Some(operation) = chat_operation(&issue)
+            && let Some(chat) = chat_uri(&issue)
         {
-            self.begin(operation);
+            self.chats.push((owner.room.clone(), chat));
             changed = true;
         }
         if let Some(choice) = composer.take_answer_use() {
@@ -648,8 +660,24 @@ impl AgentActions {
                 self.complete(&call.operation, value.as_ref(), composer);
                 false
             }
-            Step::Refused(unknown) => {
+            Step::Refused(unknown, why) => {
+                tracing::warn!(
+                    action = %call.operation.action,
+                    app = %call.operation.app,
+                    unknown,
+                    %why,
+                    "the composer's call ended without its result"
+                );
                 self.refuse(&call.operation, composer, unknown);
+                if matches!(
+                    call.operation.purpose,
+                    Purpose::Queue {
+                        request: Some(_),
+                        ..
+                    } | Purpose::Submit(_)
+                ) {
+                    composer.tell(why);
+                }
                 false
             }
         }
@@ -702,8 +730,8 @@ impl AgentActions {
                 match (opens, &asked) {
                     (Opens::Page, Some(issue)) => self.begin(show_operation(issue)),
                     (Opens::Chat, Some(issue)) => {
-                        if let Some(chat) = chat_operation(issue) {
-                            self.begin(chat);
+                        if let (Some(chat), Some(owner)) = (chat_uri(issue), &self.owner) {
+                            self.chats.push((owner.room.clone(), chat));
                         }
                     }
                     _ => {}
@@ -820,6 +848,11 @@ impl AgentActions {
 
     pub(super) fn deadline(&self) -> Option<Instant> {
         self.calls.iter().map(|call| call.deadline).min()
+    }
+
+    /// The chats asked to open since the last take, by room and address.
+    pub(super) fn take_chats(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.chats)
     }
 
     /// The task agents to launch now that their tasks exist, by room.
@@ -1107,29 +1140,12 @@ fn resolve_operation(
     }
 }
 
-/// Open `issue` (its address) as a chat: the desktop's `open` of the chat's
-/// address (`tilo-tasks:chat/<issue>`, which Tasks claims), in a window of its
-/// own. One window opens whether or not Tasks was running, and an agent opens
-/// a chat the same way.
-fn chat_operation(issue: &str) -> Option<Operation> {
-    use tilo_desktop_model::commands::{RESOURCE, layout};
+/// The address `issue` (its address) opens at as a chat
+/// (`tilo-tasks:chat/<issue>`, which Tasks claims): the desktop opens it in a
+/// window of its own, one whether or not Tasks was running.
+fn chat_uri(issue: &str) -> Option<String> {
     let id = issue.strip_prefix(tilo_action_broker::services::TRACKER_ISSUE_PREFIX)?;
-    let uri = tasks::chat_uri(&tilo_resource::Id::from_raw(id));
-    Some(Operation {
-        resource: RESOURCE.into(),
-        action: layout::OPEN.into(),
-        arguments: Map::from_iter([
-            ("target".into(), uri.into()),
-            ("place".into(), "new-window".into()),
-        ]),
-        purpose: Purpose::Show,
-        app: tilo_desktop_model::commands::APP_ID.into(),
-        target: Some(tilo_actions::remote::RemoteActionTarget {
-            provider: layout::PROVIDER.into(),
-            address: tilo_actions::ActionAddress::new(RESOURCE, layout::OPEN),
-        }),
-        confirmation: None,
-    })
+    Some(tasks::chat_uri(&tilo_resource::Id::from_raw(id)))
 }
 
 /// The issue an `ask-agent` operation makes, by its address.
@@ -1202,7 +1218,9 @@ enum Step {
     Waiting,
     Next(Phase),
     Complete(Option<Value>),
-    Refused(bool),
+    /// It ended without its result: whether its outcome is unknown (it may
+    /// have run), and why, as the host said it.
+    Refused(bool, String),
 }
 
 fn provider_step(
@@ -1214,13 +1232,19 @@ fn provider_step(
     let page = match poll(answer, &waker()) {
         PendingPoll::Waiting => return Step::Waiting,
         PendingPoll::Ready(Ok(page)) => page,
-        PendingPoll::Ready(Err(_)) | PendingPoll::Abandoned => return Step::Refused(false),
+        PendingPoll::Ready(Err(error)) => return Step::Refused(false, error.to_string()),
+        PendingPoll::Abandoned => {
+            return Step::Refused(false, "the action host stopped answering".into());
+        }
     };
     let Some(owner) = owner else {
-        return Step::Refused(false);
+        return Step::Refused(false, "the composer follows no agent".into());
     };
     if !page.exhausted || page.stale_cursor || page.budget_exhausted {
-        return Step::Refused(false);
+        return Step::Refused(
+            false,
+            "the room's providers could not be listed whole".into(),
+        );
     }
     // An action named outright goes where it is named; the host admits it there.
     if let Some(target) = &operation.target {
@@ -1249,7 +1273,13 @@ fn provider_step(
         .filter(|provider| provider.app_id == app && provider.room == owner.room)
         .collect();
     let [provider] = providers.as_slice() else {
-        return Step::Refused(false);
+        return Step::Refused(
+            false,
+            format!(
+                "{} providers of {app} in this room, not one",
+                providers.len()
+            ),
+        );
     };
     let answer = watch(session.query(CatalogueQuery {
         provider: Some(provider.provider.clone()),
@@ -1280,10 +1310,16 @@ fn resolve_step(
     let page = match poll(answer, &waker()) {
         PendingPoll::Waiting => return Step::Waiting,
         PendingPoll::Ready(Ok(page)) => page,
-        PendingPoll::Ready(Err(_)) | PendingPoll::Abandoned => return Step::Refused(false),
+        PendingPoll::Ready(Err(error)) => return Step::Refused(false, error.to_string()),
+        PendingPoll::Abandoned => {
+            return Step::Refused(false, "the action host stopped answering".into());
+        }
     };
     if page.stale_cursor || page.budget_exhausted {
-        return Step::Refused(false);
+        return Step::Refused(
+            false,
+            "the provider's actions could not be listed whole".into(),
+        );
     }
     matched.extend(
         page.rows
@@ -1292,7 +1328,10 @@ fn resolve_step(
             .cloned(),
     );
     if matched.len() > 1 {
-        return Step::Refused(false);
+        return Step::Refused(
+            false,
+            format!("{} actions match {}", matched.len(), operation.action),
+        );
     }
     if !page.exhausted && !page.next_cursor.is_empty() && *pages > 1 {
         *pages = pages.saturating_sub(1);
@@ -1307,13 +1346,16 @@ fn resolve_step(
         return Step::Waiting;
     }
     if !page.exhausted {
-        return Step::Refused(false);
+        return Step::Refused(
+            false,
+            "the provider's actions could not be listed whole".into(),
+        );
     }
     let [row] = matched.as_slice() else {
-        return Step::Refused(false);
+        return Step::Refused(false, format!("no published {}", operation.action));
     };
     let Some(target) = row.target() else {
-        return Step::Refused(false);
+        return Step::Refused(false, format!("{} names no target", operation.action));
     };
     invoke_operation(session, operation, target, Some(page.revision))
 }
@@ -1353,7 +1395,13 @@ fn invoke_step(
     let receipt = match poll(answer, &waker()) {
         PendingPoll::Waiting => return Step::Waiting,
         PendingPoll::Ready(Ok(receipt)) if receipt.invocation == invocation => receipt,
-        _ => return Step::Refused(true),
+        PendingPoll::Ready(Ok(_)) => {
+            return Step::Refused(true, "the host answered for another invocation".into());
+        }
+        PendingPoll::Ready(Err(error)) => return Step::Refused(true, error.to_string()),
+        PendingPoll::Abandoned => {
+            return Step::Refused(true, "the action host stopped answering".into());
+        }
     };
     match receipt.status {
         ReceiptStatus::Completed { output } => Step::Complete(output.value),
@@ -1361,8 +1409,11 @@ fn invoke_step(
             invocation,
             changed: session.next_change(&invocation).map(watch),
         }),
-        ReceiptStatus::Rejected { .. } => Step::Refused(false),
-        ReceiptStatus::Failed { .. } | ReceiptStatus::Cancelled { .. } => Step::Refused(true),
+        ReceiptStatus::Rejected { error } => Step::Refused(false, error.to_string()),
+        ReceiptStatus::Failed { error } => Step::Refused(true, error.message),
+        ReceiptStatus::Cancelled { message } => {
+            Step::Refused(true, message.unwrap_or_else(|| "it was cancelled".into()))
+        }
     }
 }
 
@@ -1377,14 +1428,15 @@ fn observe_step(
         return Step::Waiting;
     }
     let Some(observed) = session.observe(&invocation) else {
-        return Step::Refused(true);
+        return Step::Refused(true, "the host lost track of the invocation".into());
     };
     match observed.update {
         InvocationUpdate::Succeeded {
             invocation: returned,
             output,
         } if returned == invocation => Step::Complete(output.value),
-        InvocationUpdate::Failed { .. } | InvocationUpdate::Cancelled { .. } => Step::Refused(true),
+        InvocationUpdate::Failed { error, .. } => Step::Refused(true, error.message),
+        InvocationUpdate::Cancelled { .. } => Step::Refused(true, "it was cancelled".into()),
         _ => {
             *changed = session.next_change(&invocation).map(watch);
             Step::Waiting
@@ -2354,10 +2406,10 @@ mod tests {
         }
     }
 
-    /// "Open as chat" asks what the person typed as a task for a chat and
-    /// opens its issue's chat through the desktop's `open` of the chat's
-    /// address, in a window of its own, once asked; with a run followed, it
-    /// opens that run's issue the same way and asks nothing.
+    /// "Open as chat" asks what the person typed as a task for a chat and,
+    /// once asked, hands the shell's desktop the chat's address to open in a
+    /// window of its own; with a run followed, it opens that run's issue the
+    /// same way and asks nothing.
     #[test]
     fn open_as_chat_asks_the_typed_request_as_a_chat_and_opens_its_issue_as_one() {
         let room = Room::new(None);
@@ -2378,16 +2430,17 @@ mod tests {
         assert_eq!(asked["title"], "Review the applications in my inbox");
         assert_eq!(asked.get("chat").and_then(Value::as_bool), Some(true));
         let id = asked["id"].as_str().unwrap().to_owned();
-        let open = tilo_desktop_model::commands::layout::OPEN;
-        let desktop_open = format!("{}#{open}", tilo_desktop_model::commands::RESOURCE);
         let chat = tasks::chat_uri(&tilo_resource::Id::from_raw(&id));
         assert_eq!(
             room.invoked(),
-            [format!("{TRACKER}#ask-agent"), desktop_open.clone()],
-            "asked as work, never as a quick answer, then opened as a chat"
+            [format!("{TRACKER}#ask-agent")],
+            "asked as work, never as a quick answer"
         );
-        assert_eq!(room.arguments(open)["target"], chat.as_str());
-        assert_eq!(room.arguments(open)["place"], "new-window");
+        assert_eq!(
+            actions.take_chats(),
+            [(room.id.clone(), chat.clone())],
+            "then opened as a chat, by the shell's desktop"
+        );
         assert!(!composer.is_open(), "the conversation goes on in the chat");
 
         // The run it follows opens as a chat as it is.
@@ -2404,8 +2457,8 @@ mod tests {
             &ui::a11y::Action::Activate,
         );
         settle(&mut actions, &mut composer, &tracker);
-        assert_eq!(room.invoked(), [desktop_open]);
-        assert_eq!(room.arguments(open)["target"], chat.as_str());
+        assert!(room.invoked().is_empty(), "nothing is asked");
+        assert_eq!(actions.take_chats(), [(room.id.clone(), chat)]);
     }
 
     #[test]

@@ -290,6 +290,50 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Open the chats the composer asked for, each in a window of its own:
+    /// the desktop's `open` of the chat's address, run here as the person at
+    /// this device, as the palette's window actions are. A chat that cannot
+    /// open says why in the composer.
+    pub(super) fn open_composer_chats(&mut self) -> bool {
+        let chats: Vec<_> = self
+            .agent_actions
+            .values_mut()
+            .flat_map(super::agent_actions::AgentActions::take_chats)
+            .collect();
+        if chats.is_empty() {
+            return false;
+        }
+        for (room, address) in chats {
+            let opened = (|| {
+                let room = crate::shell::state::RoomId::parse(&room)
+                    .ok_or("the chat's workspace is gone")?;
+                let target = crate::shell::desktop_layout::Target::parse(&address)?;
+                let actor = {
+                    let chrome = self
+                        .chrome
+                        .as_ref()
+                        .ok_or("this session shows no desktop")?;
+                    crate::shell::desktop_layout::Actor::person(&chrome.borrow(), room)
+                };
+                let command = crate::shell::desktop_door::Command::Open {
+                    target,
+                    place: crate::shell::desktop_layout::Place::NewWindow { strip: None },
+                    background: false,
+                };
+                match self.serve_desktop(room, &actor, command) {
+                    crate::shell::desktop_door::Served::WhenUp { .. } => Ok(()),
+                    crate::shell::desktop_door::Served::Now(Ok(_)) => Ok(()),
+                    crate::shell::desktop_door::Served::Now(Err(failure)) => Err(failure.message),
+                }
+            })();
+            if let Err(error) = opened {
+                tracing::warn!(%address, %error, "the chat could not be opened");
+                self.agent_quick_composer.tell(error);
+            }
+        }
+        true
+    }
+
     /// Launch the agents made for tasks that now exist, each under its own
     /// key in its task's workspace. A launch that fails is said in the
     /// composer. Whether any was asked.

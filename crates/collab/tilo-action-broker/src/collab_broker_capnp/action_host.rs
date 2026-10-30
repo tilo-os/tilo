@@ -79,6 +79,7 @@ mod governance_witness_tests;
 mod directory;
 mod launch_child;
 mod own_device;
+mod publishers;
 mod room_nodes;
 mod shortcut_run;
 use directory::bridge_error;
@@ -2041,15 +2042,10 @@ impl CapnpBrokerState {
         let address = &current_address(destination.resource.as_deref(), request);
         let timeout = self.launchable.delivery_timeout();
         let deadline = tokio::time::sleep(timeout);
-        let expired = || ActionHostError::Unavailable {
-            reason: format!(
-                "{app_id} was launched but did not offer \"{}\" within {:.1} s",
-                address.action,
-                timeout.as_secs_f32()
-            ),
-        };
+        let expired = || self.offered_too_late(app_id, &room, destination, address, timeout);
         let abandoned = completer.abandoned();
         tokio::pin!(deadline, abandoned);
+        let shows = self.action_shows(app_id, &room, address);
         // Taken before the first look, so a publication between that look
         // and the wait below still wakes it.
         let mut changes = self.publisher_changes();
@@ -2066,21 +2062,20 @@ impl CapnpBrokerState {
                 return Err(expired());
             }
             let ready = match native {
-                Some(native) => native.ready(self),
-                None => self.ready_publisher(app_id, &room, destination.record.as_deref(), address),
+                Some(native) => native.ready(self).map(|peer| (peer, address.clone())),
+                None => {
+                    self.ready_publication(app_id, &room, destination.record.as_deref(), address)
+                }
             };
-            if let Some(peer_id) = ready {
+            if let Some((peer_id, published)) = ready {
                 return self
-                    .deliver_to(peer_id, caller, origin, (request, address), native)
+                    .deliver_to(peer_id, caller, origin, (request, &published), native)
                     .await;
             }
             // An action that shows nothing runs in an instance of the app
             // with no window, where the host runs one: it publishes, and the
             // wait below delivers to it. Only an `open` launches a window.
-            if !launched
-                && address.action != APPLICATION_OPEN_ACTION
-                && self.run_windowless(app_id, &room)?
-            {
+            if !launched && !shows && self.run_windowless(app_id, &room)? {
                 launched = true;
                 continue;
             }
@@ -2473,40 +2468,7 @@ impl CapnpBrokerState {
     /// instance with no window takes every action but `open`, which shows
     /// what it opens and so goes to a window.
     pub(super) fn shows(&self, peer_id: u64, action: &str) -> bool {
-        action != APPLICATION_OPEN_ACTION
-            || self
-                .launchable
-                .windowless_peers
-                .lock()
-                .is_ok_and(|windowless| !windowless.contains(&peer_id))
-    }
-
-    /// The live connection of `app_id` in `room` that publishes `address`
-    /// and can receive invocations.
-    pub(super) fn ready_publisher(
-        &self,
-        app_id: &str,
-        room: &str,
-        record: Option<&str>,
-        address: &tilo_actions::ActionAddress,
-    ) -> Option<u64> {
-        let subscribers = self.invocation_subscribers.lock().ok()?;
-        let surfaces = self.surfaces.lock().ok()?;
-        surfaces
-            .values()
-            .filter(|surface| {
-                surface.live
-                    && self.shows(surface.peer_id, &address.action)
-                    && surface.app_id == app_id
-                    && surface.route.cluster_id == room
-                    && record.is_none_or(|record| surface.route.record_id == record)
-                    && subscribers.contains_key(&surface.peer_id)
-                    && surface.actions.iter().any(|action| {
-                        action.resource == address.resource && action.action == address.action
-                    })
-            })
-            .map(|surface| surface.peer_id)
-            .min()
+        action != APPLICATION_OPEN_ACTION || !self.is_windowless(peer_id)
     }
 
     pub(super) fn invoke_eager(

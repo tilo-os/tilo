@@ -416,7 +416,7 @@ impl NativeOwnerCommitService {
     /// What the sealed writes this device holds of `route`'s record in
     /// `room` make, opened with the keys of the record's channel, within
     /// `maximum` bytes.
-    fn held_sealed_record(
+    pub(super) fn held_sealed_record(
         &self,
         room: super::super::state::RoomId,
         route: &tilo_action_broker::route::CrdtRoute,
@@ -705,7 +705,7 @@ async fn prepare_here(
 /// a mutation reassembled from its segments. `None` while a write builds on
 /// one that has not arrived. At most `maximum` bytes are opened.
 /// What the sealed writes of one record this device holds make.
-enum HeldSealed {
+pub(super) enum HeldSealed {
     /// Nothing to read yet: no write, or the channel's keys are on their way.
     Waiting,
     /// The record, whole.

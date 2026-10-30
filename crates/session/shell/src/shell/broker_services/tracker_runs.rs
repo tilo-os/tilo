@@ -45,6 +45,56 @@ impl TrackerView {
     }
 }
 
+impl NativeTrackerRuns {
+    /// The tracker of sealed `room`, as the sealed writes this device holds
+    /// of it make it: Tasks' writes on this device (its windows and its
+    /// windowless instance) and those the room's host relayed. Nothing yet
+    /// is a tracker with no runs; writes waiting for their channel's keys or
+    /// for a change they build on keep what was read before.
+    fn sealed_tracker(
+        &self,
+        room: &str,
+        room_id: super::super::state::RoomId,
+    ) -> Result<Option<Arc<TrackerView>>, String> {
+        use super::committed_document::HeldSealed;
+        let route = tilo_action_broker::route::CrdtRoute::record(
+            TRACKER_APP,
+            room.to_owned(),
+            TRACKER_RECORD,
+        );
+        let held = self.read.lock_recover().get(room).cloned();
+        match self
+            .owner
+            .held_sealed_record(room_id, &route, MAX_TRACKER_BYTES)?
+        {
+            HeldSealed::Readable(mut document) => {
+                let revision = tilo_peer_state::committed_document_revision(&document.get_heads());
+                if let Some((known, tracker)) = &held
+                    && *known == revision
+                {
+                    return Ok(Some(tracker.clone()));
+                }
+                let tracker = Arc::new(TrackerView::of(
+                    Reader::<Tracker>::read(&*document)
+                        .map_err(|error| format!("the tracker does not read: {error}"))?
+                        .state(),
+                ));
+                self.read
+                    .lock_recover()
+                    .insert(room.to_owned(), (revision, tracker.clone()));
+                Ok(Some(tracker))
+            }
+            HeldSealed::Waiting => Ok(held.map(|(_, tracker)| tracker)),
+            HeldSealed::Incomplete { missing } => match held {
+                Some((_, tracker)) => Ok(Some(tracker)),
+                None => Err(format!(
+                    "the tracker's writes here build on {missing} change(s) not here yet"
+                )),
+            },
+        }
+    }
+}
+
 /// The room's tracker, read through its owner, as last read at each room's
 /// revision.
 pub(crate) struct NativeTrackerRuns {
@@ -171,6 +221,9 @@ impl NativeTrackerRuns {
     pub(crate) fn tracker(&self, room: &str) -> Result<Option<Arc<TrackerView>>, String> {
         use super::super::native_workspace_owner::DocumentRead;
         let room_id = super::super::state::RoomId::parse(room).ok_or("invalid tracker room")?;
+        if self.owner.tree.read().seals_records(room_id) {
+            return self.sealed_tracker(room, room_id);
+        }
         let known = self
             .read
             .lock_recover()
@@ -376,8 +429,13 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
 }
 
 impl TrackerRuns for NativeTrackerRuns {
+    /// Every room whose replica this device projects: one whose records it
+    /// commits, and one whose records are sealed channels (a room hosted on
+    /// a device, this one's own workspace included), whose tracker is read
+    /// from the sealed writes this device holds of it.
     fn requires_room(&self, room: &str) -> bool {
-        tilo_owner_commit::OwnerCommitService::requires_room(&self.owner, room)
+        super::super::state::RoomId::parse(room)
+            .is_some_and(|room| self.owner.tree.read().projects_room(room))
     }
 
     /// Keep the newest snapshot of each run's turn: a later epoch, a later

@@ -1534,6 +1534,95 @@ mod tests {
         );
     }
 
+    /// An app publishes its resources bound to the record its window or
+    /// windowless instance shows (`tilo-ui-bound:…:<hex of the kind>`),
+    /// while a caller with no window of it names the resource as its kind
+    /// declares it: the action still reaches that instance, under the
+    /// address the app published.
+    #[test]
+    fn an_action_named_by_its_resource_kind_reaches_an_app_that_binds_it() {
+        let (state, room) = broker(&workspace());
+        let (tx, mut windowless) = tokio::sync::mpsc::unbounded_channel();
+        let bound = format!(
+            "{}instance:record:{}",
+            tilo_actions::selection::BOUND_RESOURCE_PREFIX,
+            hex::encode("files.app")
+        );
+        // The instance comes up publishing the action on its bound resource.
+        let owner = Caller::local_person("owner").in_room(&room);
+        state.launchable.replace_windowless_for_test({
+            let weak: Weak<CapnpBrokerState> = Arc::downgrade(&state);
+            let bound = bound.clone();
+            let stream = Mutex::new(Some(tx));
+            Arc::new(move |_, room| {
+                let state = weak.upgrade().ok_or("the broker is gone")?;
+                if let Some(tx) = stream.lock().expect("stream").take() {
+                    state
+                        .launchable
+                        .windowless_peers
+                        .lock()
+                        .expect("windowless")
+                        .insert(9);
+                    state
+                        .invocation_subscribers
+                        .lock()
+                        .expect("subscribers")
+                        .insert(9, tx);
+                    let mut up = surface(9, room);
+                    for action in &mut up.actions {
+                        action.resource.clone_from(&bound);
+                    }
+                    state.surfaces.lock().expect("surfaces").insert(9, up);
+                }
+                Ok(true)
+            })
+        });
+        let target =
+            tilo_actions::remote::application_action_target(&room, APP, "files.app", "new-window");
+        invoke(&state, &owner, &target.provider, "new-window", None)
+            .expect("delivered to the instance that binds the resource");
+        let delivered = windowless
+            .try_recv()
+            .expect("the windowless instance took it");
+        assert_eq!(delivered.action, "new-window");
+        assert_eq!(delivered.resource, bound, "under the address it published");
+    }
+
+    /// A view action (an issue's page, its chat) shows something too: an
+    /// instance with no window is no publisher of it, and no closed app is
+    /// run without a window for it.
+    #[test]
+    fn a_view_action_never_goes_to_an_instance_without_a_window() {
+        let (state, room) = broker(&workspace());
+        let (tx, _windowless) = tokio::sync::mpsc::unbounded_channel();
+        let mut up = surface(9, &room);
+        let mut page = action("show-page", tilo_actions::ConfirmationPolicy::None);
+        page.operation_kind = tilo_actions::OperationKind::View;
+        up.actions.push(page);
+        state
+            .launchable
+            .windowless_peers
+            .lock()
+            .expect("windowless")
+            .insert(9);
+        state
+            .invocation_subscribers
+            .lock()
+            .expect("subscribers")
+            .insert(9, tx);
+        state.surfaces.lock().expect("surfaces").insert(9, up);
+        let shows = tilo_actions::ActionAddress::new("files.app", "show-page");
+        assert!(state.action_shows(APP, &room, &shows));
+        assert_eq!(state.ready_publisher(APP, &room, None, &shows), None);
+        let changes = tilo_actions::ActionAddress::new("files.app", "new-window");
+        assert!(!state.action_shows(APP, &room, &changes));
+        assert_eq!(
+            state.ready_publisher(APP, &room, None, &changes),
+            Some(9),
+            "it takes what shows nothing"
+        );
+    }
+
     /// Opening shows what it opens: an `open` never goes to an instance with
     /// no window, even one that publishes it, and launches a window instead.
     #[test]

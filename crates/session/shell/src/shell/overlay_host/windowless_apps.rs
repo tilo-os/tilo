@@ -61,7 +61,7 @@ impl ShellOverlayHost {
             definition,
             room,
             windowless::INSTANCE,
-            ui::record::RecordId::room_default(),
+            windowless::record(definition),
             |_| {},
         );
         let component = match mounted {

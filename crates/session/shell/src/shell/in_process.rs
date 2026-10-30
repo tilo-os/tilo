@@ -478,20 +478,31 @@ impl InProcessApps {
             author: self.author.clone(),
             action_context: tilo_actions::ActionContext::default(),
         };
-        let checkout = RecordCheckout::new(record, definition.record_kind.clone());
-        let (mut context, target) = match records.try_open_record(&checkout) {
-            Ok(_) => {
-                let target = LaunchTarget::Record {
-                    checkout,
-                    reveal: None,
-                };
-                (HostContext::prepare(definition, inputs(), &target)?, target)
+        let (mut context, target) = if record.is_package_primary() && definition.keeps_room_record()
+        {
+            // The workspace's own record of an app that keeps one, opened as
+            // a window of the app opens it: the record every window and the
+            // room's readers share, created by the first to open it.
+            let target = definition
+                .unsaved_target(&records)
+                .map_err(LaunchError::Record)?;
+            (HostContext::prepare(definition, inputs(), &target)?, target)
+        } else {
+            let checkout = RecordCheckout::new(record, definition.record_kind.clone());
+            match records.try_open_record(&checkout) {
+                Ok(_) => {
+                    let target = LaunchTarget::Record {
+                        checkout,
+                        reveal: None,
+                    };
+                    (HostContext::prepare(definition, inputs(), &target)?, target)
+                }
+                Err(RecordOpenError::MissingRecord) => (
+                    HostContext::prepare_new_record(definition, inputs(), checkout.id)?,
+                    LaunchTarget::New,
+                ),
+                Err(error) => return Err(LaunchError::Record(error)),
             }
-            Err(RecordOpenError::MissingRecord) => (
-                HostContext::prepare_new_record(definition, inputs(), checkout.id)?,
-                LaunchTarget::New,
-            ),
-            Err(error) => return Err(LaunchError::Record(error)),
         };
         // The person's records of other apps (their accounts and contacts)
         // are the ones the session holds.
