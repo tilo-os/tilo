@@ -42,6 +42,24 @@ pub enum ContactsEffect {
         #[param("The contact merged into it")]
         source: uuid::Uuid,
     },
+    /// Edit field.
+    ///
+    /// Opens the contact's form on one of their details.
+    #[effect(view, idempotent)]
+    EditField {
+        #[param("The contact's id")]
+        contact: uuid::Uuid,
+        #[param("The detail: phone:N, email:N, address:N, birthday or notes")]
+        field: String,
+    },
+    /// Open website.
+    ///
+    /// Opens the contact's website in this device's browser.
+    #[effect(own_device, idempotent)]
+    OpenWebsite {
+        #[param("The contact's id")]
+        contact: uuid::Uuid,
+    },
     /// Import vCard.
     #[effect(job)]
     ImportVcard,

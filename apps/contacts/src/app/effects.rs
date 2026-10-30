@@ -29,6 +29,10 @@ pub(crate) enum Ask {
     OpenFavorites,
     /// Sort the list by the order the list's order picker names so.
     Sort(String),
+    /// Open a contact's form on one of their details.
+    EditField(ContactId, crate::form::Slot),
+    /// Open a website in this device's browser.
+    OpenWebsite(String),
     /// Review whether the second contact is a duplicate of the first.
     Review(ContactId, ContactId),
     /// Choose the format a contact is exported in.
@@ -120,6 +124,26 @@ fn answer(
         }
         ContactsEffect::OpenFavorites => Ask::OpenFavorites,
         ContactsEffect::SortContacts { order } => Ask::Sort(order),
+        ContactsEffect::EditField { contact, field } => {
+            if book.contact(contact).is_none() {
+                return Err("contact no longer exists".into());
+            }
+            let slot = crate::form::Slot::of_detail_key(&field)
+                .ok_or_else(|| format!("no detail `{field}` to edit"))?;
+            Ask::EditField(contact, slot)
+        }
+        ContactsEffect::OpenWebsite { contact } => {
+            let website = book
+                .contact(contact)
+                .ok_or_else(|| "contact no longer exists".to_string())?
+                .website
+                .trim()
+                .to_owned();
+            if website.is_empty() {
+                return Err("the contact has no website".into());
+            }
+            Ask::OpenWebsite(website)
+        }
         ContactsEffect::OpenReview { survivor, source } => {
             let kept = book
                 .contact(survivor)
@@ -172,6 +196,14 @@ impl ContactsApp {
                     Ok(())
                 }
                 Ask::Sort(order) => self.sort_by(&order),
+                Ask::EditField(contact, slot) => {
+                    self.edit_field(contact, slot);
+                    Ok(())
+                }
+                Ask::OpenWebsite(url) => {
+                    self.open_website(url);
+                    Ok(())
+                }
                 Ask::Review(survivor, source) => self.open_duplicate_review(survivor, source),
                 Ask::Export(contact) => self.open_contact_export(contact),
                 Ask::Resolve(token, import_as_new) => {
@@ -206,6 +238,7 @@ impl ContactsApp {
 /// account reviews beside it.
 pub(crate) fn window(cx: &ViewCx<Contacts>, mut app: ContactsApp) -> Element {
     app.document = Some(cx.live().clone());
+    app.actions = Some(cx.actions());
     app.attach_dispatcher(cx.dispatcher());
     app.attach_actions(&cx.actions());
     app.jobs = Some(cx.jobs());

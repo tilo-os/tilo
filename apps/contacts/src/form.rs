@@ -101,6 +101,38 @@ pub(crate) enum Slot {
     AddrCountry(usize),
 }
 
+impl Slot {
+    /// How [`ContactsEffect::EditField`](crate::actions::ContactsEffect::EditField)
+    /// names a detail the page offers to edit.
+    pub(crate) fn detail_key(self) -> Option<String> {
+        Some(match self {
+            Self::Phone(index) => format!("phone:{index}"),
+            Self::Email(index) => format!("email:{index}"),
+            Self::AddrStreet(index) => format!("address:{index}"),
+            Self::Birthday => "birthday".into(),
+            Self::Notes => "notes".into(),
+            _ => return None,
+        })
+    }
+
+    /// The detail [`Self::detail_key`] names.
+    pub(crate) fn of_detail_key(key: &str) -> Option<Self> {
+        match key {
+            "birthday" => return Some(Self::Birthday),
+            "notes" => return Some(Self::Notes),
+            _ => {}
+        }
+        let (kind, index) = key.split_once(':')?;
+        let index = index.parse().ok()?;
+        match kind {
+            "phone" => Some(Self::Phone(index)),
+            "email" => Some(Self::Email(index)),
+            "address" => Some(Self::AddrStreet(index)),
+            _ => None,
+        }
+    }
+}
+
 /// The human-facing name of a field: its visible label, or for a field
 /// inside a repeated row, what assistive technology calls it.
 pub(crate) fn field_name(slot: Slot) -> String {

@@ -57,8 +57,6 @@ pub(crate) enum Request {
     Reveal(ContactId),
     /// A row was opened (double-click): edit it.
     Edit(ContactId),
-    /// Edit the chosen fact through the same retained form.
-    EditField(ContactId, Slot),
     /// A row's actions were asked for: at the pointer's window point, or
     /// (from the keyboard or assistive technology) under the row.
     ContextMenu(ContactId, Option<Point>),
@@ -79,7 +77,6 @@ pub(crate) enum Request {
     ToggleCalendar,
     /// A day chosen in the birthday calendar, as `YYYY-MM-DD`.
     PickDate(String),
-    OpenWebsite(String),
     /// Start a call to this number, in whichever app this device dials with.
     Call(String),
     /// Write a message to this number.

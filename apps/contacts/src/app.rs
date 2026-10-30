@@ -223,6 +223,8 @@ pub struct ContactsApp {
     show_pane: Option<NavPane>,
     /// The last website opened from a contact.
     opened_url: Option<String>,
+    /// The book's published actions, which the page's controls run.
+    pub(crate) actions: Option<ui::framework::Actions<Contacts>>,
     /// Calls, messages and email drafts handed to the desktop, waiting for
     /// its answer.
     hand_off: Vec<handoff::PendingHandOff>,
@@ -614,6 +616,7 @@ impl ContactsApp {
             menu_follows: None,
             show_pane: None,
             opened_url: None,
+            actions: None,
             hand_off: Vec::new(),
             detail_scroll: (None, std::rc::Rc::default()),
             last_mouse: Point::ZERO,
@@ -809,6 +812,17 @@ impl ContactsApp {
             chosen.strip_prefix(GROUP_DESTINATION).map(str::to_owned)
         };
         self.set_group_filter(group);
+    }
+
+    /// Open contact `id`'s form on `slot`.
+    pub(super) fn edit_field(&mut self, id: ContactId, slot: crate::form::Slot) {
+        if let Some(contact) = self.store.contact(id).cloned() {
+            self.selected = Some(id);
+            self.begin_edit(contact, false);
+            if let Some(form) = &mut self.form {
+                form.focus = Some(slot);
+            }
+        }
     }
 
     fn begin_edit(&mut self, draft: Contact, is_new: bool) {
@@ -1542,7 +1556,12 @@ impl ContactsApp {
                     if self.detail_scroll.0 != Some(contact.id) {
                         self.detail_scroll = (Some(contact.id), std::rc::Rc::default());
                     }
-                    crate::detail::contact_page(contact, &self.shared, &self.detail_scroll.1)
+                    crate::detail::contact_page(
+                        contact,
+                        &self.shared,
+                        self.actions.as_ref(),
+                        &self.detail_scroll.1,
+                    )
                 }
                 ContentKey::Edit { .. } => match &self.form {
                     Some(form) => form.element(&self.shared),
@@ -1677,15 +1696,6 @@ impl ContactsApp {
                     self.begin_edit(contact, false);
                 }
             }
-            Request::EditField(id, slot) => {
-                if let Some(contact) = self.store.contact(id).cloned() {
-                    self.selected = Some(id);
-                    self.begin_edit(contact, false);
-                    if let Some(form) = &mut self.form {
-                        form.focus = Some(slot);
-                    }
-                }
-            }
             Request::ContextMenu(id, point) => {
                 if self.mode == Mode::Edit && self.form.as_ref().is_some_and(|f| f.draft.id != id) {
                     self.request_select(id);
@@ -1756,7 +1766,6 @@ impl ContactsApp {
                     form.calendar_open = false;
                 }
             }
-            Request::OpenWebsite(url) => self.open_website(url),
             Request::Call(value) => self.hand_off_value(handoff::HandOff::Call, &value),
             Request::WriteMessage(value) => self.hand_off_value(handoff::HandOff::Message, &value),
             Request::WriteEmail(value) => self.hand_off_value(handoff::HandOff::Email, &value),
