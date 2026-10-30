@@ -3,13 +3,16 @@
 //! key repeat), how touchpad gestures read, the layout they type with, the
 //! accessibility assists the compositor carries out, when the screen blanks,
 //! locks and the machine sleeps, what the lid, the power key and a failing
-//! battery do, and the pointer's size.
+//! battery do, the pointer's size, and the comforts the login screens start
+//! with.
 
 use std::time::Duration;
 
 use settings_store::hardware::{
     AccelProfile, KeyboardInputSource, RichInputConfig, ShortcutConfig,
 };
+use settings_store::sign_in_comforts::SignInComforts;
+use tilo_accessibility_settings::AccessibilitySettings;
 use tilo_compositor::InputConfig;
 use tilo_compositor::backend::drm::input_config::{TouchpadClickMethod, TouchpadScrollMethod};
 use tilo_compositor::gestures::GestureConfig;
@@ -42,6 +45,12 @@ pub struct SessionConfig {
     pub power: tilo_power_mgmt::PowerPolicy,
     /// The pointer's size in logical pixels.
     pub cursor_size: u32,
+    /// The comforts the login screens start with: the device's copy, which
+    /// the session keeps equal to these (`docs/security/sign-in.md` §3.4).
+    pub comforts: SignInComforts,
+    /// Whether the person's changes to those comforts apply to the login
+    /// screens too, or only to their own session.
+    pub apply_comforts_to_sign_in: bool,
     /// Whether the night light warms the displays.
     pub night_light: bool,
     /// Whether what the person changes in the session (the night light) is
@@ -68,6 +77,8 @@ impl SessionConfig {
             idle: idle_config(&power),
             power,
             cursor_size: accessibility.effective_cursor_size(),
+            comforts: sign_in_comforts(&accessibility, &input, true),
+            apply_comforts_to_sign_in: settings_store::sign_in_comforts::APPLY_TO_SIGN_IN.get(),
             ..Self::from_settings(&input, ShortcutConfig::load())
         }
     }
@@ -106,6 +117,8 @@ impl SessionConfig {
             idle: idle_config(&power),
             power,
             cursor_size: assists.effective_cursor_size(),
+            comforts: sign_in_comforts(&assists, input, false),
+            apply_comforts_to_sign_in: true,
             night_light: false,
             kept: false,
         }
@@ -116,6 +129,36 @@ impl SessionConfig {
 /// its duty and its power source.
 fn loaded_power() -> tilo_power_mgmt::PowerPolicy {
     tilo_power_mgmt::load_policy_for_profile(None, tilo_power_mgmt::sysfs_on_battery())
+}
+
+/// The login screens' comforts from the person's assists and input, and from
+/// the theme's text scale and contrast where `theme` is read (it is not when
+/// these are the compositor's default, which names none).
+fn sign_in_comforts(
+    accessibility: &AccessibilitySettings,
+    input: &RichInputConfig,
+    theme: bool,
+) -> SignInComforts {
+    let defaults = SignInComforts::default();
+    let comforted = if theme {
+        let theme = ui::theme::Theme::configured_comforts();
+        SignInComforts {
+            language: settings_store::appearance::LANGUAGE.get(),
+            text_scale: theme.text_scale.unwrap_or(defaults.text_scale),
+            high_contrast: theme.high_contrast.unwrap_or(defaults.high_contrast),
+            ..defaults
+        }
+    } else {
+        defaults
+    };
+    SignInComforts {
+        screen_reader: accessibility.screen_reader,
+        screen_reader_rate: accessibility.screen_reader_rate,
+        screen_reader_voice: accessibility.screen_reader_voice,
+        ..comforted
+    }
+    .with_keyboard_source(&input.keyboard_layout)
+    .clamped()
 }
 
 /// When the displays dim, blank and the session locks and sleeps with no

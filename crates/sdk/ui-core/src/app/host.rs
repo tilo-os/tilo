@@ -41,12 +41,29 @@ fn draw_frame_content(
 /// layers', leaving `scene` untouched, for the host to compose once it
 /// knows whether the widgets must be drawn again in full
 /// ([`redraw_culled_widgets`]).
+#[cfg(feature = "native")]
+fn draw_frame_content_with(
+    app: &mut App,
+    scene: &mut Scene,
+    size: (u32, u32),
+    scale_factor: f32,
+    t_draw_start: Option<crate::time::Instant>,
+    culled: Option<&mut crate::draw_cull::Scenes>,
+) -> DrawnFrame {
+    // The motions and the wishes for frames this pass makes are this app's:
+    // whichever surface it shares the thread with, its frame is its own.
+    let owner = app.motion_owner();
+    crate::motion::own(owner, || {
+        draw_frame_content_owning(app, scene, size, scale_factor, t_draw_start, culled)
+    })
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "frame drawing is one ordered composition pass whose sequencing must remain explicit"
 )]
 #[cfg(feature = "native")]
-fn draw_frame_content_with(
+fn draw_frame_content_owning(
     app: &mut App,
     scene: &mut Scene,
     (width, height): (u32, u32),

@@ -9,6 +9,11 @@
 //! frames of its entrance and exit, and nothing asks for frames once it has
 //! settled (rule 8: a settled motion costs nothing).
 //!
+//! A thread can host several surfaces — the session's desk and the sheets
+//! mounted over it — so a wish and the frame that meets it belong to one of
+//! them ([`own`]): the frame a desk draws is no frame of a lock screen's
+//! arrival, and would otherwise leave it standing at its first pose.
+//!
 //! **Settled clock.** [`testing::settled`] makes every motion on this thread
 //! read as arrived: a capture or a single-frame test sees the resting pose of
 //! what it opened, deterministically, without sleeping through the motion.
@@ -18,10 +23,15 @@ use crate::time::Instant;
 use std::cell::{Cell, RefCell};
 use std::panic::Location;
 
-/// One motion's wish for frames: until when it moves, who asked, and the
-/// motion's own key when it can take the wish back ([`retract`]).
+/// One motion's wish for frames: until when it moves, which surface asked,
+/// who asked, and the motion's own key when it can take the wish back
+/// ([`retract`]).
 #[derive(Clone, Copy)]
 struct Wish {
+    /// The surface that asked, while a frame of it was being drawn
+    /// ([`own`]); `None` for an ask made outside one, which any frame meets
+    /// and every surface is told about, as before surfaces had owners.
+    owner: Option<usize>,
     key: Option<u64>,
     caller: &'static Location<'static>,
     until: Instant,
@@ -34,10 +44,15 @@ thread_local! {
     /// was jumped to its end, or dropped mid-way by its owner, asks for no
     /// frames it will never draw.
     static WISHES: RefCell<Vec<Wish>> = const { RefCell::new(Vec::new()) };
-    /// The instant the latest drawn frame on this thread read its motions
-    /// at ([`frame_drawn`]): the frame at rest is owed until one is drawn at
-    /// or after a wish's end.
-    static DRAWN_AT: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// For each surface on this thread, the instant its latest drawn frame
+    /// read its motions at ([`frame_drawn`]): the frame at rest is owed
+    /// until one is drawn at or after a wish's end.
+    static DRAWN_AT: RefCell<Vec<(usize, Instant)>> = const { RefCell::new(Vec::new()) };
+    /// The surface asking or drawing now ([`own`]): wishes and drawn frames
+    /// belong to it. `None` outside such a scope — a host that draws one
+    /// tree, with no app of its own, and everything the thread does between
+    /// frames.
+    static OWNER: Cell<Option<usize>> = const { Cell::new(None) };
     /// The next key [`motion_key`] hands out.
     static NEXT_KEY: Cell<u64> = const { Cell::new(1) };
     /// How many [`testing::settled`] scopes are open on this thread.
@@ -167,13 +182,13 @@ pub(crate) fn retract(key: u64) {
 }
 
 fn wish(key: Option<u64>, caller: &'static Location<'static>, until: Instant) {
-    let drawn = DRAWN_AT.with(Cell::get);
+    let owner = OWNER.with(Cell::get);
     WISHES.with(|wishes| {
         let mut wishes = wishes.borrow_mut();
-        wishes.retain(|wish| !met(wish, drawn));
+        wishes.retain(|wish| !met(wish));
         let same = |wish: &&mut Wish| match key {
             Some(_) => wish.key == key,
-            None => wish.key.is_none() && wish.caller == caller,
+            None => wish.key.is_none() && wish.owner == owner && wish.caller == caller,
         };
         match wishes.iter_mut().find(same) {
             Some(wish) if key.is_some() => {
@@ -181,14 +196,44 @@ fn wish(key: Option<u64>, caller: &'static Location<'static>, until: Instant) {
                 wish.caller = caller;
             }
             Some(wish) => wish.until = wish.until.max(until),
-            None => wishes.push(Wish { key, caller, until }),
+            None => wishes.push(Wish {
+                owner,
+                key,
+                caller,
+                until,
+            }),
         }
     });
 }
 
-/// Whether `wish` has had the frame showing its end drawn.
-fn met(wish: &Wish, drawn: Option<Instant>) -> bool {
+/// Run `f` on behalf of the surface `owner` on this thread: the wishes its
+/// motions make while it runs and the frames it draws are its own, and only
+/// a frame of its own meets them. What the thread does outside such a scope
+/// asks for every surface, as before surfaces shared a thread.
+pub(crate) fn own<T>(owner: usize, f: impl FnOnce() -> T) -> T {
+    let previous = OWNER.with(|cell| cell.replace(Some(owner)));
+    let done = f();
+    OWNER.with(|cell| cell.set(previous));
+    done
+}
+
+/// Whether `wish` has had the frame showing its end drawn: one its own
+/// surface drew, never one another surface on the thread drew meanwhile.
+fn met(wish: &Wish) -> bool {
+    let drawn = DRAWN_AT.with(|drawn| {
+        drawn
+            .borrow()
+            .iter()
+            .filter(|(surface, _)| wish.owner.is_none_or(|owner| owner == *surface))
+            .map(|(_, at)| *at)
+            .max()
+    });
     drawn.is_some_and(|drawn| drawn >= wish.until)
+}
+
+/// Whether a surface asking [`frames_wanted`] is the one `wish` is for.
+fn for_surface(wish: &Wish, owner: Option<usize>) -> bool {
+    wish.owner.is_none() || wish.owner == owner
 }
 
 /// Where the motions that still need frames at `now` asked for them
@@ -199,12 +244,13 @@ pub fn frames_wanted_by(now: Instant) -> Vec<String> {
     if testing::is_settled() {
         return Vec::new();
     }
-    let drawn = DRAWN_AT.with(Cell::get);
+    let owner = OWNER.with(Cell::get);
     WISHES.with(|wishes| {
         wishes
             .borrow()
             .iter()
-            .filter(|wish| now < wish.until || !met(wish, drawn))
+            .filter(|wish| for_surface(wish, owner))
+            .filter(|wish| now < wish.until || !met(wish))
             .map(|wish| format!("{}:{}", wish.caller.file(), wish.caller.line()))
             .collect()
     })
@@ -219,22 +265,26 @@ pub fn frames_wanted(now: Instant) -> bool {
     if testing::is_settled() {
         return false;
     }
-    let drawn = DRAWN_AT.with(Cell::get);
+    let owner = OWNER.with(Cell::get);
     WISHES.with(|wishes| {
         let mut wishes = wishes.borrow_mut();
-        wishes.retain(|wish| now < wish.until || !met(wish, drawn));
-        !wishes.is_empty()
+        wishes.retain(|wish| now < wish.until || !met(wish));
+        wishes.iter().any(|wish| for_surface(wish, owner))
     })
 }
 
 /// A frame was drawn reading its motions at `at` (taken before drawing,
 /// so every motion the frame read was at `at` or later). Every host that
-/// asks [`frames_wanted`] says so for each frame it draws: the frame at
-/// rest after a motion ends is owed until one drawn at or after its end.
+/// asks [`frames_wanted`] says so for each frame it draws, as the surface it
+/// draws for ([`own`]): the frame at rest after a motion ends is owed until
+/// one drawn at or after its end.
 pub fn frame_drawn(at: Instant) {
-    DRAWN_AT.with(|cell| {
-        if cell.get().is_none_or(|drawn| drawn < at) {
-            cell.set(Some(at));
+    let owner = OWNER.with(Cell::get).unwrap_or(0);
+    DRAWN_AT.with(|drawn| {
+        let mut drawn = drawn.borrow_mut();
+        match drawn.iter_mut().find(|(surface, _)| *surface == owner) {
+            Some((_, latest)) => *latest = (*latest).max(at),
+            None => drawn.push((owner, at)),
         }
     });
 }
@@ -244,19 +294,20 @@ pub fn frame_drawn(at: Instant) {
 #[cfg(test)]
 pub(crate) fn forget_frames_for_tests() {
     WISHES.with(|wishes| wishes.borrow_mut().clear());
-    DRAWN_AT.with(|cell| cell.set(None));
+    DRAWN_AT.with(|drawn| drawn.borrow_mut().clear());
 }
 
 /// When the motions on this thread that still need frames have all
 /// settled; `None` when none does.
 #[must_use]
 pub fn frames_until() -> Option<Instant> {
-    let drawn = DRAWN_AT.with(Cell::get);
+    let owner = OWNER.with(Cell::get);
     WISHES.with(|wishes| {
         wishes
             .borrow()
             .iter()
-            .filter(|wish| !met(wish, drawn))
+            .filter(|wish| for_surface(wish, owner))
+            .filter(|wish| !met(wish))
             .map(|wish| wish.until)
             .max()
     })

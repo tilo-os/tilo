@@ -157,6 +157,9 @@ pub struct Options {
     /// suspend, restart, shut down, switch user); the session locks the
     /// screen itself. Without one, the choice is only logged.
     pub session_actions: fn(SessionAction) -> Result<(), String>,
+    /// Whether the lock screen may offer suspend, restart and shut down:
+    /// a session that owns the machine, not one running inside a window.
+    pub lock_power: bool,
     /// Whose session this is, as the system knows them: the user a
     /// password unlocks the lock screen for.
     pub user: String,
@@ -269,6 +272,7 @@ impl Default for Options {
             apps: None,
             setup: None,
             session_actions: no_session_actions,
+            lock_power: false,
             user: String::new(),
             verifier: std::sync::Arc::new(unlock::Unavailable),
             wake: tilo_service::LoopWake::default(),
@@ -337,6 +341,12 @@ struct Shared {
     state: Option<std::path::PathBuf>,
     /// The pictures the desk shows, by workspace.
     wallpapers: std::sync::Arc<wallpapers::Wallpapers>,
+    /// Whether the lock screen offers suspend, restart and shut down.
+    lock_power: bool,
+    /// The keyboard layouts the person switches between, and which one is
+    /// in use, as the lock screen shows them.
+    lock_layouts: Vec<String>,
+    lock_layout: Cell<usize>,
     session_actions: fn(SessionAction) -> Result<(), String>,
     /// Where everything the session publishes stood when search last read
     /// it.
@@ -1268,6 +1278,9 @@ impl Session {
             kept: RefCell::new(None),
             state: options.state.clone(),
             wallpapers,
+            lock_power: options.lock_power,
+            lock_layouts: options.config.keyboard_layouts.clone(),
+            lock_layout: Cell::new(0),
             session_actions: options.session_actions,
             observed: RefCell::new(None),
             places_seen: RefCell::default(),
@@ -1714,9 +1727,15 @@ impl Session {
         let Some(lock) = lock.filter(|lock| lock.presentation().is_open()) else {
             return Ok(());
         };
+        // What the screen asked of the session besides unlocking.
+        for asked in lock.take_asked() {
+            self.answer_lock(&asked);
+        }
         lock.show(tilo_sheets::lock::Shown {
             clock: ui::clock::time_of_day(&ui::clock::local_now()),
+            date: ui::format::day_heading(ui::clock::today(), false),
             person: self.unlocking.user.clone(),
+            status: self.lock_status(),
             ..lock.shown()
         });
         for password in lock.take_attempts() {
@@ -1735,22 +1754,129 @@ impl Session {
                 lock.refuse(tilo_sheets::lock::unavailable());
             }
         }
-        let mut unlocked = false;
         while let Ok(verdict) = self.unlocking.verdicts.1.try_recv() {
             match verdict {
-                unlock::Verdict::Unlocks => {
-                    self.compositor.unlock()?;
-                    unlocked = true;
-                }
+                unlock::Verdict::Unlocks => lock.unlocking(),
                 unlock::Verdict::Wrong => lock.refuse(tilo_sheets::lock::wrong_password()),
                 unlock::Verdict::Unavailable => lock.refuse(tilo_sheets::lock::unavailable()),
             }
         }
-        // An unlock lands as a transition: follow it at once.
-        if unlocked {
+        // The screen leaves before the desk comes back: lift the lock once it
+        // has dissolved, or once it has had long enough to.
+        if lock.shown().unlocking {
+            if !lock.dissolve_finished() {
+                // Keep the loop turning while the screen leaves; it is one
+                // short animation, and nothing else is going on.
+                self.unlocking.wake.wake_by_ref();
+                return Ok(());
+            }
+            self.compositor.unlock()?;
+            // An unlock lands as a transition: follow it at once.
             return self.follow_lock();
         }
         Ok(())
+    }
+
+    /// What the device says about itself, as the lock screen shows it.
+    fn lock_status(&self) -> tilo_sheets::lock::Status {
+        let readings = self
+            .shared
+            .readings
+            .borrow()
+            .as_ref()
+            .map(tilo_quick_settings::host::Feed::current);
+        let Some(readings) = readings else {
+            return tilo_sheets::lock::Status {
+                layout: self.lock_layout(self.shared.lock_layout.get()),
+                next_layout: self.next_lock_layout(),
+                layouts: self.shared.lock_layouts.len(),
+                power: self.shared.lock_power,
+                ..tilo_sheets::lock::Status::default()
+            };
+        };
+        let status = &readings.status;
+        tilo_sheets::lock::Status {
+            network: status.link.as_ref().and_then(|link| link.name.clone()),
+            battery: status
+                .battery
+                .filter(|battery| battery.present)
+                .map(|battery| tilo_sheets::lock::Battery {
+                    percent: Some(battery.percent),
+                    charging: status.battery_is_charging(),
+                }),
+            layout: self.lock_layout(self.shared.lock_layout.get()),
+            next_layout: self.next_lock_layout(),
+            layouts: self.shared.lock_layouts.len(),
+            keyboard: false,
+            power: self.shared.lock_power,
+        }
+    }
+
+    /// The keyboard layout at `index`, as the lock screen names it (`DE`).
+    fn lock_layout(&self, index: usize) -> Option<String> {
+        let source = self.shared.lock_layouts.get(index)?;
+        Some(source.split(':').next().unwrap_or(source).to_uppercase())
+    }
+
+    /// The layout the screen's switch goes to, the way its button says where
+    /// it leads.
+    fn next_lock_layout(&self) -> Option<String> {
+        let count = self.shared.lock_layouts.len();
+        let next = self
+            .shared
+            .lock_layout
+            .get()
+            .checked_add(1)
+            .filter(|next| *next < count)
+            .unwrap_or(0);
+        self.lock_layout(next)
+    }
+
+    /// Carry out what the lock screen asked of the session besides
+    /// unlocking.
+    fn answer_lock(&mut self, asked: &tilo_sheets::lock::LockEffect) {
+        use tilo_sheets::lock::LockEffect;
+        match asked {
+            LockEffect::NextLayout => {
+                let count = self.shared.lock_layouts.len();
+                if count == 0 {
+                    return;
+                }
+                let index = self.shared.lock_layout.get();
+                let next = index
+                    .checked_add(1)
+                    .filter(|next| *next < count)
+                    .unwrap_or(0);
+                let Some(source) = self.shared.lock_layouts.get(next).cloned() else {
+                    return;
+                };
+                self.shared.lock_layout.set(next);
+                let (layout, variant) = match source.split_once(':') {
+                    Some((layout, variant)) => (layout.to_owned(), variant.to_owned()),
+                    None => (source, String::new()),
+                };
+                self.compositor
+                    .set_keyboard_layout(&tilo_compositor::KeyboardLayout {
+                        layout,
+                        variant,
+                        ..tilo_compositor::KeyboardLayout::default()
+                    });
+            }
+            LockEffect::ShowKeyboard => {
+                tracing::info!("this session has no on-screen keyboard to show");
+            }
+            LockEffect::Suspend => self.session_action(SessionAction::Suspend),
+            LockEffect::Restart => self.session_action(SessionAction::Restart),
+            LockEffect::ShutDown => self.session_action(SessionAction::ShutDown),
+            LockEffect::TypePassword { .. } | LockEffect::Unlock => {}
+        }
+    }
+
+    /// Ask the system to suspend, restart or shut the machine down.
+    fn session_action(&self, action: SessionAction) {
+        if let Err(error) = (self.shared.session_actions)(action) {
+            tracing::warn!(%error, ?action, "session action");
+        }
     }
 
     fn command(&mut self, command: SessionCommand) -> Result<(), Error> {

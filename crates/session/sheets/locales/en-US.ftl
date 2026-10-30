@@ -245,8 +245,19 @@ file-chooser-unavailable = The file chooser can't do that now.
 
 ## The lock screen.
 lock-title = Locked
+lock-description = Type your password and press Enter to unlock.
 lock-unlock = Unlock
+lock-password = Password
+lock-welcome = Welcome back
+lock-enter-hint = Press Enter to unlock
+lock-caps-lock = Caps Lock is on
 lock-checking = Checking…
 lock-no-password = Type your password to unlock.
 lock-wrong-password = That password did not unlock. Try again.
 lock-unavailable = The password could not be checked. The screen stays locked.
+lock-switch-layout = Switch to { $layout }
+lock-on-screen-keyboard = On-screen keyboard
+lock-battery = Battery
+lock-suspend = Suspend
+lock-restart = Restart
+lock-shut-down = Shut down

@@ -245,8 +245,19 @@ file-chooser-unavailable = Das kann die Dateiauswahl gerade nicht.
 
 ## The lock screen.
 lock-title = Gesperrt
+lock-description = Gib dein Passwort ein und drücke die Eingabetaste, um zu entsperren.
 lock-unlock = Entsperren
+lock-password = Passwort
+lock-welcome = Willkommen zurück
+lock-enter-hint = Mit der Eingabetaste entsperren
+lock-caps-lock = Feststelltaste ist an
 lock-checking = Wird geprüft …
 lock-no-password = Gib dein Passwort ein, um zu entsperren.
-lock-wrong-password = Mit diesem Passwort ließ sich nicht entsperren. Versuch es noch einmal.
+lock-wrong-password = Das Passwort war falsch. Versuch es noch einmal.
 lock-unavailable = Das Passwort ließ sich nicht prüfen. Der Bildschirm bleibt gesperrt.
+lock-switch-layout = Zu { $layout } wechseln
+lock-on-screen-keyboard = Bildschirmtastatur
+lock-battery = Akku
+lock-suspend = Bereitschaft
+lock-restart = Neu starten
+lock-shut-down = Ausschalten

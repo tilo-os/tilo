@@ -781,11 +781,24 @@ impl App {
             .is_some_and(crate::wake::WakeScope::is_pending)
     }
 
+    /// Which surface this app is on the thread's motion clock: the frames it
+    /// asks for and draws are its own, so a desk drawing on the same thread
+    /// never meets a lock screen's wish for it. Its state box stays put for
+    /// as long as the app does.
+    pub(crate) fn motion_owner(&self) -> usize {
+        std::ptr::from_ref(&*self.state) as usize
+    }
+
     /// When the app next wants a frame with no input to bring one, for a
     /// host that schedules its own frames: now while something moves, else
     /// the earliest deadline its widgets set (a caret's blink, the clock's
     /// next minute) or a tooltip's dwell runs out.
     pub fn surface_next_frame(&self) -> Option<crate::time::Instant> {
+        crate::motion::own(self.motion_owner(), || self.surface_next_frame_own())
+    }
+
+    /// [`Self::surface_next_frame`], asked as this app.
+    fn surface_next_frame_own(&self) -> Option<crate::time::Instant> {
         let now = crate::time::now();
         let moving = self.root_widget.needs_animation_frame()
             || crate::motion::frames_wanted(now)
@@ -793,7 +806,13 @@ impl App {
                 .presence_ctx
                 .interaction_animation_demand(now, &self.theme);
         if moving {
-            return Some(now);
+            // Due this very frame: a host takes its own `now` before asking
+            // and draws when the answer is at or behind it, so the deadline
+            // sits just behind the clock instead of on it.
+            return Some(
+                now.checked_sub(crate::time::Duration::from_millis(1))
+                    .unwrap_or(now),
+            );
         }
         [
             self.root_widget.next_wake_deadline(),
