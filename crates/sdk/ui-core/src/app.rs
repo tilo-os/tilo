@@ -723,6 +723,10 @@ impl AppConstructionInputs {
         // process that never installed any gets the native desktop's.
         #[cfg(feature = "native")]
         crate::host::native::install_default_if_unset(None);
+        // A live window keeps the person's emoji recents on the device, so the
+        // picker opens with what they picked last time.
+        #[cfg(feature = "native")]
+        crate::emoji_catalogue::keep_recents_on_the_device();
         Self {
             control_domain: None,
             collab_manager,
