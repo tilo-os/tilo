@@ -1562,10 +1562,10 @@ impl TestMail {
 }
 
 /// Hosted-only extras that are not document state: an in-flight send.
-pub(crate) fn live_extras(app: &crate::app::Mailroom) -> Vec<tilo_actions::ResourceSpec> {
+pub(crate) fn live_extras(app: &crate::app::Mailroom) -> Vec<ui::framework::LiveRow> {
     let mut extras = Vec::new();
     if app.has_pending_send() {
-        extras.push(tilo_actions::ResourceSpec::new(
+        extras.push(ui::framework::LiveRow::new(
             "mail.send:pending",
             "mail.send",
             "Sending message…",

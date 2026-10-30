@@ -5370,13 +5370,8 @@ impl Mailroom {
     /// The rows this window shows beside the mailbox: the accounts, an
     /// in-flight send and a search-index fault.
     pub(crate) fn live_rows(&self) -> Vec<ui::framework::LiveRow> {
-        let mut rows: Vec<_> = crate::resource::live_extras(self)
-            .into_iter()
-            .map(ui::framework::LiveRow::from_resource)
-            .collect();
-        rows.push(ui::framework::LiveRow::from_resource(
-            crate::actions::accounts_collection(&self.accounts_rows()),
-        ));
+        let mut rows = crate::resource::live_extras(self);
+        rows.push(crate::actions::accounts_collection(&self.accounts_rows()));
         rows.extend(self.contact_recipient_rows());
         rows
     }
@@ -5388,32 +5383,30 @@ impl Mailroom {
         if id.starts_with("mail.contact") {
             return self.contact_recipient_row(id);
         }
-        if id.starts_with("mail.account") {
-            let accounts = crate::actions::accounts_collection(&self.accounts_rows());
-            if id == "mail.accounts" {
-                return Some(ui::framework::LiveRow::from_resource(accounts));
-            }
-            return accounts
-                .children
+        if id == "mail.accounts" {
+            return Some(crate::actions::accounts_collection(&self.accounts_rows()));
+        }
+        if let Some(account) = id.strip_prefix("mail.account:") {
+            return self
+                .accounts_rows()
                 .into_iter()
-                .find(|account| account.id.as_str() == id)
-                .map(ui::framework::LiveRow::from_resource);
+                .find(|(each, _, _)| each == account)
+                .map(|(id, label, active)| crate::actions::account_row(&id, &label, active));
         }
         if let Some(message_id) = id.strip_prefix("mail.message:") {
-            return self.resource_message_row(message_id).map(|row| {
-                ui::framework::LiveRow::from_resource(crate::actions::message_resource(&row))
-            });
+            return self
+                .resource_message_row(message_id)
+                .map(|row| crate::actions::message_row_of(&row));
         }
         if let Some(rest) = id.strip_prefix("mail.attachment:")
             && let Some((message_id, index)) = rest.rsplit_once(':')
             && let Ok(index) = index.parse::<usize>()
         {
             let row = self.resource_message_row(message_id)?;
-            return crate::actions::message_resource(&row)
-                .children
-                .into_iter()
-                .nth(index)
-                .map(ui::framework::LiveRow::from_resource);
+            return row
+                .attachments
+                .get(index)
+                .map(|attachment| crate::actions::attachment_row(&row.id, index, attachment));
         }
         if let Some(stable) = id.strip_prefix("mail.thread:") {
             let (subject, messages) = self.resource_thread_rows(stable)?;
@@ -5427,16 +5420,13 @@ impl Mailroom {
                 },
             );
             for message in &messages {
-                thread = thread.row(ui::framework::LiveRow::from_resource(
-                    crate::actions::message_resource(message),
-                ));
+                thread = thread.row(crate::actions::message_row_of(message));
             }
             return Some(thread);
         }
         crate::resource::live_extras(self)
             .into_iter()
-            .find(|extra| extra.id.as_str() == id)
-            .map(ui::framework::LiveRow::from_resource)
+            .find(|extra| extra.id() == id)
     }
 
     /// This device's accounts, `(id, label, active)`.

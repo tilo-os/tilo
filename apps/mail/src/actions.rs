@@ -10,7 +10,8 @@
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Effect, JsonSchema};
 
-use tilo_actions::{ActionSpec, ResourceSpec};
+use tilo_actions::ActionSpec;
+use ui::framework::LiveRow;
 
 use crate::attachment_store;
 use crate::model::{Draft, DraftAttachment, Folder};
@@ -714,9 +715,9 @@ fn message_label(m: &MessageRow) -> String {
     }
 }
 
-pub(crate) fn message_resource(message: &MessageRow) -> ResourceSpec {
-    let mut resource = with_message_views(
-        ResourceSpec::new(
+pub(crate) fn message_row_of(message: &MessageRow) -> LiveRow {
+    let mut row = with_message_views(
+        LiveRow::new(
             format!("mail.message:{}", message.id),
             "mail.message",
             message_label(message),
@@ -724,12 +725,18 @@ pub(crate) fn message_resource(message: &MessageRow) -> ResourceSpec {
         &message.id,
     );
     for (index, attachment) in message.attachments.iter().enumerate() {
-        resource = resource.with_child(attachment_resource(&message.id, index, attachment));
+        row = row.row(attachment_row(&message.id, index, attachment));
     }
-    resource
+    row
 }
 
-fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRow) -> ResourceSpec {
+/// The attachment `index` of the loaded message `message_id`, offering to
+/// save it once its content is here.
+pub(crate) fn attachment_row(
+    message_id: &str,
+    index: usize,
+    attachment: &AttachmentRow,
+) -> LiveRow {
     let save = MailEffect::Save {
         message: message_id.to_owned(),
         index,
@@ -756,7 +763,7 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
             spec.unavailable("not_downloaded", "Attachment content is not downloaded yet")
         }
     };
-    ResourceSpec::new(
+    LiveRow::new(
         format!("mail.attachment:{message_id}:{index}"),
         "mail.attachment",
         format!(
@@ -765,58 +772,61 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
             ui::format::size(attachment.size)
         ),
     )
-    .with_action(not_downloaded(content))
-    .with_action(not_downloaded(open))
-    .with_action(not_downloaded(save))
+    .operation(not_downloaded(content))
+    .operation(not_downloaded(open))
+    .operation(not_downloaded(save))
 }
 
 /// Open, preview, reply, reply all and forward, bound to the message
 /// `id`: what can be done with a message that changes no document.
-fn with_message_views(resource: ResourceSpec, id: &str) -> ResourceSpec {
+fn with_message_views(row: LiveRow, id: &str) -> LiveRow {
     let message = || id.to_owned();
-    resource
-        .with_action(bound(
-            &MailEffect::Open {
-                target: MailTarget::Message(message()),
-            },
-            "Open message",
-        ))
-        .with_action(MailEffect::Inspect { message: message() }.bound())
-        .with_action(MailEffect::ReadMessage { message: message() }.bound())
-        .with_action(MailEffect::Reply { message: message() }.bound())
-        .with_action(MailEffect::ReplyAll { message: message() }.bound())
-        .with_action(MailEffect::Forward { message: message() }.bound())
-        .with_action(MailEffect::LoadRemoteContent { message: message() }.bound())
-        .with_action(MailEffect::AlwaysLoadRemoteContent { message: message() }.bound())
-        .with_action(
-            MailEffect::OpenLink {
-                message: message(),
-                url: String::new(),
-            }
-            .bound_asking(&["url"]),
-        )
+    row.operation(bound(
+        &MailEffect::Open {
+            target: MailTarget::Message(message()),
+        },
+        "Open message",
+    ))
+    .effect(&MailEffect::Inspect { message: message() })
+    .effect(&MailEffect::ReadMessage { message: message() })
+    .effect(&MailEffect::Reply { message: message() })
+    .effect(&MailEffect::ReplyAll { message: message() })
+    .effect(&MailEffect::Forward { message: message() })
+    .effect(&MailEffect::LoadRemoteContent { message: message() })
+    .effect(&MailEffect::AlwaysLoadRemoteContent { message: message() })
+    .operation(
+        MailEffect::OpenLink {
+            message: message(),
+            url: String::new(),
+        }
+        .bound_asking(&["url"]),
+    )
+}
+
+/// One of this device's accounts, opening its inbox.
+pub(crate) fn account_row(id: &str, label: &str, active: bool) -> LiveRow {
+    LiveRow::new(
+        format!("mail.account:{id}"),
+        "mail.account",
+        if active {
+            format!("{label} (open)")
+        } else {
+            label.to_owned()
+        },
+    )
+    .operation(bound(
+        &MailEffect::Open {
+            target: MailTarget::Account(id.to_owned()),
+        },
+        "Open account",
+    ))
 }
 
 /// This device's accounts `(id, label, active)`, each opening its inbox.
-pub(crate) fn accounts_collection(accounts: &[(String, String, bool)]) -> ResourceSpec {
-    ResourceSpec::new("mail.accounts", "mail.account.collection", "Accounts").with_children(
-        accounts.iter().map(|(id, label, active)| {
-            ResourceSpec::new(
-                format!("mail.account:{id}"),
-                "mail.account",
-                if *active {
-                    format!("{label} (open)")
-                } else {
-                    label.clone()
-                },
-            )
-            .with_action(bound(
-                &MailEffect::Open {
-                    target: MailTarget::Account(id.clone()),
-                },
-                "Open account",
-            ))
-        }),
+pub(crate) fn accounts_collection(accounts: &[(String, String, bool)]) -> LiveRow {
+    accounts.iter().fold(
+        LiveRow::new("mail.accounts", "mail.account.collection", "Accounts"),
+        |collection, (id, label, active)| collection.row(account_row(id, label, *active)),
     )
 }
 
