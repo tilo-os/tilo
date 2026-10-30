@@ -1219,10 +1219,17 @@ impl Applier {
                 return serde_json::json!({"failed": format!("the change's invoker does not decode: {error}")});
             }
         };
-        let ambient: Option<ActionContext> = change
+        let ambient: Option<ActionContext> = match change
             .context
             .clone()
-            .and_then(|context| serde_json::from_value(context).ok());
+            .map(serde_json::from_value)
+            .transpose()
+        {
+            Ok(ambient) => ambient,
+            Err(error) => {
+                return serde_json::json!({"failed": format!("the change's context does not decode: {error}")});
+            }
+        };
         // The record as the room holds it now: requirements are decided on what others wrote.
         self.host.sync_from(self.record.doc());
         let address = ActionAddress::new(change.resource.clone(), change.action.clone());

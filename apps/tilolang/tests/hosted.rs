@@ -914,3 +914,69 @@ fn enter_in_a_new_notes_title_moves_the_keyboard_to_its_body() {
 fn enter_in_a_new_notes_title_moves_the_keyboard_to_its_body_in_the_live_window() {
     enter_in_a_new_notes_title_moves_to_its_body(Session::live_notes());
 }
+
+/// The window is made by the component shown before its record and taken over by the one the
+/// record opens, which closes the first. What its instance sends from then on (a change another
+/// writer made at the record's origin, an undo) wakes the component running the window: the
+/// window shows it then, not whenever something else wakes it.
+#[test]
+fn what_the_instance_sends_wakes_the_component_that_took_the_window_over() {
+    use tilo_render_protocol::patch::Transport as _;
+    use ui::wake::WakeScope;
+
+    fn woken(scope: &mut WakeScope) -> std::sync::mpsc::Receiver<()> {
+        let (woke, woken) = std::sync::mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woke.send(());
+            })
+            .unwrap();
+        woken
+    }
+
+    let (ours, theirs) = Channel::pair().unwrap();
+    // The component shown before the record makes the window, its patch connection at hand.
+    let mut opening = WakeScope::new();
+    let _opening_woken = woken(&mut opening);
+    let mut window = {
+        let _entry = opening.enter();
+        HostedWindow::over(theirs)
+    };
+    // The record opened: the component it opens takes the window over and closes the first.
+    let mut running = WakeScope::new();
+    let running_woken = woken(&mut running);
+    drop(opening);
+    {
+        let _entry = running.enter();
+        Widget::update(&mut window, &(), &());
+    }
+    // The instance sends what changed; the window's component is woken to show it.
+    let mut instance = ChannelTransport::new(ours).unwrap();
+    let nothing: [tilo_render_protocol::patch::ToUi; 0] = [];
+    instance
+        .send(tilo_render_protocol::patch::encode_batch(&nothing).unwrap())
+        .unwrap();
+    assert!(
+        running_woken
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .is_ok(),
+        "what the instance sent did not wake the component running the window"
+    );
+    {
+        let _entry = running.enter();
+        assert!(
+            Widget::update(&mut window, &(), &()),
+            "the window took nothing in"
+        );
+    }
+    // Woken again for what it sends next: the watch waits again once the window took it.
+    instance
+        .send(tilo_render_protocol::patch::encode_batch(&nothing).unwrap())
+        .unwrap();
+    assert!(
+        running_woken
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .is_ok(),
+        "the next thing the instance sent did not wake the window"
+    );
+}

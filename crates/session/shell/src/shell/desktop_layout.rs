@@ -671,17 +671,35 @@ fn resolve(
             })
         }
         Target::Resource(resource) => {
-            let app = publisher(resource).ok_or_else(|| {
+            if let Some(app) = publisher(resource) {
+                return Ok(Launch {
+                    app,
+                    document: None,
+                    uri: None,
+                    resource: Some(resource.clone()),
+                    visitor: false,
+                });
+            }
+            // An address in a scheme an installed app claims (its manifest's
+            // `[providers] schemes`, such as Tasks' `tilo-tasks:chat/<issue>`)
+            // launches that app on it, as opening the address anywhere does:
+            // one window, opened at what the address names.
+            let app = crate::shell::uri_open::resolve_for(
+                resource,
+                &state.local_user_for_room(&room),
+                Some(&workspace.default_apps),
+            )
+            .map_err(|_| {
                 format!(
-                    "no app in this workspace publishes {resource}: find it in the action \
-                     catalogue first"
+                    "no app in this workspace publishes {resource} or opens its address: find \
+                     it in the action catalogue first"
                 )
             })?;
             Ok(Launch {
-                app,
+                app: app.package_id,
                 document: None,
-                uri: None,
-                resource: Some(resource.clone()),
+                uri: Some(resource.clone()),
+                resource: None,
                 visitor: false,
             })
         }
