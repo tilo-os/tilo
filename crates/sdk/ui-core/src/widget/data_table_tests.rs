@@ -36,6 +36,42 @@ pub(super) fn sample_cols() -> Vec<ColumnDef<R>> {
     ]
 }
 
+/// Answer the row actions a table queued while the test drove it, the way a
+/// host does: take each invocation, find the action it names among the
+/// table's published resources, and let the table answer it.
+pub(super) fn answer_row_actions<Row: 'static>(table: &mut DataTable<Row>) {
+    let mut doc = AutoCommit::new();
+    while let Some(invocation) = crate::widget::controls::take_control_invocation(table) {
+        let resources = crate::resources::resources(&*table, &doc);
+        let spec = resources
+            .iter()
+            .find_map(|resource| {
+                resource.actions.iter().find(|spec| {
+                    invocation.address
+                        == crate::tilo_actions::ActionAddress::new(
+                            resource.id.as_str(),
+                            spec.id.as_str(),
+                        )
+                })
+            })
+            .unwrap_or_else(|| panic!("no published action at {:?}", invocation.address));
+        let encoded = spec.build_json(&invocation.arguments).unwrap();
+        let op = crate::widget::ResourceOperation::local(
+            crate::tilo_actions::InvocationId::new(),
+            spec.kind,
+            &encoded.type_id,
+            &encoded.payload,
+        );
+        crate::widget::start_operation(
+            &mut *table,
+            &op,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        )
+        .expect("the table answers its own row action");
+    }
+}
+
 struct HugeModel {
     row: R,
     key_queries: Rc<Cell<usize>>,
@@ -742,6 +778,7 @@ fn sorting_is_owned_by_the_model_and_reapplied_on_rows() {
                 );
             }
         }
+        answer_row_actions(&mut table);
         assert_eq!(*clicks.borrow(), [1, 1]);
         assert_eq!(*activations.borrow(), [1]);
         assert_eq!(table.selected_rows(), [1]);
@@ -1240,6 +1277,7 @@ fn pointer_and_keyboard_select_rows_unless_cells_or_mode_consume() {
 
         assert!(t.selection().is_selected(2), "row 2 selected");
         assert_eq!(t.selection().primary(), Some(2));
+        answer_row_actions(&mut t);
         assert_eq!(*clicks.borrow(), vec![(2, false, false)]);
     }
 
