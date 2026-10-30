@@ -61,7 +61,7 @@ impl Launch {
     #[must_use]
     pub fn parse(launch: &str) -> Option<Self> {
         if let Some(id) = launch.strip_prefix(WINDOW_PREFIX) {
-            return id.parse().ok().map(|id| Self::Window { id: id });
+            return id.parse().ok().map(|id| Self::Window { id });
         }
         if let Some(desktop_id) = launch.strip_prefix(HOST_PREFIX) {
             return (!desktop_id.is_empty()).then(|| Self::Host {

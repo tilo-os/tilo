@@ -6,7 +6,7 @@
 //!   sandbox from its signed manifest, the room it is launched into and the
 //!   grants written for it ([`Room::write_grants`]);
 //! - one of the machine's own applications, through its `.desktop` entry:
-//!   Flatpak, AppImage, a program the person added, or one of the system's.
+//!   Flatpak, `AppImage`, a program the person added, or one of the system's.
 //!   It runs unconfined, as the person, exactly as [`desktop_entry::launch`]
 //!   decides — see that module for why it cannot be confined.
 //!
@@ -38,7 +38,7 @@ pub enum Kind {
     Package,
     /// A Flatpak, in its own.
     Flatpak,
-    /// An AppImage the person downloaded.
+    /// An `AppImage` the person downloaded.
     AppImage,
     /// A program the person added.
     Program,
@@ -148,6 +148,7 @@ impl PlanContext<'_> {
 
 /// An installed package, as its launch names it. The store lookup is what
 /// [`Planned::package`] adds to this.
+#[derive(Clone, Copy)]
 struct Package<'a> {
     id: &'a str,
     title: &'a str,
@@ -299,7 +300,7 @@ impl Planned {
         Ok(from_host_launch(planned, Kind::of_entry(entry)))
     }
 
-    /// The program file at `path` itself, as opening a downloaded AppImage
+    /// The program file at `path` itself, as opening a downloaded `AppImage`
     /// or an executable in Files does. The file is made runnable first: a
     /// downloaded program arrives without the executable bit.
     ///

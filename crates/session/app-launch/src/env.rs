@@ -148,20 +148,17 @@ impl SessionEnvironment {
         } else if let Some(directory) = self.forwarded.get("XDG_RUNTIME_DIR") {
             variables.insert("XDG_RUNTIME_DIR".to_owned(), directory.clone());
         }
-        match (&self.x11_display, &self.x11_authority) {
-            (Some(display), Some(authority)) => {
-                variables.insert("DISPLAY".to_owned(), display.clone());
-                variables.insert(
-                    "XAUTHORITY".to_owned(),
-                    authority.to_string_lossy().into_owned(),
-                );
-            }
+        if let (Some(display), Some(authority)) = (&self.x11_display, &self.x11_authority) {
+            variables.insert("DISPLAY".to_owned(), display.clone());
+            variables.insert(
+                "XAUTHORITY".to_owned(),
+                authority.to_string_lossy().into_owned(),
+            );
+        } else {
             // An X11 display without its cookie is unusable and a stale
             // `DISPLAY` is worse than none: both are left out together.
-            _ => {
-                variables.remove("DISPLAY");
-                variables.remove("XAUTHORITY");
-            }
+            variables.remove("DISPLAY");
+            variables.remove("XAUTHORITY");
         }
         if let Some(address) = &self.session_bus {
             variables.insert("DBUS_SESSION_BUS_ADDRESS".to_owned(), address.clone());
