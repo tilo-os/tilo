@@ -23,10 +23,12 @@ how they run:
   the workspace compiles once and nextest's test groups and thread limits hold across
   all of it. Architectures that are only type-checked (`--full`) check on the arm
   builder at the same time.
-- Each job runs where it is compiled: through `rcargo exec` (tools/ci/lint-affected.sh,
-  tools/ci/t-nextest.sh) inside the builder's container, so helper binaries the tests
-  need are built there and no test binary or artifact is fetched to this machine.
-  Without rcargo the same commands run here.
+- Each job runs where it is compiled: through the command prefix in
+  $TILO_BUILDER_EXEC_X86_64 (and $TILO_BUILDER_EXEC_AARCH64 for the second builder), any
+  remote-exec tool that runs a command in a builder's copy of the worktree
+  (tools/ci/lint-affected.sh, tools/ci/t-nextest.sh), so helper binaries the tests need
+  are built there and no test binary or artifact is fetched to this machine. Without
+  them the same commands run here.
 - The tests that failed in the last run against the same base run as a job of their
   own beside the rest, so a fix is confirmed (or not) within the time of its own tests
   and the rest is not held up by them. The record is per worktree and base (`<git-dir>/local-affected/`).
@@ -70,6 +72,12 @@ SECOND_SHARE = 0.25
 # The packages kept on x86_64 when a test set is split: their code or tests differ by
 # architecture and CI tests them on x86_64.
 X86_ONLY = {"shell"}
+# A change to what the session's real paths cross (the shell, collaboration, the tilolang host
+# and tilolang-tilo) also runs scripts/headless-examples/session-e2e.py: one headless nested
+# session of this tree, built on the arm builder and run here, since the builders' containers
+# cannot start Tilo's sandboxes.
+SESSION_E2E_PATHS = ("crates/session/shell/", "crates/collab/", "crates/platform/tilolang-host/",
+                     "crates/platform/tilolang-tilo/", "scripts/headless-examples/session-e2e.py")
 # nextest's status line for a test that did not pass, and the test it names.
 FAILED_LINE = re.compile(
     r"^\s*(?:TRY \d+ )?(FAIL|TIMEOUT|LEAK-FAIL|ABORT|SIG[A-Z]+)\s+\[[^\]]*\]\s+"
@@ -135,17 +143,18 @@ def ordered_union(rows: list[dict], key: str) -> list[str]:
 # --- builders ------------------------------------------------------------------------------
 
 class Builder:
-    """Where a job runs: an rcargo builder (`rcargo exec` in its build container), or here."""
+    """Where a job runs: a builder, through the command prefix that runs a command in the
+    builder's copy of this worktree (its build container), or here (no prefix)."""
 
-    def __init__(self, name: str, config: Path | None):
+    def __init__(self, name: str, prefix: list[str] | None):
         self.name = name
-        self.config = config
+        self.prefix = prefix
 
     def prepare(self) -> None:
         """Sync the worktree and ready the build container before the jobs start: jobs started
         together would otherwise queue on each other's sync and container preparation, and a
         session that planned its sync before another's landed compares every file again."""
-        if self.config is None or Job.dry_run:
+        if self.prefix is None or Job.dry_run:
             return
         command, env = self.command(["true"])
         start = time.monotonic()
@@ -157,24 +166,22 @@ class Builder:
         say(f"==> {self.name} builder: worktree synced, build container ready ({time.monotonic() - start:.0f} s)")
 
     def command(self, argv: list[str]) -> tuple[list[str], dict[str, str]]:
-        env = dict(os.environ)
-        if self.config is None:
-            return argv, env
-        env["RCARGO_CONFIG"] = str(self.config)
-        return ["rcargo", "exec", "--", *argv], env
+        return [*(self.prefix or []), *argv], dict(os.environ)
+
+
+# The command prefixes that run a command (the words after them) in an x86_64 or aarch64
+# builder's copy of this worktree, from wherever its compiler runs: any remote-exec tool.
+BUILDER_EXEC = {"x86": "TILO_BUILDER_EXEC_X86_64", "arm": "TILO_BUILDER_EXEC_AARCH64"}
 
 
 def builders(local: bool) -> tuple[Builder, Builder | None]:
-    """The test builder (the one `cargo test` goes to) and a second one to share a big test
-    set with. The cargo shim's: ~/.config/rcargo/x86.toml for tests, config.toml (arm)."""
-    if local or not shutil.which("rcargo"):
+    """The test builder (x86_64, as CI tests) and an aarch64 one to share a big test set
+    with, each named by its $TILO_BUILDER_EXEC_<ARCH> prefix; without the x86_64 one, here."""
+    prefixes = {name: shlex.split(os.environ.get(variable, "")) for name, variable in BUILDER_EXEC.items()}
+    if local or not prefixes["x86"]:
         return Builder("local", None), None
-    home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "rcargo"
-    first = Path(os.environ.get("LOCAL_AFFECTED_RCARGO_CONFIG", home / "x86.toml"))
-    second = Path(os.environ.get("LOCAL_AFFECTED_RCARGO_CONFIG_2", home / "config.toml"))
-    if not first.is_file():
-        return Builder("local", None), None
-    return Builder("x86", first), (Builder("arm", second) if second.is_file() and second != first else None)
+    second = Builder("arm", prefixes["arm"]) if prefixes["arm"] and prefixes["arm"] != prefixes["x86"] else None
+    return Builder("x86", prefixes["x86"]), second
 
 
 # --- jobs ----------------------------------------------------------------------------------
@@ -515,6 +522,14 @@ def main() -> int:
             if mine:
                 spawn(f"{label}-failed", failed_first(builder, packages, mine))
             spawn(label, test_share(builder, packages, mine))
+
+    # The session's real paths, end to end: built once on the arm builder, run on this machine.
+    changed_files = plan.get("changed_files", [])
+    if args.changed and want("test") and any(path.startswith(SESSION_E2E_PATHS) for path in changed_files):
+        spawn("session-e2e", lambda job: job.run(
+            "session e2e (scripts/headless-examples/session-e2e.py)", Builder("local", None),
+            [sys.executable, "scripts/headless-examples/session-e2e.py", "--build",
+             "--out", "target/session-e2e"]))
 
     for thread in threads:
         thread.join()
