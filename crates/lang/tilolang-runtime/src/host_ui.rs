@@ -270,7 +270,8 @@ impl Core {
         } else {
             let of = tilolang::host::value_field("Version", "of").and_then(|at| fields.get(at));
             // The change is held after the action's id, past the fields code reads by name.
-            let change = tilolang::host::action_id_at("Version").and_then(|at| fields.get(at + 1));
+            let change = tilolang::host::action_id_at("Version")
+                .and_then(|at| fields.get(at.checked_add(1)?));
             let (Some(Value::Text(change)), Some(of)) = (change, of) else {
                 return trap("undo: a version names its change and its resource");
             };

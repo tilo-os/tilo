@@ -209,8 +209,7 @@ pub fn field_of_slot(
 }
 
 /// The value of `field` from `json`, what its key held as JSON at some version
-/// ([`tilo_resource::history::written`]): [`field_of_slot`] of a value read from history. Rich
-/// text is read with [`rich_at`].
+/// ([`tilo_resource::history::held_at`]): [`field_of_slot`] of a value read from history.
 ///
 /// # Errors
 /// `Backend` when the value does not have the field's shape.
@@ -265,29 +264,6 @@ pub fn field_of_json(json: &Json, field: &FieldSchema) -> Result<FieldValue, Sto
             )));
         }
     })
-}
-
-/// The rich text field `field` of the resource map `obj` as it was at `heads`: read as the
-/// runtime reads rich text, from the record forked there.
-///
-/// # Errors
-/// `Backend` when the record cannot be forked at `heads`.
-pub fn rich_at(
-    doc: &automerge::Automerge,
-    obj: &ObjId,
-    field: &str,
-    heads: &[automerge::ChangeHash],
-) -> Result<FieldValue, StoreError> {
-    let past = doc.fork_at(heads).map_err(backend)?;
-    let past = Doc::load(&past.save()).map_err(backend)?;
-    Ok(FieldValue::Rich(
-        match past.get(obj, field).map_err(backend)? {
-            Some((AmValue::Object(ObjType::Map), rich)) => {
-                tilolang_runtime::rich::read_under(&past, &rich)
-            }
-            _ => tilolang_runtime::rich::RichValue::default(),
-        },
-    ))
 }
 
 /// A text field's value as the store holds it, when it holds text: a text, or rich text. What

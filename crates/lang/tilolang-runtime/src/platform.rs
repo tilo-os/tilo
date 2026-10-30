@@ -478,6 +478,22 @@ impl Core {
                     .map(|item| self.change_shown(inner, item))
                     .collect::<HResult<_>>()?,
             ),
+            // A map: each entry as its key and what it holds, as people read it ("👍 Ada, Bo").
+            (Ty::Map(inner), Value::List(entries)) => Value::List(
+                entries
+                    .iter()
+                    .map(|entry| match entry {
+                        Value::Tuple(pair) => match pair.as_slice() {
+                            [Value::Text(key), held] => {
+                                let shown = said(&self.change_shown(inner, held)?);
+                                Ok(one("text", Value::Text(format!("{key} {shown}")), None))
+                            }
+                            _ => trap("a map entry is a key and its value"),
+                        },
+                        other => trap(format!("a map entry holds {}", other.kind_name())),
+                    })
+                    .collect::<HResult<_>>()?,
+            ),
             (_, Value::Rich(rich)) => one("text", Value::Text(rich.written_text()), None),
             (_, Value::Text(text)) => one("text", Value::Text(text.clone()), None),
             (_, other) => {
@@ -1073,5 +1089,31 @@ fn same_step(last: &crate::store::Version, next: &crate::store::Version) -> bool
         (Some(a), Some(b)) => a.id == b.id,
         (None, None) => last.who == next.who,
         _ => false,
+    }
+}
+
+/// What a value as `c.before` and `c.after` show it says as text, where it is part of a phrase
+/// (an entry of a map): a person by name, a case by its label, a list one item after another.
+fn said(shown: &Value) -> String {
+    match shown {
+        Value::List(items) => items.iter().map(said).collect::<Vec<_>>().join(", "),
+        Value::Tuple(parts) => match parts.as_slice() {
+            [Value::Text(kind), _, Value::Opt(Some(name))] if kind == "principal" => {
+                said_value(name)
+            }
+            [_, held, _] => said_value(held),
+            _ => String::new(),
+        },
+        other => said_value(other),
+    }
+}
+
+fn said_value(value: &Value) -> String {
+    match value {
+        Value::Text(text) => text.clone(),
+        Value::Int(n) => n.to_string(),
+        Value::Float(x) => x.to_string(),
+        Value::Principal(who) => who.0.clone(),
+        _ => String::new(),
     }
 }

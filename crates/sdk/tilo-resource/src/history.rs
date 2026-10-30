@@ -306,27 +306,25 @@ pub struct Written {
     pub after: serde_json::Value,
 }
 
-/// What the change `hash` of `doc` wrote under the map `obj`, one entry per
-/// key of `obj` it reached, in the order the change first reached it: a key
-/// it set or removed, or one holding an object it changed inside (the text
-/// of a field typed into, a list or map of it). Which keys is read from the
-/// change's own operations; their values before and after from the
-/// document as of the change's dependencies and as of the change, in place.
-/// A key whose value reads the same on both sides (a write of what it held)
-/// is left out. Empty for a change `doc` does not hold.
+/// The keys of the map `obj` the change `hash` of `doc` reached, in the
+/// order it first reached each: a key it set or removed, or one holding an
+/// object it changed inside (the text of a field typed into, a list or map
+/// of it), read from the change's own operations. Empty for a change `doc`
+/// does not hold. A reader that decodes the values itself reads each key at
+/// the change's dependencies and at the change ([`written`] reads them as
+/// JSON).
 ///
 /// # Errors
-/// A value the document holds cannot be read as JSON.
-pub fn written(
+/// An operation names an object the document does not hold.
+pub fn wrote(
     doc: &automerge::Automerge,
     hash: &ChangeHash,
     obj: &automerge::ObjId,
-) -> Result<Vec<Written>, ModelError> {
+) -> Result<Vec<String>, ModelError> {
     use automerge::ReadDoc as _;
     let Some(change) = doc.get_change_by_hash(hash) else {
         return Ok(Vec::new());
     };
-    let before_heads = change.deps().to_vec();
     let after_heads = [*hash];
     let mut keys: Vec<String> = Vec::new();
     for op in change.decode().operations {
@@ -351,16 +349,34 @@ pub fn written(
             keys.push(key);
         }
     }
-    let at = |key: &str, heads: &[ChangeHash]| -> Result<serde_json::Value, ModelError> {
-        match doc.get_at(obj, key, heads)? {
-            Some((value, inner)) => crate::value::read_value_at(doc, &value, &inner, heads),
-            None => Ok(serde_json::Value::Null),
-        }
+    Ok(keys)
+}
+
+/// What the change `hash` of `doc` wrote under the map `obj`, one entry per
+/// key of `obj` it reached ([`wrote`]), with the values before and after
+/// read as JSON from the document as of the change's dependencies and as of
+/// the change, in place. A key whose value reads the same on both sides (a
+/// write of what it held) is left out. Empty for a change `doc` does not
+/// hold.
+///
+/// # Errors
+/// A value the document holds cannot be read as JSON.
+pub fn written(
+    doc: &automerge::Automerge,
+    hash: &ChangeHash,
+    obj: &automerge::ObjId,
+) -> Result<Vec<Written>, ModelError> {
+    use automerge::ReadDoc as _;
+    let Some(change) = doc.get_change_by_hash(hash) else {
+        return Ok(Vec::new());
     };
+    let before_heads = change.deps().to_vec();
+    let after_heads = [*hash];
+    let keys = wrote(doc, hash, obj)?;
     let mut out = Vec::with_capacity(keys.len());
     for key in keys {
-        let before = at(&key, &before_heads)?;
-        let after = at(&key, &after_heads)?;
+        let before = held_at(doc, obj, &key, &before_heads)?;
+        let after = held_at(doc, obj, &key, &after_heads)?;
         if before != after {
             out.push(Written {
                 prop: key,
@@ -370,6 +386,25 @@ pub fn written(
         }
     }
     Ok(out)
+}
+
+/// What the key `key` of the map `obj` held as of `heads`, as JSON, `null`
+/// where it held nothing (or `obj` did not exist yet), read in place: the
+/// cost of the value, not of the document.
+///
+/// # Errors
+/// The value cannot be read as JSON.
+pub fn held_at(
+    doc: &automerge::Automerge,
+    obj: &automerge::ObjId,
+    key: &str,
+    heads: &[ChangeHash],
+) -> Result<serde_json::Value, ModelError> {
+    use automerge::ReadDoc as _;
+    match doc.get_at(obj, key, heads)? {
+        Some((value, inner)) => crate::value::read_value_at(doc, &value, &inner, heads),
+        None => Ok(serde_json::Value::Null),
+    }
 }
 
 /// The object a change's operation names, as the document addresses it.

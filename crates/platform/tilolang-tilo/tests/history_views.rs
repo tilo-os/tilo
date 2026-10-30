@@ -54,7 +54,7 @@ fn history(view: &mut ViewInstance) -> UiNode {
 fn entries(section: &UiNode) -> Vec<String> {
     nodes(section)
         .into_iter()
-        .filter(|node| node.kind == "ui.Avatar" && !node.key.contains('~'))
+        .filter(|node| node.kind == "ui.Avatar")
         .filter_map(|node| match node.props.get("who") {
             Some(Value::Principal(who)) => Some(who.0.clone()),
             _ => None,
@@ -65,14 +65,26 @@ fn entries(section: &UiNode) -> Vec<String> {
 /// Each change a history shows: the field's name, then what stands for what it held before
 /// and after (the node showing each).
 fn changes(section: &UiNode) -> Vec<(String, UiNode, UiNode)> {
+    /// A grid's cells: its children, with what a `for` places (a fragment) taken as its own.
+    fn cells<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
+        for child in &node.children {
+            if child.kind == "fragment" {
+                cells(child, out);
+            } else {
+                out.push(child);
+            }
+        }
+    }
     let mut out = Vec::new();
     for grid in nodes(section).into_iter().filter(|n| n.kind == "grid") {
-        for cells in grid.children.chunks(3) {
+        let mut all = Vec::new();
+        cells(grid, &mut all);
+        for cells in all.chunks(3) {
             if let [label, before, after] = cells {
                 out.push((
                     text(label).unwrap_or_default().to_owned(),
-                    before.clone(),
-                    after.clone(),
+                    (*before).clone(),
+                    (*after).clone(),
                 ));
             }
         }
@@ -85,8 +97,10 @@ fn button(node: &UiNode, label: &str) -> String {
     nodes(node)
         .into_iter()
         .find(|n| n.kind == "ui.Button" && text(n) == Some(label))
-        .map(|n| n.key.clone())
-        .unwrap_or_else(|| panic!("a `{label}` button: {node:#?}"))
+        .map_or_else(
+            || panic!("a `{label}` button: {node:#?}"),
+            |n| n.key.clone(),
+        )
 }
 
 fn target(v: &Value) -> ResourceRef {
