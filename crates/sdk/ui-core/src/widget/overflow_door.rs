@@ -342,6 +342,17 @@ impl Widget for OverflowDoor {
         }
     }
 
+    /// Its button takes the person's input also while hidden: it is laid
+    /// out then too, and shows at the size that input needs when the row
+    /// overflows.
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        Widget::set_interaction_environment(&mut self.button, environment);
+        Widget::set_interaction_environment(&mut self.menu, environment);
+    }
+
     fn is_layout_dirty(&self) -> bool {
         self.shown && self.button.is_layout_dirty()
     }

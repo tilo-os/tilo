@@ -2384,6 +2384,12 @@ impl App {
         // The header the rebuild builds hears whether the window's bar
         // presents search, so it never shows a second search control.
         self.offer_window_bar_to_header();
+        // What the rebuild builds hears how the person reaches the window: a
+        // control made since the input last changed (a view a press opened)
+        // is sized for a finger as the others are. A widget that already has
+        // it keeps it.
+        self.root_widget
+            .set_interaction_environment(self.input.interaction);
         // A reported mutation can already have invalidated old widget pointers.
         // Always take the widgets' report, so it is not mistaken later for a
         // change after the map this rebuild makes.

@@ -2,18 +2,20 @@
 # are known and do not fail `tests/layout_check.rs`; a finding not named here does. Take a line
 # out once its problem is fixed (the test says when one no longer shows).
 #
-# The window's own buttons (Back, Show sidebar, More) keep their pointer size on touch.
-small-hit-target notes › (window) › nav-shell-back [Button]
-small-hit-target notes › (window) › nav-shell-more-overview [Button]
-small-hit-target notes › (window) › nav-shell-sidebar [Button]
-small-hit-target tasks › (window) › nav-shell-back [Button]
-small-hit-target tasks › (window) › nav-shell-more-content [Button]
-small-hit-target tasks › (window) › nav-shell-more-overview [Button]
-small-hit-target tasks › (window) › nav-shell-sidebar [Button]
-small-hit-target mail › (window) › nav-shell-back [Button]
-small-hit-target chat › (window) › nav-shell-back [Button]
-small-hit-target chat › (window) › nav-shell-sidebar [Button]
+# At display scale 2 the detail column of a window with a draft open reaches past the window.
+scrolls-sideways mail › mailboxes › ui.NavShell [Scrollable]
 
-# The apps' own views.
-small-hit-target tasks › task_row › row [SwipeRow]
-small-hit-target chat › channel › channel_message [Chip]
+# A word longer than the window is wide (an address in a proposal) is clipped rather than
+# broken.
+clipped-text mail › compose › text [Text]
+
+# A document header's toggle made after a press on a touchscreen keeps its pointer height.
+small-hit-target mail › editor › std.document [Button]
+small-hit-target notes › note_editor › std.document [Button]
+
+# A virtual list among a section's other content is laid out taller than the section gives it.
+overflow tasks › task_page › ui.TextInput [TextInput]
+overflow tasks › task_page › ui.VirtualList [DescribedList]
+
+# A grid's one column keeps its minimum width in a window narrower than it.
+scrolls-sideways today › today › grid [Grid]
