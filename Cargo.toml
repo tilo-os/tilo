@@ -205,6 +205,7 @@ members = [
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-lan-discovery",
+    "crates/collab/tilo-store-link",
     "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",
     "crates/collab/workspace-join",

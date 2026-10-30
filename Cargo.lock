@@ -21756,6 +21756,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-store-link"
+version = "0.1.0"
+dependencies = [
+ "channel-crypto",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "iroh",
+ "neighbour-wire",
+ "postcard",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-automerge",
+ "tilo-automerge-fork",
+ "tilo-automerge-isolate",
+ "tilo-peer-state",
+ "tilo-relay-protocol",
+ "tilo-store-node",
+ "tilo-user-identity",
+ "tokio",
+ "tracing",
+ "web-time",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-store-node"
 version = "0.1.0"
 dependencies = [

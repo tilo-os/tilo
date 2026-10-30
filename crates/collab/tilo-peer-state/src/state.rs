@@ -2209,7 +2209,12 @@ impl StatePeer {
                 ));
             }
             collab_types::WholeDocumentPayload::Encrypted { .. } => {
-                if !route_existed {
+                // A sealed change needs the record it changes; a sealed
+                // compaction is the whole record as its key holder folded it,
+                // so it founds the route for a replica that has none, as a
+                // device catching up from a store that holds only ciphertext
+                // does.
+                if !route_existed && envelope.kind != OpKind::Compaction {
                     return self.defer(
                         source,
                         NeighbourMsg::AppDocument {

@@ -892,6 +892,36 @@ fn a_compaction_under_a_stale_epoch_is_refused() {
 }
 
 #[test]
+fn a_compaction_founds_a_route_a_replica_holds_none_of() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    let message = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
+    admit(&mut f.host, &f.other, message, now);
+    let compaction = mint(&mut f.host, &keys, &f.owner, now).unwrap();
+
+    let mut fresh = StatePeer::new(
+        ROOM,
+        f.authority.clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    fresh.select_admission_v5().unwrap();
+    fresh
+        .receive_from(origin(&f.owner), f.host.room_message(), now)
+        .unwrap();
+    assert!(
+        fresh.document(APP, RECORD).is_none(),
+        "the replica holds no history of the record"
+    );
+    admit(&mut fresh, &f.owner, compaction.clone(), now);
+    assert_eq!(held(&fresh), vec![envelope_of(&compaction)]);
+}
+
+#[test]
 fn a_replayed_or_superseded_compaction_is_refused() {
     let mut f = fixture();
     let now = f.now;

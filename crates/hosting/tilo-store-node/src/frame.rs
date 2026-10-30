@@ -17,6 +17,19 @@ pub struct Lineage {
     pub author: [u8; 32],
 }
 
+impl Lineage {
+    /// The lineage of `author`'s frames on `record` of `app` in `room`: the
+    /// channel those frames are sealed for, and their author.
+    #[must_use]
+    pub fn of(app: &str, room: &str, record: &str, author: [u8; 32]) -> Self {
+        let channel = collab_types::document_channel_id(app, room, record);
+        Self {
+            channel: *channel.0.as_bytes(),
+            author,
+        }
+    }
+}
+
 /// Why a message is not a frame a store keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {

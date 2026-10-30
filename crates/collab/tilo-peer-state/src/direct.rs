@@ -82,12 +82,13 @@ impl DirectSync {
     }
 
     /// Make a local change with the device's key, e.g.
-    /// `publication_mut().publish_incremental`, and send the message it
-    /// returns to every open link.
+    /// `publication_mut().publish_incremental`, send the message it returns
+    /// to every open link, and return it: a caller that keeps the device's
+    /// history at a store publishes the same frame there.
     pub fn publish(
         &self,
         write: impl FnOnce(&mut StatePeer, &SigningKey, SystemTime) -> Result<NeighbourMsg, String>,
-    ) -> Result<(), String> {
+    ) -> Result<NeighbourMsg, String> {
         let message = write(
             &mut self.0.replica.lock_recover(),
             &self.0.key,
@@ -95,7 +96,26 @@ impl DirectSync {
         )?;
         self.0.changed.send_modify(bump);
         // No open link is no error: the next one catches up from the replica.
-        let _ = self.0.outgoing.send(message);
+        let _ = self.0.outgoing.send(message.clone());
+        Ok(message)
+    }
+
+    /// Admit a frame a store replayed, as the retained history of its
+    /// author: the same admission a live frame from that device takes.
+    ///
+    /// # Errors
+    ///
+    /// The replica refuses the frame; the caller keeps the session and
+    /// carries on with the frames after it.
+    pub fn admit_retained(&self, author: [u8; 32], message: NeighbourMsg) -> Result<(), String> {
+        let outcome = self.0.replica.lock_recover().receive_from(
+            TransportOrigin::RetainedRelayDelta(author),
+            message,
+            SystemTime::now(),
+        )?;
+        if outcome.changed || outcome.metadata_changed {
+            self.0.changed.send_modify(bump);
+        }
         Ok(())
     }
 

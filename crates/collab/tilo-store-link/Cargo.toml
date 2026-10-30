@@ -1,0 +1,42 @@
+[package]
+name = "tilo-store-link"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+description = "A member device's side of a workspace store: keeps what it publishes at the store and replays from it what it lacks, admitting replayed frames as their authors' retained history."
+
+# The engine and its transport live in `tilo-peer-state`; the store's
+# protocol and retained frames in `tilo-store-node`. This crate only joins
+# the two, so a member keeps and catches up its whole history without a
+# long-lived room host.
+
+[dependencies]
+tilo-peer-state = { path = "../tilo-peer-state" }
+tilo-store-node = { path = "../../hosting/tilo-store-node" }
+# The relay workspace a room's store holds.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# A frame's routing key names the channel its cursor follows.
+collab-types = { path = "../collab-types" }
+neighbour-wire = { path = "../neighbour-wire" }
+tilo-user-identity = { path = "../tilo-user-identity" }
+iroh.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+automerge = { workspace = true }
+channel-crypto = { path = "../channel-crypto" }
+collab-types = { path = "../collab-types" }
+ed25519-dalek.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+tempfile.workspace = true
+tilo-automerge.workspace = true
+tilo-automerge-isolate.workspace = true
+tilo-peer-state = { path = "../tilo-peer-state" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+web-time = "1"
+
+[lints]
+workspace = true
