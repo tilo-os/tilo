@@ -44,7 +44,7 @@ impl Mirror {
         let sender = std::sync::Mutex::new(sender);
         let following = SessionConfig::follow(move |config| {
             let comfort = (config.comforts, config.apply_comforts_to_sign_in);
-            sender
+            let _ = sender
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .send(comfort);

@@ -35,10 +35,6 @@ pub(crate) struct PowerRun {
     sleep: SleepLock,
     /// Keeps the settings watch alive: the loader's one watch, which the
     /// compositor's assists and the power policy both follow.
-    #[expect(
-        dead_code,
-        reason = "held for as long as the run lives, which keeps the watch going"
-    )]
     watch: Option<settings_store::watch::SettingsWatch>,
 }
 
