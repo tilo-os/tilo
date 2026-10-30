@@ -79,7 +79,12 @@ impl Graph for SystemGraph {
 /// A change to make on the graph.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Change {
-    Volume(f32),
+    Volume {
+        level: f32,
+        /// Raising the sound out of silence is the person asking to hear
+        /// it, so the change unmutes as well.
+        unmute: bool,
+    },
     Mute(bool),
     Output(u32),
     Input(u32),
@@ -92,7 +97,14 @@ impl Change {
         let output = || graph.default_sink().ok_or("there is no sound output");
         let input = || graph.default_source().ok_or("there is no sound input");
         match self {
-            Self::Volume(level) => control.set_node_volume(output()?.id, level.clamp(0.0, 1.0)),
+            Self::Volume { level, unmute } => {
+                let node = output()?;
+                control.set_node_volume(node.id, level.clamp(0.0, 1.0))?;
+                if unmute && node.muted == Some(true) {
+                    control.set_node_mute(node.id, false)?;
+                }
+                Ok(())
+            }
             Self::Mute(muted) => control.set_node_mute(output()?.id, muted),
             Self::InputMute(muted) => control.set_node_mute(input()?.id, muted),
             Self::Output(node) => {
@@ -240,10 +252,22 @@ impl Service for SoundService {
                     clippy::cast_possible_truncation,
                     reason = "a level from 0 to 1 fits a f32"
                 )]
-                Change::Volume(level as f32)
+                let level = level as f32;
+                // A slider still at or above the level it reads, moved up,
+                // is the person turning the sound back on.
+                Change::Volume {
+                    level,
+                    unmute: level > 0.0 && level >= self.sound.volume.unwrap_or(0.0),
+                }
             }
-            SoundAction::VolumeUp => Change::Volume(self.stepped(VOLUME_STEP)),
-            SoundAction::VolumeDown => Change::Volume(self.stepped(-VOLUME_STEP)),
+            SoundAction::VolumeUp => Change::Volume {
+                level: self.stepped(VOLUME_STEP),
+                unmute: true,
+            },
+            SoundAction::VolumeDown => Change::Volume {
+                level: self.stepped(-VOLUME_STEP),
+                unmute: false,
+            },
             SoundAction::SetMuted { muted } => Change::Mute(muted),
             SoundAction::ToggleMuted => Change::Mute(!self.sound.muted),
             SoundAction::RouteOutput { node } => Change::Output(node),

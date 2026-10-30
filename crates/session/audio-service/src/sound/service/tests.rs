@@ -186,6 +186,49 @@ fn volume_and_mute_act_on_the_output_in_use() {
     );
 }
 
+/// Turning the sound up out of silence brings it back; turning it down
+/// while muted leaves the silence to its own control.
+#[test]
+fn raising_the_volume_unmutes_and_lowering_it_does_not() {
+    let fake = Fake::laptop();
+    let mut service = service(&fake);
+    service
+        .invoke(SOUND, "set-muted", &arguments(json!({"muted": true})))
+        .expect("taken");
+    service.settle();
+    assert_eq!(read(&service)["muted"], json!(true));
+
+    service
+        .invoke(SOUND, "volume-down", &Map::new())
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        read(&service)["muted"],
+        json!(true),
+        "a quieter sound stays silent"
+    );
+
+    service
+        .invoke(SOUND, "volume-up", &Map::new())
+        .expect("taken");
+    service.settle();
+    assert_eq!(read(&service)["muted"], json!(false));
+
+    service
+        .invoke(SOUND, "set-muted", &arguments(json!({"muted": true})))
+        .expect("taken");
+    service.settle();
+    service
+        .invoke(SOUND, "set-volume", &arguments(json!({"level": 0.9})))
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        read(&service)["muted"],
+        json!(false),
+        "a slider moved above the level it read unmutes too"
+    );
+}
+
 /// Each output is a child that plays through it: it becomes the default
 /// and every stream is released to follow the default.
 #[test]
