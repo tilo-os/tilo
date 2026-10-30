@@ -91,6 +91,40 @@ impl EndpointLocation {
     pub const fn needs_tls(self) -> bool {
         matches!(self, Self::Hosted)
     }
+
+    /// Where `endpoint` runs, as its address says: on this device (a
+    /// loopback address or `localhost`), on a private network (a private or
+    /// link-local address, a `.local` or `.lan` name), else hosted. `None`
+    /// for what is not an address. A typed endpoint takes the location its
+    /// address has, so a server on the person's network is not held to a
+    /// hosted provider's TLS, and an internet host never escapes it.
+    pub fn of_endpoint(endpoint: &str) -> Option<Self> {
+        let url = url::Url::parse(endpoint.trim()).ok()?;
+        Some(match url.host()? {
+            url::Host::Domain(name) => {
+                let name = name.trim_end_matches('.').to_ascii_lowercase();
+                let last = name.rsplit('.').next().unwrap_or_default();
+                if last == "localhost" {
+                    Self::ThisDevice
+                } else if !name.contains('.') || matches!(last, "local" | "lan") {
+                    Self::PrivateNetwork
+                } else {
+                    Self::Hosted
+                }
+            }
+            url::Host::Ipv4(address) if address.is_loopback() => Self::ThisDevice,
+            url::Host::Ipv4(address) if address.is_private() || address.is_link_local() => {
+                Self::PrivateNetwork
+            }
+            url::Host::Ipv6(address) if address.is_loopback() => Self::ThisDevice,
+            url::Host::Ipv6(address)
+                if address.is_unique_local() || address.is_unicast_link_local() =>
+            {
+                Self::PrivateNetwork
+            }
+            url::Host::Ipv4(_) | url::Host::Ipv6(_) => Self::Hosted,
+        })
+    }
 }
 
 /// A stable pointer to a secret held outside this configuration document.
@@ -1439,6 +1473,41 @@ fn is_safe_endpoint(endpoint: &str, location: EndpointLocation) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typed_endpoint_runs_where_its_address_says() {
+        let at = EndpointLocation::of_endpoint;
+        assert_eq!(
+            at("http://127.0.0.1:8000/v1"),
+            Some(EndpointLocation::ThisDevice)
+        );
+        assert_eq!(
+            at("http://localhost:4000"),
+            Some(EndpointLocation::ThisDevice)
+        );
+        assert_eq!(
+            at("http://[::1]:8080/v1"),
+            Some(EndpointLocation::ThisDevice)
+        );
+        assert_eq!(
+            at("http://192.168.1.20:8000/v1"),
+            Some(EndpointLocation::PrivateNetwork)
+        );
+        assert_eq!(
+            at("http://gpu-box.local:8000/v1"),
+            Some(EndpointLocation::PrivateNetwork)
+        );
+        assert_eq!(
+            at("http://your-server:8000/v1"),
+            Some(EndpointLocation::PrivateNetwork)
+        );
+        assert_eq!(
+            at("https://api.z.ai/api/anthropic"),
+            Some(EndpointLocation::Hosted)
+        );
+        assert_eq!(at("http://8.8.8.8/v1"), Some(EndpointLocation::Hosted));
+        assert_eq!(at("not an address"), None);
+    }
 
     #[test]
     fn an_agent_plans_with_its_own_model_and_otherwise_the_default() {

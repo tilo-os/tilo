@@ -60,7 +60,8 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
 - Do not set `CARGO_TARGET_DIR`, or point two worktrees at one target directory.
 - Do not regenerate `Cargo.lock`; `cargo update -p NAME --precise VERSION`.
   Lock-only changes and generated files: `docs/policies.md`.
-- `t scope`, then `t test <checks>`; `t suggest` lists the extensive ones.
+- `tools/ci/test-changed.sh` tests what your change affects, edits included
+  (`docs/development/testing.md`); `-- NAME` or `-E FILTERSET` narrows it.
 - Extensive checks (images, macOS, VMs) only when you change what they test.
 - Shell: `cargo test --locked -p shell --test it MODULE::` and
   `cargo check --locked -p shell --tests`.

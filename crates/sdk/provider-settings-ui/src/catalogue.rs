@@ -17,7 +17,7 @@ use agent_provider_config::{EndpointLocation, ModelDescriptor, ProviderProfile};
 use ui::LocalState;
 use ui::widget::search_field::Filtered;
 use ui::widget::{
-    Button, ChipStyle, Column, Filterable, Link, ListRow, ModelView, Row, Scrollable, Tone, Widget,
+    Button, ChipStyle, Column, Filterable, Link, ListRow, Row, Scrollable, Tone, When, Widget as _,
 };
 
 use crate::i18n::{t, t_args};
@@ -68,72 +68,84 @@ fn always_offered(preset: Preset) -> bool {
         && matches!(preset.slug(), "openai-compatible" | "anthropic-compatible")
 }
 
-/// The catalogue's entries a filter of `query` shows.
-fn shown_presets(query: &str) -> impl Iterator<Item = Preset> + '_ {
-    offered(false).filter(move |preset| {
-        always_offered(*preset)
-            || matches(
-                query,
-                &[
-                    preset.label(),
-                    preset.description(),
-                    preset.slug(),
-                    preset.protocol().label(),
-                    &method(*preset),
-                ],
-            )
-    })
+/// What a filter matches a preset by.
+fn preset_words(preset: Preset) -> Vec<String> {
+    [
+        preset.label(),
+        preset.description(),
+        preset.slug(),
+        preset.protocol().label(),
+        &method(preset),
+    ]
+    .map(str::to_owned)
+    .to_vec()
 }
 
-/// The rows of the catalogue matching `query`.
-fn preset_rows<H: PanelBindings>(cx: &H, enabled: bool, query: &str) -> El {
-    let mut column = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_rhythm(ui::tokens::Rhythm::Tight);
-    for preset in shown_presets(query) {
-        let add = Button::new(
-            &format!("agent-models-preset-{}", preset.slug()),
-            &t("agent-preset-add"),
-        )
-        .with_accessible_name(&t_args(
-            "agent-preset-add-named",
-            &[("provider", preset.label().into())],
+/// One preset's row: what it is, how it signs in, its documentation and
+/// the button that adds it.
+fn preset_row<H: PanelBindings>(cx: &H, enabled: bool, preset: Preset) -> El {
+    let add = Button::new(
+        &format!("agent-models-preset-{}", preset.slug()),
+        &t("agent-preset-add"),
+    )
+    .with_accessible_name(&t_args(
+        "agent-preset-add-named",
+        &[("provider", preset.label().into())],
+    ))
+    .with_enabled(enabled);
+    let slug = preset.slug().to_owned();
+    let add = cx.bind(
+        add,
+        ProviderEffect::ADD_PROVIDER.map(move |()| slug.clone()),
+    );
+    let trailing = Row::new()
+        .no_wrap()
+        .with_align_items(taffy::AlignItems::Center)
+        .push(Box::new(
+            Link::new(preset.docs()).with_label(&t("agent-preset-docs")),
         ))
-        .with_enabled(enabled);
-        let add = cx.bind_invocation(
-            add,
-            ProviderEffect::AddProvider {
-                preset: preset.slug().to_owned(),
-            },
-        );
-        let trailing = Row::new()
-            .no_wrap()
-            .with_align_items(taffy::AlignItems::Center)
-            .push(Box::new(
-                Link::new(preset.docs()).with_label(&t("agent-preset-docs")),
-            ))
-            .push(crate::widgets::gap(ui::tokens::SpacingStep::S3))
-            .push(Box::new(add));
-        let row = ListRow::new(
+        .push(crate::widgets::gap(ui::tokens::SpacingStep::S3))
+        .push(Box::new(add));
+    Box::new(
+        ListRow::new(
             format!("agent-models-preset-row-{}", preset.slug()),
             preset.label(),
         )
         .secondary(format!("{}\n{}", preset.description(), method(preset)))
         .secondary_lines(2)
-        .trailing(Box::new(trailing));
-        column = column.push(Box::new(row));
-    }
-    Box::new(column)
+        .trailing(Box::new(trailing)),
+    )
 }
 
-/// A list narrowed by the filter above it: it keeps the query and rebuilds
-/// its rows when it changes.
+/// One entry of a narrowed list: its row, the words a filter matches it
+/// by, and whether it stays whatever the filter says.
+pub(crate) struct Entry {
+    row: El,
+    words: Vec<String>,
+    always: bool,
+}
+
+impl Entry {
+    pub(crate) fn new(row: El, words: Vec<String>) -> Self {
+        Self {
+            row,
+            words,
+            always: false,
+        }
+    }
+}
+
+/// Whether an entry matching `words` shows under `query`.
+fn shows(query: &str, words: &[String], always: bool) -> bool {
+    always || matches(query, &words.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// A list narrowed by the filter above it. Its rows are built, and their
+/// controls bound, once with the page; the filter shows or hides them.
 struct Narrowed {
     query: LocalState<String>,
-    view: ModelView<String>,
-    total: usize,
-    shown: std::rc::Rc<std::cell::Cell<usize>>,
+    rows: Column,
+    words: Vec<(Vec<String>, bool)>,
 }
 
 impl Filterable for Narrowed {
@@ -144,50 +156,53 @@ impl Filterable for Narrowed {
     }
 
     fn filter_count(&self) -> Option<ui::widget::FilterCount> {
-        Some(ui::widget::FilterCount::new(self.shown.get(), self.total))
+        let shown = self.query.with(|query| {
+            self.words
+                .iter()
+                .filter(|(words, always)| shows(query, words, *always))
+                .count()
+        });
+        Some(ui::widget::FilterCount::new(shown, self.words.len()))
     }
 }
 
 impl ui::widget::Decorator for Narrowed {
-    type Inner = ModelView<String>;
+    type Inner = Column;
 
-    fn inner(&self) -> &ModelView<String> {
-        &self.view
+    fn inner(&self) -> &Column {
+        &self.rows
     }
 
-    fn inner_mut(&mut self) -> &mut ModelView<String> {
-        &mut self.view
+    fn inner_mut(&mut self) -> &mut Column {
+        &mut self.rows
     }
 
-    ui::provides!(dyn Filterable; inner = view);
+    ui::provides!(dyn Filterable; inner = rows);
 
     fn name(&self) -> &'static str {
         "Narrowed"
     }
 }
 
-/// `rows` of `total` entries under a filter named `placeholder`, in a
-/// scrolling region of its own. `count` says how many rows a query shows.
-fn narrowed(
-    id: &str,
-    placeholder: &str,
-    query: &LocalState<String>,
-    total: usize,
-    count: impl Fn(&str) -> usize + 'static,
-    rows: impl Fn(&str) -> El + 'static,
-) -> El {
-    let shown = std::rc::Rc::new(std::cell::Cell::new(total));
-    let seen = std::rc::Rc::clone(&shown);
-    let view = ModelView::from_state(query, move |query: &String| {
-        seen.set(count(query));
-        rows(query)
-    });
-    let list = Narrowed {
-        query: query.clone(),
-        view,
-        total,
-        shown,
-    };
+/// `entries` under a filter named `placeholder`, in a scrolling region of
+/// their own. The filter starts empty with the page.
+fn narrowed(id: &str, placeholder: &str, entries: Vec<Entry>) -> El {
+    let query = LocalState::new(String::new());
+    let mut rows = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_rhythm(ui::tokens::Rhythm::Tight);
+    let mut words = Vec::new();
+    for entry in entries {
+        let (matched, always) = (entry.words.clone(), entry.always);
+        words.push((entry.words, entry.always));
+        rows = rows.push(Box::new(When::from_state(
+            &query,
+            move |query: &String| shows(query, &matched, always),
+            entry.row,
+        )));
+    }
+    let list = Narrowed { query, rows, words };
     let mut filtered = Filtered::new(Box::new(
         Scrollable::new_vertical()
             .with_max_height(LIST_HEIGHT)
@@ -209,15 +224,19 @@ fn narrowed(
 }
 
 /// The catalogue: every provider this host can add, narrowed by its filter.
-pub(crate) fn presets<H: PanelBindings>(cx: &H, enabled: bool, query: &LocalState<String>) -> El {
-    let rows_cx = cx.clone();
+/// Built while the host lends its bindings, so each Add is bound.
+pub(crate) fn presets<H: PanelBindings>(cx: &H, enabled: bool) -> El {
+    let entries = offered(false)
+        .map(|preset| Entry {
+            row: preset_row(cx, enabled, preset),
+            words: preset_words(preset),
+            always: always_offered(preset),
+        })
+        .collect();
     narrowed(
         "agent-models-add-provider",
         &t("agent-add-provider-filter"),
-        query,
-        offered(false).count(),
-        |query| shown_presets(query).count(),
-        move |query| preset_rows(&rows_cx, enabled, query),
+        entries,
     )
 }
 
@@ -280,46 +299,37 @@ pub(crate) fn model_row(id: String, model: &ModelDescriptor, selected: bool) -> 
 pub(crate) fn models(
     profile: &ProviderProfile,
     listed: &[ModelDescriptor],
-    query: &LocalState<String>,
-    choose: impl Fn(Button, String) -> Button + 'static,
+    choose: impl Fn(Button, String) -> Button,
 ) -> El {
-    let listed: std::rc::Rc<[ModelDescriptor]> = listed.into();
-    let counted = std::rc::Rc::clone(&listed);
-    let chosen = profile.default_model.clone().unwrap_or_default();
-    let profile_id = profile.id.clone();
-    let shows =
-        |model: &ModelDescriptor, query: &str| matches(query, &[&model.id, model.display_label()]);
+    let chosen = profile.default_model.as_deref().unwrap_or_default();
+    let entries = listed
+        .iter()
+        .map(|model| {
+            let id = format!(
+                "agent-models-model-{}-{}",
+                profile.id,
+                hex::encode(&model.id)
+            );
+            let taken = model.id == chosen;
+            let mut row = model_row(id.clone(), model, taken);
+            if !taken {
+                let button = Button::new(&format!("{id}-use"), &t("agent-model-use"))
+                    .with_accessible_name(&t_args(
+                        "agent-model-use-named",
+                        &[("model", model.display_label().into())],
+                    ));
+                row = row.trailing(Box::new(choose(button, model.id.clone())));
+            }
+            Entry::new(
+                Box::new(row),
+                vec![model.id.clone(), model.display_label().to_owned()],
+            )
+        })
+        .collect();
     narrowed(
         &format!("agent-models-models-{}", profile.id),
         &t("agent-models-filter"),
-        query,
-        listed.len(),
-        move |query| counted.iter().filter(|model| shows(model, query)).count(),
-        move |query| {
-            let mut column = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_rhythm(ui::tokens::Rhythm::Tight);
-            for model in listed.iter().filter(|model| shows(model, query)) {
-                let id = format!(
-                    "agent-models-model-{}-{}",
-                    profile_id,
-                    hex::encode(&model.id)
-                );
-                let taken = model.id == chosen;
-                let mut row = model_row(id.clone(), model, taken);
-                if !taken {
-                    let button = Button::new(&format!("{id}-use"), &t("agent-model-use"))
-                        .with_accessible_name(&t_args(
-                            "agent-model-use-named",
-                            &[("model", model.display_label().into())],
-                        ));
-                    row = row.trailing(Box::new(choose(button, model.id.clone())));
-                }
-                column = column.push(Box::new(row));
-            }
-            Box::new(column) as Box<dyn Widget>
-        },
+        entries,
     )
 }
 

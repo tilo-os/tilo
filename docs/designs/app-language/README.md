@@ -89,6 +89,7 @@ which people, agents and automations can find, read and pin.
 | Workspace, windows, views | workspace-model.md |
 | Layout | layout.md |
 | Forms, dialogs and diagrams | forms-and-diagrams.md |
+| The shell | shell.md |
 | The first new experience | first-experience.md |
 | Language changes found by writing the apps | language-changes.md |
 | Chat, the flagship app | chat.md |
