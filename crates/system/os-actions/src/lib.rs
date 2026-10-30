@@ -44,8 +44,8 @@
 
 pub mod backlight_events;
 pub mod battery;
-pub mod bluez;
 pub mod bluetooth;
+pub mod bluez;
 pub mod brightness;
 pub mod bus_follow;
 pub mod codec_pack;

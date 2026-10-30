@@ -1213,8 +1213,11 @@ impl Session {
         })
         .map_err(|error| tracing::debug!(%error, "settings are not watched"))
         .ok();
-        let (desktop, policy, asks) =
-            desk(&options, notices.clone(), std::sync::Arc::clone(&wallpapers));
+        let (desktop, policy, asks) = desk(
+            &options,
+            notices.clone(),
+            std::sync::Arc::clone(&wallpapers),
+        );
         desktop.set_gestures(options.config.gestures);
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         // The desk as this device left it: workspaces, their strips, and

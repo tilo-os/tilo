@@ -265,7 +265,10 @@ fn record_panics(backend: Backend) {
 /// session in a window of another desktop, or a headless one, has that
 /// machine's storage, updates and history to leave alone.
 #[cfg(target_os = "linux")]
-fn tell_the_person(backend: Backend, desktop: Option<&tilo_session::desktop_services::DesktopServices>) {
+fn tell_the_person(
+    backend: Backend,
+    desktop: Option<&tilo_session::desktop_services::DesktopServices>,
+) {
     if backend == Backend::Drm
         && let Some(desktop) = desktop
     {

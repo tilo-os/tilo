@@ -467,9 +467,7 @@ impl Compositor {
     pub fn set_a11y(&mut self, a11y: A11y) -> Result<(), Error> {
         let now = Instant::now();
         let released = self.keys.configure(&a11y.assists, now);
-        let LoopData {
-            state, backend, ..
-        } = &mut self.data;
+        let LoopData { state, backend, .. } = &mut self.data;
         backend.set_assists(state, &a11y.assists);
         state.zoom = a11y.magnifier.factor();
         state.cursor.set_size(a11y.cursor.size);
@@ -1223,14 +1221,9 @@ impl Compositor {
     /// desktop start-up and icon. `None` for a Wayland window.
     pub fn x11_identity(&self, id: u64) -> Option<&X11Identity> {
         let x11 = self.data.x11_windows.as_ref()?;
-        let window = self
-            .data
-            .state
-            .space
-            .elements()
-            .find(|window| {
-                state::describe(&self.data.state.display, window).is_some_and(|info| info.id == id)
-            })?;
+        let window = self.data.state.space.elements().find(|window| {
+            state::describe(&self.data.state.display, window).is_some_and(|info| info.id == id)
+        })?;
         x11.identity(window.x11_surface()?.window_id())
     }
 
