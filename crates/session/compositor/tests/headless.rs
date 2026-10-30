@@ -22,8 +22,8 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
-    Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostKey, HostLayer,
-    InputEvent, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch, TabletEvent,
+    Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostKey,
+    HostLayer, InputEvent, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch, TabletEvent,
     TabletPadEvent, TabletPhase, WindowEffect, WindowFrame, WindowInfo, WindowPicture,
     WindowPolicy,
 };
@@ -822,6 +822,67 @@ fn touches_reach_the_window_under_them_and_hosted_surfaces_as_presses() {
     assert_eq!(log.borrow().buttons, [(BTN_LEFT, true), (BTN_LEFT, false)]);
     assert_eq!(log.borrow().left, 1);
     assert_eq!(client.seen.touches.len(), 6, "the window saw none of it");
+}
+
+#[test]
+fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    compositor.add_host(Box::new(Square::new(
+        (0, 0, 40, 40),
+        [0, 255, 0, 255],
+        Rc::clone(&log),
+    )));
+    let shown = |compositor: &mut Compositor, x, y| {
+        compositor.render().unwrap();
+        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
+    };
+    assert_eq!(shown(&mut compositor, 10, 10), Some([0, 255, 0, 255]));
+
+    // A 20x20 icon, its hotspot two pixels in from its top left.
+    let bytes = [0, 255, 255, 255].repeat(20 * 20);
+    let icon = MemoryRenderBuffer::from_slice(
+        &bytes,
+        Fourcc::Argb8888,
+        (20, 20),
+        1,
+        Transform::Normal,
+        None,
+    );
+    compositor
+        .input(InputEvent::PointerMotion { x: 5.0, y: 5.0 })
+        .unwrap();
+    assert!(
+        compositor
+            .start_host_drag(HostDrag {
+                offer: vec![("text/plain".into(), b"dragged".to_vec())],
+                icon: Some((icon, Point::from((2, 2)))),
+            })
+            .unwrap(),
+        "the hosted app's drag starts"
+    );
+    assert_eq!(
+        shown(&mut compositor, 10, 10),
+        Some([255, 255, 0, 255]),
+        "the icon hangs off the pointer at its hotspot"
+    );
+    assert_eq!(shown(&mut compositor, 2, 2), Some([0, 255, 0, 255]));
+
+    // It follows the pointer.
+    compositor
+        .input(InputEvent::PointerMotion { x: 100.0, y: 100.0 })
+        .unwrap();
+    assert_eq!(shown(&mut compositor, 110, 110), Some([255, 255, 0, 255]));
+    assert_eq!(shown(&mut compositor, 10, 10), Some([0, 255, 0, 255]));
+
+    // The drop ends it, icon and all.
+    compositor
+        .input(InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: false,
+        })
+        .unwrap();
+    assert_eq!(shown(&mut compositor, 110, 110), Some(BACKGROUND));
 }
 
 /// Floating windows; takes touchpad gestures when `claims`, and records
