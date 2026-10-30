@@ -195,6 +195,10 @@ impl ResourceApp for QuickSettingsApp {
     // The panel's record is the panel's state: nothing to look back on.
     const DOCUMENT_HISTORY: bool = false;
     const PRIVATE_WINDOWS: bool = true;
+    // The panel shows this device's desktop: it is nobody's workspace
+    // participant and opens before anyone is chosen.
+    const ATTACHES_RUNTIME: bool = false;
+    const OPENS_WITHOUT_IDENTITY: bool = true;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::i18n::CATALOG)
