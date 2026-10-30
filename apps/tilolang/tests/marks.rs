@@ -71,15 +71,8 @@ fn the_rows_and_the_window_show_what_the_run_did_in_its_colour_and_open_the_run(
     let retitle = action_id(&mut app, &item, "Retitle");
     let mut title = Map::new();
     title.insert("title".to_owned(), "Meeting notes".into());
-    app.invoke(
-        Some(agent.clone()),
-        Some(&ambient),
-        &item,
-        &retitle,
-        &title,
-        false,
-    )
-    .unwrap();
+    app.invoke(Some(agent), Some(&ambient), &item, &retitle, &title, false)
+        .unwrap();
     settle(&mut app);
     let row = named(&mut app, "SwipeRow", "Meeting notes");
     app.harness()

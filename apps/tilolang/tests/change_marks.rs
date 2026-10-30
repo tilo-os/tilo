@@ -66,8 +66,10 @@ pub(crate) fn action_id(app: &mut HostedApp, resource: &str, label: &str) -> Str
         .into_iter()
         .find(|published| published.id.as_str() == resource)
         .and_then(|published| published.actions.iter().find(|a| a.label == label))
-        .map(|action| action.id.clone())
-        .unwrap_or_else(|| panic!("{resource} offers no `{label}`"))
+        .map_or_else(
+            || panic!("{resource} offers no `{label}`"),
+            |action| action.id.clone(),
+        )
 }
 
 /// How far the pixels of `rect` stray from grey at most: a mark in someone's colour does,
@@ -77,13 +79,29 @@ pub(crate) fn chroma_in(app: &mut HostedApp, rect: [f64; 4]) -> u8 {
     let snapshot = app.harness().inspection();
     let [width, _] = snapshot.viewport;
     let scale = f64::from(width) / snapshot.root.rect[2].max(1.0);
-    let [x, y, w, h] = rect.map(|v| (v * scale).round() as i64);
+    // Device pixels: whole, and never negative.
+    let device = |v: f64| {
+        usize::try_from(
+            format!("{:.0}", (v * scale).max(0.0))
+                .parse::<u64>()
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let [x, y, w, h] = rect.map(device);
+    let width = usize::try_from(width).unwrap();
     let mut most = 0u8;
-    for py in y.max(0)..(y + h) {
-        for px in x.max(0)..(x + w) {
-            let at = usize::try_from((py * i64::from(width) + px) * 4).unwrap_or(usize::MAX);
-            if let Some([r, g, b, _]) = pixels.get(at..at + 4).map(|p| [p[0], p[1], p[2], p[3]]) {
-                most = most.max(r.max(g).max(b) - r.min(g).min(b));
+    for py in y..y.saturating_add(h) {
+        for px in x..x.saturating_add(w) {
+            let at = py
+                .saturating_mul(width)
+                .saturating_add(px)
+                .saturating_mul(4);
+            if let Some(&[r, g, b, _]) = pixels
+                .get(at..at.saturating_add(4))
+                .and_then(|p| p.first_chunk::<4>())
+            {
+                most = most.max(r.max(g).max(b).saturating_sub(r.min(g).min(b)));
             }
         }
     }
@@ -116,11 +134,13 @@ pub(crate) fn published_with(app: &mut HostedApp, under: &str, label: &str) -> S
     let all = flattened(&resources);
     all.iter()
         .find(|r| r.id.as_str().starts_with(under) && r.actions.iter().any(|a| a.label == label))
-        .map(|r| r.id.as_str().to_owned())
-        .unwrap_or_else(|| {
-            let ids: Vec<&str> = all.iter().map(|r| r.id.as_str()).collect();
-            panic!("nothing under {under} offers `{label}`: {ids:?}")
-        })
+        .map_or_else(
+            || {
+                let ids: Vec<&str> = all.iter().map(|r| r.id.as_str()).collect();
+                panic!("nothing under {under} offers `{label}`: {ids:?}")
+            },
+            |r| r.id.as_str().to_owned(),
+        )
 }
 
 /// The rect of the `widget` whose name begins with `name`.
@@ -144,8 +164,10 @@ pub(crate) fn named(app: &mut HostedApp, widget: &str, name: &str) -> [f64; 4] {
                     .and_then(|s| s.name.as_deref())
                     .is_some_and(|named| named.starts_with(name))
         })
-        .map(|node| node.rect)
-        .unwrap_or_else(|| panic!("no {widget} named {name}: {names:?}"))
+        .map_or_else(
+            || panic!("no {widget} named {name}: {names:?}"),
+            |node| node.rect,
+        )
 }
 
 /// The rect of the text field holding `text`.
@@ -162,6 +184,5 @@ pub(crate) fn text_field(app: &mut HostedApp, text: &str) -> [f64; 4] {
                     .and_then(|s| s.value.as_deref())
                     .is_some_and(|value| value == text)
         })
-        .map(|node| node.rect)
-        .unwrap_or_else(|| panic!("no field holds {text}"))
+        .map_or_else(|| panic!("no field holds {text}"), |node| node.rect)
 }
