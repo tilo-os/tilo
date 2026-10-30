@@ -909,14 +909,16 @@ fn directory_snapshot_revision_evicts_on_every_semantic_change() {
         publish_declared_directory(&mut app);
         let revision = app.action_directory_revision();
         catalog
-            .upsert(
-                "test.item:1",
-                "New record",
-                crate::search::SearchResult::for_action(
-                    "Large directory",
-                    "1",
-                    tilo_actions::ActionAddress::new("test.item:1", "open"),
-                ),
+            .upsert_record(
+                crate::search::SearchRecord::new(
+                    "test.item:1",
+                    crate::search::SearchResult::for_action(
+                        "Large directory",
+                        "1",
+                        tilo_actions::ActionAddress::new("test.item:1", "open"),
+                    ),
+                )
+                .field("New record", crate::search::FieldWeight::UNRANKED),
             )
             .unwrap();
         assert_ne!(app.action_directory_revision(), revision);

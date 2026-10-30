@@ -66,27 +66,31 @@ fn progressive_palette_reaches_exact_match_beyond_one_hundred_thousand_candidate
     for id in 0..100_000usize {
         let resource_id = format!("item:{id:06}");
         catalog
-            .upsert(
-                &resource_id,
-                "abc c d",
-                SearchResult::for_action(
-                    "Items",
-                    format!("Broad candidate {id}"),
-                    tilo_actions::ActionAddress::new(&resource_id, "open"),
-                ),
+            .upsert_record(
+                crate::search::SearchRecord::new(
+                    &resource_id,
+                    SearchResult::for_action(
+                        "Items",
+                        format!("Broad candidate {id}"),
+                        tilo_actions::ActionAddress::new(&resource_id, "open"),
+                    ),
+                )
+                .field("abc c d", crate::search::FieldWeight::UNRANKED),
             )
             .expect("valid broad candidate");
     }
     let target_id = "item:999999";
     catalog
-        .upsert(
-            target_id,
-            "abc d",
-            SearchResult::for_action(
-                "Items",
-                "The only exact abc d result",
-                tilo_actions::ActionAddress::new(target_id, "open"),
-            ),
+        .upsert_record(
+            crate::search::SearchRecord::new(
+                target_id,
+                SearchResult::for_action(
+                    "Items",
+                    "The only exact abc d result",
+                    tilo_actions::ActionAddress::new(target_id, "open"),
+                ),
+            )
+            .field("abc d", crate::search::FieldWeight::UNRANKED),
         )
         .expect("valid exact target");
 

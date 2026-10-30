@@ -18,7 +18,7 @@ use tilo_actions::{ActionAddress, ResourceSpec};
 use ui::icons::Icon;
 #[cfg(test)]
 use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCursor};
-use ui::search::{SearchCatalog, SearchCatalogError, SearchResult};
+use ui::search::{FieldWeight, SearchCatalog, SearchCatalogError, SearchRecord, SearchResult};
 use ui::tilo_resource::SearchEntry;
 
 use crate::derived::{
@@ -570,10 +570,9 @@ impl LibraryIndex {
         // Callers never observe fresh hits with stale resources: the rows
         // and their library change under one lock. A refused snapshot
         // leaves the catalogue, and so the old snapshot, intact.
-        state.catalog.sync(
-            rows.iter()
-                .map(|(id, row)| (id.clone(), row.searchable(), row.result())),
-        )?;
+        state.catalog.sync_records(rows.iter().map(|(id, row)| {
+            SearchRecord::new(id, row.result()).field(row.searchable(), FieldWeight::UNRANKED)
+        }))?;
         state.rows = kinds;
         state.library = library;
         drop(state);
@@ -588,11 +587,11 @@ impl LibraryIndex {
     #[cfg(test)]
     fn reject_malformed_snapshot_for_test(&self) -> Result<(), SearchCatalogError> {
         let mut state = self.state.write_recover();
-        state.catalog.replace_all([(
-            "photos.photo:malformed".to_owned(),
-            "malformed".to_owned(),
+        state.catalog.replace_all_records([SearchRecord::new(
+            "photos.photo:malformed",
             SearchResult::new(PHOTO_SEARCH_KIND, "Malformed", "legacy-action"),
-        )])?;
+        )
+        .field("malformed", FieldWeight::UNRANKED)])?;
         state.rows.clear();
         drop(state);
         Ok(())

@@ -269,10 +269,6 @@ impl SearchRecord {
         self.body = Some(body);
         self
     }
-
-    fn legacy(resource_id: String, searchable_text: &str, result: SearchResult) -> Self {
-        Self::new(resource_id, result).field(searchable_text, FieldWeight::UNRANKED)
-    }
 }
 
 /// What the catalogue keeps per resource besides its indexed fields.
@@ -474,26 +470,18 @@ impl SearchCatalog {
         }
     }
 
-    /// Replace an immutable snapshot in one generation. This is the bulk
-    /// counterpart to [`Self::upsert`]: the whole snapshot is indexed in one
-    /// build, while later incremental updates retain their existing
-    /// semantics.
-    pub fn replace_all(
-        &self,
-        rows: impl IntoIterator<Item = (String, String, SearchResult)>,
-    ) -> Result<(), SearchCatalogError> {
-        self.replace_all_records(
-            rows.into_iter().map(|(resource_id, text, result)| {
-                SearchRecord::legacy(resource_id, &text, result)
-            }),
-        )
-    }
-
-    /// [`Self::replace_all`] for weighted records with optional bodies.
+    /// Replace an immutable snapshot in one generation, for weighted records
+    /// with optional bodies. This is the bulk counterpart to
+    /// [`Self::upsert_record`]: the whole snapshot is indexed in one build,
+    /// while later incremental updates retain their existing semantics.
     ///
     /// # Errors
     ///
-    /// As [`Self::replace_all`].
+    /// [`SearchCatalogError::NonCanonicalResult`] or
+    /// [`SearchCatalogError::ResourceAddressMismatch`] for a record whose hit
+    /// does not address its own resource, and
+    /// [`SearchCatalogError::DuplicateResourceId`] when two records name the
+    /// same resource.
     pub fn replace_all_records(
         &self,
         records: impl IntoIterator<Item = SearchRecord>,
@@ -524,23 +512,6 @@ impl SearchCatalog {
         *inner = next;
         drop(inner);
         Ok(())
-    }
-
-    /// [`Self::sync_records`] for legacy `(resource id, searchable text,
-    /// result)` rows, as [`Self::replace_all`] takes them.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::sync_records`].
-    pub fn sync(
-        &self,
-        rows: impl IntoIterator<Item = (String, String, SearchResult)>,
-    ) -> Result<bool, SearchCatalogError> {
-        self.sync_records(
-            rows.into_iter().map(|(resource_id, text, result)| {
-                SearchRecord::legacy(resource_id, &text, result)
-            }),
-        )
     }
 
     /// Make `records`, in their order, the whole catalogue, as
@@ -582,27 +553,16 @@ impl SearchCatalog {
         self.inner.read_recover().ordinals.contains_key(resource_id)
     }
 
-    /// Insert or replace one durable resource. `searchable_text` may combine
-    /// title, metadata and body; `result` is materialised only when it is a
-    /// hit on a requested page.
-    pub fn upsert(
-        &self,
-        resource_id: impl Into<String>,
-        searchable_text: impl AsRef<str>,
-        result: SearchResult,
-    ) -> Result<(), SearchCatalogError> {
-        self.upsert_record(SearchRecord::legacy(
-            resource_id.into(),
-            searchable_text.as_ref(),
-            result,
-        ))
-    }
-
-    /// [`Self::upsert`] for a weighted record with an optional body.
+    /// Insert or replace one durable resource. `result` is materialised only
+    /// when it is a hit on a requested page.
     ///
     /// # Errors
     ///
-    /// As [`Self::upsert`].
+    /// [`SearchCatalogError::EmptyResourceId`] for a record naming no
+    /// resource, [`SearchCatalogError::NonCanonicalResult`] or
+    /// [`SearchCatalogError::ResourceAddressMismatch`] for a hit that does
+    /// not address the record's own resource, and the exhaustion errors when
+    /// the catalogue's generation or browse identity runs out.
     pub fn upsert_record(&self, record: SearchRecord) -> Result<(), SearchCatalogError> {
         validate(&record)?;
         let mut inner = self.inner.write_recover();
@@ -940,7 +900,7 @@ impl OpenResourceSearch {
             collect(resource, &mut indexed);
         }
         let catalog = SearchCatalog::new("Open resources");
-        if let Err(error) = catalog.replace_all(indexed.values().filter_map(|resource| {
+        if let Err(error) = catalog.replace_all_records(indexed.values().filter_map(|resource| {
             let action = resource
                 .actions
                 .iter()
@@ -958,15 +918,14 @@ impl OpenResourceSearch {
             {
                 hit = hit.with_subtitle(detail);
             }
-            Some((
-                resource.id.as_str().to_string(),
+            Some(SearchRecord::new(resource.id.as_str(), hit).field(
                 format!(
                     "{} {} {}",
                     resource.label,
                     resource.kind,
                     resource.id.as_str()
                 ),
-                hit,
+                FieldWeight::UNRANKED,
             ))
         })) {
             tracing::error!(%error, "could not index open resources");
@@ -1310,10 +1269,20 @@ mod tests {
     use super::*;
     use crate::search::{FieldWeight, SearchBody, SearchBodySource};
 
+    /// A record found by one unranked block of text, as a provider that has
+    /// no field weights names its rows.
+    fn text_record(
+        resource_id: impl Into<String>,
+        text: impl Into<String>,
+        result: SearchResult,
+    ) -> SearchRecord {
+        SearchRecord::new(resource_id, result).field(text, FieldWeight::UNRANKED)
+    }
+
     fn catalog_rows(count: usize) -> SearchCatalog {
         let catalog = SearchCatalog::new("Rows");
         catalog
-            .replace_all((0..count).map(|index| {
+            .replace_all_records((0..count).map(|index| {
                 let id = format!("row:{index}");
                 // Odd rows hold every 4-gram of `abcde` but not the word itself,
                 // so they are candidates for it that fail verification.
@@ -1324,7 +1293,7 @@ mod tests {
                 };
                 let result = SearchResult::new("Rows", text, &id)
                     .with_action_address(ActionAddress::new(id.as_str(), "open"));
-                (id, text.to_owned(), result)
+                text_record(id, text, result)
             }))
             .unwrap();
         catalog
@@ -1557,11 +1526,11 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .upsert(
+                .upsert_record(text_record(
                     "document:munich",
                     "MÜNCHEN 夏",
                     catalog_hit("document:munich", "München"),
-                )
+                ))
                 .unwrap();
 
             let page = catalog.query_page("mÜnChEn 夏", None, 1, 1);
@@ -1577,7 +1546,11 @@ mod tests {
             for index in 0..32 {
                 let id = format!("document:{index:06}");
                 catalog
-                    .upsert(&id, format!("document {query}"), catalog_hit(&id, &id))
+                    .upsert_record(text_record(
+                        &id,
+                        format!("document {query}"),
+                        catalog_hit(&id, &id),
+                    ))
                     .unwrap();
             }
 
@@ -1605,7 +1578,11 @@ mod tests {
                     "row"
                 };
                 catalog
-                    .upsert(&id, text, catalog_hit(&id, format!("Document {index}")))
+                    .upsert_record(text_record(
+                        &id,
+                        text,
+                        catalog_hit(&id, format!("Document {index}")),
+                    ))
                     .unwrap();
             }
 
@@ -1624,15 +1601,19 @@ mod tests {
             for index in 0..1_000 {
                 let id = format!("document:a{index:04}");
                 catalog
-                    .upsert(&id, "abc c d", catalog_hit(&id, "False candidate"))
+                    .upsert_record(text_record(
+                        &id,
+                        "abc c d",
+                        catalog_hit(&id, "False candidate"),
+                    ))
                     .unwrap();
             }
             catalog
-                .upsert(
+                .upsert_record(text_record(
                     "document:z-target",
                     "the exact abc d resource",
                     catalog_hit("document:z-target", "Target"),
-                )
+                ))
                 .unwrap();
 
             let mut cursor = None;
@@ -1657,7 +1638,11 @@ mod tests {
                 let id = format!("document:{index:04}");
                 assert!(
                     catalog
-                        .upsert(&id, "common", catalog_hit(&id, format!("Document {index}")))
+                        .upsert_record(text_record(
+                            &id,
+                            "common",
+                            catalog_hit(&id, format!("Document {index}"))
+                        ))
                         .is_ok()
                 );
             }
@@ -1675,11 +1660,19 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
+                .upsert_record(text_record(
+                    "document:a",
+                    "old phrase",
+                    catalog_hit("document:a", "A"),
+                ))
                 .unwrap();
             let seeded = catalog.stats();
             catalog
-                .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
+                .upsert_record(text_record(
+                    "document:a",
+                    "old phrase",
+                    catalog_hit("document:a", "A"),
+                ))
                 .unwrap();
             assert_eq!(
                 catalog.stats(),
@@ -1688,7 +1681,11 @@ mod tests {
             );
             let provider = catalog.clone();
             catalog
-                .upsert("document:a", "new phrase", catalog_hit("document:a", "A"))
+                .upsert_record(text_record(
+                    "document:a",
+                    "new phrase",
+                    catalog_hit("document:a", "A"),
+                ))
                 .unwrap();
             assert!(provider.search_limited("old", 4).is_empty());
             assert_eq!(provider.search_limited("new", 4).len(), 1);
@@ -1701,15 +1698,19 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             assert_eq!(
-                catalog.upsert(
+                catalog.upsert_record(text_record(
                     "document:a",
                     "A",
                     SearchResult::new("Documents", "A", "legacy-open")
-                ),
+                )),
                 Err(SearchCatalogError::NonCanonicalResult)
             );
             assert_eq!(
-                catalog.upsert("document:a", "A", catalog_hit("document:different", "A")),
+                catalog.upsert_record(text_record(
+                    "document:a",
+                    "A",
+                    catalog_hit("document:different", "A")
+                )),
                 Err(SearchCatalogError::ResourceAddressMismatch)
             );
         }
@@ -1717,12 +1718,20 @@ mod tests {
         {
             let catalog = SearchCatalog::new("Documents");
             catalog
-                .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
+                .upsert_record(text_record(
+                    "document:a",
+                    "old phrase",
+                    catalog_hit("document:a", "A"),
+                ))
                 .unwrap();
             catalog.inner.write_recover().generation = u64::MAX;
 
             assert_eq!(
-                catalog.upsert("document:a", "new phrase", catalog_hit("document:a", "A")),
+                catalog.upsert_record(text_record(
+                    "document:a",
+                    "new phrase",
+                    catalog_hit("document:a", "A")
+                )),
                 Err(SearchCatalogError::GenerationExhausted)
             );
             assert_eq!(catalog.search_limited("old", 4).len(), 1);
@@ -1737,7 +1746,11 @@ mod tests {
             catalog.inner.write_recover().next_browse_ordinal = u64::MAX;
 
             assert_eq!(
-                catalog.upsert("document:a", "phrase", catalog_hit("document:a", "A")),
+                catalog.upsert_record(text_record(
+                    "document:a",
+                    "phrase",
+                    catalog_hit("document:a", "A")
+                )),
                 Err(SearchCatalogError::BrowseOrdinalExhausted)
             );
             assert_eq!(catalog.stats(), SearchCatalogStats::default());
@@ -1797,7 +1810,9 @@ mod tests {
     fn legacy_rows_keep_their_candidate_order() {
         let catalog = SearchCatalog::new("Documents");
         for (id, text) in [("document:1", "xx atlas"), ("document:2", "atlas")] {
-            catalog.upsert(id, text, catalog_hit(id, text)).unwrap();
+            catalog
+                .upsert_record(text_record(id, text, catalog_hit(id, text)))
+                .unwrap();
         }
         let ids: Vec<_> = catalog
             .query_page("atlas", None, 8, 8)
@@ -2031,7 +2046,9 @@ mod tests {
             ("document:1", "needle.rs"),
             ("document:2", "contains-needle-here"),
         ] {
-            catalog.upsert(id, text, catalog_hit(id, text)).unwrap();
+            catalog
+                .upsert_record(text_record(id, text, catalog_hit(id, text)))
+                .unwrap();
         }
         let page = catalog.query_page("needle", None, 8, 8);
         assert_eq!(

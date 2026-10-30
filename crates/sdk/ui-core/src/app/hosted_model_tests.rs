@@ -157,14 +157,16 @@ fn hosted_directory_provider_generation_change_remains_stale() {
     app.publish_action_surface();
     let old = app.action_directory_revision();
     catalog
-        .upsert(
-            "test.item:1",
-            "New record",
-            crate::search::SearchResult::for_action(
-                "Large directory",
-                "1",
-                tilo_actions::ActionAddress::new("test.item:1", "open"),
-            ),
+        .upsert_record(
+            crate::search::SearchRecord::new(
+                "test.item:1",
+                crate::search::SearchResult::for_action(
+                    "Large directory",
+                    "1",
+                    tilo_actions::ActionAddress::new("test.item:1", "open"),
+                ),
+            )
+            .field("New record", crate::search::FieldWeight::UNRANKED),
         )
         .unwrap();
     app.pump_hosted_model();

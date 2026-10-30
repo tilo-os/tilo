@@ -47,17 +47,20 @@ impl LargeDirectoryProvider {
         // One bulk snapshot, as a provider rebuilding its whole corpus
         // publishes it; later `upsert`s keep their incremental semantics.
         catalog
-            .replace_all((0..records).map(|index| {
+            .replace_all_records((0..records).map(|index| {
                 let resource = format!("test.item:{index}");
                 let address = tilo_actions::ActionAddress::new(resource.clone(), "open");
-                (
+                crate::search::SearchRecord::new(
                     resource,
-                    format!("record {index} needle-{index}"),
                     crate::search::SearchResult::for_action(
                         "Large directory",
                         index.to_string(),
                         address,
                     ),
+                )
+                .field(
+                    format!("record {index} needle-{index}"),
+                    crate::search::FieldWeight::UNRANKED,
                 )
             }))
             .expect("canonical synthetic directory rows");

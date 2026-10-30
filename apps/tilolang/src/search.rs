@@ -8,7 +8,7 @@ use tilolang_tilo::OpenEffect;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::search::every_hit;
 use ui::search::index_publication::{IndexAction, IndexEntry, IndexWeight};
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
+use ui::search::{CatalogSearchProvider, FieldWeight, SearchCatalog, SearchRecord, SearchResult};
 use ui::tilo_resource::Effect as _;
 
 /// The provider the window registers.
@@ -40,7 +40,7 @@ impl CatalogSearchProvider for Provider {
 /// Index what the room holds now: every resource with text, found by that text. Returns what the
 /// system's persistent index keeps of it: short metadata only, never a prose body.
 pub fn refresh(catalog: &SearchCatalog, host: &Host) -> Vec<IndexEntry> {
-    let mut rows = Vec::new();
+    let mut records = Vec::new();
     let mut entries = Vec::new();
     for hit in every_hit(host) {
         let address = OpenEffect::Open {
@@ -74,9 +74,12 @@ pub fn refresh(catalog: &SearchCatalog, host: &Host) -> Vec<IndexEntry> {
             secret: false,
             references: hit.references.clone(),
         });
-        rows.push((hit.resource.clone(), hit.texts.join("\n"), result));
+        records.push(
+            SearchRecord::new(&hit.resource, result)
+                .field(hit.texts.join("\n"), FieldWeight::UNRANKED),
+        );
     }
-    if let Err(error) = catalog.replace_all(rows) {
+    if let Err(error) = catalog.replace_all_records(records) {
         tracing::warn!(?error, "the room could not be indexed for search");
     }
     entries

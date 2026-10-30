@@ -56,14 +56,16 @@ impl PagedProbe {
         for id in 0..65 {
             let resource = format!("bound:paged:{id}");
             catalog
-                .upsert(
-                    &resource,
-                    "paged",
-                    crate::search::SearchResult::for_action(
-                        format!("Paged kind {id}"),
-                        format!("{} paged {id}", if strict { "Allowed" } else { "Revoked" }),
-                        tilo_actions::ActionAddress::new(&resource, "apply"),
-                    ),
+                .upsert_record(
+                    crate::search::SearchRecord::new(
+                        &resource,
+                        crate::search::SearchResult::for_action(
+                            format!("Paged kind {id}"),
+                            format!("{} paged {id}", if strict { "Allowed" } else { "Revoked" }),
+                            tilo_actions::ActionAddress::new(&resource, "apply"),
+                        ),
+                    )
+                    .field("paged", crate::search::FieldWeight::UNRANKED),
                 )
                 .unwrap();
         }
