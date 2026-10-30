@@ -1335,8 +1335,7 @@ fn prove_local_person(
     signer: &runtime_identity::SigningIdentity,
     paths: &IdentityPaths,
 ) {
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     if let Err(error) = crate::local_person::ensure_proof(identity_dir, signer, paths, uid) {
         tracing::warn!(%error, "could not prove this account is the device's person");
     }

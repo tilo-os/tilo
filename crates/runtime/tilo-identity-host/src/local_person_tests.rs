@@ -6,8 +6,7 @@ use super::*;
 use crate::provisioning::{IdentityStorage, ensure_collaboration_identity};
 
 fn uid() -> u32 {
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 
 fn account(root: &Path, name: &str, uid: u32) -> Account {

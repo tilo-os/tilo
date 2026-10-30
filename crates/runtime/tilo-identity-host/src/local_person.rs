@@ -39,7 +39,7 @@ pub fn proof_message(
     device_public_key: &[u8; 32],
     uid: u32,
 ) -> Vec<u8> {
-    let mut message = Vec::with_capacity(DOMAIN.len() + 32 + 32 + 4);
+    let mut message = Vec::with_capacity(DOMAIN.len().saturating_add(68));
     message.extend_from_slice(DOMAIN);
     message.extend_from_slice(user_public_key);
     message.extend_from_slice(device_public_key);

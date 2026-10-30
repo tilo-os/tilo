@@ -325,18 +325,15 @@ mod unix {
 
     fn local_person(identity_root: &Path, passwd: Option<&Path>) -> anyhow::Result<String> {
         use tilo_identity_host::local_person::{self, Person};
-        let text = match passwd {
-            Some(path) => {
-                std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?
-            }
-            None => {
-                let out = Command::new("getent")
-                    .arg("passwd")
-                    .output()
-                    .context("run getent passwd")?;
-                anyhow::ensure!(out.status.success(), "getent passwd failed");
-                String::from_utf8_lossy(&out.stdout).into_owned()
-            }
+        let text = if let Some(path) = passwd {
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?
+        } else {
+            let out = Command::new("getent")
+                .arg("passwd")
+                .output()
+                .context("run getent passwd")?;
+            anyhow::ensure!(out.status.success(), "getent passwd failed");
+            String::from_utf8_lossy(&out.stdout).into_owned()
         };
         let accounts = local_person::regular_accounts(&text);
         let paths = IdentityPaths::under(identity_root);
@@ -355,7 +352,12 @@ mod unix {
 
     fn run(context: &Context, command: Cmd) -> anyhow::Result<()> {
         match command {
-            Cmd::LocalPerson { .. } => unreachable!("answered before the account is resolved"),
+            // Answered in `main`, before an account is resolved; the same
+            // answer if it ever arrives here.
+            Cmd::LocalPerson {
+                identity_root,
+                passwd,
+            } => local_person(&identity_root, passwd.as_deref()).map(|line| println!("{line}")),
             Cmd::Status => status(context),
             Cmd::Create {
                 acknowledge_no_recovery_service,
