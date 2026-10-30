@@ -765,9 +765,6 @@ impl MainPanel {
         if let Some(actions) = self.header.actions() {
             panel.header.attach(actions);
         }
-        if let Some(notebook) = self.notebook.clone() {
-            panel.header.set_notebook(notebook);
-        }
         panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
         if let Some(page) = workspace.selected() {
@@ -1021,7 +1018,6 @@ impl MainPanel {
     ) {
         self.editor.source_mut().attach(&notebook);
         self.header.attach(actions);
-        self.header.set_notebook(notebook.clone());
         self.notebook = Some(notebook);
     }
 
