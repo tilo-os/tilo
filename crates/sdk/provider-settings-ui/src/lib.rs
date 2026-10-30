@@ -124,9 +124,9 @@ pub enum ProviderEffect {
         preset: String,
     },
     /// Ask the provider which models it offers, with its stored key or
-    /// sign-in: shows whether the connection works, and the models to
-    /// choose from.
-    #[effect(job, row, label = "Test connection")]
+    /// sign-in: shows whether the connection works, and answers the models
+    /// to choose from with what each can do.
+    #[effect(job, row, returns, label = "Test connection")]
     ListProviderModels {
         #[param("The provider's id")]
         provider: String,
