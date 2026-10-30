@@ -23,10 +23,7 @@
 "crates/session/shell/src/compositor/state.rs" = 1
 "crates/session/shell/src/compositor/watchdog.rs" = 1
 "crates/session/shell/src/compositor/xwayland_composer.rs" = 2
-"crates/session/shell/src/firstboot.rs" = 3
 "crates/session/shell/src/network/native_media/observer.rs" = 2
-"crates/session/shell/src/onboarding.rs" = 1
-"crates/session/shell/src/onboarding_nearby.rs" = 2
 "crates/session/shell/src/portal/desktop_services.rs" = 1
 "crates/session/shell/src/portal/global_shortcuts.rs" = 1
 "crates/session/shell/src/portal/mod.rs" = 1

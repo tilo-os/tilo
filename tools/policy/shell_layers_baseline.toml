@@ -208,6 +208,7 @@ grandfathered = [
 
 [shell_dependencies.added]
 "tilo-onboarding" = "Setup as the app the session mounts in its own process and lends a seat, as it mounts the power menu's sheets: the shell keeps the ceremony, the journal and every secret's custody; it brings only tilo-app and zeroize, which the shell already depends on"
+"tilo-onboarding-host" = "The host side of setup (first boot, the nearby, browser, elsewhere and migration hand-offs, the retained files) carved out of the shell into its own crate the session calls: the shell keeps the seat and the ceremony it lends; it brings only crates the shell already depends on"
 "launcher-app" = "Search as the launcher app the session mounts in its own process, as it mounts the power menu's sheets: the desktop lends it what it can find; it brings only tilo-app and zeroize, which the shell already depends on"
 "tilo-overview" = "The workspace overview as an ordinary framework app the shell mounts in its own process and lends the desktop to; it brings tilo-desktop, tilo-desktop-model, tilo-sheets, tilo-action-policy and tilo-app, which the shell already depends on"
 "tilo-sheets" = "The sheets the shell shows over the desktop (the power menu) as ordinary framework apps it mounts in its own process; it brings only tilo-app and zeroize, which the shell already depends on"
