@@ -84,51 +84,68 @@ action overview(d: Desk) (icon: .layout_grid, label: "Overview") {
 }
 
 /// The top bar: the system's menu and the workspace in front, which opens the workspaces to
-/// switch between, then the tasks running; the time in the middle; the device's status and
-/// the person at the end.
+/// switch between, then the tasks running; the time in the middle; the people here, the person
+/// and the device's status at the end. Each part is a view of its own, so a change runs only
+/// the part that reads it: the minute, the clock alone.
 view bar(d: Desk) {
     row(padding: .tight, align: .center) {
-        row(gap: .tight, align: .center) {
-            ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
-                on press: system_menu(d)
-            }
-            ui.MenuButton(d.workspace, role: .bar) {
-                for w in d.workspaces {
-                    ui.MenuItem(w.name, checked: .some(w.current)) {
-                        on choose: switch_to(w)
-                    }
-                }
-                ui.MenuItem("New workspace", icon: .plus) {
-                    on choose: new_workspace(d)
-                }
-                ui.MenuItem("Join a workspace", icon: .users) {
-                    on choose: join_workspace(d)
-                }
-                ui.MenuItem("Workspace settings", icon: .settings) {
-                    on choose: workspace_settings(d)
-                }
-                ui.MenuItem("Overview", icon: .layout_grid) {
-                    on choose: overview(d)
+        places(d, fill)
+        clock(d)
+        presence(d, fill)
+    }
+}
+
+/// Where the person is: the system's menu, the workspace in front with the workspaces to
+/// switch to, the strip in front, and the tasks running.
+view places(d: Desk) {
+    row(gap: .tight, align: .center) {
+        ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
+            on press: system_menu(d)
+        }
+        ui.MenuButton(d.workspace, role: .bar) {
+            for w in d.workspaces {
+                ui.MenuItem(w.name, checked: .some(w.current)) {
+                    on choose: switch_to(w)
                 }
             }
-            if d.strip != "" {
-                ui.Button(d.strip, icon: .chevron_right, role: .bar) {
-                    on press: strips(d)
-                }
+            ui.MenuItem("New workspace", icon: .plus) {
+                on choose: new_workspace(d)
             }
-            for t in d.tasks {
-                ui.Button(t.title, icon: .bot, role: .bar)
+            ui.MenuItem("Join a workspace", icon: .users) {
+                on choose: join_workspace(d)
+            }
+            ui.MenuItem("Workspace settings", icon: .settings) {
+                on choose: workspace_settings(d)
+            }
+            ui.MenuItem("Overview", icon: .layout_grid) {
+                on choose: overview(d)
             }
         }
-        ui.Text(d.clock, role: .subheading, numeric: true)
-        row(gap: .sibling, align: .center, distribute: .end) {
-            for p in d.people {
-                ui.Avatar(name: .some(p.name))
+        if d.strip != "" {
+            ui.Button(d.strip, icon: .chevron_right, role: .bar) {
+                on press: strips(d)
             }
-            ui.Avatar(name: .some(d.person))
-            ui.Button(if d.unread > 0 { "{d.unread}" } else { "Notifications" }, icon: if d.quiet { .bell_off } else { .bell }, icon_only: d.unread == 0, role: .bar) {
-                on press: status(d)
-            }
+        }
+        for t in d.tasks {
+            ui.Button(t.title, icon: .bot, role: .bar)
+        }
+    }
+}
+
+/// The time, to the minute.
+view clock(d: Desk) {
+    ui.Text(d.clock, role: .subheading, numeric: true)
+}
+
+/// Who is here, the person, and the device's status.
+view presence(d: Desk) {
+    row(gap: .sibling, align: .center, distribute: .end) {
+        for p in d.people {
+            ui.Avatar(name: .some(p.name))
+        }
+        ui.Avatar(name: .some(d.person))
+        ui.Button(if d.unread > 0 { "{d.unread}" } else { "Notifications" }, icon: if d.quiet { .bell_off } else { .bell }, icon_only: d.unread == 0, role: .bar) {
+            on press: status(d)
         }
     }
 }
