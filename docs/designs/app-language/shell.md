@@ -15,8 +15,11 @@ components.md and layout.md.
   arranging action when its gesture ends. Which parts exist and where they sit is tilolang.
 - **Apps draw no chrome, colours or fonts.** Frames, menus, bars and their look belong to the
   person's shell and theme, so every shell and theme reaches every app.
-- **Only the person arranges.** Opening, closing and moving happen from their input or a view
-  acting on it, never from a task.
+- **The person and their agents arrange.** Agents acting for a person open, place, close and
+  rearrange like the person would; every change is attributed and undoable. How much of an
+  agent's work reaches the screen is the person's setting (§5), not a rule. One rule is fixed,
+  for input correctness: nothing moves or takes focus under an ongoing gesture or while the
+  person types.
 - **The system shows what tasks did.** What a person sees of an agent's or script's work never
   depends on the agent (§5).
 - **Trust stays system-drawn.** Asks, the trusted sheet, sign-in and lock, and a key that
@@ -86,26 +89,20 @@ view frame_classic(p: Place) {
 
 ## 5. What a person sees of a task
 
-The mechanism (the record, marks, seen, watching and contained) is task-legibility.md.
+The record, marks and seen are task-legibility.md. How a task's work shows up is the person's
+choice: settings in the one Settings place, overridable per task while it runs, changeable by
+an agent acting for them, and anything beyond them by editing the shell's views.
 
-An agent's or script's changes are recorded with their task: what was created, changed and
-deleted, in which steps. The system presents them from that record:
+| Setting | Options | Default |
+|---|---|---|
+| Where an agent's work goes | where the person works · a space per task (canvas cluster, strip, desktop) · a space per agent | a space per task, and its result where they asked |
+| What opens | nothing (the task's log) · what it creates · everything it touches · follow its focus | what it creates, and its answer |
+| The agent shown as | a collaborator (presence, member list, mentions) · a tool (results only) · per agent | a collaborator |
+| Marks on changes | off · agents' · everyone's | agents' |
+| Taking focus | whenever it brings something · when the person is idle · never | when idle |
+| Moving what the person placed | yes · not what they pinned · never | not what they pinned |
 
-- **Always.** Whatever the agent answers or forgets, its effects are shown; an agent can neither
-  hide its work nor fail to show it.
-- **As the person chooses**, by default and per task, switchable while it runs:
-  - **watching**: what the task creates appears near where they asked, placed by their shell
-    under their setting; things already shown that it changes are marked; its presence moves
-    to what it's working on (e.g. on the canvas);
-  - **contained**: nothing in their arrangement changes; the task's log shows each step with
-    embedded, live views of what it touched (e.g. in a chat log);
-  - on a phone, a notification whose activation shows the result.
-
-  The agent does the same work either way and isn't told which.
-- **Marks in place.** Views showing a changed resource mark the change (new, changed, removed,
-  by whom), from the record, the same for people, agents, scripts and peers.
-- The agent's own answer (agents.md, agent-ux.md) is commentary on top, never the only way to
-  see its work.
+The agent does the same work under any of these, and may read them to present its work well.
 
 ## 6. Shells as packages
 
@@ -120,16 +117,44 @@ A shell view re-runs only on discrete changes (a place opened, focus moved, a no
 motion stays in the Rust components. Idle means no work. The shell's views are held to the same
 budgets and `layout-check` as apps.
 
-## 8. Order
+## 8. On the native session
 
-1. Components out of today's Rust shell, with no behaviour change (in progress).
-2. System resources and actions a shell view can read and use: tasks, presence, notifications,
-   devices, power, network; open, close, focus, move.
-3. The arrangement in the person's own record, migrated.
-4. The strips shell rewritten in tilolang, matching today's, gated by the shell's tests and
-   budgets.
-5. Canvas, dock with top bar, phone and conversation shells; a live switcher.
-6. Task presentation settings (§5).
+The native session (`crates/session/session`) is already a thin host: the compositor
+(`tilo-compositor`) shows buffers and routes input and draws no interface; a `WindowPolicy`
+decides placement and focus; surface apps reach the screen as `SurfaceHost` layers through
+`tilo-surface-host`; the desk and chrome are the Rust widgets of `tilo-desktop`
+(`desktop_host`, `topbar`, `overview`, `window_switcher`, …) over `tilo-desktop-model`, and
+everything a person can do is a published action (`Session::resources`, `Session::invoke`).
+The tilolang shell takes the place of `tilo-desktop`'s widgets, one part at a time, on the same
+seams:
+
+- **Shell views on layers.** A shell package's views run in the tilolang host like any app's
+  and draw through the same UI host; a `SurfaceHost` shows each part (bar, desk, overlays) as
+  layers, exactly as `tilo-surface-host` shows a toolkit app. Headless, nested and DRM work
+  unchanged, because the compositor's backends do.
+- **System resources for the shell.** What the chrome reads today through `chrome.rs` (clock,
+  person, notifications), the desktop model (workspaces, strips, windows), tasks and presence
+  become typed resources and actions a shell view reads and invokes through the door, the same
+  ones agents use. A shell view never reaches Rust state any other way.
+- **Arrangement through the policy.** A shell's arrangement type is a record of the person's.
+  A `WindowPolicy` implementation per arrangement mechanic (scrolling strips: today's
+  `tilo-desktop-policy`; canvas; floating desktop) reads it and places windows; gestures are
+  Rust and commit one arranging action at their end.
+- **Frames.** A window's frame (bar, tabs, actions) is a shell view drawn on the desk layer
+  under the window, positioned from the policy's layout, as `tilo-desktop`'s window bars are
+  today. Per-type and per-app frame rules are the shell's.
+
+Order, each step deleting the Rust part it replaces once the tilolang one passes that part's
+tests, screenshots and frame budgets:
+
+1. The tilolang surface host and the system resources it needs; the top bar as a tilolang view
+   (clock, workspaces, running tasks, notifications, the person).
+2. Window frames and tabs as shell views, with per-type rules.
+3. The canvas arrangement: a `WindowPolicy` for canvas places, pan and zoom in Rust, point and
+   type (canvas.md) as shell views.
+4. Overview, switcher, launcher, palette and the agent composer as views.
+5. Strips in tilolang over `tilo-desktop-policy`; shell packages and switching them in Settings;
+   the §5 settings.
 
 ## 9. Open
 
