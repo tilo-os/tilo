@@ -33,6 +33,7 @@ pub mod desktop_services;
 pub mod displays;
 mod env;
 mod keys;
+mod lists;
 mod panels;
 mod search;
 mod setup;
@@ -67,6 +68,7 @@ pub use controls::{
 };
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA_PLAYER, MICROPHONE, QUICK_SETTINGS};
+pub use lists::{AppLists, Lists};
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
@@ -78,6 +80,7 @@ use panels::{Banners, Held, Popover, Readout};
 use search::SessionSearch;
 use setup::Setup;
 use sheets::Sheet;
+use tilo_desktop_search::providers::places::Place;
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::lock::LockSeat;
@@ -233,6 +236,23 @@ struct Shared {
     /// The lock screen, while the session is locked.
     lock: Option<LockSeat>,
     session_actions: fn(SessionAction) -> Result<(), String>,
+    /// Where everything the session publishes stood when search last read
+    /// it.
+    observed: RefCell<Option<Vec<(usize, u64)>>>,
+    /// The title each window had when search last recorded where it was.
+    places_seen: RefCell<std::collections::HashMap<u64, String>>,
+}
+
+/// The app a window shows, by its id.
+fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
+    use tilo_desktop_model::TileContent;
+    match tile {
+        TileContent::Foreign { app_id, .. }
+        | TileContent::LocalApp { app_id, .. }
+        | TileContent::PeerWindow { app_id, .. }
+        | TileContent::HostedWindow { app_id, .. } => Some(app_id.clone()),
+        _ => None,
+    }
 }
 
 impl Shared {
@@ -281,18 +301,75 @@ impl Shared {
         self.follow_asks();
     }
 
-    /// Read what the session publishes for search, after a frame.
+    /// Hand search what the session publishes when it changed: read after
+    /// a frame, as the desk cannot read its own tree while it opens search.
     fn observe(&self) {
-        let open_tabs = self.handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .map(|tab| tab.id)
-                .collect()
+        let now = self.doors.revision();
+        if now.is_some() && *self.observed.borrow() == now {
+            return;
+        }
+        self.observed.replace(now);
+        let tabs = self.handle.read(|tree| {
+            let mut tabs = Vec::new();
+            for workspace in &tree.workspaces {
+                let room = workspace.room().to_string();
+                for tab in workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                {
+                    tabs.push((tab.id, room.clone(), tab_app(&tab.tile), tab.title.clone()));
+                }
+            }
+            tabs
         });
+        self.record_places(&tabs);
+        let open_tabs = tabs.iter().map(|(tab, ..)| *tab).collect();
         self.search.observe(&self.doors.resources(), open_tabs);
+        self.keep_history();
+    }
+
+    /// Where each app's window is now, for search's Continue: a window
+    /// whose title changed since it was last seen was at a new place.
+    fn record_places(&self, tabs: &[(u64, String, Option<String>, String)]) {
+        let mut seen = self.places_seen.borrow_mut();
+        seen.retain(|tab, _| tabs.iter().any(|(open, ..)| open == tab));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        for (tab, room, app, title) in tabs {
+            let Some(app) = app else { continue };
+            if title.trim().is_empty() || seen.get(tab) == Some(title) {
+                continue;
+            }
+            seen.insert(*tab, title.clone());
+            self.search.record_place(Place {
+                app: app.clone(),
+                room: room.clone(),
+                tab: *tab,
+                label: title.clone(),
+                value: String::new(),
+                anchor: None,
+                at: now,
+                device: None,
+            });
+        }
+    }
+
+    /// Keep what changed of search's history in its settings section,
+    /// through the section's field edits; without a settings service it
+    /// lasts as long as the session.
+    fn keep_history(&self) {
+        for edit in self.search.take_unkept() {
+            let kept = self
+                .services
+                .borrow_mut()
+                .invoke(search::HISTORY, "field-edit", &edit);
+            if let Some(Err(error)) = kept {
+                tracing::warn!(%error, "search history not kept");
+            }
+        }
     }
 
     fn close_quick_settings(&self) {
@@ -680,7 +757,12 @@ impl Session {
             file_picker,
             lock,
             session_actions: options.session_actions,
+            observed: RefCell::new(None),
+            places_seen: RefCell::default(),
         };
+        if let Some(kept) = shared.services.borrow().read(search::HISTORY) {
+            shared.search.restore(&kept);
+        }
         shared.observe();
         let loop_wake = compositor.waker();
         Ok(Self {
@@ -1111,6 +1193,10 @@ struct ServiceDoor(Rc<RefCell<Services>>);
 impl Published for ServiceDoor {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         self.0.borrow().resources()
+    }
+
+    fn revision(&self) -> Option<u64> {
+        Some(self.0.borrow().revision())
     }
 
     fn invoke(

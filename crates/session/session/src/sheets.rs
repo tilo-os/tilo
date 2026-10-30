@@ -74,6 +74,10 @@ impl<S: Seat> Published for Sheet<S> {
         self.host.resources()
     }
 
+    fn revision(&self) -> Option<u64> {
+        Published::revision(&self.host)
+    }
+
     fn invoke(
         &mut self,
         address: &ActionAddress,

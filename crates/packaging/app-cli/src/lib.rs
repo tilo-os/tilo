@@ -866,6 +866,44 @@ pub fn all_offers() -> CatalogueListing {
     }
 }
 
+/// What the configured registries offered when this device last listed
+/// them, read from the catalogues it accepted, without the network and
+/// without writing anything: for a reader that must not wait (desktop
+/// search), which follows [`last_accepted_directories`] to read it again.
+/// A registry never listed, or whose kept catalogue no longer verifies,
+/// offers nothing here.
+#[must_use]
+pub fn last_accepted_offers() -> Vec<CatalogueApp> {
+    let registries = config::load_registries_no_seed();
+    let apps = registries
+        .enabled()
+        .filter_map(|registry| {
+            let entries = client::last_verified_entries(registry).ok()?;
+            Some(
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        entry_to_app_for_channel(entry, &registry.name, registry.channel)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .flatten()
+        .collect();
+    dedupe_and_subtract(apps, &[])
+}
+
+/// The directories [`last_accepted_offers`] reads: the registries'
+/// configuration and the catalogues accepted from them. Their entries
+/// change when a registry is added or switched, and when a listing accepts
+/// a newer catalogue.
+#[must_use]
+pub fn last_accepted_directories() -> Vec<std::path::PathBuf> {
+    config::config_dir()
+        .map(|dir| vec![dir.join(client::CHECKPOINT_DIR), dir])
+        .unwrap_or_default()
+}
+
 /// Everything the configured registries offer that is not installed.
 pub fn available() -> CatalogueListing {
     let mut listing = all_offers();

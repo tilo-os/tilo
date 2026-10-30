@@ -35,6 +35,10 @@ fn main() {
     unsafe {
         libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
     }
+    if std::env::args().skip(1).any(|arg| arg == "--serve") {
+        serve();
+        return;
+    }
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .thread_name("tilo-audio-mpris")
@@ -47,10 +51,6 @@ fn main() {
             return;
         }
     };
-    if std::env::args().skip(1).any(|arg| arg == "--serve") {
-        serve(runtime.handle().clone());
-        return;
-    }
     let mpris = Mpris::start(runtime.handle().clone(), |event| emit(&event));
     let (events, received) = mpsc::channel();
     let stop = events.clone();
@@ -80,14 +80,26 @@ fn main() {
     );
 }
 
+/// The players on the session bus, and what follows their changes.
+type Follow = Box<dyn FnOnce(Box<dyn Fn() + Send + Sync>) -> std::io::Result<()>>;
+
+fn media() -> zbus::Result<(
+    std::sync::Arc<dyn tilo_audio_service::media::Players>,
+    Follow,
+)> {
+    let players = std::sync::Arc::new(tilo_audio_service::media::Mpris::new()?);
+    let following = std::sync::Arc::clone(&players);
+    Ok((players, Box::new(move |changed| following.follow(changed))))
+}
+
 /// The session's audio service: the policy on a thread of its own, the
-/// sound and media resources served on the pipes until the session closes
-/// them.
-fn serve(runtime: tokio::runtime::Handle) {
+/// sound resource and what plays served on the pipes until the session
+/// closes them.
+fn serve() {
     use std::sync::Arc;
     use tilo_audio_service::media::MediaService;
     use tilo_audio_service::sound::{SoundService, SystemGraph};
-    use tilo_service::{Services, lines};
+    use tilo_service::lines;
 
     let (incoming, requests, wake) = lines::incoming();
     let sound = match SoundService::new(Arc::new(SystemGraph::default()), Some(wake.clone())) {
@@ -98,11 +110,21 @@ fn serve(runtime: tokio::runtime::Handle) {
         }
     };
     let refresh = sound.refresher();
-    let media = MediaService::start(runtime, Some(wake));
-    let mpris = media.mpris().clone();
-    let mut services = Services::default();
-    services.add(Box::new(sound));
-    services.add(Box::new(media));
+    let mut services = tilo_service::Services::default();
+    let mut playing: Option<Arc<dyn tilo_audio_service::media::Players>> = None;
+    match media() {
+        Ok((players, follow)) => match MediaService::new(Arc::clone(&players), Some(wake)) {
+            Ok(media) => {
+                if let Err(error) = follow(Box::new(media.refresher())) {
+                    tracing::warn!(%error, "what plays is read only when asked");
+                }
+                playing = Some(players);
+                services.add(Box::new(media));
+            }
+            Err(error) => tracing::warn!(%error, "the media service did not start"),
+        },
+        Err(error) => tracing::warn!(%error, "the session bus has no players to follow"),
+    }
     let (events, received) = mpsc::channel();
     let stop = events.clone();
     let policy = std::thread::Builder::new()
@@ -110,7 +132,11 @@ fn serve(runtime: tokio::runtime::Handle) {
         .spawn(move || {
             policy::serve(
                 move |_| refresh(),
-                move || mpris.pause_playing(),
+                move || {
+                    playing
+                        .as_deref()
+                        .is_none_or(tilo_audio_service::media::pause_playing)
+                },
                 events,
                 &received,
             );
@@ -122,6 +148,7 @@ fn serve(runtime: tokio::runtime::Handle) {
         tracing::error!(%error, "the request reader did not start");
         return;
     }
+    services.add(Box::new(sound));
     if let Err(error) = lines::serve(&mut services, &requests, std::io::stdout().lock()) {
         tracing::warn!(%error, "the session stopped reading");
     }

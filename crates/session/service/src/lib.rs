@@ -132,12 +132,27 @@ pub fn reading<T: serde::Serialize>(state: &T) -> Value {
 #[derive(Default)]
 pub struct Services {
     services: Vec<Box<dyn Service>>,
+    /// Moves whenever what they publish may have changed: a service was
+    /// added, an action ran, a reading landed. A reader of the catalogue
+    /// reads it again only when this moved.
+    revision: u64,
 }
 
 impl Services {
     /// Host `service` too.
     pub fn add(&mut self, service: Box<dyn Service>) {
         self.services.push(service);
+        self.changed();
+    }
+
+    /// Where what they publish stands: equal revisions publish the same.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    const fn changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Whether it hosts none.
@@ -207,7 +222,9 @@ impl Services {
         if asks && !confirmed {
             return Some(Err(DoorError::ConfirmationRequired));
         }
-        Some(service.invoke(resource, action, arguments))
+        let started = service.invoke(resource, action, arguments);
+        self.changed();
+        Some(started)
     }
 
     /// Take in what landed on every service. Whether a reading changed.
@@ -215,6 +232,9 @@ impl Services {
         let mut changed = false;
         for service in &mut self.services {
             changed |= service.poll();
+        }
+        if changed {
+            self.changed();
         }
         changed
     }
@@ -224,11 +244,13 @@ impl Services {
         for service in &mut self.services {
             service.settle();
         }
+        self.changed();
     }
 }
 
-/// Several services as one: what a process serving more than one resource
-/// family serves over lines ([`lines::serve`]).
+/// Several services served as one: what a helper process serving more
+/// than one over its pipes ([`lines::serve`]) hands it. The session asked
+/// the person first where an action asks it, so what arrives is confirmed.
 impl Service for Services {
     fn resources(&self) -> Vec<ResourceSpec> {
         Self::resources(self)
@@ -244,7 +266,7 @@ impl Service for Services {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
-        Self::invoke(self, resource, action, arguments)
+        self.invoke_confirmed(resource, action, arguments)
             .unwrap_or_else(|| Err(DoorError::Unknown(ActionAddress::new(resource, action))))
     }
 

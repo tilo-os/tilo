@@ -15,6 +15,7 @@ search-kind-settings = Settings
 search-kind-people = People
 search-kind-jobs = Running
 search-kind-continue = Continue
+search-kind-waiting = Waiting on you
 search-continue-on-device = On { $device }
 search-catalogue-from = Get from { $registry }
 search-catalogue-flathub = Flathub · see in the Store

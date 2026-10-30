@@ -239,6 +239,10 @@ impl crate::Published for DesktopHost {
         crate::Published::resources(&mut self.desk.borrow_mut().host)
     }
 
+    fn revision(&self) -> Option<u64> {
+        Some(self.desk.borrow().host.revision())
+    }
+
     fn invoke(
         &mut self,
         address: &ui::tilo_actions::ActionAddress,

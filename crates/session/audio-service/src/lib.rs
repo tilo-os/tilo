@@ -12,9 +12,10 @@
 //! input closes, so it never outlives the compositor that started it.
 //!
 //! Started with `--serve`, it is the session's audio service instead: it
-//! serves the [`sound`] and [`media`] resources over JSON lines
-//! ([`tilo_service::lines`]) on the same pipes, reading the graph again
-//! whenever a device arrives or leaves.
+//! serves the [`sound`] resource over JSON lines ([`tilo_service::lines`])
+//! on the same pipes, reading the graph again whenever a device arrives or
+//! leaves, and the [`media`] resource: the players on the session bus and
+//! their controls, read again whenever one signals a change.
 
 pub mod client;
 pub mod handoff;

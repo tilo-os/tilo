@@ -24,6 +24,11 @@ app-catalogue = { path = "../../packaging/app-catalogue" }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
 settings-store = { path = "../../system/settings-store" }
+# The registries' listing as this device last accepted it, for the apps a
+# person can get.
+app-cli = { path = "../../packaging/app-cli" }
+# Following the directories search's lists are read from.
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-paths.workspace = true
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
@@ -32,6 +37,7 @@ tilo-notification-banners = { path = "../notification-banners" }
 tilo-service = { path = "../service" }
 tilo-connectivity-service = { path = "../connectivity-service" }
 tilo-system-service = { path = "../system-service" }
+tilo-settings-service = { path = "../settings-service" }
 # The sound resource's specs, for the audio service the session starts.
 tilo-audio-service = { path = "../audio-service", default-features = false }
 # The desktop services the session starts on the buses.
@@ -40,6 +46,7 @@ tilo-notifications-service = { path = "../notifications-service" }
 tilo-polkit-agent = { path = "../polkit-agent" }
 tilo-network-secret-agent = { path = "../network-secret-agent" }
 tilo-bluetooth-agent = { path = "../bluetooth-agent" }
+tilo-tray-host = { path = "../tray-host" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 tilo-onboarding-host = { path = "../onboarding-host" }
 tilo-sheets = { path = "../sheets" }
@@ -57,13 +64,14 @@ zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 url.workspace = true
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 tilo-audio-service = { path = "../audio-service" }
 rustix = { workspace = true, features = ["fs"] }
 tilo-onboarding = { path = "../onboarding" }
 tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] }
+tempfile.workspace = true
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client"] }

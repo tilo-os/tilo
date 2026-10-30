@@ -20,6 +20,21 @@ pub enum PowerAction {
         #[param("The power mode", choices = PowerMode::NAMES)]
         mode: String,
     },
+    /// Lock the screen: unlocking asks for the password.
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "lock",
+        keywords = "lock screen, lock the screen, sperren, bildschirm sperren"
+    )]
+    Lock,
+    /// Leave this session running and let someone else sign in.
+    #[effect(
+        own_device,
+        icon = "users",
+        keywords = "switch user, change user, other user, benutzer wechseln"
+    )]
+    SwitchUser,
     /// Put the device to sleep.
     #[effect(
         own_device,

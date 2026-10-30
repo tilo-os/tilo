@@ -181,6 +181,11 @@ impl Published for SessionControls {
         resources()
     }
 
+    fn revision(&self) -> Option<u64> {
+        // Its actions never change.
+        Some(0)
+    }
+
     fn invoke(
         &mut self,
         address: &ActionAddress,

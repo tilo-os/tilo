@@ -18,7 +18,7 @@ mod observer;
 mod resume;
 mod table;
 #[cfg(test)]
-pub(crate) mod test_bus;
+mod test_bus;
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
@@ -487,9 +487,7 @@ fn decode_artwork(url: &str) -> Option<ArtworkImage> {
 
 #[cfg(test)]
 mod tests {
-    use super::test_bus::{
-        FakePlayer, FakeRoot, PROBE, PrivateBus, called, eventually, record_calls,
-    };
+    use super::test_bus::{FakePlayer, FakeRoot, PROBE, PrivateBus, eventually, record_calls};
     use super::*;
     use crate::{ResumeRequest, ResumeSource};
 
@@ -561,6 +559,18 @@ mod tests {
             .build()
             .await
             .unwrap()
+    }
+
+    async fn called(player: &zbus::Connection) -> Vec<String> {
+        player
+            .object_server()
+            .interface::<_, FakePlayer>(MPRIS_PATH)
+            .await
+            .unwrap()
+            .get()
+            .await
+            .called
+            .clone()
     }
 
     /// Transport keys, exact pauses, a verified resume and an unplug's pause

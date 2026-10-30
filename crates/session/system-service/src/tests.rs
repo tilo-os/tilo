@@ -163,6 +163,26 @@ fn restarting_and_powering_off_ask_for_confirmation() {
 }
 
 #[test]
+fn locking_asks_nothing_and_switching_user_needs_a_seat_for_another() {
+    let fake = Fake::new();
+    let mut services = Services::default();
+    services.add(Box::new(service(&fake)));
+    assert!(matches!(
+        services.invoke(POWER, "lock", &Map::new()),
+        Some(Ok(_))
+    ));
+    assert!(
+        matches!(
+            services.invoke(POWER, "switch-user", &Map::new()),
+            Some(Err(DoorError::Unavailable { .. }))
+        ),
+        "nobody else can sign in here"
+    );
+    services.settle();
+    assert_eq!(fake.changes(), [Change::Lock]);
+}
+
+#[test]
 fn an_update_reports_what_it_needs() {
     let fake = Fake::new();
     let mut service = service(&fake);

@@ -33,6 +33,12 @@ pub trait Published {
     /// The labels of its accessibility tree, in reading order.
     fn accessible_labels(&mut self) -> Vec<String>;
 
+    /// Where what it publishes stands: equal revisions publish the same.
+    /// `None` when it cannot tell, and is read again every time.
+    fn revision(&self) -> Option<u64> {
+        None
+    }
+
     /// Whether it offers its actions now: a sheet only while it is up.
     fn offered(&self) -> bool {
         true
@@ -79,22 +85,46 @@ impl Doors {
         self.surfaces.push(surface);
     }
 
-    /// The surfaces offering their actions now: only the exclusive ones
-    /// while one is up.
-    fn offered(&self) -> Vec<&Shared> {
-        let offered: Vec<&Shared> = self
-            .surfaces
-            .iter()
-            .filter(|surface| surface.borrow().offered())
+    /// The surfaces offering their actions now, by their place: only the
+    /// exclusive ones while one is up.
+    fn offered_places(&self) -> Vec<usize> {
+        let offered: Vec<usize> = (0..self.surfaces.len())
+            .filter(|&place| self.surfaces[place].borrow().offered())
             .collect();
-        if offered.iter().any(|surface| surface.borrow().exclusive()) {
+        if offered
+            .iter()
+            .any(|&place| self.surfaces[place].borrow().exclusive())
+        {
             offered
                 .into_iter()
-                .filter(|surface| surface.borrow().exclusive())
+                .filter(|&place| self.surfaces[place].borrow().exclusive())
                 .collect()
         } else {
             offered
         }
+    }
+
+    /// The surfaces offering their actions now.
+    fn offered(&self) -> Vec<&Shared> {
+        self.offered_places()
+            .into_iter()
+            .map(|place| &self.surfaces[place])
+            .collect()
+    }
+
+    /// Where everything offered now stands: equal revisions offer the
+    /// same. `None` when a surface cannot tell.
+    #[must_use]
+    pub fn revision(&self) -> Option<Vec<(usize, u64)>> {
+        self.offered_places()
+            .into_iter()
+            .map(|place| {
+                self.surfaces[place]
+                    .borrow()
+                    .revision()
+                    .map(|revision| (place, revision))
+            })
+            .collect()
     }
 
     /// Everything the hosted surfaces offer now, in the order they were

@@ -12,7 +12,8 @@
 //!
 //! What a setting is set to is not this source's: a switch or a value the
 //! settings service publishes is an action of its own, found and flipped
-//! through [`crate::providers::Published`].
+//! through [`crate::providers::Published`], and left out here
+//! ([`Settings::changing_in_place`]).
 
 use settings_store::index;
 use ui::search::FieldWeight;
@@ -114,6 +115,16 @@ impl Settings {
     /// The pages and settings, opening Settings in `room`.
     #[must_use]
     pub fn new(room: impl Into<String>) -> Self {
+        Self::changing_in_place(room, &|_| false)
+    }
+
+    /// [`Self::new`], leaving out the settings `in_place` names by id: those
+    /// the settings service publishes as actions that change them in place
+    /// (a switch, a choice's values, a value), which search finds as those
+    /// actions. A row opening Settings at them would only stand beside the
+    /// switch itself.
+    #[must_use]
+    pub fn changing_in_place(room: impl Into<String>, in_place: &dyn Fn(&str) -> bool) -> Self {
         let mut rows = Vec::new();
         let mut fields = Vec::new();
         for page in index::PAGES {
@@ -140,7 +151,7 @@ impl Settings {
             });
         }
         for setting in index::SETTINGS {
-            if QUICK_ACTION_SETTINGS.contains(&setting.id) {
+            if QUICK_ACTION_SETTINGS.contains(&setting.id) || in_place(setting.id) {
                 continue;
             }
             let Some((at, page)) = index::PAGES

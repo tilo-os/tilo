@@ -54,6 +54,9 @@ pub struct Power {
     /// The modes this machine offers; empty without a power daemon.
     pub modes: Vec<PowerMode>,
     pub mode: Option<PowerMode>,
+    /// Another person may sign in beside this session (a display manager
+    /// that switches seats is running).
+    pub user_switching: bool,
     pub pending: Vec<String>,
     pub problem: Option<String>,
 }

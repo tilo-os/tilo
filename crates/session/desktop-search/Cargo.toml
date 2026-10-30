@@ -17,7 +17,7 @@ homepage.workspace = true
 lazy-search = []
 # The session's on-disk indexes: what apps publish of their content, and
 # the bodies of the person's files. Native only.
-indexes = ["dep:tilo-action-policy", "dep:tilo-lock", "dep:tilo-paths", "dep:tilo-reference", "dep:tempfile", "dep:tilo-search", "dep:tracing", "dep:walkdir"]
+indexes = ["dep:tilo-action-policy", "dep:tilo-files", "dep:tilo-lock", "dep:tilo-paths", "dep:tilo-reference", "dep:tempfile", "dep:tilo-search", "dep:tracing", "dep:walkdir"]
 # Settings' pages and the settings on them, from Settings' own index.
 # Native only.
 settings = ["dep:settings-store"]
@@ -36,6 +36,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true, optional = true }
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy", optional = true }
+# The watch that keeps the person's file names current.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["watch"], optional = true }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock", optional = true }
 tilo-paths = { workspace = true, optional = true }
 tilo-reference = { version = "0.1.0", path = "../../collab/reference", optional = true }

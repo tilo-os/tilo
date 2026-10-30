@@ -103,6 +103,10 @@ impl Published for Popover {
         self.host.resources()
     }
 
+    fn revision(&self) -> Option<u64> {
+        Published::revision(&self.host)
+    }
+
     fn invoke(
         &mut self,
         address: &ActionAddress,
@@ -221,6 +225,10 @@ impl Published for Banners {
         self.host.resources()
     }
 
+    fn revision(&self) -> Option<u64> {
+        Published::revision(&self.host)
+    }
+
     fn invoke(
         &mut self,
         address: &ActionAddress,
@@ -322,6 +330,10 @@ impl Readout {
 impl Published for Readout {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         Published::resources(&mut self.host)
+    }
+
+    fn revision(&self) -> Option<u64> {
+        Published::revision(&self.host)
     }
 
     fn invoke(
