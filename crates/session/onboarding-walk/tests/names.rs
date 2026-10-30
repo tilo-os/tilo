@@ -17,10 +17,8 @@ fn the_walk_presses_the_sessions_own_controls() {
     }
     let acknowledgements: Vec<&str> = view
         .match_indices("acknowledgement(")
-        .map(|(at, _)| {
-            let rest = &view[at..];
-            &rest[..rest.find(')').unwrap_or(rest.len())]
-        })
+        .filter_map(|(at, _)| view.get(at..))
+        .map(|rest| rest.split(')').next().unwrap_or(rest))
         .collect();
     for press in onboarding_walk::PRESSES {
         let quoted = format!("\"{}\"", press.name);
