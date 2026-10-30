@@ -28,6 +28,10 @@ serde_json = { workspace = true }
 # The toolkit's component descriptions, read as the package `ui`.
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 wasm-encoder = "0.252"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32; the
+# toolkit links the compiler into the browser's wasm32 builds.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
