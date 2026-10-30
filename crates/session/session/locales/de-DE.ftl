@@ -28,3 +28,24 @@ system-update-app-name = Updates
 system-update-restart-title = Neu starten, um die Updates abzuschließen
 system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
 power-restart = Neu starten
+
+## Die eigenen Ressourcen der Sitzung: die Eingabegeräte, der Bildschirm, das
+## Nachtlicht, die Lupe und die Bildschirme.
+session-input = Eingabegeräte
+session-toggle-touchpad = Touchpad ein- oder ausschalten
+session-param-touchpad-on = Ob das Touchpad an ist; weglassen zum Umschalten
+session-next-input-source = In der nächsten Tastatureingabequelle tippen
+session-screen = Bildschirm
+session-lock = Bildschirm sperren
+session-log-out = Abmelden
+session-night-light = Nachtlicht
+session-night-light-toggle = Nachtlicht ein- oder ausschalten
+session-param-night-light-on = Ob das Nachtlicht an ist; weglassen zum Umschalten
+session-magnifier = Lupe
+session-magnifier-toggle = Lupe ein- oder ausschalten
+session-magnifier-zoom-in = Stärker vergrößern
+session-magnifier-zoom-out = Weniger vergrößern
+session-displays = Bildschirme
+session-displays-next = Nächste Bildschirmanordnung
+session-displays-set = Bildschirme anordnen
+session-param-displays-mode = Wie die Bildschirme zusammen genutzt werden: erweitern, spiegeln, eingebaut oder extern

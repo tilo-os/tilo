@@ -28,3 +28,24 @@ system-update-app-name = Updates
 system-update-restart-title = Restart to finish updating
 system-update-restart-body = Your windows come back after the restart.
 power-restart = Restart
+
+## The session's own resources: the input devices, the screen, the night light,
+## the magnifier and the displays.
+session-input = Input devices
+session-toggle-touchpad = Turn the touchpad on or off
+session-param-touchpad-on = Whether the touchpad is on; leave out to switch it
+session-next-input-source = Type in the next keyboard input source
+session-screen = Screen
+session-lock = Lock the screen
+session-log-out = Log out
+session-night-light = Night light
+session-night-light-toggle = Turn the night light on or off
+session-param-night-light-on = Whether the night light is on; leave out to switch it
+session-magnifier = Magnifier
+session-magnifier-toggle = Turn the magnifier on or off
+session-magnifier-zoom-in = Magnify more
+session-magnifier-zoom-out = Magnify less
+session-displays = Displays
+session-displays-next = Next display arrangement
+session-displays-set = Arrange the displays
+session-param-displays-mode = How the displays are used together: extend, mirror, built-in or external
