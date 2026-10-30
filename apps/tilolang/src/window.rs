@@ -572,8 +572,12 @@ impl Widget for Window {
             self.instance.update()
         };
         let received = self.view.receive();
-        if self.instance.take_undo() {
-            self.undo.request(ui::undo::UndoRequest::Undo);
+        // The person's Undo on a notice is the framework's undo of the record, as Ctrl+Z is here.
+        for asked in self.instance.take_history() {
+            self.undo.request(match asked {
+                instance::HistoryAsk::Undo => ui::undo::UndoRequest::Undo,
+                instance::HistoryAsk::Redo => ui::undo::UndoRequest::Redo,
+            });
         }
         let child = self.view.update(state, path);
         changed || received || child

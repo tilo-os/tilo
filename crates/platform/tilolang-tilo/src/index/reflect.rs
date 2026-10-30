@@ -23,7 +23,7 @@ use std::sync::LazyLock;
 
 use serde_json::{Value as Json, json};
 use tilolang::pred::Lit;
-use tilolang_runtime::store::{FieldValue, Reflected, Scalar, Version};
+use tilolang_runtime::store::{FieldValue, Reflected, Scalar, TaskRun, Version};
 
 use crate::action::{ACTION_TYPE, DynAction};
 use crate::schema::{FieldSchema, MergeKind};
@@ -84,13 +84,20 @@ impl Stamp {
     /// The stamp as the index holds it.
     #[must_use]
     pub fn value(&self) -> FieldValue {
-        FieldValue::Scalar(Scalar::Json(json!({
+        let mut held = json!({
             "who": self.version.who,
             "at": self.version.at,
             "action": self.version.action,
             "change": self.change,
             "op": self.op,
-        })))
+        });
+        if let (Some(task), Some(map)) = (&self.version.task, held.as_object_mut()) {
+            map.insert(
+                "task".to_owned(),
+                serde_json::to_value(task).unwrap_or(Json::Null),
+            );
+        }
+        FieldValue::Scalar(Scalar::Json(held))
     }
 
     /// The stamp the index holds as `value`.
@@ -100,16 +107,54 @@ impl Stamp {
             return None;
         };
         let text = |key: &str| json.get(key).and_then(Json::as_str).map(str::to_owned);
+        // An index written before versions named their run holds none.
+        let task = match json.get("task") {
+            None => None,
+            Some(task) => Some(serde_json::from_value(task.clone()).ok()?),
+        };
+        let change = text("change").unwrap_or_default();
         Some(Self {
             version: Version {
                 who: text("who")?,
                 at: text("at")?,
                 action: text("action")?,
+                task,
+                change: change.clone(),
+                ..Version::default()
             },
-            change: text("change").unwrap_or_default(),
+            change,
             op: json.get("op").and_then(Json::as_u64)?,
         })
     }
+}
+
+/// The task run a change's context names: its group, when it is a task's.
+fn task_of(context: &tilo_actions::ActionContext) -> Option<TaskRun> {
+    let group = context.group.as_ref()?;
+    (group.kind == tilo_actions::context::TASK_RUN_GROUP).then(|| TaskRun {
+        id: group.id.clone(),
+        title: group.label.clone(),
+    })
+}
+
+/// The versions `change` made, one per resource it changed, when it is a tilolang action's
+/// change: who, when, by which action, in which task run, and what it did to each.
+#[must_use]
+pub fn versions_of(change: &automerge::Change) -> Vec<Version> {
+    let Some((stamp, action, task)) = read(change) else {
+        return Vec::new();
+    };
+    action
+        .made()
+        .into_iter()
+        .map(|made| Version {
+            task: task.clone(),
+            kind: made.kind,
+            fields: made.fields,
+            resource: made.resource,
+            ..stamp.version.clone()
+        })
+        .collect()
 }
 
 /// What a column of a version orders by: the time, as a column of times writes it.
@@ -122,6 +167,13 @@ pub fn at_lit(value: &FieldValue) -> Lit {
 /// it is a tilolang action's change.
 #[must_use]
 pub fn stamp_of(change: &automerge::Change) -> Option<(Stamp, Vec<String>)> {
+    let (stamp, action, _) = read(change)?;
+    Some((stamp, action.changed()))
+}
+
+/// The version `change` made, its action and its task run, when it is a tilolang action's
+/// change.
+fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<TaskRun>)> {
     let context = change
         .message()
         .and_then(tilo_actions::ActionContext::from_change_message)?;
@@ -147,16 +199,21 @@ pub fn stamp_of(change: &automerge::Change) -> Option<(Stamp, Vec<String>)> {
         .at
         .clone()
         .unwrap_or_else(|| tilolang::calendar::time_text(change.timestamp()));
+    let task = task_of(&context);
+    let hash = change.hash().to_string();
     let stamp = Stamp {
         version: Version {
             who: action.authorship.invoker.clone(),
             at,
             action: action.action_id.clone(),
+            task: task.clone(),
+            change: hash.clone(),
+            ..Version::default()
         },
-        change: change.hash().to_string(),
+        change: hash,
         op: change.start_op().get(),
     };
-    Some((stamp, action.changed()))
+    Some((stamp, action, task))
 }
 
 /// The first and last versions `changes` made of each resource they changed.

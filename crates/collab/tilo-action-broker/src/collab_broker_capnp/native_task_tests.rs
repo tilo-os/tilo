@@ -23,6 +23,8 @@ mod cross_app;
 mod store_witness;
 #[path = "native_task_agent_tests.rs"]
 mod task_agents;
+#[path = "task_run_host_tests.rs"]
+mod task_run_host;
 
 struct Native {
     owner: tilo_joined_room::NativeWorkspaceOwner,
@@ -258,11 +260,18 @@ impl Fixture {
     fn new() -> Self {
         Self::with_launcher(None)
     }
+    fn with_launcher(launcher: Option<Arc<dyn crate::services::LauncherServices>>) -> Self {
+        Self::with_services(launcher, Vec::new())
+    }
+    /// The fixture with the host's own steps `host_steps` beside the apps.
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario, end to end, reads as one test"
     )]
-    fn with_launcher(launcher: Option<Arc<dyn crate::services::LauncherServices>>) -> Self {
+    fn with_services(
+        launcher: Option<Arc<dyn crate::services::LauncherServices>>,
+        host_steps: Vec<Arc<dyn crate::services::HostStepServices>>,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let mut identity_env = tilo_test_env::ScopedEnv::new();
         identity_env
@@ -340,6 +349,7 @@ impl Fixture {
                 app_action_grants: Some(native.clone()),
                 tracker_runs: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
+                host_steps,
                 ..Default::default()
             },
         );

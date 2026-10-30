@@ -1,8 +1,8 @@
 //! The session's agent door on a live headless compositor: a client that
 //! says `initialize` is served nothing until the person answers through the
 //! `permission-prompts` decision; refused, it reads a JSON-RPC error; admitted,
-//! it is an agent member of the workspace and lists the session's live and
-//! installed apps over the broker as that agent.
+//! it works in a run of its own Tasks issue, as the task agent made for it,
+//! and lists the session's live and installed apps over the broker.
 //!
 //! Spawns a real headless compositor child, like the other headless shell
 //! tests, and runs in the normal `it` target:
@@ -210,9 +210,8 @@ fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
         !names.iter().any(|name| name.starts_with("computer")),
         "{names:?}"
     );
-    // Admitted as an observer, with no grant of its own, it is told the
-    // Notes that runs and every app installed, each one it may not open
-    // saying so, never an empty list.
+    // It is told the Notes that runs and every app installed, never an
+    // empty list.
     install_viewer(&session);
     let deadline = tilo_test_env::hang_deadline();
     let mut id: u64 = 2;
@@ -236,36 +235,12 @@ fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
         );
         std::thread::sleep(Duration::from_millis(200));
     };
-    let installed: Vec<&str> = listed
-        .lines()
-        .filter(|line| line.contains("  installed"))
-        .collect();
-    assert!(
-        installed
-            .iter()
-            .all(|line| line.ends_with("  installed, not yours to open")),
-        "an observer was offered to open an app: {listed}"
-    );
-    assert!(
-        listed.contains("the person decides which apps an agent may open"),
-        "{listed}"
-    );
-    // Opening it is refused with who decides, not with "no such app".
-    let (refused, failed) = agent.tool(
-        id.checked_add(1).expect("request ids left"),
-        "tilo_do",
-        &serde_json::json!({"path": "viewer#open"}),
-    );
-    assert!(
-        failed && refused.contains("this agent may not open viewer"),
-        "{refused}"
-    );
-
-    // The admitted agent is an ordinary, revocable member of the workspace.
+    drop(listed);
+    // The door makes nobody a member: the client works in its run.
     let dump = control(&session.control(), &serde_json::json!({"op":"state_dump"}));
     assert!(
-        dump.to_string().contains("agent-member:claude-code"),
-        "the agent is not a member: {dump}"
+        !dump.to_string().contains("agent-member:claude-code"),
+        "the door made the agent a member: {dump}"
     );
 }
 
@@ -443,9 +418,8 @@ impl Drop for McpClient {
 /// session's door, not a standalone runtime of its own, and reads and edits
 /// Notes by the names a person uses, with no id in sight: ls, a new note, the
 /// note found by its title under the notebook, a paragraph appended through
-/// its body's own action, a read back; then the Notes grant is taken back
-/// and the agent may no longer write, and its membership is taken back and
-/// it may no longer read.
+/// its body's own action, a read back, and its work found as the run of its
+/// own issue in Tasks.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -468,10 +442,14 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
             "the client started a standalone runtime inside the login ({profile})"
         );
     }
-    // The agent holds no role of its own: the person grants it Notes.
+    // It works as the task agent made for its connection, which it names.
+    let agent_id = initialized["result"]["serverInfo"]["agent"]
+        .as_str()
+        .expect("the door names its agent")
+        .to_owned();
     let granted = control(
         &session.control(),
-        &serde_json::json!({"op":"allow","subject":"agent:claude-code","node":"app:so.tilo.notes",
+        &serde_json::json!({"op":"allow","subject":format!("agent:{agent_id}"),"node":"app:so.tilo.notes",
             "kinds":["read","undoable"],"answer":"allow","id":"e2e-agent-notes"}),
     );
     assert!(granted.get("err").is_none(), "{granted}");
@@ -560,43 +538,13 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
     });
     assert!(note.contains("Agent todo"), "{note}");
 
-    // Taking the Notes grant back ends what it added, at once: the agent may
-    // no longer write to the body.
-    let revoked = control(
-        &session.control(),
-        &serde_json::json!({"op":"disallow","id":"e2e-agent-notes"}),
+    // Its work is a run of its own issue in Tasks.
+    let issue = agent.tool_until(
+        "tilo_find",
+        &serde_json::json!({"query": "claude-code in this session", "app": "tasks"}),
+        |text| text.contains("claude-code in this session"),
     );
-    assert!(revoked.get("err").is_none(), "{revoked}");
-    let (refused, failed) = agent.tool(
-        "tilo_do",
-        &serde_json::json!({"path": format!("{body}#append-paragraph"),
-            "args": {"text": "buy eggs"}}),
-    );
-    assert!(
-        failed,
-        "an agent without a grant on Notes still wrote a note: {refused}"
-    );
-    // Reading the room is its membership's (the door admits an agent as an
-    // Observer: AgentPreset grants it the room's reads), so the read stands
-    // until the agent is removed, and then ends with the next call. Removed
-    // the way the Agents tab's Remove does it, through the one action that
-    // revokes every grant naming the agent.
-    let (still, failed) = agent.tool("tilo_read", &serde_json::json!({"path": page}));
-    assert!(
-        !failed && still.contains("buy milk"),
-        "an admitted Observer reads the room: {still}"
-    );
-    let removed = control(
-        &session.control(),
-        &serde_json::json!({"op":"actions_invoke","provider":"actions","id":"agent.remove",
-            "args":{"name":"claude-code","confirm":true}}),
-    );
-    assert!(removed.get("err").is_none(), "{removed}");
-    let (text, failed) = agent.tool("tilo_read", &serde_json::json!({"path": page}));
-    assert!(
-        failed && !text.contains("buy milk"),
-        "an agent removed from the workspace still read a note: {text}"
-    );
+    assert_no_opaque_id(&issue);
 
     // The compositor kept its state file's writer the whole time.
     let busy = crate::idle_wakeups::matching(&session.log(), &["file lease is busy"], 3);
