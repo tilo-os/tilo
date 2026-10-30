@@ -110,6 +110,12 @@ pub struct State {
     pub(crate) backdrops: crate::backdrop::Backdrops,
     /// How windows are drawn this frame instead of as they stand, by id.
     pub(crate) effects: std::collections::HashMap<u64, crate::effects::WindowEffect>,
+    /// How every window is framed, unless a window says otherwise.
+    pub(crate) frame: crate::window_frame::WindowFrame,
+    /// The frames of the windows that are framed differently, by id.
+    pub(crate) window_frames: std::collections::HashMap<u64, crate::window_frame::WindowFrame>,
+    /// The shadows and edges drawn so far.
+    pub(crate) frame_images: crate::window_frame::FrameImages,
     pub(crate) capture: crate::capture::Capture,
     /// Outputs turned off by a display configuration: known, not shown.
     pub(crate) disabled_outputs: Vec<Output>,
@@ -172,6 +178,9 @@ impl State {
             gamma: crate::gamma::Gamma::new(display),
             backdrops: crate::backdrop::Backdrops::default(),
             effects: std::collections::HashMap::new(),
+            frame: crate::window_frame::WindowFrame::default(),
+            window_frames: std::collections::HashMap::new(),
+            frame_images: crate::window_frame::FrameImages::default(),
             capture: crate::capture::Capture::new(display),
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
@@ -235,6 +244,25 @@ impl State {
                 Some((info, Rectangle::new(location, size)))
             })
             .collect()
+    }
+
+    /// How `window` is drawn this frame: its effect, or as it stands.
+    pub(crate) fn effect_of(&self, window: &Window) -> crate::effects::WindowEffect {
+        describe(window)
+            .and_then(|info| self.effects.get(&info.id))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// How `window` is framed: its own frame, or the desktop's.
+    pub(crate) fn framing(&self, window: &Window) -> crate::effects::Framing<'_> {
+        crate::effects::Framing {
+            frame: describe(window)
+                .and_then(|info| self.window_frames.get(&info.id))
+                .copied()
+                .unwrap_or(self.frame),
+            images: &self.frame_images,
+        }
     }
 
     /// The window under a logical point, with its surface and that surface's

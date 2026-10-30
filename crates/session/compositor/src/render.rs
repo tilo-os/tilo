@@ -20,6 +20,7 @@ use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 
+use crate::effects::WindowEffect;
 use crate::state::State;
 
 /// The colour behind every window: the desktop's background before a
@@ -38,6 +39,8 @@ smithay::backend::renderer::element::render_elements! {
     /// A window drawn moved, scaled or faded, or pictured by a hosted
     /// surface.
     Transformed=crate::effects::TransformedElement<R>,
+    /// A window's shadow and edge, behind it.
+    Frame=crate::effects::FrameElement<R>,
 }
 
 /// The idle dim's buffer of one output.
@@ -72,13 +75,15 @@ where
 
 /// What lies below hosted surface `host`, front first: the hosts beneath
 /// it and the windows, drawn at `scale` with `origin` (logical) at the
-/// top left, as its backdrop sees them.
+/// top left of the area `bounds` (physical), as its backdrop sees them —
+/// the windows where their effects draw them, framed as they are drawn.
 pub(crate) fn below_host<R>(
     renderer: &mut R,
     state: &State,
     host: usize,
     origin: Point<f64, Logical>,
     scale: f64,
+    bounds: Rectangle<i32, Physical>,
 ) -> Vec<OutputRenderElement<R>>
 where
     R: Renderer + ImportAll + ImportMem,
@@ -111,11 +116,14 @@ where
             continue;
         };
         let at = (location - window.geometry().loc).to_f64() - origin;
-        elements.extend(window.render_elements::<OutputRenderElement<R>>(
+        let effect = state.effect_of(window);
+        elements.extend(crate::effects::with_effect(
             renderer,
-            at.to_physical_precise_round(scale),
-            Scale::from(scale),
-            1.0,
+            state.framing(window),
+            window,
+            at,
+            &effect,
+            (bounds, scale),
         ));
     }
     elements
@@ -158,6 +166,7 @@ where
             if let Some(window) = window_of(picture.window) {
                 elements.extend(crate::effects::pictured(
                     renderer,
+                    state.framing(window),
                     window,
                     picture,
                     geometry.loc.to_f64(),
@@ -186,16 +195,17 @@ where
         let Some(location) = state.space.element_location(window) else {
             continue;
         };
-        let effect = crate::state::describe(window).and_then(|info| state.effects.get(&info.id));
-        if let Some(effect) = effect {
-            let Some(standing) = state.space.element_geometry(window) else {
-                continue;
-            };
+        let effect = state.effect_of(window);
+        let framing = state.framing(window);
+        // A window drawn as it stands keeps its buffer's own element, which
+        // a display can scan out; anything else is drawn through its frame.
+        if effect != WindowEffect::default() || !framing.frame.is_square() {
             elements.extend(crate::effects::with_effect(
                 renderer,
+                framing,
                 window,
-                (standing.loc - geometry.loc).to_f64(),
-                effect,
+                (location - geometry.loc).to_f64(),
+                &effect,
                 (bounds, output_scale),
             ));
             continue;
