@@ -1,0 +1,37 @@
+[package]
+name = "tilo-app-launch"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "Starting an application from the desktop: the launch vocabulary, each app's environment, host entry kinds, document and link routing, and crash reporting."
+
+# What the desktop starts and how: a Tilo package through `tilo-launcher`, the
+# machine's own applications through their desktop entries, and the room and
+# environment either is given. Nothing here draws; the session owns the loop
+# and hands over what this crate plans and spawns.
+
+[dependencies]
+# The machine's own applications: their entries, entry kinds and launch plans.
+desktop-entry = { version = "0.1.0", package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
+tilo-installed-apps = { version = "0.1.0", path = "../../packaging/installed-apps" }
+# The room's grants, as the launcher's capability file carries them.
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+tilo-paths.workspace = true
+# The type a document's path names, for the app that claims it.
+tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

@@ -17608,6 +17608,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-app-launch"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-desktop-entry",
+ "tilo-installed-apps",
+ "tilo-mime",
+ "tilo-paths",
+ "tilo-test-env",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-app-package"
 version = "0.1.0"
 dependencies = [
@@ -21527,6 +21546,7 @@ dependencies = [
  "tilo-accessibility-settings",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-app-launch",
  "tilo-audio-service",
  "tilo-auth",
  "tilo-bluetooth-agent",
