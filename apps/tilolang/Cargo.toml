@@ -37,7 +37,7 @@ path = "tests/interaction.rs"
 name = "mentions"
 path = "tests/mentions.rs"
 
-# Views: an agent's answer drawn live over other apps' resources, in a package of its own.
+# Views: the person's own views, an agent's answer among them, drawn live over the installed apps.
 [[test]]
 name = "views"
 path = "tests/views.rs"

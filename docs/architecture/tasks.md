@@ -132,7 +132,7 @@ system and an entry in its history:
 | `incorporate` | the run's agent | the first *n* messages to the run, taken in |
 | `record-read` | the run's agent | a resource it looked up, as the reference it was |
 | `record-step` | the run's agent | a tilolang program it ran and what it answered (`tilo_reference::ProgramStep`): the composer and the thread show it as code, its references as chips, its changes as rows that undo and what it proposes as previews |
-| `record-answer` | the run's agent | the view it answered with: the resource keeping it (an Answer in Views), which opens beside what the request was about |
+| `record-answer` | the run's agent | the view it answered with: a `view` declaration kept among the person's own views (a `WrittenView` in their own record of Views, written by the run), which opens beside what the request was about and which they keep or discard |
 | `ask-confirmation` | the run's agent | the draft of an action that asks first |
 | `answer-confirmation` | people, on the host's sheet | confirm (with edits) or decline with a reason |
 | `settle-confirmation` | the run's agent | the answer is spent once the action started |

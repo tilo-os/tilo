@@ -119,6 +119,25 @@ impl AmStore {
     /// A [`StoreError`] when a sync message cannot be applied, or the same store is passed
     /// twice.
     pub fn sync_with(&mut self, other: &mut Self) -> Result<(), StoreError> {
+        self.sync_where(other, |_| true)
+    }
+
+    /// [`Self::sync_with`] for the documents `docs` only, as one record travels on its route
+    /// while the others stay where they are: what two people share syncs, what each keeps as
+    /// their own does not.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::sync_with`].
+    pub fn sync_docs_with(&mut self, other: &mut Self, docs: &[DocId]) -> Result<(), StoreError> {
+        self.sync_where(other, |id| docs.contains(id))
+    }
+
+    fn sync_where(
+        &self,
+        other: &Self,
+        included: impl Fn(&DocId) -> bool,
+    ) -> Result<(), StoreError> {
         if Rc::ptr_eq(&self.inner, &other.inner) {
             return Err(StoreError::Invalid(
                 "a store cannot sync with itself".into(),
@@ -130,6 +149,7 @@ impl AmStore {
             .docs
             .keys()
             .chain(theirs.docs.keys())
+            .filter(|id| included(id))
             .cloned()
             .collect();
         for id in ids {

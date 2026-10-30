@@ -37,6 +37,10 @@ type Message {
     pinned: Bool = false
     /// Who reacted, by emoji.
     reactions: Map<Set<Principal>>
+    /// A view the message sends, as its sender had it among their views: its tilolang
+    /// definition, which a reader adds to their own views (Views' `add`), its author whoever
+    /// sent the message. Empty for a message that sends none.
+    sent_view: Text
 
     search {
         filter pinned (icon: .pin)
@@ -82,6 +86,17 @@ action add_channel(c: Category, name: Text = "new-channel") -> TextChannel (icon
 /// names one.
 action send(to: TextChannel | Thread, body: RichText, reply_to: Option<Message> = .none) -> Message (icon: .send, label: "Send") {
     let m = Message(body: body, reply_to: reply_to)
+    match to {
+        c: TextChannel => c.messages.insert(m),
+        t: Thread => t.messages.insert(m),
+    }
+}
+
+/// Sends a view as a message: its title as what the message says, its definition for anyone
+/// who reads it to add to their own views.
+action send_view(to: TextChannel | Thread, title: Text, definition: Text) -> Message (icon: .eye, label: "Send a view") {
+    require definition != "" "The view is empty"
+    let m = Message(body: RichText(title), sent_view: definition)
     match to {
         c: TextChannel => c.messages.insert(m),
         t: Thread => t.messages.insert(m),
@@ -287,6 +302,9 @@ view said(m: Message) {
     }
     for p in m.parts {
         text(p.body)
+    }
+    if m.sent_view != "" {
+        ui.Text("A view, to add to your own views", role: .caption, secondary: true)
     }
 }
 

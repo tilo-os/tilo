@@ -54,6 +54,7 @@ pub mod value;
 pub mod view;
 pub mod view_instance;
 pub mod view_state;
+mod written;
 
 pub use amstore::AmStore;
 pub use authority::{ActionInfo, Authority, Decision, SimpleAuthority};
@@ -81,3 +82,4 @@ pub use value::{ActionRef, CollRef, EnumValue, RefValue, ResourceRef, Value};
 pub use view::{BindTarget, Binding, Patch, UiNode};
 pub use view_instance::{EditOutcome, ViewEvent, ViewInstance};
 pub use view_state::{StateKey, StateLayer};
+pub use written::WrittenViewInfo;

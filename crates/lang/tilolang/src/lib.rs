@@ -66,6 +66,7 @@ pub mod source;
 pub mod stdlib;
 pub mod toolkit;
 pub mod types;
+pub mod written;
 
 pub use checker::{RESOURCE_TYPE_NAME, resource_key};
 pub use diag::{Diagnostic, Span, diagnostics_json, did_you_mean};
@@ -83,6 +84,7 @@ pub use package::{
 };
 pub use print::{print_file, print_module};
 pub use source::{PackageSource, SourceFile};
+pub use written::{CompiledView, WRITTEN_VIEW_APP_PREFIX, compile_view_definition};
 
 /// `a.b.c` as `"a.b.c"` when the expression is a dotted path.
 pub(crate) fn check_path(e: &ast::Expr) -> Option<String> {

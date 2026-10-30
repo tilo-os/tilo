@@ -271,6 +271,36 @@ impl Runtime {
         self.core.run_agent_block(agent, source)
     }
 
+    /// What the written view `source` by `author` is (`tilolang::written`): checked against
+    /// every package this runtime holds, so it reads any type the workspace has installed.
+    ///
+    /// # Errors
+    /// Its diagnostics, located in `source`.
+    pub fn check_written_view(
+        &self,
+        source: &str,
+        author: &Principal,
+    ) -> Result<crate::written::WrittenViewInfo, Vec<tilolang::Diagnostic>> {
+        self.core.check_written_view(source, author)
+    }
+
+    /// Open the written view `source` for `viewer` over `args`: it reads what `viewer` reads,
+    /// and `author`, who wrote it, is its code author, so what it does with an action asks first
+    /// unless the viewer trusts them.
+    ///
+    /// # Errors
+    /// `Package` when it does not compile or takes other arguments; otherwise as
+    /// [`Runtime::open_view`].
+    pub fn open_written_view(
+        &self,
+        viewer: &Principal,
+        source: &str,
+        author: &Principal,
+        args: Vec<Value>,
+    ) -> Result<ViewInstance, RuntimeError> {
+        self.core.open_written_view(viewer, source, author, args)
+    }
+
     /// Record the suggestion raised for `action` called with `args` by `invoker` as an
     /// `Invocation` resource that waits for a person.
     ///

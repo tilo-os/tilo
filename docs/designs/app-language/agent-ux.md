@@ -39,16 +39,33 @@ popover with pickers. The menus themselves take no typed input.
 
 ## 3. Answers as views
 
-- The Tasks agent's loop gets one more way to finish: answer with a view. Same tools, prompt,
-  budget. A view answer is a tilolang block (`run-block`'s `{"kind":"view"}`).
-- It's kept live, not snapshotted: the block is stored as a resource (as tilolang Chat's block
-  parts are) and rendered through `embed()`, with the agent as code author. Suggestions inside it
-  are invocation cards; asks still ask.
-- It opens as a window, placed beside the subject (`SelectionSeed.area`, which the composer
-  already uses).
-- Keep: the block resource goes into an app the person owns, and is reused like any view.
-  Discard: undo.
-- Where the block runs: in the tilolang host whose author is the agent task (ui-host.md step 2b).
+Resources are shared content; views belong to whoever chose them.
+
+- **A written view is a real `view`**, declared as an app declares one:
+  `view unread(m: mail.Mail) { ... }`, or `view left() { ... }` for one that stands alone. It
+  names no app with `use`: every app the workspace has installed is in scope by its name,
+  resolved when it is checked (`tilolang::compile_view_definition`), so it reads any type the
+  workspace has. It runs as the viewer, so it shows each person what they can see.
+- **It is the person's own code**, a `WrittenView` in their own record of Views
+  (`apps/tl/views`, `records: .own`), with its author as the host recorded them: the agent task
+  that answered, the person, or who sent it. That author is its code author, so its actions ask
+  first unless the viewer trusts them (the code-author grants of `tilo_action_policy`).
+- **An agent's answer is one.** The Tasks agent finishes with `plan` and a `view`; the Views host
+  checks it (`run-block` answers `{"kind":"view","definition":…}`), Views' `answer` keeps it
+  written by the task, and `record-answer` opens it beside the subject. The person keeps or
+  discards it; each person's keep is their own.
+- **Sharing sends the definition.** Views' `send` puts it in a chat message (`send_view`); a
+  reader adds it to their own views (`add`), its author whoever sent the message, as the log
+  recorded them. It is a copy: when the author changes theirs later, the recipient's stays as it
+  was (whether it should follow is open).
+- **Defaults.** `make_default` makes a view how the person shows its type on a kind of device
+  (desktop, tablet, phone).
+- **Where it runs:** in the host of the person's Views, which the session hands every installed
+  app (`with_every_installed_app` in the launcher). Reading other apps' records from there is
+  the open part: today that host reads the records it holds.
+- **Before:** answers were Text in a shared Views record with one `kept` for everyone. A
+  person's own record, opened first on a device holding that record, starts as it
+  (`open_stored_adopting`): every answer they saw, kept ones kept, with its id.
 
 ## 4. One agent
 

@@ -247,8 +247,14 @@ impl Core {
             .borrow()
             .package(&target.module)
             .ok_or_else(|| RuntimeError::NotFound(format!("module {}", target.module)))?;
+        // A written view's module is its writer's code wherever it renders: at its root, in the
+        // rows its loops render, in whatever view of its own it calls.
+        let author = author
+            .cloned()
+            .or_else(|| self.written_author(&pkg.hash))
+            .unwrap_or_else(|| pkg.hash.clone());
         self.frames.borrow_mut().push(
-            author.unwrap_or(&pkg.hash).clone(),
+            author,
             FrameKind::View(ViewState {
                 space,
                 window: offer.window.to_owned(),

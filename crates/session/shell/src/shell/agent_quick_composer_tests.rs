@@ -737,7 +737,7 @@ fn release_progress(answer: bool) -> RunProgress {
             app: "so.tilo.lang.views".into(),
             record: None,
             reference: tilo_reference::ResourceRef::whole(
-                "tl.so.tilo.lang.views.Answer",
+                "tl.so.tilo.lang.views.WrittenView",
                 "tl:so.tilo.lang.views:a1",
                 "What's left for the release",
             ),

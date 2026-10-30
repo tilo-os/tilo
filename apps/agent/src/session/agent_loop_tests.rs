@@ -946,7 +946,7 @@ impl World {
             ),
             "answer" => (
                 serde_json::json!({"succeeded": {"value": {
-                    "type": "Answer", "id": "root/items:v1", "label": text("title")
+                    "type": "WrittenView", "id": "root/items:v1", "label": text("title")
                 }}}),
                 false,
             ),
