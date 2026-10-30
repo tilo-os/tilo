@@ -16,6 +16,10 @@ use crate::theme::Theme;
 use crate::widget::floating_surface::DetachedContent;
 use crate::widget::{BandMotion, Element, TaffyTreeExt, Widget, layout_rect};
 
+#[path = "disclosure_band_component.rs"]
+mod component;
+pub use component::DisclosureBandProps;
+
 /// Content a view builds only while it is open (a tile's details under
 /// it, a row's section), standing in a column as a band
 /// ([`crate::widget::Disclosing::Band`]).

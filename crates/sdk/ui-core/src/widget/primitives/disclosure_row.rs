@@ -37,6 +37,10 @@ use crate::widget::{Element, TaffyTreeExt, Widget};
 
 use super::TextStackFace;
 
+#[path = "disclosure_row_component.rs"]
+mod component;
+pub use component::DisclosureRowProps;
+
 /// Whether a disclosure row is open, its reveal and its body's open height:
 /// what outlives the row when the view that owns it rebuilds it. Clones
 /// share one state.

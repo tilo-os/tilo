@@ -35,6 +35,9 @@ use crate::tokens::TextRole;
 use crate::widget::control_size::ControlSize;
 use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget, layout_rect};
 
+mod component;
+pub use component::BannerProps;
+
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
     pad_x: f64,
