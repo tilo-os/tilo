@@ -64,6 +64,10 @@ pub struct EmbeddedApp {
     entering_backwards: bool,
     /// The app asked for another frame.
     wants_frame: Cell<bool>,
+    /// The frame the app last drew asked for the next one: it moves. A change
+    /// it has yet to draw is not motion; the update or input that made it
+    /// answers it with one frame.
+    moving: Cell<bool>,
     /// Painted into the host's scene at the region's origin, and painted
     /// again as it is until the app has something new to show.
     painted: RefCell<Scene>,
@@ -161,6 +165,7 @@ impl EmbeddedApp {
             restore_focus: None,
             entering_backwards: false,
             wants_frame: Cell::new(true),
+            moving: Cell::new(false),
             painted: RefCell::new(Scene::new()),
             painted_parts: RefCell::new(None),
             woken,
@@ -561,8 +566,9 @@ impl Widget for EmbeddedApp {
             };
             // What the host's accessibility walk reads of the app.
             let _ = self.app.refresh_semantic_tree();
-            self.wants_frame
-                .set(again || self.region.redraw.replace(false));
+            let next = again || self.region.redraw.replace(false);
+            self.wants_frame.set(next);
+            self.moving.set(next);
             self.painted_focus = self.focused;
             self.painted_control = self.app.focused_control();
         }
@@ -835,6 +841,12 @@ impl Widget for EmbeddedApp {
 
     fn needs_redraw(&self) -> bool {
         self.wants_frame.get() || self.focus_moved()
+    }
+
+    /// The app is moving while each frame it draws asks for the next, as a
+    /// window of its own is redrawn for.
+    fn needs_animation_frame(&self) -> bool {
+        self.moving.get()
     }
 
     fn has_pending_visual_work(&self) -> bool {

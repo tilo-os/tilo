@@ -142,8 +142,10 @@ fn ordinary_host_update_adopts_completed_wifi_scan_without_a_paint() {
 #[test]
 fn native_host_wake_delivers_a_failed_scan_to_the_ordinary_update() {
     let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+    // Alone on the desktop: arriving where others are is said in the top
+    // bar with motion of its own, which is not what this measures.
     let chrome = crate::shell::chrome_state::ChromeState::new(
-        crate::shell::state::WorkspaceTree::bootstrap_demo(),
+        crate::shell::state::WorkspaceTree::bootstrap_default(),
     );
     let mut host =
         ShellOverlayHost::new(Box::new(ui::widget::Container::new())).with_chrome(chrome.clone());
