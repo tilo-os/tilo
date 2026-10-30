@@ -39,6 +39,32 @@ pub struct Setting {
     /// offers each value by its name, set through the section's field edit
     /// as its control in Settings sets it.
     pub choice: Option<Choice>,
+    /// The value it is, where search sets it to one typed or picked (a
+    /// timer, the keyboard layout): through a field edit of the section,
+    /// the value one the field declares it may hold, or a verb of the
+    /// section taking it.
+    pub value: Option<Value>,
+}
+
+/// A setting set to a value typed or picked, as the section that holds it
+/// changes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Value {
+    /// The section's kind (`settings.power`).
+    pub section: &'static str,
+    pub change: Change,
+}
+
+/// How a [`Value`] is changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    /// The section's field edit of this field (its path, names joined by
+    /// dots), which declares the values it may hold.
+    Field(&'static str),
+    /// The section's verb of this id, whose one parameter is the value: a
+    /// change that keeps other fields in step (the layout typed with is one
+    /// of the layouts).
+    Verb(&'static str),
 }
 
 /// A setting that holds one of a few values, as the section that holds it
@@ -329,6 +355,7 @@ const fn s(id: &'static str, page: &'static str, control: &'static str) -> Setti
         control,
         switch: None,
         choice: None,
+        value: None,
     }
 }
 
@@ -347,6 +374,15 @@ impl Setting {
                 field,
                 options,
             }),
+            ..self
+        }
+    }
+
+    /// The setting is set to a value through the section `section`, as
+    /// `change` changes it.
+    const fn value(self, section: &'static str, change: Change) -> Self {
+        Self {
+            value: Some(Value { section, change }),
             ..self
         }
     }
@@ -415,7 +451,8 @@ pub const SETTINGS: &[Setting] = &[
         "keyboard.layout",
         "keyboard",
         "input.source.replace|input.source.add_picker",
-    ),
+    )
+    .value("settings.input", Change::Verb("choose-layout")),
     s("keyboard.key_repeat", "keyboard", "input.key_repeat"),
     s("keyboard.compose", "keyboard", "input.compose_key"),
     s("keyboard.caps_lock", "keyboard", "input.caps_lock"),
@@ -509,15 +546,34 @@ pub const SETTINGS: &[Setting] = &[
         "power",
         "power.suspend|power.suspend_battery|power.profile_suspend",
     ),
-    s("power.blank", "power", "power.blank"),
-    s("power.lock_after", "power", "power.lock"),
+    s("power.blank", "power", "power.blank")
+        .value("settings.power", Change::Field("blank_minutes")),
+    s("power.lock_after", "power", "power.lock")
+        .value("settings.power", Change::Field("lock_minutes")),
     s("power.lock_on_sleep", "power", "power.lock_on_sleep")
         .switch("settings.power", "lock_on_sleep"),
     s("power.lid", "power", "power.lid"),
     s("power.power_key", "power", "power.power_key"),
     s("power.critical", "power", "power.critical"),
     // Appearance
-    s("appearance.style", "appearance", "appearance.theme"),
+    s("appearance.style", "appearance", "appearance.theme").choice(
+        "settings.appearance",
+        "mode",
+        &[
+            ChoiceOption {
+                value: "\"light\"",
+                name: "light",
+            },
+            ChoiceOption {
+                value: "\"dark\"",
+                name: "dark",
+            },
+            ChoiceOption {
+                value: "\"automatic\"",
+                name: "automatic",
+            },
+        ],
+    ),
     s("appearance.schedule", "appearance", "appearance.schedule"),
     s(
         "appearance.wallpaper",
@@ -704,6 +760,7 @@ mod tests {
                 continue;
             };
             assert!(setting.switch.is_none(), "{}", setting.id);
+            assert!(setting.value.is_none(), "{}", setting.id);
             assert!(choice.options.len() >= 2, "{}", setting.id);
             let mut names = HashSet::new();
             for option in choice.options {
