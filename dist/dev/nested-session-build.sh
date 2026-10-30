@@ -2,7 +2,8 @@
 # Build everything dist/dev/nested-session.sh runs, into one directory: the
 # host programs (shell, launcher, installer, packager, runtime-bundle tool,
 # model gateway, the ush supervisor, tilo-control, the native-room governor
-# fixture), the workspace host and room service a local site runs
+# fixture), the `tilolang` CLI (`tilolang dev --session` installs into the
+# session), the workspace host and room service a local site runs
 # (nested-pair.sh), the thin apps, the tilolang runtime binary (apps/tilolang,
 # which nested-session.sh bakes into the tilolang runtime bundle), the shared
 # runtime library they link and
@@ -93,13 +94,16 @@ profile_args() {
 # Each line of a build's output carries its name, as the builds interleave.
 label() { sed -u "s/^/$1: /"; }
 host_profile=nested
-host_bins=(shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
-           tilo-model-gateway tilo-ush tilo-control tilolang-host nested-session-bus)
+# tilo-runtime-mcp is the agent's end of the session's agent door
+# (`tilo-runtime-mcp --connect`), so a check that drives the session as an
+# admitted agent runs against the staged build without building its own.
+host_bins=(shell tilo-runtime-mcp tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
+           tilo-model-gateway tilo-ush tilo-control tilolang-host tilolang nested-session-bus)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
     cargo build --locked --timings "${args[@]}" \
-        -p shell --bin shell --example packaged_native_governor --features shell/dev-overrides \
+        -p shell --bin shell --bin tilo-runtime-mcp --example packaged_native_governor --features shell/dev-overrides \
         -p launcher --bin tilo-launcher --features launcher/dev-overrides \
         -p install --bin tilo-install --features install/dev-overrides \
         -p tilo-app-package-cli --bin tilo-app-package \
@@ -117,6 +121,14 @@ build_tilolang_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
     cargo build --locked --timings "${args[@]}" -p tilolang-host --bin tilolang-host
+}
+# The `tilolang` CLI authors run against the session (`tilolang dev --session`), in
+# a build of its own for the same reason: its toolkit features stay out of the
+# host programs and the tilolang host.
+build_tilolang_cli() {
+    local args
+    mapfile -t args < <(profile_args "$host_profile")
+    cargo build --locked --timings "${args[@]}" -p tilolang-cli --bin tilolang
 }
 # The workspace host and the room service in front of it, as the room
 # service's image builds them (tilo-relay with its agents): the local site
@@ -180,6 +192,7 @@ build_host_then_site() {
     seal_env_runtime 2>&1 | label seal & seal=$!
     build_site 2>&1 | label site || { wait "$seal"; return 1; }
     build_tilolang_host 2>&1 | label tilolang-host || { wait "$seal"; return 1; }
+    build_tilolang_cli 2>&1 | label tilolang || { wait "$seal"; return 1; }
     wait "$seal"
 }
 

@@ -126,8 +126,8 @@ impl NativeWorkspaceOwner {
     }
 }
 
-/// Whether a member's own device commits `command` itself; every other
-/// change only the room's governor commits.
+/// Whether a member's own device commits `command`, as the room's host admits every member's
+/// changes; the rest only the room's governor commits.
 fn a_member_commits(
     command: &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
 ) -> bool {

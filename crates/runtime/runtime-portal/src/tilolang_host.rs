@@ -96,6 +96,35 @@ pub struct InstanceRequest {
     /// the same belief.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub records_under: Option<String>,
+    /// The instance applies one change to the record at its origin instead of running a
+    /// window: an agent task's invocation the broker admitted (`docs/designs/app-language/agents.md`,
+    /// "Reading records outside their app"). The descriptor in the window's place is the change's
+    /// connection: the session writes the [`Change`] on it as one JSON line, and the host runs the
+    /// action's code against the record as it is then, applies what it wrote as the invoker's
+    /// step and answers on it with one JSON line. No window and no instance run. `instance` is
+    /// then the change's own id, never a window's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub applies_change: bool,
+}
+
+/// An action to run against a record at its origin, as the broker admitted it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Change {
+    /// The action's subject resource and the action, as the app publishes them.
+    pub resource: String,
+    pub action: String,
+    /// The arguments, by parameter name, as the caller gave them.
+    #[serde(default)]
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// Who invokes (`tilo_actions::ActionInvoker`), as the broker admitted them: an agent acting
+    /// for its person.
+    pub invoker: serde_json::Value,
+    /// The run the change is a step of (`tilo_actions::ActionContext`), as the broker set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<serde_json::Value>,
+    /// What the task's preview planned, when it planned: the applied result is compared with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<serde_json::Value>,
 }
 
 /// The session's request to run an agent task's programs.
@@ -562,6 +591,7 @@ mod tests {
             person: "ada".into(),
             module_len: 12,
             records_under: Some("so.tilo.lang.older-notes".into()),
+            applies_change: true,
         };
         let fds = InstanceFds {
             broker: connection(),

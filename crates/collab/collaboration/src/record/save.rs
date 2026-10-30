@@ -112,11 +112,11 @@ pub fn room_document(
 /// left the room ([`super::retirement`]) starts over; one written by a newer
 /// build is opened without persistence, so the copy on disk is left intact.
 pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
-    let mut doc = store.load_or_new();
+    let mut doc = named_genesis(store.load_or_new());
     // The app's document moved to another workspace, which now holds it
     // with its history; this room's app starts over.
     if super::retirement::is_retired(&doc) {
-        doc = store.new_document();
+        doc = named_genesis(store.new_document());
         if let Err(error) = store.save(&mut doc) {
             tracing::error!(%error, "could not start a new app document after a move");
         }
@@ -142,6 +142,23 @@ pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
     (doc, autosave)
 }
 
+/// `doc`, with what a brand-new one starts with (the store's schema stamp)
+/// committed as its genesis, which names itself as such. Every change a
+/// record's channel carries names what it is, and a sealed room's channel
+/// holds only what was written on it: an unnamed first change is refused
+/// there, and every later write, which builds on it, makes a record no one
+/// outside this copy can read. A document that already has history is
+/// returned as it is.
+fn named_genesis(mut doc: AutoCommit) -> AutoCommit {
+    if doc.base_heads().is_empty() && doc.pending_ops() > 0 {
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+        );
+    }
+    doc
+}
+
 /// Open the document `store` holds, as a room another host governs reads it:
 /// the broker's committed read of the room (`read`) merged into the on-disk
 /// copy, which keeps the merged graph from then on.
@@ -156,7 +173,13 @@ pub fn open_with_committed_read(
     use tilo_automerge::ApplyIncoming as _;
     let stored = store.load_complete().map_err(|e| e.to_string())?;
     let had_stored = stored.is_some();
-    let mut doc = stored.unwrap_or_else(|| store.new_document());
+    let mut doc = stored.unwrap_or_else(|| {
+        // The room's record carries its own genesis, schema version and
+        // all: a stamp made here would be a second, unnamed creation of it.
+        let mut fresh = store.new_document();
+        fresh.rollback();
+        fresh
+    });
     if let Some(reason) = store.refusal() {
         return Err(reason.to_string());
     }
@@ -177,4 +200,34 @@ pub fn open_with_committed_read(
     writer.request(&mut doc);
     read.applied();
     Ok((doc, writer))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every change of a record that was just made names what it is: the first send of a record
+    /// opened from a copy no one wrote yet carries only claimed changes, which a sealed room's
+    /// channel takes.
+    #[test]
+    fn a_new_records_first_change_is_its_named_genesis() {
+        let documents: Rc<dyn DurableStore> = Rc::new(durable_store::MemoryStore::new());
+        let store = room_document(&documents, "so.tilo.lang.tasks", "room-1").unwrap();
+        let (mut doc, _writer) = open_stored(store);
+        let bytes = doc.save_after(&[]);
+        let changes = collab_types::claim::named_changes(&bytes).unwrap();
+        assert_eq!(changes.len(), 1, "one change: the record's creation");
+        assert_eq!(
+            changes[0].message(),
+            Some(
+                tilo_actions::FrameworkChange::Genesis
+                    .change_message()
+                    .as_str()
+            )
+        );
+        assert_eq!(
+            app_state::schema_version_of(&doc),
+            app_state::SCHEMA_VERSION
+        );
+    }
 }

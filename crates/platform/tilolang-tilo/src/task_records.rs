@@ -10,7 +10,8 @@
 //!
 //! A record is fetched once per program and kept for that program only: the next program
 //! fetches it again, so each read is decided anew and a grant revoked in the middle of a task
-//! cuts what follows. A record the program changed is fetched again before it is read.
+//! cuts what follows. What the record's origin applied for the program is taken into the record
+//! it read ([`RecordReads::take_in`]), so the program reads its own changes at once.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -42,8 +43,11 @@ pub struct RecordReads {
     /// record of its earliest id.
     records_under: BTreeMap<String, String>,
     source: Rc<dyn RecordSource>,
-    /// The records this program read, by app, each in a host of its own.
-    open: RefCell<HashMap<String, Host>>,
+    /// The records this program read, by app, each with a host of its own over it.
+    open: RefCell<HashMap<String, (tilo_resource::Doc, Host)>>,
+    /// The apps whose record this program read as none: what the program saw of it (its root,
+    /// say) was made by the read alone, never written anywhere.
+    read_none: RefCell<std::collections::HashSet<String>>,
 }
 
 impl RecordReads {
@@ -65,6 +69,7 @@ impl RecordReads {
             records_under,
             source,
             open: RefCell::default(),
+            read_none: RefCell::default(),
         }
     }
 
@@ -89,11 +94,37 @@ impl RecordReads {
     /// Forget every record read: a new program reads them again.
     pub fn forget(&self) {
         self.open.borrow_mut().clear();
+        self.read_none.borrow_mut().clear();
     }
 
     /// Forget the record of the app `app`: the program changed it.
     pub fn forget_app(&self, app: &str) {
         self.open.borrow_mut().remove(app);
+        self.read_none.borrow_mut().remove(app);
+    }
+
+    /// Take in `change`, what the record's origin applied for this program to the record of the
+    /// app `app`: what the program reads next holds it, without waiting for the room. A record
+    /// this program has not read is read whole when it is next read.
+    ///
+    /// # Errors
+    /// The change does not apply to the record.
+    pub fn take_in(&self, app: &str, change: &[u8]) -> Result<(), String> {
+        // A record read as none holds only what the read made of it; the origin, which made the
+        // record for the change, answers it whole, and that is the record from now on.
+        if self.read_none.borrow_mut().remove(app) {
+            let opened = self.host_over(app, Some(change))?;
+            self.open.borrow_mut().insert(app.to_owned(), opened);
+            return Ok(());
+        }
+        let mut open = self.open.borrow_mut();
+        let Some((doc, host)) = open.get_mut(app) else {
+            return Ok(());
+        };
+        tilo_automerge::ApplyIncoming::load_incoming(doc, change)
+            .map_err(|error| format!("{app}'s change does not apply to its record: {error}"))?;
+        host.sync_from(doc);
+        Ok(())
     }
 
     /// The fields of the resource `item` of the app `app` ([`Host::read_values`]).
@@ -114,31 +145,73 @@ impl RecordReads {
         self.with_host(app, |host| host.runtime().answer_read(&request))
     }
 
+    /// What the action `call` (`{app, resource, action, arguments}`) would write, planned with
+    /// the app's package over its record as this program read it, for `caller`: the preview the
+    /// record's origin compares its own run with. The origin runs the action again against
+    /// the record as it is then, so this decides nothing.
+    ///
+    /// # Errors
+    /// The record cannot be read, or the action does not run on it (a requirement fails).
+    pub fn plan(&self, call: &Json, caller: &crate::publish::Caller) -> Result<Json, String> {
+        let app = call["app"].as_str().ok_or("a call names its app")?;
+        let action = call["action"].as_str().ok_or("a call names its action")?;
+        let prefix = crate::publish::resource_id(app, "");
+        let resource = call["resource"]
+            .as_str()
+            .and_then(|id| id.strip_prefix(&prefix));
+        let empty = serde_json::Map::new();
+        let args = call["arguments"].as_object().unwrap_or(&empty);
+        self.with_host(app, |host| {
+            let planned = host.plan(&crate::publish::PlanRequest {
+                app,
+                kind: "",
+                action_id: action,
+                resource,
+                args,
+                caller: Some(caller),
+            })?;
+            serde_json::to_value(&planned).map_err(|error| error.to_string())
+        })
+    }
+
     fn with_host<T>(
         &self,
         app: &str,
         read: impl FnOnce(&Host) -> Result<T, String>,
     ) -> Result<T, String> {
-        if let Some(host) = self.open.borrow().get(app) {
+        if let Some((_, host)) = self.open.borrow().get(app) {
             return read(host);
         }
-        let host = self.open_host(app)?;
+        let (doc, host) = self.open_host(app)?;
         let answer = read(&host);
-        self.open.borrow_mut().insert(app.to_owned(), host);
+        self.open.borrow_mut().insert(app.to_owned(), (doc, host));
         answer
     }
 
     /// A host of the app `app`'s package over its record, as the door hands it now.
-    fn open_host(&self, app: &str) -> Result<Host, String> {
+    fn open_host(&self, app: &str) -> Result<(tilo_resource::Doc, Host), String> {
+        let (under, record) = self
+            .address(app)
+            .ok_or_else(|| format!("{app} is not installed"))?;
+        let bytes = self.source.record(&under, &record)?;
+        if bytes.is_none() {
+            self.read_none.borrow_mut().insert(app.to_owned());
+        }
+        self.host_over(app, bytes.as_deref())
+    }
+
+    /// A host of the app `app`'s package over its record `bytes` (none: an empty record).
+    fn host_over(
+        &self,
+        app: &str,
+        bytes: Option<&[u8]>,
+    ) -> Result<(tilo_resource::Doc, Host), String> {
         let bundle = self
             .bundles
             .get(app)
             .ok_or_else(|| format!("{app} is not installed"))?;
-        let (under, record) = self
-            .address(app)
-            .ok_or_else(|| format!("{app} is not installed"))?;
-        let doc = match self.source.record(&under, &record)? {
-            Some(bytes) => tilo_resource::Doc::load(&bytes)
+        let doc = match bytes {
+            Some(bytes) => tilo_resource::Doc::load(bytes)
                 .map_err(|error| format!("{app}'s record does not read: {error}"))?,
             None => tilo_resource::Doc::new(),
         };
@@ -146,7 +219,7 @@ impl RecordReads {
         let host = Host::new(&doc, viewer, || None).map_err(|error| error.to_string())?;
         self.load(&host, bundle, &mut Vec::new())?;
         host.wait_index();
-        Ok(host)
+        Ok((doc, host))
     }
 
     /// Load `bundle` into `host`, after the installed packages it uses that it does not carry

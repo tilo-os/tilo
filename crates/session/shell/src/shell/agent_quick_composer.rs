@@ -83,6 +83,10 @@ pub(crate) struct ComposerRequest {
     /// run, or something answered in place. `None` while the agent decides,
     /// and always on a follow-up, which the run already shapes.
     pub as_task: Option<bool>,
+    /// The person moved the request into a chat ("Open as chat"): it is
+    /// asked as a task, sized for a conversation, and its issue opens as a
+    /// chat once asked.
+    pub chat: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -424,6 +428,10 @@ struct View {
     has_status: LocalState<bool>,
     /// Whether the composer follows a run, which opens in Tasks.
     has_run: LocalState<bool>,
+    /// Whether "Open as chat" can act: on the followed run, or on what the
+    /// person typed when no run is followed.
+    can_chat: LocalState<bool>,
+
     /// Whether there are steps or an answer view to show.
     has_work: LocalState<bool>,
     /// Whether the work area shows anything: steps, an answer view or a reply.
@@ -432,6 +440,9 @@ struct View {
     waiting: LocalState<bool>,
     running: LocalState<bool>,
     enabled: LocalState<bool>,
+    /// What keeps the chosen agent from being asked, said in place.
+    blocked: LocalState<bool>,
+    blocked_text: LocalState<String>,
 }
 
 impl Default for View {
@@ -456,12 +467,40 @@ impl Default for View {
             can_use_answer: LocalState::new(false),
             has_status: LocalState::new(false),
             has_run: LocalState::new(false),
+            can_chat: LocalState::new(false),
             has_work: LocalState::new(false),
             has_work_area: LocalState::new(false),
             waiting: LocalState::new(false),
             running: LocalState::new(false),
             enabled: LocalState::new(false),
+            blocked: LocalState::new(false),
+            blocked_text: LocalState::new(String::new()),
         }
+    }
+}
+
+/// What keeps a new agent made for a task from being asked here: no agent
+/// runtime can be launched, no model is configured, or the model is on the
+/// internet and this device is offline. Each has its fix, offered in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AskBlocker {
+    NoRuntime,
+    NoModel,
+    Offline,
+}
+
+impl AskBlocker {
+    /// The message that says it, as the composer and the canvas say it.
+    pub(crate) const fn message_key(self) -> &'static str {
+        match self {
+            Self::NoRuntime => "agent-quick-blocked-no-runtime",
+            Self::NoModel => "agent-quick-blocked-no-model",
+            Self::Offline => "agent-quick-blocked-offline",
+        }
+    }
+
+    fn text(self) -> String {
+        t(self.message_key())
     }
 }
 
@@ -474,6 +513,9 @@ struct Presses {
     insert: LocalState<bool>,
     save: LocalState<bool>,
     open_run: LocalState<bool>,
+    open_chat: LocalState<bool>,
+    /// The fix for what keeps a new agent from being asked.
+    fix: LocalState<bool>,
 }
 
 impl Default for Presses {
@@ -485,6 +527,8 @@ impl Default for Presses {
             insert: LocalState::new(false),
             save: LocalState::new(false),
             open_run: LocalState::new(false),
+            open_chat: LocalState::new(false),
+            fix: LocalState::new(false),
         }
     }
 }
@@ -564,6 +608,13 @@ pub(crate) struct AgentQuickComposer {
     mode_picker: PickerListing,
     /// The run the person asked to see in Tasks, until the host takes it.
     open_run: Option<String>,
+    /// The run the person asked to see as a chat, until the host takes it.
+    open_chat: Option<String>,
+    /// What the person typed, to be asked as a chat with the next request.
+    chat_pending: bool,
+    /// The submission moved into a chat: the composer gives way once it is
+    /// asked.
+    chat_submission: Option<u64>,
     /// Whether it stands along the bottom of a narrow viewport.
     sheet: bool,
     /// The work it shows: steps, the answer view and the reply.
@@ -576,6 +627,12 @@ pub(crate) struct AgentQuickComposer {
     answer_to_open: Option<ResourceAt>,
     /// What the composer keeps clear of: where its subject is drawn.
     anchor: Option<Rect>,
+    /// What keeps the chosen agent from being asked, while something does.
+    blocker: Option<AskBlocker>,
+    /// The fix the person pressed, until the host takes it.
+    fix: Option<AskBlocker>,
+    /// The provider settings epoch [`Self::blocker`] was read at.
+    block_epoch: u64,
 }
 
 impl Default for AgentQuickComposer {
@@ -611,12 +668,18 @@ impl Default for AgentQuickComposer {
             model_picker: PickerListing::Listed,
             mode_picker: PickerListing::Unlisted,
             open_run: None,
+            open_chat: None,
+            chat_pending: false,
+            chat_submission: None,
             sheet: false,
             work,
             worked: HashMap::new(),
             opened_answers: HashSet::new(),
             answer_to_open: None,
             anchor: None,
+            blocker: None,
+            fix: None,
+            block_epoch: 0,
         };
         composer.popover = composer.controls(slots);
         composer
@@ -680,6 +743,7 @@ impl AgentQuickComposer {
         let view = &self.view;
         let stop = self.presses.stop.clone();
         let open_run = self.presses.open_run.clone();
+        let open_chat = self.presses.open_chat.clone();
         let line = Row::new()
             .no_wrap()
             .push(Box::new(When::from_state(
@@ -706,6 +770,14 @@ impl AgentQuickComposer {
                         .on_click(move || open_run.set(true)),
                 ),
             )))
+            .push(Box::new(
+                Button::new("agent-quick-open-chat", &t("agent-quick-open-chat"))
+                    .with_icon(ui::icons::Icon::MessageCircle)
+                    .role(ButtonRole::Plain)
+                    .control_size(ControlSize::Small)
+                    .enabled_from(&view.can_chat)
+                    .on_click(move || open_chat.set(true)),
+            ))
             .push(Box::new(When::from_state(
                 &view.running,
                 |shown| *shown,
@@ -777,6 +849,28 @@ impl AgentQuickComposer {
             ))
     }
 
+    /// What keeps the agent from being asked, and the button that fixes it.
+    fn blocked_row(&self) -> Row {
+        let fix = self.presses.fix.clone();
+        Row::new()
+            .no_wrap()
+            .with_justify(taffy::JustifyContent::SpaceBetween)
+            .push(wrapped(
+                Text::from_state(&self.view.blocked_text, Clone::clone)
+                    .with_id("agent-quick-blocked")
+                    .with_role(ui::TextRole::Caption),
+            ))
+            .push(Box::new(
+                Button::new("agent-quick-fix", &t("agent-quick-fix"))
+                    .role(ButtonRole::Secondary)
+                    .on_click(move || fix.set(true)),
+            ))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the composer's one column of rows, top to bottom, reads as one layout"
+    )]
     fn controls(&self, slots: WorkSlots) -> Popover<Container> {
         let view = &self.view;
         // The work: the steps, the answer view and the reply, following the end while the run
@@ -811,7 +905,7 @@ impl AgentQuickComposer {
         let submit = self.presses.submit.clone();
         let editor = TextInput::from_state(&self.draft)
             .with_id("agent-quick-editor")
-            .with_placeholder(t("agent-quick-placeholder-idle"))
+            .with_placeholder(self.placeholder_text())
             .with_accessible_name(t("agent-quick-editor-name"))
             .with_min_lines(2)
             .on_submit(move |_| submit.set(true));
@@ -861,10 +955,13 @@ impl AgentQuickComposer {
                 |shown| *shown,
                 Box::new(status_line),
             )))
+            // Always there, so typing never moves the field: "Open as chat"
+            // waits disabled until there is something to open.
+            .push(Box::new(run_line))
             .push(Box::new(When::from_state(
-                &view.has_run,
+                &view.blocked,
                 |shown| *shown,
-                Box::new(run_line),
+                Box::new(self.blocked_row()),
             )))
             .push(Box::new(editor))
             .push(Box::new(self.footer()));
@@ -892,7 +989,9 @@ impl AgentQuickComposer {
         self.agents.clear();
         self.agent_switch = None;
         self.view.picks_agent.set(false);
-        self.view.agent.set(owner.agent.clone());
+        self.view.agent.set(agent_label(&owner.agent));
+        self.blocker = None;
+        self.fix = None;
         self.view.mode.set(t("agent-quick-mode-decides"));
         self.offer_models(models_of());
         label.clone_into(&mut self.label);
@@ -1056,6 +1155,12 @@ impl AgentQuickComposer {
         self.open_run.take()
     }
 
+    /// The run the person asked to see as a chat, exactly once: its issue.
+    pub(crate) fn take_open_chat(&mut self) -> Option<String> {
+        self.tick();
+        self.open_chat.take()
+    }
+
     /// What the person did with the work shown since the last take, oldest first: opening a
     /// reference, undoing a change, deciding a proposal. Opening the answer view is not among
     /// them; [`Self::take_answer_to_open`] has it.
@@ -1118,7 +1223,15 @@ impl AgentQuickComposer {
             self.mode_picker = PickerListing::Listed;
         }
         if self.agent_picker == PickerListing::Unlisted
-            && set_picker_options(&mut self.popover, AGENT_PICKER, &self.agents)
+            && set_picker_options(
+                &mut self.popover,
+                AGENT_PICKER,
+                &self
+                    .agents
+                    .iter()
+                    .map(|agent| agent_label(agent))
+                    .collect::<Vec<_>>(),
+            )
         {
             self.agent_picker = PickerListing::Listed;
         }
@@ -1159,6 +1272,31 @@ impl AgentQuickComposer {
     /// opens the composer again for it, about the same thing.
     pub(crate) fn take_agent_switch(&mut self) -> Option<String> {
         self.agent_switch.take()
+    }
+
+    /// Say in place what keeps the chosen agent from being asked, and offer
+    /// its fix; `None` once nothing does. Sending waits until then.
+    pub(crate) fn block(&mut self, blocker: Option<AskBlocker>) {
+        self.block_epoch = crate::shell::settings_records::provider_settings_epoch();
+        if self.blocker != blocker {
+            self.blocker = blocker;
+            self.refresh();
+        }
+    }
+
+    /// Whether what keeps the agent from being asked may have changed since it
+    /// was read: the composer is open, blocked, and the provider settings
+    /// moved on (the person set a model up from its Set up).
+    pub(crate) fn block_stale(&self) -> bool {
+        self.is_open()
+            && self.blocker.is_some()
+            && self.block_epoch != crate::shell::settings_records::provider_settings_epoch()
+    }
+
+    /// The fix the person pressed, exactly once.
+    pub(crate) fn take_fix(&mut self) -> Option<AskBlocker> {
+        self.tick();
+        self.fix.take()
     }
 
     /// Whether the composer is open about a selection rather than beside an
@@ -1296,12 +1434,16 @@ impl AgentQuickComposer {
     pub(crate) fn take_request(&mut self) -> Option<ComposerRequest> {
         self.tick();
         let stop = take(&self.presses.stop);
-        let submit = take(&self.presses.submit);
+        let chat = std::mem::take(&mut self.chat_pending);
+        let submit = take(&self.presses.submit) || chat;
         if !self.is_open() || (!stop && !submit) || self.busy() {
             return None;
         }
         let owner = self.owner.clone()?;
         let task = self.followed().map(|run| run.task.clone());
+        // A chat is asked for what the person typed while no run is
+        // followed; a followed run opens as a chat as it is.
+        let chat = chat && !stop && task.is_none();
         let text = self.draft.get();
         if (stop && task.is_none()) || (!stop && text.trim().is_empty()) {
             return None;
@@ -1315,6 +1457,8 @@ impl AgentQuickComposer {
         // follow-up to one they ruled on keeps that ruling, which the
         // adapter already carries with the run.
         let as_task = match intent {
+            // A chat is work the agent carries on in a conversation.
+            ComposerIntent::Request if chat => Some(true),
             ComposerIntent::Request => mode_of(&self.view.mode.get()),
             ComposerIntent::Steer => None,
         };
@@ -1333,6 +1477,9 @@ impl AgentQuickComposer {
                 busy: true,
             },
         );
+        if chat {
+            self.chat_submission = Some(self.next_submission);
+        }
         self.notice_waits = true;
         self.notice = Some(t(match (stop, intent) {
             (true, _) => "agent-quick-stopping",
@@ -1351,6 +1498,7 @@ impl AgentQuickComposer {
             about: self.about.clone().filter(|_| !stop),
             model: self.picked_model(),
             as_task,
+            chat,
         };
         // The ruling was for that request; the next one starts from the
         // agent's own decision until the person makes another.
@@ -1429,6 +1577,7 @@ impl AgentQuickComposer {
         let revision = pending.revision;
         let asked = pending.text.clone();
         let stop = pending.stop;
+        let moved_to_chat = success && self.chat_submission == Some(receipt.submission);
         if success && !stop && !matches!(receipt.outcome, ComposerOutcome::DirectionApplied(_)) {
             self.clear_sent(&owner, revision);
         }
@@ -1436,6 +1585,13 @@ impl AgentQuickComposer {
         if self.owner.as_ref() == Some(&owner) {
             self.notice = notice;
             self.notice_waits = false;
+            // The conversation goes on in the chat, which opens now.
+            if moved_to_chat && self.is_open() {
+                self.dismiss();
+            }
+        }
+        if moved_to_chat {
+            self.chat_submission = None;
         }
         self.refresh();
     }
@@ -1585,9 +1741,19 @@ impl AgentQuickComposer {
                 && !busy,
         );
         self.view.running.set(running && !starting && !busy);
+        let typed = !self.draft.get().trim().is_empty();
+        let can_chat = match run {
+            Some(run) => run.phase != RunPhase::Starting,
+            None => typed && !busy,
+        };
+        self.view.can_chat.set(can_chat);
+        self.view.enabled.set(
+            !busy && !starting && self.blocker.is_none() && !self.draft.get().trim().is_empty(),
+        );
+        self.view.blocked.set(self.blocker.is_some());
         self.view
-            .enabled
-            .set(!busy && !starting && !self.draft.get().trim().is_empty());
+            .blocked_text
+            .set(self.blocker.map(AskBlocker::text).unwrap_or_default());
         let status = self.notice.clone().or_else(|| {
             run.map(|run| {
                 let key = match run.phase {
@@ -1625,14 +1791,29 @@ impl AgentQuickComposer {
         {
             self.open_run = Some(run.task.task_id.clone());
         }
+        if take(&self.presses.open_chat) {
+            match self.followed() {
+                Some(run) if run.phase != RunPhase::Starting => {
+                    self.open_chat = Some(run.task.task_id.clone());
+                }
+                Some(_) => {}
+                None => self.chat_pending = !self.draft.get().trim().is_empty(),
+            }
+        }
+        if take(&self.presses.fix) {
+            self.fix = self.blocker;
+        }
         let picked = self.view.agent.get();
-        if self
-            .owner
-            .as_ref()
-            .is_some_and(|owner| owner.agent != picked)
-            && self.agents.contains(&picked)
+        if let Some(agent) = self
+            .agents
+            .iter()
+            .find(|agent| agent_label(agent) == picked)
+            && self
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.agent != *agent)
         {
-            self.agent_switch = Some(picked);
+            self.agent_switch = Some(agent.clone());
         }
         let answer = self.view.answer.get();
         if take(&self.presses.insert) && self.view.can_use_answer.get() {
@@ -1707,6 +1888,16 @@ fn editor_state(widget: &dyn Widget) -> Option<String> {
 
 /// The test id of the composer's agent picker.
 const AGENT_PICKER: &str = "agent-quick-agent";
+
+/// How the agent picker names `agent`: a new agent made for the task, or a
+/// collaborator by its id.
+fn agent_label(agent: &str) -> String {
+    if agent == crate::shell::task_agents::NEW_TASK_AGENT {
+        t("agent-quick-new-agent")
+    } else {
+        agent.to_owned()
+    }
+}
 
 /// The test id of the composer's model picker.
 const MODEL_PICKER: &str = "agent-quick-model";
@@ -2151,6 +2342,63 @@ mod tests {
         Widget::sync(&mut composer, &doc, &automerge::ROOT);
         let next = submit(&mut composer, &mut doc);
         assert_eq!(next.as_task, None);
+    }
+
+    /// "Open as chat" moves what the person typed into a chat: it is asked
+    /// as a task for a chat, and the composer gives way once it is asked.
+    /// With a run followed it opens that run's issue as a chat, and with
+    /// nothing typed and no run it waits disabled.
+    #[test]
+    fn open_as_chat_asks_what_was_typed_as_a_chat_or_opens_the_followed_run() {
+        let mut composer = AgentQuickComposer::default();
+        let mut doc = automerge::AutoCommit::new();
+        let tide = owner("tide");
+        open(&mut composer, tide.clone());
+        assert!(shown(&mut composer, "agent-quick-open-chat"));
+        assert!(
+            !composer.view.can_chat.get(),
+            "nothing typed, no run: nothing to open"
+        );
+
+        edit(
+            &mut composer,
+            &mut doc,
+            "Review the applications in my inbox",
+        );
+        press(&mut composer, &mut doc, "agent-quick-open-chat");
+        assert_eq!(composer.take_open_chat(), None, "no run to open yet");
+        let asked = composer
+            .take_request()
+            .expect("the typed request is asked as a chat");
+        assert!(asked.chat);
+        assert_eq!(
+            asked.as_task,
+            Some(true),
+            "a chat is work the agent carries on"
+        );
+        assert_eq!(asked.intent, ComposerIntent::Request);
+        assert_eq!(asked.text, "Review the applications in my inbox");
+        assert!(composer.is_open(), "it stays until the agent was asked");
+        composer.observe_receipt(ComposerReceipt {
+            owner: tide.clone(),
+            submission: asked.submission,
+            outcome: ComposerOutcome::Started {
+                task_id: "task:chat".into(),
+                title: "Review the applications".into(),
+            },
+        });
+        assert!(!composer.is_open(), "the conversation goes on in the chat");
+        assert!(composer.draft.get().is_empty());
+
+        // Opened again on the run it follows, the same control opens that
+        // run's issue as a chat and asks nothing.
+        open(&mut composer, tide.clone());
+        composer.project(&tide, Some(working("task:chat", RunPhase::Working)));
+        press(&mut composer, &mut doc, "agent-quick-open-chat");
+        assert_eq!(composer.take_open_chat(), Some("task:chat".into()));
+        assert_eq!(composer.take_open_chat(), None, "heard once");
+        assert!(composer.take_request().is_none());
+        assert!(composer.is_open());
     }
 
     #[test]
@@ -2720,6 +2968,8 @@ mod tests {
             "agent-quick-editor-name",
             "agent-quick-send",
             "agent-quick-stop",
+            "agent-quick-open-run",
+            "agent-quick-open-chat",
             "agent-quick-you-asked",
             "agent-quick-thinking",
             "agent-quick-steering",

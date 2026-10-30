@@ -878,3 +878,213 @@ fn a_page_action_either_finishes_or_says_what_became_of_it() {
     assert_eq!(error.code, "browser.page.timeout");
     assert!(error.message.contains("unknown"), "{}", error.message);
 }
+
+/// What an agent's run answers a page action with before anyone chose, as
+/// the window publishes it: allowed, or asks first.
+fn agent_default(widget: &BrowserWidget, id: &str) -> ui::permissions::policy::Answer {
+    let action = widget
+        .published()
+        .children
+        .iter()
+        .find(|resource| resource.id.0 == "browser.page")
+        .and_then(|page| page.actions.iter().find(|action| action.id == id).cloned())
+        .unwrap_or_else(|| panic!("{id} is published on the page"));
+    ui::permissions::policy::agent_answers::default_answer(
+        action.contract.need().kind,
+        action.contract.requires_confirmation(),
+    )
+}
+
+/// The page of a window in `mode`, at `url`.
+fn page_in(mode: BrowsingMode, url: &str) -> BrowserWidget {
+    let engine = TestEngine::new();
+    engine.send(WebViewCommand::Navigate(url.into()));
+    let mut widget = BrowserWidget::with_engine_mode(engine, true, mode);
+    let _ = synced(&mut widget);
+    widget
+}
+
+/// Reading a page takes what the window holds. A window opened for an agent
+/// holds none of the person's sign-ins: what only looks at its page takes
+/// no more than any visitor has, and the agent reads it without asking,
+/// while what acts on the page reaches the web and asks first. The person's
+/// own window holds their sign-ins: reading its page takes the authority to
+/// operate it, so every page action asks first, as it always has.
+#[test]
+fn a_page_read_asks_first_only_where_the_window_holds_the_persons_sign_ins() {
+    use ui::permissions::policy::Answer::{Allow, Ask};
+    const OBSERVE: [&str; 8] = [
+        "read-page",
+        "capture-page",
+        "find-page-element",
+        "read-page-changes",
+        "read-page-element-at",
+        "wait-page-settled",
+        "read-page-console",
+        "read-page-network",
+    ];
+    const ACT: [&str; 12] = [
+        "click-page",
+        "fill-page",
+        "select-page",
+        "fill-page-files",
+        "press-page",
+        "submit-page",
+        "fill-page-secret",
+        "hover-page",
+        "drag-page",
+        "pointer-path",
+        "pointer-page",
+        "scroll-page",
+    ];
+    let visitor = page_in(BrowsingMode::Visitor, "https://github.com/ada");
+    for id in OBSERVE {
+        assert_eq!(
+            agent_default(&visitor, id),
+            Allow,
+            "{id} on a visitor's page"
+        );
+    }
+    for id in ACT {
+        assert_eq!(agent_default(&visitor, id), Ask, "{id} on a visitor's page");
+    }
+    let signed_in = page_in(BrowsingMode::Normal, "https://github.com/ada");
+    for id in OBSERVE.into_iter().chain(ACT) {
+        assert_eq!(
+            agent_default(&signed_in, id),
+            Ask,
+            "{id} on a page with the person's sign-ins"
+        );
+    }
+}
+
+/// A secret filled into a visitor's page is the person's credential: from
+/// then on the page holds a sign-in. Its reads ask first like every other
+/// page action, the bar no longer says it is not signed in, and nothing
+/// the window does later takes that back.
+#[test]
+fn a_secret_filled_into_a_visitors_page_makes_it_signed_in_for_good() {
+    use ui::permissions::policy::Answer::{Allow, Ask};
+    let mut visitor = page_in(BrowsingMode::Visitor, "https://github.com/login");
+    assert_eq!(agent_default(&visitor, "read-page"), Allow);
+    assert_eq!(
+        visitor.window_toolbar().leading.len(),
+        1,
+        "it says it is not signed in"
+    );
+
+    let invocation = ui::tilo_actions::InvocationId::new();
+    let fill = crate::effects::BrowserEffect::FillPageSecret {
+        element: "d1e5".into(),
+        text: "hunter2".into(),
+        frame: None,
+    };
+    let _ = visitor.admit(invocation, fill.operation());
+    for id in [
+        "read-page",
+        "capture-page",
+        "find-page-element",
+        "click-page",
+    ] {
+        assert_eq!(
+            agent_default(&visitor, id),
+            Ask,
+            "{id} once a secret was entered"
+        );
+    }
+    assert!(
+        visitor.window_toolbar().leading.is_empty(),
+        "the bar no longer says it is not signed in"
+    );
+
+    // Whatever comes next, the page stays signed in: another page, a
+    // reload, a key that is no password.
+    visitor
+        .engine
+        .send(WebViewCommand::Navigate("https://example.org/".into()));
+    let _ = synced(&mut visitor);
+    assert_eq!(agent_default(&visitor, "read-page"), Ask);
+}
+
+/// Run the published page action `id` with `args` on `widget` as an agent's
+/// invocation does, and let the engine's answer settle it.
+fn run_page_action(widget: &mut BrowserWidget, id: &str, args: &serde_json::Value) {
+    let action = widget
+        .published()
+        .children
+        .iter()
+        .find(|resource| resource.id.0 == "browser.page")
+        .and_then(|page| page.actions.iter().find(|action| action.id == id).cloned())
+        .unwrap_or_else(|| panic!("{id} is published on the page"));
+    let encoded = action
+        .build_json(args.as_object().expect("arguments are an object"))
+        .expect("the arguments fit the action");
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            effect_operation(&encoded.payload),
+        )
+        .expect("the page action is accepted");
+    for _ in 0..3 {
+        let _ = synced(widget);
+    }
+    assert!(widget.page_operation.is_none(), "{id} settled");
+}
+
+/// What makes a credential is the field it goes into, not the action that
+/// put it there: an agent's fill or keys into a password field sign the
+/// visitor's page in as a secret does, and the same into any other field
+/// does not.
+#[test]
+fn an_agent_typing_into_a_password_field_signs_a_visitors_page_in() {
+    use ui::permissions::policy::Answer::{Allow, Ask};
+    let field = |purpose| {
+        Some(ui::webview::TextField {
+            purpose,
+            multiline: false,
+            bounds: None,
+            composition: None,
+        })
+    };
+    for (id, args) in [
+        (
+            "press-page",
+            serde_json::json!({"key": "a", "element": "d1e5"}),
+        ),
+        (
+            "fill-page",
+            serde_json::json!({"element": "d1e5", "text": "hunter2"}),
+        ),
+    ] {
+        let engine = TestEngine::new();
+        engine.send(WebViewCommand::Navigate("https://github.com/login".into()));
+        let mut visitor =
+            BrowserWidget::with_engine_mode(engine.clone(), true, BrowsingMode::Visitor);
+        let _ = synced(&mut visitor);
+
+        engine.set_text_field(field(ui::ime::InputPurpose::Email));
+        run_page_action(&mut visitor, id, &args);
+        assert_eq!(
+            agent_default(&visitor, "read-page"),
+            Allow,
+            "{id} into an email field"
+        );
+
+        engine.set_text_field(field(ui::ime::InputPurpose::Password));
+        run_page_action(&mut visitor, id, &args);
+        assert_eq!(
+            agent_default(&visitor, "read-page"),
+            Ask,
+            "{id} into a password field"
+        );
+        assert!(visitor.window_toolbar().leading.is_empty(), "{id}");
+
+        engine.set_text_field(None);
+        run_page_action(&mut visitor, id, &args);
+        assert_eq!(
+            agent_default(&visitor, "read-page"),
+            Ask,
+            "{id}: and it stays signed in"
+        );
+    }
+}

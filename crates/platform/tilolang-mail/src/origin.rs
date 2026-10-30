@@ -622,34 +622,6 @@ impl ImapOrigin {
         let _ = now;
         writes
     }
-
-    /// The server did not take `request`, for `reason`: a send settles as `sent` says, and
-    /// a write is put back with the account's trouble.
-    fn not_taken(
-        &mut self,
-        cx: &OriginCx<'_>,
-        request: &Request,
-        reason: String,
-        sent: fn(String) -> Sending,
-        polled: &mut Polled,
-    ) {
-        match self.pending.remove(request) {
-            Some(Pending::Send(payload)) => {
-                self.sends.insert(payload, sent(reason));
-                polled.settle = true;
-            }
-            Some(Pending::Write {
-                account,
-                key,
-                before,
-            }) => {
-                self.trouble.insert(account.clone(), reason);
-                self.put_back(cx.host, &cx.now, &account, &key, &before);
-                polled.wrote = true;
-            }
-            None => {}
-        }
-    }
 }
 
 /// The conversations a server's changes start, each a record in its account.
@@ -846,6 +818,36 @@ fn seconds_of(iso: &str) -> u64 {
     }
 }
 
+impl ImapOrigin {
+    /// The connector did not do `request`, for `reason`: a send ends as `outcome` says; a
+    /// write is put back, and its account shows why.
+    fn not_done(
+        &mut self,
+        cx: &OriginCx<'_>,
+        request: &Request,
+        reason: String,
+        outcome: fn(String) -> Sending,
+        polled: &mut Polled,
+    ) {
+        match self.pending.remove(request) {
+            Some(Pending::Send(payload)) => {
+                self.sends.insert(payload, outcome(reason));
+                polled.settle = true;
+            }
+            Some(Pending::Write {
+                account,
+                key,
+                before,
+            }) => {
+                self.trouble.insert(account.clone(), reason);
+                self.put_back(cx.host, &cx.now, &account, &key, &before);
+                polled.wrote = true;
+            }
+            None => {}
+        }
+    }
+}
+
 impl Origin for ImapOrigin {
     fn name(&self) -> &'static str {
         "imap"
@@ -916,10 +918,10 @@ impl Origin for ImapOrigin {
                     Some(Pending::Write { .. }) | None => {}
                 },
                 Event::Refused { request, reason } => {
-                    self.not_taken(cx, &request, reason, Sending::Refused, &mut polled);
+                    self.not_done(cx, &request, reason, Sending::Refused, &mut polled);
                 }
                 Event::Unsent { request, reason } => {
-                    self.not_taken(cx, &request, reason, Sending::Unsent, &mut polled);
+                    self.not_done(cx, &request, reason, Sending::Unsent, &mut polled);
                 }
             }
         }

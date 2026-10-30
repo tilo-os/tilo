@@ -43,6 +43,16 @@
 #                      as a computer joins tilo.coffee's Lounge. Without it
 #                      the session follows this machine's configuration.
 #                      nested-pair.sh points two sessions at a local site.
+#   --model-provider SPEC  give the session's person a model provider, as
+#                      Settings' provider pane does (provider settings, and
+#                      the key in the model gateway's own custody), before
+#                      the shell starts. SPEC is PRESET:MODEL (a Settings
+#                      preset slug: anthropic, openai, gemini, openrouter,
+#                      ollama, ...) with the key from $TILO_DEV_MODEL_KEY or
+#                      the provider's usual variable (ANTHROPIC_API_KEY,
+#                      OPENAI_API_KEY, ...), or `host`: the default provider
+#                      and key of this machine's own Tilo configuration. The
+#                      key travels on a pipe only, never an argument.
 #   --ready FILE       once the shell answers on its control socket, write the
 #                      socket, the runtime directory and the state directory to
 #                      FILE as JSON (also kept as session.json in the runtime
@@ -70,6 +80,7 @@ fresh_desktop=0
 headless=0
 software=0
 community=
+model_provider=
 install_tapps=()
 ready_out=
 shell_args=()
@@ -90,6 +101,7 @@ while (($#)); do
         --headless) headless=1; shift ;;
         --software) software=1; shift ;;
         --community) community=${2:?--community needs a site}; shift 2 ;;
+        --model-provider) model_provider=${2:?--model-provider needs PRESET:MODEL or host}; shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
         --) shift; shell_args=("$@"); break ;;
         *) die "unknown option: $1 (see --help)" ;;
@@ -203,6 +215,43 @@ python3 "$repo_root/tools/font-catalog.py" prepare \
     "$repo_root/crates/sdk/ui-core/assets/fonts" "$fonts" --scope product
 ln -sfn "$fonts" "$bin/fonts"
 
+# The developer's provider, read now, in this machine's own environment, before
+# the session's is put in place: the record (profile and key) stays in this
+# shell's memory until it is piped into the session's configuration below.
+provider_record=
+provider_key=
+if [[ -n $model_provider ]]; then
+    "$bin/tilo-model-gateway" help provision-provider >/dev/null 2>&1 \
+        || die "$bin/tilo-model-gateway cannot provision a provider (run without --no-build, or use a build that has it)"
+    if [[ $model_provider == host ]]; then
+        provider_record=$("$bin/tilo-model-gateway" export-provider) \
+            || die "this machine's Tilo configuration has no default provider to give the session"
+    elif [[ $model_provider == record:?* ]]; then
+        # A provider record (profile and key) in a file only the developer can read, for an
+        # endpoint no preset names: `record:FILE`.
+        provider_record=$(<"${model_provider#record:}") || die "cannot read ${model_provider#record:}"
+    else
+        [[ $model_provider == *:?* ]] || die "--model-provider takes PRESET:MODEL or host"
+        provider_preset=${model_provider%%:*}
+        provider_model=${model_provider#*:}
+        case $provider_preset in
+            anthropic) provider_var=ANTHROPIC_API_KEY ;;
+            openai) provider_var=OPENAI_API_KEY ;;
+            gemini) provider_var=GEMINI_API_KEY ;;
+            mistral) provider_var=MISTRAL_API_KEY ;;
+            openrouter) provider_var=OPENROUTER_API_KEY ;;
+            groq) provider_var=GROQ_API_KEY ;;
+            xai) provider_var=XAI_API_KEY ;;
+            deepseek) provider_var=DEEPSEEK_API_KEY ;;
+            together) provider_var=TOGETHER_API_KEY ;;
+            fireworks) provider_var=FIREWORKS_API_KEY ;;
+            huggingface) provider_var=HF_TOKEN ;;
+            *) provider_var= ;;
+        esac
+        provider_key=${TILO_DEV_MODEL_KEY:-${provider_var:+${!provider_var:-}}}
+    fi
+fi
+
 # --- 2. Plans -------------------------------------------------------------------
 # The plan of every built app names the runtime they link, whichever of them
 # (possibly none) this session installs.
@@ -287,6 +336,11 @@ if [[ -f $tilolang_bin ]]; then
         printf '%s\n' "$tilolang_key" > "$runtimes/.tilolang-key"
     fi
     printf '%s\n' "$tilolang_version" > "$runtimes/.tilolang-version"
+    # Pinned (runtime_bundle::gc's .pins/<version>): no installed package names
+    # it until the first `tilolang dev`, and the collection after each app
+    # install below would otherwise take it away.
+    mkdir -p "$runtimes/.pins"
+    : > "$runtimes/.pins/$tilolang_version"
 fi
 
 # --- 5. Session environment ----------------------------------------------------
@@ -411,6 +465,22 @@ for tapp in "${install_tapps[@]}"; do
     say "installing $(basename "$tapp")"
     "$bin/tilo-install" install "$tapp" --allow-self-signed --force >/dev/null
 done
+
+# --- 7b. Model provider ----------------------------------------------------------
+# Written as the session's person, in the session's configuration and secret
+# store, by the gateway's own provider code (`provision-provider`): what
+# Settings' "Add provider", "Use model" and "Save API key" write.
+if [[ -n $provider_record ]]; then
+    say "giving the session this machine's default model provider"
+    printf '%s' "$provider_record" | "$bin/tilo-model-gateway" provision-provider --record >&2 \
+        || die "the model provider could not be written"
+elif [[ -n $model_provider ]]; then
+    say "giving the session the $provider_preset provider with $provider_model"
+    printf '%s' "$provider_key" | "$bin/tilo-model-gateway" provision-provider \
+        --preset "$provider_preset" --model "$provider_model" >&2 \
+        || die "the model provider could not be written"
+fi
+unset provider_record provider_key
 
 ((prepare_only)) && { say "prepared $state"; exit 0; }
 

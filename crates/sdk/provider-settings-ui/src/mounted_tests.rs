@@ -10,33 +10,21 @@ fn rendered_enabled(widget: &dyn ui::widget::Widget, id: &str) -> Option<bool> {
         .find_map(|child| rendered_enabled(child, id))
 }
 
-/// Replace the text of the field `control` with `value`, as a person does.
-fn replace_text<A: ui::framework::ResourceApp>(
-    app: &mut ui::framework::testing::TestApp<A>,
-    control: &str,
-    value: &str,
-) {
-    app.harness().click_named(control).unwrap();
-    app.harness().set_modifiers(&["ctrl".into()]);
-    app.harness().key("a");
-    app.harness().set_modifiers(&[]);
-    app.harness().type_text(value);
-}
+/// Narrow the catalogue to `query` through its filter and press the Add of
+/// preset `slug`, as a person does.
+macro_rules! add_from_catalogue {
+    ($app:ident, $query:expr, $slug:expr) => {
+        $app.harness()
+            .click_named("agent-models-add-provider")
+            .unwrap();
+        $app.harness().type_text($query);
+        $app.settle();
 
-/// Each of `controls` is drawn disabled, and pressing it anyway is let be.
-fn press_disabled<A: ui::framework::ResourceApp>(
-    app: &mut ui::framework::testing::TestApp<A>,
-    controls: &[&str],
-) {
-    for control in controls {
-        assert_eq!(
-            rendered_enabled(app.harness().root_widget(), control),
-            Some(false),
-            "{control}"
-        );
-        app.harness().click_named(control).unwrap();
-        app.settle();
-    }
+        $app.harness()
+            .click_named(&format!("agent-models-preset-{}", $slug))
+            .unwrap();
+        $app.settle();
+    };
 }
 
 #[test]
@@ -46,22 +34,10 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
     app.harness().resize((1800, 6000)).unwrap();
     app.settle();
     // Choosing a provider adds it and opens its form, the endpoint to fill.
-    app.harness()
-        .click_named("agent-models-add-provider")
-        .unwrap();
-    app.harness().type_text("Anthropic-compatible provider");
-    app.harness()
-        .click_named("agent-models-preset-anthropic-compatible")
-        .unwrap();
-    app.settle();
+    add_from_catalogue!(app, "Anthropic-compatible provider", "anthropic-compatible");
     let [added] = config(&mut app).profiles.try_into().unwrap();
-    assert_eq!(
-        (added.label, added.endpoint),
-        (
-            "Anthropic-compatible provider".into(),
-            "https://api.example.com".into()
-        )
-    );
+    let expected = ("Anthropic-compatible provider", "https://api.example.com");
+    assert_eq!((added.label.as_str(), added.endpoint.as_str()), expected);
     let id = added.id;
     let save = format!("agent-models-save-provider-{id}");
     assert_eq!(
@@ -73,7 +49,13 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
         ("url", "https://models.example.test/v1"),
         ("model", "rendered-model"),
     ] {
-        replace_text(&mut app, &format!("agent-models-{field}-{id}"), value);
+        app.harness()
+            .click_named(&format!("agent-models-{field}-{id}"))
+            .unwrap();
+        app.harness().set_modifiers(&["ctrl".into()]);
+        app.harness().key("a");
+        app.harness().set_modifiers(&[]);
+        app.harness().type_text(value);
     }
     assert_ne!(
         backend.state.lock_recover().config.profiles[0].label,
@@ -107,16 +89,21 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
     for role in [ui::Role::Viewer, ui::Role::Commenter] {
         app.set_role(role);
         app.settle();
-        press_disabled(
-            &mut app,
-            &[
-                "agent-models-preset-openai-compatible",
-                &save,
-                &key,
-                &toggle,
-                &remove,
-            ],
-        );
+        for control in [
+            "agent-models-preset-openai-compatible",
+            &save,
+            &key,
+            &toggle,
+            &remove,
+        ] {
+            assert_eq!(
+                rendered_enabled(app.harness().root_widget(), control),
+                Some(false),
+                "{control}"
+            );
+            app.harness().click_named(control).unwrap();
+            app.settle();
+        }
         assert_eq!(config(&mut app), original);
     }
     app.set_role(ui::Role::Owner);

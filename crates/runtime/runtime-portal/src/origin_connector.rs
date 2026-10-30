@@ -121,6 +121,8 @@ pub fn receive_attachment(door: &Descriptor) -> io::Result<Option<Descriptor>> {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    use std::io::{Read as _, Write as _};
+
     use super::*;
 
     #[test]

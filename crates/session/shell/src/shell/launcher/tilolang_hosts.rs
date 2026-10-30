@@ -222,6 +222,7 @@ fn hand_over_now(
                 .to_owned(),
         )
         .filter(|id| *id != app.package_id),
+        applies_change: false,
     };
     // An app whose types hold an outside service's resources reaches its connector, which
     // holds the network and custody the host has none of.
@@ -250,6 +251,108 @@ fn hand_over_now(
         "tilolang instance handed over"
     );
     Ok(())
+}
+
+/// The ids of changes applied at a record's origin: apart from every window's instance id.
+static NEXT_CHANGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 62);
+
+/// Apply `change`, an agent task's invocation of the app `app_id` the broker admitted, at the
+/// origin of its record in `room` (`docs/designs/app-language/agents.md`, "Reading records
+/// outside their app"): the host of the app's workspace and author runs the action's code
+/// against the record as it is then, with no instance and no window, on a collaboration
+/// connection attested as that app's exactly as a window's instance's is. Waits for the host's
+/// answer, which ends the wait whether it applied, refused or failed; the host closing the
+/// connection without one ends it too.
+///
+/// # Errors
+/// The app is not an installed tilolang app, its connections cannot be opened, or the host
+/// left without answering.
+pub(crate) fn apply_change(
+    app_id: &str,
+    room: RoomId,
+    change: &runtime_portal::tilolang_host::Change,
+) -> std::io::Result<serde_json::Value> {
+    use std::io::{BufRead as _, Write as _};
+    let refused = |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
+    let apps = super::installed_apps().map_err(|error| std::io::Error::other(error.to_string()))?;
+    let app = apps
+        .iter()
+        .find(|app| app.package_id == app_id && runs_in_host(app))
+        .ok_or_else(|| refused(format!("{app_id} is no installed tilolang app")))?;
+    let workspace = room.to_string();
+    let installed =
+        super::installed_copy(app).ok_or_else(|| refused("the app is not installed".to_owned()))?;
+    let evidence = super::original_application_creation(app, &installed)
+        .ok_or_else(|| refused("the app has no verified creation record".to_owned()))?;
+    let verified = ::launcher::run::tilolang_host::verified_instance(
+        &installed,
+        &app.manifest_path,
+        &app.payload_root,
+        &evidence.package_hash,
+    )
+    .map_err(|error| refused(error.to_string()))?;
+    let person = crate::shell::state::local_user_id_for_room(&room);
+    let key = HostKey {
+        workspace: workspace.clone(),
+        author: Author::of(verified.publisher, &person).key(),
+        runtime: verified.runtime,
+        app_runtime: verified.app_runtime,
+    };
+    let module = verified.module.encode();
+    let module_len = module.len() as u64;
+    let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
+    // The app's own connection, recorded as the session's for that app with its creation
+    // record, as a window's instance's is: the broker attributes it from that record.
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(::launcher::services::collab_socket())?;
+    super::register_tilolang_change(&app.package_id, &workspace, evidence);
+    if let Err(error) =
+        ::launcher::services::write_collab_handoff(&mut stream, &app.package_id, &workspace)
+    {
+        super::withdraw_in_process_launch(&app.package_id, &workspace, None);
+        return Err(error);
+    }
+    let identity =
+        ::launcher::services::resolve_identity_bind(&app.package_id, Some(&workspace), false)
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .ok_or_else(|| refused("the identity service is unavailable".to_owned()))?
+            .host;
+    let instance = NEXT_CHANGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let request = InstanceRequest {
+        app: app.package_id.clone(),
+        room: workspace,
+        instance,
+        person,
+        module_len,
+        records_under: Some(
+            super::installed_earlier_ids()
+                .records_under(&app.package_id)
+                .to_owned(),
+        )
+        .filter(|id| *id != app.package_id),
+        applies_change: true,
+    };
+    let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+    let fds = InstanceFds {
+        broker: stream.into(),
+        identity,
+        module,
+        window: theirs.into(),
+        origin: None,
+    };
+    send_to_host(&key, &request, &fds)?;
+    drop(fds);
+    let mut line = serde_json::to_vec(change).map_err(std::io::Error::other)?;
+    line.push(b'\n');
+    (&ours).write_all(&line)?;
+    let mut answer = String::new();
+    std::io::BufReader::new(&ours).read_line(&mut answer)?;
+    if answer.trim().is_empty() {
+        return Err(std::io::Error::other(
+            "the app's host ended the change without answering it (see its log)",
+        ));
+    }
+    serde_json::from_str(&answer).map_err(std::io::Error::other)
 }
 
 /// Start the host of the agent task `task` in `room` (`docs/designs/app-language/agents.md`,
@@ -422,7 +525,9 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
         .arg("--storage")
         .arg(&storage)
         .env("XDG_RUNTIME_DIR", super::runtime_dir())
-        .stdin(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null())
+        // Read here: what it said last is why it ended when it could not say so itself.
+        .stderr(std::process::Stdio::piped());
     let door = theirs.as_raw_fd();
     let slot = ::launcher::run::tilolang_host::DOOR_CHILD_FD;
     // SAFETY: only async-signal-safe calls between fork and exec: the door is placed at its
@@ -441,6 +546,22 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
     }
     let mut child = command.spawn()?;
     drop(theirs);
+    let said = child.stderr.take().map(|stderr| {
+        let tag = format!("{} {}", key.workspace, key.author);
+        std::thread::Builder::new()
+            .name("tilolang-host-err".into())
+            .spawn(move || {
+                let mut last = std::collections::VecDeque::with_capacity(SAID_LINES);
+                super::relay_capped_lines(stderr, |line| {
+                    eprintln!("[tilolang-host {tag}] {line}");
+                    if last.len() == SAID_LINES {
+                        last.pop_front();
+                    }
+                    last.push_back(line);
+                });
+                last
+            })
+    });
     let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let door = Arc::new(ours);
     tracing::info!(
@@ -474,7 +595,12 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
             }
             let status = child.wait();
             let clean = status.as_ref().is_ok_and(std::process::ExitStatus::success);
-            let reason = reason.unwrap_or_else(|| "it ended without saying why".to_owned());
+            // Its error output ends with it: what it said last is all read by now.
+            let last = said
+                .and_then(|reading| reading.ok())
+                .and_then(|reading| reading.join().ok())
+                .unwrap_or_default();
+            let reason = reason.unwrap_or_else(|| seen_end(&status, &last));
             if clean {
                 tracing::info!(workspace = %key.workspace, author = %key.author, ?status, reason, "tilolang host ended");
             } else {
@@ -501,6 +627,43 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
         instances: HashSet::new(),
         generation,
     })
+}
+
+/// How many of its last error lines a host that ended without saying why is reported by.
+const SAID_LINES: usize = 8;
+
+/// Why a host ended that did not say so itself: how it ended, as the session saw it, and the
+/// last lines of its error output.
+fn seen_end(
+    status: &std::io::Result<std::process::ExitStatus>,
+    last: &std::collections::VecDeque<String>,
+) -> String {
+    use std::os::unix::process::ExitStatusExt as _;
+    let how = match status {
+        Ok(status) => match (status.code(), status.signal()) {
+            (Some(code), _) => format!("it exited with status {code} without saying why"),
+            (None, Some(signal)) => {
+                let name = match signal {
+                    libc::SIGTERM => " (SIGTERM)",
+                    libc::SIGKILL => " (SIGKILL: killed, as memory pressure kills)",
+                    libc::SIGSEGV => " (SIGSEGV: it crashed)",
+                    libc::SIGABRT => " (SIGABRT: it aborted)",
+                    libc::SIGBUS => " (SIGBUS: it crashed)",
+                    libc::SIGILL => " (SIGILL: it crashed)",
+                    libc::SIGSYS => " (SIGSYS: its sandbox refused a system call)",
+                    _ => "",
+                };
+                format!("it was ended by signal {signal}{name} before it could say why")
+            }
+            (None, None) => format!("it ended ({status}) without saying why"),
+        },
+        Err(error) => format!("it ended, and waiting for it failed: {error}"),
+    };
+    if last.is_empty() {
+        return format!("{how}; it wrote no error output");
+    }
+    let said: Vec<&str> = last.iter().map(String::as_str).collect();
+    format!("{how}; it last wrote: {}", said.join(" | "))
 }
 
 /// The host `key` (its start `generation`) says the instance of the window `instance` ended.
@@ -533,6 +696,30 @@ fn ended(key: &HostKey, generation: u64, instance: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host that ended without saying why is reported by how it ended and what it last
+    /// wrote, never as "without saying why" alone.
+    #[test]
+    fn a_silent_hosts_end_is_told_as_the_session_saw_it() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let killed = Ok(std::process::ExitStatus::from_raw(libc::SIGKILL));
+        let said = std::collections::VecDeque::from(vec![
+            "loading the module".to_owned(),
+            "out of memory".to_owned(),
+        ]);
+        let told = seen_end(&killed, &said);
+        assert!(told.contains("signal 9 (SIGKILL"), "{told}");
+        assert!(
+            told.ends_with("loading the module | out of memory"),
+            "{told}"
+        );
+        let exited = Ok(std::process::ExitStatus::from_raw(3 << 8));
+        let told = seen_end(&exited, &std::collections::VecDeque::new());
+        assert_eq!(
+            told,
+            "it exited with status 3 without saying why; it wrote no error output"
+        );
+    }
 
     #[test]
     fn a_hosts_author_is_its_publisher_or_the_person_whose_own_build_it_is() {

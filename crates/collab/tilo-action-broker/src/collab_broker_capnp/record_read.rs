@@ -14,8 +14,8 @@ use std::sync::{Arc, Weak};
 
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
-    ActionHostError, Caller, CallerPrincipal, RECORD_READS_FOR_TASKS, RecordAddress, RecordCopy,
-    RecordReads,
+    ActionHostError, Caller, CallerPrincipal, RECORD_READS_FOR_TASKS, RecordAddress, RecordChange,
+    RecordChanges, RecordCopy, RecordReads,
 };
 
 use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
@@ -59,6 +59,77 @@ impl CapnpBrokerState {
     }
 }
 
+/// What a caller is told about a change the room does not allow it.
+pub const RECORD_CHANGE_REFUSED: &str = "not allowed to make this change";
+
+impl CapnpBrokerState {
+    /// The record change door, when this host has an origin for its rooms' records.
+    pub fn record_changes(self: &Arc<Self>) -> Option<Arc<dyn RecordChanges>> {
+        self.services.record_changes.as_ref()?;
+        Some(Arc::new(BrokerRecordChanges {
+            state: Arc::downgrade(self),
+        }))
+    }
+}
+
+struct BrokerRecordChanges {
+    state: Weak<CapnpBrokerState>,
+}
+
+impl RecordChanges for BrokerRecordChanges {
+    fn apply(
+        &self,
+        caller: &Caller,
+        change: &RecordChange,
+    ) -> Result<serde_json::Value, ActionHostError> {
+        let unavailable = |reason: String| ActionHostError::Unavailable { reason };
+        let state = self
+            .state
+            .upgrade()
+            .ok_or_else(|| unavailable("the broker stopped".into()))?;
+        let (Some((person, room)), CallerPrincipal::Agent(agent)) =
+            (task_person(caller), caller.principal())
+        else {
+            return Err(ActionHostError::Refused {
+                reason: RECORD_READS_FOR_TASKS.into(),
+            });
+        };
+        super::action_host::check_execution(caller)?;
+        let answer = state
+            .decide_for(caller, room, |workspace, actor, now| {
+                let node = tilo_actions::action_node(
+                    &workspace.node(),
+                    &change.app,
+                    "",
+                    &change.resource,
+                    None,
+                    &change.action,
+                );
+                actor.answer_in(workspace, &node, ActionKind::Undoable, now)
+            })
+            .ok_or(ActionHostError::NotPermitted)?;
+        match answer {
+            Answer::Allow => {}
+            Answer::Ask => return Err(ActionHostError::ConfirmationRequired),
+            Answer::Deny => {
+                return Err(ActionHostError::Refused {
+                    reason: RECORD_CHANGE_REFUSED.into(),
+                });
+            }
+        }
+        let origin = state
+            .services
+            .record_changes
+            .clone()
+            .ok_or_else(|| unavailable("this host has no origin for its records".into()))?;
+        drop(state);
+        let invoker = tilo_actions::ActionInvoker::actor(format!("agent:{agent}"))
+            .with_kind(tilo_actions::ActorKind::Agent)
+            .acting_for(person);
+        origin.apply(room, change, &invoker).map_err(unavailable)
+    }
+}
+
 /// The person an agent task acts for, when `caller` is one: an agent the host admitted as a
 /// member acting for its person, confined to a room.
 fn task_person(caller: &Caller) -> Option<(&str, &str)> {
@@ -97,11 +168,6 @@ impl RecordReads for BrokerRecordReads {
                 tilo_actions::remote::RECORD_READS_UNAVAILABLE.into(),
             ));
         };
-        if owner.record_read(room, &address.app, &address.record) == RecordRead::Own {
-            return Err(unavailable(
-                "this device holds none of the room's records outside their apps".into(),
-            ));
-        }
         let certificate = people.certificate(room, person).map_err(unavailable)?;
         let checked = (Arc::downgrade(&state), caller.clone(), address.clone());
         drop(state);
@@ -121,6 +187,29 @@ impl RecordReads for BrokerRecordReads {
         context
             .revalidate()
             .map_err(|reason| ActionHostError::Refused { reason })?;
+        if owner.record_read(room, &address.app, &address.record) == RecordRead::Own {
+            // A record a sealed room holds nothing of may still arrive in its host's replay;
+            // once that landed, one this device holds nothing of is one the room has none of.
+            // This read runs on a thread of its own, which the wait holds.
+            if let Some(history) = owner.await_sealed_history(&context) {
+                futures::executor::block_on(history);
+            }
+            if owner.record_read(room, &address.app, &address.record) == RecordRead::Own {
+                if !owner.seals_records(room) {
+                    return Err(unavailable(
+                        "this device holds none of the room's records outside their apps".into(),
+                    ));
+                }
+                if owner.holds_record(room, &address.app, &address.record) {
+                    return Err(unavailable(
+                        "the writes this device holds of the record build on changes it does \
+                         not hold"
+                            .into(),
+                    ));
+                }
+                return Ok(RecordCopy::Absent);
+            }
+        }
         match owner
             .capture(&context, None, MAX_DOCUMENT_BYTES)
             .map_err(|reason| ActionHostError::Refused { reason })?

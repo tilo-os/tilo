@@ -482,6 +482,27 @@ impl Channels {
         changes
     }
 
+    /// Ask at once wherever a channel of `workspace_id` awaits its keys: the
+    /// host admitted this session to the room just now, and a request is
+    /// sent only to a room that admitted the session, so what was asked
+    /// meanwhile went nowhere and is owed now, not after its backoff.
+    pub(crate) fn ask_now(&mut self, workspace_id: u64, now_ms: u64) -> Changes {
+        let mut changes = Changes::default();
+        let channels: Vec<ChannelId> = self
+            .routes
+            .iter()
+            .filter(|(_, route)| route.workspace_id == workspace_id)
+            .map(|(channel, _)| *channel)
+            .collect();
+        for channel in channels {
+            if let Some(route) = self.routes.get_mut(&channel) {
+                route.next_request_ms = now_ms;
+            }
+            self.request_if_due(channel, now_ms, &mut changes);
+        }
+        changes
+    }
+
     fn after(
         &mut self,
         channel: ChannelId,
@@ -617,6 +638,31 @@ mod tests {
         }
         committer.published(&VaultKey::new([9; 32])).unwrap();
         changes
+    }
+
+    /// A request asked before the host admitted the session to its room
+    /// went nowhere: the room's admission asks again at once, for that
+    /// room's channels only, not after the request's backoff.
+    #[test]
+    fn a_rooms_admission_asks_again_at_once_for_its_channels() {
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let laptop_key = SigningKey::from_bytes(&[4; 32]);
+        let note = route("note-before-admission");
+        let vouch = admitting(&[&laptop_key, &browser]);
+        let mut channels = Channels::new(device(&browser), [4; 32]);
+        let asked = requests(&channels.open(&note, &vouch, 0));
+        assert_eq!(asked.len(), 1, "opening asks");
+        assert!(
+            requests(&channels.tick(1)).is_empty(),
+            "the backoff holds the next ask back"
+        );
+        let workspace_id = note.workspace_id().unwrap();
+        assert!(
+            requests(&channels.ask_now(workspace_id.wrapping_add(1), 1)).is_empty(),
+            "another room's admission asks nothing of this one"
+        );
+        let again = requests(&channels.ask_now(workspace_id, 1));
+        assert_eq!(again, asked, "the room's admission asks the same again");
     }
 
     #[test]

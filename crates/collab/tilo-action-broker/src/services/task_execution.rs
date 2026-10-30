@@ -346,6 +346,10 @@ pub struct TrackerRun {
     pub directions: Vec<TrackerDirection>,
     /// What the run asks or last asked its person.
     pub question: Option<TrackerQuestion>,
+    /// The task delegation the asking device signed for a task agent's run,
+    /// encoded (`TaskDelegation::encode`); `None` for a collaborator's run,
+    /// whose membership is its certification.
+    pub delegation: Option<Vec<u8>>,
 }
 
 impl TrackerRun {
@@ -378,12 +382,14 @@ pub trait TrackerRuns: Send + Sync {
     /// # Errors
     /// The room's tracker cannot be read now.
     fn runs(&self, room: &str) -> Result<Vec<TrackerRun>, String>;
-    /// Whether `agent` is still admitted to `room`, as the room's owner
-    /// holds it now: a removed agent reads its run no more.
+    /// Whether `run`'s agent is still admitted to `room`, as the room's
+    /// owner holds it now: a collaborator by its membership, a task agent by
+    /// its run's task delegation. A removed agent, or a task agent whose
+    /// device was revoked, reads its run no more.
     ///
     /// # Errors
     /// The agent is no longer admitted, or the room cannot be read.
-    fn check_agent(&self, room: &str, agent: &str) -> Result<(), String>;
+    fn check_agent(&self, room: &str, run: &TrackerRun) -> Result<(), String>;
     /// Apply the room's grants for the run's agent, acting for the run's
     /// starter, to `requirement`, as [`NativeTaskActionRequirement::check_tracker`]
     /// does for a room task. Where any of them asks first, the error starts

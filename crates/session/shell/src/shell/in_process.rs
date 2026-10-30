@@ -248,6 +248,24 @@ impl InProcessApps {
         component.collaborate_through(broker(component.app_id(), room))
     }
 
+    /// A collaboration manager for `component`, mounted in `room` as an
+    /// instance of its app with no window ([`crate::shell::windowless`]), on
+    /// the session's broker. `None` for apps that reach no broker of a
+    /// session.
+    pub(crate) fn windowless_collaboration(
+        &self,
+        component: &AppComponent,
+        room: &str,
+    ) -> Option<ui::collaboration::CollaborationManager> {
+        let socket = self.native_broker_socket.clone()?;
+        component.collaborate_through(windowless_connector(
+            socket,
+            launcher::services::identity_socket(),
+            component.app_id(),
+            room,
+        ))
+    }
+
     /// Block until the store has committed every write the apps' records
     /// handed it, the debounced ones included, as its own thread would
     /// commit them a moment later.
@@ -835,13 +853,47 @@ pub fn session_connector(
     app: &str,
     room: &str,
 ) -> ui::collaboration::HostSessionConnector {
+    connector_recorded_by(
+        collab,
+        identity,
+        app,
+        room,
+        crate::shell::launcher::register_in_process_launch,
+    )
+}
+
+/// [`session_connector`] for an instance of `app` the session runs with no
+/// window ([`crate::shell::windowless`]): its launch says so, so the broker
+/// hands it the app's actions on its records and never an `open`.
+fn windowless_connector(
+    collab: std::path::PathBuf,
+    identity: std::path::PathBuf,
+    app: &str,
+    room: &str,
+) -> ui::collaboration::HostSessionConnector {
+    connector_recorded_by(
+        collab,
+        identity,
+        app,
+        room,
+        crate::shell::launcher::register_windowless_launch,
+    )
+}
+
+fn connector_recorded_by(
+    collab: std::path::PathBuf,
+    identity: std::path::PathBuf,
+    app: &str,
+    room: &str,
+    record: fn(&str, &str),
+) -> ui::collaboration::HostSessionConnector {
     let (app, room) = (app.to_owned(), room.to_owned());
     // The collaboration socket carries Files' selected descriptors to the
     // broker, as a launched app's inherited connection does.
     ui::collaboration::HostSessionConnector::with_descriptor_lane(move |_route| async move {
         let failed = |error: std::io::Error| runtime_portal::NotAvailable::ConnectionFailed(error);
         let mut stream = std::os::unix::net::UnixStream::connect(&collab).map_err(failed)?;
-        crate::shell::launcher::register_in_process_launch(&app, &room);
+        record(&app, &room);
         if let Err(error) = launcher::services::write_collab_handoff(&mut stream, &app, &room) {
             crate::shell::launcher::withdraw_in_process_launch(&app, &room, None);
             return Err(failed(error));

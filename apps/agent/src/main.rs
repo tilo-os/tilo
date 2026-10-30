@@ -66,6 +66,10 @@ struct Cli {
     /// holds the endpoint and the credential; a launched agent cannot read
     /// Settings, so without this it plans by keyword only.
     provider: Option<String>,
+    /// The id of the task agent the desktop made this process for, whose
+    /// credentials (task key and task delegation) it left in the app
+    /// directory. The agent joins as that id and ends with its task.
+    task_identity: Option<String>,
 }
 
 /// What `tilo-agent --help` prints.
@@ -87,6 +91,7 @@ Options:
       --model-timeout-ms <MS>     How long a model may take to choose
       --companion <APP>           An application started beside this agent (repeatable)
       --provider <JSON>           The model selection the desktop hands over
+      --task-identity <ID>        Join as the task agent the desktop made, ending with its task
   -h, --help                      Print this help
 ";
 
@@ -116,6 +121,7 @@ impl Cli {
             model_timeout_ms: None,
             companions: Vec::new(),
             provider: None,
+            task_identity: None,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -137,7 +143,7 @@ impl Cli {
                 "--task-runs" => flag(&mut cli.task_runs)?,
                 "--no-model" => flag(&mut cli.no_model)?,
                 "--workspace" | "--record" | "--app" | "--name" | "--agent-id" | "--endpoint"
-                | "--model-timeout-ms" | "--companion" | "--provider" => {
+                | "--model-timeout-ms" | "--companion" | "--provider" | "--task-identity" => {
                     let value = match inline {
                         Some(value) => value,
                         None => args
@@ -161,6 +167,7 @@ impl Cli {
                             })?);
                         }
                         "--companion" => cli.companions.push(value),
+                        "--task-identity" => cli.task_identity = Some(value),
                         _ => cli.provider = Some(value),
                     }
                 }
@@ -248,7 +255,22 @@ fn main() -> anyhow::Result<()> {
     // What this run's invitation actually was: write on the app it was
     // asked to join, and nothing else. Widening this is a deployment
     // decision, not something a headless participant grants itself.
-    let agent_id = cli.agent_id.clone().unwrap_or_else(|| cli.name.clone());
+    let agent_id = cli
+        .task_identity
+        .clone()
+        .or_else(|| cli.agent_id.clone())
+        .unwrap_or_else(|| cli.name.clone());
+    // A task agent joins with the task key and delegation its desktop left
+    // for it, never with the person's own identity.
+    let task_identity = cli
+        .task_identity
+        .as_deref()
+        .map(|id| {
+            tilo_agent::task_identity::credentials_dir()
+                .and_then(|dir| tilo_agent::task_identity::load(&dir, id, cli.workspace))
+        })
+        .transpose()?;
+    let task_agent = task_identity.is_some();
     let permissions = {
         ui::permissions::PermissionContext::agent_granted_at(
             &agent_id,
@@ -270,7 +292,8 @@ fn main() -> anyhow::Result<()> {
         agent_id,
         provider,
         endpoint: cli.endpoint,
-        endpoint_identity: None,
+        endpoint_identity: task_identity,
+        task_agent,
         app_id: cli.app,
         cluster: cli.workspace,
         record: cli.record,
@@ -300,6 +323,25 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Cli, CliExit> {
         Cli::parse_from(args.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn a_task_agent_is_named_by_its_task_identity() {
+        let room = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+        let cli = parse(&[
+            "--workspace",
+            room,
+            "--task-runs",
+            "--task-identity",
+            "task-0a0b0c0d0e0f",
+        ])
+        .unwrap();
+        assert_eq!(cli.task_identity.as_deref(), Some("task-0a0b0c0d0e0f"));
+        assert_eq!(
+            parse(&["--workspace", room, "--task-identity"]),
+            Err(CliExit::Usage("--task-identity needs a value".into()))
+        );
+        assert_eq!(parse(&["--workspace", room]).unwrap().task_identity, None);
     }
 
     /// The launcher's own command line reads as before, with the defaults the

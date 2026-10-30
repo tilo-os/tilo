@@ -445,7 +445,11 @@ async fn expired_agent_delegation_cannot_invoke_host() {
             expires,
         )
         .unwrap();
-        relay.relay.register_agent(delegation).unwrap();
+        relay
+            .relay
+            .register_agent(&agent.cert, delegation)
+            .await
+            .unwrap();
         actions.callers.lock().unwrap().clear();
         let (client, ready) = subscribe(relay.relay.node_addr(), &user, &agent, ws).await;
         let answer = if matches!(ready, Some(Envelope::Ready { .. })) {

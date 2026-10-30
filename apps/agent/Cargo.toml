@@ -53,13 +53,14 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 workspace-hack = { version = "0.1" }
+# A task agent signs its join with the key its desktop minted for the task.
+ed25519-dalek.workspace = true
+runtime-identity = { package = "tilo-identity-client", path = "../../crates/runtime/tilo-identity-client" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
-runtime-identity = { package = "tilo-identity-client", path = "../../crates/runtime/tilo-identity-client" }
-ed25519-dalek.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
 # The broker tests (typed_peer and the tests built on it) drive the shell's

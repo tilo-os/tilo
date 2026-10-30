@@ -23,8 +23,7 @@ the task:
 
   scripts/headless-examples/agent-tilolang-e2e.py [--no-build] [--out DIR] [--keep]
 
-Without --no-build it prepares the session (nested-session.sh --prepare-only, building through
-TILO_REMOTE_CARGO, default rcargo) and builds the tilolang tool. The verdict is
+Without --no-build it prepares the session (nested-session.sh --prepare-only, building with cargo) and builds the tilolang tool. The verdict is
 OUT/summary.json; the exit status is non-zero when a check fails. Never touches the live
 desktop.
 """
@@ -55,7 +54,6 @@ APPS = ["tasks", "notes", "chat", "views"]
 NATIVE = "agent tasks settings"
 SCRIPT = HERE / "agent-tilolang/release.json"
 TRACKER = "tasks.tracker"
-AGENT = "scribe"
 MODEL = "release-replay"
 # Writes a keyless provider on this device into the session's settings
 # (crates/agent/provider-config/examples/local_provider.rs).
@@ -113,16 +111,16 @@ def invoke(session: Session, found: dict, args: dict | None = None):
 
 def configure_model(session: Session, port: int) -> dict:
     """A provider on this device, keyless, at the recorded model's loopback address, chosen for
-    agents, and an agent in the workspace to ask: what a person sets up in Settings and the
-    workspace's Agents tab."""
+    agents: what a person sets up in Settings. No agent is admitted to the workspace: asking
+    makes a new agent for the task, under a delegation this device signs."""
     env = session.env()
+    blocked = [a.get("subtitle") for a in session.actions("Ask an agent: release")
+               if a.get("provider") == "ask-agent"]
     run([LOCAL_PROVIDER, f"http://127.0.0.1:{port}/v1", MODEL], env=env)
-    session.invoke("actions", "agent.invite", {"name": AGENT, "preset": "contributor"})
-    session.control_cmd("key", "Escape")
-    ready = until("the agent ready to be asked", lambda: [
+    ready = until("asking ready", lambda: [
         a for a in session.actions("Ask an agent: release")
-        if a.get("provider") == "ask-agent" and AGENT in (a.get("subtitle") or "").lower()], 30)
-    return {"port": port, "agent": AGENT, "says": ready[0].get("subtitle")}
+        if a.get("provider") == "ask-agent" and "new agent" in (a.get("subtitle") or "").lower()], 30)
+    return {"port": port, "before_model": blocked, "says": ready[0].get("subtitle")}
 
 
 def seed(session: Session) -> dict:
@@ -232,8 +230,7 @@ def main() -> int:
     tool = REPO / "target/debug/tilolang"
     os.environ.setdefault("TMPDIR", str(Path.home() / "tmp"))
     Path(os.environ["TMPDIR"]).mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "TILO_REMOTE_CARGO": os.environ.get("TILO_REMOTE_CARGO", "rcargo"),
-           "TILO_NESTED_APPS": NATIVE}
+    env = {**os.environ, "TILO_NESTED_APPS": NATIVE}
     build = [] if not args.no_build else ["--no-build"]
     print("==> preparing the session", file=sys.stderr)
     run([e2e.SESSION, *build, "--prepare-only", "--apps", NATIVE, "--state", state], env=env)

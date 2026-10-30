@@ -3,7 +3,7 @@ use super::{ProviderEffect, ProviderPanel, definition, widgets};
 use agent_provider_config::management::AdminFuture;
 use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
 use agent_provider_config::protocol::{ErrorKind, ModelError};
-use agent_provider_config::{Interaction, ProviderConfig, ProviderProfile};
+use agent_provider_config::{EndpointLocation, Interaction, ProviderConfig, ProviderProfile};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -206,6 +206,91 @@ fn agents_list_presets_and_add_providers_through_actions() {
     );
 }
 
+/// A generic provider pointed at a server on this device or the person's
+/// network is that, not a hosted provider held to TLS; an internet host
+/// stays hosted.
+#[test]
+fn a_typed_endpoint_takes_the_location_its_address_has() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let mut app = mount(backend.clone());
+    run(
+        &mut app,
+        ProviderEffect::AddProvider {
+            preset: "anthropic-compatible".into(),
+        },
+    );
+    app.settle();
+    let id = config(&mut app).profiles[0].id.clone();
+    for (endpoint, location) in [
+        (
+            "http://127.0.0.1:8443/anthropic",
+            EndpointLocation::ThisDevice,
+        ),
+        ("http://192.168.1.20:8000", EndpointLocation::PrivateNetwork),
+        ("https://api.z.ai/api/anthropic", EndpointLocation::Hosted),
+    ] {
+        run(
+            &mut app,
+            ProviderEffect::SetProviderDetails {
+                provider: id.clone(),
+                label: "Mine".into(),
+                endpoint: endpoint.into(),
+                model: None,
+            },
+        );
+        app.settle();
+        let profile = backend.state.lock_recover().config.profiles[0].clone();
+        assert_eq!(
+            (profile.endpoint.as_str(), profile.location),
+            (endpoint, location)
+        );
+        // A key sent over plain http on the person's network is said to be.
+        let warned = with_panel(&mut app, |panel| {
+            widgets::announced_text(widgets::page(panel.sections()).as_ref())
+                .contains(&crate::i18n::t("agent-key-unencrypted"))
+        });
+        assert_eq!(
+            warned,
+            location == EndpointLocation::PrivateNetwork,
+            "{endpoint}"
+        );
+    }
+}
+
+/// Test `provider`'s connection through its row's action, and require the
+/// answer to be the result the action declares.
+fn list_models_through_the_door(
+    app: &mut TestApp<ProviderSettingsApp>,
+    provider: &str,
+) -> ui::tilo_actions::ActionOutput {
+    let row = format!("settings.agent-provider:{provider}");
+    let listed = app
+        .call_by(
+            ui::tilo_actions::ActionInvoker::actor("provider-administrator"),
+            &row,
+            ProviderEffect::LIST_PROVIDER_MODELS.id(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+    let declared = with_panel(app, |panel| {
+        panel
+            .rows()
+            .into_iter()
+            .find(|candidate| candidate.id() == row)
+            .unwrap()
+            .into_resource()
+            .actions
+            .into_iter()
+            .find(|spec| spec.id == ProviderEffect::LIST_PROVIDER_MODELS.id())
+            .unwrap()
+            .contract
+            .result
+            .clone()
+    });
+    declared.validate(&listed).unwrap();
+    listed
+}
+
 /// An agent says what a model can do, through the action on its provider,
 /// and is refused a model that calls no tools for an agent.
 #[test]
@@ -230,15 +315,11 @@ fn agents_set_model_capabilities_and_cannot_plan_with_a_model_without_tools() {
     );
     app.settle();
     assert_private(&mut app);
-    // The provider lists its models; one is taken, and is said to call no
-    // tools.
-    run(
-        &mut app,
-        ProviderEffect::ListProviderModels {
-            provider: provider.clone(),
-        },
-    );
+    // The provider lists its models, answered as the action declares.
+    let listed = list_models_through_the_door(&mut app, &provider);
+    assert_eq!(listed.value.as_ref().unwrap()[0]["id"], "listed-a");
     app.settle();
+    // One is taken, and is said to call no tools.
     run(
         &mut app,
         ProviderEffect::SetModelCapabilities {
