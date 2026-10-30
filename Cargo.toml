@@ -905,6 +905,27 @@ opt-level = 3
 [profile.test.package.taffy]
 opt-level = 3
 
+# The CPU raster path draws every frame of a window that has no GPU: the
+# scanline work of the vector renderer and of the layers it composes stays
+# optimised too, or a window without a GPU redraws slowly in a development
+# build.
+[profile.dev.package.tilo-cpu-raster]
+opt-level = 3
+[profile.test.package.tilo-cpu-raster]
+opt-level = 3
+[profile.dev.package.vello_cpu]
+opt-level = 3
+[profile.test.package.vello_cpu]
+opt-level = 3
+[profile.dev.package.vello_common]
+opt-level = 3
+[profile.test.package.vello_common]
+opt-level = 3
+[profile.dev.package.fearless_simd]
+opt-level = 3
+[profile.test.package.fearless_simd]
+opt-level = 3
+
 # The compositor monomorphises UI traversal and search/serialization code that
 # dependency-only optimisation cannot speed up. Keep a development build of it
 # lightly optimised with full debugger information, assertions and overflow
