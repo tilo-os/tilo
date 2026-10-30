@@ -4,6 +4,7 @@ use super::*;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::linux::SERVICE;
 use tilo_test_env::PrivateBus;
 
 const ACCOUNT_PATH: &str = "/org/gnome/OnlineAccounts/Accounts/account_1";
