@@ -24,6 +24,7 @@
 
 pub mod icon;
 pub mod item;
+pub mod service;
 pub mod watcher;
 
 #[cfg(test)]
