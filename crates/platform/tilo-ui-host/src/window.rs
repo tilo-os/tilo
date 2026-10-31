@@ -129,13 +129,12 @@ fn rich_spliced_at(
         .map_or(0, |gone| gone.chars().count());
     let added = insert.chars().count();
     let last = first.saturating_add(removed);
-    let delta = added as i64 - removed as i64;
     for mark in &mut block.marks {
         let moved = |chars: usize| -> usize {
             if chars <= first {
                 chars
             } else if chars >= last {
-                (chars as i64 + delta).max(0) as usize
+                chars.saturating_sub(removed).saturating_add(added)
             } else {
                 first.saturating_add(added)
             }
@@ -1465,72 +1464,18 @@ impl AppWindow {
             typed.sent = self.bound.borrow().get(&key).cloned();
         }
         let (lane, field) = lane_of(&key);
-        // What the person typed, where it goes in what the control showed: the typing keeps
-        // its place from the end, so the same place counts back from the end of what it shows
-        // now.
-        let (base_text, now_text) = typed.held.texts();
-        let (at, delete, insert) = splice_between(&base_text, &now_text);
-        let place = |shown: &str| {
-            let after = base_text.len().saturating_sub(at.saturating_add(delete));
-            let mut at = shown.len().saturating_sub(after.saturating_add(delete));
-            while !shown.is_char_boundary(at) {
-                at = at.saturating_sub(1);
-            }
-            let mut end = at.saturating_add(delete).min(shown.len());
-            while !shown.is_char_boundary(end) {
-                end = end.saturating_add(1);
-            }
-            (at, end)
-        };
         // The resource the lane shows now, when it is the one the person typed into.
         let target = self.target(lane);
         let still_shown = typed.target.is_none() || typed.target == target;
         // What the field shows now: what the app sent for it since, or what it showed when the
         // person began typing (the window showed their typing meanwhile, which is no part of
         // what it shows now).
-        let shown = typed.sent.clone().unwrap_or_else(|| match &typed.held {
+        let shown = typed.sent.take().unwrap_or_else(|| match &typed.held {
             Held::Text { base, .. } => Value::Text(base.clone()),
             Held::Rich { base, .. } => Value::Rich(base.clone()),
         });
         if still_shown && let Some(target) = target {
-            match (shown, &typed.held) {
-                (Value::Rich(before), _) => {
-                    let (at, end) = place(&rich_text_of(&before));
-                    let rich = rich_spliced_at(&before, at, end.saturating_sub(at), &insert);
-                    self.bound
-                        .borrow_mut()
-                        .insert(key.clone(), Value::Rich(rich.clone()));
-                    self.out.push(ToApp::EditRich {
-                        lane,
-                        target,
-                        key: field,
-                        rich,
-                    });
-                }
-                (Value::Text(before), _) => {
-                    let text = splice_text(&before, place(&before), &insert);
-                    if let Some(message) = self.splice(&key, &before, text) {
-                        self.out.push(message);
-                    }
-                }
-                (_, Held::Rich { now, .. }) => {
-                    self.bound
-                        .borrow_mut()
-                        .insert(key.clone(), Value::Rich(now.clone()));
-                    self.out.push(ToApp::EditRich {
-                        lane,
-                        target,
-                        key: field,
-                        rich: now.clone(),
-                    });
-                }
-                (_, Held::Text { now, .. }) => self.out.push(ToApp::Edit {
-                    lane,
-                    target,
-                    key: field,
-                    text: now.clone(),
-                }),
-            }
+            self.send_typed_into_field(&key, lane, field, target, &typed.held, shown);
             return;
         }
         // The lane moved on to another resource: what they typed goes to the one it was typed
@@ -1538,45 +1483,123 @@ impl AppWindow {
         let Some(target) = typed.target else {
             return;
         };
-        let message = match (&typed.held, shown) {
-            (Held::Rich { base, .. }, _) => {
-                let (at, end) = place(&rich_text_of(base));
-                ToApp::EditRich {
+        let message = self.typed_elsewhere(&key, lane, field, target, &typed.held, shown);
+        self.out.push(message);
+    }
+
+    /// Send what the person typed in `key` of `lane` into the field the lane shows now
+    /// (`target`), against what it shows (`shown`).
+    fn send_typed_into_field(
+        &mut self,
+        key: &str,
+        lane: Lane,
+        field: String,
+        target: ResourceRef,
+        held: &Held,
+        shown: Value,
+    ) {
+        let (show_at, delete, insert) = self.place_of(held, &shown);
+        match (&shown, held) {
+            (Value::Rich(before), _) => {
+                let rich = rich_spliced_at(before, show_at, delete, &insert);
+                self.bound
+                    .borrow_mut()
+                    .insert(key.to_owned(), Value::Rich(rich.clone()));
+                self.out.push(ToApp::EditRich {
                     lane,
                     target,
                     key: field,
-                    rich: rich_spliced_at(base, at, end.saturating_sub(at), &insert),
+                    rich,
+                });
+            }
+            (Value::Text(before), _) => {
+                let text = splice_text(before, (show_at, show_at.saturating_add(delete)), &insert);
+                if let Some(message) = self.splice(key, before, text) {
+                    self.out.push(message);
                 }
             }
-            (Held::Text { .. }, Value::Rich(before)) => {
-                let (at, end) = place(&rich_text_of(&before));
-                ToApp::EditRich {
+            (_, Held::Rich { now, .. }) => {
+                self.bound
+                    .borrow_mut()
+                    .insert(key.to_owned(), Value::Rich(now.clone()));
+                self.out.push(ToApp::EditRich {
                     lane,
                     target,
                     key: field,
-                    rich: rich_spliced_at(&before, at, end.saturating_sub(at), &insert),
-                }
+                    rich: now.clone(),
+                });
             }
-            (Held::Text { .. }, shown) => {
-                let shown = match shown {
-                    Value::Text(text) => text,
-                    _ => base_text.clone(),
+            (_, Held::Text { now, .. }) => self.out.push(ToApp::Edit {
+                lane,
+                target,
+                key: field,
+                text: now.clone(),
+            }),
+        }
+    }
+
+    /// What the person typed, where it goes in what the field shows now: a splice of the
+    /// shown text and the place the typing keeps from its end.
+    fn place_of(&self, held: &Held, shown: &Value) -> (usize, usize, String) {
+        let (base_text, now_text) = held.texts();
+        let (at, delete, insert) = splice_between(&base_text, &now_text);
+        let shown = match shown {
+            Value::Text(text) => text.clone(),
+            Value::Rich(rich) => rich_text_of(rich),
+            _ => base_text.clone(),
+        };
+        let after = base_text.len().saturating_sub(at.saturating_add(delete));
+        let mut start = shown.len().saturating_sub(after.saturating_add(delete));
+        while !shown.is_char_boundary(start) {
+            start = start.saturating_sub(1);
+        }
+        (start, delete, insert)
+    }
+
+    /// What the person typed into the field of a resource the lane left: an edit of the
+    /// resource they typed into.
+    fn typed_elsewhere(
+        &self,
+        key: &str,
+        lane: Lane,
+        field: String,
+        target: ResourceRef,
+        held: &Held,
+        shown: Value,
+    ) -> ToApp {
+        let (show_at, delete, insert) = self.place_of(held, &shown);
+        match (held, &shown) {
+            (Held::Rich { base, .. }, _) => ToApp::EditRich {
+                lane,
+                target,
+                key: field,
+                rich: rich_spliced_at(base, show_at, delete, &insert),
+            },
+            (Held::Text { .. }, Value::Rich(before)) => ToApp::EditRich {
+                lane,
+                target,
+                key: field,
+                rich: rich_spliced_at(before, show_at, delete, &insert),
+            },
+            (Held::Text { .. }, _) => {
+                let before = match &shown {
+                    Value::Text(text) => text.clone(),
+                    _ => String::new(),
                 };
-                let (at, end) = place(&shown);
-                let typed_text = splice_text(&shown, (at, end), &insert);
-                let (at, delete, insert) = splice_between(&shown, &typed_text);
+                let typed_text =
+                    splice_text(&before, (show_at, show_at.saturating_add(delete)), &insert);
+                let (at, delete, insert) = splice_between(&before, &typed_text);
                 ToApp::Splice {
                     lane,
                     target,
                     key: field,
-                    seq: self.seqs.get(&key).copied().unwrap_or_default(),
+                    seq: self.seqs.get(key).copied().unwrap_or_default(),
                     at: u32::try_from(at).unwrap_or(u32::MAX),
                     delete: u32::try_from(delete).unwrap_or(u32::MAX),
                     insert,
                 }
             }
-        };
-        self.out.push(message);
+        }
     }
 
     /// The bound control the keyboard is in now, by key in the composed tree.
