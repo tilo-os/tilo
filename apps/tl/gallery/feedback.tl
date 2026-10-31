@@ -74,6 +74,10 @@ view feedback(f: Feedback) {
                 ui.StatTile("Closed", "112", unit: .some("this month"), samples: [3.0, 5.0, 4.0, 8.0, 6.0])
                 ui.StatTile("Late", "2", tone: .danger)
             }
+            row(gap: .related) {
+                ui.Sparkline([3.0, 5.0, 4.0, 8.0, 6.0, 9.0], label: .some("Requests per second"), tone: .success)
+                ui.Sparkline([9.0, 6.0, 8.0, 4.0, 5.0, 3.0], label: .some("Errors per minute"), smooth: true, filled: false)
+            }
         }
         ui.Section("Details") {
             ui.DisclosureRow("Build log", secondary: .some("Finished in 4 minutes"), icon: .list) {
