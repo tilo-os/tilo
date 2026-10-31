@@ -957,7 +957,7 @@ impl MailApp {
             }
             "offline" => {
                 self.shared.borrow_mut().status =
-                    Some("You’re offline · Showing downloaded mail".into());
+                    Some("You’re offline. Showing downloaded mail.".into());
             }
             _ => {}
         }
