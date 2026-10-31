@@ -8,29 +8,19 @@ use std::rc::Rc;
 
 use serde_json::{Map, Value};
 use tilo_compositor::Compositor;
-use tilo_surface_host::shell_part::Ask;
+use tilo_surface_host::shell_part::{ArrangementReading, Ask};
 use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 
 use crate::desk::Desk;
 use crate::panels::Held;
 
-/// The shell package's source and its ids lock, as it ships with the session.
-const SOURCE: &str = include_str!("../../../../apps/tl/shell/app.tl");
-const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
-
-/// The shell package compiled, or why it does not compile.
+/// The shell package and the packages it uses, compiled, the shell last: what the shell's
+/// instance runs.
 ///
 /// # Errors
-/// The package does not compile: its diagnostics.
-pub fn compile() -> Result<tilolang_tilo::tilolang::Compiled, String> {
-    let lock = tilolang_tilo::tilolang::IdsLock::parse(IDS).map_err(|error| error.to_string())?;
-    tilolang_tilo::tilolang::compile_package(SOURCE, &lock, &[]).map_err(|diagnostics| {
-        diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.render("apps/tl/shell/app.tl"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    })
+/// A package does not compile: its diagnostics.
+pub fn compile() -> Result<Vec<tilolang_tilo::tilolang::Compiled>, String> {
+    tilo_surface_host::shell_part::compile_shell()
 }
 
 /// The height of the band the chrome leaves the shell's bar, logical pixels.
@@ -61,13 +51,16 @@ impl Shell {
         desk: Desk,
         scale: f64,
     ) -> Result<Self, String> {
-        let compiled = compile()?;
-        let app = compiled.meta.app.clone();
+        let packages = compile()?;
+        let app = packages
+            .last()
+            .map(|compiled| compiled.meta.app.clone())
+            .ok_or("the shell package did not compile")?;
         let link = Rc::new(SessionLink::default());
         let wake = compositor.waker();
         let part = ShellPart::new(
             &app,
-            vec![compiled],
+            packages,
             &desk.person,
             Rc::clone(&link),
             // The bar's band, at rest: what the chrome leaves it.
@@ -95,6 +88,11 @@ impl Shell {
             return false;
         }
         self.link.publish(self.desk.reading())
+    }
+
+    /// Hand the shell the person's arrangement, which its views draw, whenever it changed.
+    pub(crate) fn publish_arrangement(&self, reading: ArrangementReading) {
+        self.link.publish_arrangement(reading);
     }
 
     /// Whether the shell asked something of the door the session has not run yet.
@@ -138,11 +136,12 @@ impl Shell {
 mod tests {
     #[test]
     fn the_shell_package_compiles_and_its_ids_lock_holds_every_declaration() {
-        let compiled = super::compile().unwrap_or_else(|why| panic!("{why}"));
+        let packages = super::compile().unwrap_or_else(|why| panic!("{why}"));
+        let compiled = packages.last().expect("the shell package compiles last");
         let lock = compiled.ids.to_text();
         assert_eq!(
             lock,
-            super::IDS,
+            tilo_surface_host::shell_part::shell_ids(),
             "apps/tl/shell/app.ids is not the lock the package compiles to; write:\n{lock}"
         );
     }

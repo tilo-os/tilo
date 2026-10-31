@@ -150,6 +150,34 @@ seams:
 - **Frames.** A window's frame (bar, tabs, actions) is a shell view drawn on the desk layer
   under the window, positioned from the policy's layout, as `tilo-desktop`'s window bars are
   today. Per-type and per-app frame rules are the shell's.
+- **Where the window goes.** A shell view never draws a place's content: it puts a well where
+  the content goes, and the app's own window shows there.
+
+  ```
+  view place_window(p: ArrangementPlace) {
+      stack {
+          frame_bar(p)                 // the shell's: title, tabs, actions, presence
+          ui.WindowWell(place: p.key)  // the app's window, at this rectangle
+      }
+  }
+  ```
+
+  `ui.WindowWell` is a described Rust component. It draws nothing and takes no input, because
+  the window is composited above the desk layer. After each layout, and on each frame that a
+  component around it moves it (`ui.Map`'s pan and zoom, a strip row's scroll), it reports its
+  rectangle in layout coordinates to the host's `Wells`, keyed by place. The shell's views run in
+  the compositor's process (`tilo-surface-host`), so the surface host and the policy share one
+  `Wells` handle, as `DesktopHost` and `StripPolicy` share `Desk` today.
+
+  The policy for a tilolang shell answers `initial_size`, `place` and `arrange` from `Wells`, as
+  `StripPolicy` answers them from `Desk::shown`. A well that moves without changing size moves
+  its window in the same frame. A size change configures the client, and the window catches up
+  on its next commit, as it does today. A place without a well on screen (scrolled away, or on
+  another workspace) leaves its window unmapped from the output, so it gets no frame callbacks.
+
+  A place's key is the tab id the desktop model gives the window when it maps
+  (`DesktopPolicy::map`), so a well and its window meet by that id. A window the arrangement
+  has no place for gets one through the arranging action, never a well of its own.
 
 Order, each step deleting the Rust part it replaces once the tilolang one passes that part's
 tests, screenshots and frame budgets:

@@ -326,6 +326,11 @@ pub struct Version {
     /// For an item it removed, where the item stood: what a list that held it shows of it
     /// until the person has seen its removal.
     pub left: Option<Left>,
+    /// The items it put into a collection, in the order it put them: an action that inserts
+    /// items is a version of the collection that names them, so where a run of new items begins
+    /// is known without reading the collection (`first_unseen(r)`). Empty for a version that
+    /// put none in, and for a store that does not keep them.
+    pub placed: Vec<String>,
 }
 
 /// Where a removed item stood ([`Version::left`]).
@@ -457,6 +462,7 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
             resource: id.clone(),
             change: n.to_string(),
             left: None,
+            placed: Vec::new(),
         })
         .collect()
 }

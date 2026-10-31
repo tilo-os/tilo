@@ -138,6 +138,7 @@ impl Convert<'_> {
                     .collect(),
             ),
             Value::Offered(offered) => wire::Value::Action((**offered).clone()),
+            Value::Picture(src) => wire::Value::Picture(wire::Picture { src: src.clone() }),
             Value::Unit
             | Value::Coll(_)
             | Value::Action(_)
@@ -294,7 +295,8 @@ pub fn runtime_value(value: &wire::Value) -> Option<Value> {
         | wire::Value::Rich(_)
         | wire::Value::Error(_)
         | wire::Value::Map(_)
-        | wire::Value::Action(_) => {
+        | wire::Value::Action(_)
+        | wire::Value::Picture(_) => {
             return None;
         }
     })

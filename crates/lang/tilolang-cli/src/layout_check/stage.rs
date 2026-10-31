@@ -86,6 +86,7 @@ impl Staged {
                 device: None,
                 index_dir: None,
                 record_loader: None,
+                root: tilolang_tilo::host::RootView::default(),
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             },
             Rc::clone(packages) as Rc<dyn Platform>,

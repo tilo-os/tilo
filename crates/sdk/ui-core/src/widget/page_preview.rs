@@ -225,3 +225,7 @@ mod tests {
         );
     }
 }
+
+#[path = "page_preview_component.rs"]
+mod component;
+pub use component::PagePreviewProps;

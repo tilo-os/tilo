@@ -760,6 +760,82 @@ class AppResourceActionContractTests(unittest.TestCase):
                 ),
             )
 
+    def test_an_app_whose_record_a_model_crate_declares_is_a_framework_host(self):
+        """Tasks keeps the `tasks.tracker` record in `apps/tasks-model`, shared
+        with the agent that works its issues: the app hosts the framework app
+        and the model crate declares the record, so the app publishes its
+        actions without a surface of its own."""
+
+        def fixture(
+            *,
+            source: str = (
+                "pub use tasks_model as model;\n"
+                "pub struct App;\n"
+                "impl ResourceApp for App {\n"
+                "    type Resource = Tracker;\n"
+                "    const ID: &'static str = \"so.tilo.tasks\";\n"
+                "}\n"
+            ),
+            dependencies: str = (
+                'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+                'tasks-model={path="../tasks-model"}\n'
+            ),
+            code: str = (
+                "#[derive(Model, Default)]\n"
+                "pub struct Tracker {}\n"
+                '#[resource(kind = "tasks.tracker", label = "Tasks")]\n'
+                "impl Tracker {}\n"
+            ),
+            model_name: str = "tasks-model",
+        ) -> Path:
+            root = self.fixture(source, dependencies=dependencies)
+            crate = root / "apps" / model_name / "src"
+            crate.mkdir(parents=True)
+            (crate / "lib.rs").write_text(code, encoding="utf-8")
+            return root
+
+        def reasons(root: Path) -> str:
+            violations, _ = contract.audit(root)
+            return "\n".join(item.reason for item in violations)
+
+        with self.subTest(phase="a model crate's record passes"):
+            violations, _ = contract.audit(fixture())
+            self.assertEqual(violations, [])
+        with self.subTest(phase="a crate that declares no such record still fails"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        code=(
+                            "#[derive(Model, Default)]\n"
+                            "pub struct Note {}\n"
+                            '#[resource(kind = "tasks.note", label = "Note")]\n'
+                            "impl Note {}\n"
+                        )
+                    )
+                ),
+            )
+        with self.subTest(phase="a crate outside apps/*-model does not stand in"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(fixture(model_name="tasks-shared")),
+            )
+        with self.subTest(phase="the app must host the record it names"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        source=(
+                            "pub use tasks_model as model;\n"
+                            "pub struct App;\n"
+                            "impl ResourceApp for App {\n"
+                            "    type Resource = Elsewhere;\n"
+                            "}\n"
+                        )
+                    )
+                ),
+            )
+
     def test_only_a_compute_package_publishes_no_surface_of_its_own(self):
         compute_manifest = (
             '[package]\nid="so.tilo.sample"\nkind="service"\n'

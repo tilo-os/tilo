@@ -38,7 +38,7 @@ use tilo_render_protocol::patch::{self as ui, Lane, ToApp, ToUi, Transport, Word
 
 use crate::background::Waker;
 use crate::bundle::Bundle;
-use crate::host::{Host, Opening, Package};
+use crate::host::{Host, Opening, Package, RootView};
 use crate::publish::{COMMIT, HOST_RESOURCE};
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{
@@ -157,6 +157,11 @@ pub struct Config {
     pub record_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
     /// Where outside effects go; the development log when `None`.
     pub sink: Option<Box<dyn OutsideSink>>,
+    /// The root and the view the window opens over, each by name. A package with more than one
+    /// root (the shell's `Desk` and its `Arrangement`) says which layer this window is;
+    /// [`RootView::default`] takes the package's first root and its default view, as the
+    /// launcher opens an app.
+    pub root: RootView,
 }
 
 /// Commits waiting to be handed to the door, each tagged with the invocation of the door that
@@ -239,6 +244,8 @@ struct Pending {
 )]
 pub struct Instance {
     app: String,
+    /// The root and the view the window opens over, by name.
+    root_view: RootView,
     me: String,
     mode: Mode,
     device: Option<String>,
@@ -264,7 +271,7 @@ pub struct Instance {
     /// What waits to be sent this frame.
     out: Vec<ToUi>,
     /// The lenses on each resource of the package, as presence last reported them.
-    lenses: HashMap<String, Vec<(Principal, bool)>>,
+    lenses: HashMap<String, Vec<(Principal, bool, bool)>>,
     lenses_changed: bool,
     /// The person and the room's policy the runtime's members were last read from.
     members_from: Option<(
@@ -330,6 +337,7 @@ impl Instance {
         let told = Rc::new(crate::names::Told::new(&config.me, names));
         Self {
             app: config.app,
+            root_view: config.root,
             me: config.me,
             mode: config.mode,
             device: config.device,
@@ -792,7 +800,10 @@ impl Instance {
             .detail
             .as_ref()
             .map(|view| (view.target.clone(), view.with.clone()));
-        let (Ok(target), Ok(view)) = (host.root_of(&self.app), host.open_main(&self.app)) else {
+        let (Ok(target), Ok(view)) = (
+            host.root_of_layer(&self.app, &self.root_view),
+            host.open_layer(&self.app, &self.root_view),
+        ) else {
             tracing::warn!(app = self.app, "the new build has no root to open");
             return;
         };
@@ -836,14 +847,14 @@ impl Instance {
 
     /// Open the package's root view.
     fn open_root(&mut self, host: &Host) {
-        let target = match host.root_of(&self.app) {
+        let target = match host.root_of_layer(&self.app, &self.root_view) {
             Ok(target) => target,
             Err(error) => {
                 tracing::warn!(app = self.app, %error, "the app has no root to open");
                 return;
             }
         };
-        match host.open_main(&self.app) {
+        match host.open_layer(&self.app, &self.root_view) {
             Ok(view) => {
                 self.root = Some(Shown::new(target, self.spaced(Lane::Root, view)));
                 if self.detail.take().is_some() {
@@ -1175,6 +1186,28 @@ impl Instance {
         self.out.extend(sent);
     }
 
+    /// Whether the detail view's bound controls hold anything, and where: a draft being typed
+    /// in a conversation. Only whether, never what it says: presence carries "composing",
+    /// never the words.
+    #[must_use]
+    pub fn composing_in(&self) -> Option<&ResourceRef> {
+        let detail = self.detail.as_ref()?;
+        // The view's own controls, as the bound values it holds: any text or rich text with
+        // something in it is a draft under way.
+        let holds = self.lane(Lane::Detail).is_some_and(|shown| {
+            shown
+                .bound
+                .keys()
+                .filter_map(|key| shown.view.borrow().bound_value(key))
+                .any(|value| match value {
+                    crate::runtime::Value::Text(text) => !text.trim().is_empty(),
+                    crate::runtime::Value::Rich(rich) => !rich.written_text().trim().is_empty(),
+                    _ => false,
+                })
+        });
+        holds.then_some(&detail.target)
+    }
+
     /// The window shows what was typed into its bound control `key` of `lane` (the edit it
     /// sent just applied): take it as what the window holds, so a later change from elsewhere
     /// (the draft cleared once it was sent) differs from it and is sent.
@@ -1193,17 +1226,32 @@ impl Instance {
 
     /// Bring the lenses the views read up to date with presence: who else is at each resource
     /// (`peers`, by resource id), and the person themselves at the detail view's resource.
+    /// Someone composing a message in the detail view is a typist there: `composers` names
+    /// them, and their lens reads `composing` (`lenses(c)`), so a conversation can say
+    /// "… is typing" without reading a draft.
     pub fn set_peers(&mut self, peers: HashMap<String, String>) {
-        let mut now: HashMap<String, Vec<(Principal, bool)>> = HashMap::new();
+        self.set_peers_and_composers(peers, &[]);
+    }
+
+    /// [`Self::set_peers`], with who is composing a message in the detail view's resource.
+    pub fn set_peers_and_composers(
+        &mut self,
+        peers: HashMap<String, String>,
+        composers: &[String],
+    ) {
+        let mut now: HashMap<String, Vec<(Principal, bool, bool)>> = HashMap::new();
         for (resource, who) in peers {
+            let typing = composers.contains(&who);
             now.entry(resource)
                 .or_default()
-                .push((Principal::new(who), false));
+                .push((Principal::new(who), false, typing));
         }
         if let Some(detail) = &self.detail {
-            now.entry(detail.target.id_string())
-                .or_default()
-                .push((Principal::new(self.me.clone()), true));
+            now.entry(detail.target.id_string()).or_default().push((
+                Principal::new(self.me.clone()),
+                true,
+                false,
+            ));
         }
         if now == self.lenses {
             return;

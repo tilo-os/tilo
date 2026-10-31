@@ -199,6 +199,10 @@ struct Offered<'m> {
     present: bool,
 }
 
+/// The longest run of a conversation's unread messages a mention count reads: one page of
+/// them, so a room nobody has read is not read message by message for a badge.
+const MENTION_SCAN: usize = 64;
+
 impl Core {
     /// `delivery(r)` of the document `doc`: how its last outside effect stands, as the host
     /// last said; a view that read it runs again when that moves.
@@ -270,6 +274,42 @@ impl Core {
             }
             Imp::Versions | Imp::VersionEnd | Imp::RunChanges | Imp::Unseen | Imp::Steps => {
                 let value = self.versions_import(imp, a)?;
+                self.ret_h(value)
+            }
+            Imp::Mentions => {
+                // `mentions(c, field, Message)`: how many of `c`'s items name the person looking,
+                // that they have not seen: a channel's mention count, next to its unread count.
+                let coll = self.ref_arg(a.h(0)?)?;
+                let field = self.text(a.h(1)?)?;
+                let item = self.text(a.h(2)?)?;
+                let person = self.looking()?;
+                let count = self
+                    .mentions_of(&person, &coll.target, &field, &item)
+                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+                self.read_versions_of(&coll.target)?;
+                self.note_seen_read(&person, &coll.target.id_string())?;
+                crate::core::ret_i64(i64::try_from(count).unwrap_or(i64::MAX))
+            }
+            Imp::FirstUnseen => {
+                // `first_unseen(c, field, Message)`: where the first unread item of `c`'s
+                // collection begins, read by the frame running, so the view runs again when it
+                // moves.
+                let coll = self.ref_arg(a.h(0)?)?;
+                let field = self.text(a.h(1)?)?;
+                let item = self.text(a.h(2)?)?;
+                let person = self.looking()?;
+                let found = self
+                    .first_unseen_of(&person, &coll.target, &field, &item)
+                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+                // The view read what the answer is made of: `c`'s own versions (which move when
+                // an item is posted) and the person's seen mark and reviewed runs (which move
+                // when they read on).
+                self.read_versions_of(&coll.target)?;
+                self.note_seen_read(&person, &coll.target.id_string())?;
+                let value = found.map_or_else(Value::none, |id| {
+                    let at = coll.target.item(&id, item);
+                    Value::some(Value::resource(&at))
+                });
                 self.ret_h(value)
             }
             Imp::MetaOf => {
@@ -707,6 +747,176 @@ impl Core {
         ))
     }
 
+    /// The first item of `at`'s collection `field` that `person` has not seen, oldest first (a
+    /// conversation's first unread message), as a transcript shows it.
+    ///
+    /// Read item by item from the collection's end, a page at most: an item is unseen when a
+    /// version of it is newer than what the person has seen of `at` (its mark, or the newest
+    /// item they made, which they wrote and so read). The first one found, oldest first, is the
+    /// answer, and a channel the person is caught up with costs the page it looks through.
+    pub(crate) fn first_unseen_of(
+        &self,
+        person: &str,
+        at: &ResourceRef,
+        field: &str,
+        item: &str,
+    ) -> Result<Option<String>, crate::store::StoreError> {
+        // How many items from the end are looked through for the first unread one: one index
+        // page, which is what a listing reads to place an item.
+        const TAIL: usize = 64;
+        let store = self.store.borrow();
+        let storage = self
+            .type_of_ref(&at.ty)
+            .ok()
+            .and_then(|(_, info)| info.field_by_id_or_name(field).map(|f| f.id.clone()));
+        let Some(storage) = storage else {
+            return Ok(None);
+        };
+        // A record the store does not hold yet (one just made, or empty) has nothing unseen.
+        let Ok(items) = store.listing(
+            at,
+            &crate::store::FieldSpec {
+                id: storage,
+                kind: crate::meta::FieldKind::Collection,
+            },
+        ) else {
+            return Ok(None);
+        };
+        let len = items.len();
+        if len == 0 {
+            return Ok(None);
+        }
+        let runs = self.seen_runs(person);
+        let mark_others = self.marks_others(item);
+        let mark = self.seen_mark(person, &at.id_string());
+        // Where the person read to, by the log rather than by a clock: the newest item whose
+        // change their mark of the channel names (a store with no channel versions names the
+        // newest item it holds), and the newest item they made, since writing one means reading
+        // up to it. Both are looked for in the tail, a page deep.
+        let mut read_to: Option<usize> = None;
+        for index in (len.saturating_sub(TAIL)..len).rev() {
+            let Some(id) = items.get(index) else {
+                continue;
+            };
+            let versions = store.versions(&at.item(&id, item.to_owned()))?;
+            let named = mark
+                .as_ref()
+                .is_some_and(|mark| versions.iter().any(|v| v.change == mark.change));
+            if named || versions.iter().any(|v| v.who == person) {
+                read_to = Some(read_to.map_or(index, |at| at.max(index)));
+            }
+        }
+        let from = read_to.map_or(0, |index| index.saturating_add(1));
+        // The first item after where they read that someone changed since, oldest first: a
+        // version of theirs is one they saw, so it never makes an item unread of its own. With
+        // nothing read (no mark, nothing of theirs), the first item is where they stopped: it
+        // alone is asked, so an unread conversation costs one message rather than all of them.
+        let upto = if read_to.is_none() {
+            from.saturating_add(1)
+        } else {
+            len
+        };
+        for index in from.min(len)..upto {
+            let Some(id) = items.get(index) else {
+                break;
+            };
+            let candidate = at.item(&id, item.to_owned());
+            if store.type_of(&candidate).is_err() {
+                continue;
+            }
+            let versions = store.versions(&candidate)?;
+            // An item nothing changed is not one anyone said: nothing unseen in it.
+            if versions.is_empty() {
+                continue;
+            }
+            let seen = self.seen_mark(person, &candidate.id_string());
+            if !crate::seen::unseen(&versions, person, seen.as_ref(), &runs, mark_others).is_empty()
+            {
+                return Ok(Some(id.to_string()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// How many of the items of `at`'s collection `field` (of `item`) name `person` in their
+    /// rich text and are not seen by them: a channel's mention count, beside its unread count.
+    ///
+    /// A mention is a `mention` mark whose value is the person's id
+    /// ([`crate::rich::MENTION`]), as the system's mention notices read it. Only the messages
+    /// the person has not seen are read — from `first_unseen` on — so a channel the person is
+    /// caught up with costs one message, never its whole history. (A reference column in the
+    /// index would answer it in one read; none is kept yet.)
+    pub(crate) fn mentions_of(
+        &self,
+        person: &str,
+        at: &ResourceRef,
+        field: &str,
+        item: &str,
+    ) -> Result<usize, crate::store::StoreError> {
+        let store = self.store.borrow();
+        let storage = self
+            .type_of_ref(&at.ty)
+            .ok()
+            .and_then(|(_, info)| info.field_by_id_or_name(field).map(|f| f.id.clone()));
+        let Some(storage) = storage else {
+            return Ok(0);
+        };
+        let Ok(items) = store.listing(
+            at,
+            &crate::store::FieldSpec {
+                id: storage,
+                kind: crate::meta::FieldKind::Collection,
+            },
+        ) else {
+            return Ok(0);
+        };
+        let len = items.len();
+        // From the first unread message on: the only ones that can name the person unseen.
+        let from = match self.first_unseen_of(person, at, field, item)? {
+            Some(id) => items.position(&id).flatten().unwrap_or(0),
+            None => return Ok(0),
+        };
+        // The item's type, which the caller named: its rich text fields are what a mention is
+        // written in.
+        let Ok((_, info)) = self.type_of_ref(item) else {
+            return Ok(0);
+        };
+        let texts: Vec<String> = info
+            .fields
+            .iter()
+            .filter(|f| f.kind == crate::meta::FieldKind::RichText)
+            .map(|f| f.id.clone())
+            .collect();
+        // The longest run of unread messages read for a count: a room nobody has read counts
+        // mentions in its first page of new messages, not in every one.
+        let upto = from.saturating_add(MENTION_SCAN).min(len);
+        let mut found: usize = 0;
+        for index in from..upto {
+            let Some(id) = items.get(index) else {
+                break;
+            };
+            let candidate = at.item(&id, item.to_owned());
+            // The item may have been removed since: it names nobody.
+            if store.type_of(&candidate).is_err() {
+                continue;
+            }
+            for field in &texts {
+                let spec = crate::store::FieldSpec {
+                    id: field.clone(),
+                    kind: crate::meta::FieldKind::RichText,
+                };
+                let Ok(crate::store::FieldValue::Rich(rich)) = store.read(&candidate, &spec) else {
+                    continue;
+                };
+                if rich.mentions(person) {
+                    found = found.saturating_add(1);
+                    break;
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// Whether the type `ty` declares `mark others`: another person's change to it is marked
     /// unseen, as an agent's is.
     pub(crate) fn marks_others(&self, ty: &str) -> bool {
@@ -756,18 +966,27 @@ impl Core {
             .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))
     }
 
-    /// `person` has seen every version of `at` there is now. Whether the mark moved.
+    /// `person` has seen every version of `at` there is now, and of what it holds when it is a
+    /// container (a conversation's messages): the time they read to, which each item's version
+    /// is later or earlier than. Whether the mark moved.
     pub(crate) fn mark_seen(
         &self,
         person: &str,
         at: &ResourceRef,
     ) -> Result<bool, crate::store::StoreError> {
+        let newest_item = self.newest_item_version(at);
         let resource = at.id_string();
         let versions = self.store.borrow().versions(at)?;
-        let Some(newest) = versions.last() else {
-            return Ok(false);
+        // A store that keeps a version per item names the mark by the newest of what it holds;
+        // one that keeps the container's own versions names it by theirs. The later of the two
+        // stands: a person who read a channel has read everything in it.
+        let by_container = versions.last().cloned();
+        let mark = match (by_container, newest_item) {
+            (Some(container), Some(item)) if item.at > container.at => SeenMark::of(&item),
+            (Some(container), _) => SeenMark::of(&container),
+            (None, Some(item)) => SeenMark::of(&item),
+            (None, None) => return Ok(false),
         };
-        let mark = SeenMark::of(newest);
         if self.seen_mark(person, &resource).as_ref() == Some(&mark) {
             return Ok(false);
         }
@@ -786,6 +1005,50 @@ impl Core {
                 mark,
             });
         Ok(true)
+    }
+
+    /// The newest item's version among `at`'s collections, when it holds any: the time a read
+    /// of `at` reaches, found from the end a page at most rather than by walking the items.
+    fn newest_item_version(&self, at: &ResourceRef) -> Option<crate::store::Version> {
+        // How many items from the end are looked through for one that says something.
+        const TAIL: usize = 8;
+        let Ok((_, info)) = self.type_of_ref(&at.ty) else {
+            return None;
+        };
+        let mut newest: Option<crate::store::Version> = None;
+        for spec in info.specs() {
+            if spec.kind != crate::meta::FieldKind::Collection {
+                continue;
+            }
+            let Some(crate::meta::Ty::Record(item_ty)) = info.field(&spec.id).map(|f| f.ty.clone())
+            else {
+                continue;
+            };
+            let Ok(items) = self.store.borrow().listing(at, &spec) else {
+                continue;
+            };
+            let len = items.len();
+            for index in (len.saturating_sub(TAIL)..len).rev() {
+                let Some(id) = items.get(index) else {
+                    continue;
+                };
+                let Ok(versions) = self
+                    .store
+                    .borrow()
+                    .versions(&at.item(&id, item_ty.name.clone()))
+                else {
+                    continue;
+                };
+                let Some(last) = versions.last() else {
+                    continue;
+                };
+                if newest.as_ref().is_none_or(|held| held.at < last.at) {
+                    newest = Some(last.clone());
+                }
+                break;
+            }
+        }
+        newest
     }
 
     /// The task runs `person` reviewed are `runs` now.
@@ -843,6 +1106,20 @@ impl Core {
             vs.state_seen.push((key, seen.clone()));
         }
         Ok(())
+    }
+
+    /// Record, in a view's frame, that it read `person`'s seen mark of `resource`: it runs
+    /// again when the mark moves.
+    pub(crate) fn note_seen_read(&self, person: &str, resource: &str) -> HResult<()> {
+        let key = crate::seen::seen_key(person, resource);
+        let (generation, value) = {
+            let states = self.view_states.borrow();
+            (
+                states.generation(&key),
+                states.get(&key).cloned().unwrap_or_else(Value::none),
+            )
+        };
+        self.note_state_read(key, generation, &value)
     }
 
     /// Take `(resource, field)` reads into the running view's reads, when a view runs.

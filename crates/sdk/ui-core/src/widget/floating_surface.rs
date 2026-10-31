@@ -287,6 +287,14 @@ pub enum PopoverSide {
     Right,
 }
 
+// The side of its anchor a popover opens on, as a component's prop.
+crate::component::choice!(PopoverSide, "PopoverSide", {
+    Above => "above",
+    Below => "below",
+    Left => "left",
+    Right => "right",
+});
+
 impl PopoverSide {
     #[must_use]
     pub fn opposite(self) -> Self {

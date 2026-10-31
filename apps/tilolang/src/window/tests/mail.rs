@@ -1264,7 +1264,78 @@ fn muting_keeps_a_conversation_out_of_the_inbox_until_it_is_brought_back() {
     );
 }
 
-// USER REQUIREMENT: one press reads a whole account's inbox, as Gmail's mark-all-read does.
+// USER REQUIREMENT: each account signs what it writes with the person's own signature, above
+// what a reply quotes, as every mail client does.
+#[test]
+fn a_new_message_and_an_answer_carry_the_accounts_signature() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    let account = room.accounts().remove(0);
+    assert_eq!(
+        room.text(&account, "signature"),
+        "",
+        "an account starts without a signature"
+    );
+    room.press(
+        "set_signature",
+        vec![
+            RtValue::resource(&account),
+            RtValue::text("Sam\nhttps://rivera.example"),
+        ],
+    );
+    assert_eq!(
+        room.text(&account, "signature"),
+        "Sam\nhttps://rivera.example"
+    );
+
+    // A new message starts with it.
+    let RtValue::Ref(draft) = room.press("new_message", vec![RtValue::resource(&account)]) else {
+        panic!("a new message is a draft");
+    };
+    assert_eq!(
+        room.text(&(*draft.target).clone(), "body"),
+        "Sam\nhttps://rivera.example",
+        "a new message carries the signature"
+    );
+
+    // An answer puts it over the quotation it answers.
+    hold_for(&mut room, 0);
+    let plan = room.thread("Launch plan");
+    let RtValue::Ref(reply) = room.press("reply", vec![RtValue::resource(&plan)]) else {
+        panic!("a reply is a draft");
+    };
+    let reply = (*reply.target).clone();
+    let body = room.text(&reply, "body");
+    assert!(
+        body.starts_with("Sam\nhttps://rivera.example\n\nOn "),
+        "the signature comes before the quotation: {body:?}"
+    );
+
+    // A message typed in the conversation goes with it, over the quotation too.
+    room.press(
+        "answer",
+        vec![
+            RtValue::resource(&plan),
+            RtValue::text("Thursday suits me."),
+        ],
+    );
+    room.until("the server to take the answer", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    let said = sent
+        .find("Thursday suits me.")
+        .expect("it says what was typed");
+    let signature = sent
+        .find("https://rivera.example")
+        .expect("it carries the signature");
+    let quotation = sent.find("On 2026-").expect("it quotes what it answers");
+    assert!(
+        said < signature && signature < quotation,
+        "the answer, its signature, then what it quotes: {sent}"
+    );
+}
 #[test]
 fn marking_all_read_reads_every_conversation_and_reaches_the_server() {
     let servers = servers();

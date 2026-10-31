@@ -376,6 +376,10 @@ impl Core {
             }
             Imp::UiPropI => self.set_prop(a.h(0)?, a.h(1)?, Value::Int(a.long(2)?)),
             Imp::UiPropF => self.set_prop(a.h(0)?, a.h(1)?, Value::Float(a.float(2)?)),
+            Imp::UiPropPic => {
+                let src = self.text(a.h(2)?)?;
+                self.set_prop(a.h(0)?, a.h(1)?, Value::Picture(src))
+            }
             Imp::UiChild => {
                 let (parent, child) = (self.node_index(a.h(0)?)?, self.node_index(a.h(1)?)?);
                 self.with_view(|vs| {
@@ -406,28 +410,7 @@ impl Core {
                 })?;
                 ret_void()
             }
-            Imp::UiOn => {
-                let node = self.node_index(a.h(0)?)?;
-                let event = self.text(a.h(1)?)?;
-                let act = match self.val(a.h(2)?)? {
-                    v @ Value::Action(_) => v,
-                    other => {
-                        return trap(format!(
-                            "expected an action reference, got {}",
-                            other.kind_name()
-                        ));
-                    }
-                };
-                self.with_view(|vs| {
-                    vs.nodes
-                        .get_mut(node)
-                        .ok_or("unknown ui node")?
-                        .events
-                        .insert(event, act);
-                    Ok(())
-                })?;
-                ret_void()
-            }
+            Imp::UiOn => self.ui_on(a),
             Imp::UiActions => self.offer_actions(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::UiAnchor => {
                 let node = self.node_index(a.h(0)?)?;
@@ -450,6 +433,30 @@ impl Core {
             Imp::ChangeView => self.change_view(a),
             _ => trap("not a ui import"),
         }
+    }
+
+    /// `on event: action` on a node: the action runs when the node's component fires `event`.
+    fn ui_on(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let node = self.node_index(a.h(0)?)?;
+        let event = self.text(a.h(1)?)?;
+        let act = match self.val(a.h(2)?)? {
+            v @ Value::Action(_) => v,
+            other => {
+                return trap(format!(
+                    "expected an action reference, got {}",
+                    other.kind_name()
+                ));
+            }
+        };
+        self.with_view(|vs| {
+            vs.nodes
+                .get_mut(node)
+                .ok_or("unknown ui node")?
+                .events
+                .insert(event, act);
+            Ok(())
+        })?;
+        ret_void()
     }
 }
 

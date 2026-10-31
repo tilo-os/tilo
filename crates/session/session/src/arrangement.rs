@@ -36,6 +36,17 @@ pub const OPERATION: &str = "tilo.shell.arranging";
 pub const RESOURCE: &str = "shell:arrangement";
 /// The resource its history is published as: its undo and redo.
 pub const RECORD_RESOURCE: &str = "shell:arrangement-record";
+/// The person's arrangement as a shell's views read it, by key: what the session publishes for
+/// the shell to draw (`tilo_surface_host::shell_part`).
+pub type Reading = tilo_surface_host::shell_part::ArrangementReading;
+/// A workspace of [`Reading`].
+pub type WorkspaceReading = tilo_surface_host::shell_part::ArrangementWorkspaceReading;
+/// A row of [`Reading`].
+pub type RowReading = tilo_surface_host::shell_part::ArrangementRowReading;
+/// A strip of [`Reading`].
+pub type StripReading = tilo_surface_host::shell_part::ArrangementStripReading;
+/// A place of [`Reading`].
+pub type PlaceReading = tilo_surface_host::shell_part::ArrangementPlaceReading;
 
 /// An arranging action: one change of the person's arrangement.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -166,6 +177,69 @@ impl Arrangement {
     #[must_use]
     pub fn strips(&self) -> Strips {
         own_arrangement::read(&self.doc)
+    }
+
+    /// The arrangement as a shell's views read it: every workspace, row, strip and place, each
+    /// by its key, laid out as the shell's arrangement type holds it. This is what the session
+    /// publishes on its door for a shell to draw.
+    #[must_use]
+    pub fn reading(&self) -> Reading {
+        let strips = self.strips();
+        let mut places = Vec::new();
+        let mut strips_reading = Vec::new();
+        for strip in &strips.strips {
+            for place in &strip.places {
+                places.push(PlaceReading {
+                    key: place.id.to_string(),
+                    strip: strip.id.to_string(),
+                    shows: place.shows.clone(),
+                    shown_as: place.view.clone(),
+                    record: place.record.clone(),
+                    title: place.title.clone(),
+                    pinned: place.pinned,
+                    shell: place.shell.clone(),
+                });
+            }
+            strips_reading.push(StripReading {
+                key: strip.id.to_string(),
+                workspace: strip.workspace.0.to_string(),
+                row: strip.row.0.to_string(),
+                width: i64::from(strip.width.permille()),
+                maximized: strip.maximized,
+                active: strip
+                    .active
+                    .filter(|active| strip.places.iter().any(|place| place.id == *active))
+                    .map_or_else(String::new, |active| active.to_string()),
+                placed: strip.canvas.is_some(),
+                canvas_x: strip.canvas.map_or(0, |canvas| i64::from(canvas.x)),
+                canvas_y: strip.canvas.map_or(0, |canvas| i64::from(canvas.y)),
+                canvas_width: strip.canvas.map_or(0, |canvas| i64::from(canvas.width)),
+                canvas_height: strip.canvas.map_or(0, |canvas| i64::from(canvas.height)),
+                shell: strip.shell.clone(),
+            });
+        }
+        Reading {
+            workspaces: strips
+                .workspaces
+                .iter()
+                .map(|workspace| WorkspaceReading {
+                    key: workspace.id.0.to_string(),
+                    name: workspace.name.clone(),
+                })
+                .collect(),
+            rows: strips
+                .rows
+                .iter()
+                .map(|row| RowReading {
+                    key: row.id.0.to_string(),
+                    workspace: row.workspace.0.to_string(),
+                    name: row.name.clone(),
+                    shell: row.shell.clone(),
+                })
+                .collect(),
+            strips: strips_reading,
+            places,
+        }
     }
 
     /// The record itself, for this person's devices and its history.

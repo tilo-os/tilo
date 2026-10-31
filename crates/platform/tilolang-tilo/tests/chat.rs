@@ -861,3 +861,234 @@ fn a_room_held_by_one_version_of_chat_is_read_and_changed_by_that_version_with_t
         sent(&mut thread)
     );
 }
+
+/// A conversation's first unread message is where its "New messages" divider stands: the
+/// transcript reads `first_unseen(c)`, a fact of the channel's messages and the person's seen
+/// state, and the list places the divider over that message's row. Once the person reads to the
+/// end nothing is marked, and a message that arrives afterwards is marked alone.
+#[test]
+fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("One."), Value::none()],
+    );
+    call(
+        &ben,
+        "send",
+        vec![design.clone(), rich("Two."), Value::none()],
+    );
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+
+    // The rows the list shows, as the runtime holds them, each with whether the divider stands
+    // over it (a row's first child is the list's divider when it is).
+    let marked = |view: &mut ViewInstance| -> Vec<bool> {
+        view.poll_patches().unwrap();
+        let list = find(view.tree(), "ui.VirtualList")
+            .expect("a transcript")
+            .key
+            .clone();
+        let len = view.list_len(&list).unwrap_or(0);
+        for i in 0..len {
+            let _ = view.row(&list, i).unwrap();
+        }
+        let tree = view.tree().clone();
+        let list = find(&tree, "ui.VirtualList").expect("a transcript");
+        list.children
+            .iter()
+            .map(|row| {
+                row.children
+                    .first()
+                    .is_some_and(|first| first.kind == "ui.UnreadDivider")
+            })
+            .collect()
+    };
+
+    // Ada's view stands the divider over the first of the two, and not over the second.
+    let mut view = ada.host.open_resource(&target(&design), None).unwrap();
+    assert_eq!(marked(&mut view), [true, false], "over the first");
+
+    // She reads: opening the channel marks what it showed seen, and nothing is left unread.
+    ada.host
+        .runtime()
+        .mark_seen("ada", &target(&design))
+        .unwrap();
+    ada.commit();
+    let mut reopened = ada.host.open_resource(&target(&design), None).unwrap();
+    assert_eq!(marked(&mut reopened), [false, false], "nothing unseen");
+
+    // A message from Ben afterwards is what is new, alone.
+    ben.host.sync_from(&ada.doc);
+    call(&ben, "send", vec![design, rich("Any time."), Value::none()]);
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+    assert_eq!(
+        marked(&mut reopened),
+        [false, false, true],
+        "his answer is what is new"
+    );
+}
+
+/// A direct message is a conversation in the same model as a channel: it stands in the sidebar
+/// with everyone the workspace has, pressing a person opens the conversation with them (the
+/// one already open, not a new empty one), and it takes messages as a channel does.
+#[test]
+fn a_direct_message_opens_with_a_person_and_takes_their_messages() {
+    // A room with Ben in it: everyone the workspace has, from its own membership.
+    let mut policy = tilo_action_policy::RoomPolicy::new("room-dm", "ada");
+    policy
+        .members
+        .insert("ben".to_owned(), tilo_action_policy::Role::Editor);
+    let (mut ada, loaded) = Replica::standing(
+        "ada",
+        AutoCommit::new(),
+        &[(CHAT, CHAT_IDS)],
+        Some(tilo_action_policy::Standing::person(policy, "ada")),
+    );
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    // The room's membership, as the host hands it to the runtime.
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", "owner"),
+            tilolang_runtime::members::Member::person("ben", "editor"),
+        ],
+        None,
+    );
+
+    // The sidebar offers Ben under Direct messages: everyone in the workspace, from its
+    // membership rather than a copy Chat keeps.
+    let sidebar = ada.view(APP);
+    let section = {
+        let mut seen = Vec::new();
+        find_all(sidebar.tree(), "ui.NavSection", &mut seen);
+        seen.into_iter()
+            .find(|s| s.props.get("title") == Some(&Value::text("Direct messages")))
+            .expect("the direct messages section")
+            .clone()
+    };
+    let mut people = Vec::new();
+    texts(&section, &mut people);
+    assert!(people.contains(&"ben".to_owned()), "{people:?}");
+
+    // Pressing them opens the conversation with Ben, once: a person has one.
+    let person = {
+        let mut items = Vec::new();
+        find_all(&section, "ui.NavItem", &mut items);
+        items
+            .into_iter()
+            .find(|item| item.props.get("key") == Some(&Value::text("/person/ben")))
+            .expect("Ben's place")
+            .clone()
+    };
+    // The place's event runs the action the app declared for it.
+    assert!(
+        sidebar.event_action(&person.key, "select").is_some(),
+        "the place opens a conversation"
+    );
+    assert!(
+        ada.host
+            .package(APP)
+            .unwrap()
+            .meta
+            .actions
+            .iter()
+            .any(|a| a.name == "message_person"),
+        "the action is declared"
+    );
+    let dm = call(
+        &ada,
+        "message_person",
+        vec![all.clone(), Value::Principal(Principal::new("ben"))],
+    );
+    let again = call(
+        &ada,
+        "message_person",
+        vec![all, Value::Principal(Principal::new("ben"))],
+    );
+    assert_eq!(
+        target(&dm).id_string(),
+        target(&again).id_string(),
+        "a person has one conversation"
+    );
+    // It takes a message from Ben, which Ada reads as any conversation's: an item created by
+    // `insert` is held in its holder's record, and the store's index of records learns of it
+    // on the next scan, as a `commit` and a sync does.
+    // Ada's own sync first: the room's host scans the records, so the new conversation is
+    // one the store can find.
+    ada.commit();
+    ben.host.sync_from(&ada.doc);
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+    let _ = ada.host.wait_index();
+    call(
+        &ben,
+        "send",
+        vec![dm.clone(), rich("Still on for Saturday?"), Value::none()],
+    );
+    ben.commit();
+    ben.host.sync_from(&ben.doc);
+    ada.sync_with(&mut ben);
+    let mut conversation = ada.host.open_resource(&target(&dm), None).unwrap();
+    assert_eq!(said(&mut conversation), ["Still on for Saturday?"]);
+}
+
+/// A conversation says who is typing in it from the system's presence: the lenses on the
+/// channel a person has open carry whether that person is composing a message there, never
+/// what it says. The line goes when they stop, and a lens that is only open (not composing)
+/// says nothing.
+#[test]
+fn a_conversation_says_who_is_typing_from_presence() {
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    ada.host.sync_from(&ada.doc);
+    let mut view = ada.host.open_resource(&target(&design), None).unwrap();
+    let channel = target(&design).id_string();
+
+    // Nobody at the channel but Ada: no one is typing.
+    let typing = |view: &mut ViewInstance| -> Vec<String> {
+        view.poll_patches().unwrap();
+        let mut found = Vec::new();
+        texts(view.tree(), &mut found);
+        found
+            .into_iter()
+            .filter(|text| text.contains("is typing") || text.contains("are typing"))
+            .collect()
+    };
+    assert!(typing(&mut view).is_empty(), "no one typing yet");
+
+    // Ben has the channel open and is composing: the conversation says so, in his name. The
+    // runtime's lenses are what `lenses(c)` reads; a view that read them runs again.
+    let ben = Principal::new("ben");
+    ada.host
+        .runtime()
+        .set_lenses(&channel, &[(ben.clone(), false, true)]);
+
+    assert_eq!(
+        typing(&mut view),
+        ["ben is typing…"],
+        "presence says Ben is composing"
+    );
+
+    // He stops: the line goes. Open but not composing says nothing either.
+    ada.host
+        .runtime()
+        .set_lenses(&channel, &[(ben, false, false)]);
+    assert!(typing(&mut view).is_empty(), "he stopped");
+}

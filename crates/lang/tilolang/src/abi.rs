@@ -161,6 +161,7 @@ imports! {
     UiPropH = "ui_prop_h" ([H, H, H] -> []);
     UiPropI = "ui_prop_i" ([H, H, I64] -> []);
     UiPropF = "ui_prop_f" ([H, H, F64] -> []);
+    UiPropPic = "ui_prop_picture" ([H, H, H] -> []);
     UiChild = "ui_child" ([H, H] -> []);
     UiBind = "ui_bind" ([H, H, H] -> []);
     UiOn = "ui_on" ([H, H, H] -> []);
@@ -186,6 +187,8 @@ imports! {
     VersionEnd = "version_end" ([H, I32] -> [H]);
     RunChanges = "run_changes" ([H] -> [H]);
     Unseen = "unseen" ([H] -> [H]);
+    FirstUnseen = "first_unseen" ([H, H, H] -> [H]);
+    Mentions = "mentions" ([H, H, H] -> [I64]);
     Steps = "steps" ([H] -> [H]);
     CollOrdered = "coll_ordered" ([H, H] -> [H]);
     CollWhereWith = "coll_where_with" ([H, H, H] -> [H]);

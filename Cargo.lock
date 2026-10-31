@@ -327,7 +327,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shell",
- "tasks",
+ "tasks-model",
  "tempfile",
  "tilo-action-policy",
  "tilo-actions",
@@ -16997,11 +16997,22 @@ dependencies = [
  "serde",
  "serde_json",
  "tasks",
+ "tasks-model",
  "tilo-agent-models",
  "tilo-app",
  "tilo-rich-text",
  "tilo-test-env",
  "workspace-hack",
+]
+
+[[package]]
+name = "tasks-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-rich-text",
 ]
 
 [[package]]
@@ -22703,6 +22714,7 @@ dependencies = [
  "tilo-app-state",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-desktop-search",
  "tilo-history",
  "tilo-render-protocol",
  "tilo-resource",
@@ -27947,6 +27959,7 @@ dependencies = [
  "tar",
  "target-lexicon",
  "tasks",
+ "tasks-model",
  "tempfile",
  "tendril",
  "terminal",

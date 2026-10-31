@@ -150,6 +150,12 @@ pub struct VirtualListProps {
     /// A conversation: each row stands in the page column, the list opens at its newest row
     /// and follows it.
     pub transcript: bool,
+    /// The item a conversation's reader had not seen when they opened it (`first_unseen(c)`):
+    /// the "New messages" divider stands over the row that shows it, and while that is above
+    /// the view a pill at the foot offers to take the reader back to it. `None` draws neither.
+    /// The list works out the row as it builds, so the same list keeps its rows and only the
+    /// two the divider moved between build again.
+    pub unread: Option<ResourceId>,
     /// The items, in order.
     #[component(slot(default))]
     pub rows: DescribedRows,
@@ -475,6 +481,10 @@ impl ListModel for DescribedRows {
         })
         .flatten()
     }
+
+    fn key_presenting(&self, id: &str) -> Option<String> {
+        DescribedRows::key_presenting(self, id)
+    }
 }
 
 /// The list a described [`VirtualList`] is: over its items, under the one context menu its
@@ -675,10 +685,22 @@ fn attach(row: Element, swipe: Option<SwipeActionProps>, attached: Attachments) 
 ///
 /// Each message is one row of the page's column: a run's next line stands a tight gap under
 /// the one before, a new run a section's gap under the last.
-fn message_of(rows: &DescribedRows, key: &str) -> Element {
+fn message_of(rows: &DescribedRows, key: &str, unread: Option<&str>) -> Element {
+    // The row that shows the item the reader has not seen, of the rows the host rendered. An
+    // item is named by its id (`root-x/iy`), the one the app said and the one the row shows.
+    let first_unread = unread.is_some_and(|item| {
+        rows.with_item(key, |props| {
+            props
+                .item
+                .as_ref()
+                .is_some_and(|shown| shown.0.as_str() == item)
+        })
+        .unwrap_or(false)
+    });
     let said = rows.with_item(key, |item| (item.author, item.time));
     let Some((Some(author), at)) = said else {
-        return page_row(row_of(rows, key), RUN_GAP);
+        let row = page_row(row_of(rows, key), RUN_GAP);
+        return if first_unread { with_unread(row) } else { row };
     };
     let before = rows
         .index_of(&key.to_owned())
@@ -743,7 +765,7 @@ fn message_of(rows: &DescribedRows, key: &str) -> Element {
         attached,
     );
     let gap = if continues { Rhythm::Tight } else { RUN_GAP };
-    match day.filter(|_| new_day) {
+    let row = match day.filter(|_| new_day) {
         Some(day) => page_row(
             Box::new(
                 Stack::stack()
@@ -754,7 +776,23 @@ fn message_of(rows: &DescribedRows, key: &str) -> Element {
             gap,
         ),
         None => page_row(message, gap),
-    }
+    };
+    if first_unread { with_unread(row) } else { row }
+}
+
+/// A transcript's row for the first message the reader had not read, with the "New messages"
+/// divider over it: the divider is the toolkit's
+/// ([`crate::widget::conversation::UnreadDivider`]), placed from what the app says is unread, so
+/// every conversation draws the same one.
+fn with_unread(row: Element) -> Element {
+    Box::new(
+        Page::full()
+            .row_after(RUN_GAP)
+            .push_slot(Slot::new(Box::new(
+                crate::widget::conversation::UnreadDivider::new(),
+            )))
+            .push_slot(Slot::new(row)),
+    )
 }
 
 /// The gap over a run of messages, and over a day's divider.
@@ -808,6 +846,7 @@ impl Described for DescribedList {
             selection_follows_focus,
             in_column,
             transcript,
+            unread,
             mut rows,
             removed,
             selection,
@@ -825,13 +864,19 @@ impl Described for DescribedList {
         };
         rows.removed = removed.0;
         if transcript {
-            let list =
-                VirtualList::new(rows, MESSAGE_ESTIMATE, |rows, _, key| message_of(rows, key))
-                    .flush()
-                    .with_edges(TranscriptEdges::new(RUN_GAP))
-                    .filling()
-                    .following_end()
-                    .with_id(key);
+            // The divider stands over the row that shows the item: a row says which item it
+            // shows, so the list finds it as the rows arrive.
+            let marked = unread.as_ref().map(|item| item.0.clone());
+            let divider = marked.clone();
+            let list = VirtualList::new(rows, MESSAGE_ESTIMATE, move |rows, _, key| {
+                message_of(rows, key, divider.as_deref())
+            })
+            .flush()
+            .with_edges(TranscriptEdges::new(RUN_GAP))
+            .filling()
+            .following_end()
+            .with_id(key);
+            let list = list.unread_from(marked);
             // A message offers its menu as every row does.
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
                 row_menu(list, at, &Event::None)
@@ -913,7 +958,15 @@ impl Described for DescribedList {
             rendered: rendered(&props.rows),
             removed: props.removed.keys(),
         };
-        face.rendered.is_some() && face == self.face
+        if face.rendered.is_some() && face == self.face {
+            // The unread row moved without the list's items changing: the list takes it, and
+            // the rows it left and arrived at build again.
+            if let Some(list) = self.list_mut() {
+                list.set_unread(props.unread.as_ref().map(|item| item.0.clone()));
+            }
+            return true;
+        }
+        false
     }
 }
 
