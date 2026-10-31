@@ -28,7 +28,8 @@ class UiBuildInputs(unittest.TestCase):
             '[package]\nname = "ui-build-inputs"\nversion = "0.0.0"\n'
             'edition = "2024"\nautotests = false\n[workspace]\n'
         )
-        shutil.copyfile(SOURCE / "build.rs", self.package / "build.rs")
+        for name in ("build.rs", "component_scan.rs"):
+            shutil.copyfile(SOURCE / name, self.package / name)
         self.original = {}
         for source, filename in FIXTURES.items():
             destination = self.package / source
