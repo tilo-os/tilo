@@ -7,9 +7,22 @@
 
 use std::sync::{Arc, Mutex};
 
+use settings_store::notification_policy::AppNotificationRule;
 use tilo_notifications_service::{Caller, ImageData, Occurrence, Taken};
 
 use super::*;
+
+/// What an app with a launcher-verified identity sent.
+fn from_app(
+    mut notification: tilo_notifications_service::Notification,
+    app_id: &str,
+) -> tilo_notifications_service::Notification {
+    notification.caller = Some(Caller {
+        app_id: app_id.into(),
+        workspace: None,
+    });
+    notification
+}
 
 fn sent(id: u32) -> tilo_notifications_service::Notification {
     let mut notification = tilo_notifications_service::Notification::new(id);
@@ -411,6 +424,100 @@ fn do_not_disturb_holds_the_banner_and_the_bar_says_why() {
     rig.step();
     assert_eq!(rig.feed().banners.len(), 1, "and shows it again after");
     assert!(!rig.signals.quiet());
+}
+
+/// An app the person silenced on screen still tells them what arrived: the
+/// banner is held, the centre keeps it and the bar counts it unread.
+#[test]
+fn an_app_with_its_banners_off_still_reaches_the_centre() {
+    let mut rig = rig();
+    rig.policy.lock().unwrap().per_app.insert(
+        "so.tilo.mail".into(),
+        AppNotificationRule {
+            banners: Some(false),
+            ..AppNotificationRule::default()
+        },
+    );
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
+    rig.step();
+    assert!(rig.feed().banners.is_empty(), "nothing is put on screen");
+    assert_eq!(rig.history(), ["New mail"], "the centre keeps it");
+    assert_eq!(rig.signals.unread(), 1, "the bar counts it unread");
+
+    // An app with no rule of its own keeps its banners.
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.chat"));
+    rig.step();
+    assert_eq!(
+        rig.feed().banners.len(),
+        1,
+        "only the silenced app is quiet"
+    );
+    assert_eq!(rig.signals.unread(), 2);
+}
+
+/// An app whose previews are off shows its banner without the body, and
+/// the centre still has what was said.
+#[test]
+fn an_app_with_previews_off_shows_no_body_on_its_banner() {
+    let mut rig = rig();
+    rig.policy.lock().unwrap().per_app.insert(
+        "so.tilo.mail".into(),
+        AppNotificationRule {
+            previews: Some(false),
+            ..AppNotificationRule::default()
+        },
+    );
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
+    rig.step();
+    let banner = rig.banner();
+    assert!(!banner.show_preview, "the body stays hidden");
+    assert_eq!(banner.body, "From Ada", "but it is not lost");
+    assert_eq!(banner.title, "New mail", "the title still says it arrived");
+
+    rig.ask(Ask::Read(banner.id));
+    rig.step();
+    assert_eq!(
+        rig.desktop.log().history()[0].body,
+        "From Ada",
+        "the centre lists it in full"
+    );
+}
+
+/// An app the person keeps off the lock screen is marked so, while an app
+/// following the global preference is shown there.
+#[test]
+fn an_app_kept_off_the_lock_screen_says_so_on_its_notification() {
+    let mut rig = rig();
+    rig.policy.lock().unwrap().show_on_lock_screen = true;
+    rig.policy.lock().unwrap().per_app.insert(
+        "so.tilo.mail".into(),
+        AppNotificationRule {
+            lock_screen: Some(false),
+            ..AppNotificationRule::default()
+        },
+    );
+    for app_id in ["so.tilo.mail", "so.tilo.chat"] {
+        let id = rig.daemon.alloc_id();
+        rig.daemon.push(from_app(sent(id), app_id));
+    }
+    rig.step();
+    let feed = rig.feed();
+    assert_eq!(feed.banners.len(), 2);
+    let allowed = |app_id: &str| {
+        feed.banners
+            .iter()
+            .find(|banner| banner.notification.app_id.as_deref() == Some(app_id))
+            .map(|banner| banner.notification.show_on_lock_screen)
+            .expect("its banner")
+    };
+    assert!(!allowed("so.tilo.mail"), "kept off the lock screen");
+    assert!(
+        allowed("so.tilo.chat"),
+        "shown there as the global rule says"
+    );
 }
 
 #[test]
