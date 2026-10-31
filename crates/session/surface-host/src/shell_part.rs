@@ -1153,7 +1153,8 @@ mod tests {
             part.prepare_frame();
         }
         let mut now = reading();
-        let changes: [(&str, fn(&mut DeskReading)); 3] = [
+        type Change = (&'static str, fn(&mut DeskReading));
+        let changes: [Change; 3] = [
             ("minute", |r| r.clock = "4:29 PM".to_owned()),
             ("notification", |r| r.unread = 1),
             ("workspace switch", |r| {
