@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::fabric::{MediaContinuity, SessionFabric};
 use collab_types::presence::{Availability, PointerSpace, PresenceKey};
 use collab_types::{PeerPresence, PeerPresencePayload};
 use iroh::{EndpointAddr, EndpointId};
@@ -36,8 +37,12 @@ use neighbour_wire::NeighbourMsg;
 use tilo_desktop::chrome::WaveNotice;
 use tilo_desktop::here::{Here, LiveMember, Wave};
 use tilo_desktop_model::{DesktopTree, TabId};
+use tilo_device_fabric::DeviceId;
+use tilo_device_fabric::runtime::FabricRuntime;
 use tilo_endpoint_reachability::{Need, Reachability};
-use tilo_network_actor::{HostIdentity, NetCmd, NetEvent, WorkspaceId, room_topic_id};
+use tilo_network_actor::{
+    HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, WorkspaceId, room_topic_id,
+};
 
 /// The app id the desktop of a room says its own presence under, as the
 /// browser, the agents and every app reading a room expect it.
@@ -349,7 +354,7 @@ fn room_key(room: &str) -> Vec<u8> {
 
 /// What the sync thread is asked to do.
 #[derive(Debug)]
-enum Outgoing {
+pub(crate) enum Outgoing {
     /// Take part in the topic of a room.
     Join(WorkspaceId),
     /// Stop taking part in the topic of a room.
@@ -366,6 +371,16 @@ enum Outgoing {
     WatchSiblings,
     /// Say `msg` to each of the person's devices whose session is up.
     TellSiblings(Box<NeighbourMsg>),
+    /// Dial one of the person's own devices: the session between the two
+    /// carries their device fabric ([`tilo_network_actor::NetCmd::Connect`]).
+    ConnectDevice(EndpointAddr),
+    /// Send this device's fabric to the person's other devices, or to the one
+    /// at `target`.
+    Fabric {
+        user_public_key: [u8; 32],
+        target: Option<EndpointId>,
+        payload: PersonalFabricPayload,
+    },
     /// The session is going: stop the peer actor.
     Stop,
 }
@@ -400,6 +415,11 @@ pub struct Client {
             tilo_user_identity::DeviceCert,
         )>,
     >,
+    /// Where this device's endpoint is reached, as other devices dial it.
+    endpoint: EndpointAddr,
+    /// This device's fabric, when it is a certified device of the person's:
+    /// `None` on a session that takes part as nobody.
+    fabric: Option<Arc<SessionFabric>>,
     /// This device's relays, held back until a room this session takes part
     /// in has someone else in it.
     reachability: Reachability,
@@ -443,12 +463,17 @@ impl Client {
     /// person is here. Without one — a test, a stand-in session — the
     /// session is a device nobody certified and stays anonymous in rooms.
     ///
+    /// `media` is what the person's settings say about what they play
+    /// continuing on their other devices, kept current by the session's
+    /// settings watch.
+    ///
     /// # Errors
     /// The endpoint could not be bound.
     pub fn start(
         identity: Option<HostIdentity>,
         own: OwnPresence,
         hosts: Vec<EndpointAddr>,
+        media: MediaContinuity,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> std::io::Result<Self> {
         let (outgoing, commands) = tokio::sync::mpsc::unbounded_channel();
@@ -457,10 +482,31 @@ impl Client {
         let user = identity
             .as_ref()
             .map(|identity| identity.device_cert.user_public_key);
+        // This device's fabric before the endpoint runs, so a device that
+        // proves itself at the actor's first tick is recorded with it: the
+        // record it keeps is this device's, named by its certificate.
+        let fabric = identity.as_ref().and_then(|identity| {
+            FabricRuntime::restored(
+                Some((
+                    DeviceId::new(hex::encode(identity.device_cert.device_public_key)).ok()?,
+                    identity.device_cert.device_label.clone(),
+                )),
+                None,
+            )
+            .ok()
+            .map(|runtime| {
+                SessionFabric::new(
+                    runtime,
+                    outgoing.clone(),
+                    identity.device_cert.user_public_key,
+                    media,
+                )
+            })
+        });
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
             .spawn(move || run(identity, commands, arrivals, ready, wake))?;
-        let (publisher, reachability) = bound
+        let (publisher, endpoint, reachability) = bound
             .recv()
             .map_err(std::io::Error::other)?
             .map_err(std::io::Error::other)?;
@@ -481,6 +527,8 @@ impl Client {
             user,
             siblings: RefCell::new(std::collections::BTreeMap::new()),
             personal: RefCell::new(Vec::new()),
+            endpoint,
+            fabric,
             reachability,
             thread: Some(thread),
         };
@@ -588,6 +636,10 @@ impl Client {
             self.hear(event);
             heard = true;
         }
+        // What arrived moved this device's fabric — a copy from another
+        // device, a device that is gone: the person's other devices hear so
+        // on the same pass.
+        self.announce_fabric();
         if self.said_at.get().elapsed() >= PRESENCE_AGAIN {
             self.say_again();
         }
@@ -597,6 +649,21 @@ impl Client {
     /// Take one thing the plane heard, and hand the desktop who is here now.
     fn hear(&self, event: NetEvent) {
         self.keep_personal(&event);
+        if let Some(fabric) = &self.fabric {
+            match &event {
+                NetEvent::Sibling {
+                    peer,
+                    certs,
+                    revocations,
+                    ..
+                } => fabric.sibling(*peer, certs, revocations),
+                NetEvent::SiblingLeft { peer, .. } => fabric.sibling_left(*peer),
+                NetEvent::PersonalFabric { peer, payload, .. } => {
+                    fabric.arrived(*peer, payload);
+                }
+                _ => {}
+            }
+        }
         self.plane.borrow_mut().apply(event);
         self.note_reachability();
         self.show_here();
@@ -666,6 +733,47 @@ impl Client {
         tilo_user_identity::DeviceCert,
     )> {
         std::mem::take(&mut *self.personal.borrow_mut())
+    }
+
+    /// Tell the person's other devices what this device says of itself, when
+    /// that moved since they last heard: the session's pass calls this once
+    /// it offered the clipboard, so a copy leaves on the pass that made it.
+    pub fn announce_fabric(&self) {
+        if let Some(fabric) = &self.fabric {
+            fabric.announce_if_changed();
+        }
+    }
+
+    /// This device's fabric, when the person certified it: the link the
+    /// session's services act on.
+    #[must_use]
+    pub fn fabric(&self) -> Option<tilo_device_fabric::link::SharedLink> {
+        self.fabric
+            .as_ref()
+            .map(|fabric| Arc::clone(fabric) as tilo_device_fabric::link::SharedLink)
+    }
+
+    /// The actions one of the person's devices sent this one since the last
+    /// call, for the session's pass to carry out.
+    #[must_use]
+    pub fn fabric_actions(&self) -> Vec<tilo_device_fabric::PersonalFabricActionEnvelope> {
+        self.fabric
+            .as_ref()
+            .map(|fabric| fabric.take_actions())
+            .unwrap_or_default()
+    }
+
+    /// Where other devices reach this one: the endpoint it bound, with the
+    /// addresses it bound on.
+    #[must_use]
+    pub fn endpoint_addr(&self) -> EndpointAddr {
+        self.endpoint.clone()
+    }
+
+    /// Dial one of the person's own devices, whose address this session was
+    /// told: the session between the two carries their device fabric.
+    pub fn connect(&self, addr: EndpointAddr) {
+        let _ = self.outgoing.send(Outgoing::ConnectDevice(addr));
     }
 
     /// Take the waves at this person heard since the last call: the bar
@@ -992,6 +1100,8 @@ impl Client {
                 user: None,
                 siblings: RefCell::new(std::collections::BTreeMap::new()),
                 personal: RefCell::new(Vec::new()),
+                endpoint: EndpointAddr::new(publisher),
+                fabric: None,
                 reachability,
                 thread: None,
             },
@@ -1093,7 +1203,7 @@ fn run(
     identity: Option<HostIdentity>,
     mut commands: tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
     arrivals: std::sync::mpsc::Sender<NetEvent>,
-    ready: std::sync::mpsc::Sender<Result<(EndpointId, Reachability), String>>,
+    ready: std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     wake: Arc<dyn Fn() + Send + Sync>,
 ) {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -1131,6 +1241,7 @@ fn run(
             }
         };
         let publisher = endpoint.id();
+        let addr = endpoint.addr();
         // Nothing wakes the held-back relays from here: the peer actor does
         // when it dials a host or a peer, and the session while a room it
         // shows has someone else in it (`Client::note_reachability`).
@@ -1156,7 +1267,7 @@ fn run(
                 (wake)();
             }
         });
-        if ready.send(Ok((publisher, reachability))).is_err() {
+        if ready.send(Ok((publisher, addr, reachability))).is_err() {
             return;
         }
         while let Some(command) = commands.recv().await {
@@ -1210,6 +1321,27 @@ async fn carry_out(
             .send(NetCmd::PublishToSiblings { msg: *msg })
             .await
             .is_ok(),
+        Outgoing::ConnectDevice(addr) => plane.send(NetCmd::Connect { addr }).await.is_ok(),
+        // A fabric frame goes to the one device it is for, or to each of the
+        // person's devices whose session is up.
+        Outgoing::Fabric {
+            user_public_key,
+            target,
+            payload,
+        } => {
+            let command = match target {
+                Some(target) => NetCmd::PublishPersonalFabricTarget {
+                    user_public_key,
+                    target,
+                    payload,
+                },
+                None => NetCmd::PublishPersonalFabric {
+                    user_public_key,
+                    payload,
+                },
+            };
+            plane.send(command).await.is_ok()
+        }
         Outgoing::Stop => return None,
     })
 }

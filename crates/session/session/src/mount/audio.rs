@@ -46,10 +46,6 @@ pub(crate) fn land(shared: &Shared) -> bool {
 /// Land a session another of the person's devices hands this one, so the
 /// now-playing card offers to continue it here; `None` clears it. Logs and
 /// does nothing when this session has no device to show it on.
-#[expect(
-    dead_code,
-    reason = "no device fabric link hands this session the person's other devices' sessions"
-)]
 pub(crate) fn handoff(shared: &Shared, offer: Option<tilo_quick_settings::MediaOffer>) {
     let Some(device) = &shared.device else {
         tracing::debug!("a handoff arrived for a session that shows no device");

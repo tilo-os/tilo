@@ -46,6 +46,7 @@ pub mod displays;
 mod downloaded;
 mod emoji;
 mod env;
+pub mod fabric;
 mod i18n;
 pub mod identity;
 mod keys;
@@ -317,7 +318,10 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// Who is here: this session's membership of each workspace's room, over the
 /// collaboration plane. `None` when the session takes no part in it, or the
 /// device's endpoint did not bind: a desktop with no one else on it.
-fn start_collaboration(options: &Options) -> Option<Rc<sync::Client>> {
+fn start_collaboration(
+    options: &Options,
+    media: fabric::MediaContinuity,
+) -> Option<Rc<sync::Client>> {
     if !options.collab {
         return None;
     }
@@ -333,6 +337,7 @@ fn start_collaboration(options: &Options) -> Option<Rc<sync::Client>> {
         identity,
         own,
         sync::configured_hosts(),
+        media,
         options.wake.handle(),
     ) {
         Ok(sync) => Some(Rc::new(sync)),
@@ -1438,6 +1443,11 @@ impl Session {
         // The desk widgets' choices, kept current by the same watch.
         let widget_prefs = desk::prefs();
         let watched_widgets = std::sync::Arc::clone(&widget_prefs);
+        // Whether what the person plays here may go on playing on their other
+        // devices, read from the same settings document on the same watch.
+        let media = fabric::MediaContinuity::default();
+        media.read(&settings_store::load());
+        let watched_media = media.clone();
         // Artwork the session resolves off the loop wakes it when it is
         // ready, so the frame that painted the letter repaints with it; the
         // apps installed here are the lists' to resolve, on their worker.
@@ -1449,6 +1459,7 @@ impl Session {
                 settings_store::notification_policy::NotificationPolicy::from_document(&document);
             watched_wallpapers.follow(&document);
             desk::follow_prefs(&watched_widgets, &document);
+            watched_media.read(&document);
             woken();
         })
         .map_err(|error| tracing::debug!(%error, "settings are not watched"))
@@ -1516,11 +1527,24 @@ impl Session {
 
         // The chrome above the windows: its own tree, beside the desk's.
         let intents = Rc::new(RefCell::new(Vec::new()));
-        let sync = start_collaboration(&options);
+        let sync = start_collaboration(&options, media);
         // The person's own workspaces, which their other devices hold with
         // them: kept beside the desk, and opened when this computer knows
         // whose they are.
         let personal = workspaces::personal_for(options.state.as_deref());
+        // The fabric the session acts on: one handed to it — a stand-in in a
+        // test — or its own, when the person certified this device. A
+        // session that takes part as nobody keeps none.
+        let own_fabric = match &options.fabric {
+            Some(_) => None,
+            None => sync.as_ref().and_then(|sync| sync.fabric()),
+        };
+        let fabric: Option<tilo_device_fabric::link::SharedLink> =
+            match (&options.fabric, own_fabric) {
+                (Some(shared), _) => Some(Arc::clone(shared)),
+                (None, Some(own)) => Some(own),
+                (None, None) => None,
+            };
         let presentation = (options.presentation)();
         let overview = mount::overview::Overview::new(
             presentation.theme.motion(),
@@ -1770,7 +1794,7 @@ impl Session {
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             night_light: (options.config.night_light, options.config.kept),
             portal: options.portal,
-            fabric: options.fabric,
+            fabric,
             action_plane,
             screen_locked: false,
             desktop: options.desktop,
@@ -2212,6 +2236,14 @@ impl Session {
             if self.shared.clipboard.sync_fabric(fabric.as_ref()) {
                 self.shared.feed_clipboard();
             }
+            // What the person's devices sent this one, before this pass's
+            // pumps: a route they asked for starts on the same pass it was
+            // asked for on.
+            if let Some(sync) = &self.shared.sync {
+                for envelope in sync.fabric_actions() {
+                    self.route_fabric_action(fabric, &envelope);
+                }
+            }
             // The person's speaker groups, remote audio and the view Settings
             // asks of them move on the same fabric, on the same pass: a
             // device arriving, a group being created or a calibration
@@ -2223,6 +2255,11 @@ impl Session {
             // same fabric: what they set here is offered to it, and what
             // they set there reaches the document this session reads.
             self.shared.settings.sync(fabric.as_ref());
+            // What this pass offered the clipboard, and what the pumps just
+            // changed, is this device's next word to its other devices.
+            if let Some(sync) = &self.shared.sync {
+                sync.announce_fabric();
+            }
         }
         Ok(())
     }

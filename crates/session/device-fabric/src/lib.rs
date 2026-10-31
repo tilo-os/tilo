@@ -14,6 +14,7 @@ pub mod notification;
 pub mod random;
 pub mod realtime_session;
 pub mod remote_capture;
+pub mod runtime;
 pub mod secrets;
 pub mod spatial_calibration;
 pub mod speaker_group;
