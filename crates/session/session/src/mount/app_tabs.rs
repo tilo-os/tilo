@@ -237,7 +237,7 @@ fn answer(
     } = request;
     let message = match ask {
         Ask::Closed => {
-            withhold(withheld, compositor, connection, &app, false);
+            withhold(withheld, desktop, compositor, connection, &app, false);
             return;
         }
         Ask::Message(message) => *message,
@@ -292,7 +292,7 @@ fn answer(
             // The app id is the one the launcher vouched for, so an ask can
             // only ever withhold the asking app's own windows: it narrows
             // what leaves the display, never widens it.
-            withhold(withheld, compositor, connection, &app, protected);
+            withhold(withheld, desktop, compositor, connection, &app, protected);
             if let Some(generation) = generation {
                 let applied = FloatingSurfaceHostMessage::CaptureProtectionApplied {
                     generation,
@@ -319,6 +319,7 @@ fn answer(
 /// for it, so it goes when the last one stops asking or closes.
 fn withhold(
     withheld: &mut BTreeMap<u64, String>,
+    desktop: &DesktopHost,
     compositor: &mut Compositor,
     connection: u64,
     app: &str,
@@ -331,6 +332,11 @@ fn withhold(
     } else if asked && !withheld.values().any(|named| named == app) {
         compositor.protect_app(app, false);
     }
+    // The desk knows the same apps, so nothing it names for the compositor to
+    // draw is named for an app that keeps its content, and a card in the
+    // switcher or the overview says so instead of showing what the window
+    // holds back.
+    desktop.set_withheld_apps(withheld.values().cloned().collect());
 }
 
 /// The address `app` asks to open, when its manifest claims it: a link it

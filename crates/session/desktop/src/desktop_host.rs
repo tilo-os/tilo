@@ -25,12 +25,9 @@ use tilo_desktop_model::commands::{
     DesktopCommand, TabLocation, TabPlacement, apply_command, apply_to_active_workspace,
     move_tab_to_workspace,
 };
-use tilo_desktop_model::{
-    DesktopTree, RoomId, Strip, StripId, TabId, TileContent, Workspace, WorkspaceId,
-};
+use tilo_desktop_model::{DesktopTree, RoomId, Strip, StripId, TabId, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::{ActivityView, Command, Route, RouteIds};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource};
-use ui::icons::AppImage;
 use ui::presence::PresenceCtx;
 use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
 use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget};
@@ -52,11 +49,10 @@ use crate::overview_panel::{OverviewPanel, OverviewPick};
 use crate::shortcuts::{page_chord, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
 use crate::strip_switcher::Command as StripCommand;
+use crate::switcher_windows::{SwitcherPictures, SwitcherWindows};
 use crate::topbar::{BarSpace, Placement, TOPBAR_HEIGHT_PX, TopBarChrome};
 use crate::window_flight::WindowFlight;
-use crate::window_switcher::{
-    NoThumbnails, SwitcherOutcome, SwitcherScope, WindowSource, WindowSwitcher,
-};
+use crate::window_switcher::{SwitcherOutcome, SwitcherScope, WindowSource, WindowSwitcher};
 use crate::workspace_menu::{
     WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
 };
@@ -616,22 +612,6 @@ struct PlainOverview {
     user: String,
 }
 
-/// The switcher's view of a host: a window shows the icon it set for itself
-/// and keeps its app's glyph when it set none; none is pictured
-/// ([`NoThumbnails`]).
-struct SwitcherWindows<'a> {
-    handle: &'a DesktopHandle,
-}
-
-impl WindowSource for SwitcherWindows<'_> {
-    fn app_icon(&self, tile: &TileContent) -> Option<AppImage> {
-        let TileContent::Foreign { surface_id, .. } = tile else {
-            return None;
-        };
-        self.handle.window_artwork(*surface_id)
-    }
-}
-
 impl WindowSource for PlainOverview {}
 
 impl OverviewHost for PlainOverview {
@@ -670,6 +650,9 @@ pub struct DesktopChrome {
     /// The Alt+Tab switcher: the windows of the workspace by when they were
     /// last used, shown over the desk while Alt is held.
     switcher: WindowSwitcher,
+    /// The pictures its cards show, drawn by the host through the same
+    /// channel as the overview's.
+    switcher_pictures: SwitcherPictures,
     /// The emoji picker: Super+. opens its card at the caret of the field the
     /// person types into, and every pick is written into that field by the
     /// host.
@@ -775,6 +758,7 @@ impl DesktopChrome {
             workspace_menu: WorkspaceMenu::new(),
             navigator: StripNavigator::default(),
             switcher: WindowSwitcher::default(),
+            switcher_pictures: SwitcherPictures::default(),
             emoji: EmojiPicker::new(),
             emoji_link: EmojiLink::default(),
             emoji_viewport: Rect::ZERO,
@@ -1084,12 +1068,14 @@ impl DesktopChrome {
         self
     }
 
-    /// Have the overview's windows drawn by the host through `flight`, its
-    /// pictures flying between the desk and the overview on the clock the
-    /// host keeps there; `open` is set as the chrome draws, for the host
+    /// Have the overview's and the switcher's windows drawn by the host
+    /// through `flight`, their pictures resting where each panel draws them —
+    /// the overview's flying between the desk and the overview on the clock
+    /// the host keeps there; `open` is set as the chrome draws, for the host
     /// that clock belongs to.
     #[must_use]
     pub fn with_overview(mut self, flight: WindowFlight, open: Rc<Cell<bool>>) -> Self {
+        self.switcher_pictures.set_flight(flight.clone());
         self.overview.set_flight(flight);
         self.overview_open = Some(open);
         self
@@ -2407,7 +2393,9 @@ impl Widget for DesktopChrome {
         // Last, so what the bar opens below its band stays above the rest.
         self.bar.draw(scene, transform, text, theme, presence);
         // Above even that: while Alt is held, the switcher is what the
-        // person is looking at.
+        // person is looking at. Its cards picture their windows through the
+        // host's own channel, as the overview's do.
+        self.switcher_pictures.clip_to(self.switcher.panel_rect());
         self.switcher.draw(
             scene,
             transform,
@@ -2415,8 +2403,9 @@ impl Widget for DesktopChrome {
             theme,
             self.rect,
             ui::time::now(),
-            &mut NoThumbnails,
+            &mut self.switcher_pictures,
         );
+        self.switcher_pictures.publish();
         // Above all of it: the emoji picker is modal, the one thing the person
         // works with until it closes.
         if self.emoji.is_open() {

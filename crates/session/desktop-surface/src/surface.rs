@@ -228,6 +228,9 @@ struct Shared {
     /// The artwork each window brought of its own, by the compositor's id
     /// for it ([`DesktopHandle::set_window_artwork`]).
     artwork: std::collections::BTreeMap<u64, ui::icons::AppImage>,
+    /// The apps whose windows keep what they show to themselves
+    /// ([`DesktopHandle::set_withheld_apps`]).
+    withheld: std::collections::BTreeSet<String>,
     /// Where the host confirms in passing what left nothing to see.
     acknowledger: ui::widget::acknowledgement::Acknowledger,
 }
@@ -273,6 +276,22 @@ impl DesktopHandle {
 
     pub fn read<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R {
         read(&self.shared.borrow().tree)
+    }
+
+    /// The apps whose windows keep what they show to themselves: a password
+    /// manager's, an app that asked for the same while it shows a secret.
+    /// The host names them — it is the one that knows what a window may not
+    /// be shown to — and from then on nothing makes a picture of their
+    /// windows; a window is named by the app it belongs to.
+    pub fn set_withheld_apps(&self, apps: Vec<String>) {
+        self.shared.borrow_mut().withheld = apps.into_iter().collect();
+    }
+
+    /// Whether windows of `app_id` keep what they show to themselves, as the
+    /// host last named them.
+    #[must_use]
+    pub fn withholds(&self, app_id: &str) -> bool {
+        self.shared.borrow().withheld.contains(app_id)
     }
 
     /// Where each window of the shown strip draws its active tab, in the
@@ -824,6 +843,7 @@ impl DesktopSurface {
             presentation: Presentation::default(),
             presented: 0,
             artwork: std::collections::BTreeMap::new(),
+            withheld: std::collections::BTreeSet::new(),
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
         }));
         let acknowledger = shared.borrow().acknowledger.clone();

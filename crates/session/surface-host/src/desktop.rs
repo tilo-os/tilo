@@ -251,6 +251,13 @@ impl DesktopHost {
         read(&mut self.desk.borrow_mut().policy)
     }
 
+    /// The apps whose windows keep what they show to themselves, as the
+    /// session last learnt them: nothing the desk draws, or names for the
+    /// compositor to draw, shows one of their windows.
+    pub fn set_withheld_apps(&self, apps: Vec<String>) {
+        self.desk.borrow().policy.handle().set_withheld_apps(apps);
+    }
+
     /// Read touchpad gestures by `config` from the next one on; `None`
     /// leaves them all to the clients.
     pub fn set_gestures(&self, config: Option<GestureConfig>) {
