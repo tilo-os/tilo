@@ -53,6 +53,14 @@ pub enum PresencePayload {
         state: Availability,
         call: Option<String>,
     },
+    /// The sender is composing a message in the resource their key names (a
+    /// channel, a direct conversation): a draft is being typed, never what it
+    /// says. `composing` false says they stopped, so a reader who stopped
+    /// typing and closed the window is not left "typing" forever. Ephemeral:
+    /// a presence frame, never the record.
+    Composing {
+        composing: bool,
+    },
 }
 
 impl PresencePayload {

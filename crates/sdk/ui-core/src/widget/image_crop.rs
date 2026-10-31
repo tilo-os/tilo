@@ -60,6 +60,10 @@ impl Drag {
     }
 }
 
+#[crate::component::not_a_component(
+    part,
+    "the crop surface `ui.ImageCropEditor` shows its picture in"
+)]
 pub struct ImageCropEditor {
     image: Image,
     image_size: (u32, u32),
@@ -95,6 +99,12 @@ impl ImageCropEditor {
 
     /// Paint into an immediate-mode host while retaining the same interaction
     /// geometry as the normal [`Widget`] layout path.
+    /// The crop the person set: each edge a share of the picture, `0..=1`.
+    #[must_use]
+    pub fn selection(&self) -> CropSelection {
+        self.selection.get()
+    }
+
     pub fn paint_at(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
         self.rect = rect;
         self.image.paint_at(scene, transform, rect);
@@ -537,3 +547,7 @@ mod tests {
         touch_drag_has_exclusive_finger_ownership();
     }
 }
+
+#[path = "image_crop_component.rs"]
+mod component;
+pub use component::{CropEditor, ImageCropEditorProps};

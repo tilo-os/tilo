@@ -57,6 +57,9 @@ view today(t: Today) {
                         match x {
                             c: chat.Category => text(c.name, role: .caption),
                             t: chat.TextChannel => button("# {t.name}", on: open(t)),
+                            // A direct conversation is a person, not a room: its place is
+                            // the person's name.
+                            d: chat.Direct => button(d.name, on: open(d)),
                         }
                     }
                 }

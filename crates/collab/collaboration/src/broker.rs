@@ -6592,6 +6592,9 @@ async fn dispatch_sdk_request(
                 PresencePayload::Status { text, automatic } => {
                     let _ = presence.publish_status(&key_bytes, &text, automatic).await;
                 }
+                PresencePayload::Composing { composing } => {
+                    let _ = presence.publish_composing(&key_bytes, composing).await;
+                }
             }
         }
         CollabRequest::FetchScrollback {
@@ -7197,6 +7200,9 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
                 runtime_collab::PresencePayload::Status { text, automatic } => {
                     PresencePayload::Status { text, automatic }
                 }
+                runtime_collab::PresencePayload::Composing { composing } => {
+                    PresencePayload::Composing { composing }
+                }
                 runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
                 // `Cursor` is fully handled and returned by the outer match, so
                 // it never reaches here; folding it in with `Left` keeps this
@@ -7441,6 +7447,8 @@ mod tests {
         pub caret_publishes: Vec<(Vec<u8>, u64)>,
         pub selection_publishes: Vec<(Vec<u8>, u64, u64)>,
         pub typing_publishes: Vec<(Vec<u8>, u64, u64)>,
+        /// `(key, composing)`: whether each publish said the person was composing.
+        pub composing_publishes: Vec<(Vec<u8>, bool)>,
         pub arrived: Vec<Vec<u8>>,
         pub left: Vec<Vec<u8>>,
         pub scrollback_requests: Vec<(Vec<u8>, u64, u32)>,
@@ -7692,6 +7700,25 @@ mod tests {
                 r.get_start(),
                 r.get_end(),
             ));
+            Promise::ok(())
+        }
+
+        fn publish_composing(
+            self: Rc<Self>,
+            params: presence_handle::PublishComposingParams,
+            _results: presence_handle::PublishComposingResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
+            let Ok(k) = r.get_key_bytes() else {
+                return Promise::ok(());
+            };
+            self.captures
+                .lock()
+                .unwrap()
+                .composing_publishes
+                .push((k.to_vec(), r.get_composing()));
             Promise::ok(())
         }
 

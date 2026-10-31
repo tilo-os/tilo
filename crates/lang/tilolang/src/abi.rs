@@ -161,6 +161,7 @@ imports! {
     UiPropH = "ui_prop_h" ([H, H, H] -> []);
     UiPropI = "ui_prop_i" ([H, H, I64] -> []);
     UiPropF = "ui_prop_f" ([H, H, F64] -> []);
+    UiPropPic = "ui_prop_picture" ([H, H, H] -> []);
     UiChild = "ui_child" ([H, H] -> []);
     UiBind = "ui_bind" ([H, H, H] -> []);
     UiOn = "ui_on" ([H, H, H] -> []);

@@ -257,13 +257,16 @@ impl Ty {
         }
     }
 
-    /// Whether a value of `self` may stand where `want` is expected without a conversion: the
-    /// same type, or a resource of one of a union's types, or a union within a wider one.
+    /// Whether a value of this type may stand where `want` is expected: itself, a case of a
+    /// union, or — where `host.Resource` is expected — any resource at all, since that type is
+    /// what the language has for "a resource of whichever app" (a place a shell holds, a hit
+    /// `find` answers), and every resource is one.
     #[must_use]
     pub fn fits(&self, want: &Self) -> bool {
         match (self, want) {
             (Self::Record(k), Self::Union(keys)) => keys.contains(k),
             (Self::Union(a), Self::Union(b)) => a.iter().all(|k| b.contains(k)),
+            (Self::Record(_) | Self::Union(_), Self::Record(k)) if is_any_resource(k) => true,
             _ => self.same(want),
         }
     }
@@ -290,6 +293,13 @@ impl Ty {
         p.skip_ws();
         (p.pos >= p.chars.len()).then_some(ty)
     }
+}
+
+/// Whether `key` is the host's `Resource`: the type that stands for any resource, of whichever
+/// app (`host.Resource`; `find` and `grep` answer these across apps).
+#[must_use]
+pub fn is_any_resource(key: &TypeKey) -> bool {
+    key.app == crate::host::HOST_APP && key.name == crate::host::RESOURCE_TYPE_NAME
 }
 
 /// Why `text` is not an ISO calendar date `YYYY-MM-DD`, or nothing when it is one.

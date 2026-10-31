@@ -85,6 +85,13 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          `show-strips`, `toggle-overview`, `new-workspace`, `join-workspace`, \
          `workspace-settings`), by its id.",
     ),
+    (
+        "session.arrange",
+        "Arranges the person's own desk: one of the arranging actions the session publishes on \
+         `shell:arrangement` (`open-into`, `move-place`, `resize-strip`, `close-place`, \
+         `pin-place`), by its id, with its arguments as one line of JSON: `move-place \
+         {\"place\":3,\"row\":7}`.",
+    ),
 ];
 
 /// Every kind of every origin the platform has.
@@ -152,6 +159,133 @@ pub const KINDS: &[OriginKind] = &[
                 "people",
                 "Collection<session.person>",
                 "The others here in the workspace in front.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement",
+        doc: "The person's own arrangement: what is open where on their desk (shell.md §2), as \
+              the session keeps it in their own record. A shell's views read it; every change \
+              is one of the arranging actions on `shell:arrangement`, so nothing writes it \
+              directly.",
+        derived: true,
+        fields: &[
+            field(
+                "preset",
+                "Text",
+                "Which preset the person shows: `strips`, `frames` or `spaces`.",
+            ),
+            field(
+                "focused",
+                "Text",
+                "The strip in front, by its id; empty for none.",
+            ),
+            field(
+                "workspaces",
+                "Collection<session.arrangement_workspace>",
+                "The workspaces the desk shows.",
+            ),
+            field(
+                "rows",
+                "Collection<session.arrangement_row>",
+                "The desk's rows, each a strip across a workspace.",
+            ),
+            field(
+                "strips",
+                "Collection<session.arrangement_strip>",
+                "The strips, each a column of places.",
+            ),
+            field(
+                "places",
+                "Collection<session.arrangement_place>",
+                "Every place, showing a resource through a view; each names the strip it is in.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement_workspace",
+        doc: "A workspace the person's desk shows.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as the record names it."),
+            field("name", "Text", "Its name."),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement_row",
+        doc: "A row of the desk: a strip across a workspace's width, holding columns.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as the record names it."),
+            field("workspace", "Text", "The workspace it is a row of."),
+            field("name", "Text", "Its name."),
+            field(
+                "shell",
+                "Text",
+                "The shell that made it; empty reads as this shell's.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement_strip",
+        doc: "A strip: a column of places, with a width, in a row of a workspace.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as the record names it."),
+            field("workspace", "Text", "The workspace it is in."),
+            field("row", "Text", "The row it stands in."),
+            field(
+                "width",
+                "Int",
+                "Its width in per-mille of its row's usable width (333 narrow, 667 normal, \
+                 1000 wide).",
+            ),
+            field("maximized", "Bool", "Whether it is maximized."),
+            field(
+                "active",
+                "Text",
+                "The place in front, by its id; empty for none.",
+            ),
+            field(
+                "placed",
+                "Bool",
+                "Whether it has a place on its workspace's canvas.",
+            ),
+            field("canvas_x", "Int", "The canvas x of its top-leading corner."),
+            field("canvas_y", "Int", "The canvas y of its top-leading corner."),
+            field("canvas_width", "Int", "How wide it stands on the canvas."),
+            field("canvas_height", "Int", "How tall it stands on the canvas."),
+            field(
+                "shell",
+                "Text",
+                "The shell that made it; empty reads as this shell's.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.arrangement_place",
+        doc: "A place: one window, showing a resource through a view.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as the record names it."),
+            field("strip", "Text", "The strip it is in."),
+            field(
+                "shows",
+                "Text",
+                "The app showing the resource, by its canonical id.",
+            ),
+            field(
+                "shown_as",
+                "Text",
+                "The view it shows the resource through; empty for the app's default.",
+            ),
+            field("record", "Text", "The record it shows, when it shows one."),
+            field("title", "Text", "The title it is shown under."),
+            field("pinned", "Bool", "Whether the person pinned it."),
+            field(
+                "shell",
+                "Text",
+                "The shell that made it; empty reads as this shell's.",
             ),
         ],
     },

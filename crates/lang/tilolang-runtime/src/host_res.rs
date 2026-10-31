@@ -771,6 +771,9 @@ impl Core {
                 return trap(format!("`{}` has no field `{fid}`", ty.name));
             };
             let m = match (f.kind, v) {
+                // A register holding a record, a reference, a list or a set (`to_scalar`'s
+                // last arm) is one JSON value in the record: a place's resource, a note's
+                // tags. A register is one value, replaced whole.
                 (FieldKind::Register, v) => Mutation::SetRegister {
                     field: f.id.clone(),
                     value: to_scalar(v, &f.ty)?,

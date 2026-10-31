@@ -201,6 +201,10 @@ fn shifted(rect: Rect, dy: f64) -> Rect {
     rect + Vec2::new(0.0, dy)
 }
 
+#[crate::component::not_a_component(
+    part,
+    "the rail `ui.PageSidebar` is built from, its pages reporting the view's events"
+)]
 pub struct PageSidebar {
     /// Thumbnail height as a multiple of its width (`page_h / page_w`).
     aspect: f64,
@@ -1297,3 +1301,7 @@ mod tests {
         }
     }
 }
+
+#[path = "page_sidebar_component.rs"]
+mod component;
+pub use component::{DeclaredRail, PageSidebarProps};

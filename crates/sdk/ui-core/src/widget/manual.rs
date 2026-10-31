@@ -119,10 +119,53 @@ impl Manual {
             invalidation: ManualInvalidation::default(),
         }
     }
+    /// A region that takes its parent's whole box on both axes, as a canvas's viewport does:
+    /// its policy is handed that box as `available`, never the window's.
+    #[must_use]
+    pub fn filling(mut self) -> Self {
+        self.region = Size {
+            width: Dimension::percent(1.0),
+            height: Dimension::percent(1.0),
+        };
+        self
+    }
     #[must_use]
     pub fn child(mut self, child: Element) -> Self {
         self.parts.children.push(child);
         self
+    }
+    /// The child at `index`, to change in place (a canvas's pin, moved or given another view).
+    pub fn child_mut(&mut self, index: usize) -> Option<&mut Element> {
+        self.parts.children.get_mut(index)
+    }
+    /// How many children the region holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.parts.children.len()
+    }
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.parts.children.is_empty()
+    }
+    /// Take the children back out, to build them into a fresh region (a canvas re-placed).
+    pub fn take_children(&mut self) -> Vec<Element> {
+        std::mem::take(&mut self.parts.children)
+    }
+    /// Put a child at `index`, moving the rest along.
+    pub fn insert_child(&mut self, index: usize, child: Element) {
+        let at = index.min(self.parts.children.len());
+        self.parts.children.insert(at, child);
+    }
+    /// Take the child at `index` out.
+    pub fn remove_child(&mut self, index: usize) -> Option<Element> {
+        (index < self.parts.children.len()).then(|| self.parts.children.remove(index))
+    }
+    /// Move the child at `from` to stand at `to`.
+    pub fn move_child(&mut self, from: usize, to: usize) {
+        if from < self.parts.children.len() && to < self.parts.children.len() {
+            let child = self.parts.children.remove(from);
+            self.parts.children.insert(to, child);
+        }
     }
     /// Retain this handle alongside captured policy inputs. Invalidate it
     /// after changing those inputs, then request the host's next layout frame.

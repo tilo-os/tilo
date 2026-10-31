@@ -1,0 +1,28 @@
+[package]
+name = "tasks-model"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "The tasks.tracker record: a workspace's issues, their projects and areas, and an agent's runs on them"
+
+# The record Tasks keeps and the agent runner reads: the same types, verbs and
+# typed action arguments on both sides, so a call the agent builds and the
+# action that applies it cannot drift. It has no window and no surface of its
+# own; the app draws it.
+
+[lib]
+name = "tasks_model"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
+[lints]
+workspace = true
