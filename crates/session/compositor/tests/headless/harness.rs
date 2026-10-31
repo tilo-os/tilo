@@ -42,6 +42,10 @@ use wayland_protocols::xdg::shell::client::{
     xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
     xdg_wm_base::XdgWmBase,
 };
+use wayland_protocols::xdg::toplevel_icon::v1::client::{
+    xdg_toplevel_icon_manager_v1, xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1,
+    xdg_toplevel_icon_v1::XdgToplevelIconV1,
+};
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2,
     zwp_input_method_manager_v2::ZwpInputMethodManagerV2, zwp_input_method_v2,
@@ -94,6 +98,9 @@ pub struct Seen {
     pub closed: bool,
     pub tablet_manager: Option<ZwpTabletManagerV2>,
     pub wm_dialog: Option<XdgWmDialogV1>,
+    pub icon_manager: Option<XdgToplevelIconManagerV1>,
+    /// The icon sizes the manager tells clients a tab pill paints at.
+    pub icon_sizes: Vec<i32>,
     /// Tablet pad events as `added`, `group`, `buttons 4`, `done`,
     /// `enter`, `mode 1`, `button 2 pressed`, `ring 90`, `ring stop`,
     /// `removed`.
@@ -200,6 +207,28 @@ impl TestClient {
         surface.frame(&qh, ());
         surface.commit();
         pool.destroy();
+    }
+
+    /// A square buffer of one colour (RGBA), as a window draws its icon.
+    pub fn icon_buffer(&self, edge: i32, rgba: [u8; 4]) -> WlBuffer {
+        let qh = self.queue.handle();
+        let stride = edge * 4;
+        let len = usize::try_from(stride * edge).unwrap();
+        let fd =
+            rustix::fs::memfd_create("tilo-icon-test", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
+        let mut file = std::fs::File::from(fd);
+        // ARGB8888 is B, G, R, A in memory.
+        let pixel = [rgba[2], rgba[1], rgba[0], rgba[3]];
+        file.write_all(&pixel.repeat(len / 4)).unwrap();
+        let pool = self.seen.shm.as_ref().expect("wl_shm").create_pool(
+            file.as_fd(),
+            stride * edge,
+            &qh,
+            (),
+        );
+        let buffer = pool.create_buffer(0, edge, edge, stride, wl_shm::Format::Argb8888, &qh, ());
+        pool.destroy();
+        buffer
     }
 
     /// Give the window a text field: a `text-input-v3` object on its
@@ -371,6 +400,9 @@ impl Dispatch<WlRegistry, ()> for Seen {
                     seen.tablet_manager = Some(registry.bind(name, 1, qh, ()));
                 }
                 "xdg_wm_dialog_v1" => seen.wm_dialog = Some(registry.bind(name, 1, qh, ())),
+                "xdg_toplevel_icon_manager_v1" => {
+                    seen.icon_manager = Some(registry.bind(name, 1, qh, ()));
+                }
                 "zwp_text_input_manager_v3" => {
                     seen.text_input_manager = Some(registry.bind(name, 1, qh, ()));
                 }
@@ -382,6 +414,23 @@ impl Dispatch<WlRegistry, ()> for Seen {
         }
     }
 }
+
+impl Dispatch<XdgToplevelIconManagerV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &XdgToplevelIconManagerV1,
+        event: xdg_toplevel_icon_manager_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_toplevel_icon_manager_v1::Event::IconSize { size } = event {
+            seen.icon_sizes.push(size);
+        }
+    }
+}
+
+delegate_noop!(Seen: ignore XdgToplevelIconV1);
 
 impl Dispatch<XdgWmBase, ()> for Seen {
     fn event(

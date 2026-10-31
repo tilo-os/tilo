@@ -89,14 +89,35 @@ impl PartialEq for WindowIcon {
 
 impl Eq for WindowIcon {}
 
-/// The icon a window's surface carries, if it set one.
-pub(crate) fn of_surface(surface: &WlSurface) -> Option<Arc<WindowIcon>> {
-    with_states(surface, |states| {
-        states
-            .data_map
-            .get::<CurrentIcon>()
-            .and_then(|current| current.0.lock_recover().clone())
-    })
+/// The icon each window shows, by [`WindowInfo::id`].
+#[derive(Debug, Default)]
+pub struct Icons {
+    shown: std::collections::HashMap<u64, Arc<WindowIcon>>,
+}
+
+impl Icons {
+    /// The icon `window` shows, if it set one.
+    pub fn of(&self, window: u64) -> Option<Arc<WindowIcon>> {
+        self.shown.get(&window).cloned()
+    }
+
+    /// Record `icon` as what `window` shows; returns whether that changed.
+    pub(crate) fn set(&mut self, window: u64, icon: Option<Arc<WindowIcon>>) -> bool {
+        match icon {
+            Some(icon) => {
+                if self
+                    .shown
+                    .get(&window)
+                    .is_some_and(|shown| same(Some(shown), Some(&icon)))
+                {
+                    return false;
+                }
+                self.shown.insert(window, icon);
+                true
+            }
+            None => self.shown.remove(&window).is_some(),
+        }
+    }
 }
 
 fn next_serial() -> u64 {
@@ -104,11 +125,7 @@ fn next_serial() -> u64 {
     SERIAL.fetch_add(1, Ordering::Relaxed)
 }
 
-/// The icon the surface shows right now.
-#[derive(Debug, Default)]
-struct CurrentIcon(Mutex<Option<Arc<WindowIcon>>>);
-
-/// Whether two icons are the same picture, so a client that sets the icon
+/// Whether two icons are the same picture, so a window that sets the icon
 /// it already had changes nothing.
 fn same(left: Option<&Arc<WindowIcon>>, right: Option<&Arc<WindowIcon>>) -> bool {
     match (left, right) {
@@ -118,57 +135,16 @@ fn same(left: Option<&Arc<WindowIcon>>, right: Option<&Arc<WindowIcon>>) -> bool
     }
 }
 
-/// Record `icon` as what `surface` shows; returns whether that changed.
-fn set(surface: &WlSurface, icon: Option<Arc<WindowIcon>>) -> bool {
-    with_states(surface, |states| {
-        states
-            .data_map
-            .insert_if_missing_threadsafe(CurrentIcon::default);
-        let Some(current) = states.data_map.get::<CurrentIcon>() else {
-            return false;
-        };
-        let mut current = current.0.lock_recover();
-        if same(current.as_ref(), icon.as_ref()) {
-            return false;
-        }
-        *current = icon;
-        true
+/// An X11 window's `_NET_WM_ICON`, as what a window shows.
+pub(crate) fn x11_icon(icon: &crate::x11_windows::X11Icon) -> Arc<WindowIcon> {
+    Arc::new(WindowIcon {
+        serial: next_serial(),
+        artwork: IconArtwork::Pixels(Arc::from([IconImage {
+            width: icon.width,
+            height: icon.height,
+            pixels: Arc::new(icon.pixels.clone()),
+        }])),
     })
-}
-
-/// Record the icon an X11 window states in `_NET_WM_ICON`; returns whether
-/// that changed what the window shows.
-pub(crate) fn set_x11(surface: &WlSurface, icon: Option<&crate::x11_windows::X11Icon>) -> bool {
-    let Some((width, height, pixels)) = icon.map(|icon| (icon.width, icon.height, &icon.pixels))
-    else {
-        return set(surface, None);
-    };
-    let unchanged = of_surface(surface).is_some_and(|current| {
-        matches!(
-            current.artwork(),
-            IconArtwork::Pixels(images)
-                if images.len() == 1
-                    && images.first().is_some_and(|image| {
-                        image.width == width
-                            && image.height == height
-                            && image.pixels.as_slice() == pixels.as_slice()
-                    })
-        )
-    });
-    if unchanged {
-        return false;
-    }
-    set(
-        surface,
-        Some(Arc::new(WindowIcon {
-            serial: next_serial(),
-            artwork: IconArtwork::Pixels(Arc::from([IconImage {
-                width,
-                height,
-                pixels: Arc::new(pixels.clone()),
-            }])),
-        })),
-    )
 }
 
 /// The `xdg_toplevel_icon_manager_v1` global and the icon buffers clients
@@ -286,20 +262,20 @@ enum IconChange {
 #[derive(Debug, Default)]
 struct PendingIcon(Mutex<Option<IconChange>>);
 
-/// Apply the icon `surface`'s commit made current; returns whether the
-/// window's icon changed.
-pub(crate) fn committed(surface: &WlSurface) -> bool {
+/// Apply the icon `surface`'s commit made current: the window it belongs to
+/// and the icon it now shows, when the commit changed it.
+pub(crate) fn committed(surface: &WlSurface) -> Option<(u64, Option<Arc<WindowIcon>>)> {
     let pending = with_states(surface, |states| {
         states
             .data_map
             .get::<PendingIcon>()
             .and_then(|pending| pending.0.lock_recover().take())
     });
-    match pending {
-        None => false,
-        Some(IconChange::Reset) => set(surface, None),
-        Some(IconChange::Set(icon)) => set(surface, Some(icon)),
-    }
+    let icon = match pending? {
+        IconChange::Reset => None,
+        IconChange::Set(icon) => Some(icon),
+    };
+    Some((crate::state::window_id_of(surface)?, icon))
 }
 
 impl GlobalDispatch<XdgToplevelIconManagerV1, ()> for State {
@@ -497,7 +473,10 @@ mod tests {
             height: edge,
             pixels: Arc::new(vec![
                 0;
-                usize::try_from(edge.saturating_mul(edge) * 4).unwrap()
+                usize::try_from(
+                    edge.saturating_mul(edge).saturating_mul(4)
+                )
+                .unwrap()
             ]),
         }
     }

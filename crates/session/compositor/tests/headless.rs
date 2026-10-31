@@ -14,6 +14,8 @@
 
 #[path = "headless/harness.rs"]
 mod harness;
+#[path = "headless/window_icons.rs"]
+mod window_icons;
 
 use harness::{Seen, TestClient, headless, mapped_client, pump};
 
@@ -26,9 +28,10 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
     Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostFrame,
-    HostKey, HostLayer, InputEvent, KeyboardLayout, OutputConfig, PadAction, StackPolicy,
-    SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, TextField, TextFieldRefusal,
-    TextInsertion, WindowEffect, WindowFrame, WindowInfo, WindowPicture, WindowPolicy,
+    HostKey, HostLayer, IconArtwork, InputEvent, KeyboardLayout, OutputConfig, PadAction,
+    StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, TextField,
+    TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon, WindowInfo,
+    WindowPicture, WindowPolicy,
 };
 use wayland_client::Connection;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{

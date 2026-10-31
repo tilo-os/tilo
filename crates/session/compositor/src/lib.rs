@@ -1400,7 +1400,8 @@ impl Compositor {
     pub fn x11_identity(&self, id: u64) -> Option<&X11Identity> {
         let x11 = self.data.x11_windows.as_ref()?;
         let window = self.data.state.space.elements().find(|window| {
-            state::describe(&self.data.state.display, window).is_some_and(|info| info.id == id)
+            state::describe(&self.data.state.display, &self.data.state.icons, window)
+                .is_some_and(|info| info.id == id)
         })?;
         x11.identity(window.x11_surface()?.window_id())
     }

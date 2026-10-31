@@ -188,10 +188,16 @@ impl X11Windows {
             startup_id: window.startup_id().filter(|id| !id.is_empty()),
             icon: self.icon(id),
         };
-        if let Some(surface) = window.wl_surface() {
-            crate::toplevel_icon::set_x11(&surface, identity.icon.as_ref());
-        }
         self.identities.insert(id, identity);
+    }
+
+    /// The icon `window` showed when it was last read.
+    pub(crate) fn window_icon(
+        &self,
+        window: X11Window,
+    ) -> Option<std::sync::Arc<crate::toplevel_icon::WindowIcon>> {
+        let icon = self.identities.get(&window)?.icon.as_ref()?;
+        Some(crate::toplevel_icon::x11_icon(icon))
     }
 
     /// Drop what was learned about `window`.

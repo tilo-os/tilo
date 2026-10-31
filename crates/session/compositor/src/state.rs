@@ -145,6 +145,8 @@ pub struct State {
     /// The icons windows set for themselves, and the buffers clients must
     /// keep alive while their icon object holds them.
     pub(crate) toplevel_icon: crate::toplevel_icon::ToplevelIconManager,
+    /// The icon each window shows, by window id.
+    pub(crate) icons: crate::toplevel_icon::Icons,
     pub(crate) lock: crate::lock::Lock,
     pub(crate) text_input: crate::text_input::TextInput,
     pub(crate) cursor: crate::cursor::Cursor,
@@ -239,6 +241,7 @@ impl State {
             pointer_target: PointerTarget::Clients,
             protocols,
             toplevel_icon: crate::toplevel_icon::ToplevelIconManager::new(display),
+            icons: crate::toplevel_icon::Icons::default(),
             exited: Arc::default(),
             lock: crate::lock::Lock::new(display),
             text_input: crate::text_input::TextInput::new(display),
@@ -419,7 +422,7 @@ impl State {
         self.space
             .elements()
             .filter_map(|window| {
-                let info = describe(&self.display, window)?;
+                let info = describe(&self.display, &self.icons, window)?;
                 let location = self.space.element_location(window)?;
                 let size = window.geometry().size;
                 Some((info, Rectangle::new(location, size)))
@@ -432,7 +435,7 @@ impl State {
     /// desktop drops it with [`crate::Compositor::release_snapshot`] or a
     /// window of the same id maps again.
     pub(crate) fn keep_closing(&mut self, window: &Window) {
-        let Some(info) = describe(&self.display, window) else {
+        let Some(info) = describe(&self.display, &self.icons, window) else {
             return;
         };
         let Some(location) = self.space.element_location(window) else {
@@ -464,7 +467,9 @@ impl State {
         let Some(window) = self
             .space
             .elements()
-            .find(|window| describe(&self.display, window).is_some_and(|info| info.id == id))
+            .find(|window| {
+                describe(&self.display, &self.icons, window).is_some_and(|info| info.id == id)
+            })
             .cloned()
         else {
             return;
@@ -500,14 +505,14 @@ impl State {
         R: smithay::backend::renderer::Renderer,
         R::TextureId: Clone + 'static,
     {
-        if let Some(id) = describe(&self.display, window).map(|info| info.id) {
+        if let Some(id) = describe(&self.display, &self.icons, window).map(|info| info.id) {
             self.snapshots.record(id, renderer, window);
         }
     }
 
     /// How `window` is drawn this frame: its effect, or as it stands.
     pub(crate) fn effect_of(&self, window: &Window) -> crate::effects::WindowEffect {
-        describe(&self.display, window)
+        describe(&self.display, &self.icons, window)
             .and_then(|info| self.effects.get(&info.id))
             .copied()
             .unwrap_or_default()
@@ -516,13 +521,12 @@ impl State {
     /// How `window` is framed: its own frame, or the desktop's.
     pub(crate) fn framing(&self, window: &Window) -> crate::effects::Framing<'_> {
         crate::effects::Framing {
-            frame: describe(&self.display, window)
+            frame: describe(&self.display, &self.icons, window)
                 .and_then(|info| self.window_frames.get(&info.id))
                 .copied()
                 .unwrap_or(self.frame),
             images: &self.frame_images,
             snapshots: &self.snapshots,
-            display: &self.display,
         }
     }
 
@@ -951,7 +955,7 @@ impl State {
     /// Map a toplevel whose first buffer arrived (or an X11 window that
     /// asked to be mapped), where the policy places it.
     pub(crate) fn map_window(&mut self, window: &Window) {
-        let Some(info) = describe(&self.display, window) else {
+        let Some(info) = describe(&self.display, &self.icons, window) else {
             return;
         };
         // It came back before the desktop was done with its close.
@@ -984,7 +988,7 @@ impl State {
         };
         let stack: Vec<Window> = self.space.elements().cloned().collect();
         for window in stack {
-            let Some(id) = describe(&self.display, &window).map(|info| info.id) else {
+            let Some(id) = describe(&self.display, &self.icons, &window).map(|info| info.id) else {
                 continue;
             };
             let Some(arrangement) = arrangements.iter().find(|arrangement| arrangement.id == id)
@@ -1026,7 +1030,9 @@ impl State {
             state
                 .space
                 .elements()
-                .find(|window| describe(&self.display, window).is_some_and(|info| info.id == id))
+                .find(|window| {
+                    describe(&self.display, &self.icons, window).is_some_and(|info| info.id == id)
+                })
                 .cloned()
         };
         for id in self.policy.take_close_requests() {
@@ -1074,7 +1080,7 @@ impl State {
     /// `window` asked for the keyboard: it gets it when the policy says so
     /// ([`WindowPolicy::activate`]).
     pub(crate) fn activation_requested(&mut self, window: &Window, fresh: bool) {
-        let focus = describe(&self.display, window)
+        let focus = describe(&self.display, &self.icons, window)
             .map_or(fresh, |info| self.policy.activate(&info, fresh));
         if focus {
             self.focus_window(window, SERIAL_COUNTER.next_serial());
@@ -1088,7 +1094,7 @@ impl State {
             return;
         }
         if let Some((window, _, _)) = self.surface_under(point) {
-            let info = describe(&self.display, &window);
+            let info = describe(&self.display, &self.icons, &window);
             if info.is_some_and(|info| self.policy.focus_on_click(&info)) {
                 self.focus_window(&window, serial);
             }
@@ -1104,15 +1110,35 @@ static NEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 const X11_IDS: u64 = 1 << 40;
 
 /// The id of `window`, when it has one.
-pub(crate) fn window_id(display: &DisplayHandle, window: &Window) -> Option<u64> {
-    describe(display, window).map(|info| info.id)
+pub(crate) fn window_id(window: &Window) -> Option<u64> {
+    if let Some(toplevel) = window.toplevel() {
+        return window_id_of(toplevel.wl_surface());
+    }
+    let x11 = window.x11_surface()?;
+    (!x11.is_override_redirect()).then(|| x11_window_id(x11.window_id()))
+}
+
+/// The id of the toplevel drawing into `surface`, once it has one.
+pub(crate) fn window_id_of(surface: &WlSurface) -> Option<u64> {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        states.data_map.get::<WindowId>().map(|id| id.0)
+    })
+}
+
+/// The [`WindowInfo`] id of the X11 window `window`.
+pub(crate) fn x11_window_id(window: u32) -> u64 {
+    X11_IDS | u64::from(window)
 }
 
 /// What a policy learns about a window, Wayland or X11; `None` for
 /// override-redirect X11 windows, which place themselves.
-pub(crate) fn describe(display: &DisplayHandle, window: &Window) -> Option<WindowInfo> {
+pub(crate) fn describe(
+    display: &DisplayHandle,
+    icons: &crate::toplevel_icon::Icons,
+    window: &Window,
+) -> Option<WindowInfo> {
     if let Some(toplevel) = window.toplevel() {
-        return Some(window_info(display, toplevel));
+        return Some(window_info(display, icons, toplevel));
     }
     let x11 = window.x11_surface()?;
     let size = |size: Option<smithay::utils::Size<i32, Logical>>| {
@@ -1120,18 +1146,14 @@ pub(crate) fn describe(display: &DisplayHandle, window: &Window) -> Option<Windo
             .map(|size| (size.w, size.h))
     };
     (!x11.is_override_redirect()).then(|| WindowInfo {
-        id: X11_IDS | u64::from(x11.window_id()),
+        id: x11_window_id(x11.window_id()),
         app_id: Some(x11.class()),
         title: Some(x11.title()),
-        parent: x11
-            .is_transient_for()
-            .map(|parent| X11_IDS | u64::from(parent)),
+        parent: x11.is_transient_for().map(x11_window_id),
         min_size: size(x11.min_size()),
         max_size: size(x11.max_size()),
         pid: x11.pid(),
-        icon: x11
-            .wl_surface()
-            .and_then(|surface| crate::toplevel_icon::of_surface(&surface)),
+        icon: icons.of(x11_window_id(x11.window_id())),
     })
 }
 
@@ -1191,14 +1213,18 @@ fn pid_of(client: Option<&Client>, display: &DisplayHandle) -> Option<u32> {
 }
 
 /// What a policy learns about a toplevel.
-fn window_info(display: &DisplayHandle, toplevel: &ToplevelSurface) -> WindowInfo {
+fn window_info(
+    display: &DisplayHandle,
+    icons: &crate::toplevel_icon::Icons,
+    toplevel: &ToplevelSurface,
+) -> WindowInfo {
     let id_of = |surface: &WlSurface| {
         smithay::wayland::compositor::with_states(surface, |states| {
             states.data_map.get::<WindowId>().map(|id| id.0)
         })
     };
     let parent = toplevel.parent().as_ref().and_then(id_of);
-    smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+    let mut info = smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
         let id = states.data_map.get::<WindowId>().map_or(0, |id| id.0);
         let attributes = states
             .data_map
@@ -1229,9 +1255,11 @@ fn window_info(display: &DisplayHandle, toplevel: &ToplevelSurface) -> WindowInf
             min_size: size(min),
             max_size: size(max),
             pid: pid_of(toplevel.wl_surface().client().as_ref(), display),
-            icon: crate::toplevel_icon::of_surface(toplevel.wl_surface()),
+            icon: None,
         }
-    })
+    });
+    info.icon = icons.of(info.id);
+    info
 }
 
 impl CompositorHandler for State {
@@ -1262,7 +1290,9 @@ impl CompositorHandler for State {
             }
             // The icon a client set takes effect on this commit, like any
             // other double-buffered state.
-            crate::toplevel_icon::committed(&root);
+            if let Some((window, icon)) = crate::toplevel_icon::committed(&root) {
+                self.icons.set(window, icon);
+            }
             let is_root = |window: &&Window| {
                 window
                     .toplevel()
@@ -1278,7 +1308,7 @@ impl CompositorHandler for State {
                 {
                     window.on_commit();
                     if !toplevel.is_initial_configure_sent() {
-                        let info = window_info(&self.display, toplevel);
+                        let info = window_info(&self.display, &self.icons, toplevel);
                         let outputs = self.output_geometries();
                         if let Some((w, h)) = self.policy.initial_size(&info, &outputs) {
                             toplevel.with_pending_state(|state| state.size = Some((w, h).into()));
@@ -1435,7 +1465,8 @@ impl XdgShellHandler for State {
         self.unmapped
             .retain(|window| window.toplevel() != Some(&surface));
         if pending {
-            self.policy.withdrawn(&window_info(&self.display, &surface));
+            self.policy
+                .withdrawn(&window_info(&self.display, &self.icons, &surface));
         }
         let gone = self
             .space
@@ -1524,6 +1555,6 @@ impl State {
             .elements()
             .filter_map(Window::toplevel)
             .find(|toplevel| toplevel.wl_surface() == &focus)
-            .map(|toplevel| window_info(&self.display, toplevel))
+            .map(|toplevel| window_info(&self.display, &self.icons, toplevel))
     }
 }
