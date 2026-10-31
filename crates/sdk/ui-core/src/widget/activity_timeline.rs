@@ -338,6 +338,10 @@ struct NamingState {
     clippy::struct_excessive_bools,
     reason = "each flag tracks an independent interaction, rendering, or invalidation state"
 )]
+#[crate::component::not_a_component(
+    part,
+    "`ui.ActivityTimeline` (`DescribedActivityTimeline`) is its described form"
+)]
 pub struct ActivityTimeline {
     entries: Vec<HistoryEntry>,
     named: Vec<NamedRange>,

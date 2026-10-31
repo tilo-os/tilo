@@ -1115,3 +1115,6 @@ mod coverage_tests;
 
 #[cfg(test)]
 mod feedback_tests;
+
+#[cfg(test)]
+mod data_tests;

@@ -3347,6 +3347,10 @@ mod pacer;
 pub use pacer::Pacer;
 pub(crate) mod block_editor_table;
 pub mod data_table;
+mod data_table_component;
+pub use data_table_component::{
+    DataTableCellProps, DataTableColumnProps, DataTableProps, DataTableRowProps, DescribedTable,
+};
 pub mod table {
     pub use super::block_editor_table::*;
 }
@@ -3521,10 +3525,14 @@ pub use webview::WebView;
 pub mod image_viewer;
 pub use image_viewer::ImageViewer;
 pub mod tree_view;
+mod tree_view_component;
 pub use tree_view::{
     TreeChildState, TreeClickActivation, TreeHeadingAction, TreeLoadReason, TreeLoadRequest,
     TreeModel, TreeModelChange, TreeMove, TreeNode, TreeRowAction, TreeRowDecoration, TreeRowIcon,
     TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
+};
+pub use tree_view_component::{
+    DescribedTreeView, TreeTone, TreeViewNodeProps, TreeViewProps, TreeViewRowProps,
 };
 mod rows;
 pub mod virtual_list;
@@ -3627,14 +3635,16 @@ pub use change_mark::ChangeMarkProps;
 pub mod conversation;
 pub use conversation::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,
-    ComposerRule, ConversationClock, ConversationDay, ConversationLine, ConversationList,
-    ConversationRole, DayBreaks, DayDividerFace, DeliveryFace, DeliveryState, DeliveryStep,
-    DraftBook, ListCache, ListFace, ListWork, SavedCopy, UploadProgress,
+    ComposerRule, ConversationClock, ConversationDay, ConversationEntryProps, ConversationLine,
+    ConversationList, ConversationListProps, ConversationRole, DayBreaks, DayDividerFace,
+    DeliveryFace, DeliveryState, DeliveryStep, DescribedConversationList, DraftBook, ListCache,
+    ListFace, ListWork, SavedCopy, UploadProgress,
 };
 pub mod card;
 mod tone;
 pub use card::{
-    Actions, Card, CardFace, CardGrid, CardProps, CardWidth, card_column_width, card_columns,
+    Actions, Card, CardFace, CardGrid, CardGridCardProps, CardGridProps, CardProps, CardWidth,
+    DescribedCardGrid, card_column_width, card_columns,
 };
 pub use tone::Tone;
 mod section;
@@ -3657,11 +3667,15 @@ pub use screenshot_markup::{
 pub use selection_handles::{Handle as SelectionHandle, SelectionHandles, TextGrip, TextGrips};
 
 pub mod activity_timeline;
+mod activity_timeline_component;
 pub mod history;
 pub mod history_face;
 pub mod history_group;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
+pub use activity_timeline_component::{
+    ActivityArtifact, ActivityEntryProps, ActivityTimelineProps, DescribedActivityTimeline,
+};
 pub use history::{
     AuthorRelation, EntryKind, HistoryAttribution, HistoryAuthor, HistoryClassification,
     HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
