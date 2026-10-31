@@ -85,6 +85,7 @@ struct Subscription {
     callback: Box<dyn FnMut(&ChangeSummary)>,
 }
 
+#[derive(Default)]
 struct TxnState {
     app: Option<AppId>,
     /// The resource kind of the first resource touched.
@@ -100,21 +101,6 @@ struct TxnState {
     /// One action's transaction writes one kind or the other, never both.
     saved: usize,
     derived: usize,
-}
-
-impl Default for TxnState {
-    fn default() -> Self {
-        Self {
-            app: None,
-            kind: None,
-            edits: Vec::new(),
-            start: 0,
-            touched: BTreeMap::new(),
-            listings: Vec::new(),
-            saved: 0,
-            derived: 0,
-        }
-    }
 }
 
 /// What the record moved on from, when known: its heads before, and the versions its new
