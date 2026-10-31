@@ -56,6 +56,8 @@ mod notices;
 #[cfg(test)]
 mod open_motion_tests;
 mod paging;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod peer_view;
 mod personal_ask;
 mod search;
 mod seed;
@@ -233,6 +235,10 @@ struct Shared {
     withheld: std::collections::BTreeSet<String>,
     /// Where the host confirms in passing what left nothing to see.
     acknowledger: ui::widget::acknowledgement::Acknowledger,
+    /// The windows other devices share with this one, each decoded into its
+    /// tile as it arrives.
+    #[cfg(not(target_arch = "wasm32"))]
+    peers: Rc<RefCell<peer_view::PeerSurfaces>>,
 }
 
 impl Shared {
@@ -845,8 +851,15 @@ impl DesktopSurface {
             artwork: std::collections::BTreeMap::new(),
             withheld: std::collections::BTreeSet::new(),
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            peers: Rc::new(RefCell::new(peer_view::PeerSurfaces::default())),
         }));
         let acknowledger = shared.borrow().acknowledger.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let tiles = Box::new(peer_view::PeerTiles::new(
+            tiles,
+            Rc::clone(&shared.borrow().peers),
+        )) as Box<dyn TileSource>;
         let mut surface = Self {
             shared: Rc::clone(&shared),
             tiles,
@@ -2383,12 +2396,16 @@ impl Widget for DesktopSurface {
             self.apply_commands(doc, root);
         }
         self.show_active_strip();
+        #[cfg(not(target_arch = "wasm32"))]
+        let peers_changed = self.follow_peer_streams();
         self.build_deferred();
         self.present();
         let held = self.apply_holders();
         let changed = self.shared.borrow().revision != before
             || search_was_open != self.search.is_open()
             || held;
+        #[cfg(not(target_arch = "wasm32"))]
+        let changed = changed || peers_changed;
         let row_changed = self.shown_row().is_some_and(|row| row.update(state, path));
         self.offer_window_shares();
         let bars_changed = self.sync_window_bars();

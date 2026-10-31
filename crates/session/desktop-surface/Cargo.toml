@@ -60,3 +60,19 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+# Another device's shared window: the wire it arrives on, the decoder that
+# turns its units into pictures, the colour that tone-maps an HDR stream to
+# this display, and the share's own rule for the input a viewer sends back.
+# All four run the media stack, which has no wasm32 build.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+tilo-callstream = { path = "../../collab/tilo-callstream", features = ["surface-decoder"] }
+tilo-media = { path = "../../platform/tilo-media", features = ["realtime"] }
+tilo-color-pipeline = { path = "../color-pipeline" }
+tilo-window-share = { path = "../window-share" }
+# The input a viewer sends back is the wire's own encoding.
+postcard.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The tests encode their own frames with the crate's encoder, as a sharing
+# device does, and read the input events back off the wire.
+tilo-callstream = { path = "../../collab/tilo-callstream", features = ["surface-decoder"] }
