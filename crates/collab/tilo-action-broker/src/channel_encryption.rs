@@ -231,6 +231,14 @@ pub trait ChannelDirectory: Send {
     /// the record only from grants naming it. `None` for a channel it cannot
     /// name: it may be a member's own record, so who reads it is unknown, and
     /// this device admits and removes no one.
+    ///
+    /// A person room ([`collab_types::person_room`]) has no record grants:
+    /// its channels are read by the devices of the identity it derives from
+    /// (certified, not revoked), and a directory holding that identity
+    /// answers them for every channel. A channel is then taken up once the
+    /// directory can name its readers, whether or not the room has a
+    /// governor; the governor is admitted too where there is one
+    /// ([`ChannelEncryption::allowed`]).
     fn allowed_devices(
         &self,
         room: RoomId,
@@ -330,14 +338,15 @@ struct PeerEntry {
     wanted: bool,
 }
 
-/// A channel an endpoint asked about that this device could not open: its
-/// room has no governor this device knows of, or opening its state failed.
-/// Its answer changes with nothing arriving for it, so the service tells the
-/// route itself ([`ChannelEncryption::bump`]) rather than leaving the
-/// endpoint to ask on a timer.
+/// A channel an endpoint asked about that this device could not open: no
+/// one can name its readers here (its room has no governor this device
+/// knows of), or opening its state failed. Its answer changes with nothing
+/// arriving for it, so the service tells the route itself
+/// ([`ChannelEncryption::bump`]) rather than leaving the endpoint to ask on
+/// a timer.
 struct Unopened {
     room: RoomId,
-    /// `None` while the room's governance is unknown here: re-checked
+    /// `None` while no one can name the channel's readers here: re-checked
     /// whenever the policy inputs announce a change. `Some` after a failed
     /// open: retried on its own backoff.
     retry: Option<Backoff>,
@@ -637,17 +646,18 @@ impl ChannelEncryption {
     }
 
     /// Tell the routes of unopened channels whose answer may now differ:
-    /// on a policy re-check (`recheck`), those whose room's governance is
-    /// now known here; and those whose failed open is due again.
+    /// on a policy re-check (`recheck`), those this device may now take
+    /// part in; and those whose failed open is due again.
     fn wake_unopened(&mut self, now: Instant, recheck: bool) {
         let mut changed = Vec::new();
         let stored = self.store.is_some();
+        let device = self.device();
         for (channel, entry) in &mut self.unopened {
             match &mut entry.retry {
                 None => {
                     // Without a store only a room now hosted here opens.
                     let opens = if stored {
-                        self.directory.governor_of(entry.room).is_some()
+                        takes_part(&*self.directory, device, entry.room, *channel)
                     } else {
                         hosted_answer(
                             &self.resolved,
@@ -1138,15 +1148,19 @@ impl ChannelEncryption {
     }
 
     /// Start taking part in `channel`: wait for access, and for the group to
-    /// be created ([`Self::found`]). `Ok(false)` while the room's governance
-    /// is not known here.
+    /// be created ([`Self::found`]). `Ok(false)` while the directory cannot
+    /// name the channel's readers here: a room whose governance is unknown
+    /// and which is no person room of this device's. A room governed by a
+    /// person's node needs that node, and the person's own room has no
+    /// governor at all: its readers are the identity's devices, and any of
+    /// them founds its channels.
     fn start_peer(
         &mut self,
         room: RoomId,
         channel: ChannelId,
         now: Instant,
     ) -> channel_crypto::Result<bool> {
-        if self.directory.governor_of(room).is_none() {
+        if !takes_part(&*self.directory, self.device(), room, channel) {
             return Ok(false);
         }
         if self.open_peer(room, channel, now)? {
@@ -1332,6 +1346,27 @@ fn hosted_answer(
         Some(answer) => answer.clone(),
         None => directory.hosted_channel_keys(room, channel, route, create),
     }
+}
+
+/// Whether this device may take the channel up: the room's governor takes
+/// part in its channels, or the directory names this device among the
+/// channel's readers. A channel whose readers the directory names without
+/// this device can be neither founded nor joined by it, and a channel whose
+/// readers no one can name here (a room this device holds no view of) opens
+/// nothing.
+fn takes_part(
+    directory: &dyn ChannelDirectory,
+    device: Option<Ed25519PublicKey>,
+    room: RoomId,
+    channel: ChannelId,
+) -> bool {
+    if directory.governor_of(room).is_some() {
+        return true;
+    }
+    directory
+        .allowed_devices(room, channel, None, tilo_clock::unix_now())
+        .zip(device)
+        .is_some_and(|(allowed, device)| allowed.contains(&device))
 }
 
 /// Wakes a host's parked governance pump.
@@ -3218,148 +3253,7 @@ mod tests {
         drop(state);
     }
 
-    /// A room whose governance this device learns of later, as the workspace
-    /// tree does when a room's authority arrives: it announces the change.
-    #[derive(Clone, Default)]
-    struct LateGovernor {
-        governor: Arc<Mutex<Option<Ed25519PublicKey>>>,
-        epoch: Arc<std::sync::atomic::AtomicU64>,
-    }
-
-    impl ChannelDirectory for LateGovernor {
-        fn governor_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
-            *self.governor.lock().unwrap()
-        }
-        fn allowed_devices(
-            &self,
-            _: RoomId,
-            _: ChannelId,
-            _: Option<&ChannelRoute>,
-            _: u64,
-        ) -> Option<BTreeSet<Ed25519PublicKey>> {
-            Some(BTreeSet::new())
-        }
-        fn policy_epoch(&self) -> Option<u64> {
-            Some(self.epoch.load(Ordering::SeqCst))
-        }
-    }
-
-    fn late_governor_service(dir: &Path, directory: &LateGovernor) -> ChannelEncryption {
-        ChannelEncryption::open(
-            ChannelEncryptionConfig {
-                root: dir.join("channels"),
-                vault: VaultKey::new([21; 32]),
-                device_key: key(21),
-            },
-            Box::new(directory.clone()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-        )
-        .unwrap()
-    }
-
-    /// A route asked about before its room's governance is known is told
-    /// when it is learned, with no timer running meanwhile: the endpoint need
-    /// not ask on one to find out.
-    #[test]
-    fn a_route_hears_when_its_rooms_governance_is_learned() {
-        let dir = tempfile::tempdir().unwrap();
-        let directory = LateGovernor::default();
-        let mut service = late_governor_service(dir.path(), &directory);
-        let (room, channel) = (RoomId::new(), ChannelId::new());
-        let transport = Endpoint::join(&Arc::new(Room::default()), room, 0);
-        let mut now = Instant::now();
-        assert!(matches!(
-            service.access(room, channel, now),
-            ChannelAccess::Unavailable
-        ));
-        assert!(
-            std::mem::take(&mut service.queued),
-            "a newly unopened channel wakes a parked pump to arm its watch"
-        );
-        service.pump(&transport, now, 1_000);
-        assert_eq!(service.channel_change(channel), 0);
-        assert_eq!(
-            service.next_pump_deadline(now),
-            None,
-            "nothing is due while the room's governance is unknown"
-        );
-        assert!(
-            service.waits_for_policy_change(),
-            "the pump waits for an announcement instead"
-        );
-
-        // Announcements that leave the room's governance unknown tell no
-        // route.
-        directory.epoch.fetch_add(1, Ordering::SeqCst);
-        now = now.checked_add(Duration::from_secs(5)).unwrap();
-        service.pump(&transport, now, 1_005);
-        assert_eq!(service.channel_change(channel), 0);
-
-        *directory.governor.lock().unwrap() = Some(public(22));
-        directory.epoch.fetch_add(1, Ordering::SeqCst);
-        now = now.checked_add(Duration::from_secs(5)).unwrap();
-        service.pump(&transport, now, 1_010);
-        let told = service.channel_change(channel);
-        assert_ne!(
-            told, 0,
-            "the route is told its room's governance is known now"
-        );
-        assert!(matches!(
-            service.access(room, channel, now),
-            ChannelAccess::Waiting
-        ));
-        assert!(service.unopened.is_empty());
-
-        directory.epoch.fetch_add(1, Ordering::SeqCst);
-        now = now.checked_add(Duration::from_secs(5)).unwrap();
-        service.pump(&transport, now, 1_015);
-        assert_eq!(
-            service.channel_change(channel),
-            told,
-            "an opened channel is not told again"
-        );
-    }
-
-    /// A channel whose state could not be opened is retried by the pump on
-    /// its own backoff, each retry telling the route to ask again.
-    #[test]
-    fn a_failed_open_is_retried_on_the_pumps_backoff() {
-        let dir = tempfile::tempdir().unwrap();
-        let directory = LateGovernor::default();
-        *directory.governor.lock().unwrap() = Some(public(22));
-        let mut service = late_governor_service(dir.path(), &directory);
-        let (room, channel) = (RoomId::new(), ChannelId::new());
-        let transport = Endpoint::join(&Arc::new(Room::default()), room, 0);
-        // The room's state directory cannot be created: a file is in its way.
-        let blocker = dir.path().join("channels").join(room.to_string());
-        std::fs::write(&blocker, b"").unwrap();
-        let now = Instant::now();
-        assert!(matches!(
-            service.access(room, channel, now),
-            ChannelAccess::Unavailable
-        ));
-        service.pump(&transport, now, 1_000);
-        let due = service
-            .next_pump_deadline(now)
-            .expect("the failed open is due again");
-        assert_eq!(due, now.checked_add(REQUEST_FIRST).unwrap());
-        assert_eq!(service.channel_change(channel), 0);
-        service.pump(&transport, due, 1_002);
-        let told = service.channel_change(channel);
-        assert_ne!(told, 0, "the retry tells the route to ask again");
-        assert_eq!(
-            service.next_pump_deadline(due),
-            Some(due.checked_add(REQUEST_FIRST * 2).unwrap()),
-            "and backs off"
-        );
-
-        std::fs::remove_file(&blocker).unwrap();
-        assert!(matches!(
-            service.access(room, channel, due),
-            ChannelAccess::Waiting
-        ));
-        assert!(service.unopened.is_empty(), "an open that succeeds settles");
-    }
+    include!("channel_encryption_unopened_tests.rs");
 
     /// This device's own room host is asked for a channel's keys with no
     /// lock of the service held. The host may wait on whoever waits for
@@ -3485,4 +3379,6 @@ mod tests {
         ));
         assert!(governed.peers.is_empty());
     }
+
+    include!("channel_encryption_person_room_tests.rs");
 }
