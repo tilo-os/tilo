@@ -396,7 +396,7 @@ fn access_app(review: &AgentReview, app: &AccessApp, open: bool, parts: &Parts) 
     let mut head = head
         .disclosure()
         .selected(open)
-        .on_activate(move || toggle.toggle_app(&scope));
+        .on_view(move || toggle.toggle_app(&scope));
     if app.customised && open {
         let (agent, scope) = (review.agent.clone(), app.scope.clone());
         head = head.trailing(Box::new(
@@ -447,16 +447,19 @@ fn kind_line(review: &AgentReview, app: &AccessApp, line: &KindLine, parts: &Par
         .with_id(format!("ws-agent-answer-{}-{}", app.scope, line.kind))
         .with_accessible_name(format!("{} {}", app.label, line.label))
         .with_enabled(review.editable)
-        .on_change(move |index| {
-            if let Some(answer) = ANSWERS.get(index) {
-                press.ask(WorkspaceSettingsEffect::SetAgentAnswer {
-                    agent: agent.clone(),
-                    scope: scope.clone(),
-                    kind: kind.clone(),
-                    answer: (*answer).to_owned(),
-                });
-            }
-        });
+        .on_view(
+            &format!("ws-agent-answer-{}-{}", app.scope, line.kind),
+            move |index| {
+                if let Some(answer) = ANSWERS.get(index) {
+                    press.ask(WorkspaceSettingsEffect::SetAgentAnswer {
+                        agent: agent.clone(),
+                        scope: scope.clone(),
+                        kind: kind.clone(),
+                        answer: (*answer).to_owned(),
+                    });
+                }
+            },
+        );
     Box::new(
         ListRow::new(
             format!("ws-agent-kind-{}-{}", app.scope, line.kind),
@@ -476,7 +479,7 @@ fn models_section(review: &AgentReview, models: &Models, open: bool, parts: &Par
         .secondary(models.summary.clone())
         .disclosure()
         .selected(open)
-        .on_activate(move || toggle.toggle_models());
+        .on_view(move || toggle.toggle_models());
     if !open {
         return Box::new(head);
     }

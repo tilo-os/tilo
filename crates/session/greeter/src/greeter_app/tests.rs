@@ -137,14 +137,14 @@ fn find_mut<'a>(w: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
 
 /// Activate the control `id` as Enter, Space or assistive technology
 /// does, then let the greeter take what it reported.
+///
+/// A press publishes the control's own action; the answer a window's host
+/// gives it is what runs the greeter's handler, so the test answers it here.
 fn press(app: &mut GreeterApp, doc: &mut AutoCommit, id: &str) {
     app.sync(doc, &automerge::ROOT);
     app.composed.replace(app.build_composition(&Theme::dark()));
-    let control = app
-        .composed
-        .element_mut()
-        .and_then(|composed| find_mut(composed, id))
-        .unwrap_or_else(|| panic!("{id} is on the screen"));
+    let composed = app.composed.element_mut().expect("the greeter composed");
+    let control = find_mut(composed, id).unwrap_or_else(|| panic!("{id} is on the screen"));
     assert!(
         control.perform_action(
             &ui::a11y::Action::Activate,
@@ -153,6 +153,11 @@ fn press(app: &mut GreeterApp, doc: &mut AutoCommit, id: &str) {
             &automerge::ROOT
         ),
         "{id} accepts activation"
+    );
+    ui::widget::controls::start_pending_control_invocations(
+        composed,
+        &mut ui::widget::Edits::lend(doc),
+        &automerge::ROOT,
     );
     app.sync(doc, &automerge::ROOT);
 }

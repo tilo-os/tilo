@@ -218,7 +218,7 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                 let press = parts.clone();
                 column = column.push(Box::new(
                     ListRow::new("portal-remember", remember.label.clone())
-                        .checkbox(remember.on, move |_| press.remember()),
+                        .checkbox_view(remember.on, move |_| press.remember()),
                 ));
             }
             for (at, choice) in choices.iter().enumerate() {
@@ -229,7 +229,7 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                     } else {
                         ButtonRole::Secondary
                     })
-                    .on_click(move || press.answer(at));
+                    .on_own_device_effect(move || press.answer(at));
                 button.set_focus(at == dialog.selected);
                 column = column.push(Box::new(button));
             }
@@ -262,7 +262,7 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                         .checked(dialog.selected == at)
                         .selected(focus == Focus::Icons && dialog.selected == at)
                         .with_enabled(*icon_editable)
-                        .on_activate(move || {
+                        .on_effect(move || {
                             press.focus(Focus::Icons);
                             press.icon(at);
                         }),
@@ -309,7 +309,7 @@ fn choices_rows(
             ListRow::new(format!("portal-choice-{at}"), choice.clone())
                 .checked(chosen)
                 .selected(chosen && focus == Focus::Choices)
-                .on_activate(move || {
+                .on_view(move || {
                     press.focus(Focus::Choices);
                     press.select(at);
                 }),
@@ -328,7 +328,7 @@ fn device_row(at: usize, device: &Device, focused: bool, parts: &Parts) -> Eleme
                 "portal-usb-row-read-only"
             }))
             .selected(focused)
-            .checkbox(device.selected, move |_| {
+            .checkbox_view(device.selected, move |_| {
                 press.select(at);
                 press.toggle(at);
             }),
@@ -344,7 +344,7 @@ fn shortcut_row(at: usize, row: &Shortcut, focused: bool, parts: &Parts) -> Elem
                 .unwrap_or_else(|| t("portal-shortcut-not-set")),
         )
         .selected(focused)
-        .on_activate(move || press.select(at));
+        .on_view(move || press.select(at));
     if let Some(status) = &row.status {
         list_row = list_row.subtitle(status.clone()).warning();
     }
@@ -360,7 +360,7 @@ fn draft_row(row: &DraftRow, focus: Focus, invalid: bool, parts: &Parts) -> Elem
                 ListRow::new(format!("portal-draft-{at}"), row.label.clone())
                     .selected(focus == Focus::Flag(at))
                     .with_enabled(row.editable)
-                    .checkbox(*on, move |_| {
+                    .checkbox_view(*on, move |_| {
                         press.focus(Focus::Flag(at));
                         press.toggle(at);
                     }),
@@ -420,7 +420,7 @@ fn text_field(field: Field, initial: &str, parts: &Parts) -> TextInput {
     let mut input = TextInput::local()
         .with_id(&field_id(field))
         .with_initial_value(&text)
-        .on_change(move |text| {
+        .on_change_view(move |text| {
             typed
                 .texts
                 .borrow_mut()
