@@ -440,6 +440,7 @@ impl Compositor {
         self.sync_power();
         self.publish_displays();
         self.display.flush_clients()?;
+        self.data.state.lift_lock_of_departed_client();
         Ok(())
     }
 
