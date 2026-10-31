@@ -444,6 +444,41 @@ macro_rules! choice {
 )]
 pub(crate) use choice;
 
+/// A slot of any number of one part, whose props the slot's owner reads (a stat group's tiles,
+/// a trail's segments): `crate::component::part_slot!(FactProps);` beside the part.
+macro_rules! part_slot {
+    ($props:ty) => {
+        impl $crate::component::SlotType for Vec<$props> {
+            const MANY: bool = true;
+
+            fn accepts() -> $crate::component::Accepts {
+                $crate::component::Accepts::Component(
+                    <$props as $crate::component::Component>::NAME.into(),
+                )
+            }
+
+            fn fill(
+                &mut self,
+                source: &mut dyn $crate::component::Source,
+                slot: &str,
+            ) -> Result<(), String> {
+                let mut read = Vec::new();
+                source.components(slot, &mut |child| {
+                    read.push(
+                        <$props as $crate::component::Component>::from_source(child)
+                            .map_err(|error| error.to_string())?,
+                    );
+                    Ok(())
+                })?;
+                *self = read;
+                Ok(())
+            }
+        }
+    };
+}
+
+pub(crate) use part_slot;
+
 choice!(crate::tokens::TextRole, "TextRole", {
     Display => "display",
     LargeTitle => "large_title",
@@ -1077,3 +1112,6 @@ mod tests;
 
 #[cfg(test)]
 mod coverage_tests;
+
+#[cfg(test)]
+mod feedback_tests;

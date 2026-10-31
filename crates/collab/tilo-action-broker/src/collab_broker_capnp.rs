@@ -3481,6 +3481,11 @@ pub struct CapnpBrokerState {
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
     pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
+    /// The host each launched task agent's run takes its host steps through
+    /// (a task's programs), by run: the same the agent door's connection is,
+    /// one for the run, so each step is read back by the caller that took
+    /// it. Made at its first host step; gone with the agent's stream.
+    run_task_hosts: Mutex<HashMap<u64, TaskRunHost>>,
     invocation_id: AtomicU64,
     services: HostServices,
     workers: Mutex<Vec<PendingWorker>>,
@@ -4134,6 +4139,10 @@ impl CapnpBrokerState {
             .transpose()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one constructor naming every registry the broker keeps"
+    )]
     fn new_configured(
         fanout: &Arc<FanoutState>,
         broker_channels: Arc<Mutex<BrokerChannels>>,
@@ -4230,6 +4239,7 @@ impl CapnpBrokerState {
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
                 task_subscribers: Mutex::new(HashMap::new()),
                 pending_task_runs: Mutex::new(HashMap::new()),
+                run_task_hosts: Mutex::new(HashMap::new()),
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
                 workers: Mutex::new(Vec::new()),
@@ -5299,51 +5309,94 @@ impl CapnpBrokerState {
             })
             .filter(|app| !live_apps.contains(&app.package_id))
             .collect::<Vec<_>>();
+        // A task agent's run takes the host's task steps (a task's programs)
+        // as steps of the run: listed for it alone, each admitted by the run
+        // when taken.
+        let task_steps = self
+            .services
+            .host_steps
+            .iter()
+            .filter(|steps| actor.issue().is_some() && steps.for_tasks())
+            .map(|steps| {
+                let actions = steps
+                    .descriptors()
+                    .into_iter()
+                    .filter(|descriptor| {
+                        scope.is_none_or(|scope| {
+                            scope.app_id == steps.app_id()
+                                && descriptor.address.resource == scope.resource
+                                && descriptor.address.action == scope.action
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                (steps.provider(), steps.app_id().to_owned(), actions)
+            })
+            .collect::<Vec<_>>();
         // One policy sample decides every row; serialization runs after the
         // committed authority is released.
-        let (published, applications) = membership.decide_in_room(cluster_id, |workspace| {
-            let workspace = workspace
-                .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-            let published = published
-                .into_iter()
-                .map(|mut surface| {
-                    if !surface.live
-                        && !actor.may_in(
+        let (published, applications, task_steps) =
+            membership.decide_in_room(cluster_id, |workspace| {
+                let workspace = workspace
+                    .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+                let published = published
+                    .into_iter()
+                    .map(|mut surface| {
+                        if !surface.live
+                            && !actor.may_in(
+                                workspace,
+                                &app_node(workspace, &surface.app_id),
+                                ActionKind::Undoable,
+                                now,
+                            )
+                        {
+                            surface.actions.clear();
+                        }
+                        // Listed when the actor may take it, or would be asked
+                        // first.
+                        surface.actions.retain(|action| {
+                            actor.action_answer_in(
+                                workspace,
+                                &surface.app_id,
+                                (&action.resource_kind, &action.resource, &action.action),
+                                &action.contract.need(),
+                                now,
+                            ) != Answer::Deny
+                        });
+                        surface
+                    })
+                    .collect::<Vec<_>>();
+                let applications = applications
+                    .into_iter()
+                    .filter(|app| {
+                        actor.may_in(
                             workspace,
-                            &app_node(workspace, &surface.app_id),
+                            &app_node(workspace, &app.package_id),
                             ActionKind::Undoable,
                             now,
                         )
-                    {
-                        surface.actions.clear();
-                    }
-                    // Listed when the actor may take it, or would be asked
-                    // first.
-                    surface.actions.retain(|action| {
-                        actor.action_answer_in(
-                            workspace,
-                            &surface.app_id,
-                            (&action.resource_kind, &action.resource, &action.action),
-                            &action.contract.need(),
-                            now,
-                        ) != Answer::Deny
-                    });
-                    surface
-                })
-                .collect::<Vec<_>>();
-            let applications = applications
-                .into_iter()
-                .filter(|app| {
-                    actor.may_in(
-                        workspace,
-                        &app_node(workspace, &app.package_id),
-                        ActionKind::Undoable,
-                        now,
-                    )
-                })
-                .collect::<Vec<_>>();
-            Ok::<_, String>((published, applications))
-        })??;
+                    })
+                    .collect::<Vec<_>>();
+                let task_steps = task_steps
+                    .into_iter()
+                    .map(|(provider, app_id, mut actions)| {
+                        actions.retain(|descriptor| {
+                            actor.action_answer_in(
+                                workspace,
+                                &app_id,
+                                (
+                                    &descriptor.resource_kind,
+                                    &descriptor.address.resource,
+                                    &descriptor.address.action,
+                                ),
+                                &descriptor.contract.need(),
+                                now,
+                            ) != Answer::Deny
+                        });
+                        (provider, app_id, actions)
+                    })
+                    .collect::<Vec<_>>();
+                Ok::<_, String>((published, applications, task_steps))
+            })??;
         let mut surfaces = published
             .into_iter()
             .filter_map(|surface| {
@@ -5361,6 +5414,20 @@ impl CapnpBrokerState {
                 })
             })
             .collect::<Vec<_>>();
+        for (provider, app_id, actions) in task_steps {
+            if actions.is_empty() {
+                continue;
+            }
+            surfaces.push(serde_json::json!({
+                "peer_id": 0,
+                "provider": provider,
+                "app_id": app_id,
+                "cluster_id": cluster_id,
+                "record_id": "",
+                "live": true,
+                "actions": actions.iter().map(PublishedAction::from).collect::<Vec<_>>(),
+            }));
+        }
         for app in applications {
             let package_id = app.package_id;
             let display_name = app.display_name;
@@ -7130,6 +7197,19 @@ impl CapnpBrokerState {
         if let Ok(mut runs) = self.pending_task_runs.lock() {
             runs.retain(|_, run| run.peer_id != peer_id);
         }
+        // Taken out under the lock and dropped after it: a host's own drop
+        // may come back here.
+        let mut ended: Vec<TaskRunHost> = Vec::new();
+        if let Ok(mut hosts) = self.run_task_hosts.lock() {
+            hosts.retain(|_, host| {
+                let goes = host.peer() != peer_id;
+                if !goes {
+                    ended.push(host.clone());
+                }
+                goes
+            });
+        }
+        drop(ended);
     }
 
     /// Stable authenticated actor id for native presence and interactions.

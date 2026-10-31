@@ -392,6 +392,11 @@ use crate::widget::Widget;
 
 pub const DEFAULT_DELAY: Duration = Duration::from_millis(600);
 
+#[crate::component::not_a_component(
+    framework,
+    "a tooltip is what a control says of itself (`Widget::tooltip`), which the window's one \
+     tooltip layer (`TooltipHost`) reveals after a dwell; a view never places one"
+)]
 pub struct Tooltip {
     label: String,
     delay: Duration,

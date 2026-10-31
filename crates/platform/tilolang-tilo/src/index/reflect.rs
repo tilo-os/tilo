@@ -167,6 +167,13 @@ pub fn versions_of(change: &automerge::Change) -> Vec<Version> {
         .collect()
 }
 
+/// Where `change` placed items, when it is a tilolang action's change
+/// ([`DynAction::placed`]).
+#[must_use]
+pub fn placed_of(change: &automerge::Change) -> Vec<(String, String, String, Option<String>)> {
+    read(change).map_or_else(Vec::new, |(_, action, _)| action.placed())
+}
+
 /// What a column of a version orders by: the time, as a column of times writes it.
 #[must_use]
 pub fn at_lit(value: &FieldValue) -> Lit {

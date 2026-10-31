@@ -152,6 +152,31 @@ impl Replica {
         self.host.sync_from(&self.doc);
     }
 
+    /// Apply the history verb `edit` to the record as this replica's person, as the room does
+    /// for a window: a step of their own, recorded like any action.
+    #[cfg(feature = "room")]
+    pub fn history(&mut self, edit: &collaboration::history_source::verbs::HistoryEdit) {
+        let action: tilolang_tilo::instance::room::HostHistoryEdit =
+            serde_json::from_value(serde_json::to_value(edit).unwrap()).unwrap();
+        let encoded = tilo_actions::EncodedAction {
+            type_id: collaboration::history_source::verbs::EDIT_TYPE.to_owned(),
+            payload: serde_json::to_vec(edit).unwrap(),
+        };
+        let context = ActionContext::for_resource("room", "room", "room")
+            .with_app("so.tilo.lang", "tilolang")
+            .with_invoker(ActionInvoker::actor(self.name.clone()));
+        tilo_actions::apply_local_with_context(
+            &mut self.doc,
+            &action,
+            encoded,
+            Some(self.name.as_bytes()),
+            context,
+        )
+        .unwrap();
+        self.doc.commit();
+        self.host.sync_from(&self.doc);
+    }
+
     /// Commit what the runtime committed on its own (a press, a created root).
     pub fn commit(&mut self) {
         for committed in self.host.take_committed() {

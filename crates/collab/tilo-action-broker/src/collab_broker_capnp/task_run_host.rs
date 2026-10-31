@@ -33,7 +33,7 @@ use super::native_task_execution::ChildReask;
 use super::published_invocation::InvocationCaller;
 use super::{
     AdmittedJoinIdentity, CapnpBrokerState, CrdtRoute, InvocationOwner, PendingTaskRun,
-    TaskRunEnvelope, TaskSubscription, mpsc,
+    TaskSubscription, mpsc,
 };
 
 /// The route a task agent's connection is admitted on: the workspace agent
@@ -55,6 +55,13 @@ enum Started {
     Refused(String),
 }
 
+/// The run a host works in, as the broker delivered it.
+struct RunRef {
+    run_id: u64,
+    lease: String,
+    task_id: String,
+}
+
 struct Inner {
     state: Arc<CapnpBrokerState>,
     peer: u64,
@@ -62,16 +69,22 @@ struct Inner {
     admitted: AdmittedJoinIdentity,
     agent: String,
     person: String,
-    run: TaskRunEnvelope,
+    run: RunRef,
     /// Who the task agent is to the catalogue and the host steps, in this
     /// connection's execution.
     caller: Caller,
     started: Mutex<HashMap<tilo_actions::InvocationId, Started>>,
+    /// Whether this host took the run's delivery itself (the agent door's
+    /// connection), so the run's stream ends with it; a launched task
+    /// agent's stream is its channel's.
+    owns_stream: bool,
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        self.state.disconnect_native_task_stream(self.peer);
+        if self.owns_stream {
+            self.state.disconnect_native_task_stream(self.peer);
+        }
     }
 }
 
@@ -126,18 +139,70 @@ impl CapnpBrokerState {
                 },
             );
         // Delivery is synchronous: a going run is in the channel now.
-        self.refresh_tracker_runs(&std::iter::once(room.clone()).collect());
+        self.refresh_tracker_runs(&std::iter::once(room).collect());
         let Ok(run) = rx.try_recv() else {
             self.disconnect_native_task_stream(peer);
             return Err("the task's run is not going, so it was delivered nothing".into());
         };
+        let run = RunRef {
+            run_id: run.run_id,
+            lease: run.lease,
+            task_id: run.task_id,
+        };
+        Ok(TaskRunHost::new(
+            self,
+            (peer, route, admitted),
+            agent,
+            run,
+            true,
+        ))
+    }
+
+    /// The host a launched task agent's run takes its host steps through
+    /// (a task's programs), the same the agent door's connection is: on the
+    /// agent's own channel (`peer` on `route`, admitted as `admitted`), in
+    /// its delivered run `run_id` at `lease`.
+    pub(super) fn launched_task_run_host(
+        self: &Arc<Self>,
+        (peer, route, admitted): (u64, CrdtRoute, AdmittedJoinIdentity),
+        (run_id, lease, task_id): (u64, &str, &str),
+    ) -> Result<TaskRunHost, String> {
+        let agent = admitted
+            .task
+            .as_deref()
+            .map(|task| task.agent_id.clone())
+            .or_else(|| admitted.agent_id.clone())
+            .ok_or("a task's steps are its agent's")?;
+        let run = RunRef {
+            run_id,
+            lease: lease.to_owned(),
+            task_id: task_id.to_owned(),
+        };
+        Ok(TaskRunHost::new(
+            self,
+            (peer, route, admitted),
+            agent,
+            run,
+            false,
+        ))
+    }
+}
+
+impl TaskRunHost {
+    fn new(
+        state: &Arc<CapnpBrokerState>,
+        (peer, route, admitted): (u64, CrdtRoute, AdmittedJoinIdentity),
+        agent: String,
+        run: RunRef,
+        owns_stream: bool,
+    ) -> Self {
         let person = admitted.principal_id.clone();
         let caller = Caller::local_person(person.clone())
-            .in_room(&room)
+            .in_room(&route.cluster_id)
             .in_new_execution()
             .delegated_to(agent.clone());
-        Ok(TaskRunHost(Arc::new(Inner {
-            state: Arc::clone(self),
+        Self(Arc::new(Inner {
+            state: Arc::clone(state),
             peer,
             route,
             admitted,
@@ -146,7 +211,71 @@ impl CapnpBrokerState {
             run,
             caller,
             started: Mutex::default(),
-        })))
+            owns_stream,
+        }))
+    }
+
+    /// Who the task agent is to the host steps it takes in its run.
+    pub(super) fn caller(&self) -> &Caller {
+        &self.0.caller
+    }
+
+    /// The connection the run was delivered to.
+    pub(super) fn peer(&self) -> u64 {
+        self.0.peer
+    }
+
+    pub(super) fn state(&self) -> Arc<CapnpBrokerState> {
+        Arc::clone(&self.0.state)
+    }
+
+    /// Admit a step of the run on a record outside its app: `action` of the
+    /// app `app` on `resource`, needing `kind`. The run decides it as it
+    /// decides its other steps (its delegation, its issue's and its
+    /// starter's live grants, only while it goes), for `caller`, this
+    /// host's own execution.
+    ///
+    /// # Errors
+    /// The caller is not this host's, the run no longer goes or is paused,
+    /// or the run's grants refuse the step or would ask first.
+    pub(super) fn admit_record_step(
+        &self,
+        caller: &Caller,
+        (app, resource, action): (&str, &str, &str),
+        kind: tilo_action_policy::ActionKind,
+    ) -> Result<(), ActionHostError> {
+        self.check(caller)?;
+        let refused = |reason: String| ActionHostError::Refused { reason };
+        let (run, lease) = self.pending_run().map_err(refused)?;
+        let mut binding = run.native.clone();
+        binding.revision = runtime_collab::native_task_revision(&lease)
+            .ok_or_else(|| refused("invalid native task lease".into()))?
+            .1;
+        let requirement = crate::services::NativeTaskActionRequirement {
+            binding: binding.clone(),
+            app: app.to_owned(),
+            resource_kind: String::new(),
+            resource: resource.to_owned(),
+            action: action.to_owned(),
+            need: tilo_actions::ActionNeed {
+                kind,
+                field: None,
+                privileged: false,
+            },
+            consequential: false,
+            attended: false,
+            confirmed: false,
+        };
+        self.0
+            .state
+            .admit_task_launch(&run, &binding, &requirement, &mut || Ok(()))
+            .map_err(|reason| {
+                if crate::services::NativeTaskActionRequirement::awaits_confirmation(&reason) {
+                    ActionHostError::ConfirmationRequired
+                } else {
+                    refused(reason)
+                }
+            })
     }
 }
 
@@ -235,10 +364,14 @@ impl TaskRunHost {
         self.0.started.lock().ok()?.get(invocation).cloned()
     }
 
-    /// A host step, admitted by the run and taken by the task agent: its
-    /// grants, the run's issue and its starter decide, and it goes to
-    /// history in the run's group.
-    fn invoke_host_step(
+    /// A host step, admitted by the run like any of its children (its
+    /// grants, its issue and its starter decide), taken on the host by the
+    /// task agent, and listed in history in the run's group. The one path
+    /// every task agent takes a host step by: the agent door's connection
+    /// and a launched task agent alike. The step is handed this host, so
+    /// what it does in turn (a task's program: its actions, its reads and
+    /// changes of records) is the run's too.
+    pub(super) fn invoke_host_step(
         &self,
         steps: &dyn crate::services::HostStepServices,
         request: &InvokeRequest,
@@ -268,29 +401,36 @@ impl TaskRunHost {
             .state
             .admit_task_launch(&run, &binding, &requirement, &mut || Ok(()))
             .map_err(refused)?;
-        let time = self
-            .0
-            .state
-            .registered_policy_time()
-            .map_err(refused)?
-            .ok_or_else(|| refused("the policy clock is unavailable".into()))?;
-        let origin = InvocationCaller::Local {
-            route: self.0.route.clone(),
-            admitted: Box::new(self.0.admitted.clone()),
-            time: Some(time),
-        };
+        let origin = self.origin().map_err(refused)?;
         // The run's group, so history lists the step under the run.
         let mut request = request.clone();
         let mut context = request.context.take().unwrap_or_default();
         context.group.clone_from(&run.action_context.group);
         context.purpose.clone_from(&run.action_context.purpose);
         request.context = Some(context);
-        let receipt =
-            self.0
-                .state
-                .invoke_host_step(&self.0.caller, Some(&origin), steps, &request)?;
+        let receipt = self.0.state.invoke_host_step_in_run(
+            &self.0.caller,
+            Some(&origin),
+            steps,
+            &request,
+            Some(self),
+        )?;
         self.remember(request.invocation, Started::HostStep);
         Ok(receipt)
+    }
+
+    /// This connection as the host steps' admission reads it.
+    fn origin(&self) -> Result<InvocationCaller, String> {
+        let time = self
+            .0
+            .state
+            .registered_policy_time()?
+            .ok_or("the policy clock is unavailable")?;
+        Ok(InvocationCaller::Local {
+            route: self.0.route.clone(),
+            admitted: Box::new(self.0.admitted.clone()),
+            time: Some(time),
+        })
     }
 }
 
@@ -428,6 +568,17 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
             }
             None => Pending::ready(Err(ActionHostError::UnknownInvocation)),
         }
+    }
+
+    /// Records outside their apps, read as steps of the run.
+    fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
+        Some(Arc::new(super::record_read::RunRecords(self.clone())))
+    }
+
+    /// Records outside their apps, changed as steps of the run.
+    fn record_changes(&self) -> Option<Arc<dyn tilo_actions::remote::RecordChanges>> {
+        self.0.state.services.record_changes.as_ref()?;
+        Some(Arc::new(super::record_read::RunRecords(self.clone())))
     }
 }
 

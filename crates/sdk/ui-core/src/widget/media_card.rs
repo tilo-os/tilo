@@ -55,6 +55,14 @@ pub enum MediaAspect {
     Circle,
 }
 
+// The shapes a component's art takes by name; a photo's own ratio comes from the photo.
+crate::component::choice!(MediaAspect, "MediaAspect", {
+    Square => "square",
+    Wide => "wide",
+    Portrait => "portrait",
+    Circle => "circle",
+});
+
 impl MediaAspect {
     /// Width over height.
     #[must_use]

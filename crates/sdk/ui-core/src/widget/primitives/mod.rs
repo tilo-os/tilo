@@ -38,12 +38,12 @@ mod surface;
 mod text_stack;
 
 pub use bar_control::{BarControlFace, IconButton};
-pub use disclosure_row::{DisclosureGroup, DisclosureRow, DisclosureState};
-pub use facts::{Fact, Facts, FactsFace};
+pub use disclosure_row::{DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState};
+pub use facts::{Fact, FactProps, Facts, FactsFace, FactsProps};
 pub use floating_panel::{FloatingPanel, FloatingPanelFace, FloatingPanelLayout};
-pub use key_hint::{KeyHint, KeyHints, KeyHintsFace};
+pub use key_hint::{KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps};
 pub use quick_tile::{QuickTileFace, paint_level_gauge};
 pub use surface::{
     DensityRegion, Surface, SurfaceLevel, paint_document_sheet, paint_see_through, paint_surface,
 };
-pub use text_stack::{StackSize, TextStack, TextStackFace};
+pub use text_stack::{StackSize, TextStack, TextStackFace, TextStackProps};

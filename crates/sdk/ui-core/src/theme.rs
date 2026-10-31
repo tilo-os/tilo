@@ -217,6 +217,10 @@ pub struct Theme {
     /// to edge. `None` when no host said; nothing then keeps out of corners.
     /// Set where the window is drawn, not part of the configured theme.
     pub surface: Option<SurfaceShape>,
+    /// The painter set drawing each surface role's parts, where the theme
+    /// names one; the toolkit's own painters elsewhere
+    /// ([`crate::part_paint`]). Read through [`Theme::painter`].
+    pub painters: crate::part_paint::RolePainters,
 }
 
 // Written out rather than derived: a derived `eq` is `#[inline]`, so every
@@ -245,6 +249,7 @@ impl PartialEq for Theme {
             caret_width,
             forced_colors,
             surface,
+            painters,
         } = self;
         *name == other.name
             && *document == other.document
@@ -265,6 +270,7 @@ impl PartialEq for Theme {
             && *caret_width == other.caret_width
             && *forced_colors == other.forced_colors
             && *surface == other.surface
+            && *painters == other.painters
     }
 }
 
@@ -293,6 +299,7 @@ impl Clone for Theme {
             caret_width: self.caret_width,
             forced_colors: self.forced_colors,
             surface: self.surface,
+            painters: self.painters.clone(),
         }
     }
 }
@@ -393,6 +400,7 @@ impl Theme {
             caret_width: 2.0,
             forced_colors: document.palette.high_contrast,
             surface: None,
+            painters: crate::part_paint::RolePainters::default(),
             document,
             tokens,
         }
@@ -792,6 +800,41 @@ impl Theme {
     /// reduced transparency and forced colours (a flat finish stays flat).
     #[must_use]
     pub fn finish(&self, role: crate::tokens::SurfaceRole) -> crate::tokens::Finish {
+        self.finish_of(role)
+    }
+
+    /// The painter set drawing `role`'s parts, or `None` for the toolkit's
+    /// own. Forced colours always draw with the toolkit's own: what they
+    /// guarantee is not a painter's to keep.
+    #[must_use]
+    pub fn painter(
+        &self,
+        role: crate::tokens::SurfaceRole,
+    ) -> Option<&crate::part_paint::PainterSet> {
+        if self.forced_colors {
+            return None;
+        }
+        self.painters.of(role)
+    }
+
+    /// This theme with `set` drawing `role`'s parts.
+    #[must_use]
+    pub fn with_painter_set(
+        mut self,
+        role: crate::tokens::SurfaceRole,
+        set: crate::part_paint::PainterSet,
+    ) -> Self {
+        let slot = match role {
+            crate::tokens::SurfaceRole::Window => &mut self.painters.window,
+            crate::tokens::SurfaceRole::Control => &mut self.painters.control,
+            crate::tokens::SurfaceRole::Floating => &mut self.painters.floating,
+            crate::tokens::SurfaceRole::Bar => &mut self.painters.bar,
+        };
+        *slot = Some(set);
+        self
+    }
+
+    fn finish_of(&self, role: crate::tokens::SurfaceRole) -> crate::tokens::Finish {
         let finish = self.tokens.finishes.of(role);
         if self.reduce_transparency || self.forced_colors {
             finish.opaque()

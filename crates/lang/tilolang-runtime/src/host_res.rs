@@ -345,6 +345,22 @@ impl Core {
             }
             Err(e) => return Err(e.to_string()),
         };
+        self.field_value(target, field, fv, author)
+    }
+
+    /// A field of `target` as the store holds it (`fv`), as a value of its declared type:
+    /// [`Self::read_value`] of a value read some other way (as a change wrote it).
+    ///
+    /// # Errors
+    ///
+    /// A message when the stored shape does not fit the field.
+    pub fn field_value(
+        &self,
+        target: &ResourceRef,
+        field: &FieldInfo,
+        fv: FieldValue,
+        author: Option<&ModuleHash>,
+    ) -> Result<Value, String> {
         match (field.kind, fv) {
             (FieldKind::Register, FieldValue::Absent) => {
                 declared_default(&field.ty, field.default.as_ref())

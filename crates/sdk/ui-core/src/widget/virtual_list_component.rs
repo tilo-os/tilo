@@ -77,6 +77,9 @@ pub struct ListItemProps {
     /// it, in their colour, on its trailing edge. The UI host places it (task-legibility §3).
     #[component(slot)]
     pub change: Option<ChangeMarkProps>,
+    /// The item was removed and the person has not seen it go: the row stands in for it, its
+    /// title struck through, at the row's own height. The UI host places such rows.
+    pub removed: bool,
     /// The row: a `ui.ListRow`, or any view.
     #[component(slot(default))]
     pub row: ItemRow,
@@ -150,6 +153,10 @@ pub struct VirtualListProps {
     /// The items, in order.
     #[component(slot(default))]
     pub rows: DescribedRows,
+    /// Items someone else removed that the person has not seen go: each a row after the
+    /// items, its title struck through. The UI host places them.
+    #[component(slot)]
+    pub removed: RemovedRows,
     /// The selected rows, by key.
     #[component(state)]
     pub selection: Option<Vec<String>>,
@@ -177,6 +184,41 @@ pub struct DescribedRows {
     spaced: RefCell<Vec<String>>,
     /// The rows to build again: the avatar column came in after they were built.
     restyled: RefCell<Vec<String>>,
+    /// Rows standing in for removed items, after the items ([`VirtualListProps::removed`]).
+    removed: Rc<Vec<ListItemProps>>,
+}
+
+/// The rows of a list that stand in for items removed unseen: [`ListItemProps`] marked
+/// `removed`, in order.
+#[derive(Default)]
+pub struct RemovedRows(Rc<Vec<ListItemProps>>);
+
+impl RemovedRows {
+    fn keys(&self) -> Vec<String> {
+        self.0.iter().map(|item| item.key.clone()).collect()
+    }
+}
+
+impl SlotType for RemovedRows {
+    const MANY: bool = true;
+
+    fn accepts() -> Accepts {
+        Accepts::Component(ListItemProps::NAME.into())
+    }
+
+    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
+        let mut items: Vec<ListItemProps> = Vec::new();
+        source.components(slot, &mut |child| {
+            let item = ListItemProps::from_source(child).map_err(|error| error.to_string())?;
+            if !item.removed {
+                return Err("the removed rows of a list stand for removed items".to_owned());
+            }
+            items.push(item);
+            Ok(())
+        })?;
+        self.0 = Rc::new(items);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Default)]
@@ -242,13 +284,31 @@ impl DescribedRows {
     fn reader(&self) -> Self {
         Self {
             held: self.held.clone(),
+            removed: Rc::clone(&self.removed),
             ..Self::default()
+        }
+    }
+
+    /// Whether `key` is a row standing in for a removed item.
+    fn is_removed(&self, key: &str) -> bool {
+        self.removed.iter().any(|item| item.key == key)
+    }
+
+    /// How many items the list holds, before the removed items' rows.
+    fn held_len(&self) -> usize {
+        match &self.held {
+            Held::Nothing => 0,
+            Held::Given(items) => items.len(),
+            Held::Rendered(rows) => rows.try_borrow().map_or(0, |rows| rows.len()),
         }
     }
 
     /// Read the item `key` with `read`: `None` when there is no such item, or it is not
     /// rendered.
     fn with_item<R>(&self, key: &str, read: impl FnOnce(ListItemProps) -> R) -> Option<R> {
+        if let Some(item) = self.removed.iter().find(|item| item.key == key) {
+            return Some(read(reusable(item)?));
+        }
         match &self.held {
             Held::Nothing => None,
             Held::Given(items) => {
@@ -311,10 +371,6 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         ItemRow::Row(row) => ItemRow::Row(Box::new(row.reusable()?)),
         ItemRow::View(_) => return None,
     };
-    // A row with a change mark holds its activation: it is built once, until it is seen.
-    if item.change.is_some() {
-        return None;
-    }
     Some(ListItemProps {
         key: item.key.clone(),
         item: item.item.clone(),
@@ -341,7 +397,8 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
                     .map(SwipeActionProps::again),
             },
         },
-        change: None,
+        change: item.change.as_ref().map(ChangeMarkProps::again),
+        removed: item.removed,
         row,
     })
 }
@@ -350,14 +407,17 @@ impl ListModel for DescribedRows {
     type Key = String;
 
     fn len(&self) -> usize {
-        match &self.held {
-            Held::Nothing => 0,
-            Held::Given(items) => items.len(),
-            Held::Rendered(rows) => rows.try_borrow().map_or(0, |rows| rows.len()),
-        }
+        self.held_len().saturating_add(self.removed.len())
     }
 
     fn key_at(&self, index: usize) -> Option<String> {
+        let held = self.held_len();
+        if index >= held {
+            return self
+                .removed
+                .get(index.saturating_sub(held))
+                .map(|item| item.key.clone());
+        }
         match &self.held {
             Held::Nothing => None,
             Held::Given(items) => items.get(index).map(|item| item.key.clone()),
@@ -366,6 +426,9 @@ impl ListModel for DescribedRows {
     }
 
     fn index_of(&self, key: &String) -> Option<usize> {
+        if let Some(at) = self.removed.iter().position(|item| item.key == *key) {
+            return Some(self.held_len().saturating_add(at));
+        }
         match &self.held {
             Held::Nothing => None,
             Held::Given(items) => items.iter().position(|item| item.key == *key),
@@ -432,6 +495,8 @@ struct Face {
     /// The rows the host renders as they are shown, by identity: they then change through
     /// the host, never through the props. `None` for items given whole.
     rendered: Option<usize>,
+    /// The removed items' rows, by key.
+    removed: Vec<String>,
 }
 
 /// The identity of the rows a host renders, when it renders them.
@@ -528,32 +593,35 @@ fn bare_row(
             attached,
             row,
             change,
+            removed,
             ..
         } = item;
-        // What someone else changed and the person has not seen: a pill in their colour.
-        let mark = change.and_then(|change| change.chip(&format!("{key}~change")));
+        // What someone else changed and the person has not seen, at the row's own height: on a
+        // list row their face on its trailing edge and their colour under it; beside a row's
+        // own view their face alone.
         let row = match row {
             ItemRow::Row(mut props) => {
                 rows.row_props(&mut props, key);
                 // The list activates its rows itself, by key: a row of it is not a target of
                 // its own.
                 props.activate = Event::None;
-                // The mark stands on the trailing edge, unless the row holds a control there.
-                let beside = match mark {
-                    Some(mark) if props.trailing.is_none() => {
-                        props.trailing = Some(Box::new(mark));
-                        None
-                    }
-                    other => other,
-                };
                 let mut row = ListRow::from_props(key, *props);
                 if let Some(person) = presence {
                     row = row.presence(person.identity);
                 }
-                with_mark(Box::new(row), beside)
+                if removed {
+                    row = row.struck();
+                }
+                if let Some(mark) = change.and_then(ChangeMarkProps::row) {
+                    row = row.change(mark.identity, mark.name, mark.spoken, mark.show);
+                }
+                Box::new(row) as Element
             }
-            ItemRow::View(view) => with_mark(view, mark),
-            ItemRow::None => with_mark(Box::new(ListRow::new(key.to_owned(), "")), mark),
+            ItemRow::View(view) => with_mark(
+                view,
+                change.and_then(|change| change.face(&format!("{key}~change"))),
+            ),
+            ItemRow::None => Box::new(ListRow::new(key.to_owned(), "")),
         };
         (row, swipe, attached)
     })
@@ -740,7 +808,8 @@ impl Described for DescribedList {
             selection_follows_focus,
             in_column,
             transcript,
-            rows,
+            mut rows,
+            removed,
             selection,
             scroll,
             select,
@@ -752,7 +821,9 @@ impl Described for DescribedList {
             in_column,
             transcript,
             rendered: rendered(&rows),
+            removed: removed.keys(),
         };
+        rows.removed = removed.0;
         if transcript {
             let list =
                 VirtualList::new(rows, MESSAGE_ESTIMATE, |rows, _, key| message_of(rows, key))
@@ -812,7 +883,12 @@ impl Described for DescribedList {
                         on_select.fire(item);
                     }
                 })
-                .on_activate(move |key| activate.fire(item_of(&picking, &key)));
+                .on_activate(move |key| {
+                    // A removed item's row opens nothing: its mark shows what removed it.
+                    if !picking.is_removed(&key) {
+                        activate.fire(item_of(&picking, &key));
+                    }
+                });
         }
         if let Some(offset) = scroll {
             list.set_scroll_offset(offset);
@@ -835,6 +911,7 @@ impl Described for DescribedList {
             in_column: props.in_column,
             transcript: props.transcript,
             rendered: rendered(&props.rows),
+            removed: props.removed.keys(),
         };
         face.rendered.is_some() && face == self.face
     }

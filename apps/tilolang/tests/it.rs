@@ -9,8 +9,14 @@
     reason = "test assertions"
 )]
 
+#[allow(
+    dead_code,
+    reason = "each test binary reads what it needs of the change marks"
+)]
 mod change_marks;
 mod door;
+mod history;
+mod history_window;
 mod marks;
 mod narrow;
 mod opening;

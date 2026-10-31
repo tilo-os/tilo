@@ -20,6 +20,8 @@ type Basics {
     note: Text
     /// Who looks after the basics.
     owner: Option<Principal>
+    /// When the basics last changed.
+    updated: Time
 }
 
 /// The team's items as a list, with the composer a conversation has at its foot.
@@ -41,6 +43,7 @@ type Gallery {
     basics: Collection<Basics>
     backlogs: Collection<Backlog>
     releases: Collection<Release>
+    feedback: Collection<Feedback>
 }
 
 root Gallery
@@ -65,6 +68,9 @@ view gallery(g: Gallery) {
             }
             for x in g.releases {
                 ui.ListRow(x.title, item: x, icon: .layout_grid)
+            }
+            for x in g.feedback {
+                ui.ListRow(x.title, item: x, icon: .eye)
             }
         }
     }
@@ -118,7 +124,7 @@ view parts(b: Basics, last: State<Text>) {
     ui.Section("Text and buttons") {
         ui.Text("Release planning", role: .large_title)
         ui.Text("Body text says what a thing is, at the reading measure.")
-        ui.Text("Updated a minute ago", role: .caption, secondary: true)
+        ui.Time(b.updated, role: .caption, secondary: true)
         row(gap: .related, wrap: true) {
             ui.Button("Save", icon: .check, role: .primary) {
                 on press: set(last, "Save")
@@ -233,7 +239,7 @@ view release_board(r: Release) {
 /// The basics, looked after by the person looking.
 scenario "basics" {
     let g = root Gallery
-    g.basics.insert(Basics(title: "Basics", owner: .some(invoker)))
+    g.basics.insert(Basics(title: "Basics", owner: .some(invoker), updated: 2026-06-30T09:00Z))
 }
 
 /// A team's backlog a week into a release.
