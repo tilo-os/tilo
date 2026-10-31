@@ -334,6 +334,9 @@ impl SessionResource {
         None
     }
 
+    /// Nothing is watched on this transport, so no reading wakes a view.
+    pub fn attach(&self, _wake: tilo_rt::wake::WakeHandle) {}
+
     /// # Errors
     ///
     /// Always reports unavailable on this transport.

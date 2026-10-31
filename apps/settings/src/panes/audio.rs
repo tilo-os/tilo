@@ -23,7 +23,7 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
-use ui::time::{Duration, Instant};
+use ui::time::Duration;
 
 use media::audio_runtime::{
     AudioRuntimeControl, BoundedSession, MicrophoneMeterSession, RealAudioRuntime,
@@ -63,9 +63,6 @@ crate::area::pane_area! {
     }
     fn busy(&self) -> bool {
         self.model.get().is_some_and(|model| model.borrow().busy())
-    }
-    fn next_wake(&self) -> Option<Instant> {
-        self.model.get().and_then(|model| model.borrow().next_wake())
     }
 }
 
@@ -109,11 +106,6 @@ pub(crate) fn system_sounds(cx: &ViewCx<AudioPrefs>) -> Item {
         .id("audio.system_sounds")
         .toggle(AudioPrefs::paths().system_sounds.enabled)
 }
-
-/// How often a page open on the Sound area looks for a new reading of the
-/// session's sound resource, so a headset plugged in or an application that
-/// just started playing appears without reopening Settings.
-const READ_INTERVAL: Duration = Duration::from_millis(500);
 
 /// The picker entry meaning "no explicit device — follow the default".
 /// Choosing it clears the stream's `target.object` metadata.
@@ -418,6 +410,9 @@ impl AudioRuntimeControl for NoopAudioRuntime {
 pub trait SoundResource: Send + Sync {
     /// The newest reading since the last call; `None` when nothing changed.
     fn latest(&self) -> Option<Result<String, String>>;
+    /// Wake `wake`'s owner when a reading arrives, so a page showing the
+    /// resource draws the new one.
+    fn attach(&self, wake: ui::WakeHandle);
     /// Take one of its actions.
     ///
     /// # Errors
@@ -444,6 +439,10 @@ impl SoundResource for SessionSound {
         self.0.latest()
     }
 
+    fn attach(&self, wake: ui::WakeHandle) {
+        self.0.attach(wake);
+    }
+
     fn invoke(
         &self,
         action: &str,
@@ -463,6 +462,8 @@ impl SoundResource for SampleSound {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
     }
+
+    fn attach(&self, _: ui::WakeHandle) {}
 
     fn invoke(
         &self,
@@ -893,6 +894,9 @@ impl AudioModel {
             sound_themes,
             event_sounds_available,
         } = read;
+        if let Some(sounds) = sounds.as_deref() {
+            sounds.attach(ui::WakeHandle::new());
+        }
         let reaches_devices = sounds.is_some();
         let mut model = Self {
             reaches_devices,
@@ -1684,15 +1688,6 @@ impl AudioModel {
         self.mic_session.is_some() || self.channel_test.is_some()
     }
 
-    /// When a page showing the model looks for a new reading while nothing
-    /// else happens. The resource pushes readings; the window looks in
-    /// between frames, so one shows without waiting for the next click.
-    fn next_wake(&self) -> Option<Instant> {
-        self.page.upgrade()?;
-        self.sounds.as_ref()?;
-        Some(ui::time::now() + READ_INTERVAL)
-    }
-
     /// Start following what a page that shows the model needs: the output's
     /// meter runs while a page holds what this answers. Pages showing the
     /// model share one, so building a page again never restarts it.
@@ -1755,6 +1750,8 @@ mod tests {
     struct RecordingSound {
         published: Mutex<Option<Result<String, String>>>,
         taken: Mutex<Vec<(String, serde_json::Value)>>,
+        /// What a reading wakes, once a page attached it.
+        wake: Mutex<Option<ui::WakeHandle>>,
     }
 
     impl RecordingSound {
@@ -1762,6 +1759,9 @@ mod tests {
         fn publish(&self, sound: &Sound) {
             let reading = serde_json::to_string(sound).expect("a reading is JSON");
             *self.published.lock().unwrap() = Some(Ok(reading));
+            if let Some(wake) = self.wake.lock().unwrap().as_ref() {
+                wake.wake();
+            }
         }
 
         /// Publish a reading that is not a sound.
@@ -1789,6 +1789,10 @@ mod tests {
             self.published.lock().unwrap().take()
         }
 
+        fn attach(&self, wake: ui::WakeHandle) {
+            *self.wake.lock().unwrap() = Some(wake);
+        }
+
         fn invoke(
             &self,
             action: &str,
@@ -1810,6 +1814,46 @@ mod tests {
         // The sample's speaker sets would need the shell.
         model.speakers = Arc::new(SampleSpeakerSets);
         model
+    }
+
+    /// A page open on the sound is woken by each reading the session
+    /// publishes, so a headset plugged in shows without looking for it.
+    #[test]
+    fn a_new_reading_wakes_the_page_showing_it() {
+        let scope = ui::WakeScope::new();
+        let _entry = scope.enter();
+        let sounds = Arc::new(RecordingSound::default());
+        let mut model = AudioModel::from_read(
+            crate::sections::Sections::default(),
+            AudioRead {
+                sounds: Some(Arc::clone(&sounds) as Arc<dyn SoundResource>),
+                sound: Sound::default(),
+                error: None,
+                runtime_caps: RuntimeCapabilities::default(),
+                sound_themes: Vec::new(),
+                event_sounds_available: false,
+            },
+        );
+        assert!(
+            !scope.is_pending(),
+            "opening the page asks for no frame of its own"
+        );
+
+        let reading = Sound {
+            output: Some(91),
+            outputs: vec![
+                device(51, "Speakers", false),
+                device(91, "Headphones", true),
+            ],
+            ..Sound::default()
+        };
+        sounds.publish(&reading);
+        assert!(scope.is_pending(), "the reading woke the page showing it");
+        assert!(model.poll(), "the page shows the reading it was woken for");
+        assert_eq!(
+            model.output_device().map(|device| device.label.as_str()),
+            Some("Headphones"),
+        );
     }
 
     /// What the pane shows is the reading the resource published, and a
@@ -2457,6 +2501,8 @@ mod tests {
         fn latest(&self) -> Option<Result<String, String>> {
             self.published.lock().unwrap().take()
         }
+
+        fn attach(&self, _: ui::WakeHandle) {}
 
         fn invoke(
             &self,

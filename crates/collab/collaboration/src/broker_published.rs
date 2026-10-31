@@ -1,6 +1,7 @@
 //! The session's published resources as the app's UI thread reaches them:
 //! the reading each stands at, the readings that follow, and the actions
-//! that change them. The watch runs on the broker's worker.
+//! that change them. The watch runs on the broker's worker; the view that
+//! shows a reading is woken at each one.
 
 use super::{
     BridgeState, PublishedCommand, SETTINGS_COMMAND_BRIDGE, SdkCommand, enqueue_sdk_command, mpsc,
@@ -27,11 +28,15 @@ static PUBLISHED_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::O
 /// [`Self::open`] watches it on the broker's worker, so [`Self::latest`]
 /// hands the newest reading without waiting on the frame thread, and
 /// [`Self::invoke`] takes an action with its arguments and waits for the
-/// door's answer. Clones share one watch: the last one dropped ends it.
+/// door's answer. [`Self::attach`] has the watch wake the view showing the
+/// reading, as a locked query's does. Clones share one watch: the last one
+/// dropped ends it.
 #[derive(Clone)]
 pub struct SessionResource {
     resource: Arc<str>,
     newest: Arc<std::sync::Mutex<Option<Result<String, String>>>>,
+    /// Woken at each reading that arrives, once a view attached one.
+    wake: Arc<std::sync::Mutex<Option<tilo_rt::wake::WakeHandle>>>,
     /// Ends the worker's watch when the last handle is dropped.
     _watch: Arc<tokio::sync::watch::Sender<()>>,
 }
@@ -46,6 +51,7 @@ impl SessionResource {
     /// publishes `resource`.
     pub fn open(resource: &str) -> Result<Self, String> {
         let newest = Arc::new(std::sync::Mutex::new(None));
+        let wake = Arc::new(std::sync::Mutex::new(None));
         let (first_tx, first_rx) = mpsc::sync_channel(1);
         let (cancel, cancel_rx) = tokio::sync::watch::channel(());
         let sender = SETTINGS_COMMAND_BRIDGE
@@ -60,6 +66,7 @@ impl SessionResource {
             SdkCommand::Published(PublishedCommand::Watch {
                 resource: Arc::from(resource),
                 readings: Arc::clone(&newest),
+                wake: Arc::clone(&wake),
                 first: first_tx,
                 cancel: cancel_rx,
             }),
@@ -75,6 +82,7 @@ impl SessionResource {
                 Ok(Self {
                     resource: Arc::from(resource),
                     newest,
+                    wake,
                     _watch: Arc::new(cancel),
                 })
             }
@@ -90,6 +98,15 @@ impl SessionResource {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
+    }
+
+    /// Wake `wake`'s owner at each reading that arrives, so a page showing
+    /// the resource draws the new one instead of looking for it.
+    pub fn attach(&self, wake: tilo_rt::wake::WakeHandle) {
+        *self
+            .wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake);
     }
 
     /// Invoke `action` of the resource with `arguments` (none for an action

@@ -334,10 +334,12 @@ pub fn display_control(
 pub(super) enum PublishedCommand {
     /// Follow a resource's reading, handing each to `readings` (always the
     /// newest: a reading that arrives before the owner took the one before
-    /// it replaces it) and the one the watch begins at to `first`.
+    /// it replaces it) and the one the watch begins at to `first`, waking
+    /// whatever view `wake` holds.
     Watch {
         resource: Arc<str>,
         readings: Arc<std::sync::Mutex<Option<Result<String, String>>>>,
+        wake: Arc<std::sync::Mutex<Option<tilo_rt::wake::WakeHandle>>>,
         first: mpsc::SyncSender<Result<String, String>>,
         cancel: tokio::sync::watch::Receiver<()>,
     },
@@ -358,6 +360,7 @@ async fn published_command(client: &runtime_collab::CollabClient, command: Publi
         PublishedCommand::Watch {
             resource,
             readings,
+            wake,
             first,
             mut cancel,
         } => {
@@ -391,6 +394,13 @@ async fn published_command(client: &runtime_collab::CollabClient, command: Publi
                     *readings
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(delivery);
+                    let view = wake
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    if let Some(view) = view {
+                        view.wake();
+                    }
                     if ended {
                         return;
                     }
