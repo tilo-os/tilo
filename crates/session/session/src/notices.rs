@@ -1,11 +1,12 @@
 //! What the session itself tells the person, through their notifications.
 //!
-//! Four things the desktop knows and the person should: that storage is
+//! Five things the desktop knows and the person should: that storage is
 //! running out, that the media codecs they asked for finished or failed, that
-//! the session or the computer stopped and started again, and that an update
-//! waits for a restart. Each becomes an ordinary notification
-//! ([`tilo_notifications_service::Notification`]) published by the
-//! notifications service: the banners and the notification centre read the
+//! the session or the computer stopped and started again, that an update
+//! waits for a restart, and that the machine's graphics stopped and every
+//! frame is drawn in software from now on. Each becomes an ordinary
+//! notification ([`tilo_notifications_service::Notification`]) published by
+//! the notifications service: the banners and the notification centre read the
 //! same resource any app's notification is read from, the person closes or
 //! acts on it as they would on any other, and nothing here draws.
 //!
@@ -15,9 +16,12 @@
 //! Nothing is polled hard: storage is one `statvfs` per filesystem every two
 //! minutes (every twenty seconds while one of them is low), the codecs are a
 //! watch on the helper's status file, the crash records are read once at
-//! start, and the update state once the desktop has settled and then hourly.
+//! start, the update state once the desktop has settled and then hourly, and
+//! the graphics fallback is a read of what the renderers recorded, once per
+//! pass of the session's loop.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
@@ -307,6 +311,38 @@ pub fn news_notice(news: &tilo_crash_records::News, today: NaiveDate) -> Notice 
     Notice::new(t("crash-notice-app-name"), urgency, title, body)
 }
 
+/// The notice that this machine's graphics stopped: the renderers could not
+/// bring the GPU back, so every frame is drawn in software from now on and
+/// only a restart of the computer brings the speed back.
+fn graphics_notice() -> Notice {
+    Notice::new(
+        t("graphics-app-name"),
+        1,
+        t("graphics-stopped-title"),
+        t("graphics-stopped-body"),
+    )
+}
+
+/// Whether the person was already told that this machine's graphics stopped.
+static GRAPHICS_TOLD: AtomicBool = AtomicBool::new(false);
+
+/// Tell the person, once, that the graphics stopped and everything keeps
+/// working, only slower. The renderers of this process record that fallback
+/// where the shared rendering code decides it (`ui::gpu::recover`), so each
+/// pass of the session's loop reads one record and says nothing until it is
+/// set: a GPU that stops between two frames is told on the next pass, and
+/// never twice.
+pub fn tell_graphics_fallback(notifications: &Notifications) {
+    if TELLING.get().is_none() || GRAPHICS_TOLD.load(Ordering::Relaxed) {
+        return;
+    }
+    if ui::gpu::software_fallback().is_none() {
+        return;
+    }
+    GRAPHICS_TOLD.store(true, Ordering::Relaxed);
+    graphics_notice().tell(notifications);
+}
+
 /// The notice that a staged update waits for a restart, offering the action
 /// that takes it.
 fn update_notice() -> Notice {
@@ -471,12 +507,16 @@ impl tilo_compositor::LoopTurns for Turns {
     }
 }
 
+/// Whether this session is the one that tells the person what it knows of
+/// the machine: a session in a window of another desktop, or a headless one,
+/// leaves that machine's news to the session that owns it.
+static TELLING: OnceLock<()> = OnceLock::new();
+
 /// Start telling the person what this desktop knows about its machine: the
 /// crash records of the last start now, then storage, the codecs and a staged
 /// update as they change. Once per process.
 pub fn start(notifications: &Notifications) {
-    static STARTED: OnceLock<()> = OnceLock::new();
-    if STARTED.set(()).is_err() {
+    if TELLING.set(()).is_err() {
         return;
     }
     // The records are files, and the kernel's are read through commands: the
@@ -740,6 +780,76 @@ mod tests {
 
         tell_crash_news(&notifications, dir.path());
         assert_eq!(notifications.live().len(), 1, "said once");
+    }
+
+    /// A machine whose GPU cannot be brought back draws every frame in
+    /// software, and the person hears it once: one warning from "Graphics",
+    /// an ordinary notification like any app's, and one entry in the centre
+    /// however many passes follow.
+    #[test]
+    fn a_gpu_given_up_is_told_once() {
+        use ui::vello::wgpu::{AdapterInfo, Backend, DeviceType};
+        // The notice sources speak only in the session that owns the machine
+        // (`start`); a test tells as that session does.
+        TELLING.get_or_init(|| ());
+        ui::gpu::reset_software_fallback_for_test();
+        let notifications = Notifications::new();
+
+        // While the GPU draws the frames there is nothing to say.
+        tell_graphics_fallback(&notifications);
+        assert!(
+            notifications.live().is_empty(),
+            "a working GPU says nothing"
+        );
+
+        // What the renderers decide for a device lost before it finished a
+        // frame: that GPU cannot be brought back, and every frame after is
+        // drawn in software.
+        let adapter = AdapterInfo {
+            name: "Adreno X1-85".to_owned(),
+            vendor: 0,
+            device: 0,
+            device_type: DeviceType::IntegratedGpu,
+            device_pci_bus_id: String::new(),
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: Backend::Vulkan,
+            subgroup_min_size: 4,
+            subgroup_max_size: 128,
+            transient_saves_memory: false,
+        };
+        assert_eq!(
+            ui::gpu::recover(&adapter, false, "Device is lost"),
+            ui::gpu::Recovery::Software,
+            "a device lost before its first frame is on a GPU that cannot come back"
+        );
+
+        tell_graphics_fallback(&notifications);
+        let live = notifications.live();
+        assert_eq!(live.len(), 1, "one notice, not one for every frame");
+        assert_eq!(live[0].app_name, "Graphics");
+        assert_eq!(live[0].summary, "Graphics stopped responding");
+        assert_eq!(
+            live[0].body,
+            "Everything keeps working, but may be slower until you restart the computer."
+        );
+        assert_eq!(live[0].urgency, 1, "a warning, not an error");
+        assert!(live[0].machine_wide, "the whole machine's news");
+
+        tell_graphics_fallback(&notifications);
+        assert_eq!(notifications.live().len(), 1, "said once");
+
+        // The centre holds that one entry, read and closed as any app's.
+        let resource = tilo_notifications_service::notification_resource(live[0].id);
+        let mut published = notifications.clone();
+        let read = published.read(&resource).expect("the notice is published");
+        assert_eq!(read["summary"], "Graphics stopped responding");
+        published
+            .invoke(&resource, "close", &serde_json::Map::new())
+            .expect("the person closes it");
+        assert!(notifications.live().is_empty());
+
+        ui::gpu::reset_software_fallback_for_test();
     }
 
     #[test]

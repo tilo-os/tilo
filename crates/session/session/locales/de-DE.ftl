@@ -1,6 +1,7 @@
 # Hinweise, die die Sitzung der Person zeigt: knapper Speicher, ankommende
-# Medien-Codecs, eine beendete Sitzung oder ein angehaltener Computer und ein
-# Update, das auf einen Neustart wartet.
+# Medien-Codecs, eine beendete Sitzung oder ein angehaltener Computer, ein
+# Update, das auf einen Neustart wartet, und eine Grafik, die nicht mehr
+# reagiert.
 storage-app-name = Speicher
 storage-volume-home = deine Dateien
 storage-volume-system = das System
@@ -8,6 +9,10 @@ storage-low-title = Der Speicher ist fast voll
 storage-low-body = Noch { $free } frei für { $volume }. Lösche große Downloads oder öffne Einstellungen, Speicher, um Platz zu schaffen.
 storage-full-title = Der Speicher ist voll
 storage-full-body = Nur noch { $free } frei für { $volume }. Neue Dateien und Änderungen werden eventuell erst gespeichert, wenn wieder Platz ist. Alles andere funktioniert weiter.
+
+graphics-app-name = Grafik
+graphics-stopped-title = Grafik reagiert nicht mehr
+graphics-stopped-body = Alles funktioniert weiter, ist aber möglicherweise langsamer, bis du den Computer neu startest.
 
 codec-app-name = Video- und Audioformate
 codec-hardware-ready = Hardware-H.264/HEVC ist bereit

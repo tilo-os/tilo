@@ -1,6 +1,6 @@
 # Notices the session shows the person: storage running out, the media codecs
-# arriving, the session or the computer having stopped, and an update waiting
-# for a restart.
+# arriving, the session or the computer having stopped, an update waiting for a
+# restart, and the machine's graphics having stopped.
 storage-app-name = Storage
 storage-volume-home = your files
 storage-volume-system = the system
@@ -8,6 +8,10 @@ storage-low-title = Storage is almost full
 storage-low-body = { $free } left for { $volume }. Delete large downloads or open Settings, Storage to free space.
 storage-full-title = Storage is full
 storage-full-body = Only { $free } left for { $volume }. New files and changes may not be saved until you free space. Everything else keeps working.
+
+graphics-app-name = Graphics
+graphics-stopped-title = Graphics stopped responding
+graphics-stopped-body = Everything keeps working, but may be slower until you restart the computer.
 
 codec-app-name = Video and audio formats
 codec-hardware-ready = Hardware H.264/HEVC is ready

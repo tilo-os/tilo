@@ -506,6 +506,9 @@ impl SessionNotifications {
         // header, before they are published.
         self.desktop.set_quiet(self.quiet_status());
         if let Some(daemon) = self.daemon.clone() {
+            // The machine's graphics stopped for good: the person is told
+            // once, in the pass the renderers' record first says so.
+            crate::notices::tell_graphics_fallback(&daemon);
             for arrival in daemon.drain() {
                 self.arrive(arrival);
             }

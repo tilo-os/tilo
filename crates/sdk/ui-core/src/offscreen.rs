@@ -1142,6 +1142,23 @@ impl OffscreenRenderer {
             .map(|handle| handle.adapter.get_info())
     }
 
+    /// Why this renderer can no longer draw on its device, or `None` while it
+    /// can: wgpu reported the device lost, or the shared context no longer
+    /// holds it. The same question the render worker asks of its device
+    /// before it reuses a renderer, for a caller that can open another
+    /// device instead of drawing into a dead one. One lock and two reads; no
+    /// GPU work.
+    #[doc(hidden)]
+    pub fn device_loss(&self) -> Option<String> {
+        let Ok(context) = self.context.lock() else {
+            return Some("the shared wgpu RenderContext is poisoned".to_owned());
+        };
+        match context.devices.get(self.dev_id) {
+            Some(handle) => handle.loss_monitor().reason(),
+            None => Some("this renderer's device left the shared RenderContext".to_owned()),
+        }
+    }
+
     /// For any code path that has to survive a GPU-less machine, since
     /// `catch_unwind` can't (see [`new`](Self::new)). Still asserts on a
     /// zero width or height — that's a caller bug, not an environment one.
