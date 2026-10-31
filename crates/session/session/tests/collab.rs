@@ -221,7 +221,12 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     let labels = session.accessible_labels();
     let listed = |what: &str| labels.iter().any(|label| label.contains(what));
     assert!(listed("Framework 16"), "who is here: {labels:?}");
-    assert!(listed("In Notes"), "where their pointer is: {labels:?}");
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "Framework 16 is in Notes"),
+        "where their pointer is: {labels:?}"
+    );
     assert!(listed("Away"), "how they said they are: {labels:?}");
     assert_eq!(
         sync.pointers(ROOM, NOTES),

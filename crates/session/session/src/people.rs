@@ -200,8 +200,13 @@ impl Published for People {
             pending.extend(node.children);
         }
         // Where everyone else is working: their pointer over a window of
-        // this desk says so, beside their name.
+        // this desk says so, beside their name. A pointer the roster cannot
+        // put a name to is drawn all the same, but says nothing here: "is in
+        // Notes" names nobody.
         for (who, title) in &shown.pointers {
+            if who.trim().is_empty() {
+                continue;
+            }
             labels.push(crate::i18n::t_args(
                 "people-pointer-where",
                 &[("who", who.clone().into()), ("where", title.clone().into())],
