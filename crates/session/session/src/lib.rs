@@ -44,6 +44,7 @@ mod controls;
 mod desk;
 mod desk_history;
 mod desk_layout;
+mod desk_restore;
 pub mod desktop_services;
 mod dictation;
 mod directory;
@@ -468,6 +469,9 @@ struct Shared {
     search: Rc<SessionSearch>,
     /// The apps the person opens, when this session starts them.
     launch: Option<Rc<mount::apps::Apps>>,
+    /// The windows this device left open, asked for again one at a time into
+    /// the tabs they were in.
+    restore: RefCell<desk_restore::Restore>,
     /// The drives the person plugs in, when this session watches them.
     drives: Option<Rc<mount::drives::Drives>>,
     /// What the desk and the chrome asked of the session.
@@ -961,6 +965,14 @@ impl Shared {
         }
     }
 
+    /// The windows this device left open: ask for the next one once the one
+    /// before it came, each into the tab it was in.
+    fn follow_restore(&self) {
+        self.restore
+            .borrow_mut()
+            .follow(&self.desktop, self.launch.as_deref());
+    }
+
     /// Carry out what the person chose in the sheets.
     fn follow_sheets(&self) {
         if let Some(power) = &self.power {
@@ -1334,10 +1346,25 @@ impl Session {
         desktop.set_gestures(options.config.gestures);
         desktop.set_theme(presentation.theme);
         let handle = desktop.with_policy(|policy| policy.handle().clone());
-        // The desk as this device left it: its workspaces and the windows
-        // they held.
-        if let Some(kept) = options.state.as_deref().and_then(desk_layout::load_at) {
-            handle.replace_tree(kept);
+        // The desk as this device left it: its workspaces, the windows they
+        // held, and the apps those windows open again.
+        let mut restore = desk_restore::Restore::default();
+        let mut keeps_desk = true;
+        if let Some(state) = options.state.as_deref() {
+            match desk_layout::load_at(state) {
+                desk_layout::Kept::Desk(kept) => {
+                    restore = desk_restore::Restore::of(&kept);
+                    handle.replace_tree(*kept);
+                }
+                // The person's desk is on disk and this session did not open
+                // it: they are looking at a desk that is not theirs, and have
+                // to be told where their own still is.
+                desk_layout::Kept::Refused(refusal) => {
+                    keeps_desk = false;
+                    notices::tell_desk_not_opened(&notices, &refusal);
+                }
+                desk_layout::Kept::None => {}
+            }
         }
         workspaces::publish_host_actions(&handle);
         // What the person's settings say the desk shows: a device that kept
@@ -1659,6 +1686,7 @@ impl Session {
             person: options.person.clone(),
             search,
             launch: options.launch,
+            restore: RefCell::new(restore),
             drives: options.drives,
             asks,
             intents,
@@ -1692,7 +1720,9 @@ impl Session {
             tray,
             kept: RefCell::new(None),
             recorded: RefCell::new(None),
-            state: options.state.clone(),
+            // A desk this session did not open is never written over: it
+            // keeps nothing, so it cannot be.
+            state: keeps_desk.then(|| options.state.clone()).flatten(),
             wallpapers,
             lock_power: options.lock_power,
             lock_layouts: options.config.keyboard_layouts.clone(),
@@ -2243,6 +2273,9 @@ impl Session {
             if let Some(launch) = &self.shared.launch {
                 launch.follow();
             }
+            // The windows this device left open, one at a time, each into the
+            // tab it was in.
+            self.shared.follow_restore();
             // What the apps asked of their own tabs, and of what a capture
             // may show of them, as the desk commands they are.
             if let Some(tabs) = &mut self.tabs {

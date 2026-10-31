@@ -14,6 +14,10 @@
 //! They are the whole machine's news, so they are shown on every display
 //! ([`Notification::machine_wide`]).
 //!
+//! The one about the desk this device saved is the desktop's own: the person
+//! sees it in the centre of the desk they are looking at, which is not the one
+//! they left.
+//!
 //! Nothing is polled hard: storage is one `statvfs` per filesystem every two
 //! minutes (every twenty seconds while one of them is low), the codecs are a
 //! watch on the helper's status file, the crash records are read once at
@@ -26,12 +30,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
+use tilo_desktop_surface::DesktopNotifications;
+use tilo_desktop_surface::notifications::{
+    Notification as DeskNotification, NotificationSeverity, PERSISTENT_DISMISS,
+};
 use tilo_files::native::ChangeWatch;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_notifications_service::{Notification, Notifications, Taken};
 use tilo_system_service::update;
 use ui::format::NaiveDate;
 
+use crate::desk_layout::StateNotice;
 use crate::i18n::{t, t_args};
 use crate::mount::drives::Medium;
 
@@ -251,6 +260,19 @@ pub fn wake_notice(event: &tilo_device_fabric::wake::WakeEvent) -> Option<Notice
         ),
     };
     Some(Notice::new(t("device-wake-app-name"), 1, title, body))
+}
+
+/// Tell the person the desk this device saved was not opened: it is still on
+/// disk and untouched, and this session starts on an empty desk and keeps
+/// nothing, so it cannot be written over. It stays until they let it go — a
+/// desk that is not theirs looks exactly like theirs.
+pub(crate) fn tell_desk_not_opened(notices: &DesktopNotifications, refusal: &StateNotice) {
+    notices.post(
+        DeskNotification::new(refusal.title(), refusal.explains())
+            .with_app_name(t("desk-not-opened-app-name"))
+            .with_severity(NotificationSeverity::Error)
+            .with_dismiss_after(PERSISTENT_DISMISS),
+    );
 }
 
 /// Room `path`'s filesystem has left, when the path exists.

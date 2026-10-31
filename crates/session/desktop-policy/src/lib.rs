@@ -145,6 +145,18 @@ struct Windows {
 
 impl TileSource for Windows {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        // A window this device left open whose app did not come back says so
+        // where the window would be, in the tab the person left it in: the
+        // name they know it by, and why it is not here. Closing the tab is
+        // the end of it.
+        if let TileContent::LocalApp { note, .. } = &tab.tile
+            && !note.is_empty()
+        {
+            return TileHost::new(ui::widget::TileContent::Notice {
+                title: tab.title.clone(),
+                detail: note.clone(),
+            });
+        }
         let Some(app) = self.crashed.borrow().get(&tab.id).cloned() else {
             return TileHost::new(ui::widget::TileContent::Arriving);
         };
@@ -610,27 +622,90 @@ impl DesktopPolicy {
     /// nothing: the place it held goes, whether the desktop made it yet or
     /// not.
     pub fn release_held(&mut self, app: &str) {
-        let released = {
-            let mut held = self.held.borrow_mut();
-            let Some(key) = held.keys().find(|asked| app_ids_match(app, asked)).cloned() else {
-                return;
-            };
-            let Some(queue) = held.get_mut(&key) else {
-                return;
-            };
-            let released = (!queue.is_empty()).then(|| queue.remove(0));
-            if queue.is_empty() {
-                held.remove(&key);
-            }
-            released
-        };
-        let Some(HeldTab { tab: Some(tab), .. }) = released else {
+        let Some(HeldTab { tab: Some(tab), .. }) = self.forget_held(app) else {
             return;
         };
         let mut tree = self.handle.read(Clone::clone);
         if tree.close_tab(tab).is_some() {
             self.handle.replace_tree(tree);
         }
+    }
+
+    /// Let go of the place held for `app`'s next window, leaving the tab it
+    /// was held for where it is: the launch it was held for started nothing,
+    /// and a tab a person left a window in is theirs to close, not the
+    /// launch's.
+    pub fn give_up_held(&mut self, app: &str) {
+        self.forget_held(app);
+    }
+
+    /// The place held for `app`'s next window, taken back without touching a
+    /// tab: the desktop may not have made it yet.
+    fn forget_held(&self, app: &str) -> Option<HeldTab> {
+        let mut held = self.held.borrow_mut();
+        let key = held
+            .keys()
+            .find(|asked| app_ids_match(app, asked))
+            .cloned()?;
+        let queue = held.get_mut(&key)?;
+        let released = (!queue.is_empty()).then(|| queue.remove(0));
+        if queue.is_empty() {
+            held.remove(&key);
+        }
+        released
+    }
+
+    /// Hold `tab` for the next window `app` opens, in the background: the
+    /// window takes the tab the person left it in — its place, its width,
+    /// the strip it was in — instead of a new one beside it, and does not
+    /// take focus from the window they had in front.
+    ///
+    /// `app` is the app as its windows announce themselves, which is what the
+    /// tab holds it as when the desk is saved. False when `tab` is not on the
+    /// desk any more.
+    pub fn adopt(&mut self, app: &str, tab: TabId) -> bool {
+        if self.handle.read(|tree| route_of(tree, tab)).is_none() {
+            return false;
+        }
+        self.held
+            .borrow_mut()
+            .entry(app.to_owned())
+            .or_default()
+            .push(HeldTab {
+                tab: Some(tab),
+                background: true,
+            });
+        true
+    }
+
+    /// `tab` stands in for the app whose window did not come, saying why:
+    /// what the person sees where the window would be, and closes when they
+    /// are done with it. False when the tab is gone or holds no app.
+    pub fn note_in_tab(&mut self, tab: TabId, note: &str) -> bool {
+        let mut tree = self.handle.read(Clone::clone);
+        let Some(found) = tabs_mut(&mut tree).find(|found| found.id == tab) else {
+            return false;
+        };
+        let TileContent::LocalApp { note: said, .. } = &mut found.tile else {
+            return false;
+        };
+        if said == note {
+            return false;
+        }
+        note.clone_into(said);
+        self.handle.replace_tree(tree);
+        self.handle.rebuild(tab);
+        true
+    }
+
+    /// Whether `tab` still waits for the window of a saved app: what the
+    /// restore asks before it opens the next one.
+    pub fn waits_for_window(&self, tab: TabId) -> bool {
+        self.handle.read(|tree| {
+            tabs(tree)
+                .find(|found| found.id == tab)
+                .is_some_and(|found| matches!(found.tile, TileContent::LocalApp { .. }))
+        })
     }
 
     /// The tab held for the next window of the app `app` announces, oldest
@@ -670,7 +745,7 @@ impl DesktopPolicy {
             app_id,
             surface_id: window.id,
         };
-        tab.title = title;
+        tab.set_window_title(&title);
         if !held.background {
             if let Some(group) = tree
                 .workspaces
@@ -769,8 +844,9 @@ impl DesktopPolicy {
         let Some(tab) = tab_mut(&mut tree, window) else {
             return;
         };
-        if tab.title != title {
-            title.clone_into(&mut tab.title);
+        // The person's own name for the tab stands in front of the window's,
+        // which is kept beside it.
+        if tab.set_window_title(title) {
             self.handle.replace_tree(tree);
         }
     }

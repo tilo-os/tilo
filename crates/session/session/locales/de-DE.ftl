@@ -34,6 +34,20 @@ system-update-restart-title = Neu starten, um die Updates abzuschließen
 system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
 power-restart = Neu starten
 
+## Der gespeicherte Schreibtisch dieses Geräts ließ sich nicht öffnen: der
+## eigene Schreibtisch liegt weiterhin auf der Platte, und diese Sitzung startet
+## leer, damit nichts darüber geschrieben wird.
+desk-not-opened-app-name = Desktop
+desk-not-opened-newer-title = Dein Schreibtisch wurde nicht geöffnet
+desk-not-opened-newer-detail = { $path } wurde von einer neueren Tilo-Version gespeichert (Layout { $found }; diese Version versteht { $understood }). Die Datei wurde nicht verändert: diese Sitzung startet mit einem leeren Schreibtisch und speichert nichts, kann sie also nicht überschreiben.
+desk-not-opened-unreadable-title = Dein Schreibtisch konnte nicht gelesen werden
+desk-not-opened-unreadable-detail = { $path } ist vorhanden, konnte aber nicht gelesen werden ({ $error }). Die Datei wurde nicht verändert: diese Sitzung startet mit einem leeren Schreibtisch und speichert nichts, kann sie also nicht überschreiben.
+
+## Ein Fenster, das dieses Gerät offen ließ und dessen App nicht zurückkam.
+desk-window-not-installed = { $app } ist auf diesem Rechner nicht installiert
+desk-window-would-not-start = { $app } konnte nicht gestartet werden: { $why }
+desk-window-did-not-open = { $app } wurde gestartet, hat aber kein Fenster geöffnet
+
 ## Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die die
 ## Person gerade zurückgesetzt hatte.
 display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast

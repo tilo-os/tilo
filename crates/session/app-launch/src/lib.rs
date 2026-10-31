@@ -43,7 +43,7 @@ pub mod spawner;
 
 pub use doors::{Connects, Doors, HeldDoor, Routed, StartAlone, WindowConnections};
 pub use env::SessionEnvironment;
-pub use instance::{Answer, Instance, Shown, Windows};
+pub use instance::{Answer, Instance, Shown, Windows, package_identities};
 pub use launch::{Launch, Open};
 pub use plan::{Kind, PlanContext, PlanError, Planned};
 pub use room::Room;
