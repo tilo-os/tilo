@@ -597,7 +597,10 @@ impl PersonState {
     /// The person's records `owner` keeps: this app's own, or another app's,
     /// opened once.
     fn records_of(&self, owner: &'static str) -> Option<PersonRecords> {
-        if owner == self.app_id {
+        // A host that keeps the person's shared records lends this app its
+        // own as well: a second writer of them here would store nowhere the
+        // host stores or syncs.
+        if owner == self.app_id && !self.records.as_ref()?.shared_by_host() {
             return self.records.clone();
         }
         let mut others = self.others.borrow_mut();

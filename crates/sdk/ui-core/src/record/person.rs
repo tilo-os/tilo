@@ -201,6 +201,14 @@ impl PersonRecords {
         self
     }
 
+    /// Whether a host keeps the person's shared records and lends them to
+    /// these ([`Self::sharing`]): those this app owns are then the host's
+    /// too, so the process has one writer of each.
+    #[must_use]
+    pub fn shared_by_host(&self) -> bool {
+        self.others.is_some()
+    }
+
     /// Write out what is not stored yet, as closing the window does.
     ///
     /// The records are the store's once written: a store whose host commits

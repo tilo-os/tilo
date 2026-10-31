@@ -302,6 +302,31 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// The app as `person` opens it in a host that keeps the person's
+    /// shared records itself, in `held`, and lends them to the apps it
+    /// shows in its process (a session showing Settings).
+    pub fn for_person_shown_by(
+        person: &str,
+        held: &ui_core::record::person::PersonRecords,
+    ) -> Result<Self, LaunchError> {
+        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let held = held.clone();
+        Self::open(
+            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+            Role::Owner,
+            person,
+            &[],
+            None,
+            None,
+            None,
+            move |context| {
+                if let Some(own) = context.person_records().cloned() {
+                    context.provide_person_records(own.sharing(&held));
+                }
+            },
+        )
+    }
+
     /// How many of the person's records the window holds open, the records
     /// a settings section keeps among them: a section's opens only when it
     /// is first written or stepped.
