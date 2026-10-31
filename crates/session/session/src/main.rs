@@ -15,6 +15,15 @@ fn main() -> std::process::ExitCode {
     use tilo_session::desktop_services::{Bus, Buses};
     use tilo_session::{Options, Session};
 
+    // The desktop's tilolang surfaces start compiled once Cranelift compiled them in an
+    // earlier session.
+    if let Some(cache) = tilo_paths::xdg::cache_home()
+        && let Err(error) = tilolang_tilo::runtime::engine::keep_compiled_in(
+            cache.join("tilo").join("tilolang-compiled"),
+        )
+    {
+        eprintln!("tilo-session: compiled tilolang modules are not kept: {error}");
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (ours, command) = match args.iter().position(|arg| arg == "--") {
         Some(split) => (

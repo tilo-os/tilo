@@ -931,6 +931,13 @@ impl Host {
         self.inner.package_of(app).ok()
     }
 
+    /// The first thing `find` finds in a loaded package, read where the packages are kept: what
+    /// a frame looks up (an action's meta, an enum's cases) without copying every package.
+    /// `find` must not load or drop a package.
+    pub fn find_in_packages<R>(&self, find: impl FnMut(&Package) -> Option<R>) -> Option<R> {
+        self.inner.packages.borrow().iter().find_map(find)
+    }
+
     /// Bring the runtime's view of the room record up to date; see [`TiloStore::sync_from`].
     pub fn sync_from(&self, record: &tilo_resource::Doc) -> bool {
         self.inner.store.sync_from(record)
@@ -967,10 +974,10 @@ impl Host {
     /// # Errors
     /// The package declares no root with a default view, or the resource cannot be created.
     pub fn root_of(&self, app: &str) -> Result<ResourceRef, HostError> {
-        let package = self
-            .package(app)
+        let main = self
+            .find_in_packages(|package| (package.meta.app == app).then(|| package.main()))
             .ok_or_else(|| HostError::NotFound(format!("package {app}")))?;
-        let (_, ty) = package.main().ok_or_else(|| {
+        let (_, ty) = main.ok_or_else(|| {
             HostError::NotFound(format!("a root type with a default view in {app}"))
         })?;
         let id = format!("root-{ty}");

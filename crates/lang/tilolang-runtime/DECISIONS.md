@@ -318,7 +318,8 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   with the metadata the module embeds; a launcher ships built-in packages compiled with Tilo.
   Compiling a package's source takes 0.8 to 1.5 ms (notes, chat; release, aarch64),
   so this saves little time; it removes the compiler from the launch path. wasmi cannot
-  serialize translated code, so there is no on-disk cache, and none is needed (below).
+  serialize translated code, so there is no on-disk cache for it, and none is needed (below);
+  the tiered engine keeps Cranelift's compiled modules on disk ("Tiered", below).
 - **Engine: wasmi, lazy translation.** Measured with `tilolang bench --profile` (release,
   aarch64, a notes list of 10k items, 20 samples). Time inside wasm, imports excluded, is 28 ms of
   a 2035 ms open (search 454 ms, publication 1429 ms, imports 773 ms) and 0.013 to 0.017 ms of
@@ -334,8 +335,24 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   memory limit, call one export with a host context in the store. The module cache, instance
   pools, profile, import dispatch and the wording of every `CallError` sit above it, once, so a
   call gives the same result on every engine. wasmtime (Cranelift or Winch) is a second
-  implementation behind the `wasmtime` feature, off by default, for comparing engines
-  (`tilolang bench --engine`, docs/tilolang-engines.md); `TILOLANG_ENGINE` runs the suites on it.
+  implementation behind the `wasmtime` feature (`tilolang bench --engine`,
+  docs/tilolang-engines.md); `TILOLANG_ENGINE` runs the suites on any engine.
+- **Tiered: wasmi at once, Cranelift once compiled.** The `wasmtime` feature is on by default
+  and the default engine is `Tiered` (`engine/tiering.rs`): a module starts on wasmi, so a
+  launch pays no compile; one thread per process compiles it with Cranelift; the next call after
+  the compile finishes checks out an instance of the compiled module (guests keep no state
+  between calls, so instances are interchangeable and nothing is transferred). Compiled modules
+  are kept per process by content hash and on disk where the process says
+  (`keep_compiled_in`: a tilolang host in its storage, `<storage>/.compiled`; the session in
+  `$XDG_CACHE_HOME/tilo/tilolang-compiled`), so a module compiled once starts compiled. An entry
+  is the serialized module behind its blake3 digest; a damaged entry, or one written by another
+  wasmtime version, configuration or CPU, is not loaded and the module compiles again. Each
+  directory is written only by the process that reads it, so no process loads code another one
+  wrote. Fuel and the memory limit are the same numbers on both tiers and trap with the same
+  `CallError`; fuel units differ slightly between the engines (both charge about one unit per
+  wasm instruction), which matters only to a call near the 2·10⁹ budget. Measured in
+  docs/tilolang-engines.md: UI work is unchanged and a launch is no slower than wasmi, while
+  guest computation and wasm libraries run at Cranelift's speed a few milliseconds after load.
 - **Finding a node.** `ViewInstance::edit`/`press`/`fire` find a node in its boundary when its
   key carries one; any other node (the root view's own, an anchored one) by walking the tree
   once, after which where it was is kept and checked before use. Typing into an input of a view

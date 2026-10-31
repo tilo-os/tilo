@@ -146,7 +146,14 @@ fn has_text(node: &InspectionNode) -> bool {
 fn layers(widget: &str) -> bool {
     matches!(
         widget,
-        "Layers" | "NavShell" | "NavPane" | "Pane" | "TilolangWindow" | "Decorated" | "Toast"
+        "Layers"
+            | "NavShell"
+            | "NavPane"
+            | "Pane"
+            | "TilolangWindow"
+            | "Decorated"
+            | "Toast"
+            | "Banner"
     ) || widget.contains("Overlay")
         || widget.contains("Layer")
 }

@@ -13,7 +13,7 @@ use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
-use crate::host_ui::{OPEN_ACTION, REVIEW_ACTION, SET_ACTION, THEN_ACTION};
+use crate::host_ui::{OPEN_ACTION, REVIEW_ACTION, SET_ACTION, THEN_ACTION, UNDO_ACTION};
 use crate::ids::{DocId, ModuleHash, Principal};
 use crate::live::{Live, LiveStats};
 use crate::meta::{EffectClass, FieldKind};
@@ -40,6 +40,18 @@ pub enum ViewEvent {
     /// A change mark was activated: show what the task run `run` (its group) did, where it
     /// changed `target`.
     Review { run: String, target: ResourceRef },
+    /// `undo(v)` or `undo(run)` was pressed: take back, through the platform's history, the
+    /// step a version is part of, or every step of a task run.
+    Undo(UndoAsk),
+}
+
+/// What an `undo(...)` a view applied takes back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UndoAsk {
+    /// The step the change `change` (a version's) of `target` is part of.
+    Step { change: String, target: ResourceRef },
+    /// Every step of the task run `run` (its group).
+    Run { run: String },
 }
 
 /// How an edit of a bound field ended.
@@ -499,6 +511,22 @@ impl ViewInstance {
                     run: run.clone(),
                     target: ResourceRef::clone(&r.target),
                 });
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
+            UNDO_ACTION => {
+                let ask = match aref.args.as_slice() {
+                    [Value::Text(kind), Value::Text(change), Value::Ref(r)] if kind == "step" => {
+                        UndoAsk::Step {
+                            change: change.clone(),
+                            target: ResourceRef::clone(&r.target),
+                        }
+                    }
+                    [Value::Text(kind), Value::Text(run), _] if kind == "run" => {
+                        UndoAsk::Run { run: run.clone() }
+                    }
+                    _ => return Err(RuntimeError::BadArgs("a malformed `undo`".into())),
+                };
+                self.events.borrow_mut().push(ViewEvent::Undo(ask));
                 Ok(InvokeOutcome::Done(Value::Unit))
             }
             THEN_ACTION => {

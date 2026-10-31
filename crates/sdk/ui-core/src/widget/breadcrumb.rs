@@ -25,6 +25,10 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::text::centered_text_top;
 
+#[path = "breadcrumb_component.rs"]
+mod component;
+pub use component::{BreadcrumbProps, BreadcrumbSegmentProps};
+
 /// The separator between two segments: a chevron from the one icon set,
 /// at the small glyph size, never a typed character.
 fn separator_width(theme: &Theme) -> f64 {

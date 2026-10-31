@@ -316,6 +316,20 @@ pub struct Version {
     /// The change that made it, as its store names changes; empty while provisional. What a
     /// seen mark names ([`crate::seen`]).
     pub change: String,
+    /// For an item it removed, where the item stood: what a list that held it shows of it
+    /// until the person has seen its removal.
+    pub left: Option<Left>,
+}
+
+/// Where a removed item stood ([`Version::left`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Left {
+    /// The resource holding the collection, as [`ResourceRef::id_string`] writes it.
+    pub holder: String,
+    /// The collection's field.
+    pub field: FieldId,
+    /// The item's type, when the store knows it.
+    pub ty: Option<TypeId>,
 }
 
 /// One run of a task, as the changes it made are stamped.
@@ -435,6 +449,7 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
             fields: Vec::new(),
             resource: id.clone(),
             change: n.to_string(),
+            left: None,
         })
         .collect()
 }
@@ -1089,6 +1104,26 @@ pub trait Store {
         let _ = (at, field);
         Err(StoreError::Invalid(format!(
             "this store keeps no log to read before the change {change} in"
+        )))
+    }
+
+    /// What the change `change` (a [`Version::change`]) wrote to each of `fields` of `at`: the
+    /// field's value before the change and after it, read from the change itself, for each
+    /// field it changed, in the order of `fields`. A field it wrote with what the field held is
+    /// left out.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for a change the store does not hold; a store that keeps no log says so.
+    fn written(
+        &self,
+        at: &ResourceRef,
+        fields: &[FieldSpec],
+        change: &str,
+    ) -> Result<Vec<(FieldId, FieldValue, FieldValue)>, StoreError> {
+        let _ = (at, fields);
+        Err(StoreError::Invalid(format!(
+            "this store keeps no log to read what the change {change} wrote"
         )))
     }
 

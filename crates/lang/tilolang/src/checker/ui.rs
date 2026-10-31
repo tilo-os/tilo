@@ -445,6 +445,27 @@ impl Checker<'_> {
                     }
                 }
             }
+            // A view a value holds, read where it stands: `c.before` of a `host.Change`.
+            ExprKind::Field { .. } if args.is_empty() && c.block.is_none() => {
+                let v = self.expr(callee, None);
+                match v.ty {
+                    Ty::View => {
+                        let n = self.fresh(Ty::View);
+                        self.emit(Stmt::Set(n, v));
+                        n
+                    }
+                    Ty::Error => return self.dead_node(),
+                    other => {
+                        let t = self.show(&other);
+                        self.err(
+                            "E060",
+                            span,
+                            format!("a UI statement is a primitive, a view call or a view a value holds; this is {t}"),
+                        );
+                        return self.dead_node();
+                    }
+                }
+            }
             _ => {
                 self.err(
                     "E060",

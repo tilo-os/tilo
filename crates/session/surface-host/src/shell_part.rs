@@ -466,11 +466,12 @@ impl Origin for SessionOrigin {
         let Some(reading) = self.link.reading.borrow().clone() else {
             return polled;
         };
-        let Some(package) = cx.host.package(cx.app) else {
+        let Some(types) = cx.host.find_in_packages(|package| {
+            (package.meta.app == cx.app).then(|| origin_types(&package.meta, ORIGIN))
+        }) else {
             tracing::error!(app = cx.app, "the shell's package is not loaded");
             return polled;
         };
-        let types = origin_types(&package.meta, ORIGIN);
         let root = match cx.host.root_of(cx.app) {
             Ok(root) => root,
             Err(error) => {
@@ -1148,12 +1149,13 @@ mod tests {
     /// of its frame budget; each must land in one turn.
     #[test]
     fn each_change_is_one_turn() {
+        type Change = (&'static str, fn(&mut DeskReading));
         let (mut part, link) = part();
         for _ in 0..4 {
             part.prepare_frame();
         }
         let mut now = reading();
-        let changes: [(&str, fn(&mut DeskReading)); 3] = [
+        let changes: [Change; 3] = [
             ("minute", |r| r.clock = "4:29 PM".to_owned()),
             ("notification", |r| r.unread = 1),
             ("workspace switch", |r| {

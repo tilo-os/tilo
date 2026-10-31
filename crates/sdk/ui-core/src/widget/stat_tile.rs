@@ -37,6 +37,10 @@ use crate::tokens::TextRole;
 use crate::widget::activation::{Activation, Interaction, activation_controls};
 use crate::widget::{Element, TaffyTreeExt, Tone, Widget, card_column_width};
 
+#[path = "stat_tile_component.rs"]
+mod component;
+pub use component::{StatGroupProps, StatTileProps};
+
 /// Direction of a tile's change line. The arrow says which way the number
 /// moved; whether that is good is the tile's [`Tone`], not the arrow's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -290,6 +290,7 @@ impl ListedOnce {
 
 mod plan;
 mod versions;
+mod written;
 use versions::{NO_VERSIONS, note_versions};
 
 /// Gives the store the room record when it opened without it: for a write, or a field no index
@@ -323,6 +324,9 @@ struct Inner {
     /// Items filters were evaluated on one by one.
     evaluated: std::cell::Cell<u64>,
     listed: RefCell<Vec<ListedOnce>>,
+    /// What each change wrote to the fields of each resource it changed, by the change and the
+    /// resource, as [`Store::written`] read it: a change never changes, so it is read once.
+    written: RefCell<HashMap<(String, String), written::Written>>,
     txns: HashMap<u64, TxnState>,
     next_txn: u64,
     subs: Vec<Subscription>,
@@ -344,7 +348,7 @@ struct Inner {
     notes: BTreeMap<DocId, Vec<ChangeNote>>,
     /// The versions of each resource the record's changes made (reflection), built from the
     /// record the first time one is asked for and kept up as it moves.
-    versions: Option<HashMap<String, Vec<Version>>>,
+    versions: Option<versions::Versions>,
     instance: String,
     /// The device that carries out the outside effects this store queues: they stay queued in
     /// the record, and this device alone settles them.
@@ -739,6 +743,7 @@ impl TiloStore {
                 snapshot: std::sync::Weak::new(),
                 nested: Nested::default(),
                 unshared: Arc::from(tilolang_runtime::rich::UNSHARED),
+                written: RefCell::default(),
             })),
         }
     }
@@ -1082,7 +1087,7 @@ impl TiloStore {
             let mut held = self.inner.borrow_mut();
             let inner = &mut *held;
             if inner.versions.is_none() {
-                let mut built = HashMap::new();
+                let mut built = versions::Versions::default();
                 if let Some(mirror) = inner.mirror.as_deref() {
                     note_versions(
                         &mut built,
@@ -1095,7 +1100,10 @@ impl TiloStore {
             }
         }
         std::cell::Ref::map(self.inner.borrow(), |inner| {
-            inner.versions.as_ref().unwrap_or(&*NO_VERSIONS)
+            inner
+                .versions
+                .as_ref()
+                .map_or(&*NO_VERSIONS, |held| &held.by_resource)
         })
     }
 
@@ -2782,6 +2790,15 @@ impl Store for TiloStore {
             .field(&field.id)
             .ok_or_else(|| not_found(format!("field {}", field.id)))?;
         read_field(&before, &located, spec)
+    }
+
+    fn written(
+        &self,
+        at: &ResourceRef,
+        fields: &[FieldSpec],
+        change: &str,
+    ) -> Result<Vec<(FieldId, FieldValue, FieldValue)>, StoreError> {
+        self.written_by(at, fields, change)
     }
 
     fn version_end(&self, at: &ResourceRef, last: bool) -> Result<Option<Version>, StoreError> {

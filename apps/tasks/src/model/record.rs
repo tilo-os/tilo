@@ -340,6 +340,22 @@ fn start_run(issue: &mut Issue, starter: String, now: i64) -> Result<u64, Refusa
     Ok(epoch)
 }
 
+/// A person who gives `issue` to an agent starts its run then, acting for
+/// them, as their own ask does: no separate approval. The run is admitted
+/// step by step against that person's live grants like any run, so it never
+/// does what they could not, and a step that asks first waits for its
+/// answer. Work an agent or an automation hands on waits for a person's
+/// `approve-run`, there being no person whose authority it would act with.
+fn run_when_a_person_assigns(issue: &mut Issue, cx: &ActionCx, now: i64) -> Result<(), Refusal> {
+    if issue.assigned_agent().is_none() || by_agent(cx) {
+        return Ok(());
+    }
+    let Ok(starter) = person(cx) else {
+        return Ok(());
+    };
+    start_run(issue, starter, now).map(drop)
+}
+
 fn push_message(issue: &mut Issue, cx: &mut ActionCx, message: Message) {
     let id = cx.id();
     issue.comments.push(id, message);
@@ -382,8 +398,9 @@ impl Tracker {
             ..Issue::default()
         };
         let id = cx.id();
-        self.issues.push(id, issue);
-        Ok(())
+        self.issues.push(id.clone(), issue);
+        let now = cx.now_ms();
+        run_when_a_person_assigns(self.issue_mut(&id)?, cx, now)
     }
 
     /// Create a project or an area: the resource above the issues written
@@ -498,7 +515,8 @@ impl Tracker {
         Ok(())
     }
 
-    /// Assign an issue to a person or an agent, or to nobody.
+    /// Assign an issue to a person or an agent, or to nobody. A person
+    /// assigning it to an agent starts its run at once, acting for them.
     ///
     /// # Errors
     /// Refuses while an agent's run of the issue is going, or an assignee
@@ -506,9 +524,11 @@ impl Tracker {
     #[action(item = issues, writes = issues)]
     pub fn assign(
         &mut self,
+        cx: &mut ActionCx,
         issue: &Id,
         #[param("person:<id> or agent:<id>; nobody without")] assignee: Option<String>,
     ) -> Result<(), Refusal> {
+        let now = cx.now_ms();
         let target = self.issue_mut(issue)?;
         if target.active_run().is_some() {
             return Err(Refusal::new(
@@ -519,7 +539,7 @@ impl Tracker {
             .map(|assignee| assignee.trim().to_owned())
             .filter(|assignee| !assignee.is_empty())
             .map(ui::tilo_resource::Atom);
-        Ok(())
+        run_when_a_person_assigns(target, cx, now)
     }
 
     /// Choose the model the issue's agent plans with, or let it plan with
@@ -577,9 +597,9 @@ impl Tracker {
             quick: ask.quick,
             author: starter.clone(),
             created_ms: now,
-            // A chat is a conversation the person comes back to, with
-            // tasks of many items in it: its runs get the chat's budget.
-            budget: ask.chat.then(Budget::chat),
+            // No run has a cap of its own: one the person asks goes until
+            // it is done or stopped, within the limits they set.
+            budget: None,
             run: Some(Run {
                 epoch: 1,
                 agent,

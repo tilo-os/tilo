@@ -1296,6 +1296,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
     if engine != config.engine {
         return Err(format!("the process's engine is already {engine:?}"));
     }
+    let kept = engines::CompiledDir::new(config)?;
     let compiling = Instant::now();
     let packages = compile(&config.package)?;
     let compiled_in = ms(compiling.elapsed());
@@ -1356,7 +1357,9 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
             out.push(record);
         }
         if config.workloads.cold {
-            out.push(engines::start(&sized)?);
+            for record in engines::start(&sized, &kept)? {
+                out.push(record);
+            }
         }
         if config.open_only {
             continue;
@@ -1380,6 +1383,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
 /// The scenarios that change a room of the size after it opened, in one window onto it.
 fn changes(sized: &Sized<'_>, out: &mut Recorder<'_>) -> Result<(), String> {
     let mut room = sized.open()?;
+    engines::settle(sized.packages.iter().map(|p| &p.wasm))?;
     room.settle();
     if sized.config.timings {
         for record in index_everything(sized, &room) {
@@ -1389,7 +1393,10 @@ fn changes(sized: &Sized<'_>, out: &mut Recorder<'_>) -> Result<(), String> {
     room.frame(&mut [])?;
     room.phases.take();
     if sized.shape.subject().is_some() || text_input(&room.host, room.list.tree()).is_some() {
-        out.push(keystroke(sized, &mut room)?);
+        match keystroke(sized, &mut room)? {
+            Some(record) => out.push(record),
+            None => eprintln!("tilolang bench: keystroke not measured: nothing to type into"),
+        }
     } else {
         out.push(press(sized, &mut room)?);
     }
@@ -1567,9 +1574,11 @@ fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
         std::hint::black_box(Doc::load(&saved).map_err(|e| e.to_string())?);
         loads.push(ms(start.elapsed()));
     }
-    let [first, write] = first_frame(sized, &saved)?;
+    let firsts = first_frame(sized, &saved)?;
     let load = sized.record("load", "ms", loads, json!({"bytes": saved.len()}));
-    Ok(vec![open, ready, load, index_build, first, write])
+    let mut records = vec![open, ready, load, index_build];
+    records.extend(firsts);
+    Ok(records)
 }
 
 /// The room's record, loading on a thread of its own: what a window opening over its index
@@ -1603,11 +1612,13 @@ impl Loading {
 
 /// From the saved room to the first frame of a window opening over its index while the
 /// record loads beside it (and to the record had and taken in, in its meta); and the first
-/// change right after that frame, which waits for the record.
-fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
+/// change right after that frame, which waits for the record: not measured for a package
+/// with nothing to type into (the shell's bar, which only the session changes).
+fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
     let (mut frames, mut loaded, mut taken, mut writes) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut work = None;
+    let mut untyped = false;
     for sample in 0..sized.config.samples {
         let index = sized.index.copy()?;
         let start = Instant::now();
@@ -1646,18 +1657,17 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
                 "evaluated": reads.evaluated,
             }));
         }
-        if sample % 2 == 0 {
-            // The record had in the background, then taken in.
-            loading.borrow_mut().wait()?;
-            loaded.push(ms(start.elapsed()));
-            let doc = loading.borrow_mut().wait()?.clone();
-            host.sync_from(&doc);
-            taken.push(ms(start.elapsed()));
+        // Where the keystroke phase types: an item's window, else the main window.
+        let typing_here = if sample % 2 == 0 || untyped {
+            None
         } else {
+            let found = typing(sized, &host, list.tree())?;
+            untyped = found.is_none();
+            found
+        };
+        if let Some((typing, text)) = typing_here {
             // A change at once: it waits for the record.
             let after_frame = Instant::now();
-            // Where the keystroke phase types: an item's window, else the main window.
-            let (typing, text) = typing(sized, &host, list.tree())?;
             let text = format!("{text}x");
             let mut editor = match typing {
                 Typing::Item(editor, input) => {
@@ -1682,6 +1692,13 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
                 editor.poll_patches().map_err(|e| e.to_string())?;
             }
             writes.push(ms(after_frame.elapsed()));
+        } else {
+            // The record had in the background, then taken in.
+            loading.borrow_mut().wait()?;
+            loaded.push(ms(start.elapsed()));
+            let doc = loading.borrow_mut().wait()?.clone();
+            host.sync_from(&doc);
+            taken.push(ms(start.elapsed()));
         }
     }
     let extra = json!({
@@ -1689,10 +1706,13 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
         "record_taken_ms": taken,
         "work": work,
     });
-    Ok([
-        sized.record("first_frame", "ms", frames, extra),
-        sized.record("first_write", "ms", writes, Json::Null),
-    ])
+    let mut records = vec![sized.record("first_frame", "ms", frames, extra)];
+    if untyped {
+        eprintln!("tilolang bench: first_write not measured: nothing to type into");
+    } else {
+        records.push(sized.record("first_write", "ms", writes, Json::Null));
+    }
+    Ok(records)
 }
 
 /// What a live window publishes to the session's search index right after it opens: every
@@ -1818,8 +1838,14 @@ pub(crate) fn typed(view: &ViewInstance, input: &str, text: &str) -> Value {
     }
 }
 
-/// Where a person types in the window `main` of `host` shows.
-fn typing(sized: &Sized<'_>, host: &Host, main: &UiNode) -> Result<(Typing, String), String> {
+/// Where a person types in the window `main` of `host` shows; nowhere when the main window
+/// has no text input and the items no window of their own (the shell's bar, which only the
+/// session changes).
+fn typing(
+    sized: &Sized<'_>,
+    host: &Host,
+    main: &UiNode,
+) -> Result<Option<(Typing, String)>, String> {
     if let Some((root, list)) = sized.shape.subject()
         && has_default_view(sized.packages, &list.item_ty)
     {
@@ -1836,17 +1862,17 @@ fn typing(sized: &Sized<'_>, host: &Host, main: &UiNode) -> Result<(Typing, Stri
                 .or_else(|| composer_input(&editor, editor.tree()))
                 .ok_or("the item's window has no text input")?,
         };
-        return Ok((Typing::Item(Box::new(editor), input), text));
+        return Ok(Some((Typing::Item(Box::new(editor), input), text)));
     }
-    let (key, text) = text_input(host, main)
-        .ok_or("the main window has no text input, and the items no window of their own")?;
-    Ok((Typing::Main(key), text))
+    Ok(text_input(host, main).map(|(key, text)| (Typing::Main(key), text)))
 }
 
 /// Typing one letter a frame where a person types in the package: into the title of an item
 /// in the item's own window, or else into the main window's first text input.
-fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
-    let (mut typing, mut text) = typing(sized, &room.host, room.list.tree())?;
+fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> {
+    let Some((mut typing, mut text)) = typing(sized, &room.host, room.list.tree())? else {
+        return Ok(None);
+    };
     let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
         text.push('x');
@@ -1889,7 +1915,7 @@ fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
         };
         m.insert("into".into(), json!(into));
     }
-    Ok(sized.record("keystroke", "ms", samples, extra))
+    Ok(Some(sized.record("keystroke", "ms", samples, extra)))
 }
 
 /// Pressing the main window's first button, one press a frame.

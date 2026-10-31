@@ -153,6 +153,33 @@ fn placing_on_the_board_sets_status_and_order_in_one_step() {
     assert_eq!(state.issues.at(2).unwrap().0, &three);
 }
 
+/// A person giving work to an agent starts its run then, acting for them:
+/// on a new issue and on one given to it later alike.
+#[test]
+fn a_person_giving_an_agent_work_starts_its_run_at_once() {
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Tidy the docs", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Tidy the docs");
+    let run = run_of(&person, &issue);
+    assert_eq!((run.epoch, run.starter.as_str()), (1, "ada"));
+    assert_eq!(run.phase, RunPhase::Approved);
+    person
+        .apply(Tracker::CREATE.with(create("Sort the inbox", None, None)))
+        .unwrap();
+    let later = id_of(&person, "Sort the inbox");
+    person
+        .apply(Tracker::ASSIGN.with(tracker::Assign {
+            issue: later.clone(),
+            assignee: Some(AGENT.into()),
+        }))
+        .unwrap();
+    assert_eq!(run_of(&person, &later).starter, "ada");
+    let state = person.state().unwrap();
+    assert_eq!(state.issues.get(&later).unwrap().status, Status::InProgress);
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -161,11 +188,33 @@ fn placing_on_the_board_sets_status_and_order_in_one_step() {
 fn an_agents_run_is_approved_by_a_person_reported_by_its_agent_and_steered_in_the_thread() {
     let mut person = ada();
     person
-        .apply(Tracker::CREATE.with(create("Tidy the docs", None, Some(AGENT))))
+        .apply(Tracker::CREATE.with(create("Tidy the docs", None, None)))
         .unwrap();
     let issue = id_of(&person, "Tidy the docs");
     let mut agent = person.fork().as_agent_for(AGENT, "ada");
     let mut other = person.fork().as_agent_for("agent:other", "ada");
+
+    // Another agent hands the work on: it waits for a person's approval,
+    // there being no person whose authority it would run with.
+    other
+        .apply(Tracker::ASSIGN.with(tracker::Assign {
+            issue: issue.clone(),
+            assignee: Some(AGENT.into()),
+        }))
+        .unwrap();
+    person.sync_with(&mut other).unwrap();
+    agent.sync_with(&mut person).unwrap();
+    assert!(
+        person
+            .state()
+            .unwrap()
+            .issues
+            .get(&issue)
+            .unwrap()
+            .run
+            .is_none(),
+        "work an agent hands on is queued"
+    );
 
     // The agent cannot approve itself.
     assert!(
@@ -297,7 +346,7 @@ fn an_agents_run_is_approved_by_a_person_reported_by_its_agent_and_steered_in_th
 fn a_budget_is_set_only_between_runs_and_within_its_ceilings() {
     let mut replica = ada();
     replica
-        .apply(Tracker::CREATE.with(create("Budgeted", None, Some(AGENT))))
+        .apply(Tracker::CREATE.with(create("Budgeted", None, None)))
         .unwrap();
     let issue = id_of(&replica, "Budgeted");
     let budget = |turn_ms, total_ms| {
@@ -316,9 +365,11 @@ fn a_budget_is_set_only_between_runs_and_within_its_ceilings() {
             .is_err()
     );
     replica.apply(budget(Some(1_000), Some(60_000))).unwrap();
+    // Given to the agent, its run starts at once.
     replica
-        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+        .apply(Tracker::ASSIGN.with(tracker::Assign {
             issue: issue.clone(),
+            assignee: Some(AGENT.into()),
         }))
         .unwrap();
     assert!(replica.apply(budget(None, None)).is_err());
@@ -336,7 +387,7 @@ fn a_budget_is_set_only_between_runs_and_within_its_ceilings() {
 #[test]
 fn a_task_is_a_shared_thread_two_people_take_part_in() {
     let mut ada = ada().as_invoker("ada");
-    ada.apply(Tracker::CREATE.with(create("Plan the offsite", None, Some(AGENT))))
+    ada.apply(Tracker::CREATE.with(create("Plan the offsite", None, None)))
         .unwrap();
     let issue = id_of(&ada, "Plan the offsite");
     let mut bob = ada.fork().as_invoker("bob");
@@ -467,7 +518,7 @@ fn asking_an_agent_makes_an_issue_whose_run_the_asking_approved() {
 }
 
 #[test]
-fn a_chat_ask_gets_the_chat_budget_and_a_plain_ask_the_runners_default() {
+fn no_ask_gives_its_runs_a_cap_of_their_own() {
     let mut person = ada();
     let ask = |id: &str, chat: bool| {
         Tracker::ASK_AGENT.with(tracker::AskAgent {
@@ -487,19 +538,10 @@ fn a_chat_ask_gets_the_chat_budget_and_a_plain_ask_the_runners_default() {
     person.apply(ask("chat", true)).unwrap();
     person.apply(ask("plain", false)).unwrap();
     let state = person.state().unwrap();
-    let chat = state.issues.get(&Id::from_raw("chat")).unwrap();
-    assert_eq!(chat.budget, Some(crate::model::Budget::chat()));
-    let budget = chat.budget.clone().unwrap();
-    // Eight items of about fifteen steps each fit, with room to read on.
-    assert!(budget.max_turns.unwrap() >= 8 * 15 * 2);
-    assert!(crate::model::Budget::admits(
-        budget.turn_ms,
-        budget.total_ms
-    ));
-    assert!(crate::model::Budget::admits_turns(budget.max_turns));
-    assert!(
-        budget.spends_freely(),
-        "a chat limits no spending by itself"
+    assert_eq!(
+        state.issues.get(&Id::from_raw("chat")).unwrap().budget,
+        None,
+        "a chat's runs are bounded by what its person sets, not by turns of its own"
     );
     assert_eq!(
         state.issues.get(&Id::from_raw("plain")).unwrap().budget,
@@ -511,7 +553,7 @@ fn a_chat_ask_gets_the_chat_budget_and_a_plain_ask_the_runners_default() {
 fn a_runs_turn_ceiling_is_set_with_its_budget_and_within_range() {
     let mut replica = ada();
     replica
-        .apply(Tracker::CREATE.with(create("Long", None, Some(AGENT))))
+        .apply(Tracker::CREATE.with(create("Long", None, None)))
         .unwrap();
     let issue = id_of(&replica, "Long");
     let budget = |max_turns| {
@@ -624,12 +666,8 @@ fn an_issue_reads_its_goal_its_urgency_and_its_cost_and_its_agent_records_what_i
         assert!(person.apply(Tracker::PLAN.with(wrong)).is_err());
     }
 
-    // The run's agent says where it runs and what it used; nobody else does.
-    person
-        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
-            issue: issue.clone(),
-        }))
-        .unwrap();
+    // The run its person started by giving the issue to the agent: its
+    // agent says where it runs and what it used; nobody else does.
     let mut agent = person.fork().as_agent_for(AGENT, "ada");
     let mut other = agent.fork().as_agent_for("agent:other", "ada");
     let on_steam_deck = || {
@@ -668,11 +706,6 @@ fn a_run_lists_every_resource_it_looked_up_on_its_task() {
         .apply(Tracker::CREATE.with(create("Say what changed", None, Some(AGENT))))
         .unwrap();
     let issue = id_of(&person, "Say what changed");
-    person
-        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
-            issue: issue.clone(),
-        }))
-        .unwrap();
     let mut agent = person.fork().as_agent_for(AGENT, "ada");
     let mut other = agent.fork().as_agent_for("agent:other", "ada");
     let read = |resource: &str, label: &str| {
@@ -791,15 +824,11 @@ fn a_task_syncs_to_another_device_survives_a_restart_and_merges_its_edits() {
     );
 
     // Both work on it at once, off the net: the desktop nests a subtask, the
-    // laptop approves the run and its agent records what it used. Both edits
-    // are ordinary collaborative changes and both survive the merge.
+    // laptop's run (started as the issue was given to the agent there) records
+    // what it used. Both edits are ordinary collaborative changes and both
+    // survive the merge.
     on_desktop
         .apply(Tracker::CREATE.with(create("Gather the ledgers", Some(issue.clone()), None)))
-        .unwrap();
-    on_laptop
-        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
-            issue: issue.clone(),
-        }))
         .unwrap();
     let mut agent = on_laptop.fork().as_agent_for(AGENT, "ada");
     agent
@@ -859,11 +888,6 @@ fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
 
     // Every change says what it did and for whom, in fields the person reads:
     // the agent, the kind of actor, and the person it acted under.
-    person
-        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
-            issue: issue.clone(),
-        }))
-        .unwrap();
     let mut agent = person.fork().as_agent_for(AGENT, "ada");
     agent
         .apply(Tracker::SETTLE_SPEND.with(tracker::SettleSpend {
@@ -906,11 +930,6 @@ fn a_paused_run_takes_no_step_until_a_person_lets_it_go_on_from_its_boundary() {
         .unwrap();
     let issue = id_of(&person, "Tidy the docs");
     let mut agent = person.fork().as_agent_for(AGENT, "ada");
-    person
-        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
-            issue: issue.clone(),
-        }))
-        .unwrap();
     agent.sync_with(&mut person).unwrap();
     let report = |text: &str| {
         Tracker::REPORT_RUN.with(tracker::ReportRun {
@@ -1004,11 +1023,6 @@ fn a_run_that_stopped_showing_a_step_is_ended_as_idle_and_leaves_what_it_did() {
         .unwrap();
     let issue = id_of(&person, "Tidy the docs");
     let mut agent = person.fork().as_agent_for(AGENT, "ada");
-    person
-        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
-            issue: issue.clone(),
-        }))
-        .unwrap();
     agent.sync_with(&mut person).unwrap();
     agent
         .apply(Tracker::REPORT_RUN.with(tracker::ReportRun {
@@ -1068,11 +1082,6 @@ fn stopping_a_paused_run_ends_it_and_leaves_what_it_did() {
         .apply(Tracker::CREATE.with(create("Tidy the docs", None, Some(AGENT))))
         .unwrap();
     let issue = id_of(&person, "Tidy the docs");
-    person
-        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
-            issue: issue.clone(),
-        }))
-        .unwrap();
     person
         .apply(Tracker::PAUSE_RUN.with(tracker::PauseRun {
             issue: issue.clone(),
@@ -1519,7 +1528,7 @@ fn limits(max_tokens: Option<u64>, max_cost_micros: Option<u64>, currency: &str)
 fn a_step_that_would_cross_a_budget_is_refused_naming_the_limit() {
     let mut replica = ada();
     replica
-        .apply(Tracker::CREATE.with(create("Budgeted", None, Some(AGENT))))
+        .apply(Tracker::CREATE.with(create("Budgeted", None, None)))
         .unwrap();
     let issue = id_of(&replica, "Budgeted");
     replica
@@ -1534,8 +1543,9 @@ fn a_step_that_would_cross_a_budget_is_refused_naming_the_limit() {
         )
         .unwrap();
     replica
-        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+        .apply(Tracker::ASSIGN.with(tracker::Assign {
             issue: issue.clone(),
+            assignee: Some(AGENT.into()),
         }))
         .unwrap();
     let mut agent = replica.fork().as_agent_for(AGENT, "ada");
@@ -1568,11 +1578,6 @@ fn a_run_on_a_local_model_records_its_model_and_device_and_spends_no_money() {
         .apply(Tracker::CREATE.with(create("Local", None, Some(AGENT))))
         .unwrap();
     let issue = id_of(&replica, "Local");
-    replica
-        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
-            issue: issue.clone(),
-        }))
-        .unwrap();
     let mut agent = replica.fork().as_agent_for(AGENT, "ada");
     agent
         .apply(Tracker::SETTLE_SPEND.with(tracker::SettleSpend {
@@ -1613,11 +1618,6 @@ fn a_subtasks_spend_counts_towards_its_parent() {
         .unwrap();
     let child = id_of(&replica, "Write notes");
     for issue in [parent.clone(), child.clone()] {
-        replica
-            .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
-                issue: issue.clone(),
-            }))
-            .unwrap();
         let mut agent = replica.fork().as_agent_for(AGENT, "ada");
         agent
             .apply(Tracker::SETTLE_SPEND.with(tracker::SettleSpend {
@@ -1643,11 +1643,6 @@ fn a_run_that_reaches_its_budget_pauses_saying_which_limit_it_reached() {
         .apply(Tracker::CREATE.with(create("Tight", None, Some(AGENT))))
         .unwrap();
     let issue = id_of(&replica, "Tight");
-    replica
-        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
-            issue: issue.clone(),
-        }))
-        .unwrap();
     let mut agent = replica.fork().as_agent_for(AGENT, "ada");
     assert!(
         serde_json::from_value::<tracker::PauseRunForBudget>(
@@ -1742,7 +1737,8 @@ fn telling_an_agent_steers_its_run_or_starts_the_next_one_with_the_message() {
         })
     };
 
-    // Nothing runs yet: telling the agent starts its first run with it.
+    // Giving it to the agent started its first run: telling the agent is
+    // that run's first direction.
     person.apply(tell("Start with the newest")).unwrap();
     assert_eq!(run_of(&person, &issue).epoch, 1);
     let state = person.state().unwrap();
