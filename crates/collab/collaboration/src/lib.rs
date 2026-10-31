@@ -186,8 +186,8 @@ pub mod record_content;
 mod route_keys;
 #[cfg(feature = "broker-transport")]
 pub use broker::{
-    CertifiedEndpointIdentity, EndpointChannelKeys, HostSessionConnector, display_control,
-    speaker_command, wifi_continuity_command,
+    CertifiedEndpointIdentity, EndpointChannelKeys, HostSessionConnector, SessionResource,
+    display_control, speaker_command, wifi_continuity_command,
 };
 // Committed reads live with the broker worker that retains them. Without the
 // broker transport no committed capture can exist, but the type stays part of
@@ -313,8 +313,40 @@ pub fn display_control(_command: Vec<u8>, _origin: DisplayOrigin) -> Result<Vec<
     Err("Displays need the certified collaboration service.".into())
 }
 
-pub use crate::host::ContinuationMetadata;
+/// The session's published resources need an admitted broker to reach; in
+/// this build the same handle opens nothing and says so.
+#[cfg(not(feature = "broker-transport"))]
+#[derive(Clone)]
+pub struct SessionResource;
 
+#[cfg(not(feature = "broker-transport"))]
+impl SessionResource {
+    /// # Errors
+    ///
+    /// Always reports unavailable on this transport.
+    pub fn open(_resource: &str) -> Result<Self, String> {
+        Err("Published resources need the certified collaboration service.".into())
+    }
+
+    /// Nothing is watched on this transport.
+    #[must_use]
+    pub fn latest(&self) -> Option<Result<String, String>> {
+        None
+    }
+
+    /// # Errors
+    ///
+    /// Always reports unavailable on this transport.
+    pub fn invoke(
+        &self,
+        _action: &str,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        Err("Published resources need the certified collaboration service.".into())
+    }
+}
+
+pub use crate::host::ContinuationMetadata;
 /// The numbers a semantic checkpoint carries for the portable schemas a
 /// signed manifest can declare (`continuity.semantic_schema`). The tag says
 /// what the payload means, so a device that has not installed the app can

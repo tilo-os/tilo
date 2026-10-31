@@ -327,6 +327,215 @@ pub fn display_control(
         .map_err(|_| "The display service did not respond.".to_string())?
 }
 
+/// How long a change of a published resource waits for the broker's answer:
+/// the worker replies as soon as the door took it, so this bounds a lost
+/// connection, not slow work.
+const PUBLISHED_CHANGE_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// How long opening a published resource waits for the reading its watch
+/// begins at.
+const PUBLISHED_OPEN_TIMEOUT: Duration = Duration::from_secs(4);
+
+static PUBLISHED_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::OnceLock::new();
+
+/// One the session's published resources (`sound`, `displays`, the person's
+/// settings), as the app's UI thread reaches it: the reading it stands at,
+/// each later reading, and the actions that change it.
+///
+/// [`Self::open`] watches it on the broker's worker, so [`Self::latest`]
+/// hands the newest reading without waiting on the frame thread, and
+/// [`Self::invoke`] takes an action with its arguments and waits for the
+/// door's answer. Clones share one watch: the last one dropped ends it.
+#[derive(Clone)]
+pub struct SessionResource {
+    resource: Arc<str>,
+    newest: Arc<std::sync::Mutex<Option<Result<String, String>>>>,
+    /// Ends the worker's watch when the last handle is dropped.
+    _watch: Arc<tokio::sync::watch::Sender<()>>,
+}
+
+impl SessionResource {
+    /// Watch `resource` and wait for the reading it reads now. Blocking:
+    /// call it off the frame thread, as [`Self::invoke`].
+    ///
+    /// # Errors
+    ///
+    /// No session is connected, it does not answer in time, or no service
+    /// publishes `resource`.
+    pub fn open(resource: &str) -> Result<Self, String> {
+        let newest = Arc::new(std::sync::Mutex::new(None));
+        let (first_tx, first_rx) = mpsc::sync_channel(1);
+        let (cancel, cancel_rx) = tokio::sync::watch::channel(());
+        let sender = SETTINGS_COMMAND_BRIDGE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .map_err(|_| "The session's services are unavailable.")?
+            .as_ref()
+            .and_then(tokio_mpsc::WeakSender::upgrade)
+            .ok_or("Published resources need the certified collaboration service.")?;
+        if !enqueue_sdk_command(
+            &sender,
+            SdkCommand::Published(PublishedCommand::Watch {
+                resource: Arc::from(resource),
+                readings: Arc::clone(&newest),
+                first: first_tx,
+                cancel: cancel_rx,
+            }),
+            PUBLISHED_COMMAND_BUDGET.get_or_init(BridgeState::new),
+        ) {
+            return Err("The published resource queue is unavailable.".into());
+        }
+        match first_rx.recv_timeout(PUBLISHED_OPEN_TIMEOUT) {
+            Ok(Ok(reading)) => {
+                *newest
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(reading));
+                Ok(Self {
+                    resource: Arc::from(resource),
+                    newest,
+                    _watch: Arc::new(cancel),
+                })
+            }
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err("The session did not answer.".to_string()),
+        }
+    }
+
+    /// The newest reading since the last call; `None` when nothing changed.
+    #[must_use]
+    pub fn latest(&self) -> Option<Result<String, String>> {
+        self.newest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    /// Invoke `action` of the resource with `arguments` (none for an action
+    /// that takes nothing). Blocking, bounded: call it off the frame thread.
+    ///
+    /// # Errors
+    ///
+    /// No session is connected, it does not answer in time, or the door
+    /// refused the action, with what it said.
+    pub fn invoke(
+        &self,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let sender = SETTINGS_COMMAND_BRIDGE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .map_err(|_| "The session's services are unavailable.")?
+            .as_ref()
+            .and_then(tokio_mpsc::WeakSender::upgrade)
+            .ok_or("Published resources need the certified collaboration service.")?;
+        let (reply, receiver) = mpsc::sync_channel(1);
+        if !enqueue_sdk_command(
+            &sender,
+            SdkCommand::Published(PublishedCommand::Invoke {
+                resource: Arc::clone(&self.resource),
+                action: action.to_owned(),
+                arguments: arguments.clone(),
+                reply,
+            }),
+            PUBLISHED_COMMAND_BUDGET.get_or_init(BridgeState::new),
+        ) {
+            return Err("The published resource queue is unavailable.".into());
+        }
+        receiver
+            .recv_timeout(PUBLISHED_CHANGE_TIMEOUT)
+            .map_err(|_| "The session did not answer the change.".to_string())?
+    }
+}
+
+/// What the owner thread asks of one of the session's published resources.
+pub(super) enum PublishedCommand {
+    /// Follow a resource's reading, handing each to `readings` (always the
+    /// newest: a reading that arrives before the owner took the one before
+    /// it replaces it) and the one the watch begins at to `first`.
+    Watch {
+        resource: Arc<str>,
+        readings: Arc<std::sync::Mutex<Option<Result<String, String>>>>,
+        first: mpsc::SyncSender<Result<String, String>>,
+        cancel: tokio::sync::watch::Receiver<()>,
+    },
+    /// Take an action of one, answering the door's verdict.
+    Invoke {
+        resource: Arc<str>,
+        action: String,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        reply: mpsc::SyncSender<Result<(), String>>,
+    },
+}
+
+/// Serve one [`PublishedCommand`] on the shovel, where the session's
+/// services are reached.
+async fn published_command(client: &runtime_collab::CollabClient, command: PublishedCommand) {
+    let services = client.services();
+    match command {
+        PublishedCommand::Watch {
+            resource,
+            readings,
+            first,
+            mut cancel,
+        } => {
+            let stream = match services.watch(&resource).await {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let _ = first.try_send(Err(published_error(&error)));
+                    return;
+                }
+            };
+            tokio::task::spawn_local(async move {
+                let mut first = Some(first);
+                loop {
+                    let reading = tokio::select! {
+                        // The owner dropped its handle: the watch ends with it.
+                        _ = cancel.changed() => return,
+                        reading = stream.read() => reading,
+                    };
+                    let (delivery, ended) = match reading {
+                        Ok(reading) => match reading.reading {
+                            Some(reading) => (Ok(reading), false),
+                            // No service is up for it yet; one may be at a
+                            // later revision, so the watch stays on.
+                            None => (Err(format!("No service publishes {resource}.")), false),
+                        },
+                        Err(error) => (Err(published_error(&error)), true),
+                    };
+                    if let Some(answer) = first.take() {
+                        let _ = answer.try_send(delivery.clone());
+                    }
+                    *readings
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(delivery);
+                    if ended {
+                        return;
+                    }
+                }
+            });
+        }
+        PublishedCommand::Invoke {
+            resource,
+            action,
+            arguments,
+            reply,
+        } => {
+            let result = match services.invoke(&resource, &action, &arguments).await {
+                Ok(runtime_collab::wire::Receipt::Refused { message, .. }) => Err(message),
+                Ok(_taken) => Ok(()),
+                Err(error) => Err(published_error(&error)),
+            };
+            let _ = reply.send(result);
+        }
+    }
+}
+
+/// Why a call on the session's services failed, as the app reports it.
+fn published_error(error: &runtime_portal::NotAvailable) -> String {
+    error.to_string()
+}
+
 /// Have the connected transport's worker send the app's unsent settings
 /// writes ([`super::channel_settings`]). Without a connected transport they
 /// wait for the primary route, whose join sends them.
@@ -984,6 +1193,8 @@ enum SdkCommand {
         command: Vec<u8>,
         reply: mpsc::SyncSender<Result<Vec<u8>, String>>,
     },
+    /// Read, watch or change one of the session's published resources.
+    Published(PublishedCommand),
     /// Send the app's unsent settings writes over the primary route.
     FlushSettings,
     /// Send the app's live activity over the primary route.
@@ -4245,6 +4456,9 @@ async fn drive_shovel(
                     Err("The admitted settings channel is unavailable.".into())
                 };
                 let _ = reply.send(result);
+            }
+            SdkCommand::Published(command) => {
+                published_command(&client, command).await;
             }
             SdkCommand::FlushSettings => {
                 if let Some(link) = settings_link.as_ref() {
