@@ -1,8 +1,8 @@
-//! The curves a theme's painter declares for a part ([`tilo_theme_sdk::motion::Transition`]):
+//! The curves a theme's painter declares for a part ([`tilo_theme_sdk::Transition`]):
 //! the painter says how a change moves and the toolkit runs it on its clock. The math lives
 //! here, with the rest of the motion library, so a theme cannot hand-roll its own.
 
-use tilo_theme_sdk::motion::{Easing, Transition};
+use tilo_theme_sdk::{Easing, Transition};
 
 /// How close to its end a spring counts as settled.
 const SETTLED: f32 = 1e-3;
