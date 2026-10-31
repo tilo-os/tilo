@@ -45,6 +45,9 @@ imports! {
     IntToStr = "int_to_str" ([I64] -> [H]);
     FloatToStr = "float_to_str" ([F64] -> [H]);
     StrCmp = "str_cmp" ([H, H] -> [I32]);
+    StrFind = "str_find" ([H, H] -> [I64]);
+    StrSlice = "str_slice" ([H, I64, I64] -> [H]);
+    StrReplace = "str_replace" ([H, H, H] -> [H]);
 
     ListNew = "list_new" ([] -> [H]);
     ListPushI = "list_push_i" ([H, I64] -> []);
@@ -110,6 +113,7 @@ imports! {
     PrincipalEq = "principal_eq" ([H, H] -> [I32]);
     PrincipalName = "principal_name" ([H] -> [H]);
     Now = "now" ([] -> [H]);
+    TimeShift = "time_shift" ([H, I64, I32] -> [H]);
     PrincipalNamed = "principal_named" ([H] -> [H]);
     InvokerPush = "invoker_push" ([H, H] -> []);
     InvokerPop = "invoker_pop" ([] -> []);
@@ -130,6 +134,8 @@ imports! {
     Invoke = "invoke" ([H] -> [H]);
     TryInvoke = "try_invoke" ([H] -> [H]);
     Outside = "outside" ([H, H] -> [H]);
+    OutsideAt = "outside_at" ([H, H, H] -> [H]);
+    Withdraw = "withdraw" ([H, H] -> [H]);
     ModelCall = "model_call" ([H, H] -> [H]);
     QueueBlock = "queue_block" ([H, H, H] -> []);
     Print = "print" ([H, H] -> []);

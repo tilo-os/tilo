@@ -8,6 +8,7 @@ mod common;
 mod cases {
     use super::common::*;
     use serde_json::json;
+    use tilolang_runtime::AmStore as Store;
     use tilolang_runtime::{InvokeOutcome, MemorySink, Value};
 
     fn world() -> (World, tilolang_runtime::ResourceRef) {
@@ -147,6 +148,131 @@ mod cases {
                 .unwrap_err();
         assert!(err.to_string().contains("not classed outside"), "{err}");
         assert!(w.rt.pending_outbox().is_empty());
+    }
+
+    /// A letter held for ten seconds, written in tilolang, so the language's
+    /// `outside(.., at:)` and `withdraw(r, why)` are what the runtime runs.
+    const HELD: &str = r#"app test.held "Held" (icon: .send, category: .office)
+
+type Draft {
+    to: Text (title)
+    sent: Bool = false
+}
+
+type Desk {
+    drafts: Collection<Draft>
+}
+
+root Desk
+
+default view desk for Desk
+
+view desk(desk: Desk) {
+    std.list(desk, desk.drafts, empty: "No drafts") { d -> row(d.to) }
+}
+
+action address(d: Draft, to: Text) (icon: .user) {
+    d.to = to
+}
+
+primary action send(d: Draft) (icon: .send) {
+    d.sent = true
+    outside("post", (d.to,), at: now + 10s)
+}
+
+action take_back(d: Draft) (icon: .undo_2, label: "Undo send") {
+    withdraw(d, "Taken back")
+    d.sent = false
+}
+"#;
+
+    struct Held {
+        rt: tilolang_runtime::Runtime,
+        draft: tilolang_runtime::ResourceRef,
+        send: String,
+        take_back: String,
+    }
+
+    fn held(clock: std::rc::Rc<std::cell::RefCell<String>>) -> Held {
+        let app = App::compile(HELD, &[]);
+        let auth = TestAuthority::new();
+        auth.grant_outside(&app.action("send"));
+        auth.grant_outside(&app.action("take_back"));
+        let rt = tilolang_runtime::Runtime::new(Store::new(), auth).unwrap();
+        app.load(&rt);
+        rt.set_clock(move || clock.borrow().clone());
+        let _desk = rt.create_root("Desk").unwrap();
+        // A draft with somebody to write to, as a person's draft has once they name them.
+        let draft = rt.create("Draft").unwrap();
+        let address = app.action("address");
+        rt.invoke_action(
+            &me(),
+            (
+                address.as_str(),
+                vec![Value::resource(&draft), Value::text("alice@example.org")],
+            ),
+        )
+        .unwrap();
+        let send = app.action("send");
+        let take_back = app.action("take_back");
+        Held {
+            rt,
+            draft,
+            send,
+            take_back,
+        }
+    }
+
+    #[test]
+    fn an_effect_held_until_a_moment_waits_for_it() {
+        let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-06-30T13:40:00Z".to_owned()));
+        let h = held(std::rc::Rc::clone(&clock));
+        h.rt.invoke_action(&me(), (h.send.as_str(), vec![Value::resource(&h.draft)]))
+            .unwrap();
+        let sink = MemorySink::new();
+        h.rt.set_sink(sink.clone());
+        // Held for ten seconds: nothing is handed over, and the moment is known.
+        assert_eq!(h.rt.settle().unwrap().held, 1);
+        assert!(sink.delivered().is_empty(), "a held effect does not go");
+        assert_eq!(
+            h.rt.next_held().as_deref(),
+            Some("2026-06-30T13:40:10Z"),
+            "the moment it is due is the one the action named"
+        );
+        assert!(h.rt.held_for().is_some_and(|wait| wait.as_secs() == 10));
+        // The clock reaches the moment: it goes, once.
+        *clock.borrow_mut() = "2026-06-30T13:40:10Z".to_owned();
+        assert!(h.rt.held_for().is_some_and(|wait| wait.is_zero()));
+        h.rt.settle().unwrap();
+        h.rt.settle().unwrap();
+        assert_eq!(sink.delivered().len(), 1);
+        assert!(h.rt.pending_outbox().is_empty());
+    }
+
+    #[test]
+    fn a_held_effect_taken_back_never_goes() {
+        let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-06-30T13:40:00Z".to_owned()));
+        let h = held(std::rc::Rc::clone(&clock));
+        h.rt.invoke_action(&me(), (h.send.as_str(), vec![Value::resource(&h.draft)]))
+            .unwrap();
+        let sink = MemorySink::new();
+        h.rt.set_sink(sink.clone());
+        assert_eq!(h.rt.settle().unwrap().held, 1);
+        assert!(sink.delivered().is_empty());
+        // Taken back: nothing waits, and it never goes, even once its moment comes.
+        h.rt.invoke_action(
+            &me(),
+            (h.take_back.as_str(), vec![Value::resource(&h.draft)]),
+        )
+        .unwrap();
+        assert!(h.rt.pending_outbox().is_empty(), "it is taken back");
+        *clock.borrow_mut() = "2026-06-30T13:45:00Z".to_owned();
+        h.rt.settle().unwrap();
+        h.rt.settle().unwrap();
+        assert!(
+            sink.delivered().is_empty(),
+            "a taken-back effect never goes"
+        );
     }
 
     #[test]

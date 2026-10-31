@@ -396,6 +396,9 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 [dev-dependencies]
 # Hand-written painter modules for the wasm host's refusal and budget tests.
 wat = "1"
+# The Bauhaus theme's painter, run natively through the host to check its
+# shipped document and how the toolkit draws it.
+tilo-theme-bauhaus = { version = "0.1.0", path = "../themes/bauhaus" }
 runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
 # The headless host's `HeadlessApp` and its fixtures are behind `test-support`;
 # enabling it here runs the integration tests that drive them whenever the

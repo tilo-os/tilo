@@ -303,21 +303,21 @@ impl Core {
             IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses,
             ListEnd, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH,
             ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd,
-            MapSetRemove, Members, Mentions, MetaOf, ModelCall, NoneV, Now, Outside, Phrase,
+            MapSetRemove, Members, Mentions, MetaOf, ModelCall, NoneV, Now, Outside, OutsideAt,
+            Phrase,
             PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Query,
             QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF,
             ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty,
             RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, SomeF, SomeH, SomeI,
-            SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrEq, StrLen,
-            StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
-            TupleSetI, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
-            UiPropH, UiPropI, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
-            WorkspaceMembers,
+            SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrEq, StrFind,
+            StrLen, StrLit, StrReplace, StrSlice, TimeShift, TryInvoke, TupleGetF, TupleGetH,
+            TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions, UiAnchor, UiBind,
+            UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, Unseen, UnwrapF,
+            UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Withdraw, WorkspaceMembers,
         };
         match imp {
-            StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
-                self.text_import(imp, mem, a)
-            }
+            StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp | StrFind
+            | StrSlice | StrReplace => self.text_import(imp, mem, a),
             ListNew | ListPushI | ListPushF | ListPushH | ListLen | ListGetI | ListGetF
             | ListSortByKey | ListReverse | ListGetH | ListEnd | TupleNew | TupleSetI
             | TupleSetF | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF
@@ -355,10 +355,9 @@ impl Core {
             | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId => {
                 self.resource_import(imp, a)
             }
-            ActRef | Invoke | TryInvoke | IsError | Outside | ModelCall | Invoker | PrincipalEq
-            | PrincipalName | QueueBlock | Now | PrincipalNamed | InvokerPush | InvokerPop => {
-                self.effect_import(imp, a)
-            }
+            ActRef | Invoke | TryInvoke | IsError | Outside | OutsideAt | Withdraw | ModelCall
+            | Invoker | PrincipalEq | PrincipalName | QueueBlock | Now | TimeShift
+            | PrincipalNamed | InvokerPush | InvokerPop => self.effect_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
             | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
             | ActUndo | ChangeView | UiActions => self.ui_import(imp, a),

@@ -1557,6 +1557,8 @@ pub fn show_bound<S: std::hash::BuildHasher>(
             match value {
                 Value::Bool(checked) => reconciler.set_flag(&key, *checked),
                 Value::Int(number) if flag => reconciler.set_flag(&key, *number != 0),
+                Value::Int(number) => reconciler.set_count(&key, *number),
+                Value::Float(number) => reconciler.set_number(&key, *number),
                 Value::Rich(rich) => reconciler.set_rich(&key, rich),
                 other => reconciler.set_text(&key, &crate::reconcile::display(other)),
             }

@@ -183,8 +183,9 @@ pub struct Options {
     /// Write the window at the `dump` size, at display and text scale 1, as each stage leaves
     /// it, in the light and the dark theme, to PNGs in this directory.
     pub shots: Option<PathBuf>,
-    /// The shipped themes `shots` are taken in, by name (`glass`, `block`), each in its light
-    /// and dark variant; none takes the stock light and dark.
+    /// The themes `shots` are taken in: a shipped theme by name (`glass`, `block`), in its
+    /// light and dark variant, or a theme bundle's directory (`ui::theme_bundle`); none takes
+    /// the stock light and dark.
     pub themes: Vec<String>,
 }
 
@@ -194,9 +195,44 @@ fn theme_pair(name: &str) -> Result<[(&'static str, ui::Theme); 2], String> {
     if ui::theme::Preset::find(name) == Some(ui::theme::Preset::Dark) || name == "default" {
         return Ok([("light", ui::Theme::light()), ("dark", ui::Theme::dark())]);
     }
+    if ui::Theme::named(name).is_none() && Path::new(name).is_dir() {
+        // A theme bundle: one document, shot as both.
+        let dir = Path::new(name);
+        let theme = load_theme_bundle(dir).map_err(|e| format!("--theme {name}: {e}"))?;
+        return Ok([("light", theme.clone()), ("dark", theme)]);
+    }
     let dark = ui::Theme::named(name).ok_or_else(|| format!("--theme {name}: no such theme"))?;
     let light = ui::Theme::named(&format!("{name} light")).unwrap_or_else(|| dark.clone());
     Ok([("light", light), ("dark", dark)])
+}
+
+/// The theme of the bundle directory `dir`: its [`ui::theme_bundle::DOCUMENT`] and a
+/// `<set>.wasm` beside it for each set the document names. The toolkit reads no directory itself;
+/// this is the dev tool's read of one.
+fn load_theme_bundle(dir: &Path) -> Result<ui::Theme, ui::theme_bundle::BundleError> {
+    let document = std::fs::read_to_string(dir.join(ui::theme_bundle::DOCUMENT))
+        .map_err(|e| ui::theme_bundle::BundleError::Read(format!("{}: {e}", dir.display())))?;
+    ui::theme_bundle::load(&document, |set| {
+        let path = dir.join(format!("{set}.wasm"));
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(ui::theme_bundle::BundleError::Read(format!(
+                "{}: {e}",
+                path.display()
+            ))),
+        }
+    })
+}
+
+/// The part of a shot's file name that says which theme family it is in:
+/// the name, or a bundle directory's last component.
+fn family_slug(family: &str) -> String {
+    Path::new(family)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(family)
+        .to_owned()
 }
 
 /// What a check found.
@@ -607,7 +643,11 @@ impl AppCheck<'_> {
                 let file = if family.is_empty() {
                     dir.join(format!("{}-{slug}-{name}.png", self.short))
                 } else {
-                    dir.join(format!("{}-{slug}-{family}-{name}.png", self.short))
+                    dir.join(format!(
+                        "{}-{slug}-{}-{name}.png",
+                        self.short,
+                        family_slug(family)
+                    ))
                 };
                 staged.harness().render_png(&file);
             }
