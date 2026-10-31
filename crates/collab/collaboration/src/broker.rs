@@ -10196,6 +10196,9 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    include!("held_outbound_tests.rs");
+
     /// An endpoint on a pushing broker whose identity service answers its
     /// one route with `access` (or refuses, `None`): asked again on the
     /// timer (`on_timer`), or left with its timer disarmed and unasked. A
