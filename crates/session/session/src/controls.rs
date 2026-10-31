@@ -12,10 +12,10 @@ use tilo_actions::{
     ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
 use tilo_desktop_search::providers::downloaded::{APP_PARAM, APPS_RESOURCE, ASK_UNINSTALL};
-use tilo_desktop_surface::i18n::t;
 use tilo_surface_host::Published;
 
 use crate::displays::{self, DisplayMode};
+use crate::i18n::t;
 use ui::host_operation::ResourceOperationStart;
 
 /// The operation type the session's own actions carry.
