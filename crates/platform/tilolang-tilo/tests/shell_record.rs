@@ -16,11 +16,27 @@ use tilolang_tilo::record::DynValue;
 
 use crate::fixtures::Replica;
 
-const FILES: [&str; 5] = [
+const FILES: [&str; 21] = [
     include_str!("../../../../apps/tl/shell/app.tl"),
+    include_str!("../../../../apps/tl/shell/arrangement.tl"),
+    include_str!("../../../../apps/tl/shell/arranging.tl"),
+    include_str!("../../../../apps/tl/shell/canvas.tl"),
     include_str!("../../../../apps/tl/shell/chrome.tl"),
+    include_str!("../../../../apps/tl/shell/composer.tl"),
+    include_str!("../../../../apps/tl/shell/desk.tl"),
     include_str!("../../../../apps/tl/shell/docks.tl"),
+    include_str!("../../../../apps/tl/shell/launcher.tl"),
     include_str!("../../../../apps/tl/shell/layout.tl"),
+    include_str!("../../../../apps/tl/shell/notices.tl"),
+    include_str!("../../../../apps/tl/shell/overview.tl"),
+    include_str!("../../../../apps/tl/shell/parts.tl"),
+    include_str!("../../../../apps/tl/shell/people.tl"),
+    include_str!("../../../../apps/tl/shell/presets.tl"),
+    include_str!("../../../../apps/tl/shell/rooms.tl"),
+    include_str!("../../../../apps/tl/shell/scenarios.tl"),
+    include_str!("../../../../apps/tl/shell/session.tl"),
+    include_str!("../../../../apps/tl/shell/strips.tl"),
+    include_str!("../../../../apps/tl/shell/switcher.tl"),
     include_str!("../../../../apps/tl/shell/system.tl"),
 ];
 const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
@@ -206,7 +222,17 @@ fn applying_a_preset_changes_every_setting_it_names_and_undo_restores_them_all()
 
 /// The `Desk` record the shell's root view reads: the package's unnamed root.
 fn desk(r: &Replica) -> Value {
-    Value::resource(&r.host.root_of(APP).unwrap())
+    let root = r
+        .host
+        .root_of_layer(
+            APP,
+            &tilolang_tilo::host::RootView {
+                root: Some("Desk".to_owned()),
+                view: None,
+            },
+        )
+        .expect("the desk's root is made");
+    Value::resource(&root)
 }
 
 /// The person's shell record: the package's named root, `root shell: Shell`.
@@ -221,10 +247,18 @@ fn shell_ref(r: &Replica) -> Value {
     Value::resource(&r.host.root_record(APP, &ty).unwrap())
 }
 
-/// The chrome the session shows (`chrome`, the desk's default view), laid out as the person
+/// The chrome the session shows (the desk's default view, `desk`), laid out as the person
 /// sees it: the bar and the dock over the desk and the person's shell record.
 fn desk_view(r: &Replica) -> tilolang_runtime::ViewInstance {
-    r.view(APP)
+    r.host
+        .open_layer(
+            APP,
+            &tilolang_tilo::host::RootView {
+                root: Some("Desk".to_owned()),
+                view: None,
+            },
+        )
+        .expect("the desk opens")
 }
 
 /// Every node of `view`'s tree that is `kind`, depth first: what a preset's layout is read

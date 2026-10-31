@@ -75,7 +75,21 @@ impl Staged {
         packages: &Rc<Packages>,
         scenario: &str,
         viewport: (u32, u32),
+        theme: ui::Theme,
+    ) -> Result<Self, String> {
+        Self::over(app, packages, scenario, viewport, theme, None)
+    }
+
+    /// As [`Self::new`], the window showing the layer `root` names rather than the package's
+    /// first root: a package with more than one root (the shell's `Desk` beside its
+    /// `Arrangement`) shows each, and each is laid out as a person sees it.
+    pub fn over(
+        app: &str,
+        packages: &Rc<Packages>,
+        scenario: &str,
+        viewport: (u32, u32),
         mut theme: ui::Theme,
+        root: Option<&str>,
     ) -> Result<Self, String> {
         // Layout at rest: what changes land at once rather than moving there.
         theme.reduce_motion = true;
@@ -88,7 +102,10 @@ impl Staged {
                 device: None,
                 index_dir: None,
                 record_loader: None,
-                root: tilolang_tilo::host::RootView::default(),
+                root: tilolang_tilo::host::RootView {
+                    root: root.map(str::to_owned),
+                    view: None,
+                },
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             },
             Rc::clone(packages) as Rc<dyn Platform>,

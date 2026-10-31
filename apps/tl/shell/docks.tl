@@ -18,37 +18,6 @@ view dock(s: Shell, d: Desk) {
     }
 }
 
-/// The dock's ground on the edge the person set, over what is under it: edge to edge and
-/// square on the `full` fit, a rounded body inset from the edges on the floating one. A dock on
-/// the top or bottom edge runs along it, one on the leading or trailing edge stands up it.
-view dock_body(s: Shell, d: Desk) {
-    if s.dock_edge == .bottom {
-        row(at: .bottom, fill, align: .center, distribute: .center) {
-            ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .bottom, fill: if s.dock_fit == .full { 1 } else { 0 }) {
-                dock(s, d)
-            }
-        }
-    } else if s.dock_edge == .top {
-        row(at: .top, fill, align: .center, distribute: .center) {
-            ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .top, fill: if s.dock_fit == .full { 1 } else { 0 }) {
-                dock(s, d)
-            }
-        }
-    } else if s.dock_edge == .left {
-        stack(at: .leading, align: .center) {
-            ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .leading) {
-                dock(s, d)
-            }
-        }
-    } else {
-        stack(at: .trailing, align: .center) {
-            ui.Chrome(name: "Dock", shape: if s.dock_fit == .full { .square } else { .rounded }, edge: .trailing) {
-                dock(s, d)
-            }
-        }
-    }
-}
-
 /// The dock's items in a run the person rearranges by dragging one onto another place.
 /// Letting go runs `place_item`, the one action the gesture commits; a press on an item opens
 /// what it stands for. A floating dock is one compact group centred on its edge; a dock that
