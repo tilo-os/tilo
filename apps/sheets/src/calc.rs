@@ -456,11 +456,13 @@ fn literal(raw: &str) -> CellValue {
     {
         return CellValue::Number(n / 100.0);
     }
-    match trimmed.to_uppercase().as_str() {
-        "TRUE" => CellValue::Bool(true),
-        "FALSE" => CellValue::Bool(false),
-        _ => CellValue::Text(raw.to_string()),
+    if trimmed.eq_ignore_ascii_case("TRUE") {
+        return CellValue::Bool(true);
     }
+    if trimmed.eq_ignore_ascii_case("FALSE") {
+        return CellValue::Bool(false);
+    }
+    CellValue::Text(raw.to_string())
 }
 
 /// The value `IronCalc` holds in `cell`; `None` for an empty one.
