@@ -94,6 +94,24 @@ pub struct FieldSchema {
     /// A register holding a structured runtime value (an option, a list, a reference) rather
     /// than an integer, float, flag or text: the runtime reads such a value as JSON.
     pub composite: bool,
+    /// What the field is to the platform (`title: Text (title)`): the record's
+    /// [`FieldRole`]. The language's `title` and `body` roles name the record and are the
+    /// field search reads it by; a type declares at most one of each.
+    pub role: FieldRole,
+}
+
+/// What a field is to the platform, as the package declares it (`(title)`, `(body)`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FieldRole {
+    /// Text for people to read, or data with no role of its own.
+    #[default]
+    Plain,
+    /// The record's name: the one text a person knows it by, in a row, a menu, a search
+    /// hit.
+    Title,
+    /// The record's substance, for a record the person does not name by a word of its own (a
+    /// message, an article): search shows its first line where a title would stand.
+    Body,
 }
 
 impl FieldSchema {
@@ -105,7 +123,22 @@ impl FieldSchema {
             record: None,
             default: serde_json::Value::Null,
             composite: false,
+            role: FieldRole::Plain,
         }
+    }
+
+    /// The field is the record's name (`title: Text (title)`).
+    #[must_use]
+    pub const fn titled(mut self) -> Self {
+        self.role = FieldRole::Title;
+        self
+    }
+
+    /// The field is the record's substance (`body: RichText (body)`).
+    #[must_use]
+    pub const fn bodied(mut self) -> Self {
+        self.role = FieldRole::Body;
+        self
     }
 
     /// The field holds records of the type `type_id`.

@@ -281,7 +281,8 @@ fn readers_share_a_snapshot_until_the_mirror_changes() {
     );
 }
 
-/// What names a record is its first text, in field id order and a collection's items in order.
+/// What names a record is a text of its own (a `title` field, or its `body`'s first line),
+/// and only a record that holds none is named by its items.
 /// A republish reads it again only where a change can move it, and gets it right each time.
 #[test]
 fn the_label_follows_whatever_names_the_record() {

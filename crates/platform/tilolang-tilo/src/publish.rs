@@ -1384,11 +1384,58 @@ fn published_holder(tree: &ResourceSpec, id: &str) -> Option<String> {
     None
 }
 
-/// What names an item: the first of its texts.
+/// What names an item, as [`crate::reads::first_text`] names a resource: its own texts first —
+/// a `title` field, then a `body`'s first line, then the rest in declaration order — and only a
+/// record holding none of its own is named by an item it holds (a record that is nothing but
+/// its list). A channel's messages never name the channel: its `name` does.
 fn item_label(item: &crate::record::DynRecord) -> Option<String> {
-    let mut text = Vec::new();
-    tilo_resource::Model::collect_text(item, &mut text);
-    text.into_iter().next()
+    use crate::record::DynValue;
+    use crate::schema::{FieldRole, MergeKind};
+    let schema = item.schema();
+    let read = |field: &crate::schema::FieldSchema| match item.get(&field.id) {
+        Some(DynValue::Text(text)) if !text.trim().is_empty() => Some(text.clone()),
+        _ => None,
+    };
+    let mut texts = schema
+        .fields
+        .iter()
+        .filter(|field| field.kind == MergeKind::Text);
+    let titled = texts.clone().find(|field| field.role == FieldRole::Title);
+    if let Some(text) = titled.as_ref().and_then(|field| read(field)) {
+        return Some(text);
+    }
+    let bodied = texts.clone().find(|field| field.role == FieldRole::Body);
+    if let Some(text) = bodied.as_ref().and_then(|field| read(field)) {
+        let first = text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default();
+        if !first.trim().is_empty() {
+            return Some(first.to_owned());
+        }
+    }
+    if let Some(text) = texts.find_map(read) {
+        return Some(text);
+    }
+    // No text of its own: a record that is nothing but its list is named by its first item.
+    for field in &schema.fields {
+        match item.get(&field.id) {
+            Some(DynValue::Record(record)) => {
+                if let Some(found) = item_label(record) {
+                    return Some(found);
+                }
+            }
+            Some(DynValue::Collection(items)) => {
+                for (_, item) in items.iter() {
+                    if let Some(found) = item_label(item) {
+                        return Some(found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The package's own resource, carrying the actions that take no record.

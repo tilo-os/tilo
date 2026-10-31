@@ -2448,7 +2448,25 @@ impl ActionPalette {
     }
 
     fn refresh_progressive_results(&mut self) {
+        // The hits of the query: what an action row acts on, where that is a row of this same
+        // list. An action's secondary line that only says the name of the hit under it is that
+        // hit's own title, shown twice, and is left off.
+        let hit_titles: std::collections::HashSet<&str> = self
+            .provider_rows
+            .iter()
+            .filter(|row| self.provider_row_is_current(&row.action_id) && row.kind != ACTIONS_KIND)
+            .map(|row| row.title.trim())
+            .collect();
         let mut rows = self.action_rows.clone();
+        for row in &mut rows {
+            let restates_a_hit = row
+                .subtitle
+                .as_deref()
+                .is_some_and(|subtitle| hit_titles.contains(subtitle.trim()));
+            if restates_a_hit {
+                row.subtitle = None;
+            }
+        }
         rows.extend(
             self.provider_rows
                 .iter()
@@ -3514,6 +3532,7 @@ mod tests {
     include!("action_palette/confirmation_tests.rs");
     include!("action_palette/platform_search_tests.rs");
     include!("action_palette/search_tests.rs");
+    include!("action_palette/results_and_actions_tests.rs");
     use super::*;
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue};

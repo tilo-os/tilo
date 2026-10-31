@@ -74,6 +74,22 @@ impl SearchPreview {
             && self.body.is_none()
     }
 
+    /// Whether it says no more than `title` already does: it has no heading of its own and
+    /// every part it shows is that same text. A band under a row that repeats the row's own
+    /// line says nothing, so the platform draws none.
+    #[must_use]
+    pub fn restates(&self, title: &str) -> bool {
+        let said = title.split_whitespace().collect::<Vec<_>>().join(" ");
+        if said.is_empty() || self.title.is_some() {
+            return false;
+        }
+        let same = |text: &String| text.split_whitespace().collect::<Vec<_>>().join(" ") == said;
+        self.facts.iter().all(same)
+            && self.lines.iter().all(same)
+            && self.body.as_ref().is_none_or(same)
+            && !(self.facts.is_empty() && self.lines.is_empty() && self.body.is_none())
+    }
+
     /// The whole preview as one sentence for a screen reader.
     #[must_use]
     pub fn spoken(&self) -> String {

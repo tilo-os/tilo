@@ -859,7 +859,10 @@ impl SearchResult {
     #[must_use]
     pub fn with_preview(mut self, preview: impl Into<super::SearchPreview>) -> Self {
         let preview = preview.into();
-        self.preview = (!preview.is_empty()).then_some(preview);
+        // A band that only repeats the row's own title says nothing: the row already shows
+        // it. The platform owns the preview, so it drops the echo here once, for every
+        // palette.
+        self.preview = (!preview.is_empty() && !preview.restates(&self.title)).then_some(preview);
         self
     }
 

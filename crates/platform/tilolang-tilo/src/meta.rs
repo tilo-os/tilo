@@ -140,6 +140,15 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
     if let Some(default) = &field.default {
         schema = schema.with_default(default.clone());
     }
+    // Only text names a record: a non-text field declared `title` says nothing, as the row
+    // it would name could not read it.
+    if schema.kind.holds_text() {
+        schema = match field.role.as_deref() {
+            Some("title") => schema.titled(),
+            Some("body") => schema.bodied(),
+            _ => schema,
+        };
+    }
     schema
 }
 
