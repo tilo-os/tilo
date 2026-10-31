@@ -13,11 +13,13 @@ mod canvas;
 mod desktop;
 mod door;
 pub mod shell_part;
+mod well_policy;
 mod widget;
 
 pub use desktop::{DeskGesture, DesktopHost, StripPolicy, desktop, desktop_with};
 pub use door::{Doors, Published, Shared, through_door};
 pub use shell_part::{DeskReading, SessionLink, ShellPart, ShellWork};
+pub use well_policy::{DeskHost, WellPolicy, well_policy};
 pub use widget::WidgetHost;
 
 use std::cell::Cell;

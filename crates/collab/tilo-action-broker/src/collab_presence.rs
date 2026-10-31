@@ -39,6 +39,8 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
             state: state.id().to_owned(),
             call: call.clone(),
         },
+        // A draft under way in the resource the key names: carried to peers as its own
+        // ephemeral frame. Nothing of the draft is ever in it.
         PresencePayload::Composing { composing } => PeerPresencePayload::Composing {
             composing: *composing,
         },
