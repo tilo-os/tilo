@@ -8,8 +8,6 @@
 //! built-in ones. A bundle is never trusted: each module is held to the
 //! wasm host's limits, and the document is validated like any other.
 
-use std::path::Path;
-
 use crate::part_paint::{self, builtin, wasm};
 use crate::theme::Theme;
 
@@ -112,24 +110,6 @@ pub fn load(
         .validate()
         .map_err(|why| BundleError::Document(why.to_owned()))?;
     Theme::from_document(&document).ok_or_else(|| BundleError::Document("refused".to_owned()))
-}
-
-/// The theme of the bundle directory `dir`: its [`DOCUMENT`] and a
-/// `<set>.wasm` beside it for each set the document names ([`load`]).
-///
-/// # Errors
-/// As [`load`], and for files that cannot be read.
-pub fn load_dir(dir: &Path) -> Result<Theme, BundleError> {
-    let document = std::fs::read_to_string(dir.join(DOCUMENT))
-        .map_err(|e| BundleError::Read(format!("{}: {e}", dir.join(DOCUMENT).display())))?;
-    load(&document, |set| {
-        let path = dir.join(format!("{set}.wasm"));
-        match std::fs::read(&path) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(BundleError::Read(format!("{}: {e}", path.display()))),
-        }
-    })
 }
 
 #[cfg(test)]
