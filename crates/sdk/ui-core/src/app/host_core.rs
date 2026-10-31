@@ -152,6 +152,16 @@ impl crate::host_core::HostCore for App {
         self.history.as_mut()
     }
 
+    fn service_history_own_controls(&mut self) -> bool {
+        let Some(history) = self.history.as_mut() else {
+            return false;
+        };
+        let path = &self.state.root;
+        let answered =
+            history.answer_own_controls(&mut crate::widget::Edits::lend(&mut self.state.doc), path);
+        answered > 0
+    }
+
     fn acting_for_mut(
         &mut self,
     ) -> &mut std::collections::HashMap<

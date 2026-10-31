@@ -4368,6 +4368,12 @@ fn emit_pending_control_command(
     let node = node_for_test_id(app, test_id);
     app.perform_node_action(node, &crate::a11y::Action::Activate)
         .unwrap();
+    // The pending control publishes its press; History hosts that chrome and
+    // answers it, which queues the continuation the test takes below.
+    assert!(
+        app.service_history_own_controls(),
+        "History answers its chrome's press"
+    );
     let mut commands = app
         .history
         .as_ref()
@@ -5311,7 +5317,7 @@ fn denied_bridge_with_exit_emission() -> DeniedBridge {
             crate::widget::Column::new()
                 .push(Box::new(crate::widget::BoundAppWidget::new(component)))
                 .push(Box::new(
-                    crate::widget::Button::new("live-pulse", "Live pulse").on_click(|| {}),
+                    crate::widget::Button::new("live-pulse", "Live pulse").on_effect(|| {}),
                 )),
         ),
         denied: denied.clone(),
@@ -5767,11 +5773,9 @@ fn custody_matrix_app_with_confirmation(
         unsettled_layout: None,
         installed_output: None,
         record: None,
-        child: Box::new(
-            Column::new()
-                .push(control)
-                .push(Box::new(Button::new("pulse", "Live pulse").on_click(|| {}))),
-        ),
+        child: Box::new(Column::new().push(control).push(Box::new(
+            Button::new("pulse", "Live pulse").on_effect(|| {}),
+        ))),
         resources,
         ledger: ledger.clone(),
     });
@@ -5794,7 +5798,8 @@ fn custody_matrix_app_with_confirmation(
     )
     .unwrap();
     layout(&mut app);
-    assert_eq!(app.control_coverage().registered, 1, "{kind}");
+    // The matrix control and the live pulse beside it both publish a route.
+    assert_eq!(app.control_coverage().registered, 2, "{kind}");
     (app, ledger)
 }
 
@@ -5950,7 +5955,7 @@ fn control_custody_core_first_emission_after_return_keeps_live_semantics() {
             crate::widget::Column::new()
                 .push(Box::new(crate::widget::BoundAppWidget::new(component)))
                 .push(Box::new(
-                    crate::widget::Button::new("live-pulse", "Live pulse").on_click(|| {}),
+                    crate::widget::Button::new("live-pulse", "Live pulse").on_effect(|| {}),
                 )),
         ),
         denied: denied.clone(),

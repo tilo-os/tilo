@@ -3519,9 +3519,11 @@ pub use virtual_list::{
     RowSelection, VecListModel, VirtualList, VirtualListProps,
 };
 mod activation;
-mod dismissal;
 pub(crate) mod control_verb;
+mod dismissal;
 pub(crate) mod view_choice;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use activation::NATIVE_INVOKE;
 pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;

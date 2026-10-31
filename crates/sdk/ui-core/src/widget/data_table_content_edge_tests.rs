@@ -346,7 +346,7 @@ fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
     .on_check_view("table.check", move |row, on| {
         seen.borrow_mut().push((row, on))
     })
-    .on_activate(move |_| activated.set(activated.get() + 1));
+    .on_activate_view("table.open", move |_| activated.set(activated.get() + 1));
     table.set_rows(items(2));
     let mut harness = crate::headless::FrameHarness::new(
         crate::State::new(),

@@ -54,7 +54,7 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
             })
             .child(child)
             .child(Box::new(
-                Button::new("save", "Save").on_click(crate::testing::record_click("saved")),
+                Button::new("save", "Save").on_effect(crate::testing::record_click("saved")),
             ));
             let root: Box<dyn Widget> = if mode == 2 {
                 Box::new(
@@ -170,7 +170,7 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
             })
             .child(child)
             .child(Box::new(
-                Button::new("save", "Save").on_click(crate::testing::record_click("saved")),
+                Button::new("save", "Save").on_effect(crate::testing::record_click("saved")),
             ));
             let invalidation = manual.invalidation();
             let root: Box<dyn Widget> = if mode == 2 {

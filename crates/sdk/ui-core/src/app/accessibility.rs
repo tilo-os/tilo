@@ -1320,11 +1320,13 @@ impl App {
             // AccessKit update so an AT-SPI DoAction never reports success
             // while leaving the visible state unchanged.
             if framework {
+                // The press queued in the control the presentation shows; it
+                // is answered while that control still is the one History
+                // holds, before a refresh may rebuild the chrome around it.
+                self.service_history_own_controls();
                 self.refresh_framework_history(
                     self.layout.last_layout_logical.map_or(900.0, |size| size.0),
                 );
-            }
-            if framework {
                 self.service_pending_history_commands();
             } else {
                 self.dispatch_control_invocations();
@@ -1762,6 +1764,10 @@ impl App {
                 if matches!(verb, crate::a11y::Action::Focus) {
                     self.set_focused_node(Some(taffy_id));
                 }
+                // An action-bound control queues what the verb asked for;
+                // run it now, as the accessible route does, so the node the
+                // caller acted on reports the change it made.
+                self.dispatch_control_invocations();
                 self.invalidate_widget_resource_cache();
                 self.needs_sync = true;
                 self.layout.layout_dirty = true;

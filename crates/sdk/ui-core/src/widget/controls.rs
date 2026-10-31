@@ -266,11 +266,12 @@ pub fn take_control_invocation(widget: &mut dyn Widget) -> Option<tilo_actions::
 }
 
 /// Run the queued control intents of a tree whose host keeps no resource
-/// tree of its own, such as the shell's own UI: an intent addressed to a
-/// `tilo.control:` handler ([`Button::on_effect`](super::Button::on_effect),
-/// [`Button::on_view`](super::Button::on_view) and the other published
-/// controls) is delivered to the control that published it, as a resource
-/// host delivers an admitted invocation. Answers how many ran.
+/// tree of its own, such as the shell's own UI: an intent is delivered to the
+/// control that published the action it names — a press
+/// ([`Button::on_effect`](super::Button::on_effect),
+/// [`Button::on_view`](super::Button::on_view)) and a control's own verb
+/// (the value a field reports, the choice a picker made) alike — as a
+/// resource host delivers an admitted invocation. Answers how many ran.
 ///
 /// Every other intent is the resource dispatcher's and is dropped here.
 pub fn start_pending_control_invocations(
@@ -287,21 +288,36 @@ pub fn start_pending_control_invocations(
         let Some(invocation) = take_control_invocation(&mut *root) else {
             break;
         };
-        let Some(control) = invocation.address.resource.strip_prefix("tilo.control:") else {
-            continue;
+        // The action the control named, encoded the way it declared it.
+        let spec = published_action(&*root, doc.doc(), &invocation.address);
+        let encoded = spec
+            .as_ref()
+            .and_then(|spec| spec.build_json(&invocation.arguments).ok());
+        // A press addressed to a control that publishes nothing for it still
+        // answers where it is drawn.
+        let control_press = encoded
+            .is_none()
+            .then(|| {
+                let control = invocation.address.resource.strip_prefix("tilo.control:")?;
+                (invocation.address.action == "invoke").then(|| serde_json::to_vec(control).ok())
+            })
+            .flatten()
+            .flatten();
+        let (kind, type_id, payload) = match (&spec, &encoded, &control_press) {
+            (Some(spec), Some(encoded), _) => (
+                spec.kind,
+                encoded.type_id.as_str(),
+                encoded.payload.as_slice(),
+            ),
+            (_, _, Some(payload)) => (
+                tilo_actions::OperationKind::Effect,
+                super::activation::NATIVE_INVOKE,
+                payload.as_slice(),
+            ),
+            _ => continue,
         };
-        if invocation.address.action != "invoke" {
-            continue;
-        }
-        let Ok(payload) = serde_json::to_vec(control) else {
-            continue;
-        };
-        let operation = ResourceOperation::local(
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::Effect,
-            super::activation::NATIVE_INVOKE,
-            &payload,
-        );
+        let operation =
+            ResourceOperation::local(tilo_actions::InvocationId::new(), kind, type_id, payload);
         if matches!(
             start_operation(&mut *root, &operation, doc, path),
             Ok(Some(_))
@@ -310,6 +326,25 @@ pub fn start_pending_control_invocations(
         }
     }
     started
+}
+
+/// The action `widget`'s subtree publishes at `address`, if any does.
+pub(crate) fn published_action(
+    widget: &dyn Widget,
+    doc: &automerge::AutoCommit,
+    address: &tilo_actions::ActionAddress,
+) -> Option<tilo_actions::ActionSpec> {
+    for resource in crate::resources::resources(widget, doc) {
+        if let Some(spec) = resource.actions.iter().find(|spec| {
+            address == &tilo_actions::ActionAddress::new(resource.id.as_str(), spec.id.as_str())
+        }) {
+            return Some(spec.clone());
+        }
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| published_action(child, doc, address))
 }
 
 /// [`take_control_invocation`], with the effect invocation the intent

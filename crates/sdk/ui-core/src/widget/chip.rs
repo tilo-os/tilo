@@ -1291,8 +1291,16 @@ impl crate::widget::controls::ActionControls for Chip {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.activation
             .take_invocation()
-            .or_else(|| self.toggle_verb.as_mut().and_then(super::control_verb::ControlVerb::take))
-            .or_else(|| self.remove_verb.as_mut().and_then(super::control_verb::ControlVerb::take))
+            .or_else(|| {
+                self.toggle_verb
+                    .as_mut()
+                    .and_then(super::control_verb::ControlVerb::take)
+            })
+            .or_else(|| {
+                self.remove_verb
+                    .as_mut()
+                    .and_then(super::control_verb::ControlVerb::take)
+            })
             .or_else(|| {
                 crate::widget::Widget::children_mut(self)
                     .into_iter()
@@ -1767,7 +1775,7 @@ mod activation_tests {
         let counter = Rc::clone(&opened);
         let mut chip = Chip::new("design")
             .with_id("tag-design")
-            .on_click(move || counter.set(counter.get() + 1));
+            .on_view(move || counter.set(counter.get() + 1));
         assert!(chip.is_focusable());
         let node = Widget::accessibility(&chip).unwrap();
         assert_eq!(node.role, crate::a11y::Role::Button);
@@ -1781,6 +1789,8 @@ mod activation_tests {
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
+        assert_eq!(opened.get(), 0, "the press waits to be answered");
+        assert_eq!(crate::testing::answer_controls(&mut chip), 1);
         assert_eq!(opened.get(), 1, "Enter, Space and AT press the chip");
         let mut harness = crate::headless::FrameHarness::new(
             crate::State::new(),
@@ -1806,7 +1816,7 @@ mod activation_tests {
             &mut text,
         );
         assert!(menu > plain);
-        let chip = Chip::new("Sort").menu().on_click(|| {});
+        let chip = Chip::new("Sort").menu().on_view(|| {});
         let node = Widget::accessibility(&chip).unwrap();
         assert_eq!(node.state.expanded, Some(false));
         // A key wider than its label: the label sits in the middle.

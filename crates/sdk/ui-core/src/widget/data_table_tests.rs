@@ -739,7 +739,9 @@ fn sorting_is_owned_by_the_model_and_reapplied_on_rows() {
             .on_row_click_view("table.click", move |row, _, _| {
                 click_sink.borrow_mut().push(row)
             })
-            .on_activate(move |row| activate_sink.borrow_mut().push(row));
+            .on_activate_view("table.open", move |row| {
+                activate_sink.borrow_mut().push(row);
+            });
         table.set_rows(rows());
         let _ = lay_out(&mut table);
         // The host selects its row 0 ("c"); sorting by the text column
@@ -905,7 +907,7 @@ fn semantic_rows_and_cells_publish_identity_geometry_and_values() {
         let mut table = DataTable::<R>::new(sample_cols())
             .with_row_key(|row| u64::from(row.name.as_bytes()[0]))
             .selectable(true)
-            .on_activate(move |index| captured.borrow_mut().push(index));
+            .on_activate_view("table.open", move |index| captured.borrow_mut().push(index));
         table.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
 
         let semantics = Widget::accessibility(&table).expect("table semantics");
@@ -928,6 +930,7 @@ fn semantic_rows_and_cells_publish_identity_geometry_and_values() {
             &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
+        assert_eq!(crate::testing::answer_controls(&mut table), 1);
         assert_eq!(&*activated.borrow(), &[1]);
 
         let mut index_keyed = DataTable::<R>::new(sample_cols()).selectable(true);
@@ -971,7 +974,7 @@ fn semantic_rows_and_cells_publish_identity_geometry_and_values() {
         let sink = fired.clone();
         let mut t = DataTable::<R>::new(sample_cols())
             .selectable(true)
-            .on_activate(move |i| sink.borrow_mut().push(i));
+            .on_activate_view("table.open", move |i| sink.borrow_mut().push(i));
         t.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
         t.selection_mut().move_to(0, false);
 
@@ -985,6 +988,11 @@ fn semantic_rows_and_cells_publish_identity_geometry_and_values() {
             &root,
         );
         assert!(!handled, "a vanished row cannot be activated");
+        assert_eq!(
+            crate::testing::answer_controls(&mut t),
+            0,
+            "and it publishes nothing to answer"
+        );
         assert!(
             fired.borrow().is_empty(),
             "and must not activate some other row in its place"
@@ -1110,7 +1118,7 @@ fn interactive_cols(clicks: Rc<Cell<usize>>, builds: Rc<Cell<usize>>) -> Vec<Col
                 let id = format!("action-{index}");
                 Box::new(
                     Button::new(&id, &row.name)
-                        .on_click(move || clicks.set(clicks.get().saturating_add(1))),
+                        .on_effect(move || clicks.set(clicks.get().saturating_add(1))),
                 )
             },
         ),
@@ -1242,6 +1250,8 @@ fn pointer_and_keyboard_select_rows_unless_cells_or_mode_consume() {
             &crate::synthetic_input::mouse_release(),
         );
 
+        assert_eq!(clicks.get(), 0, "the press waits to be answered");
+        assert_eq!(crate::testing::answer_controls(&mut table), 1);
         assert_eq!(clicks.get(), 1, "real cell button receives activation");
         assert!(
             table.selection().is_empty(),

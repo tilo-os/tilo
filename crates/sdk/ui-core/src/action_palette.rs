@@ -953,6 +953,9 @@ impl ActionPalette {
         format!("ordinary-confirmation:{}:{part}", self.request_generation)
     }
     fn drain_command(&mut self, doc: &mut crate::widget::Edits<'_>, path: &ObjId) {
+        // Confirm and Cancel publish their press; the palette answers it
+        // here, before reading the command the answer sets.
+        crate::widget::controls::start_pending_control_invocations(&mut self.controls, doc, path);
         match self.command.take() {
             Some(true) if self.confirm.is_some() => self.accept_confirmation(),
             Some(true) => {

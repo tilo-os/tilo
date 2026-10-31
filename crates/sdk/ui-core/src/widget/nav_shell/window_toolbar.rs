@@ -651,8 +651,17 @@ impl NavShell {
             }
             if let Some(widget) = widget {
                 widget.perform_action(&crate::a11y::Action::Activate, &[], edits, path_root);
+                // The button publishes the press; a shell a host has not
+                // taken the controls of yet shows it in the bar, so it
+                // answers the press where it was made.
+                crate::widget::controls::start_pending_control_invocations(
+                    widget, edits, path_root,
+                );
             }
         }
+        // A control of the shell's own the bar presses off the button path
+        // publishes its press too; the shell answers those here.
+        crate::widget::controls::start_pending_control_invocations(self, edits, path_root);
         self.invalidate();
     }
 }

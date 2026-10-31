@@ -889,7 +889,7 @@ mod tests {
             .with_cell(60.0)
             .with_cell_height(40.0)
             .with_painter(move |_, _, _, _, _, _| counted.set(counted.get() + 1))
-            .on_change(move |index| told.borrow_mut().push(index));
+            .on_change_view(move |index| told.borrow_mut().push(index));
         lay_out(&mut picker);
         // Three cells of 60 by 40, less the gap after the last: the grid
         // has no outer inset.
@@ -904,6 +904,11 @@ mod tests {
             &crate::synthetic_input::cursor_moved(third.x, third.y),
         );
         dispatch(&mut picker, &crate::synthetic_input::mouse_press());
+        assert_eq!(
+            crate::testing::answer_controls(&mut picker),
+            1,
+            "the choice reaches its handler when it is answered"
+        );
         assert_eq!(*chosen.borrow(), vec![2]);
 
         // Showing a choice made elsewhere tells no one.

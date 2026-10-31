@@ -368,6 +368,15 @@ impl HistoryHost {
         }
         if let Some(root) = self.chrome_node {
             self.handle_event(event, &mut ctx.reborrow(ctx.path, root));
+            // History's own controls publish their press; this surface is
+            // their host, so it answers it here, before the frame seals what
+            // the live app queued for custody.
+            let path = ctx.path;
+            crate::widget::controls::start_pending_control_invocations(
+                self,
+                &mut ctx.edits(),
+                path,
+            );
         }
         if chrome_event && !matches!(event, WindowEvent::KeyboardInput { .. }) {
             *ctx.handled = true;

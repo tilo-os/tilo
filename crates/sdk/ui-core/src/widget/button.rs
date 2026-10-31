@@ -2481,7 +2481,7 @@ mod tests {
         fn compact_fit_width_is_the_prepaint_click_and_focus_geometry() {
             let fired = Arc::new(AtomicUsize::new(0));
             let clicks = Arc::clone(&fired);
-            let button = Button::new("back", "Back to apps").on_click(move || {
+            let button = Button::new("back", "Back to apps").on_effect(move || {
                 clicks.fetch_add(1, Ordering::SeqCst);
             });
             let mut harness = crate::headless::FrameHarness::new_with_theme(
@@ -3304,7 +3304,7 @@ mod tests {
             let mut b = {
                 let fired = fired.clone();
                 Button::new("id", "Go")
-                    .on_click(move || fired.set(fired.get() + 1))
+                    .on_effect(move || fired.set(fired.get() + 1))
                     .with_enabled(false)
             };
 
@@ -3348,7 +3348,10 @@ mod tests {
                 focus = sent.focus_target.or(focus);
             }
 
-            assert_eq!(fired.get(), 0, "disabled button must not fire on_click");
+            // Presses are published, so an enabled button would fire here
+            // when the press is answered; a disabled one queues nothing.
+            assert_eq!(crate::testing::answer_controls(&mut b), 0);
+            assert_eq!(fired.get(), 0, "disabled button must not fire its press");
             assert!(focus.is_none(), "disabled button must not request focus");
             assert!(!handled, "disabled button must not swallow input");
         }
@@ -3663,7 +3666,7 @@ mod tests {
             let fired = Rc::new(Cell::new(0u32));
             let mut b = {
                 let fired = fired.clone();
-                Button::new("id", "Go").on_click(move || fired.set(fired.get() + 1))
+                Button::new("id", "Go").on_effect(move || fired.set(fired.get() + 1))
             };
 
             let mut tree = TaffyTree::<()>::new();
@@ -3710,7 +3713,13 @@ mod tests {
                     button: MouseButton::Left,
                 },
             );
-            assert_eq!(fired.get(), 1, "fired once on release over the button");
+            assert_eq!(fired.get(), 0, "the press waits to be answered");
+            assert_eq!(
+                crate::testing::answer_controls(&mut b),
+                1,
+                "fired once, when the release's press is answered"
+            );
+            assert_eq!(fired.get(), 1);
         }
 
         cursor_shape_is_pointer_over_button();

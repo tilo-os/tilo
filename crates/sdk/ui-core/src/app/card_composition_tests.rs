@@ -20,7 +20,7 @@ fn fixture() -> App {
                 .with_footer(
                     Actions::new(
                         Button::new(&format!("primary-{index}"), "Refresh connections")
-                            .on_click(crate::testing::record_click("clicked"))
+                            .on_effect(crate::testing::record_click("clicked"))
                             .role(ButtonRole::Primary),
                     )
                     .secondary(Button::new(&format!("secondary-{index}"), "Details")),
@@ -142,7 +142,7 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
             ))))));
         }
         content = content.push(Box::new(
-            Button::new("final-action", "Open all applications").on_click(move || {
+            Button::new("final-action", "Open all applications").on_effect(move || {
                 activated.set(activated.get() + 1);
             }),
         ));

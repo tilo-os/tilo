@@ -94,7 +94,9 @@ impl DatePicker {
     #[must_use]
     pub fn fed_by(self, feed: &DateFeed) -> Self {
         let chooses = feed.clone();
-        let mut picker = self.on_change(move |day| chooses.0.borrow_mut().chosen.push(day));
+        let mut picker = self.on_view("date-picker", move |day| {
+            chooses.0.borrow_mut().chosen.push(day)
+        });
         picker.feed = Some(feed.clone());
         picker.pull_feed();
         picker

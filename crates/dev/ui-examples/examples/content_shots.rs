@@ -35,7 +35,7 @@ fn rows() -> Element {
                     .meta("09:41")
                     .emphasized(true)
                     .presence("ada@example.org")
-                    .on_activate(|| {}),
+                    .on_view(|| {}),
             ),
             Box::new(
                 ListRow::new("grace", "Grace Hopper")
@@ -43,28 +43,28 @@ fn rows() -> Element {
                     .secondary("Re: compiler review on Thursday")
                     .meta("Yesterday")
                     .selected(true)
-                    .on_activate(|| {}),
+                    .on_view(|| {}),
             ),
             Box::new(
                 ListRow::new("linus", "Linus Pauling")
                     .avatar("Linus Pauling", "linus@example.org")
                     .secondary("Vitamin C and the common cold, chapter three")
                     .meta("Mon")
-                    .on_activate(|| {}),
+                    .on_view(|| {}),
             ),
             Box::new(
                 ListRow::new("get-users", "/v1/users")
                     .badge("GET")
                     .meta("84 ms")
                     .active()
-                    .on_activate(|| {}),
+                    .on_view(|| {}),
             ),
             Box::new(
                 ListRow::new("settings", "Storage")
                     .icon(Icon::HardDrive)
                     .meta("412 GB free")
                     .disclosure()
-                    .on_activate(|| {}),
+                    .on_view(|| {}),
             ),
         ])
         .with_header(
@@ -166,7 +166,7 @@ fn media() -> Element {
                     .title(*title)
                     .meta(*artist)
                     .hover_action_view(Icon::Play, "Play", || {})
-                    .on_activate(|| {})
+                    .on_view(|| {})
             })
             .collect(),
     )
@@ -179,13 +179,13 @@ fn media() -> Element {
             .meta("3 days ago")
             .badge(OwnedBadge::Duration("42:17".into()))
             .badge(OwnedBadge::Progress(0.35))
-            .on_activate(|| {}),
+            .on_view(|| {}),
         MediaCard::new("live", MediaSource::Placeholder)
             .aspect(MediaAspect::Wide)
             .title("Release day stream")
             .meta("Tilo")
             .badge(OwnedBadge::Live)
-            .on_activate(|| {}),
+            .on_view(|| {}),
         MediaCard::new("offline", MediaSource::Placeholder)
             .aspect(MediaAspect::Wide)
             .title("Designing for presence")
@@ -193,7 +193,7 @@ fn media() -> Element {
             .meta("Last week")
             .badge(OwnedBadge::Duration("18:03".into()))
             .badge(OwnedBadge::Downloaded)
-            .on_activate(|| {}),
+            .on_view(|| {}),
     ]);
     Box::new(
         Column::new()
@@ -477,7 +477,7 @@ fn shelf() -> Element {
                 .aspect(MediaAspect::Circle)
                 .title(*name)
                 .meta(*meta)
-                .on_activate(|| {})
+                .on_view(|| {})
         })
         .collect(),
     )
@@ -491,10 +491,10 @@ fn shelf() -> Element {
                 "New".into(),
                 tilo_ui::widget::ChipStyle::Neutral,
             ))
-            .on_activate(|| {}),
+            .on_view(|| {}),
         MediaCard::new("photo", MediaSource::Placeholder)
             .seed("Lisbon")
-            .on_activate(|| {}),
+            .on_view(|| {}),
     ])
     .with_size(MediaSize::Small);
     Box::new(

@@ -1223,7 +1223,7 @@ mod tests {
             let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let captured = std::rc::Rc::clone(&changes);
             let mut first = Toggle::from_state(&state)
-                .on_change(move |checked| captured.borrow_mut().push(checked));
+                .on_view("toggle", move |checked| captured.borrow_mut().push(checked));
             let mut second = Toggle::from_state(&state);
             let mut document = AutoCommit::new();
 
@@ -1241,6 +1241,7 @@ mod tests {
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
+            assert_eq!(crate::testing::answer_controls(&mut first), 1);
             assert!(!state.get(), "user activation publishes typed state");
             assert_eq!(&*changes.borrow(), &[false]);
 
@@ -1324,7 +1325,7 @@ mod tests {
 
         {
             let mut toggle = Toggle::new("native", "legacy")
-                .on_change(|_| panic!("legacy callback must be suppressed"))
+                .on_view("toggle", |_| panic!("legacy callback must be suppressed"))
                 .on_action(crate::widget::test_bool_action_binding());
             let mut doc = AutoCommit::new();
             crate::widget::controls::refresh_control_action_availability(
@@ -1353,6 +1354,11 @@ mod tests {
                     .unwrap()
                     .arguments["value"],
                 true
+            );
+            assert_eq!(
+                crate::testing::answer_controls(&mut toggle),
+                0,
+                "the bound action answers the press, not the view"
             );
         }
     }
@@ -1602,7 +1608,8 @@ mod tests {
     fn counted(state: &crate::LocalState<bool>) -> (Toggle, std::rc::Rc<std::cell::Cell<u32>>) {
         let changes = std::rc::Rc::new(std::cell::Cell::new(0));
         let count = std::rc::Rc::clone(&changes);
-        let mut t = Toggle::from_state(state).on_change(move |_| count.set(count.get() + 1));
+        let mut t =
+            Toggle::from_state(state).on_view("toggle", move |_| count.set(count.get() + 1));
         switch_at_origin(&mut t);
         (t, changes)
     }
@@ -1646,11 +1653,13 @@ mod tests {
             );
             assert!(!t.switch.is_moving(at), "nothing runs under the hand");
         }
+        crate::testing::answer_controls(&mut t);
         assert_eq!(changes.get(), 0, "the knob moves; the value does not");
         // Let go heading left, near the left: it settles off, where it
         // began, and nothing changed.
         with_monotonic_time(ms(t0, 60), || dispatch(&mut t, &mouse_release()));
         assert!(!state.get(), "left on the off side");
+        crate::testing::answer_controls(&mut t);
         assert_eq!(changes.get(), 0, "a drag back to the start changes nothing");
         assert!(!Widget::wants_pointer_capture(&t));
         let rest = t.switch.knob.settles_at().map_or(ms(t0, 60), |at| at);
@@ -1666,8 +1675,14 @@ mod tests {
             dispatch(&mut t, &cursor_moved(16.0, 16.0));
         });
         with_monotonic_time(ms(t0, 10), || dispatch(&mut t, &cursor_moved(30.0, 16.0)));
+        crate::testing::answer_controls(&mut t);
         assert_eq!(changes.get(), 0);
         with_monotonic_time(ms(t0, 300), || dispatch(&mut t, &mouse_release()));
+        assert_eq!(
+            crate::testing::answer_controls(&mut t),
+            1,
+            "a drag across reports once when it is answered"
+        );
         assert!(state.get(), "left on the on side");
         assert_eq!(changes.get(), 1, "a drag across changes the value once");
         assert_eq!(t.switch.knob(ms(t0, 2_000)), 1.0);
@@ -1680,6 +1695,7 @@ mod tests {
             dispatch(&mut t, &mouse_release());
         });
         assert!(state.get());
+        crate::testing::answer_controls(&mut t);
         assert_eq!(changes.get(), 1);
     }
 
