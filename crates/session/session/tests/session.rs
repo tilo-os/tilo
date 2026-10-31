@@ -676,31 +676,190 @@ fn a_desktop_chord_works_while_a_window_has_the_keyboard_and_the_window_never_se
     });
 }
 
-#[test]
-fn hardware_keys_run_the_published_effects_and_a_held_volume_key_repeats() {
-    let _settled = ui::motion::testing::settled();
-    let (mut session, host) = session_with_quick_settings();
-    assert!(
-        publishes(&session, tilo_session::QUICK_SETTINGS, "volume-up"),
-        "quick settings publishes its effects: {:#?}",
-        session
-            .resources()
+/// The machine's brightness controls as a test lights them: the display the
+/// test session shows, and any other monitor it names.
+#[derive(Clone, Default)]
+struct Dials(Rc<RefCell<DialsInner>>);
+
+#[derive(Default)]
+struct DialsInner {
+    levels: Vec<os_actions::brightness::MonitorLevel>,
+    /// Every connector set, and to what percentage, in order.
+    set: Vec<(String, f32)>,
+}
+
+impl Dials {
+    fn with(levels: &[(&str, f32)]) -> Self {
+        let dials = Self::default();
+        dials.0.borrow_mut().levels = levels
             .iter()
-            .map(|resource| resource.id.clone())
-            .collect::<Vec<_>>()
+            .map(|(connector, level)| os_actions::brightness::MonitorLevel {
+                connector: (*connector).into(),
+                level: *level,
+                kind: os_actions::brightness::BrightnessKind::Backlight,
+            })
+            .collect();
+        dials
+    }
+
+    /// What the display at `connector` is at now.
+    fn at(&self, connector: &str) -> Option<f32> {
+        self.0
+            .borrow()
+            .levels
+            .iter()
+            .find(|level| level.connector == connector)
+            .map(|level| level.level)
+    }
+
+    /// What the service asked of the display at `connector`, in percent.
+    fn asked(&self, connector: &str) -> Vec<f32> {
+        self.0
+            .borrow()
+            .set
+            .iter()
+            .filter(|(asked, _)| asked == connector)
+            .map(|(_, percent)| *percent)
+            .collect()
+    }
+}
+
+impl tilo_session::displays::Backlights for Dials {
+    fn levels(&self) -> Vec<os_actions::brightness::MonitorLevel> {
+        self.0.borrow().levels.clone()
+    }
+
+    fn set(&self, connector: &str, percent: f32) -> bool {
+        let mut inner = self.0.borrow_mut();
+        let Some(level) = inner
+            .levels
+            .iter_mut()
+            .find(|level| level.connector == connector)
+        else {
+            return false;
+        };
+        level.level = percent / 100.0;
+        inner.set.push((connector.to_owned(), percent));
+        true
+    }
+
+    fn show_only(&self, _connectors: &[String]) {}
+}
+
+/// The connectivity service as the session reaches it: a device with a Wi-Fi
+/// radio, and every change asked of it.
+struct Wire {
+    network: RefCell<tilo_connectivity_service::model::Network>,
+    asked: Rc<RefCell<Vec<String>>>,
+}
+
+impl Wire {
+    fn on(asked: Rc<RefCell<Vec<String>>>) -> Self {
+        let mut network = tilo_connectivity_service::model::Network::default();
+        network.wifi.available = true;
+        network.wifi.on = true;
+        Self {
+            network: RefCell::new(network),
+            asked,
+        }
+    }
+}
+
+impl tilo_session::Service for Wire {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        vec![tilo_connectivity_service::network_resource(
+            &self.network.borrow(),
+        )]
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        (resource == tilo_connectivity_service::NETWORK)
+            .then(|| serde_json::to_value(&*self.network.borrow()).ok())
+            .flatten()
+    }
+
+    fn invoke(
+        &mut self,
+        _: &str,
+        action: &str,
+        _: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        self.asked.borrow_mut().push(action.to_owned());
+        Ok(tilo_service::Started::Accepted)
+    }
+}
+
+/// What the session publishes of its displays now.
+#[track_caller]
+fn displays_reading(session: &Session) -> tilo_session::displays::Reading {
+    let published = session
+        .read(tilo_session::displays::RESOURCE)
+        .expect("the session's displays publish");
+    serde_json::from_value(published).expect("the reading reads back")
+}
+
+#[test]
+fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
+    let _settled = ui::motion::testing::settled();
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let wireless = Rc::new(RefCell::new(Vec::new()));
+    let dials = Dials::with(&[("HEADLESS-1", 0.5)]);
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            // No quick settings panel, and no device behind one: the keys
+            // reach the services the resources belong to.
+            services: vec![
+                Box::new(Audio::speakers(Rc::clone(&asked))),
+                Box::new(Wire::on(Rc::clone(&wireless))),
+            ],
+            backlights: Some(Box::new(dials.clone())),
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    assert!(
+        !publishes(&session, tilo_session::QUICK_SETTINGS, "volume-up"),
+        "nothing shows the panel's effects here"
     );
+
     tap(&mut session, keys::MUTE);
     tap(&mut session, keys::BRIGHTNESS_DOWN);
     tap(&mut session, keys::WLAN);
+    pump(&mut session, &mut [], |_, _| {
+        asked.borrow().iter().any(|call| call == "toggle-muted")
+            && !wireless.borrow().is_empty()
+            && dials.asked("HEADLESS-1").len() == 1
+    });
     assert_eq!(
-        host.ran(),
-        [
-            QsEffect::ToggleMuted,
-            QsEffect::BrightnessDown,
-            QsEffect::ToggleAirplaneMode
-        ]
+        *wireless.borrow(),
+        ["toggle-airplane-mode"],
+        "the wireless key is the connectivity service's"
+    );
+    assert_eq!(
+        *asked.borrow(),
+        ["toggle-muted"],
+        "the mute key is the audio service's"
+    );
+    assert_eq!(
+        dials.asked("HEADLESS-1"),
+        [40.0],
+        "the brightness key is the displays service's, one step down"
+    );
+    let reading = displays_reading(&session);
+    assert!(
+        reading.displays.iter().any(|display| {
+            display.connector == "HEADLESS-1"
+                && display
+                    .brightness
+                    .is_some_and(|brightness| (brightness - 0.4).abs() < 0.001)
+        }),
+        "the reading follows the change: {reading:?}"
     );
 
+    // A held key repeats into the service, as the panel's effect did.
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_millis(20),
         rate: 100,
@@ -711,29 +870,129 @@ fn hardware_keys_run_the_published_effects_and_a_held_volume_key_repeats() {
         session.step(Duration::from_millis(5)).unwrap();
     }
     key(&mut session, keys::VOLUME_UP, false);
-    let louder = host
-        .ran()
+    let louder = asked
+        .borrow()
         .iter()
-        .filter(|effect| **effect == QsEffect::VolumeUp)
+        .filter(|call| *call == "volume-up")
         .count();
     assert!(louder > 3, "holding volume up ramps it: {louder}");
     assert!(
         session
             .accessible_labels()
             .iter()
-            .any(|label| label.starts_with("Volume ")),
-        "the readout shows the volume: {:?}",
+            .any(|label| label == "Muted"),
+        "the readout shows the sound as the service reads it, here muted: {:?}",
         session.accessible_labels()
     );
     for _ in 0..5 {
         session.step(Duration::from_millis(10)).unwrap();
     }
-    let after = host
-        .ran()
+    let after = asked
+        .borrow()
         .iter()
-        .filter(|effect| **effect == QsEffect::VolumeUp)
+        .filter(|call| *call == "volume-up")
         .count();
     assert_eq!(after, louder, "the release stops the repeat");
+}
+
+#[test]
+fn a_brightness_key_on_a_machine_that_dims_nothing_says_so() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    tap(&mut session, keys::BRIGHTNESS_DOWN);
+    pump(&mut session, &mut [], |session, _| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "No adjustable display")
+    });
+}
+
+#[test]
+fn the_panels_brightness_is_the_sessions_displays_reading() {
+    let _settled = ui::motion::testing::settled();
+    let dials = Dials::with(&[("HEADLESS-1", 0.5)]);
+    let reads = Machine::laptop();
+    let kept: Rc<RefCell<Option<DeviceHost>>> = Rc::new(RefCell::new(None));
+    let panel_kept = Rc::clone(&kept);
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
+                let host = DeviceHost::new(
+                    Device {
+                        reads: std::sync::Arc::new(reads.clone()),
+                        dispatcher: std::sync::Arc::new(reads),
+                        preferences: Box::new(Kept::default()),
+                    },
+                    wake,
+                );
+                *panel_kept.borrow_mut() = Some(host.clone());
+                host
+            }))),
+            backlights: Some(Box::new(dials.clone())),
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    let host = kept.borrow().clone().expect("the panel's device");
+    pump(&mut session, &mut [], |_, _| {
+        let state = host.state();
+        state.brightness_available && (state.brightness - 0.5).abs() < 0.001
+    });
+    let shown = host.state();
+    assert_eq!(
+        shown
+            .displays
+            .iter()
+            .map(|display| (display.connector.as_str(), display.name.as_str()))
+            .collect::<Vec<_>>(),
+        [("HEADLESS-1", "HEADLESS-1")]
+    );
+    assert!(
+        shown
+            .displays
+            .iter()
+            .any(|display| display.connector == "HEADLESS-1"),
+        "the slider is named for the display the service reads: {shown:?}"
+    );
+
+    // The slider is the session's displays to set: the panel asks them, and
+    // what it shows afterwards is their reading.
+    let panel = offering(&session, QsEffect::SET_BRIGHTNESS.id).expect("the slider is offered");
+    session
+        .invoke(
+            &panel,
+            QsEffect::SET_BRIGHTNESS.id,
+            &arguments(serde_json::json!({ "level": 0.9 })),
+        )
+        .expect("set the brightness");
+    pump(&mut session, &mut [], |_, _| {
+        (host.state().brightness - 0.9).abs() < 0.001
+    });
+    assert!(
+        dials
+            .at("HEADLESS-1")
+            .is_some_and(|level| (level - 0.9).abs() < 0.001),
+        "the display is at the level the person chose: {:?}",
+        dials.at("HEADLESS-1")
+    );
+
+    // A key moves it too, and the panel follows.
+    tap(&mut session, keys::BRIGHTNESS_DOWN);
+    pump(&mut session, &mut [], |_, _| {
+        (host.state().brightness - 0.8).abs() < 0.001
+    });
 }
 
 /// A service the session runs in its process: it publishes what plays,
@@ -2009,22 +2268,22 @@ fn the_display_action_steps_through_the_ways_of_using_two_displays() {
         arrangement(&mut session),
         [on("eDP-1", 0), on("HDMI-A-1", WIDTH)].into()
     );
-    invoke(&mut session, tilo_session::DISPLAYS_RESOURCE, "next-mode");
+    invoke(&mut session, tilo_session::displays::RESOURCE, "next-mode");
     assert_eq!(
         arrangement(&mut session),
         [on("eDP-1", 0), on("HDMI-A-1", 0)].into(),
         "mirrored"
     );
-    invoke(&mut session, tilo_session::DISPLAYS_RESOURCE, "next-mode");
+    invoke(&mut session, tilo_session::displays::RESOURCE, "next-mode");
     assert_eq!(
         arrangement(&mut session),
         [on("eDP-1", 0), off("HDMI-A-1")].into(),
         "the built-in display only"
     );
-    invoke(&mut session, tilo_session::DISPLAYS_RESOURCE, "next-mode");
+    invoke(&mut session, tilo_session::displays::RESOURCE, "next-mode");
     let external_only = arrangement(&mut session);
     assert!(external_only.contains(&off("eDP-1")), "{external_only:?}");
-    invoke(&mut session, tilo_session::DISPLAYS_RESOURCE, "next-mode");
+    invoke(&mut session, tilo_session::displays::RESOURCE, "next-mode");
     let extended = arrangement(&mut session);
     assert!(
         extended.iter().all(|(_, enabled, _)| *enabled),

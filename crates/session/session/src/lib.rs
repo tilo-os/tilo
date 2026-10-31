@@ -127,8 +127,8 @@ pub use bars::BarShown;
 pub use channels::ChannelLink;
 pub use config::SessionConfig;
 pub use controls::{
-    CLIPBOARD_RESOURCE, DISPLAYS_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify,
-    NIGHT_LIGHT_RESOURCE, SESSION_RESOURCE, SessionCommand,
+    CLIPBOARD_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
+    SESSION_RESOURCE, SessionCommand,
 };
 pub use engine::Person;
 pub use env::SessionEnvironment;
@@ -230,7 +230,11 @@ struct Shared {
     triggered: PressedChords,
     /// What the session's own resources asked of the compositor.
     commands: Rc<RefCell<Vec<SessionCommand>>>,
-    /// Quick settings' readings of the device, which a readout shows.
+    /// The readouts of keys whose action a device took and has not answered
+    /// yet.
+    waiting: RefCell<Vec<keys::PendingReadout>>,
+    /// Quick settings' readings of the device, which the lock screen's media
+    /// shows.
     readings: Rc<RefCell<Option<tilo_quick_settings::host::Feed>>>,
     /// The system services, reached for their readings; their actions go
     /// through the door like every other.
@@ -250,6 +254,8 @@ struct Shared {
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     /// The person's devices as the panel was last fed them.
     devices: mount::devices::Devices,
+    /// The session's displays as the panel was last fed them.
+    displays: mount::displays::Displays,
     /// The wakes this session takes part in.
     waking: Rc<mount::wake::Wake>,
     /// What plays, as the desk's music widget shows it: written from the
@@ -862,6 +868,10 @@ pub struct Session {
     /// The displays as the person arranged them, kept in step with the ones
     /// attached.
     displays: display_settings::Displays,
+    /// The displays as a published service: the arrangements they are used in
+    /// and how bright each one is, kept told of the outputs the compositor
+    /// shows.
+    displays_service: displays::Displays,
     /// The question about a display change, and the answers it takes.
     confirmation: display_confirm::Confirmation,
     /// The display sheet: where the desktop appears, and the wireless
@@ -1426,6 +1436,11 @@ impl Session {
             .add(Box::new(window_share::WindowShareService::new(Rc::clone(
                 &window_shares,
             ))));
+        // The displays, on the same door: their arrangements land as the
+        // commands the loop carries out, their brightness is set at once, and
+        // the reading says where each display stands.
+        let displays_service =
+            displays::Displays::mount(&services, options.backlights.take(), Rc::clone(&commands));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
         let dictation =
@@ -1461,6 +1476,7 @@ impl Session {
             invocations,
             triggered,
             commands,
+            waiting: RefCell::default(),
             readings,
             services,
             window_shares,
@@ -1469,6 +1485,7 @@ impl Session {
             device,
             fabric,
             devices: mount::devices::Devices::default(),
+            displays: mount::displays::Displays::default(),
             waking: mount::wake::Wake::new(&options.wake_seams),
             music,
             power,
@@ -1574,6 +1591,7 @@ impl Session {
             surface_apps,
             window_menu_view_absent: false,
             displays: display_settings::Displays::default(),
+            displays_service,
             confirmation: display_confirm::Confirmation::default(),
             display_sheet: display_sheet::DisplaySheet::new(
                 display_seat,
@@ -1661,6 +1679,10 @@ impl Session {
     fn follow_displays(&mut self) -> Result<(), Error> {
         let night_light = self.night_light.0.then_some(NIGHT_LIGHT_WARMTH);
         let turned = self.rotation.follow(&self.compositor.outputs());
+        // What the displays service publishes follows what the compositor
+        // shows: which ones there are, and which one the person works on.
+        self.displays_service
+            .land(&self.shared.handle, &self.compositor.outputs());
         self.displays
             .follow(&mut self.compositor, night_light, turned)
     }
@@ -2526,6 +2548,7 @@ impl Session {
                 plane.link.serve(&mut services);
             }
         }
+        self.shared.show_answered_readouts();
         // The surface apps are answered after the services took in what
         // their devices did, so a panel is sent the reading of this pass.
         self.surfaces.poll();

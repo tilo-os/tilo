@@ -9,6 +9,7 @@ use tilo_quick_settings::device::{DeviceHost, Wake};
 use tilo_quick_settings::host::PanelHost;
 use ui::application::ComponentRunnerInputs;
 
+use crate::displays::Backlights;
 use crate::rotation::Accelerometer;
 use crate::{
     AppActions, KillSwitch, Launches, OnboardingView, SearchOptions, Service, SessionAction,
@@ -51,6 +52,11 @@ pub struct Options {
     /// The system services the session hosts: what they publish is the
     /// session's, beside the desktop's.
     pub services: Vec<Box<dyn Service>>,
+    /// The machine's brightness controls, which the displays service reads and
+    /// sets: the panel's backlight and every external monitor that speaks
+    /// DDC/CI. Without one, no display of this session can be dimmed (a test,
+    /// or a session in a window of another desktop).
+    pub backlights: Option<Box<dyn Backlights>>,
     /// What the desktop's search reaches beyond the desktop.
     pub search: SearchOptions,
     /// The action host: what open apps publish and run, and where what is
@@ -291,6 +297,7 @@ impl Default for Options {
             config: SessionConfig::default(),
             accelerometer: Accelerometer::default(),
             services: Vec::new(),
+            backlights: None,
             search: SearchOptions::default(),
             apps: None,
             launch: None,

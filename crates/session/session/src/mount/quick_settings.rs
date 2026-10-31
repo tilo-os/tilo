@@ -86,6 +86,7 @@ pub(crate) fn answer(shared: &Shared) {
     super::audio::land(shared);
     device.pump();
     super::devices::land(shared);
+    super::displays::land(shared);
     for request in device.take_requests() {
         match request {
             SessionRequest::Effect(QsEffect::PowerMenu) => {
@@ -165,6 +166,7 @@ pub(crate) fn answer(shared: &Shared) {
                 shared.clipboard.clear();
             }
             other if super::audio::follow(shared, &other) => {}
+            other if super::displays::follow(shared, &other) => {}
             other if super::devices::follow(shared, &other) => {}
             other => {
                 tracing::debug!(?other, "quick settings asks what the session cannot do yet");

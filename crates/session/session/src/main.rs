@@ -437,6 +437,7 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
     use tilo_quick_settings::device::PlayerLink;
     use tilo_session::{
         ActionPlane, DeviceHost, KillSwitch, Options, QuickSettings, SessionConfig,
+        displays::{Backlights, Screens},
     };
     let owned = machine.is_owned();
     Options {
@@ -464,6 +465,9 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
                 device
             }))
         }),
+        // A session in another desktop's window dims none of the window's
+        // machine: the display it draws in is that desktop's.
+        backlights: owned.then(|| Box::new(Screens) as Box<dyn Backlights>),
         // The controllers in the room drive the desktop of the session that
         // owns the machine; a session in another desktop's window leaves
         // them to that desktop.
