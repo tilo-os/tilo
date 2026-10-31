@@ -23,8 +23,7 @@ use ui::widget::arrange::{
 };
 use ui::widget::{
     Button, ButtonRole, Checkbox, Container, Divider, Dropdown, Element, EmptyState, Field,
-    FormSection, ProgressBar, Scrollable, Section, Segment, Spacer, Text, Toggle, ToggleGroup,
-    labeled_check,
+    FormSection, Scrollable, Section, Segment, Spacer, Text, Toggle, ToggleGroup, labeled_check,
 };
 
 use crate::adapter::{Adapter, NodeSource};
@@ -591,7 +590,6 @@ impl Reconciler {
             "scroll" => self.scroll(node),
             "spacer" => Box::new(Spacer::fixed(0.0).with_id(node.key.clone())),
             "divider" => Box::new(Divider::horizontal()),
-            "progress" => Box::new(ProgressBar::new(number(node, "value").unwrap_or(0.0))),
             "form" | "field" => self.holder(node),
             "toggle" => self.toggle(node),
             "choice" => self.choice(node),

@@ -61,6 +61,7 @@ view feedback(f: Feedback) {
         ui.Section("Progress") {
             ui.ProgressBar(.some(0.62), label: .some("Uploading"))
             ui.ProgressBar(label: .some("Preparing"))
+            progress(0.25)
             row(gap: .related, wrap: true) {
                 ui.ProgressRing(0.4, readout: .some("40%"))
                 ui.ProgressRing(0.9, tone: .warning, size: .small)
