@@ -273,6 +273,33 @@ panel, bar body, control face) and leaves the rest to the toolkit.
 
 The module's declared parameters are read once, at load.
 
+**Theme bundles.** A theme with its own set ships as a bundle
+(`theme_bundle`): a directory holding `theme.json` and one `<set>.wasm`
+for each set the document names that is not built in. Loading it loads
+and registers each module under its name, then reads the document like any
+other. Set names are lowercase letters, digits, `-`, `_` and `.`. A
+bundle that is missing a module, or carries one the host refuses, is
+refused. The material bench (`ui-perf material_bench DIR`) and
+`tilolang layout-check --theme DIR` take a bundle directory where they
+take a theme's name.
+
+**Writing a set.** A set is a crate that depends on `tilo-theme-sdk`
+alone, built as a `cdylib` for `wasm32-unknown-unknown`, exporting its
+painter with `export_painter!`. Its tests run the painter natively through
+`guest::answer`, over the same wire bytes the host exchanges with the
+module. Bauhaus (`crates/sdk/themes/bauhaus`) is the worked example:
+- square surfaces and an accent rule down floating chrome;
+- surfaces shading towards their ink in ordered-dither bands, where
+  `levels`, `depth` and `grain` set the number of bands, how deep they
+  go, and the texel size;
+- buttons on a hard offset shadow (`shadow`) that sink onto it in a
+  stepped transition when pressed.
+
+It is built with
+`cargo build -p tilo-theme-bauhaus --target wasm32-unknown-unknown --release`.
+Its bundle is that module, renamed `bauhaus.wasm`, beside the crate's
+`theme.json`.
+
 ## Live surfaces
 
 A live surface is a program that draws a layer the shell places: the desk
