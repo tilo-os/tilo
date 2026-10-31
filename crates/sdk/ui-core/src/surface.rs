@@ -19,7 +19,7 @@ use vello::peniko::{Color, Fill, ImageBrush, ImageData as Image};
 
 use crate::ColorCompat;
 use crate::theme::Theme;
-use crate::tokens::{Colors, Optics, Shadow};
+use crate::tokens::{Colors, Shadow};
 use tilo_lock::MutexRecover as _;
 
 /// Shared silhouette for lightweight desktop floats. The asymmetry is only
@@ -811,14 +811,13 @@ pub fn floating_shadow(
     theme: &Theme,
 ) {
     let elevation = &theme.tokens.elevation;
-    // A glass body shows what is below it nearly clear, so its own shadow
-    // must not show through it: the shadow falls outside it only. (The stock
-    // frosted material tints the blur heavily enough to carry it.)
-    let glass = matches!(
-        theme.finish(crate::tokens::SurfaceRole::Floating),
-        crate::tokens::Finish::Glass { .. }
-    );
-    let outside = glass.then(|| {
+    // A body tinted less than half shows what is below it nearly clear, so
+    // its own shadow must not show through it: the shadow falls outside it
+    // only. (The stock frosted material tints the blur heavily enough to
+    // carry it.)
+    let floating = theme.finish(crate::tokens::SurfaceRole::Floating);
+    let clear = floating.translucent() && floating.tint() < CLEAR_TINT;
+    let outside = clear.then(|| {
         let mut outside = BezPath::from_vec(
             vello::kurbo::Shape::path_elements(&rect.inflate(96.0, 96.0), 0.1).collect(),
         );
@@ -844,6 +843,10 @@ pub fn floating_shadow(
         scene.pop_layer();
     }
 }
+
+/// The tint under which a translucent body reads as clear, not frosted:
+/// its own shadow would show through it.
+const CLEAR_TINT: f32 = 0.5;
 
 /// Every pixel [`floating_shadow`] can paint for a surface at `rect`, the
 /// surface's own included.
@@ -1105,74 +1108,6 @@ pub fn separator_rect(x0: f64, x1: f64, y: f64, inset: f64) -> Option<Rect> {
     Some(Rect::new(a, top, b, top + 1.0))
 }
 
-/// The sheen a glass body catches across its upper body: its light at
-/// `optics.specular` opacity at the top-left, gone past the body's middle.
-/// Nothing at `0`.
-pub fn sheen(scene: &mut Scene, transform: Affine, body: &RoundedRect, optics: Optics) {
-    use vello::peniko::{ColorStop, Gradient};
-    let rect = body.rect();
-    let (specular, light) = (optics.specular, optics.light);
-    if specular <= 0.0 || rect.width() <= 2.0 || rect.height() <= 2.0 {
-        return;
-    }
-    let sheen = Gradient::new_linear(
-        (rect.x0, rect.y0),
-        (rect.x0 + rect.width() * 0.3, rect.y0 + rect.height() * 0.6),
-    )
-    .with_stops(
-        &[
-            ColorStop {
-                offset: 0.0,
-                color: light.with_alpha(specular).into(),
-            },
-            ColorStop {
-                offset: 0.45,
-                color: light.with_alpha(specular * 0.35).into(),
-            },
-            ColorStop {
-                offset: 1.0,
-                color: light.with_alpha(0.0).into(),
-            },
-        ][..],
-    );
-    scene.fill(Fill::NonZero, transform, &sheen, None, body);
-}
-
-/// The lit rim of a glass body: its outermost pixel row, brightest along
-/// the top edge at `optics.edge_highlight` opacity, fading down the sides
-/// and catching a little bounced light at the foot. Nothing at `0`.
-pub fn rim_light(scene: &mut Scene, transform: Affine, body: &RoundedRect, optics: Optics) {
-    use vello::peniko::{ColorStop, Gradient};
-    let rect = body.rect();
-    let (edge_highlight, light) = (optics.edge_highlight, optics.light);
-    if edge_highlight <= 0.0 || rect.width() <= 2.0 || rect.height() <= 2.0 {
-        return;
-    }
-    let rim = Gradient::new_linear((rect.x0, rect.y0), (rect.x0, rect.y1)).with_stops(
-        &[
-            ColorStop {
-                offset: 0.0,
-                color: light.with_alpha(edge_highlight).into(),
-            },
-            ColorStop {
-                offset: 0.5,
-                color: light.with_alpha(edge_highlight * 0.12).into(),
-            },
-            ColorStop {
-                offset: 1.0,
-                color: light.with_alpha(edge_highlight * 0.35).into(),
-            },
-        ][..],
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        &rim,
-        None,
-        &edge_outline(rect, body.radii().top_left),
-    );
-}
-
 /// The border every surface carries under the theme's shape role, as
 /// `(width, ink)`, or `None` where the theme keeps the design language's
 /// own hairlines ([`crate::tokens::BorderInk::Hairline`]).
@@ -1209,13 +1144,14 @@ pub fn paint_border(
 }
 
 /// Paint a control's face (a button, a field's well, a segmented track, a
-/// toggle's body) in the control role's finish: `fill` itself, except that
-/// the rest face (`surfaces.raised`) of a translucent finish lets the window
-/// ground through at the finish's tint, glass catches its light, and the
-/// theme's border outlines it. A face of any other fill (a primary action,
-/// a selection, a hover lift) stays opaque: those carry state, and their
-/// ink is measured on them. Returns whether a border was drawn, which
-/// stands in for the control's own rest edge.
+/// toggle's body) with the control role's painter set
+/// (`crate::part_paint::Part::ControlFace`), then the theme's border
+/// around it. The rest face (`surfaces.raised`) is drawn at rest, where a
+/// set may let the window ground through it and light it; a face of any
+/// other fill (a primary action, a selection, a hover lift) is drawn
+/// selected: those carry state, and their ink is measured on them, so the
+/// toolkit's sets keep them opaque. Returns whether a border was drawn,
+/// which stands in for the control's own rest edge.
 pub fn control_face(
     scene: &mut Scene,
     transform: Affine,
@@ -1223,22 +1159,44 @@ pub fn control_face(
     fill: Color,
     theme: &Theme,
 ) -> bool {
-    let finish = theme.finish(crate::tokens::SurfaceRole::Control);
-    let rest = fill == theme.tokens.colors.surfaces.raised;
-    let fill = if rest && finish.translucent() {
-        fill.with_alpha(fill.components[3] * finish.tint())
-    } else {
-        fill
-    };
+    use crate::part_paint::{Moment, Part, States, builtin, paint_part, part_tokens};
+    use crate::tokens::SurfaceRole;
     if fill.components[3] <= 0.0 {
         // A plain face at rest has no body to finish or outline.
         return false;
     }
-    scene.fill(Fill::NonZero, transform, fill, None, body);
-    if rest {
-        let optics = finish.optics();
-        sheen(scene, transform, body, optics);
-        rim_light(scene, transform, body, optics);
+    let rest = fill == theme.tokens.colors.surfaces.raised;
+    let mut tokens = part_tokens(
+        theme,
+        SurfaceRole::Control,
+        (fill, theme.tokens.colors.text_primary, Color::TRANSPARENT),
+        theme.tokens.colors.surfaces.content,
+    );
+    tokens.radius = crate::num::f32_of_f64(body.radii().top_left);
+    let moment = Moment::settled(if rest { States::REST } else { States::SELECTED });
+    let part = (Part::ControlFace, SurfaceRole::Control);
+    let rect = body.rect();
+    let set = theme.painter(SurfaceRole::Control);
+    if paint_part(
+        scene,
+        transform,
+        rect,
+        (set, part.0, part.1),
+        moment,
+        &tokens,
+        theme,
+    )
+    .is_none()
+    {
+        paint_part(
+            scene,
+            transform,
+            rect,
+            (builtin::default_set(), part.0, part.1),
+            moment,
+            &tokens,
+            theme,
+        );
     }
     paint_border(scene, transform, body, theme)
 }
@@ -1697,7 +1655,7 @@ mod tests {
     fn a_control_face_takes_every_finish_border_and_depth_of_its_theme() {
         use crate::tokens::{Border, BorderInk, Depth, Finish};
         // Flat and solid: the raised fill, exactly.
-        for finish in [Finish::Flat, Finish::Solid] {
+        for finish in [Finish::flat(), Finish::solid()] {
             let (theme, rgba) = control_in(finish, Border::STOCK, Depth::None);
             assert!(near(
                 at(&rgba, 60, 30),
@@ -1705,15 +1663,7 @@ mod tests {
             ));
         }
         // Translucent: the window ground shows through at the tint.
-        let (theme, rgba) = control_in(
-            Finish::Translucent {
-                blur: 0.0,
-                tint: 0.5,
-                saturation: 1.0,
-            },
-            Border::STOCK,
-            Depth::None,
-        );
+        let (theme, rgba) = control_in(Finish::frosted(0.0, 0.5, 1.0), Border::STOCK, Depth::None);
         let half = crate::tokens::colors::over(
             theme.tokens.colors.surfaces.content,
             theme.tokens.colors.surfaces.raised,
@@ -1726,14 +1676,7 @@ mod tests {
         );
         // Glass: the sheen lights the upper body and the rim its top edge.
         let (_, rgba) = control_in(
-            Finish::Glass {
-                blur: 0.0,
-                tint: 0.6,
-                saturation: 1.0,
-                refraction: 0.0,
-                edge_highlight: 0.5,
-                specular: 0.3,
-            },
+            Finish::glass([0.0, 0.6, 1.0, 0.0, 0.5, 0.3]),
             Border::STOCK,
             Depth::None,
         );
@@ -1742,7 +1685,7 @@ mod tests {
         assert!(sum(at(&rgba, 60, 10)) > sum(at(&rgba, 60, 13)), "lit rim");
         // A strong border outlines the face, inside it.
         let (theme, rgba) = control_in(
-            Finish::Flat,
+            Finish::flat(),
             Border {
                 width: 2.0,
                 ink: BorderInk::Strong,
@@ -1763,7 +1706,7 @@ mod tests {
             rgb(theme.tokens.colors.surfaces.content)
         ));
         // Outline depth: a line around the face where its shadow was.
-        let (theme, rgba) = control_in(Finish::Solid, Border::STOCK, Depth::Outline);
+        let (theme, rgba) = control_in(Finish::solid(), Border::STOCK, Depth::Outline);
         assert!(!near(
             at(&rgba, 60, 50),
             rgb(theme.tokens.colors.surfaces.content)
@@ -1773,7 +1716,7 @@ mod tests {
             rgb(theme.tokens.colors.surfaces.content)
         ));
         // The stock theme's shadow still falls below.
-        let (theme, rgba) = control_in(Finish::Solid, Border::STOCK, Depth::STOCK);
+        let (theme, rgba) = control_in(Finish::solid(), Border::STOCK, Depth::STOCK);
         assert!(!near(
             at(&rgba, 60, 52),
             rgb(theme.tokens.colors.surfaces.content)

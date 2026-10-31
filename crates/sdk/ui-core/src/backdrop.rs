@@ -80,20 +80,19 @@ pub(crate) fn blurs(material: Material, theme: &Theme) -> bool {
     matches!(material, Material::Floating) && samples(theme.finish(SurfaceRole::Floating))
 }
 
-/// Whether a surface of `finish` shows a blurred backdrop: a translucent or
-/// glass finish with a blur. Unblurred translucency is never drawn over a
+/// Whether a surface of `finish` shows a blurred backdrop: a translucent
+/// finish with a blur. Unblurred translucency is never drawn over a
 /// backdrop pass (`docs/design-language.md`, "Material and
 /// transparency"); such a finish is its tint over the ground it knows.
-fn samples(finish: Finish) -> bool {
+fn samples(finish: &Finish) -> bool {
     finish.translucent() && finish.blur() > 0.0
 }
 
-/// Fill `shape` as a surface of `role` stands: its finish
-/// ([`Theme::finish`]) over `ground`. A floating or bar surface under an
-/// active [`BackdropRecording`] shows what lies below it, held in the
-/// material's band, bent and lit as its painter set says; every other
-/// surface, and any without a backdrop pass, is its opaque ground with the
-/// light its finish catches.
+/// Fill `shape` as a surface of `role` stands: its finish's painter set
+/// ([`Theme::painter`]) draws it over `ground`. A floating or bar surface
+/// under an active [`BackdropRecording`] can show what lies below it, held
+/// in the material's band, bent and lit as its set says; every other
+/// surface, and any without a backdrop pass, is drawn opaque.
 pub fn fill_role(
     scene: &mut Scene,
     transform: Affine,
@@ -102,74 +101,95 @@ pub fn fill_role(
     theme: &Theme,
     ground: Color,
 ) {
-    let finish = theme.finish(role);
-    let sampled = matches!(role, SurfaceRole::Floating | SurfaceRole::Bar);
-    fill_finish(scene, transform, shape, finish, sampled, theme, ground);
+    paint_body(
+        scene,
+        transform,
+        shape,
+        (theme.finish(role), role),
+        theme,
+        ground,
+    );
 }
 
-/// [`fill_role`] for a finish already resolved. `sampled`: whether this
-/// surface may take a blurred backdrop at all (the window ground and
-/// controls never do: what is below a window is the compositor's, and a
-/// control stands on a ground it knows).
-fn fill_finish(
+/// Paint `shape` as the body of a surface of `role` in `finish` over
+/// `ground`, through the finish's painter set; a set that leaves the part
+/// to the toolkit has it drawn by the Default set.
+///
+/// A set draws a part as its rect at a radius. A rounded rect, a rect and a
+/// circle are that; any other shape is drawn as its bounding box clipped to
+/// the shape.
+fn paint_body(
     scene: &mut Scene,
     transform: Affine,
     shape: &impl Shape,
-    finish: Finish,
-    sampled: bool,
+    (finish, role): (&Finish, SurfaceRole),
     theme: &Theme,
     ground: Color,
 ) {
-    let optics = finish.optics();
-    let body = shape.as_rounded_rect();
-    if sampled
-        && samples(finish)
-        && let Some((image, brush_transform)) =
-            record(scene, transform, shape, finish.blur(), ground)
-    {
-        let brush = ImageBrush::new(image)
-            .with_extend(Extend::Pad)
-            .with_quality(ImageQuality::Medium);
-        match body {
-            Some(body) if optics.refraction > 0.0 => {
-                refract(
-                    scene,
-                    transform,
-                    &body,
-                    &brush,
-                    brush_transform,
-                    optics.refraction,
-                );
-            }
-            _ => scene.fill(
-                Fill::NonZero,
-                transform,
-                &brush,
-                Some(brush_transform),
-                shape,
-            ),
-        }
-        if let Some(body) = body {
-            crate::surface::sheen(scene, transform, &body, optics);
-        }
-        settle(scene, transform, shape, theme, ground);
-        scene.fill(
-            Fill::NonZero,
+    use crate::part_paint::{Moment, Part, States, builtin, paint_part, part_tokens};
+    let (rect, radius, clip) = body_of(shape);
+    let part = match role {
+        SurfaceRole::Window => Part::WindowGround,
+        SurfaceRole::Control => Part::ControlFace,
+        SurfaceRole::Floating => Part::FloatingPanel,
+        SurfaceRole::Bar => Part::BarBody,
+    };
+    let mut tokens = part_tokens(
+        theme,
+        role,
+        (ground, theme.tokens.colors.text_primary, Color::TRANSPARENT),
+        ground,
+    );
+    tokens.radius = crate::num::f32_of_f64(radius);
+    tokens.params = finish.params().clone();
+    tokens.backdrop = matches!(role, SurfaceRole::Floating | SurfaceRole::Bar)
+        && !(theme.reduce_transparency || theme.forced_colors)
+        && takes_backdrop(scene);
+    if let Some(clip) = &clip {
+        scene.push_clip_layer(Fill::NonZero, transform, clip);
+    }
+    let rest = Moment::settled(States::REST);
+    let painted = paint_part(
+        scene,
+        transform,
+        rect,
+        (finish.set(), part, role),
+        rest,
+        &tokens,
+        theme,
+    );
+    if painted.is_none() {
+        paint_part(
+            scene,
             transform,
-            ground.with_alpha(finish.tint()),
-            None,
-            shape,
+            rect,
+            (builtin::default_set(), part, role),
+            rest,
+            &tokens,
+            theme,
         );
-        if let Some(body) = body {
-            crate::surface::rim_light(scene, transform, &body, optics);
-        }
-        return;
     }
-    scene.fill(Fill::NonZero, transform, ground, None, shape);
-    if let Some(body) = body {
-        crate::surface::sheen(scene, transform, &body, optics);
-        crate::surface::rim_light(scene, transform, &body, optics);
+    if clip.is_some() {
+        scene.pop_layer();
     }
+}
+
+/// `shape` as a painter set draws a part: its rect, its corner radius, and
+/// the shape to clip to where it is neither a rounded rect with one radius,
+/// a rect nor a circle.
+fn body_of(shape: &impl Shape) -> (Rect, f64, Option<vello::kurbo::BezPath>) {
+    if let Some(body) = shape.as_rounded_rect()
+        && let Some(radius) = body.radii().as_single_radius()
+    {
+        return (body.rect(), radius, None);
+    }
+    if let Some(rect) = shape.as_rect() {
+        return (rect, 0.0, None);
+    }
+    if let Some(circle) = shape.as_circle() {
+        return (circle.bounding_box(), circle.radius, None);
+    }
+    (shape.bounding_box(), 0.0, Some(shape.to_path(0.1)))
 }
 
 /// Draw the blurred backdrop `brush` in `body` as a thick lens bends it:
@@ -220,43 +240,60 @@ fn refract(
     }
 }
 
+/// Whether a surface drawn into `scene` now would be recorded for the
+/// backdrop pass: a recording is active, `scene` is one of its layers and a
+/// region is left this frame.
+fn takes_backdrop(scene: &Scene) -> bool {
+    let address = std::ptr::from_ref(scene) as usize;
+    RECORDING.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|recording| {
+            (recording.layers.iter().any(|&(known, _)| known == address)
+                || recording.nested.contains(&address))
+                && recording.next_slot < MAX_BACKDROP_REGIONS
+        })
+    })
+}
+
 /// Fill `path` with what lies below it, for a painter's backdrop brush
-/// (`crate::part_paint`): under an active [`BackdropRecording`] the
-/// backdrop blurred by `blur` logical pixels, bent by `refraction` at the
-/// rim of the `radius`-rounded box around it, and held in the material's
-/// band around `tint` (the colour the painter lays over it), so ink keeps
-/// its contrast whatever the painter draws next. `fallback` where nothing
-/// may be translucent or nothing records.
-pub(crate) fn fill_painted_backdrop(
+/// (`crate::part_paint`): under an active [`BackdropRecording`], the
+/// backdrop blurred by `blur` logical pixels and bent by `refraction` at
+/// the rim of the `radius`-rounded box around the path. `tint` is the
+/// colour the painter lays over it, which the placeholder shows where no
+/// pass substitutes it. `false`, and nothing drawn, where nothing may be
+/// translucent or nothing records: the caller draws the brush's fallback.
+///
+/// The caller then draws the painter's glaze and holds the whole in the
+/// material's band with [`hold_in_band`], last.
+pub(crate) fn fill_backdrop_sample(
     scene: &mut Scene,
     transform: Affine,
     path: &vello::kurbo::BezPath,
     (blur, refraction, radius): (f32, f32, f64),
     theme: &Theme,
-    (tint, fallback): (Color, Color),
-) {
+    tint: Color,
+) -> bool {
     let translucent = !(theme.reduce_transparency || theme.forced_colors) && blur > 0.0;
     let recorded = translucent
         .then(|| record(scene, transform, path, blur, tint))
         .flatten();
     let Some((image, brush_transform)) = recorded else {
-        scene.fill(Fill::NonZero, transform, fallback, None, path);
-        return;
+        return false;
     };
     let brush = ImageBrush::new(image)
         .with_extend(Extend::Pad)
         .with_quality(ImageQuality::Medium);
     if refraction > 0.0 {
         let body = RoundedRect::from_rect(path.bounding_box(), radius);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            path,
-        );
+        // The rings fill the rounded box; a path that is not that box
+        // keeps them inside it.
+        let clipped = !same_outline(&body.to_path(0.1), path);
+        if clipped {
+            scene.push_clip_layer(Fill::NonZero, transform, path);
+        }
         refract(scene, transform, &body, &brush, brush_transform, refraction);
-        scene.pop_layer();
+        if clipped {
+            scene.pop_layer();
+        }
     } else {
         scene.fill(
             Fill::NonZero,
@@ -266,6 +303,47 @@ pub(crate) fn fill_painted_backdrop(
             path,
         );
     }
+    true
+}
+
+/// Whether `a` and `b` trace one outline: the same elements at points a
+/// float rounding apart. A body rebuilt from its own path's bounds is not
+/// bit-identical to that path, and an outline that is the body must not
+/// take a clip it does not need (its edge would be antialiased twice).
+fn same_outline(a: &vello::kurbo::BezPath, b: &vello::kurbo::BezPath) -> bool {
+    use vello::kurbo::{PathEl, Point};
+    /// Far below a device pixel's antialiasing step at any zoom.
+    const APART: f64 = 1e-6;
+    let near = |p: Point, q: Point| (p - q).hypot() <= APART;
+    a.elements().len() == b.elements().len()
+        && a.elements()
+            .iter()
+            .zip(b.elements())
+            .all(|pair| match pair {
+                (PathEl::MoveTo(p), PathEl::MoveTo(q)) | (PathEl::LineTo(p), PathEl::LineTo(q)) => {
+                    near(*p, *q)
+                }
+                (PathEl::QuadTo(p1, p2), PathEl::QuadTo(q1, q2)) => {
+                    near(*p1, *q1) && near(*p2, *q2)
+                }
+                (PathEl::CurveTo(p1, p2, p3), PathEl::CurveTo(q1, q2, q3)) => {
+                    near(*p1, *q1) && near(*p2, *q2) && near(*p3, *q3)
+                }
+                (PathEl::ClosePath, PathEl::ClosePath) => true,
+                _ => false,
+            })
+}
+
+/// Hold what was drawn in `path` over a backdrop inside the material's band
+/// around `tint` ([`material_band`]): the last step of a backdrop brush,
+/// after the painter's glaze, so nothing a painter draws there escapes it.
+pub(crate) fn hold_in_band(
+    scene: &mut Scene,
+    transform: Affine,
+    path: &vello::kurbo::BezPath,
+    theme: &Theme,
+    tint: Color,
+) {
     settle(scene, transform, path, theme, tint);
 }
 
@@ -329,11 +407,19 @@ pub(crate) fn fill_with_ground(
         scene.fill(Fill::NonZero, transform, tint, None, shape);
         return;
     }
+    let solid = Finish::solid();
     let finish = match material {
         Material::Floating => theme.finish(SurfaceRole::Floating),
-        Material::Opaque | Material::SeeThrough => Finish::Solid,
+        Material::Opaque | Material::SeeThrough => &solid,
     };
-    fill_finish(scene, transform, shape, finish, true, theme, ground);
+    paint_body(
+        scene,
+        transform,
+        shape,
+        (finish, SurfaceRole::Floating),
+        theme,
+        ground,
+    );
 }
 
 pub use crate::tokens::finish::MATERIAL_SPREAD;

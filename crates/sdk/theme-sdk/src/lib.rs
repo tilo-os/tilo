@@ -38,7 +38,7 @@ pub use peniko;
 pub use motion::{Easing, Transition};
 pub use part::{Part, PartState, States};
 pub use scene::{Brush, Lens, Op, PaintedPart, PartImage, PartScene, Stop};
-pub use tokens::{Param, PartTokens};
+pub use tokens::{Param, ParamSpec, PartTokens};
 
 use kurbo::Size;
 
@@ -62,6 +62,13 @@ pub trait PartPainter: Send + Sync {
         progress: f32,
         tokens: &PartTokens,
     ) -> Option<PaintedPart>;
+
+    /// The parameters this set takes from a theme document. A document
+    /// naming the set may state these and no others; the toolkit hands the
+    /// stated values to every call in [`PartTokens::params`].
+    fn params(&self) -> Vec<ParamSpec> {
+        Vec::new()
+    }
 
     /// How `part` moves from `from` to `to`. The toolkit runs it on its
     /// clock; [`Transition::Inherit`] takes the toolkit's own motion.

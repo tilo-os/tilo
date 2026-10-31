@@ -529,7 +529,7 @@ fn merge_pins(
         merged.motion = distribution.motion;
     }
     if policy.pins(PIN_MATERIAL) {
-        merged.material = distribution.material;
+        merged.material = distribution.material.clone();
     }
     merged
 }

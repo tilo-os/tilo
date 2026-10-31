@@ -58,13 +58,9 @@ impl From<MaterialV7> for ThemeMaterial {
     /// no way to name one.
     fn from(old: MaterialV7) -> Self {
         Self {
-            floating: Finish::Translucent {
-                blur: old.blur,
-                tint: old.tint_opacity,
-                saturation: 1.0,
-            },
+            floating: Finish::frosted(old.blur, old.tint_opacity, 1.0),
             selector: old.selector,
-            ..Self::STOCK
+            ..Self::stock()
         }
     }
 }
@@ -299,7 +295,7 @@ impl ThemeMotion {
 /// What every surface role is made of ([`Finish`] per
 /// [`crate::tokens::SurfaceRole`]), and the finish of selectors. A role a
 /// document leaves out keeps its stock finish.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeMaterial {
     /// The window ground every app paints on.
@@ -322,47 +318,57 @@ pub struct ThemeMaterial {
 
 impl ThemeMaterial {
     /// The design language's materials.
-    pub const STOCK: Self = Self {
-        window: RoleFinishes::STOCK.window,
-        control: RoleFinishes::STOCK.control,
-        floating: RoleFinishes::STOCK.floating,
-        bar: RoleFinishes::STOCK.bar,
-        selector: SelectorFinish::STOCK,
-    };
+    #[must_use]
+    pub fn stock() -> Self {
+        Self::of(RoleFinishes::stock(), SelectorFinish::STOCK)
+    }
 
     /// Everything opaque, as high contrast paints.
-    pub const OPAQUE: Self = Self {
-        window: RoleFinishes::OPAQUE.window,
-        control: RoleFinishes::OPAQUE.control,
-        floating: RoleFinishes::OPAQUE.floating,
-        bar: RoleFinishes::OPAQUE.bar,
-        selector: SelectorFinish::OPAQUE,
-    };
-
-    const fn stock_window() -> Finish {
-        Self::STOCK.window
+    #[must_use]
+    pub fn opaque() -> Self {
+        Self::of(RoleFinishes::solid(), SelectorFinish::OPAQUE)
     }
 
-    const fn stock_control() -> Finish {
-        Self::STOCK.control
+    fn of(roles: RoleFinishes, selector: SelectorFinish) -> Self {
+        let RoleFinishes {
+            window,
+            control,
+            floating,
+            bar,
+        } = roles;
+        Self {
+            window,
+            control,
+            floating,
+            bar,
+            selector,
+        }
     }
 
-    const fn stock_floating() -> Finish {
-        Self::STOCK.floating
+    fn stock_window() -> Finish {
+        RoleFinishes::stock().window
+    }
+
+    fn stock_control() -> Finish {
+        RoleFinishes::stock().control
+    }
+
+    fn stock_floating() -> Finish {
+        RoleFinishes::stock().floating
     }
 
     const fn stock_selector() -> SelectorFinish {
-        Self::STOCK.selector
+        SelectorFinish::STOCK
     }
 
     /// The finish of every role.
     #[must_use]
-    pub const fn roles(&self) -> RoleFinishes {
+    pub fn roles(&self) -> RoleFinishes {
         RoleFinishes {
-            window: self.window,
-            control: self.control,
-            floating: self.floating,
-            bar: self.bar,
+            window: self.window.clone(),
+            control: self.control.clone(),
+            floating: self.floating.clone(),
+            bar: self.bar.clone(),
         }
     }
 }
@@ -431,9 +437,9 @@ impl ThemeDocument {
             },
             motion: ThemeMotion::STOCK,
             material: if opaque {
-                ThemeMaterial::OPAQUE
+                ThemeMaterial::opaque()
             } else {
-                ThemeMaterial::STOCK
+                ThemeMaterial::stock()
             },
             depth: Depth::STOCK,
         }
@@ -815,24 +821,13 @@ mod tests {
             (
                 "tint",
                 Box::new(|d: &mut ThemeDocument| {
-                    d.material.floating = Finish::Translucent {
-                        blur: 24.0,
-                        tint: 1.4,
-                        saturation: 1.0,
-                    };
+                    d.material.floating = Finish::frosted(24.0, 1.4, 1.0);
                 }),
             ),
             (
                 "glass",
                 Box::new(|d: &mut ThemeDocument| {
-                    d.material.window = Finish::Glass {
-                        blur: 24.0,
-                        tint: 0.4,
-                        saturation: 1.0,
-                        refraction: 90.0,
-                        edge_highlight: 0.2,
-                        specular: 0.1,
-                    };
+                    d.material.window = Finish::glass([24.0, 0.4, 1.0, 90.0, 0.2, 0.1]);
                 }),
             ),
             (
@@ -900,7 +895,7 @@ mod tests {
         assert_eq!(hc.emphasis, Emphasis::Inverted);
         assert!((hc.shape.window_radius - 6.0).abs() < f32::EPSILON);
         assert!((hc.density.spacing - 1.2).abs() < f32::EPSILON);
-        assert_eq!(hc.material, ThemeMaterial::OPAQUE);
+        assert_eq!(hc.material, ThemeMaterial::opaque());
         assert_eq!(hc.material.selector, SelectorFinish::OPAQUE);
         assert_eq!(hc.findings(), Vec::new());
     }
@@ -920,7 +915,7 @@ mod tests {
             glass.material.control,
             glass.material.floating,
         ] {
-            assert!(matches!(role, Finish::Glass { .. }), "{role:?}");
+            assert_eq!(role.painter(), "glass", "{role:?}");
         }
         let block = Preset::Block.document();
         assert_eq!(block.shape.window_radius, 0.0);
@@ -996,25 +991,14 @@ mod tests {
 
     #[test]
     fn every_material_round_trips_on_a_whole_document() {
-        let glass = Finish::Glass {
-            blur: 20.0,
-            tint: 0.2,
-            saturation: 1.8,
-            refraction: 12.0,
-            edge_highlight: 0.4,
-            specular: 0.2,
-        };
-        let translucent = Finish::Translucent {
-            blur: 30.0,
-            tint: 0.4,
-            saturation: 0.5,
-        };
-        for finish in [Finish::Flat, Finish::Solid, translucent, glass] {
+        let glass = Finish::glass([20.0, 0.2, 1.8, 12.0, 0.4, 0.2]);
+        let translucent = Finish::frosted(30.0, 0.4, 0.5);
+        for finish in [Finish::flat(), Finish::solid(), translucent, glass] {
             let mut doc = Preset::Dark.document();
-            doc.material.window = finish;
-            doc.material.control = finish;
-            doc.material.floating = finish;
-            doc.material.bar = Some(finish);
+            doc.material.window = finish.clone();
+            doc.material.control = finish.clone();
+            doc.material.floating = finish.clone();
+            doc.material.bar = Some(finish.clone());
             doc.shape.border = Border {
                 width: 2.0,
                 ink: crate::tokens::BorderInk::Standard,
@@ -1053,7 +1037,7 @@ mod tests {
             "material": {}
         });
         let doc: ThemeDocument = serde_json::from_value(json).unwrap();
-        assert_eq!(doc.material, ThemeMaterial::STOCK);
+        assert_eq!(doc.material, ThemeMaterial::stock());
         assert_eq!(doc.depth, Depth::STOCK);
         assert_eq!(doc.shape.border, Border::STOCK);
         assert_eq!(doc.motion, ThemeMotion::STOCK);
@@ -1070,14 +1054,7 @@ mod tests {
         // still clears it over the darkest and the lightest backdrop.
         let mut doc = Preset::Dark.document();
         doc.palette.ink.secondary = 0.64;
-        doc.material.window = Finish::Glass {
-            blur: 24.0,
-            tint: 0.0,
-            saturation: 1.0,
-            refraction: 8.0,
-            edge_highlight: 0.2,
-            specular: 0.1,
-        };
+        doc.material.window = Finish::glass([24.0, 0.0, 1.0, 8.0, 0.2, 0.1]);
         assert_eq!(doc.validate(), Ok(()));
         let colors =
             Colors::as_authored(&doc.palette, doc.emphasis, doc.presence, PresenceHue::Blue);
