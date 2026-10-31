@@ -13,7 +13,7 @@ use smithay::output::Output;
 use smithay::utils::Point;
 
 use crate::dim::ScreenDimmer;
-use crate::idle::{Holds, IdleConfig, SessionManager, SessionTransition};
+use crate::idle::{Holds, IdleConfig, LockedBy, SessionManager, SessionTransition};
 use crate::state::State;
 
 /// The idle state machine, the dim, and what the session has to act on.
@@ -22,6 +22,8 @@ pub(crate) struct Idle {
     pub(crate) dimmer: ScreenDimmer,
     /// Lock and suspend transitions for the session, oldest first.
     pub(crate) events: Vec<SessionTransition>,
+    /// Whose the lock the session has is: the idle timer's, or the person's.
+    pub(crate) lock_of: LockedBy,
     /// Something outside the compositor holds the machine awake.
     pub(crate) suspend_held: bool,
     /// Something outside the compositor says the person is there without
@@ -35,6 +37,7 @@ impl Idle {
             session: SessionManager::new(IdleConfig::default(), Instant::now()),
             dimmer: ScreenDimmer::default(),
             events: Vec::new(),
+            lock_of: LockedBy::Person,
             suspend_held: false,
             held: false,
         }
@@ -45,7 +48,7 @@ impl State {
     /// The person touched something: wake and undim the displays.
     pub(crate) fn note_input(&mut self) {
         let transitions = self.idle.session.note_activity(Instant::now());
-        self.apply_idle(transitions);
+        self.apply_idle(transitions, LockedBy::Person);
     }
 
     /// Advance the idle timers; an idle-inhibit surface, a hold from outside
@@ -56,11 +59,18 @@ impl State {
             suspend: self.idle.suspend_held,
         };
         let transitions = self.idle.session.tick_inhibited(Instant::now(), holds);
-        self.apply_idle(transitions);
+        self.apply_idle(transitions, LockedBy::IdleTimer);
     }
 
-    /// Apply what the idle state machine decided.
-    pub(crate) fn apply_idle(&mut self, transitions: Vec<SessionTransition>) {
+    /// Whether the lock the session has is the idle timer's rather than the
+    /// person's.
+    pub(crate) fn lock_by_idle(&self) -> bool {
+        self.idle.session.is_locked() && self.idle.lock_of == LockedBy::IdleTimer
+    }
+
+    /// Apply what the idle state machine decided, `locked_by` saying whose
+    /// the lock is when one is among the transitions.
+    pub(crate) fn apply_idle(&mut self, transitions: Vec<SessionTransition>, locked_by: LockedBy) {
         if transitions.is_empty() {
             return;
         }
@@ -70,9 +80,15 @@ impl State {
                 SessionTransition::Undimmed => self.idle.dimmer.restore(),
                 SessionTransition::Blanked => self.output_power.set_blanked(true),
                 SessionTransition::Woke => self.output_power.set_blanked(false),
-                SessionTransition::Locked
-                | SessionTransition::Unlocked
-                | SessionTransition::Suspend => self.idle.events.push(transition),
+                SessionTransition::Locked => {
+                    self.idle.lock_of = locked_by;
+                    self.idle.events.push(transition);
+                }
+                SessionTransition::Unlocked => {
+                    self.idle.lock_of = LockedBy::Person;
+                    self.idle.events.push(transition);
+                }
+                SessionTransition::Suspend => self.idle.events.push(transition),
             }
         }
         self.idle
@@ -88,7 +104,7 @@ impl State {
             .into_iter()
             .filter(|transition| *transition != SessionTransition::Locked)
             .collect();
-        self.apply_idle(display);
+        self.apply_idle(display, LockedBy::Person);
     }
 
     /// The lock client unlocked the session after verifying the person.
@@ -98,7 +114,7 @@ impl State {
             .into_iter()
             .filter(|transition| *transition != SessionTransition::Unlocked)
             .collect();
-        self.apply_idle(display);
+        self.apply_idle(display, LockedBy::Person);
     }
 
     /// Every known output's name and whether a configuration keeps it on.

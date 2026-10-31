@@ -6,7 +6,9 @@ use std::collections::BTreeSet;
 
 use tilo_network_actor::fabric::DeviceId;
 
-use crate::{ClipboardEntry, DeviceFabric, PersonalFabricAction, RoamingSetting, WakeRoute};
+use crate::{
+    ClipboardEntry, DeviceFabric, OwnerSession, PersonalFabricAction, RoamingSetting, WakeRoute,
+};
 
 /// Why a personal fabric action did not reach the transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,6 +91,15 @@ pub trait FabricLink {
     fn share_settings(&self, settings: Vec<RoamingSetting>) {
         let _ = settings;
     }
+    /// Say the person's session on this device to their other devices, as
+    /// this device's own record in its next snapshot: whether it is locked,
+    /// when they last locked or unlocked it themselves, and when they last
+    /// used it. Their devices read it from [`Self::device_fabric`].
+    ///
+    /// A link whose transport does not carry this yet ignores it.
+    fn publish_owner_session(&self, session: OwnerSession) {
+        let _ = session;
+    }
 }
 
 /// A link a service keeps beyond one call, for work it finishes later.
@@ -137,5 +148,9 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
         (**self).share_wake_routes(routes);
+    }
+
+    fn publish_owner_session(&self, session: OwnerSession) {
+        (**self).publish_owner_session(session);
     }
 }

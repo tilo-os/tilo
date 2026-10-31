@@ -66,6 +66,7 @@ mod lists;
 pub mod mount;
 pub mod notices;
 mod notifications;
+mod owner_session;
 mod panels;
 mod plane;
 pub mod portal_link;
@@ -519,6 +520,9 @@ struct Shared {
     directory_store: directory::Store,
     /// The lock screen, while the session is locked.
     lock: Option<LockSeat>,
+    /// This device's side of the person's session on their devices: what it
+    /// says of its own lock and what it has followed from theirs.
+    owner_session: owner_session::SessionFollow,
     /// What mounted the lock screen, to mount it again when a lock finds it
     /// gone.
     lock_mount: mount::sheets::LockMount,
@@ -1352,6 +1356,10 @@ pub struct Session {
     /// session put it up again: a lock is lifted rather than left with
     /// nothing that can unlock it.
     lock_watch: LockWatch,
+    /// When the person's other devices were last read for their sessions:
+    /// their fabric says what it says for a while, and following it more
+    /// often would change nothing.
+    owner_session_poll: Option<Instant>,
     /// The screenshots asked for.
     captures: Option<capture::Captures>,
     /// The capture studio the session shows, and answers the asks of.
@@ -1888,6 +1896,7 @@ impl Session {
             portal,
             file_picker,
             lock,
+            owner_session: owner_session::SessionFollow::default(),
             lock_mount,
             display_confirm,
             notices: notices.clone(),
@@ -1962,6 +1971,7 @@ impl Session {
                 wake: loop_wake,
             },
             lock_watch: LockWatch::default(),
+            owner_session_poll: None,
             captures: options.captures,
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
@@ -2390,6 +2400,7 @@ impl Session {
         if let Some(comforts) = &mut self.comforts {
             comforts.observe();
         }
+        self.follow_owner_session()?;
         self.follow_lock()?;
         if let Some(captures) = &self.captures {
             captures.serve(&mut self.compositor, self.capture_studio.as_mut());
@@ -2680,6 +2691,16 @@ impl Session {
         for event in self.compositor.take_session_events() {
             match event {
                 SessionTransition::Locked => {
+                    // The idle timer's lock, and one this device followed
+                    // from another, stay here: only the person's own lock is
+                    // told to their other devices.
+                    if self.compositor.lock_by_idle() {
+                        self.shared.owner_session.locked_by_idle();
+                    } else if !self.shared.owner_session.followed_lock() {
+                        self.shared
+                            .owner_session
+                            .changed_by_person(tilo_clock::unix_now_ms());
+                    }
                     // The lock screen shows afresh, and is mounted when the
                     // session has none.
                     if let Some(lock) = &self.shared.lock {
@@ -2688,6 +2709,9 @@ impl Session {
                     self.raise_lock_screen();
                 }
                 SessionTransition::Unlocked => {
+                    self.shared
+                        .owner_session
+                        .changed_by_person(tilo_clock::unix_now_ms());
                     if let Some(lock) = self.shared.lock.clone() {
                         lock.lifted();
                         lock.presentation().close();
@@ -2937,18 +2961,21 @@ impl Session {
         }
     }
 
+    /// Lock the session as the person asked: with a key, a command, or
+    /// because one of their other devices locked. A session that cannot
+    /// check a password never locks: the lock screen could not be left again.
+    pub(crate) fn lock_by_person(&mut self) -> Result<(), Error> {
+        if self.unlocking.verifier.available() {
+            self.compositor.lock_now()
+        } else {
+            tracing::warn!("no password can be checked here: not locking");
+            Ok(())
+        }
+    }
+
     fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
         match command {
-            SessionCommand::Lock => {
-                // A session that cannot check a password never locks: the
-                // lock screen could not be left again.
-                if self.unlocking.verifier.available() {
-                    self.compositor.lock_now()?;
-                } else {
-                    tracing::warn!("no password can be checked here: not locking");
-                }
-                Ok(())
-            }
+            SessionCommand::Lock => self.lock_by_person(),
             SessionCommand::Displays { mode } => {
                 let changes = displays::arrange(mode, &self.compositor.outputs());
                 // A refused arrangement leaves the displays as they were.

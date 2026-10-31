@@ -133,6 +133,10 @@ impl WakeInterfaces for FixedInterfaces {
 struct Fabric {
     converged: DeviceFabric,
     sent: Vec<(DeviceId, PersonalFabricAction)>,
+    /// What this device's session said of itself, as its record carries it.
+    published: Option<OwnerSession>,
+    /// The revision the next record a device says of itself is said at.
+    counter: u64,
 }
 
 #[derive(Clone, Default)]
@@ -162,13 +166,27 @@ impl FakeLink {
     /// A device of the person's, awake now, reporting that `mac` on `on`
     /// wakes it.
     fn joined_awake_device(&self, device: DeviceId, label: &str, mac: u8, on: &str) {
-        self.put_device(device, label, true, false, vec![wake_route(mac, on)]);
+        self.put_device(
+            device,
+            label,
+            true,
+            false,
+            vec![wake_route(mac, on)],
+            OwnerSession::default(),
+        );
     }
 
     /// A device of the person's, asleep off the network, reporting that
     /// `mac` on `on` wakes it.
     fn joined_sleeping_device(&self, device: DeviceId, label: &str, mac: u8, on: &str) {
-        self.put_device(device, label, false, false, vec![wake_route(mac, on)]);
+        self.put_device(
+            device,
+            label,
+            false,
+            false,
+            vec![wake_route(mac, on)],
+            OwnerSession::default(),
+        );
     }
 
     /// The wake routes this machine offered its devices.
@@ -178,9 +196,43 @@ impl FakeLink {
 
     /// A device of the person's, as it said of itself.
     fn joined_device(&self, device: DeviceId, label: &str, online: bool, display: bool) {
-        self.put_device(device, label, online, display, Vec::new());
+        self.put_device(
+            device,
+            label,
+            online,
+            display,
+            Vec::new(),
+            OwnerSession::default(),
+        );
     }
 
+    /// Both of the person's devices on their home network, which is what
+    /// lets one follow a lock on the other.
+    fn joined_at_home(display: bool) -> Self {
+        let link = Self::default();
+        *link.identity.lock().expect("the identity") = Some(this_device());
+        *link.media.lock().expect("the media switch") = true;
+        link.put_device(
+            this_device(),
+            "This computer",
+            true,
+            true,
+            vec![wake_route(1, LAN)],
+            OwnerSession::default(),
+        );
+        link.put_device(
+            laptop(),
+            "Laptop",
+            true,
+            display,
+            vec![wake_route(2, LAN)],
+            OwnerSession::default(),
+        );
+        link
+    }
+
+    /// A device of the person's says of itself what it says now, at a
+    /// revision newer than its last.
     fn put_device(
         &self,
         device: DeviceId,
@@ -188,6 +240,7 @@ impl FakeLink {
         online: bool,
         display: bool,
         routes: Vec<WakeRoute>,
+        session: OwnerSession,
     ) {
         if online {
             self.online
@@ -195,8 +248,10 @@ impl FakeLink {
                 .expect("the online devices")
                 .insert(device.clone());
         }
+        let mut fabric = self.fabric.lock().expect("the fabric");
+        fabric.counter = fabric.counter.saturating_add(1);
         let stamp = FabricStamp {
-            counter: 1,
+            counter: fabric.counter,
             device: device.clone(),
         };
         let snapshot = DeviceFabricSnapshot {
@@ -214,7 +269,7 @@ impl FakeLink {
                 online,
                 last_seen_unix_ms: 0,
                 wake_routes: routes,
-                session: OwnerSession::default(),
+                session,
                 stamp,
             },
             media: Vec::new(),
@@ -225,12 +280,27 @@ impl FakeLink {
             speakers: SpeakerFabricState::default(),
             unlock: UnlockFabricState::default(),
         };
-        self.fabric
-            .lock()
-            .expect("the fabric")
+        fabric
             .converged
             .upsert(snapshot)
             .expect("the snapshot is valid");
+    }
+
+    /// The session the person's laptop says it has now.
+    fn laptop_session(&self, session: OwnerSession) {
+        self.put_device(
+            laptop(),
+            "Laptop",
+            true,
+            true,
+            vec![wake_route(2, LAN)],
+            session,
+        );
+    }
+
+    /// What this device's session last said of itself.
+    fn published(&self) -> Option<OwnerSession> {
+        self.fabric.lock().expect("the fabric").published
     }
 
     /// What the session sent through the fabric.
@@ -290,6 +360,24 @@ impl FabricLink for FakeLink {
         (*self.media.lock().expect("the media switch"))
             .then_some(())
             .ok_or_else(|| "media continuity is off".to_owned())
+    }
+
+    fn publish_owner_session(&self, session: OwnerSession) {
+        self.fabric.lock().expect("the fabric").published = Some(session);
+    }
+}
+
+/// A password the session can check, so it locks when the person's other
+/// devices do.
+struct Sesame;
+
+impl tilo_session::unlock::PasswordVerifier for Sesame {
+    fn verify(&self, _user: &str, password: &str) -> tilo_session::unlock::Verdict {
+        if password == "sesame" {
+            tilo_session::unlock::Verdict::Unlocks
+        } else {
+            tilo_session::unlock::Verdict::Wrong
+        }
     }
 }
 
@@ -389,6 +477,8 @@ fn session_with(
                 packets: packets.map(|packets| packets as Arc<dyn MagicPackets>),
                 interfaces: interfaces.map(|interfaces| interfaces as Arc<dyn WakeInterfaces>),
             },
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -476,6 +566,70 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
             .collect::<Vec<_>>(),
         [("this-pc", true, true), ("laptop", true, false)],
         "this device is listed too, and says it is this one"
+    );
+}
+
+/// The person's session on their other devices: locking the laptop locks this
+/// one, unlocking it again undoes that where the person was here, and this
+/// device says its own session to theirs while doing so.
+#[test]
+fn the_person_s_lock_follows_their_other_devices() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined_at_home(true);
+    let mut harness = session(&link, Rc::new(Host::default()));
+    // The laptop is locked a moment after the person last touched this one:
+    // this device has not been used since, so the lock is followed. The time
+    // is the laptop's own clock, ahead of this device's by a moment.
+    link.laptop_session(OwnerSession {
+        locked: true,
+        changed_unix_ms: tilo_clock::unix_now_ms().saturating_add(1),
+        active_unix_ms: 0,
+    });
+    for _ in 0..6 {
+        harness
+            .session
+            .step(Duration::from_millis(1100))
+            .expect("step");
+        if harness.session.compositor().locked() {
+            break;
+        }
+    }
+    assert!(
+        harness.session.compositor().locked(),
+        "the laptop's lock locks this device"
+    );
+    let published = link.published().expect("the session says its own state");
+    assert!(published.locked, "this device says it is locked");
+    assert_eq!(
+        published.changed_unix_ms, 0,
+        "a followed lock is not the person's here, and does not spread further"
+    );
+
+    // Unlocking the laptop undoes the lock this device followed, because the
+    // person was here when it locked.
+    link.laptop_session(OwnerSession {
+        locked: false,
+        changed_unix_ms: tilo_clock::unix_now_ms().saturating_add(2),
+        active_unix_ms: 0,
+    });
+    for _ in 0..6 {
+        harness
+            .session
+            .step(Duration::from_millis(1100))
+            .expect("step");
+        if !harness.session.compositor().locked() {
+            break;
+        }
+    }
+    assert!(
+        !harness.session.compositor().locked(),
+        "the laptop's unlock unlocks this device again"
+    );
+    let published = link.published().expect("the session says its own state");
+    assert!(!published.locked);
+    assert_ne!(
+        published.changed_unix_ms, 0,
+        "the person unlocked here, and their other devices are told"
     );
 }
 

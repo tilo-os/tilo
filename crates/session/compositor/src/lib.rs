@@ -97,7 +97,7 @@ pub use dim::Backlight;
 pub use display_change::{CONFIRM_FOR, DisplayEvent};
 pub use effects::{WindowEffect, WindowPicture};
 pub use host::{CursorIcon, HostDrag, HostFrame, HostLayer, Region, SurfaceHost};
-pub use idle::{IdleConfig, SessionTransition};
+pub use idle::{IdleConfig, LockedBy, SessionTransition};
 pub use input::{
     GestureEvent, HostKey, InputEvent, KeyModifiers, ObservedInput, PadAction, Switch, TabletEvent,
     TabletPadEvent, TabletPhase,
@@ -711,9 +711,20 @@ impl Compositor {
         self.data.state.gamma.night_light()
     }
 
-    /// Apply idle transitions a session request caused, at once.
+    /// Apply idle transitions a session request caused, at once: what the
+    /// session asked for is the person's, and their devices follow it.
     fn apply_idle(&mut self, transitions: Vec<SessionTransition>) -> Result<(), Error> {
-        self.data.state.apply_idle(transitions);
+        self.apply_idle_by(transitions, LockedBy::Person)
+    }
+
+    /// Apply idle transitions, `locked_by` saying whose the lock is when one
+    /// is among them.
+    fn apply_idle_by(
+        &mut self,
+        transitions: Vec<SessionTransition>,
+        locked_by: LockedBy,
+    ) -> Result<(), Error> {
+        self.data.state.apply_idle(transitions, locked_by);
         self.sync_power();
         self.display.flush_clients()?;
         Ok(())
@@ -768,6 +779,41 @@ impl Compositor {
     /// (ask logind, unless something vetoes it).
     pub fn take_session_events(&mut self) -> Vec<SessionTransition> {
         std::mem::take(&mut self.data.state.idle.events)
+    }
+
+    /// Whether the lock the session has is the idle timer's rather than the
+    /// person's: theirs is the one their other devices follow, while the idle
+    /// timer's lock stays on this device.
+    #[must_use]
+    pub fn lock_by_idle(&self) -> bool {
+        self.data.state.lock_by_idle()
+    }
+
+    /// How long since the person last touched this device.
+    #[must_use]
+    pub fn input_idle(&self) -> std::time::Duration {
+        self.data
+            .state
+            .idle
+            .session
+            .input_idle_for(std::time::Instant::now())
+    }
+
+    /// Whether the person was using this device, here or on one of their
+    /// devices nearby, when the idle lock would have fired.
+    #[must_use]
+    pub fn in_use(&self) -> bool {
+        self.data
+            .state
+            .idle
+            .session
+            .in_use(std::time::Instant::now())
+    }
+
+    /// The person used another of their devices at `at`: idle time here
+    /// counts from then, so neither device locks while they are on the other.
+    pub fn note_use_elsewhere(&mut self, at: std::time::Instant) {
+        self.data.state.idle.session.note_use_elsewhere(at);
     }
 
     /// Something outside the compositor (a download, a remote session, a
@@ -842,14 +888,18 @@ impl Compositor {
     }
 
     /// The machine is about to sleep: lock first when `lock_on_sleep`.
-    pub fn prepare_for_sleep(&mut self, lock_on_sleep: bool) -> Result<(), Error> {
+    pub fn prepare_for_sleep(
+        &mut self,
+        lock_on_sleep: bool,
+        locked_by: LockedBy,
+    ) -> Result<(), Error> {
         let transitions = self
             .data
             .state
             .idle
             .session
             .prepare_for_sleep(std::time::Instant::now(), lock_on_sleep);
-        self.apply_idle(transitions)
+        self.apply_idle_by(transitions, locked_by)
     }
 
     /// The machine woke: light the panels, keep the lock.

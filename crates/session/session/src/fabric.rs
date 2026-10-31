@@ -273,6 +273,13 @@ impl FabricLink for SessionFabric {
             tracing::debug!(%error, "the clipboard is not shared");
         }
     }
+
+    fn publish_owner_session(&self, session: tilo_device_fabric::OwnerSession) {
+        let taken = self.runtime.lock_recover().set_owner_session(session);
+        if let Err(error) = taken {
+            tracing::debug!(%error, "this device's session is not said to the others");
+        }
+    }
 }
 
 /// What this session does with the actions the person's other devices sent
