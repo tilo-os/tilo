@@ -475,6 +475,24 @@ mod tests {
         assert_eq!((pixels.width, pixels.height), (2, 1));
     }
 
+    /// The pixels a window hands over come in several sizes: the one that
+    /// fills the slot is shown, so the artwork is never stretched.
+    #[test]
+    fn a_windows_icon_is_shown_at_the_size_that_fills_its_slot() {
+        let images: Vec<ui::peniko::ImageData> = [16, 32, 48]
+            .into_iter()
+            .map(|edge| {
+                let bytes = usize::try_from(edge * edge * 4).unwrap_or_default();
+                ui::raster::rgba8_premultiplied(vec![0; bytes], edge, edge)
+            })
+            .collect();
+        let width = |device_px| pick(&images, device_px).map(|image| image.width);
+        assert_eq!(width(20), Some(32));
+        assert_eq!(width(16), Some(16));
+        assert_eq!(width(64), Some(48), "the largest there is, never stretched");
+        assert_eq!(pick(&[], 16).map(|image| image.width), None);
+    }
+
     #[test]
     fn nothing_that_names_artwork_is_no_artwork() {
         assert!(notification("notification:2:0".to_owned(), None, None, None, None).is_none());
