@@ -44,7 +44,7 @@ fn the_lock_screen_shows_on_the_output_when_its_process_asks_for_the_lock() {
         &mut compositor,
         &mut screen,
         "the session is locked",
-        |session| session.locked(),
+        Compositor::locked,
     );
 
     // The lock screen's own frame, drawn by its process and composited like
@@ -96,13 +96,12 @@ fn wait_for_frame(compositor: &mut Compositor, screen: &mut Child, was: &Screens
         if frame.rgba != was.rgba {
             return frame;
         }
-        if Instant::now() >= deadline {
-            panic!(
-                "the lock screen never drew (locked: {})\n{}",
-                compositor.locked(),
-                stderr_of(screen)
-            );
-        }
+        assert!(
+            Instant::now() < deadline,
+            "the lock screen never drew (locked: {})\n{}",
+            compositor.locked(),
+            stderr_of(screen)
+        );
         pumped(compositor, screen, "the lock screen drew");
     }
 }

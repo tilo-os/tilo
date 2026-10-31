@@ -943,7 +943,7 @@ mod tests {
 
     #[test]
     fn enlarged_calculator_keeps_a_stacked_display_and_usable_keypad() {
-        for theme in [
+        for theme in vec![
             Theme::dark(),
             Theme::dark().with_ui_scale(1.5),
             Theme::light().with_ui_scale(1.5),

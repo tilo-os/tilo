@@ -138,6 +138,7 @@ mod tests {
             has_gui: true,
             opens_extensions: extensions.iter().map(|ext| (*ext).to_owned()).collect(),
             opens_mime_types: mimes.iter().map(|mime| (*mime).to_owned()).collect(),
+            opens_resource_kinds: Vec::new(),
             opens_uri_schemes: schemes.iter().map(|scheme| (*scheme).to_owned()).collect(),
             opens_secondary: false,
             offers: Vec::new(),

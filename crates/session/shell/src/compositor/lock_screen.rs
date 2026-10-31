@@ -2207,7 +2207,7 @@ mod tests {
         // One wgpu device per output size, shared by every variant of it.
         let mut desktop = OffscreenRenderer::new(1280, 800);
         let mut laptop = OffscreenRenderer::new(800, 700);
-        let variants = [
+        let variants = vec![
             ("dark-1x-1280x800", Theme::dark(), (1280_u32, 800_u32)),
             (
                 "dark-2x-1280x800",
