@@ -261,14 +261,7 @@ fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
     env.remove("XDG_CURRENT_DESKTOP")
         .set("XDG_CONFIG_HOME", session.path());
     // The session's settings, as the app's channel to the shell gives them.
-    struct RestoreSource(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
-    impl Drop for RestoreSource {
-        fn drop(&mut self) {
-            settings_store::install_source(self.0.take());
-        }
-    }
-    let _restore = RestoreSource(settings_store::installed_source());
-    settings_store::install_source(Some(settings_store::profile(session.path())));
+    let _session = settings_store::scoped_source(Some(settings_store::profile(session.path())));
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
@@ -1161,13 +1154,6 @@ fn native_idle_model_wake_adopts_requested_component_before_draining() {
 #[test]
 #[serial_test::serial(process_env)]
 fn a_running_app_takes_contrast_text_size_and_preset_on_the_tick_they_change() {
-    struct Restore(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            settings_store::install_source(self.0.take());
-        }
-    }
-    let _restore = Restore(settings_store::installed_source());
     let mut env = tilo_test_env::ScopedEnv::new();
     for name in [
         "TILO_A11Y_HIGH_CONTRAST",
@@ -1184,7 +1170,7 @@ fn a_running_app_takes_contrast_text_size_and_preset_on_the_tick_they_change() {
     else {
         unreachable!("a document is an object")
     };
-    settings_store::install_source(Some(std::sync::Arc::new(
+    let _document = settings_store::scoped_source(Some(std::sync::Arc::new(
         settings_store::HostDocument::new(initial, |_| Ok(())),
     )));
     let mut app = App::from_factory_with_inputs(

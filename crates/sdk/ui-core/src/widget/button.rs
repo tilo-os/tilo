@@ -1261,12 +1261,10 @@ fn container_states(interact: ButtonInteract, on: bool) -> crate::part_paint::St
 }
 
 impl FacePaint<'_> {
-    /// Paint the face. Returns the shape the theme's painter set drew the
-    /// container as, where it drew one: the button takes the pointer there.
-    fn paint(&self, ctx: &mut PaintCtx<'_>) -> Option<vello::kurbo::BezPath> {
-        let theme = ctx.theme;
-        let disabled = self.interact.disabled;
-        let on = self.on && !disabled;
+    /// The face's colours `(fill, edge, ink)` in its state and the effective
+    /// interaction they were resolved for.
+    fn colors(&self, theme: &Theme) -> (FaceColors, ButtonInteract) {
+        let on = self.on && !self.interact.disabled;
         // An "on" toggle is a lift and stays one under the pointer; a press
         // still answers.
         let interact = ButtonInteract {
@@ -1279,14 +1277,65 @@ impl FacePaint<'_> {
         } else {
             fill
         };
-        let radius = f64::from(theme.tokens.radii.control);
-        // A labelled plain face keeps its ink on its layout edge; its lift
-        // (and focus ring) reach outward by the padding it does not take.
-        let face_rect = if self.content.flush {
+        ((fill, edge, ink), interact)
+    }
+
+    /// The rect the face fills: a labelled plain face keeps its ink on its
+    /// layout edge, and its lift (and focus ring) reach outward by the
+    /// padding it does not take.
+    fn face_rect(&self) -> Rect {
+        if self.content.flush {
             self.rect.inflate(self.metrics.pad_x, 0.0)
         } else {
             self.rect
-        };
+        }
+    }
+
+    /// Draw the container with the theme's painter set into `scene`, where
+    /// the theme names one for controls and it draws the container.
+    fn painted_container(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) -> Option<crate::part_paint::Painted> {
+        let set = theme.painter(crate::tokens::SurfaceRole::Control)?;
+        let ((fill, edge, ink), _) = self.colors(theme);
+        crate::part_paint::paint_part(
+            scene,
+            transform,
+            self.face_rect(),
+            (
+                set,
+                crate::part_paint::Part::ButtonContainer,
+                crate::tokens::SurfaceRole::Control,
+            ),
+            self.moment,
+            &crate::part_paint::part_tokens(
+                theme,
+                crate::tokens::SurfaceRole::Control,
+                (fill, ink, edge.unwrap_or(vello::peniko::Color::TRANSPARENT)),
+                theme.tokens.colors.surfaces.content,
+            ),
+            theme,
+        )
+    }
+
+    /// The shape the theme's painter set draws the container as, in the
+    /// face's coordinates; `None` where no set draws it.
+    fn painted_shape(&self, theme: &Theme) -> Option<vello::kurbo::BezPath> {
+        self.painted_container(&mut Scene::new(), Affine::IDENTITY, theme)?
+            .hit
+    }
+
+    /// Paint the face. Returns the shape the theme's painter set drew the
+    /// container as, where it drew one: the button takes the pointer there.
+    fn paint(&self, ctx: &mut PaintCtx<'_>) -> Option<vello::kurbo::BezPath> {
+        let theme = ctx.theme;
+        let disabled = self.interact.disabled;
+        let ((fill, edge, ink), _) = self.colors(theme);
+        let radius = f64::from(theme.tokens.radii.control);
+        let face_rect = self.face_rect();
         let shape = RoundedRect::from_rect(face_rect, radius);
         let set = theme.painter(crate::tokens::SurfaceRole::Control);
         // Disabled is the rest face under one group alpha (HIG §9.5), the
@@ -1306,26 +1355,7 @@ impl FacePaint<'_> {
                 &clip,
             );
         }
-        let painted = set.and_then(|set| {
-            crate::part_paint::paint_part(
-                ctx.scene,
-                ctx.transform,
-                face_rect,
-                (
-                    set,
-                    crate::part_paint::Part::ButtonContainer,
-                    crate::tokens::SurfaceRole::Control,
-                ),
-                self.moment,
-                &crate::part_paint::part_tokens(
-                    theme,
-                    crate::tokens::SurfaceRole::Control,
-                    (fill, ink, edge.unwrap_or(vello::peniko::Color::TRANSPARENT)),
-                    theme.tokens.colors.surfaces.content,
-                ),
-                theme,
-            )
-        });
+        let painted = self.painted_container(ctx.scene, ctx.transform, theme);
         // A painted container draws its own edge; a border stands in for
         // the rest edge.
         let bordered = painted.is_some()
@@ -1561,9 +1591,40 @@ impl<'a> ButtonFace<'a> {
         let grow_y = ((target - self.rect.height()) / 2.0).max(0.0);
         self.rect.inflate(grow_x, grow_y)
     }
-    /// Whether `point` activates this face.
+    /// Whether `point` activates this face: inside the shape the theme's
+    /// painter set draws it as, or else in its hit rect.
     pub fn contains(&self, theme: &Theme, point: Point) -> bool {
-        self.hit_rect(theme).contains(point)
+        let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
+        match self.painter(&metrics, "").painted_shape(theme) {
+            Some(shape) => crate::part_paint::hit_contains(&shape, point),
+            None => self.hit_rect(theme).contains(point),
+        }
+    }
+
+    /// This face as it is painted, labelled `label`.
+    fn painter<'b>(&'b self, metrics: &'b FaceMetrics, label: &'b str) -> FacePaint<'b> {
+        FacePaint {
+            rect: self.rect,
+            role: self.role,
+            confirms: self.confirms,
+            on: self.on,
+            interact: self.interact,
+            content: FaceContent {
+                icon: self.icon,
+                image: None,
+                badge: None,
+                label,
+                hint: self.shortcut.as_ref().map(shortcut_text),
+                // A painted face fills the rect its host gave it.
+                flush: false,
+                filled_icon: self
+                    .icon
+                    .is_some_and(|icon| icon.is_brand() || (self.on && fills_when_on(icon))),
+                menu: false,
+            },
+            metrics,
+            moment: crate::part_paint::Moment::settled(container_states(self.interact, self.on)),
+        }
     }
 }
 
@@ -1606,29 +1667,12 @@ impl Button {
     ) {
         let label = localized_label(face.label);
         let metrics = FaceMetrics::of_role(face.control_size, face.role, theme);
-        FacePaint {
-            rect: face.rect,
-            role: face.role,
-            confirms: face.confirms,
-            on: face.on,
-            interact: face.interact,
-            content: FaceContent {
-                icon: face.icon,
-                image: None,
-                badge: None,
-                label: &label,
-                hint: face.shortcut.as_ref().map(shortcut_text),
-                // A painted face fills the rect its host gave it.
-                flush: false,
-                filled_icon: face
-                    .icon
-                    .is_some_and(|icon| icon.is_brand() || (face.on && fills_when_on(icon))),
-                menu: false,
-            },
-            metrics: &metrics,
-            moment: crate::part_paint::Moment::settled(container_states(face.interact, face.on)),
-        }
-        .paint(&mut PaintCtx::new(scene, transform, text_renderer, theme));
+        face.painter(&metrics, &label).paint(&mut PaintCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+        ));
     }
 
     fn content(&self) -> (String, Option<String>) {
@@ -2220,7 +2264,10 @@ impl Widget for Button {
         };
         let node = AccessNode::new(role)
             .with_semantic_key(&self.id)
-            .with_bounds(self.rect)
+            // A painted button is spoken where it is drawn.
+            .with_bounds(self.painted_hit.as_ref().map_or(self.rect, |hit| {
+                vello::kurbo::Shape::bounding_box(hit) + self.rect.origin().to_vec2()
+            }))
             .with_optional_name(name)
             .with_interface_name(interface)
             .with_state(AccessState {

@@ -25,11 +25,13 @@ impl Triangles {
         (PainterSet::new("test.triangles", painter.clone()), painter)
     }
 
+    /// A triangle on the rect's foot, a tenth of its width in from each
+    /// side, its apex at the top centre.
     fn triangle(size: Size) -> BezPath {
         let mut path = BezPath::new();
         path.move_to((size.width / 2.0, 0.0));
-        path.line_to((size.width, size.height));
-        path.line_to((0.0, size.height));
+        path.line_to((size.width * 0.9, size.height));
+        path.line_to((size.width * 0.1, size.height));
         path.close_path();
         path
     }
@@ -111,7 +113,13 @@ fn a_triangle_button_takes_the_pointer_inside_its_triangle_only() {
     // The apex column and the foot of the triangle take it; the rect's top
     // corners, outside the triangle, do not.
     assert!(moved_to(&mut button, (160.0, 60.0)));
-    assert!(moved_to(&mut button, (110.0, 88.0)));
+    assert!(moved_to(&mut button, (116.0, 88.0)));
+    assert!(!moved_to(&mut button, (104.0, 88.0)));
+    // It is spoken where it is drawn.
+    let spoken = Widget::accessibility(&button)
+        .and_then(|node| node.bounds)
+        .expect("bounds");
+    assert_eq!(spoken, Rect::new(112.0, 50.0, 208.0, 90.0).into());
     assert!(!moved_to(&mut button, (104.0, 54.0)));
     assert!(!moved_to(&mut button, (216.0, 54.0)));
     // A press in a corner does nothing; one inside the triangle clicks.
@@ -133,6 +141,10 @@ fn a_triangle_button_takes_the_pointer_inside_its_triangle_only() {
     assert_eq!(fired.load(Ordering::Relaxed), 0);
     click((160.0, 80.0));
     assert_eq!(fired.load(Ordering::Relaxed), 1);
+    // An immediate-mode face takes it in the same shape.
+    let face = crate::widget::ButtonFace::new(Rect::new(100.0, 50.0, 220.0, 90.0), "Go");
+    assert!(face.contains(&theme, Point::new(160.0, 60.0)));
+    assert!(!face.contains(&theme, Point::new(104.0, 54.0)));
     // Without a painter set the whole rect takes it, as before.
     let mut plain = Button::new("go", "Go");
     plain.apply_layout_external(Rect::new(100.0, 50.0, 220.0, 90.0));

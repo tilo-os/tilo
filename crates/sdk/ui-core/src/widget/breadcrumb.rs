@@ -485,7 +485,9 @@ impl crate::widget::controls::ActionControls for Breadcrumb {
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.choice.as_mut().and_then(super::view_choice::ViewChoice::take)
+        self.choice
+            .as_mut()
+            .and_then(super::view_choice::ViewChoice::take)
     }
 
     fn refresh_control_action_availability(
