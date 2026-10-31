@@ -89,8 +89,7 @@ fn the_lock_action_locks_the_session_behind_the_lock_screen_which_a_password_unl
 fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
     const DISPLAYS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
     let _settled = ui::motion::testing::settled();
-    let mut external = OutputConfig::new("HEADLESS-2", 1024, 768);
-    external.position = (WIDTH, 0);
+    let external = OutputConfig::new("HEADLESS-2", 1024, 768).at(WIDTH, 0);
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,

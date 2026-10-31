@@ -597,4 +597,55 @@ mod tests {
         assert_eq!(tree.strip_shown_on(0), Some(StripId(1)));
         assert_eq!(tree.active_strip_id(), Some(StripId(1)));
     }
+
+    /// A monitor is unplugged and plugged back in while the desk runs, as a
+    /// docked laptop's is: what it held moves to the display left and
+    /// returns with it, a group opened on it is homed to it, and the strip
+    /// it shows follows the displays it has.
+    #[test]
+    fn a_monitor_plugged_in_while_the_desk_runs_takes_a_group_and_hands_its_groups_on_when_it_goes()
+    {
+        let ws = workspace(&[1, 2]).remove(0);
+        let mut tree = crate::tree::DesktopTree {
+            active: ws.id,
+            workspaces: vec![ws],
+            ..Default::default()
+        };
+        tree.active_strip.insert(tree.active, StripId(1));
+        assert!(tree.reconcile_displays(&docked()));
+        home(&mut tree.outputs, &[(1, 0), (2, 1)]);
+
+        // The cable is pulled: its group moves to the panel, and the desk
+        // remembers it came from the monitor.
+        assert!(tree.reconcile_displays(&docked()[..1]));
+        assert!(!tree.is_partitioned(), "one display shows one strip");
+        assert_eq!(tree.outputs.display_of(2), Some(0));
+        assert_eq!(
+            tree.outputs.origin.get(&2).map(String::as_str),
+            Some(MONITOR)
+        );
+
+        // Plugged back in mid-run, the monitor is a display again and the
+        // group it held is back on it, on the strip the desk shows there.
+        assert!(tree.reconcile_displays(&docked()));
+        assert!(tree.is_partitioned());
+        assert_eq!(tree.strip_shown_on(1), tree.active_strip_id());
+        assert_eq!(
+            tree.outputs.groups_on(&tree.workspaces[0].strips[0], 1),
+            vec![2]
+        );
+
+        // A group opened while the monitor has focus is homed to it.
+        tree.outputs.set_focused(1);
+        tree.workspaces[0].strips[0].window_groups.push(group(3));
+        assert!(tree.reconcile_displays(&docked()));
+        assert_eq!(tree.outputs.display_of(3), Some(1));
+
+        // And when it goes again everything it showed moves to the panel.
+        assert!(tree.reconcile_displays(&docked()[..1]));
+        assert_eq!(
+            tree.outputs.groups_on(&tree.workspaces[0].strips[0], 0),
+            vec![1, 2, 3]
+        );
+    }
 }

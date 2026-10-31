@@ -11,15 +11,14 @@ use tilo_session::{BarShown, Session};
 /// Two displays side by side, the built-in one first: the arrangement a
 /// session with a monitor plugged in on the right starts in.
 fn two_displays() -> Session {
-    let mut external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT);
-    external.position = (WIDTH, 0);
+    let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
     )
     .expect("session")
 }
@@ -106,7 +105,7 @@ fn a_display_arriving_or_going_changes_the_bars() {
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT)],
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0)],
     )
     .expect("session");
     settle(&mut session, 4);
@@ -117,8 +116,7 @@ fn a_display_arriving_or_going_changes_the_bars() {
     );
 
     // A monitor is plugged in on the right.
-    let mut external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT);
-    external.position = (WIDTH, 0);
+    let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
     session
         .compositor()
         .add_output(&external)

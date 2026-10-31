@@ -324,6 +324,19 @@ impl Compositor {
         Ok(())
     }
 
+    /// Drop an output the backend simulates, as unplugging its cable does:
+    /// it leaves the layout, clients stop seeing it and the desktop hears
+    /// the outputs it has now and places its windows on those left.
+    pub fn remove_output(&mut self, name: &str) -> Result<(), Error> {
+        self.data
+            .backend
+            .remove_output(&mut self.data.state, name)?;
+        self.sync_power();
+        self.publish_displays();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
     /// Host a surface app above the windows (and above earlier hosts), or
     /// under them when it says so ([`SurfaceHost::below_windows`]).
     pub fn add_host(&mut self, mut host: Box<dyn SurfaceHost>) {
@@ -969,9 +982,15 @@ impl Compositor {
     }
 
     /// Whether the panel of the output named `name` is lit (not blanked,
-    /// switched off by a tool or turned off).
+    /// switched off by a tool or turned off); `false` when no output is
+    /// there to light.
     pub fn output_lit(&self, name: &str) -> bool {
-        self.data.state.output_power.lit(name)
+        self.data
+            .state
+            .space
+            .outputs()
+            .any(|output| output.name() == name)
+            && self.data.state.output_power.lit(name)
     }
 
     /// Apply (or test) the display configurations clients sent and tell

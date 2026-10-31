@@ -2203,7 +2203,7 @@ fn the_policy_knows_each_output_by_the_monitor_on_it() {
     let told = Rc::new(RefCell::new(Vec::new()));
     let mut compositor = Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).unwrap();
     compositor
-        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480).at(0, 0))
         .unwrap();
     compositor
         .add_output(&OutputConfig::new("HEADLESS-2", 320, 240).at(640, 0))

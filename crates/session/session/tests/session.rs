@@ -2138,15 +2138,14 @@ delegate_noop!(Seen: ignore WlSurface);
 #[test]
 fn the_display_action_steps_through_the_ways_of_using_two_displays() {
     let _settled = ui::motion::testing::settled();
-    let mut external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT);
-    external.position = (WIDTH, 0);
+    let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
     )
     .expect("session");
     let arrangement = |session: &mut Session| {
@@ -2199,8 +2198,7 @@ fn the_portals_screenshot_is_a_picture_of_every_display() {
     let wake = tilo_service::LoopWake::default();
     let (capture, captures) =
         tilo_session::capture::channel_to(directory.path().to_owned(), wake.handle());
-    let mut external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT);
-    external.position = (WIDTH, 0);
+    let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -2209,7 +2207,7 @@ fn the_portals_screenshot_is_a_picture_of_every_display() {
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT), external],
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
     )
     .expect("session");
     session.step(Duration::from_millis(1)).unwrap();

@@ -61,7 +61,9 @@ use smithay::utils::{DeviceFd, Point, Transform};
 use settings_store::hardware::{AdaptiveSyncUnavailable, HdrUnavailable};
 
 use super::{Backend, BackendError, failed};
-use crate::output::{ModeRequest, OutputChange, apply_placement, find_mode, refresh_interval};
+use crate::output::{
+    ModeRequest, OutputChange, apply_placement, find_mode, logical_width, refresh_interval,
+};
 use crate::pacing::Pacing;
 use crate::present::{Presentation, Shown};
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
@@ -1566,19 +1568,6 @@ fn arrange_outputs(gpus: &HashMap<u64, Gpu>, config: &DisplayConfig, state: &mut
         }
     }
     state.rearrange();
-}
-
-/// An output's width in the logical layout: its mode over its scale,
-/// turned.
-fn logical_width(output: &Output) -> i32 {
-    let size = output
-        .current_mode()
-        .map(|mode| output.current_transform().transform_size(mode.size))
-        .unwrap_or_default();
-    size.to_f64()
-        .to_logical(output.current_scale().fractional_scale())
-        .to_i32_round::<i32>()
-        .w
 }
 
 /// Drive `info`'s connector from `crtc` in `mode` and make it an output
