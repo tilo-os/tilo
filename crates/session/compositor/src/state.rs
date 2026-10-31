@@ -168,6 +168,9 @@ pub struct State {
     pub(crate) closing: Vec<Closing>,
     /// The frames the windows last drew, by id.
     pub(crate) snapshots: crate::snapshot::Snapshots,
+    /// The streams sharing a window, by window id: each is told what the
+    /// window's content is in, on the commit that changes it.
+    pub(crate) share_streams: std::collections::HashMap<u64, Arc<dyn crate::ShareStream>>,
     pub(crate) capture: crate::capture::Capture,
     /// What input from another device crosses before it reaches the seat.
     pub(crate) remote_input: crate::remote_input::Firewall,
@@ -263,6 +266,7 @@ impl State {
             frame_images: crate::window_frame::FrameImages::default(),
             closing: Vec::new(),
             snapshots: crate::snapshot::Snapshots::default(),
+            share_streams: std::collections::HashMap::new(),
             capture: crate::capture::Capture::new(display),
             remote_input: crate::remote_input::Firewall::default(),
             disabled_outputs: Vec::new(),
@@ -1307,6 +1311,11 @@ impl CompositorHandler for State {
             self.layer_committed(surface);
         }
         self.drag_icon_commit(surface);
+        // Colorimetry passthrough: a shared window's stream is told what its
+        // content is in on the commit that says so, so a receiver decodes in
+        // the right space, and that the configured treatment applies again
+        // once the client unsets it.
+        self.tell_share_color(surface);
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
@@ -1480,6 +1489,11 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // A share is of a window: it ends with it, and its stream hears
+        // nothing more from here.
+        if let Some(window) = window_id_of(surface.wl_surface()) {
+            self.share_streams.remove(&window);
+        }
         let pending = self
             .unmapped
             .iter()

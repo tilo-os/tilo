@@ -1797,4 +1797,100 @@ mod tests {
             assert_eq!(sink.events[0].1, 7);
         }
     }
+
+    /// A BT.2020 PQ description carrying the volume it was mastered for: what
+    /// an HDR video player attaches to its window.
+    fn hdr10_pq() -> (Colorimetry, Option<Hdr10Metadata>) {
+        use neighbour_wire::colorimetry::{
+            ColorPrimaries, ColorRange, MatrixCoefficients, TransferCharacteristics,
+        };
+        (
+            Colorimetry {
+                primaries: ColorPrimaries::Bt2020,
+                transfer: TransferCharacteristics::SmpteSt2084,
+                matrix: MatrixCoefficients::Bt2020NonConstant,
+                range: ColorRange::Limited,
+            },
+            Some(Hdr10Metadata::reference_bt2020()),
+        )
+    }
+
+    /// What a share announces to its viewers now: its colour, its mastering
+    /// volume, its codec label and its bit depth.
+    fn announced(
+        session: &SharedFlatpakSession,
+    ) -> (Option<Colorimetry>, Option<Hdr10Metadata>, u8) {
+        match session.stream_start_msg() {
+            NeighbourMsg::SurfaceStreamStart {
+                codec,
+                colorimetry,
+                hdr_static_metadata,
+                bit_depth,
+                ..
+            } => {
+                assert_eq!(codec, session.chosen_codec().wire_label());
+                (colorimetry, hdr_static_metadata, bit_depth)
+            }
+            other => panic!("expected SurfaceStreamStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_share_nobody_told_a_colour_reports_the_configured_sdr_bt709() {
+        let s = SharedFlatpakSession::start(1, "app", 42, 64, 64, &cfg_software()).expect("start");
+        assert_eq!(
+            announced(&s),
+            (Some(Colorimetry::sdr_bt709()), None, 8),
+            "the bytes are 8-bit SDR and the stream says so"
+        );
+    }
+
+    #[test]
+    fn the_colour_a_client_attaches_wins_over_the_configured_one() {
+        let s = SharedFlatpakSession::start(1, "app", 42, 64, 64, &cfg_software()).expect("start");
+        let (color, hdr) = hdr10_pq();
+        // What the compositor does after the commit that carried the client's
+        // `wp_color_management_surface_v1.set_image_description`.
+        s.set_color_override(color, hdr);
+
+        assert_eq!(
+            announced(&s),
+            (Some(color), hdr, 8),
+            "the client's intent, while the label and depth still describe the SDR bytes"
+        );
+    }
+
+    #[test]
+    fn unsetting_the_description_gives_the_configured_colour_back() {
+        let s = SharedFlatpakSession::start(1, "app", 42, 64, 64, &cfg_software()).expect("start");
+        let (color, _) = hdr10_pq();
+        s.set_color_override(color, None);
+        // What the compositor does after `unset_image_description`.
+        s.clear_color_override();
+
+        assert_eq!(
+            announced(&s),
+            (Some(Colorimetry::sdr_bt709()), None, 8),
+            "the configured colour applies again"
+        );
+    }
+
+    #[test]
+    fn a_client_saying_sdr_keeps_a_share_set_up_for_hdr_in_sdr() {
+        // The workspace was configured for HDR and the client then attaches an
+        // SDR description: the client's intent wins, so the stream must not
+        // claim PQ for bytes that are not.
+        let cfg = FlatpakShareConfig {
+            hdr: Some(HdrConfig::pq_reference()),
+            ..cfg_software()
+        };
+        let s = SharedFlatpakSession::start(1, "app", 42, 64, 64, &cfg).expect("start");
+        s.set_color_override(Colorimetry::sdr_bt709(), None);
+
+        assert_eq!(
+            announced(&s),
+            (Some(Colorimetry::sdr_bt709()), None, 8),
+            "the client's own description wins over the workspace's HDR default"
+        );
+    }
 }

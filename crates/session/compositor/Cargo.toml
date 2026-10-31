@@ -65,6 +65,9 @@ wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# A share of a window as the session keeps it, to prove the colour a client
+# commits is what the stream carrying the window's frames announces.
+tilo-window-share = { path = "../window-share" }
 
 [lints]
 workspace = true

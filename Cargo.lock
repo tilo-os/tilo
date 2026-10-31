@@ -18323,6 +18323,7 @@ dependencies = [
  "tempfile",
  "tilo-frame-metrics",
  "tilo-wayland-ext",
+ "tilo-window-share",
  "tilo-winit",
  "tracing",
  "wayland-client",

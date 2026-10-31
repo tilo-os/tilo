@@ -57,6 +57,7 @@ pub mod render;
 mod requests;
 pub mod selection;
 pub mod settings_bridge;
+mod share_stream;
 mod snapshot;
 mod state;
 pub mod sticky_keys;
@@ -110,6 +111,7 @@ pub use policy::{
     WindowRequest,
 };
 pub use selection::{Selection, TEXT_MIME};
+pub use share_stream::ShareStream;
 /// The quarter turns an output is shown at.
 pub use smithay::utils::Transform;
 pub use state::State;
