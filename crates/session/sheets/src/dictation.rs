@@ -153,6 +153,8 @@ pub enum Answer {
     Copy(u64),
     /// Throw the kept transcript away.
     Discard(u64),
+    /// Go where the local speech models are set up.
+    SetUp(u64),
 }
 
 /// The sheet's resource: what it shows. It holds only what is shown; the
@@ -510,10 +512,32 @@ fn card(shown: &Shown, seat: Option<&DictationSeat>) -> Element {
                     .push(Box::new(discard)),
             )
         }
-        Stage::Unavailable => Box::new(answering(
-            Answer::Cancel(id),
-            primary("dictation-close", &t("dictation-close")),
-        )),
+        Stage::Unavailable => {
+            if prompt.failure == Some(Failure::ModelRequired) {
+                // Nothing can be dictated until a speech model is installed:
+                // the way there leads the card, and the dictation is given
+                // up by the other answer.
+                let setup = answering(
+                    Answer::SetUp(id),
+                    primary("dictation-open-settings", &t("dictation-open-settings")),
+                );
+                let close = answering(
+                    Answer::Cancel(id),
+                    Button::new("dictation-close", &t("dictation-close")),
+                );
+                Box::new(
+                    Row::new()
+                        .with_gap(ui::tokens::Spacing::BASE.s2)
+                        .push(Box::new(setup))
+                        .push(Box::new(close)),
+                )
+            } else {
+                Box::new(answering(
+                    Answer::Cancel(id),
+                    primary("dictation-close", &t("dictation-close")),
+                ))
+            }
+        }
     };
     let mut body = Column::new()
         .with_rhythm(ui::tokens::Rhythm::Tight)

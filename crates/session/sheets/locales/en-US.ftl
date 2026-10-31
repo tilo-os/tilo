@@ -66,6 +66,7 @@ dictation-microphone-unavailable = Microphone access is unavailable. Check your 
 dictation-vocabulary-unavailable = Your personal dictionary changed or became unavailable. Dictation stopped; start a new session.
 dictation-audio-interrupted = Microphone audio was interrupted. No text was inserted.
 dictation-close = Close
+dictation-open-settings = Set up
 
 ## Shortcut guide
 

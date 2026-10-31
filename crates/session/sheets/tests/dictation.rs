@@ -151,6 +151,15 @@ fn every_stage_says_what_happens() {
         said.contains("Install an approved local speech model"),
         "{said}"
     );
+    let labels: Vec<String> = buttons(&mut app)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
+    assert_eq!(
+        labels,
+        ["Set up", "Close"],
+        "a missing model offers the way to install one first"
+    );
 
     let mut app = staged("unavailable");
     let said = told(&mut app);
@@ -250,6 +259,36 @@ fn escape_cancels_while_the_dictation_runs_or_cannot_run() {
     app.harness().key("Escape");
     app.settle();
     assert_eq!(seat.take_answers(), [Answer::Cancel(30)]);
+}
+
+#[test]
+fn a_missing_model_takes_the_person_to_its_setup() {
+    let (mut app, seat) = seated(Prompt {
+        id: 31,
+        stage: Stage::Unavailable,
+        draft: String::new(),
+        failure: Some(Failure::ModelRequired),
+        recovery: None,
+        copied: false,
+        copy_failed: false,
+    });
+    let setup = buttons(&mut app)
+        .into_iter()
+        .find(|(label, _)| label == "Set up")
+        .expect("the card that needs a model says where to get one")
+        .1;
+    app.harness().click_at(setup.center().x, setup.center().y);
+    app.settle();
+    assert_eq!(seat.take_answers(), [Answer::SetUp(31)]);
+
+    // Enter gives the primary answer, which is the way there while no model
+    // is set up; Escape still gives the dictation up.
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(seat.take_answers(), [Answer::SetUp(31)]);
+    app.harness().key("Escape");
+    app.settle();
+    assert_eq!(seat.take_answers(), [Answer::Cancel(31)]);
 }
 
 #[test]

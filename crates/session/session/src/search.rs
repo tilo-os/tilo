@@ -299,7 +299,20 @@ impl SessionSearch {
         target: Target,
         own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
     ) {
-        let done = match target {
+        if let Err(error) = self.perform_checked(room, target, own) {
+            tracing::warn!(%error, "search row not carried out");
+        }
+    }
+
+    /// [`Self::perform`], saying whether it was carried out: a caller that
+    /// has another way to reach the same place needs to know.
+    pub(crate) fn perform_checked(
+        &self,
+        room: &str,
+        target: Target,
+        own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
+    ) -> Result<(), DoorError> {
+        match target {
             Target::Invoke(invoke) if invoke.app == DESKTOP_APP => own(&invoke),
             Target::Invoke(invoke) => self.with_apps(|apps| {
                 apps.invoke(
@@ -326,9 +339,6 @@ impl SessionSearch {
                 tracing::debug!(?other, "search row the desk carries out");
                 Ok(())
             }
-        };
-        if let Err(error) = done {
-            tracing::warn!(%error, "search row not carried out");
         }
     }
 

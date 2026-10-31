@@ -43,6 +43,8 @@ pub(crate) struct Dictation {
     seat: Option<DictationSeat>,
     /// The card is up.
     up: Cell<bool>,
+    /// The person asked to be taken where the speech models are set up.
+    model_setup: Cell<bool>,
     /// What the card was last told, so it is woken only on a change.
     shown: RefCell<Option<Prompt>>,
 }
@@ -63,8 +65,15 @@ impl Dictation {
             link,
             seat,
             up: Cell::new(false),
+            model_setup: Cell::new(false),
             shown: RefCell::new(None),
         }
+    }
+
+    /// Whether the person asked the card where speech models are set up,
+    /// once: the session opens it and clears the ask.
+    pub(crate) fn take_model_setup(&self) -> bool {
+        self.model_setup.replace(false)
     }
 
     /// A key the person pressed asked for dictation.
@@ -156,7 +165,13 @@ impl Dictation {
     }
 
     /// What the person answered on the card.
-    fn answer(&self, compositor: &mut Compositor, clipboard: &Clipboard, locked: bool, now: Instant) {
+    fn answer(
+        &self,
+        compositor: &mut Compositor,
+        clipboard: &Clipboard,
+        locked: bool,
+        now: Instant,
+    ) {
         let Some(seat) = &self.seat else {
             return;
         };
@@ -186,6 +201,13 @@ impl Dictation {
                 }
                 Answer::Discard(id) => {
                     self.link.discard_recovery(SessionId::new(id));
+                }
+                Answer::SetUp(id) => {
+                    // The model the dictation needed is installed where the
+                    // person manages them: the card closes, and the session
+                    // takes them there (`take_model_setup`).
+                    self.link.cancel(SessionId::new(id));
+                    self.model_setup.set(true);
                 }
             }
         }
@@ -234,7 +256,9 @@ impl Dictation {
             draft: self.preview(),
             failure: self.link.failure().map(failure),
             recovery: recovery.map(|(reason, _, _)| match reason {
-                tilo_dictation::RecoveryReason::VocabularyChanged => RecoveryReason::VocabularyChanged,
+                tilo_dictation::RecoveryReason::VocabularyChanged => {
+                    RecoveryReason::VocabularyChanged
+                }
                 tilo_dictation::RecoveryReason::TooLong => RecoveryReason::TooLong,
             }),
             copied: recovery.is_some_and(|(_, copied, _)| copied),
@@ -257,7 +281,9 @@ impl Dictation {
             .rev()
             .nth(PREVIEW_SCALARS.saturating_sub(1))
             .map_or(0, |(index, _)| index);
-        draft.get(start..).map_or_else(String::new, ToOwned::to_owned)
+        draft
+            .get(start..)
+            .map_or_else(String::new, ToOwned::to_owned)
     }
 }
 
@@ -312,16 +338,18 @@ struct Fields<'a>(&'a mut Compositor);
 
 impl Target for Fields<'_> {
     fn field(&mut self) -> Result<Field, FieldRefusal> {
-        self.0.dictation_field().map_err(|refusal| match refusal {
-            TextFieldRefusal::NoField => FieldRefusal::NoField,
-            TextFieldRefusal::Secret => FieldRefusal::Secret,
-            TextFieldRefusal::Unsupported => FieldRefusal::Unsupported,
-        })
-        .map(|field| Field {
-            id: field.id,
-            revision: field.revision,
-            multiline: field.multiline,
-        })
+        self.0
+            .dictation_field()
+            .map_err(|refusal| match refusal {
+                TextFieldRefusal::NoField => FieldRefusal::NoField,
+                TextFieldRefusal::Secret => FieldRefusal::Secret,
+                TextFieldRefusal::Unsupported => FieldRefusal::Unsupported,
+            })
+            .map(|field| Field {
+                id: field.id,
+                revision: field.revision,
+                multiline: field.multiline,
+            })
     }
 
     fn insert(&mut self, field: Field, text: &str) -> Insertion {

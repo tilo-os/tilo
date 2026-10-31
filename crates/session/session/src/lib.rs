@@ -241,6 +241,10 @@ pub enum QuickSettings {
 /// The settings app, which quick settings opens.
 const SETTINGS_APP: &str = "so.tilo.settings";
 
+/// Where Settings installs the local speech models dictation needs: the
+/// page of the models the person's devices run themselves.
+const SPEECH_MODELS_ANCHOR: &str = "settings.section:agent_models";
+
 /// The default for [`Options::session_actions`]: a session that owns no
 /// machine (a test, a screenshot, a session in a window) carries out
 /// nothing.
@@ -578,6 +582,36 @@ impl Shared {
     fn close_quick_settings(&self) {
         if let Some(panel) = &self.quick_settings {
             panel.open.set(false);
+        }
+    }
+
+    /// Take the person where the speech models are set up when the dictation
+    /// card's "Set up" was pressed: Settings at its models page, through the
+    /// action path search rows use; a plain launch opens Settings too when no
+    /// action host runs an app's actions.
+    fn follow_dictation(&self) {
+        if !self.dictation.take_model_setup() {
+            return;
+        }
+        let room = self.active_room();
+        let target =
+            tilo_desktop_search::Target::Invoke(Box::new(tilo_desktop_search::InvokeTarget::open(
+                SETTINGS_APP,
+                room.clone(),
+                SPEECH_MODELS_ANCHOR,
+            )));
+        let opened = self.search.perform_checked(&room, target, &mut |own| {
+            self.doors.invoke(&own.address, &own.arguments).map(drop)
+        });
+        if opened.is_ok() {
+            return;
+        }
+        let launch = Command::Launch {
+            generation: GENERATION.into(),
+            app: SETTINGS_APP.into(),
+        };
+        if let Err(error) = self.handle.dispatch(&launch, GENERATION) {
+            tracing::warn!(%error, "open settings for speech models");
         }
     }
 
@@ -1365,7 +1399,8 @@ impl Session {
         let services = mount_services(&mut doors, std::mem::take(&mut options.services));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
-        let dictation = dictation::Dictation::mount(&mut compositor, &mut doors, &services, &options);
+        let dictation =
+            dictation::Dictation::mount(&mut compositor, &mut doors, &services, &options);
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
         let asker = questions::Asker::new(
@@ -2223,6 +2258,7 @@ impl Session {
             locked,
             Instant::now(),
         );
+        self.shared.follow_dictation();
         let compositor = &mut self.compositor;
         self.shared
             .notifications
