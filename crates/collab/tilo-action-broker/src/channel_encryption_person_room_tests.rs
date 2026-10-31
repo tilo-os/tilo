@@ -43,7 +43,7 @@ fn an_ungoverned_room_whose_readers_are_named_opens_and_admits_only_them() {
     policy.allowed.lock().unwrap().insert(public(1));
     policy.allowed.lock().unwrap().insert(public(2));
     let dirs = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
-    let mut open = |seed: u8, id: usize, temp: &tempfile::TempDir| Device {
+    let open = |seed: u8, id: usize, temp: &tempfile::TempDir| Device {
         service: ChannelEncryption::open(
             ChannelEncryptionConfig {
                 root: temp.path().join("channels"),
