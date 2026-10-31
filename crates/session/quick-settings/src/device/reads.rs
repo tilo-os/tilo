@@ -1,17 +1,17 @@
 //! What the panel reads of the device, one read each, and what a read
 //! found.
 //!
-//! The reads go through the OS (`NetworkManager`, `BlueZ`, the power daemon,
-//! the brightness service) and some take seconds, so they only ever run on a
-//! worker ([`super::refresh`]). [`DeviceReads`] is the seam: the desktop
-//! reads the OS ([`OsReads`]), a test reads stand-ins. The sound is not read
-//! here: the audio service owns the graph, and the session hands the panel
-//! what it reads ([`super::DeviceHost::sound`]).
+//! The reads go through the OS (`NetworkManager`, `BlueZ`, the power daemon)
+//! and some take seconds, so they only ever run on a worker
+//! ([`super::refresh`]). [`DeviceReads`] is the seam: the desktop reads the
+//! OS ([`OsReads`]), a test reads stand-ins. The sound and the brightness are
+//! not read here: the audio service and the session's displays own them, and
+//! the session hands the panel what they read ([`super::DeviceHost::sound`],
+//! [`super::DeviceHost::update`]).
 
 use os_actions as qs;
 use tilo_power_mgmt::{BatterySnapshot, BatteryTime};
 
-use crate::DisplayBrightness;
 use crate::actions::QsActionAvailability;
 use crate::i18n::t;
 
@@ -19,10 +19,6 @@ use crate::i18n::t;
 /// and is only ever made on a worker; `None` (or an error) means it could
 /// not be read, which leaves what the panel shows as it is.
 pub trait DeviceReads: Send + Sync {
-    /// The built-in backlight, `0.0..=1.0`.
-    fn brightness(&self) -> Option<f32>;
-    /// Every monitor whose brightness can be set, named for display.
-    fn displays(&self) -> Vec<DisplayBrightness>;
     /// Whether Bluetooth is on; `None` without an adapter.
     fn bluetooth(&self) -> Option<bool>;
     fn power(&self) -> Option<qs::PowerProfile>;
@@ -72,17 +68,6 @@ pub trait DeviceReads: Send + Sync {
 pub struct OsReads;
 
 impl DeviceReads for OsReads {
-    fn brightness(&self) -> Option<f32> {
-        qs::log_get("get_brightness", qs::get_brightness())
-    }
-
-    fn displays(&self) -> Vec<DisplayBrightness> {
-        display_brightness(
-            qs::BrightnessService::global().rescan_blocking(),
-            settings_store::hardware::DisplayHardwareSnapshot::load(),
-        )
-    }
-
     fn bluetooth(&self) -> Option<bool> {
         qs::log_get("get_bluetooth", qs::bluez::is_powered())
     }
@@ -169,8 +154,6 @@ impl DeviceReads for OsReads {
 /// field the panel wrote after this read had started.
 #[derive(Debug)]
 pub(crate) struct FastReading {
-    pub(crate) brightness: Option<f32>,
-    pub(crate) displays: Option<Vec<DisplayBrightness>>,
     pub(crate) bluetooth: Option<bool>,
     /// A successful `BlueZ` state query proves that an adapter exists.
     pub(crate) bluetooth_available: bool,
@@ -191,8 +174,6 @@ impl FastReading {
     pub(crate) fn read(reads: &dyn DeviceReads) -> Self {
         let bluetooth = reads.bluetooth();
         Self {
-            brightness: reads.brightness(),
-            displays: Some(reads.displays()),
             bluetooth_available: bluetooth.is_some(),
             bluetooth,
             power: reads.power(),
@@ -218,10 +199,6 @@ impl FastReading {
             Reader::Wired => self.wired = None,
             Reader::Power => self.power = None,
             Reader::Vpns => self.vpns = None,
-            Reader::Brightness => {
-                self.brightness = None;
-                self.displays = None;
-            }
         }
     }
 
@@ -229,8 +206,6 @@ impl FastReading {
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
         Self {
-            brightness: None,
-            displays: Some(Vec::new()),
             bluetooth: None,
             bluetooth_available: false,
             power: None,
@@ -258,7 +233,6 @@ pub(crate) enum QsField {
     Mobile,
     Power,
     Vpn,
-    Brightness,
 }
 
 impl QsField {
@@ -271,7 +245,6 @@ impl QsField {
             Self::Wired => Reader::Wired,
             Self::Power => Reader::Power,
             Self::Vpn => Reader::Vpns,
-            Self::Brightness => Reader::Brightness,
         }
     }
 
@@ -292,17 +265,15 @@ pub(crate) enum Reader {
     Wired,
     Power,
     Vpns,
-    Brightness,
 }
 
 impl Reader {
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 5] = [
         Self::Radios,
         Self::Bluetooth,
         Self::Wired,
         Self::Power,
         Self::Vpns,
-        Self::Brightness,
     ];
 
     pub(crate) const fn index(self) -> usize {
@@ -317,7 +288,6 @@ impl Reader {
             Self::Wired => FieldReading::Wired(reads.wired()),
             Self::Power => FieldReading::Power(reads.power()),
             Self::Vpns => FieldReading::Vpns(reads.vpns()),
-            Self::Brightness => FieldReading::Brightness(reads.brightness(), reads.displays()),
         }
     }
 }
@@ -330,7 +300,6 @@ pub(crate) enum FieldReading {
     Wired(Option<qs::WiredInfo>),
     Power(Option<qs::PowerProfile>),
     Vpns(Option<Vec<qs::VpnConnectionInfo>>),
-    Brightness(Option<f32>, Vec<DisplayBrightness>),
 }
 
 impl FieldReading {
@@ -341,7 +310,6 @@ impl FieldReading {
             Self::Wired(_) => Reader::Wired,
             Self::Power(_) => Reader::Power,
             Self::Vpns(_) => Reader::Vpns,
-            Self::Brightness(..) => Reader::Brightness,
         }
     }
 }
@@ -360,8 +328,6 @@ pub(crate) struct WifiJoinResult {
 pub(crate) enum Failure {
     /// A switch, put back as the device has it.
     State(String),
-    /// A level, put back as the device has it.
-    Value(String),
     /// The device's own reason, while its state is read again.
     Refreshing(String),
 }
@@ -371,7 +337,6 @@ impl Failure {
     pub(crate) fn told(self, error: &str) -> (String, String) {
         match self {
             Self::State(title) => (title, t("host-qs-change-failed-state-restored")),
-            Self::Value(title) => (title, t("host-qs-change-failed-value-restored")),
             Self::Refreshing(title) => (
                 title,
                 crate::i18n::t_args("qs-action-failed-refreshing", &[("error", error.into())]),
@@ -427,111 +392,4 @@ pub(crate) enum QsReading {
     BtDevices(BluetoothReading),
     WifiJoin(WifiJoinResult),
     Wrote(WriteDone),
-}
-
-/// Name each controllable monitor from the compositor's display snapshot:
-/// its EDID model, "Built-in display" for the laptop panel, else its
-/// connector.
-pub(crate) fn display_brightness(
-    levels: Vec<qs::MonitorLevel>,
-    snapshot: Option<settings_store::hardware::DisplayHardwareSnapshot>,
-) -> Vec<DisplayBrightness> {
-    let outputs = snapshot
-        .map(|snapshot| snapshot.outputs)
-        .unwrap_or_default();
-    levels
-        .into_iter()
-        .map(|level| {
-            let output = outputs
-                .iter()
-                .find(|output| output.descriptor.label() == level.connector);
-            let name = match output {
-                Some(output) if output.builtin => t("display-identify-builtin"),
-                Some(output) => output
-                    .descriptor
-                    .monitor
-                    .as_ref()
-                    .map(settings_store::hardware::MonitorIdentity::display_name)
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or_else(|| level.connector.clone()),
-                None if qs::brightness::is_builtin_connector(&level.connector) => {
-                    t("display-identify-builtin")
-                }
-                None => level.connector.clone(),
-            };
-            DisplayBrightness {
-                connector: level.connector,
-                name,
-                level: level.level,
-            }
-        })
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn monitors_are_named_by_edid_model_or_else_connector() {
-        use settings_store::hardware::{
-            DisplayHardwareSnapshot, DisplayOutputSnapshot, MonitorIdentity, OutputDescriptor,
-            OutputMode,
-        };
-        let output = |connector: &str, builtin: bool, monitor: Option<MonitorIdentity>| {
-            let mode = OutputMode {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 60_000,
-            };
-            DisplayOutputSnapshot {
-                descriptor: OutputDescriptor {
-                    connector: connector.into(),
-                    connector_label: connector.into(),
-                    modes: vec![mode],
-                    hdr: false,
-                    vrr: false,
-                    color_profiles: Vec::new(),
-                    monitor,
-                },
-                current_mode: mode,
-                scale: 1.0,
-                builtin,
-                sink_hdr: false,
-                hdr_unavailable_reason: None,
-                sink_vrr: false,
-                vrr_unavailable_reason: None,
-                unavailable_reason: None,
-                color_profile_labels: std::collections::BTreeMap::new(),
-            }
-        };
-        let snapshot = DisplayHardwareSnapshot {
-            outputs: vec![
-                output("eDP-1", true, None),
-                output(
-                    "DP-2",
-                    false,
-                    Some(MonitorIdentity {
-                        make: "Dell".into(),
-                        model: "DELL U2720Q".into(),
-                        ..MonitorIdentity::default()
-                    }),
-                ),
-            ],
-            ..DisplayHardwareSnapshot::default()
-        };
-        let level = |connector: &str| qs::MonitorLevel {
-            connector: connector.into(),
-            level: 0.5,
-            kind: qs::BrightnessKind::Ddc,
-        };
-        let names: Vec<String> = display_brightness(
-            vec![level("eDP-1"), level("DP-2"), level("HDMI-A-1")],
-            Some(snapshot),
-        )
-        .into_iter()
-        .map(|display| display.name)
-        .collect();
-        assert_eq!(names, ["Built-in display", "Dell U2720Q", "HDMI-A-1"]);
-    }
 }

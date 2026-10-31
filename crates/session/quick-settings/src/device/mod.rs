@@ -564,23 +564,14 @@ impl DeviceHost {
     }
 
     fn set_level(&self, change: &LevelChange) -> Result<(), String> {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a level in 0..=1 as a percentage the OS takes in f32"
-        )]
-        let percent_of = |level: f64| (level.clamp(0.0, 1.0) * 100.0) as f32;
         let mut state = self.0.state.borrow_mut();
         match change {
             LevelChange::Brightness(level) => {
+                // The session's displays own the level: the slider shows
+                // where it was let go until their reading replaces it.
                 apply::show_level(&mut state, change);
                 drop(state);
-                let pct = percent_of(*level);
-                self.write(
-                    "set_brightness",
-                    Failure::Value(t("host-qs-change-failed-brightness")),
-                    ReadBack::Field(QsField::Brightness),
-                    move |d| d.set_brightness(pct),
-                );
+                self.ask(QsEffect::SetBrightness { level: *level });
             }
             LevelChange::Display(connector, level) => {
                 if !state
@@ -592,13 +583,10 @@ impl DeviceHost {
                 }
                 apply::show_level(&mut state, change);
                 drop(state);
-                let (connector, pct) = (connector.clone(), percent_of(*level));
-                self.write(
-                    "set_display_brightness",
-                    Failure::Value(t("host-qs-change-failed-brightness")),
-                    ReadBack::Field(QsField::Brightness),
-                    move |d| d.set_display_brightness(&connector, pct),
-                );
+                self.ask(QsEffect::SetDisplayBrightness {
+                    display: connector.clone(),
+                    level: *level,
+                });
             }
             LevelChange::Volume(level) => {
                 // The audio service owns the level and the mute: the slider
@@ -853,14 +841,10 @@ impl DeviceHost {
             QsEffect::SetDisplayBrightness { display, level } => {
                 self.set_level(&LevelChange::Display(display, level))?;
             }
-            QsEffect::BrightnessUp => {
-                let change = apply::brightness_step(&state(), apply::BRIGHTNESS_STEP);
-                self.set_level(&change)?;
-            }
-            QsEffect::BrightnessDown => {
-                let change = apply::brightness_step(&state(), -apply::BRIGHTNESS_STEP);
-                self.set_level(&change)?;
-            }
+            // The session's displays step the brightness, as the keys do:
+            // the panel asks and their reading moves the slider.
+            QsEffect::BrightnessUp => self.ask(QsEffect::BrightnessUp),
+            QsEffect::BrightnessDown => self.ask(QsEffect::BrightnessDown),
             QsEffect::SetVolume { level } => self.set_level(&LevelChange::Volume(level))?,
             QsEffect::VolumeUp => {
                 let change = apply::volume_step(&state(), apply::VOLUME_STEP);
@@ -1120,14 +1104,10 @@ impl Dispatcher for ValidatedQsActions<'_> {
         self.inner.apply_radio_change(change)
     }
 
-    fn set_brightness(&self, percent_value: f32) -> Result<(), String> {
-        self.inner.set_brightness(percent(percent_value)?)
-    }
-
-    fn set_display_brightness(&self, connector: &str, percent_value: f32) -> Result<(), String> {
-        name(connector, "display connector", 64)?;
-        self.inner
-            .set_display_brightness(connector, percent(percent_value)?)
+    /// The brightness is not the OS's to set here: the session's displays own
+    /// it, and the panel asks them.
+    fn set_brightness(&self, _percent: f32) -> Result<(), String> {
+        Err("the session's displays set the brightness".into())
     }
 
     fn set_volume(&self, percent_value: f32) -> Result<(), String> {
@@ -1249,9 +1229,6 @@ mod tests {
         fn set_brightness(&self, percent: f32) -> Result<(), String> {
             self.push(format!("brightness:{percent}"))
         }
-        fn set_display_brightness(&self, connector: &str, percent: f32) -> Result<(), String> {
-            self.push(format!("brightness:{connector}:{percent}"))
-        }
         fn set_volume(&self, percent: f32) -> Result<(), String> {
             self.push(format!("volume:{percent}"))
         }
@@ -1278,11 +1255,7 @@ mod tests {
     fn values_are_checked_before_they_reach_the_os() {
         let recorder = Recorder::default();
         let validated = ValidatedQsActions::new(&recorder);
-        validated.set_brightness(37.5).expect("a percentage passes");
         validated.set_volume(64.0).expect("a percentage passes");
-        validated
-            .set_display_brightness("DP-2", 40.0)
-            .expect("a connector and a percentage pass");
         validated.set_wifi(true).expect("a switch passes");
         validated
             .set_power_profile(os_actions::PowerProfile::Saver)
@@ -1292,28 +1265,23 @@ mod tests {
             .expect("a profile name passes");
         assert_eq!(
             recorder.calls.borrow().as_slice(),
-            [
-                "brightness:37.5",
-                "volume:64",
-                "brightness:DP-2:40",
-                "wifi:true",
-                "power:Saver",
-                "vpn:Work:false",
-            ]
+            ["volume:64", "wifi:true", "power:Saver", "vpn:Work:false"]
         );
-        assert!(validated.set_brightness(101.0).is_err());
         assert!(validated.set_volume(-1.0).is_err());
         assert!(validated.set_volume(f32::NAN).is_err());
-        assert!(validated.set_display_brightness("", 40.0).is_err());
+        assert!(
+            validated.set_brightness(50.0).is_err(),
+            "the brightness reaches the OS only through the session's displays"
+        );
         assert!(validated.set_vpn_connection("", true).is_err());
         assert_eq!(
             recorder.calls.borrow().len(),
-            6,
+            4,
             "nothing invalid dispatched"
         );
         recorder.fail.set(true);
         let error = validated
-            .set_brightness(50.0)
+            .set_volume(50.0)
             .expect_err("the OS's refusal reaches the caller");
         assert!(error.contains("controlled"));
     }
