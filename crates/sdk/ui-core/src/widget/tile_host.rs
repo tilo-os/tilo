@@ -261,6 +261,7 @@ mod window_search;
     clippy::struct_excessive_bools,
     reason = "history policy, record refusal, focus, layout dirtiness and presentation latches are independent"
 )]
+#[crate::component::not_a_component(shell, "hosts an app's window in the strip")]
 pub struct TileHost {
     content: TileContent,
     history: Option<crate::history_mode::host::HistoryChrome>,

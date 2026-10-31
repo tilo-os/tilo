@@ -374,18 +374,6 @@ pub fn attach_broker(broker: &AppActionBroker) {
     *SESSION_BROKER.write_recover() = Some(broker.downgrade());
 }
 
-/// The session's action broker while it runs.
-///
-/// # Errors
-/// It is not running yet, or has stopped.
-pub(crate) fn session_broker() -> Result<AppActionBroker, String> {
-    SESSION_BROKER
-        .read_recover()
-        .clone()
-        .ok_or("the session's action broker is not running yet")?
-        .upgrade()
-}
-
 /// [`LinkDoor`] over the session's action broker, admitting this device's
 /// selected person in the room as the palette does.
 pub struct SessionDoor;

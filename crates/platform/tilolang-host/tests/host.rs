@@ -635,18 +635,27 @@ fn the_instance_publishes_and_answers_the_history_verbs_every_app_does() {
     }
     assert_eq!(hosted.record().can_undo_as("grace"), (false, true));
 
-    // Ada has nothing of hers to undo: her Undo is refused, saying so.
+    // Ada's one step is the counter she created, which Grace has since counted in: her Undo
+    // takes that step back without taking Grace's work with it, so the counter stays.
     deliver(&inbox, 3, &undo, "ada");
     settle(&mut host, &mut window);
-    assert!(
-        matches!(
-            answered(&sent, 3),
-            Some(tilo_actions::InvocationUpdate::Failed { .. })
-        ),
-        "ada's undo is refused: {:?}",
-        answered(&sent, 3)
-    );
+    match answered(&sent, 3) {
+        Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+            let value = output.value.expect("undo says what it took back");
+            assert_eq!(value["undone"][0]["sentence"], "Created Counter", "{value}");
+        }
+        other => panic!("ada's undo is never refused: {other:?}"),
+    }
     assert_eq!(value_of(host.instances().next().unwrap()), 0);
+    assert!(
+        !host
+            .instances()
+            .next()
+            .unwrap()
+            .record()
+            .can_undo_as("ada")
+            .0
+    );
 
     // Grace's redo brings it back, and History lists all three steps as hers.
     deliver(&inbox, 4, &redo, "grace");

@@ -62,6 +62,10 @@ pub enum HistoryEdit {
         /// Every step after this version instead.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to: Option<String>,
+        /// Only the step this change id from history is part of, wherever it
+        /// stands, instead.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<String>,
     },
     Redo {
         steps: Option<u32>,
@@ -115,8 +119,10 @@ impl HistoryEdit {
                 steps,
                 run: None,
                 to: None,
+                step: None,
                 ..
             } => (HistoryOp::Undo, steps.unwrap_or(1)),
+            Self::Undo { step: Some(_), .. } => (HistoryOp::Undo, 1),
             Self::Undo { steps, .. } => (HistoryOp::Undo, steps.unwrap_or(0)),
             Self::Redo { steps } => (HistoryOp::Redo, steps.unwrap_or(1)),
             Self::Restore { .. } | Self::RestoreReviewed { .. } => (HistoryOp::Restore, 0),
@@ -405,11 +411,25 @@ fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
                 )
                 .nullable(),
                 ActionParam::optional("to", ParamType::Text, VERSION).nullable(),
+                ActionParam::optional(
+                    "step",
+                    ParamType::Text,
+                    "A change id from history: undo only the step it is part of",
+                )
+                .nullable(),
             ],
             |args| {
                 let to = args.text("to").map(str::to_owned);
+                let step = args.text("step").map(str::to_owned);
                 if to.is_some() && args.integer("steps").is_some() {
                     return Err("give steps or to, not both".into());
+                }
+                if step.is_some()
+                    && (to.is_some()
+                        || args.integer("steps").is_some()
+                        || args.text("run").is_some())
+                {
+                    return Err("give step alone".into());
                 }
                 let by = args.text("by").map(str::trim).map(str::to_owned);
                 if by.as_ref().is_some_and(|author| {
@@ -428,6 +448,7 @@ fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
                     steps: steps_arg(args)?,
                     run: args.text("run").map(str::to_owned),
                     to,
+                    step,
                 })
             },
         ),
@@ -915,7 +936,13 @@ impl HistoryEdit {
         let registry = tilo_actions::ActionRegistry::with(register);
         let mut original = doc.fork();
         match self {
-            Self::Undo { steps, run, by, to } => {
+            Self::Undo {
+                steps,
+                run,
+                by,
+                to,
+                step,
+            } => {
                 let (scope, default) = match run {
                     Some(run) => (Scope::Run(run.clone()), usize::MAX),
                     None => (
@@ -927,11 +954,19 @@ impl HistoryEdit {
                     ),
                 };
                 let compensate = |version: &Version| inverse(&mut original, &registry, version);
-                match to {
-                    Some(to) => steps::resolve(doc, to).and_then(|heads| {
+                match (to, step) {
+                    (_, Some(step)) => {
+                        steps::resolve(doc, step).and_then(|heads| match heads[..] {
+                            [hash] => steps::undo_step(doc, &scope, &hash, compensate, words),
+                            _ => Err(format!("`{step}` names no one change")),
+                        })
+                    }
+                    (Some(to), None) => steps::resolve(doc, to).and_then(|heads| {
                         steps::undo_since(doc, &scope, &heads, compensate, words)
                     }),
-                    None => steps::undo(doc, &scope, limit(*steps, default), compensate, words),
+                    (None, None) => {
+                        steps::undo(doc, &scope, limit(*steps, default), compensate, words)
+                    }
                 }
                 .map(drop)
             }

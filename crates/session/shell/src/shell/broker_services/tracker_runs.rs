@@ -535,7 +535,7 @@ mod tests {
     use super::{inherited_model, runs_of};
 
     #[test]
-    fn an_issue_assigned_to_an_agent_is_a_run_once_a_person_approves_it() {
+    fn an_issue_a_person_gives_an_agent_is_a_run_at_once() {
         let mut person = Replica::<Tracker>::new().as_author("ada");
         person
             .apply(Tracker::CREATE.with(tracker::Create {
@@ -546,7 +546,6 @@ mod tests {
                 assignee: Some("agent:claude".into()),
             }))
             .unwrap();
-        assert!(runs_of(&person.state().unwrap()).is_empty());
         let issue = person
             .state()
             .unwrap()
@@ -554,11 +553,6 @@ mod tests {
             .ids()
             .next()
             .cloned()
-            .unwrap();
-        person
-            .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
-                issue: issue.clone(),
-            }))
             .unwrap();
         person
             .apply(Tracker::SEND_MESSAGE.with(tracker::SendMessage {
@@ -588,11 +582,11 @@ mod tests {
         assert_eq!((run.applied_revision(), run.latest_revision()), (0, 1));
     }
 
-    /// A chat's run reaches its agent with the chat's whole budget: its turn
-    /// ceiling as well as its time, and the tracker admits no more turns
-    /// than the run's envelope does.
+    /// A chat's run reaches its agent with no turn or time cap the person
+    /// did not set, and the tracker admits no more turns than the run's
+    /// envelope does.
     #[test]
-    fn a_chats_run_carries_its_turn_ceiling_to_the_agent() {
+    fn a_chats_run_reaches_its_agent_uncapped() {
         assert_eq!(
             tasks::model::MAX_TURNS,
             u64::from(collab_types::task_budget::MAX_RUN_TURNS)
@@ -617,13 +611,10 @@ mod tests {
         let [run] = runs.as_slice() else {
             panic!("one run: {runs:?}");
         };
-        let budget = run.budget.expect("a chat has a budget");
-        budget.validate().unwrap();
         assert_eq!(
-            budget.max_turns.map(u64::from),
-            Some(tasks::model::CHAT_TURNS)
+            run.budget, None,
+            "a chat's run has no cap of its own: only what its person sets bounds it"
         );
-        assert_eq!(u64::from(budget.total_ms), tasks::model::MAX_TOTAL_MS);
     }
 
     /// A conversation goes on after a run ended: what the person tells the

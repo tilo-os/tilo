@@ -33,6 +33,7 @@ struct Shown {
 }
 
 /// A row with controls shown over its trailing top corner while it is hovered or holds focus.
+#[crate::component::not_a_component(part, "shown by the `ui.HoverToolbar` attachment")]
 pub struct HoverToolbar {
     layers: Layers,
     shown: Rc<Shown>,

@@ -296,6 +296,10 @@ pub fn line_height(text: &mut TextRenderer, theme: &Theme, role: TextRole) -> f6
 
 /// [`DayDividerFace`] as a widget, for a list built of widgets: a band across its column with
 /// the day's label at its centre, where a conversation's day changes.
+#[crate::component::not_a_component(
+    part,
+    "the divider between days of a transcript, which `ui.VirtualList(transcript: true)` draws"
+)]
 pub struct DayDivider {
     label: String,
     rect: Rect,

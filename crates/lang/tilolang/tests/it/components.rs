@@ -65,6 +65,22 @@ fn a_component_call_compiles_to_its_node_with_props_slots_and_events() {
     }
 }
 
+/// The `progress` primitive is the toolkit's `ProgressBar`, not a bar the host draws apart.
+#[test]
+fn the_progress_primitive_is_the_toolkits_progress_bar() {
+    let c = compile_body(&with_note(
+        r"view progress_of(n: Note) {
+    progress(0.4)
+}",
+    ));
+    validate(&c.wasm);
+    let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+    assert!(
+        strings.contains("ui.ProgressBar"),
+        "the node is ui.ProgressBar"
+    );
+}
+
 #[test]
 fn positional_props_follow_the_description() {
     let c = compile_body(&with_note(

@@ -920,6 +920,7 @@ impl Transient {
 /// has no token. When the stream goes quiet it fades over the caller's
 /// retirement window ([`Self::fading`]). Under reduced motion the raw
 /// position is the answer and nothing glides.
+#[crate::component::not_a_component(framework, "motion the framework applies")]
 pub struct Follow;
 
 impl Follow {

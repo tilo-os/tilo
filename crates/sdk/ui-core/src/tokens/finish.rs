@@ -5,9 +5,10 @@
 //! A theme document sets one [`Finish`] per surface role
 //! ([`RoleFinishes`]: the window ground, raised controls, floating chrome
 //! and bars), one [`Border`] and one [`Depth`]. The toolkit paints every
-//! surface of a role through the role's finish (`crate::surface`,
-//! `crate::backdrop`), so a theme makes everything flat and blocky or
-//! everything glass without an app or widget knowing.
+//! surface of a role with the role's painter set (`crate::part_paint`,
+//! through `crate::surface` and `crate::backdrop`), so a theme makes
+//! everything flat and blocky or everything glass without an app or widget
+//! knowing.
 //!
 //! Legibility never depends on a finish: whatever lies below a translucent
 //! or glass surface is held inside a band around the role's ground before
@@ -15,374 +16,322 @@
 //! the contrast it has on the opaque ground over the worst backdrop
 //! (`crate::theme::ThemeDocument::findings`).
 
+use std::collections::BTreeMap;
+use std::sync::{Arc, LazyLock};
+
 use serde::{Deserialize, Serialize};
+
+use crate::part_paint::{PainterSet, Param, builtin};
 
 /// What one surface role is made of: the painter set that draws it and that
 /// set's parameters.
 ///
 /// In a document a role names its painter set (`"painter"`) beside the
-/// set's own parameters, so the same field names a built-in set today and an
-/// installed one later (`docs/architecture/theming.md`, "Part painters"):
+/// set's own parameters, the ones the set declares
+/// ([`crate::part_paint::PartPainter::params`]):
 ///
-/// | Document | Finish |
+/// | Document | Look |
 /// |---|---|
-/// | `{ "painter": "block" }` | [`Finish::Flat`] |
-/// | `{ "painter": "default" }` | [`Finish::Solid`] |
-/// | `{ "painter": "default", "blur": 24, "tint": 0.72, "saturation": 1 }` | [`Finish::Translucent`] |
-/// | `{ "painter": "glass", "blur": …, "tint": …, "saturation": …, "refraction": …, "edge_highlight": …, "specular": … }` | [`Finish::Glass`] |
+/// | `{ "painter": "block" }` | flat, square to the border |
+/// | `{ "painter": "default" }` | the design language's opaque surfaces |
+/// | `{ "painter": "default", "blur": 24, "tint": 0.72, "saturation": 1 }` | the blurred backdrop under the ground at a tint |
+/// | `{ "painter": "glass", "blur": …, "tint": …, "saturation": …, "refraction": …, "edge_highlight": …, "specular": … }` | the same, bent and lit |
 ///
-/// A set this build does not have is not admitted.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(from = "PainterRef", into = "PainterRef")]
-pub enum Finish {
-    /// The role's ground, opaque, with no edge light and no hairline of
-    /// its own: a printed surface. Borders come from [`Border`] alone.
-    Flat,
-    /// The role's ground, opaque, with the hairline the design language
-    /// gives the role.
-    Solid,
-    /// What lies below, blurred by `blur` logical pixels and its colour
-    /// scaled by `saturation`, under the role's ground at `tint` opacity.
-    Translucent {
-        blur: f32,
-        tint: f32,
-        saturation: f32,
-    },
-    /// [`Self::Translucent`], with the backdrop bent at the edges like a
-    /// thick lens (`refraction`, logical pixels of displacement at the rim),
-    /// a lit rim along the top edge (`edge_highlight`, its opacity) and a
-    /// soft sheen across the upper body (`specular`, its opacity).
-    Glass {
-        blur: f32,
-        tint: f32,
-        saturation: f32,
-        refraction: f32,
-        edge_highlight: f32,
-        specular: f32,
-    },
+/// A set this build does not have, a parameter the set does not declare and
+/// a required one left out are not admitted.
+///
+/// The toolkit itself understands three parameters, whichever set states
+/// them: `blur` (how far the backdrop is blurred, logical pixels), `tint`
+/// (the ground's opacity over it) and `saturation`. A role that states any
+/// of them lets what is below it through ([`Finish::translucent`]).
+#[derive(Clone)]
+pub struct Finish {
+    set: PainterSet,
+    /// The parameters the document states, in the order the set declares
+    /// them.
+    params: Arc<[Param]>,
 }
 
-/// The built-in painter sets a role can name, with their parameters, as a
-/// document spells them.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "painter", rename_all = "snake_case", deny_unknown_fields)]
-enum PainterRef {
-    /// Flat, square-edged, borders only: the Block set.
-    Block {},
-    /// The design language's painters: opaque, or translucent when given a
-    /// blur or a tint.
-    Default {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        blur: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tint: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        saturation: Option<f32>,
-    },
-    /// The Glass set.
-    Glass {
-        blur: f32,
-        tint: f32,
-        saturation: f32,
-        refraction: f32,
-        edge_highlight: f32,
-        specular: f32,
-    },
+/// A finish as a document spells it.
+#[derive(Deserialize)]
+struct FinishDocument {
+    painter: String,
+    #[serde(flatten)]
+    params: BTreeMap<String, f32>,
 }
 
-impl From<PainterRef> for Finish {
-    fn from(painter: PainterRef) -> Self {
-        match painter {
-            PainterRef::Block {} => Self::Flat,
-            PainterRef::Default {
-                blur: None,
-                tint: None,
-                saturation: None,
-            } => Self::Solid,
-            PainterRef::Default {
-                blur,
-                tint,
-                saturation,
-            } => Self::Translucent {
-                blur: blur.unwrap_or(0.0),
-                tint: tint.unwrap_or(1.0),
-                saturation: saturation.unwrap_or(1.0),
-            },
-            PainterRef::Glass {
-                blur,
-                tint,
-                saturation,
-                refraction,
-                edge_highlight,
-                specular,
-            } => Self::Glass {
-                blur,
-                tint,
-                saturation,
-                refraction,
-                edge_highlight,
-                specular,
-            },
+impl Serialize for Finish {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.params.len().saturating_add(1)))?;
+        map.serialize_entry("painter", self.set.name())?;
+        for param in self.params.iter() {
+            map.serialize_entry(&param.name, &param.value)?;
         }
+        map.end()
     }
 }
 
-impl From<Finish> for PainterRef {
-    fn from(finish: Finish) -> Self {
-        match finish {
-            Finish::Flat => Self::Block {},
-            Finish::Solid => Self::Default {
-                blur: None,
-                tint: None,
-                saturation: None,
-            },
-            Finish::Translucent {
-                blur,
-                tint,
-                saturation,
-            } => Self::Default {
-                blur: Some(blur),
-                tint: Some(tint),
-                saturation: Some(saturation),
-            },
-            Finish::Glass {
-                blur,
-                tint,
-                saturation,
-                refraction,
-                edge_highlight,
-                specular,
-            } => Self::Glass {
-                blur,
-                tint,
-                saturation,
-                refraction,
-                edge_highlight,
-                specular,
-            },
-        }
+impl<'de> Deserialize<'de> for Finish {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let document = FinishDocument::deserialize(deserializer)?;
+        Self::named(&document.painter, document.params).map_err(serde::de::Error::custom)
     }
 }
+
+impl std::fmt::Debug for Finish {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut out = f.debug_struct("Finish");
+        out.field("painter", &self.set.name());
+        for param in self.params.iter() {
+            out.field(&param.name, &param.value);
+        }
+        out.finish()
+    }
+}
+
+impl PartialEq for Finish {
+    fn eq(&self, other: &Self) -> bool {
+        self.set.name() == other.set.name() && self.params == other.params
+    }
+}
+
+static SOLID: LazyLock<Finish> = LazyLock::new(|| Finish::builtin(builtin::default_set(), &[]));
+static FLAT: LazyLock<Finish> = LazyLock::new(|| Finish::builtin(builtin::block_set(), &[]));
 
 impl Finish {
-    /// The painter set that draws this finish, as a document names it.
-    #[must_use]
-    pub const fn painter_set(self) -> &'static str {
-        match self {
-            Self::Flat => "block",
-            Self::Solid | Self::Translucent { .. } => "default",
-            Self::Glass { .. } => "glass",
+    /// `set` with `params`, as the set declares them: every parameter it
+    /// requires stated, none it does not declare.
+    pub fn new<N: Into<String>>(
+        set: PainterSet,
+        params: impl IntoIterator<Item = (N, f32)>,
+    ) -> Result<Self, &'static str> {
+        let mut given: Vec<(String, f32)> = params
+            .into_iter()
+            .map(|(name, value)| (name.into(), value))
+            .collect();
+        let mut ordered = Vec::with_capacity(given.len());
+        for spec in set.painter().params() {
+            match given.iter().position(|(name, _)| *name == spec.name) {
+                Some(at) => {
+                    let (name, value) = given.swap_remove(at);
+                    ordered.push(Param { name, value });
+                }
+                None if spec.default.is_none() => return Err("painter parameter missing"),
+                None => {}
+            }
+        }
+        if !given.is_empty() {
+            return Err("painter parameter the set does not take");
+        }
+        Ok(Self {
+            set,
+            params: ordered.into(),
+        })
+    }
+
+    /// The set a document calls `name`, with `params`.
+    pub fn named<N: Into<String>>(
+        name: &str,
+        params: impl IntoIterator<Item = (N, f32)>,
+    ) -> Result<Self, &'static str> {
+        let set = crate::part_paint::painter_set(name).ok_or("painter set not installed")?;
+        Self::new(set, params)
+    }
+
+    /// A built-in set with parameters it is known to take.
+    fn builtin(set: &PainterSet, params: &[(&str, f32)]) -> Self {
+        Self {
+            set: set.clone(),
+            params: params
+                .iter()
+                .map(|&(name, value)| Param {
+                    name: name.to_owned(),
+                    value,
+                })
+                .collect(),
         }
     }
 
-    /// Blur band a document may state, logical pixels.
-    pub const BLUR_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=64.0;
-    /// Blur band a theme is built at.
-    pub const BLUR_USABLE: std::ops::RangeInclusive<f32> = 0.0..=48.0;
-    /// Tint band: any. Legibility is the backdrop band's, not the tint's.
-    pub const TINT_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=1.0;
-    /// Saturation band: `0` grey, `1` as it is, `2` twice as vivid.
-    pub const SATURATION_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=2.0;
-    /// Refraction band, logical pixels of displacement at the rim.
-    pub const REFRACTION_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=32.0;
-    /// Edge highlight and specular band: past half they read as a second
-    /// surface, not light on this one.
-    pub const LIGHT_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=0.5;
+    /// The design language's opaque surface: the Default set as it is.
+    #[must_use]
+    pub fn solid() -> Self {
+        SOLID.clone()
+    }
+
+    /// A flat surface: the Block set.
+    #[must_use]
+    pub fn flat() -> Self {
+        FLAT.clone()
+    }
+
+    /// The Default set showing what is below, blurred by `blur` logical
+    /// pixels, its colour scaled by `saturation`, under the ground at
+    /// `tint` opacity.
+    #[must_use]
+    pub fn frosted(blur: f32, tint: f32, saturation: f32) -> Self {
+        Self::builtin(
+            builtin::default_set(),
+            &[("blur", blur), ("tint", tint), ("saturation", saturation)],
+        )
+    }
+
+    /// The Glass set with `[blur, tint, saturation, refraction,
+    /// edge_highlight, specular]`, for tests.
+    #[cfg(test)]
+    pub(crate) fn glass(
+        [blur, tint, saturation, refraction, edge_highlight, specular]: [f32; 6],
+    ) -> Self {
+        Self::builtin(
+            builtin::glass_set(),
+            &[
+                ("blur", blur),
+                ("tint", tint),
+                ("saturation", saturation),
+                ("refraction", refraction),
+                ("edge_highlight", edge_highlight),
+                ("specular", specular),
+            ],
+        )
+    }
 
     /// The stock floating material: the design language's blurred panel.
-    pub const STOCK_FLOATING: Self = Self::Translucent {
-        blur: crate::tokens::colors::MATERIAL_BLUR_PX,
-        tint: crate::tokens::colors::MATERIAL_ALPHA,
-        saturation: 1.0,
-    };
-
-    /// Whether the role lets what is below it through.
     #[must_use]
-    pub const fn translucent(self) -> bool {
-        matches!(self, Self::Translucent { .. } | Self::Glass { .. })
+    pub fn stock_floating() -> Self {
+        Self::frosted(
+            crate::tokens::colors::MATERIAL_BLUR_PX,
+            crate::tokens::colors::MATERIAL_ALPHA,
+            1.0,
+        )
     }
 
-    /// The backdrop blur, logical pixels; `0` for an opaque finish.
+    /// The set that draws this finish.
     #[must_use]
-    pub const fn blur(self) -> f32 {
-        match self {
-            Self::Translucent { blur, .. } | Self::Glass { blur, .. } => blur,
-            Self::Flat | Self::Solid => 0.0,
-        }
+    pub fn set(&self) -> &PainterSet {
+        &self.set
     }
 
-    /// The tint's opacity over the backdrop; `1` for an opaque finish.
+    /// The set's name, as a document names it.
     #[must_use]
-    pub const fn tint(self) -> f32 {
-        match self {
-            Self::Translucent { tint, .. } | Self::Glass { tint, .. } => tint,
-            Self::Flat | Self::Solid => 1.0,
-        }
+    pub fn painter(&self) -> &str {
+        self.set.name()
     }
 
-    /// The backdrop's saturation; `1` for an opaque finish.
+    /// The parameters the document states, in the set's order.
     #[must_use]
-    pub const fn saturation(self) -> f32 {
-        match self {
-            Self::Translucent { saturation, .. } | Self::Glass { saturation, .. } => saturation,
-            Self::Flat | Self::Solid => 1.0,
-        }
+    pub fn params(&self) -> &Arc<[Param]> {
+        &self.params
     }
 
-    /// How light bends through the body and catches on it, for glass.
+    /// The parameter `name`, where the document states it.
     #[must_use]
-    pub const fn optics(self) -> Optics {
-        match self {
-            Self::Glass {
-                refraction,
-                edge_highlight,
-                specular,
-                saturation,
-                ..
-            } => Optics {
-                refraction,
-                edge_highlight,
-                specular,
-                saturation,
-            },
-            Self::Translucent { saturation, .. } => Optics {
-                saturation,
-                ..Optics::NONE
-            },
-            Self::Flat | Self::Solid => Optics::NONE,
-        }
+    pub fn param(&self, name: &str) -> Option<f32> {
+        self.params
+            .iter()
+            .find(|param| param.name == name)
+            .map(|param| param.value)
     }
 
-    /// Whether the role draws the hairline the design language gives it.
+    /// Whether the role lets what is below it through: it states a blur, a
+    /// tint or a saturation.
     #[must_use]
-    pub const fn hairline(self) -> bool {
-        !matches!(self, Self::Flat)
+    pub fn translucent(&self) -> bool {
+        ["blur", "tint", "saturation"]
+            .iter()
+            .any(|name| self.param(name).is_some())
+    }
+
+    /// The backdrop blur, logical pixels; `0` where none is stated.
+    #[must_use]
+    pub fn blur(&self) -> f32 {
+        self.param("blur").unwrap_or(0.0)
+    }
+
+    /// The tint's opacity over the backdrop; `1` where none is stated.
+    #[must_use]
+    pub fn tint(&self) -> f32 {
+        self.param("tint").unwrap_or(1.0)
+    }
+
+    /// The backdrop's saturation; `1` where none is stated.
+    #[must_use]
+    pub fn saturation(&self) -> f32 {
+        self.param("saturation").unwrap_or(1.0)
+    }
+
+    /// Whether the role draws the hairline the design language gives it:
+    /// every set's surfaces but Block's, which carry the border alone.
+    #[must_use]
+    pub fn hairline(&self) -> bool {
+        self.set != *builtin::block_set()
     }
 
     /// The finish actually painted where nothing may be translucent
-    /// (reduced transparency, forced colours, high contrast): solid, or
-    /// flat if it was flat.
+    /// (reduced transparency, high contrast): the toolkit's own sets become
+    /// solid, Block staying flat; a theme's own set keeps drawing, every
+    /// backdrop it asks for shown as its fallback.
     #[must_use]
-    pub const fn opaque(self) -> Self {
-        match self {
-            Self::Flat => Self::Flat,
-            _ => Self::Solid,
+    pub fn opaque(&self) -> &Self {
+        if self.set == *builtin::default_set() || self.set == *builtin::glass_set() {
+            &SOLID
+        } else {
+            self
         }
     }
 
-    /// Structural check: every number finite and in its band.
-    pub fn validate(self) -> Result<(), &'static str> {
-        let within = |value: f32, band: &std::ops::RangeInclusive<f32>| {
-            value.is_finite() && band.contains(&value)
-        };
-        match self {
-            Self::Flat | Self::Solid => Ok(()),
-            Self::Translucent {
-                blur,
-                tint,
-                saturation,
-            } => {
-                if !within(blur, &Self::BLUR_ADMITTED) {
-                    return Err("material blur outside 0..=64");
-                }
-                if !within(tint, &Self::TINT_ADMITTED) {
-                    return Err("material tint outside 0..=1");
-                }
-                if !within(saturation, &Self::SATURATION_ADMITTED) {
-                    return Err("material saturation outside 0..=2");
-                }
-                Ok(())
-            }
-            Self::Glass {
-                blur,
-                tint,
-                saturation,
-                refraction,
-                edge_highlight,
-                specular,
-            } => {
-                Self::Translucent {
-                    blur,
-                    tint,
-                    saturation,
-                }
-                .validate()?;
-                if !within(refraction, &Self::REFRACTION_ADMITTED) {
-                    return Err("glass refraction outside 0..=32");
-                }
-                if !within(edge_highlight, &Self::LIGHT_ADMITTED) {
-                    return Err("glass edge highlight outside 0..=0.5");
-                }
-                if !within(specular, &Self::LIGHT_ADMITTED) {
-                    return Err("glass specular outside 0..=0.5");
-                }
-                Ok(())
+    /// The finish painted under forced colours: what they guarantee is not
+    /// a theme's set to keep, so always the toolkit's own, solid (Block
+    /// staying flat).
+    #[must_use]
+    pub fn forced(&self) -> &Self {
+        if self.set == *builtin::block_set() {
+            &FLAT
+        } else {
+            &SOLID
+        }
+    }
+
+    /// Structural check: every parameter finite and in the band its set
+    /// admits.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let specs = self.set.painter().params();
+        for param in self.params.iter() {
+            let spec = specs
+                .iter()
+                .find(|spec| spec.name == param.name)
+                .ok_or("painter parameter the set does not take")?;
+            if !(param.value.is_finite() && spec.admitted.contains(&param.value)) {
+                return Err("painter parameter outside its band");
             }
         }
+        Ok(())
     }
 
-    /// This finish with its blur held to the usable band.
+    /// This finish with every parameter held to the band its set is built
+    /// at.
     #[must_use]
-    pub fn usable(self) -> Self {
-        let clamp = |blur: f32| blur.clamp(*Self::BLUR_USABLE.start(), *Self::BLUR_USABLE.end());
-        match self {
-            Self::Translucent {
-                blur,
-                tint,
-                saturation,
-            } => Self::Translucent {
-                blur: clamp(blur),
-                tint,
-                saturation,
-            },
-            Self::Glass {
-                blur,
-                tint,
-                saturation,
-                refraction,
-                edge_highlight,
-                specular,
-            } => Self::Glass {
-                blur: clamp(blur),
-                tint,
-                saturation,
-                refraction,
-                edge_highlight,
-                specular,
-            },
-            other => other,
+    pub fn usable(&self) -> Self {
+        let specs = self.set.painter().params();
+        let params = self
+            .params
+            .iter()
+            .map(|param| {
+                let value = specs
+                    .iter()
+                    .find(|spec| spec.name == param.name)
+                    .map_or(param.value, |spec| {
+                        param.value.clamp(*spec.usable.start(), *spec.usable.end())
+                    });
+                Param {
+                    name: param.name.clone(),
+                    value,
+                }
+            })
+            .collect();
+        Self {
+            set: self.set.clone(),
+            params,
         }
-    }
-}
-
-/// How a glass body treats the light through it and on it. All zero (and
-/// saturation one) for every other finish, so a painter applies it
-/// unconditionally.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Optics {
-    /// Displacement of the backdrop at the rim, logical pixels; it eases to
-    /// nothing a rim's width in.
-    pub refraction: f32,
-    /// Opacity of the lit rim along the top edge.
-    pub edge_highlight: f32,
-    /// Opacity of the sheen across the upper body.
-    pub specular: f32,
-    /// The backdrop's saturation.
-    pub saturation: f32,
-}
-
-impl Optics {
-    pub const NONE: Self = Self {
-        refraction: 0.0,
-        edge_highlight: 0.0,
-        specular: 0.0,
-        saturation: 1.0,
-    };
-
-    /// Whether the backdrop pass has anything to do beyond the blur.
-    #[must_use]
-    pub fn bends(&self) -> bool {
-        self.refraction > 0.0 || (self.saturation - 1.0).abs() > f32::EPSILON
     }
 }
 
@@ -404,7 +353,7 @@ pub enum SurfaceRole {
 
 /// One finish per surface role: the theme document's `material` role
 /// (`crate::theme::ThemeMaterial`) as the toolkit paints it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RoleFinishes {
     /// The window ground. Windows never overlap, so a translucent window
     /// shows the desktop behind it.
@@ -421,32 +370,35 @@ pub struct RoleFinishes {
 impl RoleFinishes {
     /// The design language's finishes: opaque windows and controls, the
     /// blurred floating material, a bar with no body.
-    pub const STOCK: Self = Self {
-        window: Finish::Solid,
-        control: Finish::Solid,
-        floating: Finish::STOCK_FLOATING,
-        bar: None,
-    };
+    #[must_use]
+    pub fn stock() -> Self {
+        Self {
+            window: Finish::solid(),
+            control: Finish::solid(),
+            floating: Finish::stock_floating(),
+            bar: None,
+        }
+    }
 
     /// Everything opaque: high contrast and forced colours.
-    pub const OPAQUE: Self = Self {
-        window: Finish::Solid,
-        control: Finish::Solid,
-        floating: Finish::Solid,
-        bar: None,
-    };
+    #[must_use]
+    pub fn solid() -> Self {
+        Self {
+            window: Finish::solid(),
+            control: Finish::solid(),
+            floating: Finish::solid(),
+            bar: None,
+        }
+    }
 
     /// The finish of `role`; a bar without a body reads as flat.
     #[must_use]
-    pub const fn of(&self, role: SurfaceRole) -> Finish {
+    pub fn of(&self, role: SurfaceRole) -> &Finish {
         match role {
-            SurfaceRole::Window => self.window,
-            SurfaceRole::Control => self.control,
-            SurfaceRole::Floating => self.floating,
-            SurfaceRole::Bar => match self.bar {
-                Some(finish) => finish,
-                None => Finish::Flat,
-            },
+            SurfaceRole::Window => &self.window,
+            SurfaceRole::Control => &self.control,
+            SurfaceRole::Floating => &self.floating,
+            SurfaceRole::Bar => self.bar.as_ref().unwrap_or(&*FLAT),
         }
     }
 
@@ -454,38 +406,38 @@ impl RoleFinishes {
         self.window.validate()?;
         self.control.validate()?;
         self.floating.validate()?;
-        if let Some(bar) = self.bar {
+        if let Some(bar) = &self.bar {
             bar.validate()?;
         }
         Ok(())
     }
 
-    /// These finishes with every blur held to the usable band.
+    /// These finishes with every parameter held to its usable band.
     #[must_use]
-    pub fn usable(self) -> Self {
+    pub fn usable(&self) -> Self {
         Self {
             window: self.window.usable(),
             control: self.control.usable(),
             floating: self.floating.usable(),
-            bar: self.bar.map(Finish::usable),
+            bar: self.bar.as_ref().map(Finish::usable),
         }
     }
 
     /// These finishes where nothing may be translucent.
     #[must_use]
-    pub fn opaque(self) -> Self {
+    pub fn opaque(&self) -> Self {
         Self {
-            window: self.window.opaque(),
-            control: self.control.opaque(),
-            floating: self.floating.opaque(),
-            bar: self.bar.map(Finish::opaque),
+            window: self.window.opaque().clone(),
+            control: self.control.opaque().clone(),
+            floating: self.floating.opaque().clone(),
+            bar: self.bar.as_ref().map(|bar| bar.opaque().clone()),
         }
     }
 }
 
 impl Default for RoleFinishes {
     fn default() -> Self {
-        Self::STOCK
+        Self::stock()
     }
 }
 
@@ -707,51 +659,52 @@ mod tests {
     use super::*;
 
     fn glass_with(refraction: f32, specular: f32, saturation: f32) -> Finish {
-        Finish::Glass {
-            blur: 18.0,
-            tint: 0.25,
-            saturation,
-            refraction,
-            edge_highlight: 0.4,
-            specular,
-        }
+        Finish::named(
+            "glass",
+            [
+                ("blur", 18.0),
+                ("tint", 0.25),
+                ("saturation", saturation),
+                ("refraction", refraction),
+                ("edge_highlight", 0.4),
+                ("specular", specular),
+            ],
+        )
+        .unwrap()
     }
 
     #[test]
     fn every_finish_round_trips_and_out_of_band_values_are_refused() {
-        let glass = Finish::Glass {
-            blur: 18.0,
-            tint: 0.25,
-            saturation: 1.6,
-            refraction: 10.0,
-            edge_highlight: 0.4,
-            specular: 0.15,
-        };
+        let glass = glass_with(10.0, 0.15, 1.6);
         for finish in [
-            Finish::Flat,
-            Finish::Solid,
-            Finish::Translucent {
-                blur: 24.0,
-                tint: 0.5,
-                saturation: 1.2,
-            },
-            glass,
+            Finish::flat(),
+            Finish::solid(),
+            Finish::frosted(24.0, 0.5, 1.2),
+            glass.clone(),
         ] {
-            let json = serde_json::to_value(finish).unwrap();
+            let json = serde_json::to_value(&finish).unwrap();
             assert_eq!(serde_json::from_value::<Finish>(json).unwrap(), finish);
             assert_eq!(finish.validate(), Ok(()));
         }
-        assert_eq!(
-            serde_json::to_value(glass).unwrap()["painter"],
-            serde_json::json!("glass")
-        );
+        let json = serde_json::to_value(&glass).unwrap();
+        assert_eq!(json["painter"], serde_json::json!("glass"));
+        assert_eq!(json["refraction"], serde_json::json!(10.0));
         assert_eq!(
             serde_json::from_value::<Finish>(serde_json::json!({"painter": "block"})).unwrap(),
-            Finish::Flat
+            Finish::flat()
         );
         assert_eq!(
             serde_json::from_value::<Finish>(serde_json::json!({"painter": "default"})).unwrap(),
-            Finish::Solid
+            Finish::solid()
+        );
+        // The set's parameters, in its order, whatever order a document
+        // states them in.
+        assert_eq!(
+            serde_json::from_value::<Finish>(serde_json::json!({
+                "painter": "default", "saturation": 1.2, "tint": 0.5, "blur": 24.0
+            }))
+            .unwrap(),
+            Finish::frosted(24.0, 0.5, 1.2)
         );
         assert!(
             serde_json::from_value::<Finish>(serde_json::json!({"painter": "block", "blur": 3.0}))
@@ -759,39 +712,45 @@ mod tests {
             "the block set takes no blur"
         );
         assert!(
+            serde_json::from_value::<Finish>(serde_json::json!({"painter": "glass", "blur": 3.0}))
+                .is_err(),
+            "glass states every parameter"
+        );
+        assert!(
             serde_json::from_value::<Finish>(serde_json::json!({"painter": "chrome"})).is_err(),
             "a painter set this build does not have is not admitted"
         );
         for bad in [
-            Finish::Translucent {
-                blur: 80.0,
-                tint: 0.5,
-                saturation: 1.0,
-            },
-            Finish::Translucent {
-                blur: 8.0,
-                tint: f32::NAN,
-                saturation: 1.0,
-            },
+            Finish::frosted(80.0, 0.5, 1.0),
+            Finish::frosted(8.0, f32::NAN, 1.0),
             glass_with(64.0, 0.1, 1.0),
             glass_with(8.0, 0.9, 1.0),
             glass_with(8.0, 0.1, 3.0),
         ] {
             assert!(bad.validate().is_err(), "{bad:?}");
         }
+        // A blur past its usable band is built at the band's end.
+        assert!((Finish::frosted(60.0, 0.5, 1.0).usable().blur() - 48.0).abs() < 1e-6);
     }
 
     #[test]
     fn opaque_keeps_flat_flat_and_makes_the_rest_solid() {
         let block = RoleFinishes {
-            window: Finish::Flat,
-            control: Finish::Flat,
-            floating: Finish::Flat,
-            bar: Some(Finish::Flat),
+            window: Finish::flat(),
+            control: Finish::flat(),
+            floating: Finish::flat(),
+            bar: Some(Finish::flat()),
         };
         assert_eq!(block.opaque(), block);
-        assert_eq!(RoleFinishes::STOCK.opaque().floating, Finish::Solid);
-        assert_eq!(RoleFinishes::STOCK.of(SurfaceRole::Bar), Finish::Flat);
+        assert_eq!(RoleFinishes::stock().opaque().floating, Finish::solid());
+        assert_eq!(*glass_with(4.0, 0.1, 1.0).opaque(), Finish::solid());
+        assert_eq!(*glass_with(4.0, 0.1, 1.0).forced(), Finish::solid());
+        assert_eq!(*Finish::flat().forced(), Finish::flat());
+        assert_eq!(*RoleFinishes::stock().of(SurfaceRole::Bar), Finish::flat());
+        assert!(!Finish::flat().hairline());
+        assert!(Finish::solid().hairline());
+        assert!(!Finish::solid().translucent());
+        assert!(Finish::stock_floating().translucent());
     }
 
     #[test]

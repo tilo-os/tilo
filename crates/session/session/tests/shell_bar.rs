@@ -282,8 +282,12 @@ fn with_nothing_changing_the_bar_does_no_work() {
     assert!(turns <= 4, "a change is a few turns, not a loop: {turns}");
     let ms = |d: Duration| d.as_secs_f64() * 1000.0;
     println!(
-        "shell bar change: {turns} view turns ({:.2} ms), {drawn} frames drawn ({:.2} ms)",
+        "shell bar change: {turns} view turns ({:.2} ms: update {:.2}, commit {:.2}, receive {:.2}, layout {:.2}), {drawn} frames drawn ({:.2} ms)",
         ms(after.turning.saturating_sub(before.turning)),
+        ms(after.updating.saturating_sub(before.updating)),
+        ms(after.committing.saturating_sub(before.committing)),
+        ms(after.receiving.saturating_sub(before.receiving)),
+        ms(after.laying_out.saturating_sub(before.laying_out)),
         ms(after.drawing.saturating_sub(before.drawing)),
     );
 }

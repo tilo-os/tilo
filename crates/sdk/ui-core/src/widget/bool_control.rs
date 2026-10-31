@@ -97,7 +97,11 @@ impl BoolControl {
             "Turn it on or off",
             OperationKind::View,
             VIEW_SET,
-            vec![ActionParam::required("value", ParamType::Boolean, "On or off")],
+            vec![ActionParam::required(
+                "value",
+                ParamType::Boolean,
+                "On or off",
+            )],
             move |args| {
                 EncodedAction::encode_operation(
                     VIEW_SET,
@@ -109,12 +113,9 @@ impl BoolControl {
                 .expect("generated value payload is serializable")
             },
         );
-        let resource = tilo_actions::ResourceSpec::new(
-            format!("tilo.control:{id}"),
-            "tilo.control.value",
-            id,
-        )
-        .with_action(spec.clone());
+        let resource =
+            tilo_actions::ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control.value", id)
+                .with_action(spec.clone());
         let binding = tilo_actions::ActionBinding::new(&resource, &spec, |value: bool| {
             serde_json::Map::from_iter([("value".into(), serde_json::Value::Bool(value))])
         })

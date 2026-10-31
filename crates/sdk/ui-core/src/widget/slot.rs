@@ -33,6 +33,10 @@ impl SlotHandle {
 
 /// A place in the tree whose content the app replaces in place:
 /// transparent to layout, input, paint and semantics.
+#[crate::component::not_a_component(
+    framework,
+    "content its owner swaps in place; the language swaps content with `if`"
+)]
 pub struct Slot {
     content: Element,
     pending: Rc<RefCell<Option<Element>>>,
@@ -127,6 +131,10 @@ impl super::Decorator for Slot {
 
 /// One of several parts, chosen by a key, each built once and kept alive
 /// while another shows. See the module docs.
+#[crate::component::not_a_component(
+    framework,
+    "content its owner swaps in place; the language swaps content with `if`"
+)]
 pub struct Switch<K> {
     key: Box<dyn FnMut() -> K>,
     build: Box<dyn FnMut(&K) -> Element>,

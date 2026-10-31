@@ -537,6 +537,7 @@ impl FindSession {
 
 /// The find bar: a query field with a match counter, option chips,
 /// previous/next and close, and an optional replace row.
+#[crate::component::not_a_component(system, "find in a window is the system's")]
 pub struct FindBar {
     field: SearchField,
     replace_field: SearchField,
@@ -1366,6 +1367,7 @@ pub fn with_findable<R>(
 /// keeps the whole scope (its larger extent) and moves with the band's edge
 /// by transform; the content is laid out under the band once, at rest.
 /// Ctrl+F and Escape land at once; the close button collapses the band.
+#[crate::component::not_a_component(system, "find in a window is the system's")]
 pub struct FindScope {
     bar: FindBar,
     content: Element,

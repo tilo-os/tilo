@@ -21,6 +21,10 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{TaffyTreeExt, Widget};
 
+#[path = "input_hint_component.rs"]
+mod component;
+pub use component::InputHintProps;
+
 /// Height of a painted hint row; hosts that centre a hint in their own band
 /// (the shortcut recorder) offset by half of this rather than a literal.
 pub(crate) const HEIGHT: f64 = 22.0;

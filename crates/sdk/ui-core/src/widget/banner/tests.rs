@@ -668,3 +668,43 @@ fn a_banner_dropped_while_opening_leaves_from_where_it_is_drawn() {
         assert!(!d.root_widget().needs_animation_frame());
     });
 }
+
+/// On touch a banner's action and its dismiss control are each a finger's target, inside the
+/// banner, which grows to hold them, and at a fractional display scale they stand on device
+/// pixels.
+#[test]
+fn on_touch_a_banners_controls_are_a_fingers_target_inside_it() {
+    use crate::interaction::InteractionEnvironment;
+    let root = Column::new().push(Box::new(
+        Banner::warning("Sync paused")
+            .with_message("Files sync again when you are online.")
+            .with_id("paused")
+            .with_action(Button::new("paused.retry", "Retry"))
+            .on_dismiss(|| {}),
+    ));
+    let mut d = driver(Box::new(root));
+    d.root_widget_mut()
+        .set_interaction_environment(InteractionEnvironment::TOUCH);
+    d.set_input_scale(1.5).expect("a scale");
+    d.relayout();
+    let finger = f64::from(InteractionEnvironment::TOUCH.minimum_target());
+    let targets = d.targets();
+    let banner = targets["paused"];
+    for control in ["paused.retry", "paused.dismiss"] {
+        let rect = targets[control];
+        assert!(
+            rect.height() >= finger - 0.5,
+            "{control} is {rect:?}, under a finger's {finger}"
+        );
+        assert!(
+            banner.contains(rect.origin()) && banner.contains(Point::new(rect.x1, rect.y1)),
+            "{control} {rect:?} stands inside the banner {banner:?}"
+        );
+        let device = rect.y0 * 1.5;
+        assert!(
+            (device - device.round()).abs() < 1e-3,
+            "{control}'s top edge {} is on a device pixel at 1.5x",
+            rect.y0
+        );
+    }
+}

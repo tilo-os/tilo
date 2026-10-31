@@ -94,6 +94,10 @@ impl ManualPolicy {
 /// The policy measures children, places every child, and returns its desired size.
 /// It can run repeatedly before painting and must not change child topology.
 /// Rectangles are relative to this region, represented by Taffy's logical f32.
+#[crate::component::not_a_component(
+    framework,
+    "geometry placed by Rust code; the language lays out with its primitives (`layers`, `at:`)"
+)]
 pub struct Manual {
     parts: Parts,
     policy: Rc<Policy>,

@@ -41,6 +41,7 @@ use super::Queryable;
 ///
 /// Opening the search and Enter in its field ask nothing of the view: it
 /// already is the query view, and the bar hands the keyboard on to it.
+#[crate::component::not_a_component(system, "system search")]
 pub struct QueryView {
     view: Element,
     kept: Option<FilterCount>,

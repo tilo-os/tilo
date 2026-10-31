@@ -26,6 +26,10 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{TaffyTreeExt, Tone, Widget};
 
+#[path = "text_stack_component.rs"]
+mod component;
+pub use component::TextStackProps;
+
 /// The gap between two lines of a stack: half the tight step.
 fn line_gap(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.rhythm.tight) / 2.0

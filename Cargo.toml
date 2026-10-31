@@ -180,6 +180,7 @@ members = [
     "crates/sdk/tilo-rich-text",
     "crates/sdk/tilo-page-raster",
     "crates/sdk/ui-paint",
+    "crates/sdk/theme-sdk",
     "crates/sdk/canvas",
     "crates/sdk/winit-x11",
     "crates/sdk/search",

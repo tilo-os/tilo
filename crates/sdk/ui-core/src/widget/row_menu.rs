@@ -30,6 +30,7 @@ struct Entry {
 }
 
 /// A row's More button and the menu of its secondary actions.
+#[crate::component::not_a_component(part, "a row's menu, from its `menu` slot")]
 pub struct RowMenu {
     menu: MenuButton,
     id: String,

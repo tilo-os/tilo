@@ -439,14 +439,54 @@ pub fn take_deferred_failures() -> Vec<DeferredFailure> {
 }
 
 /// Make `source` the settings document of this process, or restore the
-/// local profile with `None`.
+/// local profile with `None`. A host does this once, as it starts; a test
+/// that needs a document of its own takes a [`scoped_source`], which no
+/// other test sees.
 pub fn install_source(source: Option<Arc<dyn SettingsSource>>) {
     *SOURCE.write_recover() = source;
 }
 
-/// The installed source, if the host provides the document.
+/// The installed source, if the host provides the document: this thread's
+/// [`scoped_source`] where one is held, else the process's.
 pub fn installed_source() -> Option<Arc<dyn SettingsSource>> {
+    if let Some(scoped) = SCOPED.with(|scoped| scoped.borrow().last().cloned()) {
+        return scoped;
+    }
     SOURCE.read_recover().clone()
+}
+
+thread_local! {
+    /// The documents scoped to this thread, innermost last. An entry of
+    /// `None` scopes this thread to the local profile.
+    static SCOPED: std::cell::RefCell<Vec<Option<Arc<dyn SettingsSource>>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `source` as this thread's settings document until the returned scope is
+/// dropped (`None`: the local profile), whatever the process installed.
+/// Tests run on threads of one process; a document one of them installs
+/// process-wide is read by every other running at the time, so a test sets
+/// up its settings with this instead.
+#[must_use = "the scope ends when it is dropped"]
+pub fn scoped_source(source: Option<Arc<dyn SettingsSource>>) -> SourceScope {
+    SCOPED.with(|scoped| scoped.borrow_mut().push(source));
+    SourceScope {
+        _not_send: std::marker::PhantomData,
+    }
+}
+
+/// This thread's settings document, held by [`scoped_source`]. It ends on
+/// the thread it began on (it is not `Send`).
+pub struct SourceScope {
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for SourceScope {
+    fn drop(&mut self) {
+        SCOPED.with(|scoped| {
+            scoped.borrow_mut().pop();
+        });
+    }
 }
 
 /// Merge `values` into section `name` of `doc`, keeping every other section
@@ -646,5 +686,33 @@ mod tests {
         assert!(doc.update_section("a", object(json!({"x": 2}))).is_err());
         assert_eq!(Value::Object(doc.load()), json!({"a": {"x": 1}}));
         assert_eq!(doc.revision(), before);
+    }
+
+    #[test]
+    fn a_scoped_document_is_its_threads_alone_and_ends_with_its_scope() {
+        let document = |mode: &str| -> Arc<dyn SettingsSource> {
+            Arc::new(HostDocument::new(
+                object(json!({"appearance": {"mode": mode}})),
+                |_| Ok(()),
+            ))
+        };
+        let mode = || -> Option<String> {
+            let doc = installed_source()?.load();
+            Some(doc.get("appearance")?.get("mode")?.as_str()?.to_owned())
+        };
+        let outer = scoped_source(Some(document("light")));
+        assert_eq!(mode().as_deref(), Some("light"));
+        // A thread running beside it does not see it.
+        let elsewhere = std::thread::spawn(move || mode().as_deref() != Some("light"))
+            .join()
+            .unwrap_or(false);
+        assert!(elsewhere);
+        {
+            let _inner = scoped_source(Some(document("dark")));
+            assert_eq!(mode().as_deref(), Some("dark"));
+        }
+        assert_eq!(mode().as_deref(), Some("light"));
+        drop(outer);
+        assert!(SCOPED.with(|scoped| scoped.borrow().is_empty()));
     }
 }

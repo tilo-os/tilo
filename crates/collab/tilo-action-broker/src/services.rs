@@ -1021,6 +1021,10 @@ pub struct HostStepRequest<'a> {
     pub actor: &'a crate::collab_broker_capnp::BrokerActor,
     pub address: &'a tilo_actions::ActionAddress,
     pub argument: Option<&'a str>,
+    /// The task run the step is taken in, when it is one of a run's steps
+    /// (a task's program): what the step does in turn goes through it, so it
+    /// is admitted by the run too.
+    pub task_run: Option<&'a crate::collab_broker_capnp::TaskRunHost>,
 }
 
 /// How a host step ended.
@@ -1042,6 +1046,12 @@ pub trait HostStepServices: Send + Sync {
     fn app_id(&self) -> &str;
     /// Every step, described.
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
+    /// Whether its steps are steps a task agent takes in its run (a task's
+    /// programs): offered in a task agent's catalogue and admitted by its
+    /// run. No other host step is a task agent's.
+    fn for_tasks(&self) -> bool {
+        false
+    }
     /// The step at `address` as one invocation with `argument` (its slot
     /// form) is: by default as described, or, for a setting, as risky as
     /// the value it carries makes it.
