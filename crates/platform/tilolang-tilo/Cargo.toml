@@ -67,6 +67,10 @@ name = "it"
 path = "tests/it.rs"
 
 [[test]]
+name = "upgrade_it"
+path = "tests/upgrade_it.rs"
+
+[[test]]
 name = "budgets"
 path = "tests/budgets.rs"
 

@@ -309,6 +309,7 @@ impl ListedOnce {
 mod outbox;
 mod plan;
 mod unsaved;
+mod upgrade_fields;
 mod versions;
 mod written;
 use versions::{NO_VERSIONS, note_versions};
@@ -1321,6 +1322,19 @@ impl TiloStore {
     /// resource `doc`, or, with `None`, as anything else.
     pub fn set_migrating(&self, migrating: Option<(String, DocId)>) {
         self.mutate().migrating = migrating;
+    }
+
+    /// Turn the plain text each record of `app` holds in a field its type now keeps as rich
+    /// text into rich text with the same words, and write each as a change of the record
+    /// (committed under `by`, the package version's migration principal). A record already
+    /// holding rich text is not written, so a second run writes nothing. Returns how many
+    /// records changed. The room's origin calls it once, as it opens (`Host::migrate`).
+    pub fn upgrade_plain_text(&self, app: &str, module: &str, by: &str) -> usize {
+        if self.load_record().is_err() {
+            return 0;
+        }
+        let mut inner = self.mutate();
+        inner.upgrade_plain_text(app, module, by)
     }
 
     /// Whether the migration `migration` (its action id) ran on the resource `doc`.
