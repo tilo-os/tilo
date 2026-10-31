@@ -105,6 +105,13 @@ pub enum Command {
         generation: String,
         route: Route,
     },
+    /// Put the window closed most recently in the shown workspace back where
+    /// it was, and focus it. Nothing closed is no error: the chord that sent
+    /// it belongs to the desktop whether or not it had a window to bring
+    /// back.
+    Reopen {
+        generation: String,
+    },
     Workspace {
         generation: String,
         workspace: String,
@@ -194,6 +201,7 @@ impl Command {
     pub fn generation(&self) -> &str {
         match self {
             Self::Close { generation, .. }
+            | Self::Reopen { generation }
             | Self::Workspace { generation, .. }
             | Self::WorkspaceActivity { generation, .. }
             | Self::CloseWorkspaceActivity { generation, .. }
@@ -246,6 +254,8 @@ impl From<ScrollAction> for ui::widget::PrimaryScrollAction {
 pub enum Admitted {
     Select(RouteIds),
     Close(RouteIds),
+    /// Reopen the newest close of the active workspace.
+    Reopen(WorkspaceId),
     Width(RouteIds, u32),
     Maximize(RouteIds, bool),
     /// A person's name for the window; empty clears it.
@@ -358,6 +368,17 @@ fn admit_activity(
     }
 }
 
+/// The workspace whose closes a `reopen` undoes: the one the surface shows.
+///
+/// The closes a workspace remembers belong to the device the person closed
+/// them on, so what can be reopened is read when the command applies; here
+/// the shown workspace is all there is to check.
+fn admit_reopen(tree: &DesktopTree) -> Result<Admitted, String> {
+    tree.active_workspace()
+        .map(|workspace| Admitted::Reopen(workspace.id))
+        .ok_or_else(|| "Workspace unavailable".into())
+}
+
 /// [`admit`] for a surface performing `capabilities`.
 ///
 /// # Errors
@@ -389,6 +410,7 @@ pub fn admit_with(
     match command {
         Command::Select { route: r, .. } => route(r).map(Admitted::Select),
         Command::Close { route: r, .. } => route(r).map(Admitted::Close),
+        Command::Reopen { .. } => admit_reopen(tree),
         Command::Width {
             route: r, permille, ..
         } => {

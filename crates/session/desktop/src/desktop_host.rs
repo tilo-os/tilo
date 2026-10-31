@@ -1681,6 +1681,15 @@ impl DesktopChrome {
             ShortcutAction::NextWorkspace => self.apply_intent(ChromeIntent::SwitchWorkspace(1)),
             ShortcutAction::MaximizeWindow => self.maximize_focused(Some(true)),
             ShortcutAction::RestoreWindow => self.maximize_focused(Some(false)),
+            // The window the person closed last in the shown workspace comes
+            // back where it was. Nothing closed is no reason to leave the
+            // chord to whatever holds the keyboard: the desktop answers it
+            // either way, as the shell it replaces did.
+            ShortcutAction::ReopenClosedTab => {
+                self.dispatch(&Command::Reopen {
+                    generation: self.generation.clone(),
+                });
+            }
             // A tab covers the display by filling the strip it is laid out
             // in, so the fullscreen chord fills the strip and gives it back.
             ShortcutAction::ToggleMaximize | ShortcutAction::ToggleFullscreen => {

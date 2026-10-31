@@ -1557,6 +1557,16 @@ impl DesktopSurface {
                             });
                         }
                     }
+                    // The window comes back where it was, its app launched
+                    // again if that is what it takes: the row takes it in as
+                    // it takes a window a peer added, and the strip comes to
+                    // it as it does to a launched one.
+                    Admitted::Reopen(workspace) => {
+                        if let Some(reopened) = shared.tree.reopen_closed(workspace) {
+                            self.reveal = Some((reopened.strip, reopened.group));
+                            shared.replaced = true;
+                        }
+                    }
                     Admitted::Strip(workspace, strip) => {
                         shared.tree.active = workspace;
                         shared.tree.active_strip.insert(workspace, strip);
