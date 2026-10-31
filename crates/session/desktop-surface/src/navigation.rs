@@ -195,6 +195,15 @@ pub enum Command {
         generation: String,
         app: String,
     },
+    /// Open `app` as a tab right after the tab at `beside`, in its window
+    /// group: another window of an app that asked to open beside one of its
+    /// own. It takes focus unless `background`.
+    TabOpenBeside {
+        generation: String,
+        app: String,
+        beside: Route,
+        background: bool,
+    },
 }
 
 impl Command {
@@ -217,7 +226,8 @@ impl Command {
             | Self::GlobalSearch { generation }
             | Self::Commands { generation, .. }
             | Self::Launch { generation, .. }
-            | Self::Open { generation, .. } => generation,
+            | Self::Open { generation, .. }
+            | Self::TabOpenBeside { generation, .. } => generation,
         }
     }
 }
@@ -284,6 +294,9 @@ pub enum Admitted {
     CloseActivity(WorkspaceId),
     /// Open or close the notification centre.
     NotificationCenter(bool),
+    /// Open `app` as a tab right after the tab at the route, in its group,
+    /// taking focus unless the last field says not to.
+    TabOpenBeside(RouteIds, String, bool),
 }
 
 pub fn scroll_region(route: RouteIds, key: &str) -> String {
@@ -478,16 +491,33 @@ pub fn admit_with(
                 Err("Search query too long".into())
             }
         }
-        Command::Launch { app, .. } => {
-            let workspace = tree.active_workspace().ok_or("Workspace unavailable")?;
-            active_strip(tree, workspace).ok_or("Strip unavailable")?;
-            if app.is_empty() {
-                return Err("Application unavailable".into());
-            }
-            Ok(Admitted::Launch(app.clone()))
-        }
+        Command::Launch { app, .. } => admit_launch(tree, app),
+        Command::TabOpenBeside {
+            app,
+            beside: r,
+            background,
+            ..
+        } => route(r).and_then(|ids| admit_beside(ids, app, *background)),
         Command::Open { app, .. } => admit_open(tree, app),
     }
+}
+
+/// A launch, checked against the desktop it opens on.
+fn admit_launch(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
+    let workspace = tree.active_workspace().ok_or("Workspace unavailable")?;
+    active_strip(tree, workspace).ok_or("Strip unavailable")?;
+    if app.is_empty() {
+        return Err("Application unavailable".into());
+    }
+    Ok(Admitted::Launch(app.to_owned()))
+}
+
+/// A tab opening beside the window at `ids`, with the app it opens.
+fn admit_beside(ids: RouteIds, app: &str, background: bool) -> Result<Admitted, String> {
+    if app.is_empty() {
+        return Err("Application unavailable".into());
+    }
+    Ok(Admitted::TabOpenBeside(ids, app.to_owned(), background))
 }
 
 fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {

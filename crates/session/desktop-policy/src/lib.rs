@@ -26,8 +26,10 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use tilo_desktop_model::{DesktopTree, Display, IdMinter, Tab, TabId, TileContent, Workspace};
-use tilo_desktop_surface::navigation::Command;
+use tilo_desktop_model::{
+    DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace,
+};
+use tilo_desktop_surface::navigation::{Command, Route, RouteIds};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
 use ui::kurbo::Rect;
 use ui::widget::TileHost;
@@ -87,6 +89,14 @@ type Crashed = Rc<RefCell<BTreeMap<TabId, String>>>;
 /// The name each app is known by, for the notice it leaves when it stops.
 /// A launch id carries the app id alone, so its tab is named from here.
 type Titles = Rc<RefCell<BTreeMap<String, String>>>;
+
+/// Where a window of an app that asked to open beside one of its own lands:
+/// the tab it lands after, and whether it takes focus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Beside {
+    beside: RouteIds,
+    background: bool,
+}
 
 /// The tile source behind the policy's surface: a window's tab is opened
 /// from the window waiting under its launch id, and its tile is the
@@ -177,6 +187,9 @@ pub struct DesktopPolicy {
     crashed: Crashed,
     /// The name each app is known by, for its notice.
     titles: Titles,
+    /// The places the apps asked for, oldest first, by the app that asked:
+    /// its next window lands at the one its open asked for.
+    places: BTreeMap<String, Vec<Beside>>,
     /// Windows the desktop has given a tab, so a tab gone without
     /// [`Self::unmap`] is one the person closed.
     placed: BTreeSet<u64>,
@@ -218,6 +231,7 @@ impl DesktopPolicy {
             launches,
             crashed,
             titles,
+            places: BTreeMap::new(),
             placed: BTreeSet::new(),
             floating: BTreeMap::new(),
             displays: Vec::new(),
@@ -317,7 +331,8 @@ impl DesktopPolicy {
     /// Give `window` its place: a dialog ([`floating::floats`]) floats over
     /// the window it belongs to; any other window gets a tab beside the
     /// focused window of the shown strip, on the surface's next update
-    /// pass, where it takes focus.
+    /// pass, where it takes focus. One whose app asked to open beside a tab
+    /// of its own takes its place right after that tab instead.
     ///
     /// # Errors
     /// The desktop has no workspace or strip to open it in.
@@ -330,15 +345,89 @@ impl DesktopPolicy {
             self.floating.insert(window.id, parent);
             return Ok(());
         }
-        let launch = Command::Launch {
-            generation: GENERATION.into(),
-            app: format!("{LAUNCH_PREFIX}{}", window.id),
-        };
         let id = window.id;
+        let launch = format!("{LAUNCH_PREFIX}{id}");
+        let beside = self
+            .take_place(window.app_id.as_deref().unwrap_or_default())
+            .map(|place| Command::TabOpenBeside {
+                generation: GENERATION.into(),
+                app: launch.clone(),
+                beside: Route::from_ids(place.beside),
+                background: place.background,
+            });
         self.arriving.borrow_mut().insert(id, window);
-        self.handle.dispatch(&launch, GENERATION).inspect_err(|_| {
+        let placed = match beside {
+            // The tab it was asked to open beside may be gone by now: it
+            // lands as any launch does then.
+            Some(command) => self.handle.dispatch(&command, GENERATION).or_else(|_| {
+                self.handle.dispatch(
+                    &Command::Launch {
+                        generation: GENERATION.into(),
+                        app: launch,
+                    },
+                    GENERATION,
+                )
+            }),
+            None => self.handle.dispatch(
+                &Command::Launch {
+                    generation: GENERATION.into(),
+                    app: launch,
+                },
+                GENERATION,
+            ),
+        };
+        placed.inspect_err(|_| {
             self.arriving.borrow_mut().remove(&id);
         })
+    }
+
+    /// The tab of `app` a request from it answers to, with its group and its
+    /// place in it: the focused tab when it shows `app`, else the app's
+    /// first tab, in the workspace in front. Only `app`'s own tabs are
+    /// candidates, so a request never anchors on another app's tab.
+    #[must_use]
+    pub fn anchor_for(&self, app: &str) -> Option<(TabId, GroupId, usize)> {
+        self.handle.read(|tree| anchor_for(tree, app))
+    }
+
+    /// The next window `app` maps lands right after `anchor` (`None`: the tab
+    /// [`Self::anchor_for`] finds), in front unless `background`. Queued per
+    /// app, oldest first, so a burst of opens keeps each window's place.
+    /// False when the desktop holds no tab of `app` to open beside: the
+    /// window then lands wherever a launch lands.
+    pub fn place_next_beside(
+        &mut self,
+        app: &str,
+        anchor: Option<TabId>,
+        background: bool,
+    ) -> bool {
+        let Some(tab) = anchor.or_else(|| self.anchor_for(app).map(|(tab, ..)| tab)) else {
+            return false;
+        };
+        let Some(beside) = self.handle.read(|tree| route_of(tree, tab)) else {
+            return false;
+        };
+        self.places
+            .entry(app.to_owned())
+            .or_default()
+            .push(Beside { beside, background });
+        true
+    }
+
+    /// The place the app of an arriving window asked for, oldest first:
+    /// taken once, by the window it was asked for.
+    fn take_place(&mut self, app: &str) -> Option<Beside> {
+        let key = self
+            .places
+            .keys()
+            .find(|asked| app_ids_match(app, asked))?
+            .clone();
+        let mut asked = self.places.remove(&key)?;
+        let place = (!asked.is_empty()).then(|| asked.remove(0));
+        if !asked.is_empty() {
+            self.places.insert(key, asked);
+        }
+        place
     }
 
     /// `window` went away: its tab closes, and focus goes back to the
@@ -603,4 +692,58 @@ fn tab_mut(tree: &mut DesktopTree, window: u64) -> Option<&mut Tab> {
         .flat_map(|strip| &mut strip.window_groups)
         .flat_map(|group| &mut group.tabs)
         .find(|tab| foreign(tab) == Some(window))
+}
+
+/// Whether the app a window announces is the app a request named: the id
+/// itself, or the short name it ends with (`so.tilo.notes` is `notes`).
+fn app_ids_match(announced: &str, asked: &str) -> bool {
+    let announced = announced.to_ascii_lowercase();
+    let asked = asked.to_ascii_lowercase();
+    announced == asked || asked.rsplit('.').next() == Some(announced.as_str())
+}
+
+/// Where `tab` sits, for the command naming it.
+fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
+    tree.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            let group = strip
+                .window_groups
+                .iter()
+                .find(|group| group.tabs.iter().any(|candidate| candidate.id == tab))?;
+            Some(RouteIds {
+                workspace: workspace.id,
+                strip: strip.id,
+                group: group.id,
+                tab,
+            })
+        })
+    })
+}
+
+/// The tab of `app` a request from it answers to, with its group and place:
+/// the focused tab when it shows `app`, else the app's first tab in the
+/// workspace in front.
+fn anchor_for(tree: &DesktopTree, app: &str) -> Option<(TabId, GroupId, usize)> {
+    let workspace = tree.active_workspace()?;
+    let focused = tilo_desktop_surface::navigation::active_route(tree).map(|ids| ids.tab);
+    let tabs: Vec<(TabId, GroupId, usize)> = workspace
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| {
+            group
+                .tabs
+                .iter()
+                .enumerate()
+                .map(move |(index, tab)| (tab, group.id, index))
+        })
+        .filter_map(|(tab, group, index)| {
+            let id = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
+            app_ids_match(&id, app).then_some((tab.id, group, index))
+        })
+        .collect();
+    tabs.iter()
+        .copied()
+        .find(|(tab, ..)| Some(*tab) == focused)
+        .or_else(|| tabs.first().copied())
 }
