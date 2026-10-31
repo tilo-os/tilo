@@ -208,6 +208,64 @@ pub fn field_of_slot(
     })
 }
 
+/// The value of `field` from `json`, what its key held as JSON at some version
+/// ([`tilo_resource::history::held_at`]): [`field_of_slot`] of a value read from history.
+///
+/// # Errors
+/// `Backend` when the value does not have the field's shape.
+pub fn field_of_json(json: &Json, field: &FieldSchema) -> Result<FieldValue, StoreError> {
+    let shape = |what: &str| {
+        StoreError::Backend(format!(
+            "field `{}` held {json} where it holds {what}",
+            field.id
+        ))
+    };
+    Ok(match field.kind {
+        MergeKind::Register => {
+            let value = if json.is_null() { &field.default } else { json };
+            if value.is_null() {
+                FieldValue::Absent
+            } else {
+                FieldValue::Scalar(scalar_of_json(value, field.composite))
+            }
+        }
+        MergeKind::Counter => match json {
+            Json::Null => FieldValue::Counter(0),
+            other => FieldValue::Counter(other.as_i64().ok_or_else(|| shape("a count"))?),
+        },
+        MergeKind::Text => match json {
+            Json::Null => FieldValue::Text(String::new()),
+            Json::String(text) => FieldValue::Text(text.clone()),
+            _ => return Err(shape("text")),
+        },
+        MergeKind::Set => match json {
+            Json::Null => FieldValue::Keys(Vec::new()),
+            Json::Object(elements) => {
+                let mut keys: Vec<String> = elements.keys().cloned().collect();
+                keys.sort();
+                FieldValue::Keys(keys)
+            }
+            _ => return Err(shape("a set")),
+        },
+        MergeKind::Map => match json {
+            Json::Null => FieldValue::Entries(Vec::new()),
+            Json::Object(entries) => FieldValue::Entries(
+                entries
+                    .iter()
+                    .map(|(key, value)| (key.clone(), scalar_of_json(value, false)))
+                    .collect(),
+            ),
+            _ => return Err(shape("a map")),
+        },
+        MergeKind::RichText | MergeKind::Collection | MergeKind::Record => {
+            return Err(StoreError::Invalid(format!(
+                "field `{}` is not read from what its key held",
+                field.id
+            )));
+        }
+    })
+}
+
 /// A text field's value as the store holds it, when it holds text: a text, or rich text. What
 /// it says depends on who reads it, as a rich text's references read for each reader
 /// ([`crate::reading::said`]).

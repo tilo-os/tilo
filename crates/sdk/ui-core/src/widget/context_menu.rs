@@ -438,6 +438,10 @@ pub fn note_input(event: &WindowEvent) {
     }
 }
 
+#[crate::component::not_a_component(
+    part,
+    "opened by the `ui.ContextMenu` attachment and a row's menu"
+)]
 pub struct ContextMenu {
     items: Vec<MenuItem>,
     open: bool,

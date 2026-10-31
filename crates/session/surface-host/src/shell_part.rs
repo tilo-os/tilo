@@ -632,6 +632,14 @@ pub struct ShellWork {
     pub turning: std::time::Duration,
     /// Time the toolkit spent drawing those frames and the CPU rasterizing them.
     pub drawing: std::time::Duration,
+    /// Of [`Self::turning`]: the instance's updates (views run, patches made), the commits
+    /// to the shell's record, the window taking the patches in, and the layout after.
+    pub updating: std::time::Duration,
+    pub committing: std::time::Duration,
+    pub receiving: std::time::Duration,
+    pub laying_out: std::time::Duration,
+    /// Of [`Self::committing`]: the instance reading the record anew after a commit.
+    pub syncing: std::time::Duration,
     /// Effects the shell handed the session's door, and those the session ran.
     pub handed: u64,
     pub served: u64,
@@ -838,7 +846,9 @@ impl ShellPart {
             // The record holds the changes once they are committed: the instance reads them
             // from its heads.
             self.record.commit();
+            let at = std::time::Instant::now();
             self.instance.sync(Some(&self.record));
+            self.work.syncing = self.work.syncing.saturating_add(at.elapsed());
         }
         committed
     }
@@ -849,25 +859,39 @@ impl ShellPart {
         let started = std::time::Instant::now();
         self.work.turns = self.work.turns.wrapping_add(1);
         let mut shown = false;
-        let mut moved = false;
+        let mut quiet = false;
+        let lap = |since: &mut std::time::Instant| {
+            let now = std::time::Instant::now();
+            let took = now.saturating_duration_since(*since);
+            *since = now;
+            took
+        };
         for _ in 0..EXCHANGES {
+            let mut at = std::time::Instant::now();
             if let Some(window) = self.window() {
                 window.flush();
             }
             let updated = self.instance.update();
+            self.work.updating = self.work.updating.saturating_add(lap(&mut at));
             let committed = self.commit();
+            self.work.committing = self.work.committing.saturating_add(lap(&mut at));
             let received = self.window().is_some_and(AppWindow::receive);
             self.hear_notices();
+            self.work.receiving = self.work.receiving.saturating_add(lap(&mut at));
             shown |= received;
-            moved |= updated || committed || received;
             if !(updated || committed || received) {
+                quiet = true;
                 break;
             }
         }
         if shown {
+            let at = std::time::Instant::now();
             self.widgets.relayout();
+            self.work.laying_out = self.work.laying_out.saturating_add(at.elapsed());
         }
-        self.again = moved;
+        // The exchanges ran until neither side had more to say, unless they ran out first:
+        // then the next frame goes on.
+        self.again = !quiet;
         self.work.turning = self.work.turning.saturating_add(started.elapsed());
         shown
     }
@@ -1034,7 +1058,12 @@ impl ShellPart {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::arithmetic_side_effects,
+        reason = "test fixtures"
+    )]
 
     use super::*;
 
@@ -1117,6 +1146,51 @@ mod tests {
             link.asked.borrow().front().map(|ask| ask.action.clone()),
             Some("toggle-quick-settings".to_owned())
         );
+    }
+
+    /// What one discrete change costs the bar: printed per kind of change, for the record
+    /// of its frame budget; each must land in one turn.
+    #[test]
+    fn each_change_is_one_turn() {
+        type Change = (&'static str, fn(&mut DeskReading));
+        let (mut part, link) = part();
+        for _ in 0..4 {
+            part.prepare_frame();
+        }
+        let mut now = reading();
+        let changes: [Change; 3] = [
+            ("minute", |r| r.clock = "4:29 PM".to_owned()),
+            ("notification", |r| r.unread = 1),
+            ("workspace switch", |r| {
+                r.workspace = "Studio".to_owned();
+                r.workspaces[0].current = false;
+                r.workspaces[1].current = true;
+            }),
+        ];
+        for (name, change) in changes {
+            change(&mut now);
+            link.publish(now.clone());
+            let before = part.work();
+            part.prepare_frame();
+            part.prepare_frame();
+            let after = part.work();
+            let ms = |a: std::time::Duration, b: std::time::Duration| {
+                a.saturating_sub(b).as_secs_f64() * 1000.0
+            };
+            println!(
+                "SHELL-CHANGE {name}: {} turns, {:.3} ms (update {:.3}, commit {:.3} of which sync {:.3}, receive {:.3}, layout {:.3}), {} drawn {:.3} ms",
+                after.turns - before.turns,
+                ms(after.turning, before.turning),
+                ms(after.updating, before.updating),
+                ms(after.committing, before.committing),
+                ms(after.syncing, before.syncing),
+                ms(after.receiving, before.receiving),
+                ms(after.laying_out, before.laying_out),
+                after.drawn - before.drawn,
+                ms(after.drawing, before.drawing),
+            );
+            assert_eq!(after.turns - before.turns, 1, "{name} is one turn");
+        }
     }
 
     #[test]

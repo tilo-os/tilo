@@ -121,6 +121,11 @@ pub struct Reconciler {
     adapter: Adapter,
     /// Where the rows of the virtual lists it builds come from.
     rows: Option<crate::adapter::RowsOf>,
+    /// Each component of the view that did not build or take its props, and why: shown as a
+    /// caption in its place, and read by whoever checks the view (layout-check, tests), so a
+    /// component that does not build is never only a log line. Shared with every reconciler of
+    /// the same view.
+    broken: Rc<RefCell<Vec<String>>>,
 }
 
 fn prop<'a>(node: &'a UiNode, name: &str) -> Option<&'a Value> {
@@ -440,6 +445,7 @@ impl Reconciler {
             navigation: None,
             adapter,
             rows: None,
+            broken: Rc::default(),
         }
     }
 
@@ -455,7 +461,21 @@ impl Reconciler {
             navigation: None,
             adapter: other.adapter.clone(),
             rows: other.rows.clone(),
+            broken: Rc::clone(&other.broken),
         }
+    }
+
+    /// Each component of the view that did not build or take its props, and why, as of now.
+    #[must_use]
+    pub fn broken(&self) -> Vec<String> {
+        self.broken.borrow().clone()
+    }
+
+    fn note_broken(&self, node: &UiNode, error: &ui::component::Error) {
+        tracing::warn!(%error, key = %node.key, "a component of the view did not build");
+        self.broken
+            .borrow_mut()
+            .push(format!("{} ({}): {error}", node.kind, node.key));
     }
 
     /// Read the rows of the virtual lists it builds from `rows`.
@@ -590,6 +610,7 @@ impl Reconciler {
     /// A node of a described component, built by the one adapter from its description.
     fn component(&mut self, node: &UiNode) -> Element {
         let Some(description) = crate::adapter::description_of(node) else {
+            self.note_broken(node, &ui::component::Error::unknown(&node.kind));
             return self.text_of(node, "", TextRole::Caption);
         };
         // In a document, a body is the block editor native Notes edits a note in.
@@ -609,7 +630,7 @@ impl Reconciler {
             ui::component::build(&description.name, &mut source)
         };
         built.unwrap_or_else(|error| {
-            tracing::warn!(%error, "a component of the view did not build");
+            self.note_broken(node, &error);
             self.text_of(node, "", TextRole::Caption)
         })
     }
@@ -636,7 +657,7 @@ impl Reconciler {
                 Ok(true) => {}
                 Ok(false) => return Some(self.build(new_node)),
                 Err(error) => {
-                    tracing::warn!(%error, "a component of the view did not take its props");
+                    self.note_broken(new_node, &error);
                     return Some(self.build(new_node));
                 }
             }
@@ -719,8 +740,8 @@ impl Reconciler {
     }
 
     fn slots(&mut self, node: &UiNode) -> Vec<Slot> {
-        node.children
-            .iter()
+        placed(node)
+            .into_iter()
             .map(|child| self.slot(node, child))
             .collect()
     }
@@ -1272,7 +1293,7 @@ impl Reconciler {
         let moved = with_host(old, |old_host| {
             with_host(&mut fresh, |host| {
                 // The old children, in order, into the new shell; then reconciled there.
-                for (index, child) in old_node.children.iter().enumerate() {
+                for (index, child) in placed(old_node).into_iter().enumerate() {
                     let widget = old_host
                         .child_mut(index)
                         .map(|held| std::mem::replace(held, Box::new(Spacer::fixed(0.0))));
@@ -1307,17 +1328,18 @@ impl Reconciler {
     /// those gone removed, those kept moved to their place and reconciled in it, those new
     /// built and inserted.
     fn reconcile_slots(&mut self, host: &mut dyn SlotHost, old_node: &UiNode, new_node: &UiNode) {
-        let mut held: Vec<&UiNode> = old_node.children.iter().collect();
+        let mut held = placed(old_node);
+        let placing = placed(new_node);
         for index in (0..held.len()).rev() {
             let gone = held
                 .get(index)
-                .is_some_and(|old| !new_node.children.iter().any(|child| child.key == old.key));
+                .is_some_and(|old| !placing.iter().any(|child| child.key == old.key));
             if gone {
                 host.remove(index);
                 held.remove(index);
             }
         }
-        for (index, child) in new_node.children.iter().enumerate() {
+        for (index, child) in placing.into_iter().enumerate() {
             let Some(at) = held.iter().position(|old| old.key == child.key) else {
                 let slot = self.slot(new_node, child);
                 host.insert(index, slot);
@@ -1417,6 +1439,28 @@ fn frames(node: &UiNode) -> bool {
 }
 
 /// Whether `node` holds cards, directly or through the fragments a `match` or `if` leaves.
+/// The children `node` places in its slots. What a `for` or an `if` places in a grid or a row
+/// arrives as a fragment; there each of its children is a cell or an item of its own, where a
+/// fragment built as a stack would pile them into one. Elsewhere a fragment is a slot of its
+/// own, its children stacked tight.
+fn placed(node: &UiNode) -> Vec<&UiNode> {
+    fn flatten<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
+        for child in &node.children {
+            if child.kind == "fragment" {
+                flatten(child, out);
+            } else {
+                out.push(child);
+            }
+        }
+    }
+    if !matches!(node.kind.as_str(), "grid" | "row") {
+        return node.children.iter().collect();
+    }
+    let mut out = Vec::new();
+    flatten(node, &mut out);
+    out
+}
+
 fn holds_cards(node: &UiNode) -> bool {
     node.children.iter().any(|child| match child.kind.as_str() {
         "ui.Card" => true,
@@ -1533,6 +1577,27 @@ mod tests {
             .iter()
             .map(|child| std::ptr::from_ref::<dyn ui::widget::Widget>(*child).cast::<()>() as usize)
             .collect()
+    }
+
+    /// A component that does not build is shown as an empty caption in its place, and said:
+    /// whoever checks the view (layout-check, a test) reads why, never only a log line.
+    #[test]
+    fn a_component_that_does_not_build_is_recorded_with_why() {
+        let mut reconciler = reconciler();
+        // `ui.Text` requires its value; an unknown component is not described at all.
+        let view = stack("s", vec![node("ui.Text", "t"), node("ui.Nothing", "n")]);
+        let _ = reconciler.build(&view);
+        let broken = reconciler.broken();
+        assert_eq!(broken.len(), 2, "both are recorded: {broken:?}");
+        assert!(
+            broken
+                .iter()
+                .any(|b| b.contains("ui.Text (t)") && b.contains("value"))
+        );
+        assert!(broken.iter().any(|b| b.contains("ui.Nothing (n)")));
+        // Every reconciler of the same view records into the one list.
+        let rows = Reconciler::sharing(&reconciler);
+        assert_eq!(rows.broken().len(), 2);
     }
 
     #[test]
@@ -1695,5 +1760,50 @@ mod tests {
         };
         assert_eq!(with_min("grid"), None);
         assert_eq!(with_min("stack"), Some(Length::Rem(22.0)));
+    }
+
+    /// What a `for` places in a grid (a fragment per item) fills the grid's cells one by one,
+    /// rather than each item piling its cells into one; and an item added later takes cells of
+    /// its own while those already shown keep their widgets.
+    #[test]
+    fn a_grids_cells_from_a_for_are_each_a_cell_and_keep_their_widgets() {
+        let item = |key: &str, cells: [&str; 3]| UiNode {
+            children: cells
+                .iter()
+                .map(|cell| text(&format!("{key}{cell}"), cell))
+                .collect(),
+            ..node("fragment", key)
+        };
+        let grid = |items: Vec<UiNode>| {
+            let mut grid = node("grid", "g");
+            grid.props.insert("columns".to_owned(), Value::Int(3));
+            grid.children = items;
+            grid
+        };
+        let mut reconciler = reconciler();
+        let old = grid(vec![item("a", ["Title", "Old", "New"])]);
+        let built = reconciler.build(&old);
+        let before = identities(&built);
+        assert_eq!(
+            before.len(),
+            3,
+            "each of the item's cells is a cell of the grid"
+        );
+        let new = grid(vec![
+            item("a", ["Title", "Old", "New"]),
+            item("b", ["Due", "Mon", "Tue"]),
+        ]);
+        let updated = reconciler.update(built, &old, &new);
+        let after = identities(&updated);
+        assert_eq!(
+            after.len(),
+            6,
+            "the added item's cells are cells of their own"
+        );
+        assert_eq!(
+            after[..3],
+            before[..],
+            "the cells already shown keep their widgets"
+        );
     }
 }

@@ -31,6 +31,15 @@ static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-app-session-build-marker-v1"
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
 
+    // The desktop's tilolang surfaces start compiled once Cranelift compiled them in an
+    // earlier session.
+    if let Some(cache) = tilo_paths::xdg::cache_home()
+        && let Err(error) = tilolang_tilo::runtime::engine::keep_compiled_in(
+            cache.join("tilo").join("tilolang-compiled"),
+        )
+    {
+        eprintln!("tilo-session: compiled tilolang modules are not kept: {error}");
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (ours, command) = split_command(&args);
     // `--firstboot` is the host package's wrapper hook, which goes on to the

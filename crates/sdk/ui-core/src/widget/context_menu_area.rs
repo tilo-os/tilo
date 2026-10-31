@@ -148,6 +148,7 @@ pub type MenuEntries = Box<dyn Fn(Option<Point>) -> Vec<MenuEntry>>;
 /// keyboard opened the menu (`None`).
 pub type ContentMenuEntries = Box<dyn Fn(&dyn Widget, Option<Point>) -> Vec<MenuEntry>>;
 
+#[crate::component::not_a_component(part, "what the `ui.ContextMenu` attachment wraps its view in")]
 pub struct ContextMenuArea {
     content: Element,
     entries: ContentMenuEntries,

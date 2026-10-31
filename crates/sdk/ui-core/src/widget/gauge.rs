@@ -93,6 +93,10 @@ fn pct(frac: f32) -> i64 {
     (frac.clamp(0.0, 1.0) * 100.0).round() as i64
 }
 
+#[path = "gauge_component.rs"]
+mod component;
+pub use component::{BarGaugeProps, ProgressRingProps};
+
 /// Fraction thresholds (inclusive lower bounds) at which a gauge switches
 /// from success → warning → danger. The default mirrors the dashboard
 /// convention: `>= 0.85` danger, `>= 0.6` warning, else success.

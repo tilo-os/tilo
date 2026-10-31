@@ -272,6 +272,19 @@ impl Fixture {
         launcher: Option<Arc<dyn crate::services::LauncherServices>>,
         host_steps: Vec<Arc<dyn crate::services::HostStepServices>>,
     ) -> Self {
+        Self::with_origin(launcher, host_steps, None)
+    }
+    /// As [`Self::with_services`], with `record_changes` the origin of the
+    /// room's records.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, end to end, reads as one test"
+    )]
+    fn with_origin(
+        launcher: Option<Arc<dyn crate::services::LauncherServices>>,
+        host_steps: Vec<Arc<dyn crate::services::HostStepServices>>,
+        record_changes: Option<Arc<dyn crate::services::RecordChangeServices>>,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let mut identity_env = tilo_test_env::ScopedEnv::new();
         identity_env
@@ -350,6 +363,7 @@ impl Fixture {
                 tracker_runs: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
                 host_steps,
+                record_changes,
                 ..Default::default()
             },
         );
@@ -506,6 +520,15 @@ impl Fixture {
             )
             .unwrap();
         }
+        self.channel_admitted(peer, &route, admitted)
+    }
+    /// A channel on `route`, admitted as `admitted`.
+    fn channel_admitted(
+        &self,
+        peer: u64,
+        route: &CrdtRoute,
+        admitted: AdmittedJoinIdentity,
+    ) -> channel_handle::Client {
         capnp_rpc::new_client(CapnpChannelHandle {
             as_app: None,
             person_chat_views: std::cell::RefCell::default(),
@@ -1092,6 +1115,41 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
                     .is_err()
             );
             assert_eq!(crate::collab_broker_capnp::unread_invocations(200), 0);
+            drop(f);
+        })
+        .await;
+}
+
+/// A run its own agent finished (its `finish-run` landed) is over, not
+/// cancelled: the agent still follows that report to its result and then
+/// tells the host how the run ended. Read as cancelled, the broker cancelled
+/// the finishing report itself, however fast the run had answered.
+#[tokio::test(flavor = "current_thread")]
+async fn a_run_its_agent_finished_is_not_read_as_cancelled() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            f.on_run(|run| {
+                run.active = false;
+                run.finished_by_agent = true;
+            });
+            let mut status = agent.task_run_cancelled_request();
+            status.get().set_run_id(run.run_id);
+            status.get().set_lease(&run.lease);
+            assert!(
+                !status
+                    .send()
+                    .promise
+                    .await
+                    .unwrap()
+                    .get()
+                    .unwrap()
+                    .get_cancelled(),
+                "its own end is not a cancellation"
+            );
             drop(f);
         })
         .await;

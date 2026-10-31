@@ -117,3 +117,48 @@ fn the_apps_show_no_layout_problem_their_allow_list_does_not_name() {
         layout_check::render(&report)
     );
 }
+
+/// Whether `source` names the component `name` as `ui.<name>`, not as the start of a longer
+/// name (`ui.Card` is not `ui.CardGrid`).
+fn names_component(source: &str, name: &str) -> bool {
+    let wanted = format!("ui.{name}");
+    source.match_indices(&wanted).any(|(at, _)| {
+        !source
+            .get(at.saturating_add(wanted.len())..)
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
+/// The gallery app shows every component of the toolkit, as tilolang reaches it (`ui.<Name>`,
+/// from the toolkit's generated catalogue), and lays out headlessly with each of them built:
+/// so every public component compiles and renders from tilolang, and a component added to the
+/// toolkit fails here until the gallery shows it. (The check fails on a component that did
+/// not build; the apps' check above holds the gallery's layout to the others' bar.)
+#[test]
+fn the_gallery_shows_every_component_of_the_toolkit_and_each_builds() {
+    let dir = manifest().join("../../../apps/tl/gallery");
+    let mut source = String::new();
+    for entry in std::fs::read_dir(&dir).expect("the gallery reads") {
+        let path = entry.expect("the gallery reads").path();
+        if path.extension().is_some_and(|e| e == "tl") {
+            source.push_str(&std::fs::read_to_string(&path).expect("the gallery reads"));
+        }
+    }
+    let missing: Vec<&str> = tilolang::toolkit::catalogue()
+        .names()
+        .into_iter()
+        .filter(|name| !names_component(&source, name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the gallery (apps/tl/gallery) shows no `ui.{{Name}}` for: {}",
+        missing.join(", ")
+    );
+    let report = layout_check::check(&Options {
+        dirs: vec![dir],
+        ..Options::default()
+    })
+    .expect("the gallery lays out, every component of it built");
+    assert!(report.layouts > 0, "the gallery is laid out");
+}

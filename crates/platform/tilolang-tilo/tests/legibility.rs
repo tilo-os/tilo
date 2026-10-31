@@ -16,7 +16,7 @@ const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 pub(crate) const NOTES_APP: &str = "so.tilo.lang.notes";
-const TASKS_APP: &str = "so.tilo.lang.tasks";
+pub(crate) const TASKS_APP: &str = "so.tilo.lang.tasks";
 
 pub(crate) const AGENT: &str = "agent:helper";
 pub(crate) const RUN: &str = "issue-7@8000000000000001";

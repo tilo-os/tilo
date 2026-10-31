@@ -160,6 +160,8 @@ fnv.workspace = true
 # native backends. Re-exported under the toolkit's own module paths.
 tilo-host = { version = "0.1.0", path = "../tilo-host" }
 tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
+# The part painter interface every painter set draws through (`part_paint`).
+tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
 # The emoji catalogue the toolkit's picker, reaction strip and text fields
 # read: a text field resolves `:name:` without the app naming a catalogue
 # crate, and every app's field offers emoji by default. A workspace's own

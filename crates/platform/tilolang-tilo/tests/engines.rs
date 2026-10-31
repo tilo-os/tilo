@@ -4,13 +4,15 @@
 use tilolang_runtime::{AmStore, InvokeOutcome, Principal, Runtime, SimpleAuthority, Value};
 
 /// The suites run on each engine by naming it in `TILOLANG_ENGINE`; a run that names an engine
-/// this build lacks fails here instead of passing on wasmi.
+/// this build lacks fails here instead of passing on the default one.
 #[test]
 fn the_suite_runs_on_the_engine_it_names() {
     let named = std::env::var(tilolang_runtime::engine::ENGINE_VARIABLE).ok();
     assert_eq!(
         tilolang_runtime::configured().kind.name(),
-        named.as_deref().unwrap_or("wasmi")
+        named
+            .as_deref()
+            .unwrap_or_else(|| tilolang_runtime::EngineKind::default().name())
     );
 }
 

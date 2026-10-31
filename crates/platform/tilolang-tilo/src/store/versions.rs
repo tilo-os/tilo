@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
-use tilolang_runtime::store::{ANY_FIELD, Version};
+use tilolang_runtime::store::{ANY_FIELD, Left, Version, VersionKind};
 
 use crate::index as idx;
 use crate::reads::changed_by;
@@ -20,7 +20,7 @@ type Doc = tilo_resource::Doc;
 /// undo, a revert from History) is a version too, of each resource it wrote, as `mirror` (which
 /// holds it) places what it wrote: who took back an agent's run has seen what they took back.
 pub(super) fn note_versions<'c>(
-    index: &mut HashMap<String, Vec<Version>>,
+    index: &mut Versions,
     changes: impl IntoIterator<Item = &'c automerge::Change>,
     mirror: &Doc,
     resources: &BTreeMap<DocId, (AppId, TypeId)>,
@@ -32,13 +32,29 @@ pub(super) fn note_versions<'c>(
         } else {
             made
         };
-        for version in made {
+        for mut version in made {
+            // A removed item stood where it was last placed.
+            if version.kind == VersionKind::Removed {
+                version.left = index.placed.get(&version.resource).cloned();
+            }
             index
+                .by_resource
                 .entry(version.resource.clone())
                 .or_default()
                 .push(version);
         }
+        for (item, holder, field, ty) in idx::reflect::placed_of(change) {
+            let ty = ty.or_else(|| index.placed.get(&item).and_then(|left| left.ty.clone()));
+            index.placed.insert(item, Left { holder, field, ty });
+        }
     }
+}
+
+/// The versions of every resource, and where each item was last placed.
+#[derive(Default)]
+pub(crate) struct Versions {
+    pub(crate) by_resource: HashMap<String, Vec<Version>>,
+    placed: HashMap<String, Left>,
 }
 
 /// The versions a step on the record that is no action of a package made (an undo, a revert):
@@ -87,6 +103,7 @@ fn stepped(
             fields,
             resource,
             change: hash.clone(),
+            left: None,
         })
         .collect()
 }

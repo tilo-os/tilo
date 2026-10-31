@@ -192,6 +192,7 @@ pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec
         return Ok(out);
     }
     let mut room = sized.open()?;
+    super::engines::settle(sized.packages.iter().map(|p| &p.wasm))?;
     room.settle();
     let mut thread = Thread::open(&room, &item)?;
     room.frame(&mut [&mut thread.view])?;

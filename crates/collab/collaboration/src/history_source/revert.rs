@@ -9,16 +9,22 @@
 //! [`write_patches`](crate::state::write_patches), never cut out of the
 //! graph, so the original keeps its author and the undo is itself undoable.
 //!
-//! Not wholesale: inverting a splice deletes everything in the span,
-//! including what somebody typed there afterwards. So a [`Slot`] written
-//! since the run is left alone and reported in [`RevertOutcome::kept`], and
-//! a caller must consult [`RevertOutcome::is_complete`] before saying
-//! "undone".
+//! Not wholesale: a revert takes back the run's own change and leaves
+//! everybody else's alone. In text it removes exactly the characters the run
+//! inserted and puts back exactly the ones it deleted, wherever they are now
+//! ([`text`]), so somebody typing elsewhere in the same text keeps their
+//! words. A value somebody else set since (a field, a mark, a text they
+//! rewrote inside the run's own words, a container they wrote in) keeps their
+//! value: that part is left alone and reported in [`RevertOutcome::kept`].
+//! Nothing here refuses: what is kept was overwritten, and taking the run
+//! back means leaving the newer value standing.
 
 use std::collections::{HashMap, HashSet};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, Patch, PatchAction, Prop, ReadDoc};
+
+mod text;
 
 use crate::history_source::authors::{HistoryAuthor, ResolveAuthor};
 use crate::history_source::entry_id_from_hash;
@@ -57,7 +63,9 @@ impl ChangeRun {
 /// document anybody is still working in.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Slot {
-    /// One text object — the case where an undo would eat somebody's words.
+    /// One text object whose part of the run somebody else has since
+    /// rewritten (edited inside the run's own words, or wrote where it
+    /// deleted), or a mark they have since set again in it.
     Text(ObjId),
     /// One key of one map. Two writers on the same key is a plain overwrite.
     Field(ObjId, String),
@@ -85,9 +93,9 @@ pub struct RevertOutcome {
     pub covered: usize,
     /// Slots whose effect was inverted.
     pub reverted: usize,
-    /// Slots left alone because somebody edited them after the run. Empty is
-    /// the ordinary case; non-empty means this revert was partial **and the
-    /// caller must say so**.
+    /// Slots left alone because somebody else set them after the run: their
+    /// newer value stands. The run is still taken back; this says where its
+    /// effect was already overwritten.
     pub kept: Vec<KeptSlot>,
     /// True when the document changed. A run whose effect had already
     /// been undone reverts nothing and is not an error.
@@ -95,8 +103,8 @@ pub struct RevertOutcome {
 }
 
 impl RevertOutcome {
-    /// True when every slot the run wrote was inverted — i.e. the caller may
-    /// report that the work was undone completely.
+    /// True when every slot the run wrote was inverted: nobody had set any
+    /// of them since.
     pub fn is_complete(&self) -> bool {
         self.kept.is_empty()
     }
@@ -174,26 +182,41 @@ pub fn run_bounds(
 
 /// Structural sequence work returns `None` on purpose: `write_patches`
 /// re-anchors those positions through cursors, so a concurrent insert
-/// elsewhere in the same list is already handled and is not a reason to refuse.
-fn slot_of(doc: &AutoCommit, p: &Patch) -> Option<Slot> {
-    let is_text = matches!(doc.object_type(&p.obj), Ok(ObjType::Text));
+/// elsewhere in the same list is already handled and is not a reason to
+/// leave anything. Text is sequence work too: its characters are re-anchored
+/// the same way, and whether somebody rewrote a change's own text is
+/// [`text::rewritten`]'s question. A mark is a value over a span: setting it
+/// again is a [`Slot::Text`].
+fn slot_of(p: &Patch) -> Option<Slot> {
     match &p.action {
-        PatchAction::SpliceText { .. } | PatchAction::Mark { .. } => {
-            Some(Slot::Text(p.obj.clone()))
-        }
-        PatchAction::DeleteSeq { .. } | PatchAction::Insert { .. } | PatchAction::PutSeq { .. } => {
-            is_text.then(|| Slot::Text(p.obj.clone()))
-        }
+        PatchAction::Mark { .. } => Some(Slot::Text(p.obj.clone())),
         PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => {
             Some(Slot::Field(p.obj.clone(), key.clone()))
         }
-        PatchAction::Increment { prop, .. } => match prop {
-            Prop::Map(k) => Some(Slot::Field(p.obj.clone(), k.clone())),
-            Prop::Seq(_) => is_text.then(|| Slot::Text(p.obj.clone())),
-        },
+        PatchAction::Increment {
+            prop: Prop::Map(key),
+            ..
+        } => Some(Slot::Field(p.obj.clone(), key.clone())),
+        PatchAction::SpliceText { .. }
+        | PatchAction::DeleteSeq { .. }
+        | PatchAction::Insert { .. }
+        | PatchAction::PutSeq { .. }
+        | PatchAction::Increment { .. }
         // A conflict marker carries no content.
-        PatchAction::Conflict { .. } => None,
+        | PatchAction::Conflict { .. } => None,
     }
+}
+
+/// Whether `p` writes a text object's characters: what [`text::rewritten`]
+/// decides for the whole text.
+fn writes_text(doc: &AutoCommit, p: &Patch) -> bool {
+    matches!(
+        p.action,
+        PatchAction::SpliceText { .. }
+            | PatchAction::DeleteSeq { .. }
+            | PatchAction::Insert { .. }
+            | PatchAction::PutSeq { .. }
+    ) && matches!(doc.object_type(&p.obj), Ok(ObjType::Text))
 }
 
 /// Index of the first change after the run bracketed by `after`.
@@ -244,6 +267,58 @@ fn objects_created(forward: &[Patch]) -> HashSet<ObjId> {
     out
 }
 
+/// What changes after a run wrote, by whom: [`later_writers`].
+struct Later {
+    /// Each slot, with the first actor that wrote it.
+    slots: HashMap<Slot, String>,
+    /// What changes made with the run in their history typed and deleted
+    /// in each text object.
+    text: HashMap<ObjId, text::LaterText>,
+}
+
+/// The changes made with the run (the changes `after` has and `before` has
+/// not) in their history: what could have built on it. A change made
+/// concurrently never saw the run's text, so it cannot have rewritten it.
+fn made_after_run(
+    doc: &AutoCommit,
+    before: &[ChangeHash],
+    after: &[ChangeHash],
+) -> HashSet<ChangeHash> {
+    let metas = doc.committed_document().get_changes_meta(&[]);
+    let deps: HashMap<ChangeHash, &[ChangeHash]> = metas
+        .iter()
+        .map(|meta| (meta.hash, meta.deps.as_slice()))
+        .collect();
+    let ancestors = |heads: &[ChangeHash]| {
+        let mut seen: HashSet<ChangeHash> = HashSet::new();
+        let mut stack: Vec<ChangeHash> = heads.to_vec();
+        while let Some(hash) = stack.pop() {
+            if seen.insert(hash) {
+                stack.extend(deps.get(&hash).copied().unwrap_or_default().iter().copied());
+            }
+        }
+        seen
+    };
+    let had = ancestors(before);
+    let run: HashSet<ChangeHash> = ancestors(after)
+        .into_iter()
+        .filter(|hash| !had.contains(hash))
+        .collect();
+    let mut out: HashSet<ChangeHash> = HashSet::new();
+    // Listed in causal order: every dependency comes before what needs it.
+    for meta in &metas {
+        if !run.contains(&meta.hash)
+            && meta
+                .deps
+                .iter()
+                .any(|dep| run.contains(dep) || out.contains(dep))
+        {
+            out.insert(meta.hash);
+        }
+    }
+    out
+}
+
 /// Slots written by changes that landed after `after`, mapped to the actor
 /// that wrote them.
 ///
@@ -256,14 +331,16 @@ fn objects_created(forward: &[Patch]) -> HashSet<ObjId> {
 /// the inverse would delete it outright.
 fn later_writers(
     doc: &mut AutoCommit,
-    after: &[ChangeHash],
+    (before, after): (&[ChangeHash], &[ChangeHash]),
     by: Option<&str>,
     invoker: Option<&str>,
     created: &HashSet<ObjId>,
-) -> HashMap<Slot, String> {
+) -> Later {
     let versions = tilo_resource::history::versions(doc);
+    let saw_run = made_after_run(doc, before, after);
     let start_at = first_index_after(doc, after, versions.len());
     let mut out: HashMap<Slot, String> = HashMap::new();
+    let mut typed: HashMap<ObjId, text::LaterText> = HashMap::new();
     for i in start_at..versions.len() {
         // `i` is always `< versions.len()` by the loop bound; retain the
         // checked access for a panic-free path.
@@ -295,8 +372,11 @@ fn later_writers(
         if crate::history_source::is_history_metadata(&patches) {
             continue;
         }
+        if saw_run.contains(&v.hash) {
+            text::record_later(doc, &patches, (&lo, &hi), &v.actor, &mut typed);
+        }
         for p in &patches {
-            if let Some(s) = slot_of(doc, p) {
+            if let Some(s) = slot_of(p) {
                 out.entry(s).or_insert_with(|| v.actor.clone());
             }
             // Every created ancestor is protected: the inverse deletes the
@@ -310,7 +390,10 @@ fn later_writers(
             }
         }
     }
-    out
+    Later {
+        slots: out,
+        text: typed,
+    }
 }
 
 /// The object living at `prop` of `obj` as of `after`, when it is one the run
@@ -331,11 +414,13 @@ fn blocked_container(
     Some((slot, actor))
 }
 
-/// Two kinds of hold-back: a patch writing to a [`Slot`] somebody has
-/// edited since would overwrite their edit; a patch *removing a container*
-/// the run created that somebody has since written inside would delete
-/// their work outright. A multi-element removal is split so the elements
-/// nobody touched still go.
+/// Three kinds of hold-back: a patch writing to a [`Slot`] somebody has
+/// set since would overwrite their value; a patch writing the characters
+/// of a text somebody has rewritten since ([`text::rewritten`]) would undo
+/// their rewrite; a patch *removing or replacing a container* the run
+/// created that somebody has since written inside would delete their work
+/// outright. A multi-element removal is split so the elements nobody
+/// touched still go.
 #[allow(
     clippy::too_many_lines,
     reason = "classification keeps the patch shadow, conflict attribution, and write decision in one auditable pass"
@@ -343,7 +428,7 @@ fn blocked_container(
 fn classify(
     doc: &AutoCommit,
     inverse: Vec<Patch>,
-    later: &HashMap<Slot, String>,
+    (later, rewritten): (&HashMap<Slot, String>, &HashMap<ObjId, String>),
     after: &[ChangeHash],
     covered: usize,
     authors: &dyn ResolveAuthor,
@@ -411,7 +496,7 @@ fn classify(
                 }
                 continue;
             }
-            PatchAction::DeleteMap { key } => {
+            PatchAction::DeleteMap { key } | PatchAction::PutMap { key, .. } => {
                 if let Some((slot, actor)) =
                     blocked_container(doc, after, &p.obj, key.as_str(), later)
                 {
@@ -429,7 +514,24 @@ fn classify(
             _ => {}
         }
 
-        if let Some(s) = slot_of(doc, &p) {
+        if writes_text(doc, &p) {
+            let slot = Slot::Text(p.obj.clone());
+            if let Some(actor) = rewritten.get(&p.obj) {
+                if kept_seen.insert(slot.clone()) {
+                    kept.push(KeptSlot {
+                        by: authors.resolve(actor),
+                        slot,
+                        actor_hex: actor.clone(),
+                    });
+                }
+                writable.push((p, false));
+            } else {
+                reverted_slots.insert(slot);
+                writable.push((p, true));
+            }
+            continue;
+        }
+        if let Some(s) = slot_of(&p) {
             if let Some(actor) = later.get(&s) {
                 if kept_seen.insert(s.clone()) {
                     kept.push(KeptSlot {
@@ -460,9 +562,8 @@ fn classify(
 
 /// Work out what undoing `run` would do, without touching the document.
 ///
-/// The dry run behind an affordance that must be explicit *before* the user
-/// commits to it — a menu item saying "undo, except the paragraph you edited"
-/// needs this, and so does a caller deciding whether to refuse.
+/// The dry run behind an affordance that says *before* the user commits to
+/// it what stays: "undo, except the title Bob renamed since".
 ///
 /// # Errors
 ///
@@ -475,11 +576,32 @@ pub fn plan_revert(
     authors: &dyn ResolveAuthor,
 ) -> Result<RevertOutcome, RevertError> {
     let (before, after, covered) = run_bounds(doc, run)?;
-    let forward = doc.diff(&before, &after);
+    Ok(plan(doc, (&before, &after, covered), (by, None), authors).0)
+}
+
+/// The revert of the changes between `before` and `after` (`covered` of
+/// them) by the actor `by` (and the invoker `invoker` writing from other
+/// actors): what it does and leaves, and its patches, each marked whether
+/// to write it.
+fn plan(
+    doc: &mut AutoCommit,
+    (before, after, covered): (&[ChangeHash], &[ChangeHash], usize),
+    (by, invoker): (Option<&str>, Option<&str>),
+    authors: &dyn ResolveAuthor,
+) -> (RevertOutcome, Vec<(Patch, bool)>) {
+    let forward = doc.diff(before, after);
     let created = objects_created(&forward);
-    let inverse = doc.diff(&after, &before);
-    let later = later_writers(doc, &after, by, None, &created);
-    Ok(classify(doc, inverse, &later, &after, covered, authors).0)
+    let inverse = doc.diff(after, before);
+    let later = later_writers(doc, (before, after), by, invoker, &created);
+    let rewritten = text::rewritten(doc, &forward, (before, after), &later.text);
+    classify(
+        doc,
+        inverse,
+        (&later.slots, &rewritten),
+        after,
+        covered,
+        authors,
+    )
 }
 
 /// Undo a run of changes by writing its inverse forward into `doc`.
@@ -502,11 +624,7 @@ pub fn revert_run(
     authors: &dyn ResolveAuthor,
 ) -> Result<RevertOutcome, RevertError> {
     let (before, after, covered) = run_bounds(doc, run)?;
-    let forward = doc.diff(&before, &after);
-    let created = objects_created(&forward);
-    let inverse = doc.diff(&after, &before);
-    let later = later_writers(doc, &after, by, None, &created);
-    let (mut outcome, patches) = classify(doc, inverse, &later, &after, covered, authors);
+    let (mut outcome, patches) = plan(doc, (&before, &after, covered), (by, None), authors);
 
     if !patches.iter().any(|(_, apply)| *apply) {
         return Ok(outcome);
@@ -551,8 +669,8 @@ pub fn revert_step(
 /// the history closes the open transaction, which would commit the first
 /// revert as a change of its own.
 ///
-/// As with [`revert_run`] the caller commits, and must consult each
-/// outcome's [`RevertOutcome::kept`] before saying "undone".
+/// As with [`revert_run`] the caller commits. Each outcome's
+/// [`RevertOutcome::kept`] says what somebody else had set since and stays.
 ///
 /// # Errors
 ///
@@ -566,14 +684,15 @@ pub fn revert_changes(
     for (hash, actor) in changes {
         let run = ChangeRun::single(entry_id_from_hash(&hash.to_string()));
         let (before, after, covered) = run_bounds(doc, &run)?;
-        let forward = doc.diff(&before, &after);
-        let created = objects_created(&forward);
-        let inverse = doc.diff(&after, &before);
         let invoker = tilo_actions::entry_of(doc.committed_document(), *hash)
             .and_then(|context| context.invoker)
             .map(|invoker| invoker.actor);
-        let later = later_writers(doc, &after, Some(actor), invoker.as_deref(), &created);
-        let (outcome, patches) = classify(doc, inverse, &later, &after, covered, authors);
+        let (outcome, patches) = plan(
+            doc,
+            (&before, &after, covered),
+            (Some(actor), invoker.as_deref()),
+            authors,
+        );
         plans.push((outcome, patches, before, after));
     }
     Ok(plans

@@ -40,7 +40,7 @@ use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::room::{RoomError, RoomRecord};
-use tilolang_tilo::instance::{Config, HistoryAsk, Instance, Mode, Platform, Publication};
+use tilolang_tilo::instance::{Config, Instance, Mode, Platform, Publication};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::package_resource_id;
@@ -425,15 +425,14 @@ impl Hosted {
         // step, typing they did just before it included.
         for asked in self.instance.take_history() {
             let (resource, kind) = &self.resource;
-            let done = match asked {
-                HistoryAsk::Undo => self.record.undo(&mut self.instance, resource, kind),
-                HistoryAsk::Redo => self.record.redo(&mut self.instance, resource, kind),
-            };
+            let done = self
+                .record
+                .asked(&mut self.instance, &asked, resource, kind);
             match done {
                 Ok(done) => changed |= done,
                 Err(error) => {
-                    tracing::warn!(app = self.spec.app, ?asked, %error, "an undo was refused");
-                    self.instance.history_refused(error.to_string());
+                    tracing::warn!(app = self.spec.app, ?asked, %error, "an undo or redo failed");
+                    self.instance.history_failed(error.to_string());
                     changed = true;
                 }
             }
