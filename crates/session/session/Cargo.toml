@@ -283,6 +283,10 @@ wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client"] }
 # A display tool speaking `wlr-output-management` to the session's compositor.
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# The action host a test's answering device runs its actions through, and the
+# certified room two of one person's devices ask each other in.
+tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
+tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 
 [lints]
 workspace = true

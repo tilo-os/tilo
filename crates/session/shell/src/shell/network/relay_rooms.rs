@@ -46,14 +46,11 @@ use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_network_actor::room_governance::Request;
 use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
-    ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssuedInvitation,
-    LIST_ROOMS, RoomListing,
+    ENTER_ROOM, EnteredRoom, IssuedInvitation, LIST_ROOMS, RoomListing,
 };
 
 /// How long one invocation on a room's own session may take.
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(15);
-/// How long one host operation may take, dialling the host included.
-const HOST_TIMEOUT: Duration = Duration::from_secs(30);
 /// The room governance action that issues an invitation.
 const INVITE: &str = tilo_action_policy::roles::governance::INVITE;
 /// The room governance action that cancels an unredeemed invitation.
@@ -118,12 +115,8 @@ impl HeldRoom {
 pub(super) enum PersonsHost {
     /// This device's own host, in process.
     Here,
-    /// Another of the person's devices hosting rooms, on a session opened
-    /// for each request.
-    Device {
-        addr: iroh::EndpointAddr,
-        device: [u8; 32],
-    },
+    /// Another of the person's devices hosting rooms.
+    Device { addr: iroh::EndpointAddr },
     /// A home relay the person paired.
     Relay(RegisteredHomePeer),
     /// A workspace host this session is configured with (a company node),
@@ -392,48 +385,15 @@ impl ShellNetwork {
         )
     }
 
-    /// Invoke the host operation `action` with `arguments` at `host`, as
-    /// this device, asking the host directly.
-    pub(super) fn ask_host(
+    /// The host's own operations (`tilo.host`) are app actions on the
+    /// host's own action plane, not something this shell reaches.
+    fn ask_host(
         &self,
-        host: &PersonsHost,
-        action: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
+        _host: &PersonsHost,
+        _action: &str,
+        _arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
-        let (addr, device) = match host {
-            PersonsHost::Here => return self.local_host_action(action, arguments),
-            PersonsHost::Relay(home) => {
-                (home.addr.clone(), Some(home.expectation.device_public_key))
-            }
-            PersonsHost::Configured(addr) => (addr.clone(), None),
-            PersonsHost::Device { addr, device } => (addr.clone(), Some(*device)),
-        };
-        // This device's own host answers in process: an endpoint cannot
-        // dial itself.
-        if addr.id == self.local_peer_id {
-            return self.local_host_action(action, arguments);
-        }
-        let (reply, answer) = std::sync::mpsc::sync_channel(1);
-        let invoke = invocation(
-            HOST_ACTIONS_PROVIDER,
-            HOST_ROOMS_RESOURCE.to_owned(),
-            action,
-            arguments,
-        );
-        self.cmd_tx
-            .try_send(NetCmd::AskHost(Box::new(
-                tilo_network_actor::host_ask::Request {
-                    addr,
-                    device,
-                    invoke,
-                    reply,
-                },
-            )))
-            .map_err(|_| "the network queue is unavailable")?;
-        let status = answer
-            .recv_timeout(HOST_TIMEOUT)
-            .map_err(|_| "the host did not answer in time")??;
-        receipt_value(status)
+        Err("this shell does not ask a host for its own operations".into())
     }
 
     /// The device of the room's admitted governor when a host governs
@@ -858,7 +818,6 @@ impl ShellNetwork {
             })
             .map(|only| PersonsHost::Device {
                 addr: iroh::EndpointAddr::new(only),
-                device: *only.as_bytes(),
             });
         let hosts = super::configured_host_addrs()
             .into_iter()
@@ -905,7 +864,6 @@ impl ShellNetwork {
         let endpoint = iroh::EndpointId::from_bytes(&device).ok()?;
         Some(PersonsHost::Device {
             addr: iroh::EndpointAddr::new(endpoint),
-            device,
         })
     }
 }
@@ -1089,8 +1047,8 @@ mod tests {
     #[test]
     fn every_invocation_names_its_provider() {
         let host = invocation(
-            HOST_ACTIONS_PROVIDER,
-            HOST_ROOMS_RESOURCE.to_owned(),
+            "tilo.host",
+            "host.rooms".to_owned(),
             LIST_ROOMS,
             serde_json::Map::new(),
         );

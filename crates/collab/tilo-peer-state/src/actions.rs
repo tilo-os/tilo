@@ -100,6 +100,19 @@ const KEPT_CALLERS: usize = 4096;
 /// Most invocations one device follows at a time.
 const MAX_FOLLOWED: usize = 1024;
 
+/// The workspaces a device answers for, as the plane reads them.
+///
+/// A device whose rooms are held in a store of its own (a session's
+/// workspace owner) hands the plane this view of them instead of
+/// [`Replica`]s: the plane then reads a room's state when a request names
+/// it, so a revocation, a removal or a new certificate is seen as it
+/// happens rather than as it was when the plane was handed the room.
+pub trait Workspaces: Send + Sync {
+    /// Read the state of `workspace`, if this device holds it: whether it
+    /// did.
+    fn read(&self, workspace: &str, read: &mut dyn FnMut(&crate::StatePeer)) -> bool;
+}
+
 /// A device's action plane: it serves the requests other devices of its
 /// workspaces make, and asks them through [`Self::remote`].
 #[derive(Clone)]
@@ -110,6 +123,9 @@ struct Inner {
     device: SigningKey,
     /// The workspaces this device holds, by room id.
     replicas: Mutex<BTreeMap<String, Replica>>,
+    /// Where this device keeps its rooms, when they are not [`Replica`]s
+    /// here ([`Workspaces`]).
+    workspaces: Option<Arc<dyn Workspaces>>,
     /// The one place a request is handed to, wherever it came from.
     dispatcher: Arc<dyn ActionHost + Send + Sync>,
     replay: Mutex<ActionReplayWindow>,
@@ -156,9 +172,34 @@ impl ActionPlane {
         Self(Arc::new(Inner {
             device,
             replicas: Mutex::default(),
+            workspaces: None,
             dispatcher,
             replay: Mutex::default(),
             bounds,
+            callers: Mutex::default(),
+            runtime: tokio::runtime::Handle::current(),
+        }))
+    }
+
+    /// [`Self::new`] for a device whose rooms are held in `workspaces`
+    /// rather than as [`Replica`]s here.
+    ///
+    /// # Panics
+    ///
+    /// Outside a runtime context, where there is nothing to answer on.
+    #[must_use]
+    pub fn over(
+        device: SigningKey,
+        dispatcher: Arc<dyn ActionHost + Send + Sync>,
+        workspaces: Arc<dyn Workspaces>,
+    ) -> Self {
+        Self(Arc::new(Inner {
+            device,
+            replicas: Mutex::default(),
+            workspaces: Some(workspaces),
+            dispatcher,
+            replay: Mutex::default(),
+            bounds: Bounds::default(),
             callers: Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         }))
@@ -181,6 +222,26 @@ impl ActionPlane {
     /// Answer requests for the workspace `sync` syncs.
     pub fn share(&self, sync: &crate::direct::DirectSync) {
         self.hold(sync.replica());
+    }
+
+    /// Read one workspace's state, from wherever this device holds it: a
+    /// replica handed to [`Self::hold`], else what [`Workspaces`] says of
+    /// it.
+    fn read_workspace<R>(
+        &self,
+        workspace: &str,
+        mut read: impl FnMut(&crate::StatePeer) -> R,
+    ) -> Option<R> {
+        let held = self.0.replicas.lock_recover().get(workspace).cloned();
+        if let Some(replica) = held {
+            return Some(replica.read(|peer| read(peer)));
+        }
+        let workspaces = self.0.workspaces.as_ref()?;
+        let mut answer = None;
+        workspaces
+            .read(workspace, &mut |peer| answer = Some(read(peer)))
+            .then_some(())
+            .and(answer)
     }
 
     /// A host for another device's actions in `workspace`, asked as this
@@ -245,26 +306,21 @@ impl ActionPlane {
             .map_err(|error| ActionHostError::Refused {
                 reason: error.to_string(),
             })?;
-        let replica = self
-            .0
-            .replicas
-            .lock_recover()
-            .get(&action.workspace)
-            .cloned()
+        let now = SystemTime::now();
+        let (authority, certificate) = self
+            .read_workspace(&action.workspace, |peer| {
+                let authority = peer.permissions(source, now);
+                let certificate = peer
+                    .certificates()
+                    .into_iter()
+                    .find(|certificate| certificate.device_public_key == source);
+                (authority, certificate)
+            })
             .ok_or_else(|| ActionHostError::Refused {
                 reason: "this device does not hold that workspace".into(),
             })?;
-        let now = SystemTime::now();
-        let authority = replica
-            .read(|peer| peer.permissions(source, now))
-            .map_err(|error| refusal_of(&error))?;
-        let certificate = replica
-            .read(|peer| {
-                peer.certificates()
-                    .into_iter()
-                    .find(|certificate| certificate.device_public_key == source)
-            })
-            .ok_or(ActionHostError::NotPermitted)?;
+        let authority = authority.map_err(|error| refusal_of(&error))?;
+        let certificate = certificate.ok_or(ActionHostError::NotPermitted)?;
         // The device is its own principal when its person delegated it: an
         // agent is the agent, a bot the bot, never the person.
         let caller = match authority.delegate.map(|bound| bound.subject) {

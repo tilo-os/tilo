@@ -21,7 +21,6 @@ mod device_sessions;
 pub mod fabric;
 mod fabric_link;
 pub mod held_log;
-pub mod host_ask;
 pub mod local_host;
 pub mod media_caps;
 pub mod native_ingress;
@@ -425,9 +424,6 @@ pub enum NetCmd {
         ws: u64,
         ended: tokio::sync::oneshot::Sender<()>,
     },
-    /// Ask a host of the person for one of its own operations, directly,
-    /// on a session opened for it.
-    AskHost(Box<host_ask::Request>),
     /// Take part in workspace `ws`: its events reach `on_event`, and its
     /// workspace hosts are dialled. A room's traffic travels over its host
     /// sessions alone.
@@ -486,14 +482,6 @@ pub enum NetCmd {
         ws: WorkspaceId,
         msg: NeighbourMsg,
         route: WorkspaceControlRoute,
-    },
-    /// Send a remote-action frame to one exact authenticated device of the
-    /// workspace over the direct surface/control plane. Never fanned out:
-    /// action arguments and results are private to the two devices.
-    PublishRemoteAction {
-        ws: WorkspaceId,
-        target: EndpointId,
-        msg: NeighbourMsg,
     },
     /// Send one piece of a record's content to the device that asked for it.
     PublishRecordContent(RecordContentDelivery),
@@ -1178,7 +1166,6 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
         NetCmd::Connect { .. } => "dialling a peer",
         NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(..) => "dialling a host",
         NetCmd::RoomGovernance(_) => "talking to a room's host",
-        NetCmd::AskHost(_) => "asking one of the person's hosts",
         NetCmd::NativeEnrollment(_) => "enrolling a device",
         NetCmd::NativeMedia(_) => "a call",
         NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
@@ -1236,6 +1223,28 @@ impl Actor {
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         reachability: Reachability,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
+        Self::spawn_serving(
+            endpoint,
+            lookup,
+            host_identity,
+            listen_addrs,
+            reachability,
+            Vec::new(),
+        )
+    }
+
+    /// [`Self::spawn_deferring_relays`] for an endpoint that also serves
+    /// `served` — protocol handlers the session's own features answer on,
+    /// beside the actor's: a device's action plane, say. Each names its own
+    /// ALPN and serves it for as long as the actor runs.
+    pub fn spawn_serving(
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        host_identity: Option<HostIdentity>,
+        listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+        reachability: Reachability,
+        served: crate::local_host::Protocols,
+    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         Self::spawn_with_heartbeat(
             endpoint,
             lookup,
@@ -1244,6 +1253,7 @@ impl Actor {
             HEARTBEAT_INTERVAL,
             reachability,
             None,
+            served,
         )
     }
 
@@ -1267,6 +1277,7 @@ impl Actor {
             HEARTBEAT_INTERVAL,
             reachability,
             hosting,
+            Vec::new(),
         )
     }
 
@@ -1281,6 +1292,7 @@ impl Actor {
         heartbeat: Duration,
         reachability: Reachability,
         hosting: Option<Hosting>,
+        served: crate::local_host::Protocols,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         if let Ok(mut out) = listen_addrs.lock() {
             out.push(endpoint.addr());
@@ -1294,10 +1306,19 @@ impl Actor {
             cmd_rx,
             heartbeat,
             reachability,
-            hosting,
+            Serving { hosting, served },
         ));
         (cmd_tx, task)
     }
+}
+
+/// What this endpoint serves beside the actor's own protocols: this
+/// device's room host's handlers, when it hosts the rooms placed on it, and
+/// the session's own (its action plane, say) — all on the one endpoint both
+/// reach this device at.
+struct Serving {
+    hosting: Option<Hosting>,
+    served: crate::local_host::Protocols,
 }
 
 /// This device's room host, for the actor: the handle the native owner
@@ -1421,9 +1442,6 @@ struct ActorState {
     /// Fingerprint of the codec advert last announced, so a change goes out
     /// and an unchanged advert never does.
     caps_sent: Option<[u8; 32]>,
-    /// Remote-action requests that found neither a direct nor a relayed
-    /// route. Sent when that peer is next seen on the workspace.
-    pending_remote_actions: PendingRemoteActions,
 }
 
 /// Every application message this device received from its peers, by kind:
@@ -1493,68 +1511,6 @@ fn take_personal_transfer_generation(
         .is_some_and(|entry| entry.generation == generation)
         .then(|| active.remove(&key))
         .flatten()
-}
-
-const MAX_PENDING_REMOTE_ACTIONS: usize = 8;
-/// A request older than this is dropped rather than run long after the
-/// person who sent it has moved on.
-const PENDING_REMOTE_ACTION_TTL: Duration = Duration::from_secs(30);
-
-struct PendingRemoteAction {
-    ws: WorkspaceId,
-    target: EndpointId,
-    frame: Vec<u8>,
-    queued_at: Instant,
-}
-
-#[derive(Default)]
-struct PendingRemoteActions {
-    items: VecDeque<PendingRemoteAction>,
-}
-
-impl PendingRemoteActions {
-    fn hold(&mut self, ws: WorkspaceId, target: EndpointId, frame: Vec<u8>, now: Instant) {
-        self.expire(now);
-        if self.items.len() >= MAX_PENDING_REMOTE_ACTIONS {
-            self.items.pop_front();
-        }
-        self.items.push_back(PendingRemoteAction {
-            ws,
-            target,
-            frame,
-            queued_at: now,
-        });
-    }
-
-    fn expire(&mut self, now: Instant) {
-        self.items.retain(|item| {
-            now.saturating_duration_since(item.queued_at) < PENDING_REMOTE_ACTION_TTL
-        });
-    }
-
-    /// The frames held for `target` on `ws`, oldest first.
-    fn take_for(&mut self, ws: WorkspaceId, target: EndpointId, now: Instant) -> Vec<Vec<u8>> {
-        self.expire(now);
-        let (ready, kept) = std::mem::take(&mut self.items)
-            .into_iter()
-            .partition::<VecDeque<_>, _>(|item| item.ws == ws && item.target == target);
-        self.items = kept;
-        ready.into_iter().map(|item| item.frame).collect()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    fn targets(&self) -> Vec<(WorkspaceId, EndpointId)> {
-        let mut seen = Vec::new();
-        for item in &self.items {
-            if !seen.contains(&(item.ws, item.target)) {
-                seen.push((item.ws, item.target));
-            }
-        }
-        seen
-    }
 }
 
 impl Drop for HostRuntime {
@@ -1662,7 +1618,6 @@ impl ActorState {
             Some(NetCmd::NativeConnect(connect, https)) => self.native_connect(connect, https),
             Some(NetCmd::LocalHostReady) => self.retry_native_routes(),
             Some(NetCmd::ChannelQueue(queue)) => self.channel_queue = queue,
-            Some(NetCmd::AskHost(request)) => self.ask_host(*request),
             Some(NetCmd::NativePublish { ws }) => self.drive_native_publication(ws),
             Some(NetCmd::NativeEnrollment(command)) => self.native_enrollment.handle(
                 command,
@@ -1859,9 +1814,6 @@ impl ActorState {
             }
             Some(NetCmd::PublishSurfaceTo { ws, msg, viewers }) => {
                 self.publish_surface_to(ws, msg, &viewers);
-            }
-            Some(NetCmd::PublishRemoteAction { ws, target, msg }) => {
-                self.publish_remote_action(ws, target, msg);
             }
             Some(NetCmd::PublishRecordContent(delivery)) => {
                 self.publish_record_content(delivery);
@@ -2549,52 +2501,6 @@ impl ActorState {
         }
     }
 
-    /// Send a remote-action frame to exactly `target`: directly when the
-    /// device is live on this workspace's mesh, otherwise through an
-    /// authenticated workspace host, which routes it to that device alone.
-    fn publish_remote_action(&mut self, ws: WorkspaceId, target: EndpointId, msg: NeighbourMsg) {
-        let NeighbourMsg::RemoteAction { frame } = msg else {
-            tracing::warn!(
-                ws,
-                "refused a non-action message on the remote-action route"
-            );
-            return;
-        };
-        if self.is_surface_member(ws, target) {
-            match self.publish_direct(ws, target, NeighbourMsg::RemoteAction { frame }) {
-                // How it went comes back from the room's lane.
-                Ok(()) => return,
-                Err(msg) => {
-                    if let NeighbourMsg::RemoteAction { frame } = *msg {
-                        self.relay_remote_action(ws, target, frame);
-                    }
-                }
-            }
-            return;
-        }
-        self.relay_remote_action(ws, target, frame);
-    }
-
-    /// A remote action that could not go to `target` directly: through an
-    /// authenticated workspace host, or held until the device is seen.
-    fn relay_remote_action(&mut self, ws: WorkspaceId, target: EndpointId, frame: Vec<u8>) {
-        let relayed = self
-            .host_sessions
-            .iter()
-            .filter(|((session_ws, _), _)| *session_ws == ws)
-            .any(|(_, runtime)| {
-                runtime
-                    .session
-                    .publish_remote_action(*target.as_bytes(), frame.clone())
-                    .is_ok()
-            });
-        if !relayed {
-            tracing::warn!(ws, peer = %target, "no direct or relayed route for a remote action; held until the peer is seen");
-            self.pending_remote_actions
-                .hold(ws, target, frame, Instant::now());
-        }
-    }
-
     /// Send `request` to the room's relay device it is addressed to
     /// ([`room_governance`]), on any session of the room.
     fn send_room_governance(&mut self, request: room_governance::Request) {
@@ -2695,15 +2601,6 @@ impl ActorState {
         }
     }
 
-    fn flush_pending_remote_actions(&mut self, ws: WorkspaceId, peer: EndpointId) {
-        for frame in self
-            .pending_remote_actions
-            .take_for(ws, peer, Instant::now())
-        {
-            self.publish_remote_action(ws, peer, NeighbourMsg::RemoteAction { frame });
-        }
-    }
-
     fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
         let RecordContentDelivery { ws, target, msg } = delivery;
         if !matches!(
@@ -2776,9 +2673,7 @@ impl ActorState {
         // an action frame (up to a catalogue page) is worth waiting for.
         let budget = if matches!(
             msg,
-            NeighbourMsg::RemoteAction { .. }
-                | NeighbourMsg::RecordContentPiece { .. }
-                | NeighbourMsg::RecordContentLacks { .. }
+            NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
         ) {
             Duration::from_secs(2)
         } else {
@@ -2829,7 +2724,6 @@ impl ActorState {
             return;
         }
         match msg {
-            NeighbourMsg::RemoteAction { frame } => self.relay_remote_action(ws, target, frame),
             NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. } => {
                 self.relay_record_content(ws, Some(target), &msg);
             }
@@ -3071,10 +2965,8 @@ impl ActorState {
         // identical key/button events must not be content-deduped.
         // A remote-action retry is byte-identical on purpose; the
         // receiving host deduplicates it by invocation id instead.
-        if (matches!(
-            &msg,
-            NeighbourMsg::RemoteInput { .. } | NeighbourMsg::RemoteAction { .. }
-        ) || mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order))
+        if (matches!(&msg, NeighbourMsg::RemoteInput { .. })
+            || mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order))
             && let Some(tx) = self.subscribers.get(&ws)
         {
             let _ = tx
@@ -3482,12 +3374,9 @@ impl ActorState {
         ) {
             tracing::debug!(ws, author = %author, kind = ?std::mem::discriminant(&msg), "host session message");
         }
-        // A remote-action retry is byte-identical on purpose; the receiving
-        // host deduplicates it by invocation id instead. A replay the host
-        // was asked for repeats what this device saw before on purpose too:
-        // the broker drops what it holds.
+        // A replay the host was asked for repeats what this device saw
+        // before on purpose: the broker drops what it holds.
         let new = match msg {
-            NeighbourMsg::RemoteAction { .. } => true,
             NeighbourMsg::RemoteInput { .. } => mark_new_input(
                 ws,
                 peer,
@@ -3522,7 +3411,6 @@ impl ActorState {
             || !self.hosts.is_empty()
             || self.remote_host_sessions()
             || self.native_routes.any_remote()
-            || !self.pending_remote_actions.is_empty()
     }
 
     /// Where workspace `ws` stands with its hosts, this device's own
@@ -3627,8 +3515,6 @@ impl ActorState {
             || !self.held_surface_units.is_empty()
         {
             "a window streamed with a peer"
-        } else if !self.pending_remote_actions.is_empty() {
-            "a remote action waiting for its peer"
         } else if self.native_enrollment.is_busy() {
             "a device being enrolled"
         } else if self.private_messages.is_bound() {
@@ -3642,11 +3528,6 @@ impl ActorState {
     /// connected. Runs every [`HEARTBEAT_INTERVAL`] while
     /// [`Self::needs_upkeep`].
     fn run_heartbeat_tick(&mut self) {
-        for (ws, peer) in self.pending_remote_actions.targets() {
-            if self.is_surface_member(ws, peer) {
-                self.flush_pending_remote_actions(ws, peer);
-            }
-        }
         self.retry_native_routes();
         // A session with this device's own host loses nothing between
         // heartbeats: it publishes as the owner commits.
@@ -4068,7 +3949,7 @@ async fn run(
     mut cmd_rx: mpsc::Receiver<NetCmd>,
     heartbeat_interval: Duration,
     reachability: Reachability,
-    hosting: Option<Hosting>,
+    Serving { hosting, served }: Serving,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let (input_tx, mut input_rx) = mpsc::channel(64);
@@ -4091,7 +3972,7 @@ async fn run(
         );
     // This device's room host answers here once it opens: until then its
     // handlers refuse, as a device hosting nothing does.
-    let (local_host, protocols, held_log) = match hosting {
+    let (local_host, mut protocols, held_log) = match hosting {
         Some(Hosting {
             host,
             protocols,
@@ -4103,6 +3984,9 @@ async fn run(
         ),
         None => (None, Vec::new(), None),
     };
+    // What the session serves beside the actor's own protocols: its action
+    // plane, say, on the one endpoint both reach this device at.
+    protocols.extend(served);
     #[cfg(target_os = "linux")]
     let router = router.accept(device_vpn::tunnel::ALPN, DeviceVpnProtocol);
     let router = protocols
@@ -4168,7 +4052,6 @@ async fn run(
         next_personal_transfer_generation: 0,
         tally: Arc::default(),
         caps_sent: None,
-        pending_remote_actions: PendingRemoteActions::default(),
     };
     let _identity_watch = state
         .host_identity

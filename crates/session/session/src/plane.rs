@@ -267,6 +267,9 @@ pub struct Hosted {
     /// The rooms' sealed records: what the broker gates, and where an
     /// endpoint follows a route's keys.
     pub sealed: Sealed,
+    /// How an app on this device runs one of its actions on another of the
+    /// person's devices: what the collaboration plane reaches them through.
+    pub own_device: Option<std::sync::Arc<dyn tilo_action_broker::services::OwnDeviceActions>>,
 }
 
 /// Serve the session's published resources to the apps on `socket`: the
@@ -436,6 +439,7 @@ fn host_services(
         activity,
         agent_runs,
         sealed,
+        own_device,
     } = hosted;
     let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
         std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
@@ -463,6 +467,9 @@ fn host_services(
         // What people ask this session's agents to do: a run is the broker's
         // to deliver, and its reports come back to the run.
         tracker_runs: agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>),
+        // An app's action on another of the person's own devices is carried
+        // there by the collaboration plane.
+        own_device,
         // A call an app joins is this session's: the channel it is in, who
         // else is there, and what the app hears of it until it leaves.
         native_media: native_media.map(|media| {
@@ -716,6 +723,7 @@ mod tests {
                 broker: std::sync::Arc::new(Mutex::new(BrokerChannels::default())),
                 keys: None,
             },
+            own_device: None,
         }
     }
 

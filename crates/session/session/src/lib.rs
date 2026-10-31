@@ -49,6 +49,7 @@ mod desk_migration;
 mod desk_resource;
 mod desk_restore;
 pub mod desktop_services;
+mod device_actions;
 mod dictation;
 mod directory;
 mod display_confirm;

@@ -46,6 +46,7 @@ use tilo_network_actor::{
 };
 
 use crate::channels::ChannelLink;
+use crate::device_actions::DeviceActions;
 use crate::engine::Engine;
 
 /// The app id the desktop of a room says its own presence under, as the
@@ -557,6 +558,9 @@ pub struct Client {
     /// This device's fabric, when it is a certified device of the person's:
     /// `None` on a session that takes part as nobody.
     fabric: Option<Arc<SessionFabric>>,
+    /// Where this device's actions are served, and how an app here reaches
+    /// the person's other devices: `None` until the endpoint has bound.
+    device_actions: Arc<std::sync::OnceLock<DeviceActions>>,
     /// This device's relays, held back until a room this session takes part
     /// in has someone else in it.
     reachability: Reachability,
@@ -652,6 +656,8 @@ impl Client {
         let link = engine.as_ref().and_then(|engine| engine.link());
         let plane_link = link.clone();
         let enrolling = engine.clone();
+        let device_actions = Arc::new(std::sync::OnceLock::new());
+        let serving = Arc::clone(&device_actions);
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
             .spawn(move || {
@@ -663,7 +669,10 @@ impl Client {
                     enrollments,
                     ready,
                     wake,
-                    plane_link,
+                    Serving {
+                        link: plane_link,
+                        actions: serving,
+                    },
                 );
             })?;
         let (publisher, endpoint, reachability) = bound
@@ -695,6 +704,7 @@ impl Client {
             personal: RefCell::new(Vec::new()),
             endpoint,
             fabric,
+            device_actions,
             reachability,
             thread: Some(thread),
         };
@@ -972,6 +982,14 @@ impl Client {
             .map(|fabric| Arc::clone(fabric) as tilo_device_fabric::link::SharedLink)
     }
 
+    /// Where this device's actions are served, and how an app here runs its
+    /// actions on the person's other devices: `None` on a session that takes
+    /// part as nobody, which has no key of its own to ask with.
+    #[must_use]
+    pub(crate) fn device_actions(&self) -> Option<DeviceActions> {
+        self.device_actions.get().cloned()
+    }
+
     /// Ask the peer actor for this device's lane of private texts: the
     /// messages between people, carried by this endpoint. `None` when the
     /// actor is gone.
@@ -1005,6 +1023,11 @@ impl Client {
     /// Dial one of the person's own devices, whose address this session was
     /// told: the session between the two carries their device fabric.
     pub fn connect(&self, addr: EndpointAddr) {
+        // An action for this device is sent to where it was told to be,
+        // without waiting for the two sessions to meet first.
+        if let Some(actions) = self.device_actions.get() {
+            actions.learn(addr.clone());
+        }
         let _ = self.outgoing.send(Outgoing::ConnectDevice(addr));
     }
 
@@ -1374,6 +1397,7 @@ impl Client {
                 personal: RefCell::new(Vec::new()),
                 endpoint: EndpointAddr::new(publisher),
                 fabric: None,
+                device_actions: Arc::new(std::sync::OnceLock::new()),
                 reachability,
                 thread: None,
             },
@@ -1489,6 +1513,14 @@ fn plane_runtime(
     }
 }
 
+/// What the session's endpoint carries beside its rooms: the channels it
+/// runs, and this device's action plane, which answers the person's other
+/// devices on it.
+pub(crate) struct Serving {
+    pub(crate) link: Option<Arc<ChannelLink>>,
+    pub(crate) actions: Arc<std::sync::OnceLock<DeviceActions>>,
+}
+
 /// The thread: bind the endpoint, run the peer actor, and carry what it
 /// hears to the session's loop until it is told to stop.
 fn run(
@@ -1499,7 +1531,7 @@ fn run(
     enrollments: std::sync::mpsc::Sender<Enrolled>,
     ready: std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     wake: Arc<dyn Fn() + Send + Sync>,
-    link: Option<Arc<ChannelLink>>,
+    Serving { link, actions }: Serving,
 ) {
     let Some(runtime) = plane_runtime(&ready) else {
         return;
@@ -1536,12 +1568,27 @@ fn run(
             tokio::runtime::Handle::current(),
             Some(tilo_endpoint_reachability::REST_AFTER),
         );
-        let (actor, actor_task) = tilo_network_actor::Actor::spawn_deferring_relays(
+        // This device's action plane is served on the same endpoint: another
+        // of the person's devices reaches what this one publishes here,
+        // beside the rooms' own traffic.
+        let mut served: tilo_network_actor::local_host::Protocols = Vec::new();
+        if let Some(identity) = identity.as_ref() {
+            let device = DeviceActions::start(identity, endpoint.clone(), engine.clone());
+            served.push((
+                tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
+                Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.plane()),
+            ));
+            // The session takes it from here: what it installs answers, and
+            // an app's own-device actions leave through it.
+            let _ = actions.set(device);
+        }
+        let (actor, actor_task) = tilo_network_actor::Actor::spawn_serving(
             endpoint.clone(),
             lookup,
             identity.clone(),
             Arc::new(std::sync::Mutex::new(Vec::new())),
             reachability.clone(),
+            served,
         );
         let (events, carrying, attending) = heard(identity.clone(), arrivals, wake, link.clone());
         if ready.send(Ok((publisher, addr, reachability))).is_err() {

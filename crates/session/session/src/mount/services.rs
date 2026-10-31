@@ -141,6 +141,12 @@ pub(crate) fn start_action_plane(
         )));
         service
     });
+    // An app's action on another of the person's own devices leaves through
+    // the plane the collaboration endpoint runs.
+    let own_device = sync.and_then(|sync| sync.device_actions()).map(|actions| {
+        std::sync::Arc::new(actions)
+            as std::sync::Arc<dyn tilo_action_broker::services::OwnDeviceActions>
+    });
     let broker = plane::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
@@ -159,8 +165,18 @@ pub(crate) fn start_action_plane(
             // hears back what they report of them.
             agent_runs: Some(agent_runs),
             sealed,
+            own_device,
         },
     )?;
+    // What arrives on this device's action plane is answered by the broker
+    // that now serves: another of the person's devices runs nothing here the
+    // person in front of it could not.
+    if let (Some(actions), Some(host)) = (
+        sync.and_then(|sync| sync.device_actions()),
+        broker.app_action_broker(),
+    ) {
+        actions.install(host.device_host());
+    }
     Ok(Some(Plane {
         link,
         path,

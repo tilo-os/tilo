@@ -1968,6 +1968,16 @@ use witness::requires_store_witness;
 mod workspace_open;
 pub use local_action_host::{CertifiedActionLifecycle, CertifiedPersonContext};
 
+/// The host the person's other devices reach this device's actions through:
+/// a request is admitted for the caller its own device's signature named,
+/// under no connection's custody and no step of a run's, so what it may do is
+/// decided by that caller alone.
+pub(crate) fn device_host(
+    state: Arc<AppBrokerState>,
+) -> Arc<dyn tilo_actions::remote::ActionHost + Send + Sync> {
+    Arc::new(action_host::BrokerDoor::new(state))
+}
+
 pub use launchable::launchable_provider;
 #[path = "peer_action_broker.rs"]
 pub(crate) mod peer_action_broker;
