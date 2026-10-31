@@ -32,10 +32,14 @@ use crate::t;
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.add-app";
 
+/// The dialog, whose footer buttons are `add-app.primary` and
+/// `add-app.secondary`.
+pub const SHEET: &str = "add-app";
 /// The row showing the app.
-pub const APP: &str = "add-app";
+pub const APP: &str = "add-app-row";
 /// The "Move to Applications" row, and the switch in it.
 pub const MOVE: &str = "add-app-move";
+pub const MOVE_SWITCH: &str = "add-app-move-switch";
 
 /// The largest file whose bytes are read as a program's artwork: past it,
 /// the row keeps the system's generic application icon.
@@ -252,7 +256,7 @@ fn card(offer: &Offer, moved: &LocalState<bool>, dispatch: &Dispatcher<AddToApps
                 .secondary(t("add-app-move-detail"))
                 .trailing(Box::new(
                     Toggle::from_state(moved)
-                        .with_id(MOVE)
+                        .with_id(MOVE_SWITCH)
                         .with_accessible_name(&t("add-app-move")),
                 )),
         ));
@@ -263,7 +267,7 @@ fn card(offer: &Offer, moved: &LocalState<bool>, dispatch: &Dispatcher<AddToApps
     let dismissed = dispatch.clone();
     Box::new(
         ModalDialog::new(title, body)
-            .with_test_id(APP)
+            .with_test_id(SHEET)
             .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
             .open(true)
             .primary_action(t("add-app-add"), move || {

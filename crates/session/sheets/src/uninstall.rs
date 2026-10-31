@@ -35,7 +35,7 @@ pub const REMOVE_DATA: &str = "uninstall-remove-data";
 pub const REMOVE_DATA_SWITCH: &str = "uninstall-remove-data-switch";
 /// The rows naming each copy of a downloaded program that goes to the
 /// Trash: `uninstall.copy.<index>`.
-pub const COPY: &str = "uninstall.copy";
+pub const COPY: &str = "uninstall-copy";
 
 /// The sheet's resource: the door its actions are published on. It holds
 /// nothing; the question is the shell's, which is what answers it.
@@ -297,7 +297,7 @@ fn card(app: &App, remove_data: &LocalState<bool>, dispatch: &Dispatcher<Uninsta
             for (index, copy) in copies.iter().enumerate() {
                 let (file, folder) = copy_label(copy, home.as_deref());
                 body = body.push(Box::new(
-                    ListRow::new(format!("{COPY}.{index}"), file).secondary(folder),
+                    ListRow::new(format!("{COPY}-{index}"), file).secondary(folder),
                 ));
             }
         }
