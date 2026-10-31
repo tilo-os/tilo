@@ -530,10 +530,10 @@ impl PersonState {
         // An older record is brought up to the resource's storage version
         // before it is read, as the app's record is when it opens: once, as
         // the same housekeeping change on every device, nobody's undo step.
-        let stored = record
-            .read(tilo_resource::evolution::stored_version)
+        let older = record
+            .read(tilo_resource::evolution::needs_migrate::<P>)
             .ok_or_else(|| "the record cannot be read".to_owned())?;
-        if stored < P::VERSION
+        if older
             && let Err(error) = record.edit(false, |doc| {
                 tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
             })

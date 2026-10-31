@@ -2,10 +2,12 @@
 //! and the snapshot depend on these field names.
 
 pub const SCHEMA_ID: &str = "tilo.richtext";
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: u64 = 1;
 
 pub const KEY_SCHEMA: &str = "schema";
-pub const KEY_SCHEMA_VERSION: &str = "schema_version";
+/// The document's schema version, under the one key every Tilo document
+/// keeps it (`tilo_resource::evolution`).
+pub const KEY_SCHEMA_VERSION: &str = tilo_resource::evolution::VERSION_KEY;
 pub const KEY_BLOCKS: &str = "blocks"; // Map<block_id, block>
 /// Prefix for grow-only structural deletion markers stored beside block maps.
 pub const BLOCK_TOMBSTONE_PREFIX: &str = "~deleted:";

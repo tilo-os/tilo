@@ -1,7 +1,7 @@
 //! Cache adapter for the canonical record lifecycle; widget, action and history
 //! ownership remain in the ordinary RecordStore.
 use super::{
-    AutoCommit, Parked, Path, PortableStorage, ROOT, Rc, RecordCheckout, RecordId, RecordOpenError,
+    AutoCommit, Parked, PortableStorage, Rc, RecordCheckout, RecordId, RecordOpenError,
     RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus, RecordSet, RecordStore,
     Reserved, Transactable, validate_identity,
 };
@@ -73,7 +73,6 @@ impl RecordSet {
             automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Error),
         )
         .map_err(error)?;
-        app_state::validate_document_schema(&doc, Path::new(want.id.as_str()))?;
         validate_identity(&doc, want, &self.home)?;
         doc.set_actor(automerge::ActorId::from(actor));
         let history = crate::state::UndoLog::new(&mut doc);
@@ -204,18 +203,11 @@ impl RecordReservation {
             )
         };
         let mut doc = AutoCommit::new().with_actor(actor.clone());
-        doc.put(
-            ROOT,
-            app_state::SCHEMA_VERSION_KEY,
-            u64::from(app_state::SCHEMA_VERSION),
-        )
-        .map_err(error)?;
         super::genesis(&mut doc, &self.checkout, &workspace, initialize)?;
         seed(&mut doc).map_err(RecordOpenError::Initialization)?;
         if doc.get_actor() != &actor {
             return Err(RecordOpenError::IdentityMismatch);
         }
-        app_state::validate_document_schema(&doc, Path::new(self.checkout.id.as_str()))?;
         validate_identity(&doc, &self.checkout, &workspace)?;
         doc.commit_with(
             automerge::transaction::CommitOptions::default()

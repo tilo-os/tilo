@@ -1,5 +1,6 @@
 use super::*;
 use crate::state::State;
+use std::path::Path;
 
 fn native(root: &Path) -> Rc<dyn DurableStore> {
     Rc::new(app_state::FsStore::new(root))

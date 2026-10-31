@@ -12,7 +12,11 @@
 //! live document without blocking, appending `save_after(sent_heads)`
 //! (linear write volume, not quadratic) until compaction pays off, and
 //! reporting what is actually durable. [`DocStore`] adds the load/save
-//! conveniences and schema policy apps drive by hand, on the same owner.
+//! conveniences on the same owner.
+//!
+//! A store never interprets what it keeps: a document's schema version and
+//! the migrations between them belong to whoever owns the document's model
+//! (`tilo_resource::evolution`), not to the bytes.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -25,8 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use advisory_lock::{FileLock, LockMode, TryLockError};
 use durable_store::{DurableStore, StorageKey, WriteOp};
 
-use automerge::transaction::Transactable;
-use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROOT, ReadDoc};
+use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad};
 
 mod doc_writer;
 mod private_history;
@@ -55,19 +58,6 @@ pub const ROOMS_DIR: &str = "rooms";
 /// under a new identity.
 const RECORD_SUCCESSOR_CLAIM: &str = "successor-claim";
 
-/// Root-map key for the document's layout version. A document from before
-/// this key existed reads as [`SCHEMA_VERSION`] rather than "unknown", so the
-/// upgrade that added the check doesn't strand every existing document.
-pub const SCHEMA_VERSION_KEY: &str = "tilo:schema_version";
-
-/// The document layout this build writes and understands. Bump only when a
-/// change makes a document unreadable to an older build in a way that loses
-/// meaning — adding a key does not qualify, since an older build just
-/// ignores it. Older-reading-newer has no safe default; this crate used to
-/// start empty and overwrite, turning version skew into data loss. See
-/// [`DocStore::load`].
-pub const SCHEMA_VERSION: u32 = 1;
-
 /// Everything that can go wrong opening, reading or writing a store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -82,8 +72,6 @@ pub enum StoreError {
     EmptyExistingDocument { path: PathBuf },
     #[error("storage source changed: {path}")]
     SourceChanged { path: PathBuf },
-    #[error("invalid schema in {path}: {reason}")]
-    InvalidSchema { path: PathBuf, reason: &'static str },
     #[error("invalid package id {0:?}: {1}")]
     PackageId(String, &'static str),
     /// The record key could not be turned into a directory name (distinct from
@@ -107,63 +95,12 @@ pub enum StoreError {
         #[source]
         source: Box<automerge::AutomergeError>,
     },
-    /// The document was written by a newer build than this one. Kept separate
-    /// from [`StoreError::Automerge`] because the data is intact and only this
-    /// build is wrong for it — saying "unreadable" would lose that distinction.
-    #[error(
-        "{path} has layout {found}, and this build understands {understood}. \
-         It was written by a newer version of this app; nothing has been \
-         changed."
-    )]
-    NewerSchema {
-        path: PathBuf,
-        found: u32,
-        understood: u32,
-    },
-    /// An app-owned migration declined an older, otherwise readable layout.
-    #[error("migrating {path} from layout {from} to {to}: {message}")]
-    Migration {
-        path: PathBuf,
-        from: u32,
-        to: u32,
-        message: String,
-    },
 }
 
 fn io_err(context: impl Into<String>, source: io::Error) -> StoreError {
     StoreError::Io {
         context: context.into(),
         source,
-    }
-}
-
-/// The layout version a document declares. Absent, or present but not an
-/// integer, both read as [`SCHEMA_VERSION`] (see [`SCHEMA_VERSION_KEY`]) —
-/// this crate is the only writer of the key, so a non-integer is someone
-/// else's key of the same name, not corruption.
-pub fn schema_version_of(doc: &AutoCommit) -> u32 {
-    doc.get(ROOT, SCHEMA_VERSION_KEY)
-        .ok()
-        .flatten()
-        .and_then(|(v, _)| {
-            v.as_u64()
-                .or_else(|| v.as_i64().and_then(|i| u64::try_from(i).ok()))
-                .and_then(|n| u32::try_from(n).ok())
-        })
-        .unwrap_or(SCHEMA_VERSION)
-}
-
-fn stamp_schema_version(doc: &mut AutoCommit, version: u32) {
-    if let Err(e) = doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(version)) {
-        tracing::warn!(error = %e, "could not stamp the document's schema version");
-    }
-}
-
-/// Stamp the version only if the document doesn't already carry one, so a
-/// pre-versioning document gets it on first save rather than staying unlabelled.
-fn ensure_schema_version(doc: &mut AutoCommit, version: u32) {
-    if matches!(doc.get(ROOT, SCHEMA_VERSION_KEY), Ok(None) | Err(_)) {
-        stamp_schema_version(doc, version);
     }
 }
 
@@ -266,26 +203,11 @@ pub fn validate_room_identity(package: &str, room: &str) -> Result<(), StoreErro
 pub struct DocStore {
     package_id: String,
     owner: Rc<DocOwner>,
-    /// App/document-specific layout understood by this caller. Constructors
-    /// default to the toolkit's legacy v1 contract; apps opt into a newer
-    /// schema before loading via [`Self::with_schema_version`].
-    schema_version: u32,
     /// Heads the store is known to hold; empty until the first load or save.
     persisted: Vec<ChangeHash>,
     /// Whether the store holds any bytes yet; learned on first need.
     has_base: Option<bool>,
-    /// Why [`DocStore::load_or_new`] handed back an empty document instead of
-    /// the stored one — set only for a refusal that must not be written over;
-    /// e.g. [`DocStore::writer`] hands back a disabled writer when this is set.
-    refusal: Option<Refusal>,
     directory: PathBuf,
-}
-
-/// The stored document, and why this build would not open it.
-#[derive(Clone, Debug)]
-struct Refusal {
-    found: u32,
-    message: String,
 }
 
 impl DocStore {
@@ -388,10 +310,8 @@ impl DocStore {
         Self {
             package_id,
             owner: Rc::new(owner),
-            schema_version: SCHEMA_VERSION,
             persisted: Vec::new(),
             has_base: None,
-            refusal: None,
             directory,
         }
     }
@@ -462,19 +382,6 @@ impl DocStore {
         &self.package_id
     }
 
-    /// Select the app-owned CRDT layout this store reads and writes. Call
-    /// this before `load`, `load_or_new`, or creating a writer.
-    #[must_use]
-    pub fn with_schema_version(mut self, version: u32) -> Self {
-        self.schema_version = version;
-        self
-    }
-
-    #[must_use]
-    pub fn schema_version(&self) -> u32 {
-        self.schema_version
-    }
-
     /// The directory holding the document, its actor sidecar and its locks,
     /// where the store keeps one.
     pub fn dir(&self) -> &Path {
@@ -504,9 +411,8 @@ impl DocStore {
     ///
     /// # Errors
     ///
-    /// Returns an error if the document exists but can't be read, if its
-    /// bytes aren't a loadable Automerge document, or if it declares a schema
-    /// layout newer than this build understands ([`StoreError::NewerSchema`]).
+    /// Returns an error if the document exists but can't be read, or if its
+    /// bytes aren't a loadable Automerge document.
     pub fn load(&mut self) -> Result<Option<AutoCommit>, StoreError> {
         self.load_with_completeness(false)
     }
@@ -549,16 +455,6 @@ impl DocStore {
                 source: Box::new(source),
             }
         })?;
-        // Check before reading any value: a newer layout may reuse a key with a
-        // different meaning, and the writer above saves the whole document back.
-        let found = schema_version_of(&doc);
-        if found > self.schema_version {
-            return Err(StoreError::NewerSchema {
-                path: self.document_path().to_path_buf(),
-                found,
-                understood: self.schema_version,
-            });
-        }
         doc.set_actor(self.actor().clone());
         self.persisted = doc.get_heads();
         Ok(Some(doc))
@@ -572,62 +468,12 @@ impl DocStore {
         self.load_with_completeness(true)
     }
 
-    /// Load and, when necessary, atomically migrate an older app-owned CRDT
-    /// layout to [`Self::schema_version`]. The callback must be deterministic
-    /// and idempotent because another replica may independently migrate the
-    /// same logical document before their changes merge.
-    ///
-    /// A successful migration is written before returning. This keeps the
-    /// autosave frontier aligned with what is actually durable; merely
-    /// mutating the returned document and then seeding autosave would
-    /// otherwise make those migration heads look already persisted.
-    ///
-    /// # Errors
-    ///
-    /// Returns load/write errors unchanged, or [`StoreError::Migration`] when
-    /// the app callback rejects the older layout.
-    pub fn load_migrating<F>(&mut self, migrate: F) -> Result<Option<AutoCommit>, StoreError>
-    where
-        F: FnOnce(&mut AutoCommit, u32, u32) -> Result<(), String>,
-    {
-        let Some(mut doc) = self.load()? else {
-            return Ok(None);
-        };
-        let found = schema_version_of(&doc);
-        if found >= self.schema_version {
-            return Ok(Some(doc));
-        }
-        migrate(&mut doc, found, self.schema_version).map_err(|message| StoreError::Migration {
-            path: self.document_path().to_path_buf(),
-            from: found,
-            to: self.schema_version,
-            message,
-        })?;
-        stamp_schema_version(&mut doc, self.schema_version);
-        self.save(&mut doc)?;
-        Ok(Some(doc))
-    }
-
     /// Load the persisted document, falling back to an empty one. An unreadable
-    /// file is logged and treated as empty rather than crashing on launch. A
-    /// document from a **newer** layout is different: the refusal is recorded
-    /// ([`DocStore::refusal`]) and every writer built on this store switches
-    /// itself off, since starting empty and then saving over the file would be
-    /// data loss rather than a survivable empty session.
+    /// file is logged and treated as empty rather than crashing on launch.
     pub fn load_or_new(&mut self) -> AutoCommit {
         match self.load() {
             Ok(Some(doc)) => doc,
             Ok(None) => self.new_document(),
-            Err(e @ StoreError::NewerSchema { found, .. }) => {
-                tracing::error!(error = %e, "app state was written by a newer version; \
-                                             starting empty and NOT writing back");
-                let message = e.to_string();
-                let doc = self.new_document();
-                // After new_document, which clears it: the refusal describes the file, not
-                // the fresh document, and must outlive this call for the write paths below.
-                self.refusal = Some(Refusal { found, message });
-                doc
-            }
             Err(e) => {
                 tracing::error!(error = %e, "app state unreadable; starting empty");
                 self.new_document()
@@ -635,38 +481,20 @@ impl DocStore {
         }
     }
 
-    /// Why this store handed back an empty document, when it did — `Some` means
-    /// the on-disk document must not be written over.
-    pub fn refusal(&self) -> Option<&str> {
-        self.refusal.as_ref().map(|r| r.message.as_str())
-    }
-
-    /// An empty document already carrying this store's actor id, stamped with
-    /// the current layout version at creation (not first save) so the version
-    /// is never missing from a document written outside this path.
+    /// An empty document already carrying this store's actor id.
     pub fn new_document(&mut self) -> AutoCommit {
         self.persisted = Vec::new();
-        self.refusal = None;
-        let mut doc = AutoCommit::new().with_actor(self.actor().clone());
-        stamp_schema_version(&mut doc, self.schema_version);
-        doc
+        self.owner.new_document()
     }
 
     /// Replace the whole document and wait until the store has committed it
     /// — for [`FsStore`], a synced temporary file renamed into place, so a
     /// crash leaves either the previous or the new document complete.
-    /// Refuses when [`DocStore::refusal`] is set, since the in-memory
-    /// document is an empty stand-in and writing it out would delete the
-    /// user's actual data.
     ///
     /// # Errors
     ///
-    /// Returns an error if [`DocStore::refusal`] is set (writing would
-    /// discard a newer-schema document already stored), or if the store
-    /// fails to commit it.
+    /// Returns an error if the store fails to commit it.
     pub fn save(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
-        self.refuse_to_write()?;
-        ensure_schema_version(doc, self.schema_version);
         let bytes = doc.save();
         let hint = load_hint::encode(&bytes, doc.committed_document().change_hashes());
         self.commit(WriteOp::Replace(bytes))?;
@@ -691,30 +519,13 @@ impl DocStore {
         }
     }
 
-    /// The guard both write paths share; returns the original refusal so a
-    /// caller can log why, not just "write failed".
-    fn refuse_to_write(&self) -> Result<(), StoreError> {
-        match &self.refusal {
-            None => Ok(()),
-            Some(r) => Err(StoreError::NewerSchema {
-                path: self.document_path().to_path_buf(),
-                found: r.found,
-                understood: self.schema_version,
-            }),
-        }
-    }
-
     /// Append only the changes `doc` has that the store does not, and wait
     /// for the store to commit them. Returns bytes appended (`0` when idle).
-    /// Refuses for the same data-loss reason as [`DocStore::save`].
     ///
     /// # Errors
     ///
-    /// Returns an error if [`DocStore::refusal`] is set, or if the store
-    /// fails to commit the changes.
+    /// Returns an error if the store fails to commit the changes.
     pub fn append(&mut self, doc: &mut AutoCommit) -> Result<usize, StoreError> {
-        self.refuse_to_write()?;
-        ensure_schema_version(doc, self.schema_version);
         let heads = doc.get_heads();
         if heads == self.persisted {
             return Ok(0);
@@ -777,12 +588,8 @@ impl DocStore {
 
     /// A [`DocWriter`] continuing this document in the background: a burst
     /// of edits becomes one write. Seed it with the loaded document (see
-    /// [`DocWriter::seed`]). A refused store hands back a disabled writer,
-    /// so the stand-in document never reaches storage.
+    /// [`DocWriter::seed`]).
     pub fn writer(self) -> DocWriter {
-        if let Some(refusal) = &self.refusal {
-            return DocWriter::disabled(refusal.message.clone());
-        }
         if !self.persisted.is_empty() {
             let base = self
                 .owner
@@ -882,7 +689,6 @@ fn decode_canonical_with(
                 true,
             ),
         };
-    validate_canonical_schema_of(&doc, label)?;
     let repair = repair.then(|| doc.save());
     Ok((doc, repair))
 }
@@ -894,66 +700,6 @@ fn decode_canonical_with(
 pub fn validate_record_namespace(package: &str, workspace: &str) -> Result<(), StoreError> {
     validate_package_id(package)?;
     validate_record_key(workspace)
-}
-
-/// Validate portable or filesystem document schema assignments without
-/// mutating bytes; the portable-record name for [`validate_canonical_schema_of`].
-///
-/// # Errors
-/// Rejects malformed, conflicting and newer schemas.
-pub fn validate_document_schema(doc: &AutoCommit, path: &Path) -> Result<(), StoreError> {
-    validate_canonical_schema_of(doc, path)
-}
-
-/// Validate every live schema assignment of a canonical document without
-/// coercion or mutation. `label` names the source in errors.
-///
-/// # Errors
-/// Rejects malformed, conflicting and newer schemas.
-pub fn validate_canonical_schema_of(doc: &AutoCommit, label: &Path) -> Result<(), StoreError> {
-    let invalid = |reason| StoreError::InvalidSchema {
-        path: label.to_path_buf(),
-        reason,
-    };
-    let automerge_error = |source| StoreError::Automerge {
-        path: label.to_path_buf(),
-        source: Box::new(source),
-    };
-    let mut versions = Vec::new();
-    for (value, _) in doc
-        .get_all(ROOT, SCHEMA_VERSION_KEY)
-        .map_err(automerge_error)?
-    {
-        let raw = match value {
-            automerge::Value::Scalar(value) => match value.as_ref() {
-                automerge::ScalarValue::Uint(v) => *v,
-                automerge::ScalarValue::Int(v) => {
-                    u64::try_from(*v).map_err(|_| invalid("negative schema version"))?
-                }
-                _ => return Err(invalid("schema version must be an integer")),
-            },
-            automerge::Value::Object(_) => {
-                return Err(invalid("schema version must be a scalar"));
-            }
-        };
-        versions.push(u32::try_from(raw).map_err(|_| invalid("schema version exceeds u32"))?);
-    }
-    if let Some(found) = versions
-        .iter()
-        .copied()
-        .max()
-        .filter(|v| *v > SCHEMA_VERSION)
-    {
-        return Err(StoreError::NewerSchema {
-            path: label.to_path_buf(),
-            found,
-            understood: SCHEMA_VERSION,
-        });
-    }
-    if versions.iter().any(|v| Some(v) != versions.first()) {
-        return Err(invalid("conflicting schema versions"));
-    }
-    Ok(())
 }
 
 /// `fsync` a directory and every ancestor up to the store's provisioned
@@ -1296,13 +1042,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_and_complete_loads_refuse_newer_invalid_or_truncated_documents() {
-        // Phase `canonical_schema_checks_all_live_values_without_mutation`.
-        {
-            assert_malformed_schemas_are_rejected();
-            assert_supported_schemas_are_nonmutating();
-            assert_schema_conflicts_are_checked();
-        }
+    fn canonical_and_complete_loads_refuse_truncated_documents() {
         // Phase `complete_load_refuses_truncated_increment_without_accepting_or_rewriting_it`.
         {
             let tmp = tempfile::tempdir().unwrap();
@@ -1402,138 +1142,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    fn with_partial_tail(doc: &mut AutoCommit) -> Vec<u8> {
-        let heads = doc.get_heads();
-        let mut bytes = doc.save();
-        doc.put(ROOT, "incomplete_tail", true).unwrap();
-        let tail = doc.save_after(&heads);
-        bytes.extend_from_slice(&tail[..tail.len() / 2]);
-        bytes
-    }
-
-    fn assert_malformed_schemas_are_rejected() {
-        for value in [
-            ScalarValue::Int(-1),
-            ScalarValue::Int(i64::MAX),
-            ScalarValue::Uint(u64::MAX),
-            ScalarValue::F64(1.0),
-            ScalarValue::Str("1".into()),
-            ScalarValue::Boolean(true),
-            ScalarValue::Null,
-            ScalarValue::Timestamp(1),
-            ScalarValue::Counter(1.into()),
-            ScalarValue::Bytes(vec![1]),
-        ] {
-            for torn in [false, true] {
-                let mut doc = AutoCommit::new();
-                doc.put(ROOT, SCHEMA_VERSION_KEY, value.clone()).unwrap();
-                assert_eq!(
-                    schema_version_of(&doc),
-                    SCHEMA_VERSION,
-                    "legacy remains tolerant"
-                );
-                let bytes = if torn {
-                    with_partial_tail(&mut doc)
-                } else {
-                    doc.save()
-                };
-                assert!(matches!(
-                    decode_canonical(&bytes, true, Path::new("doc")),
-                    Err(StoreError::InvalidSchema { .. })
-                ));
-            }
-        }
-        let mut object = AutoCommit::new();
-        object
-            .put_object(ROOT, SCHEMA_VERSION_KEY, ObjType::Map)
-            .unwrap();
-        assert!(matches!(
-            validate_canonical_schema_of(&object, Path::new("doc")),
-            Err(StoreError::InvalidSchema { .. })
-        ));
-    }
-
-    fn assert_supported_schemas_are_nonmutating() {
-        for value in [
-            None,
-            Some(ScalarValue::Int(0)),
-            Some(ScalarValue::Int(1)),
-            Some(ScalarValue::Uint(1)),
-            Some(ScalarValue::Uint(2)),
-        ] {
-            for torn in [false, true] {
-                let mut doc = AutoCommit::new();
-                if let Some(value) = value.clone() {
-                    doc.put(ROOT, SCHEMA_VERSION_KEY, value).unwrap();
-                }
-                let newer = schema_version_of(&doc) > SCHEMA_VERSION;
-                let bytes = if torn {
-                    with_partial_tail(&mut doc)
-                } else {
-                    doc.save()
-                };
-                if newer {
-                    assert!(matches!(
-                        decode_canonical(&bytes, true, Path::new("doc")),
-                        Err(StoreError::NewerSchema { .. })
-                    ));
-                } else {
-                    let loaded = decode_canonical(&bytes, true, Path::new("doc")).unwrap();
-                    if value.is_none() {
-                        assert!(loaded.0.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_none());
-                    }
-                }
-            }
-        }
-    }
-
-    fn assert_schema_conflicts_are_checked() {
-        for (left, right, accepted) in [
-            (ScalarValue::Int(1), ScalarValue::Uint(1), true),
-            (ScalarValue::Uint(0), ScalarValue::Uint(1), false),
-        ] {
-            let mut a = AutoCommit::new();
-            let mut b = a.fork();
-            a.put(ROOT, SCHEMA_VERSION_KEY, left).unwrap();
-            b.put(ROOT, SCHEMA_VERSION_KEY, right).unwrap();
-            a.merge_incoming(&mut b).unwrap();
-            let bytes = a.save();
-            if accepted {
-                let loaded = decode_canonical(&bytes, true, Path::new("doc")).unwrap();
-                let restored = loaded.0;
-                assert_eq!(restored.get_all(ROOT, SCHEMA_VERSION_KEY).unwrap().len(), 2);
-            } else {
-                assert!(matches!(
-                    decode_canonical(&bytes, true, Path::new("doc")),
-                    Err(StoreError::InvalidSchema {
-                        reason: "conflicting schema versions",
-                        ..
-                    })
-                ));
-            }
-        }
-        let mut supported_winner_seen = false;
-        for swap in [false, true] {
-            let mut a = AutoCommit::new().with_actor(ActorId::from(vec![1]));
-            let mut b = AutoCommit::new().with_actor(ActorId::from(vec![2]));
-            a.put(ROOT, SCHEMA_VERSION_KEY, if swap { 1_u64 } else { 2 })
-                .unwrap();
-            b.put(ROOT, SCHEMA_VERSION_KEY, if swap { 2_u64 } else { 1 })
-                .unwrap();
-            a.merge_incoming(&mut b).unwrap();
-            supported_winner_seen |= schema_version_of(&a) == 1;
-            let bytes = a.save();
-            assert!(matches!(
-                decode_canonical(&bytes, true, Path::new("doc")),
-                Err(StoreError::NewerSchema { found: 2, .. })
-            ));
-        }
-        assert!(
-            supported_winner_seen,
-            "must exercise unsupported losing assignment"
-        );
     }
 
     #[test]
@@ -1799,190 +1407,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn schema_versions_are_stamped_migrated_once_and_newer_documents_refused() {
-        // Phase `app_owned_schema_migration_is_durable_and_runs_once`.
-        fn app_owned_schema_migration_is_durable_and_runs_once() {
-            let _tmp = scratch_home();
-            let package = "so.tilo.schema-migration";
-            let mut old_store = DocStore::open_for(package).unwrap();
-            let mut old = old_store.new_document();
-            old.put(ROOT, "legacy", "value").unwrap();
-            old_store.save(&mut old).unwrap();
-            drop(old_store);
-
-            let mut migrated_store = DocStore::open_for(package).unwrap().with_schema_version(2);
-            let migrated = migrated_store
-                .load_migrating(|doc, from, to| {
-                    assert_eq!((from, to), (1, 2));
-                    doc.put(ROOT, "migrated", true)
-                        .map_err(|error| error.to_string())?;
-                    Ok(())
-                })
-                .unwrap()
-                .unwrap();
-            assert_eq!(schema_version_of(&migrated), 2);
-            assert!(migrated.get(ROOT, "migrated").unwrap().is_some());
-            drop(migrated_store);
-
-            let mut reopened = DocStore::open_for(package).unwrap().with_schema_version(2);
-            let loaded = reopened
-                .load_migrating(|_, _, _| Err("migration ran twice".into()))
-                .unwrap()
-                .unwrap();
-            assert_eq!(schema_version_of(&loaded), 2);
-            assert!(loaded.get(ROOT, "legacy").unwrap().is_some());
-            assert!(loaded.get(ROOT, "migrated").unwrap().is_some());
-        }
-        // Phase `a_new_document_carries_the_schema_version`.
-        // Every document this crate creates says which layout it is, from the
-        // moment it exists, so a document created and never edited is still
-        // distinguishable from one written before versioning.
-        {
-            let _tmp = scratch_home();
-            let mut store = DocStore::open_for("so.tilo.stamped").unwrap();
-            let mut doc = store.new_document();
-            assert_eq!(schema_version_of(&doc), SCHEMA_VERSION);
-            store.save(&mut doc).unwrap();
-
-            let mut reopened = DocStore::open_for("so.tilo.stamped").unwrap();
-            let loaded = reopened.load().unwrap().expect("saved document");
-            assert!(
-                loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
-                "the version has to survive the round trip, not just live in memory"
-            );
-            assert_eq!(schema_version_of(&loaded), SCHEMA_VERSION);
-        }
-        // Phase `app_owned_schema_migration_is_durable_and_runs_once` (defined above).
-        app_owned_schema_migration_is_durable_and_runs_once();
-        // Phase `app_owned_schema_refuses_a_newer_layout`.
-        {
-            let _tmp = scratch_home();
-            let package = "so.tilo.schema-refusal";
-            let mut newer = DocStore::open_for(package).unwrap().with_schema_version(3);
-            let mut doc = newer.new_document();
-            newer.save(&mut doc).unwrap();
-            drop(newer);
-
-            let mut older = DocStore::open_for(package).unwrap().with_schema_version(2);
-            assert!(matches!(
-                older.load(),
-                Err(StoreError::NewerSchema {
-                    found: 3,
-                    understood: 2,
-                    ..
-                })
-            ));
-        }
-        // Phase `a_document_written_before_versioning_opens_and_is_stamped_on_save`.
-        // A document from before versioning existed opens, and gains its version
-        // on next write. Reading absence as "unknown" would refuse every existing
-        // user's documents on the very upgrade meant to prevent that loss.
-        {
-            let _tmp = scratch_home();
-            let mut store = DocStore::open_for("so.tilo.unversioned").unwrap();
-
-            // Written the way the crate used to: a bare AutoCommit, no stamp.
-            let mut old = AutoCommit::new();
-            old.put(&ROOT, "note", ScalarValue::Str("kept".into()))
-                .unwrap();
-            assert!(
-                old.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_none(),
-                "the fixture must actually be unversioned"
-            );
-            fs::create_dir_all(store.dir()).unwrap();
-            fs::write(store.document_path(), old.save()).unwrap();
-
-            let mut doc = store.load_or_new();
-            assert!(
-                store.refusal().is_none(),
-                "an unversioned document is not refused"
-            );
-            assert_eq!(
-                text_of(&doc, "note").as_deref(),
-                Some("kept"),
-                "its contents must load"
-            );
-            store.save(&mut doc).unwrap();
-
-            let mut reopened = DocStore::open_for("so.tilo.unversioned").unwrap();
-            let loaded = reopened.load().unwrap().unwrap();
-            assert!(
-                loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
-                "saving must stamp a document that had no version, so a later build \
-                 is not left guessing"
-            );
-            assert_eq!(text_of(&loaded, "note").as_deref(), Some("kept"));
-        }
-        // Phase `a_newer_document_is_refused_and_never_written_over`.
-        // The one this exists for: an older build meets a document a newer one
-        // wrote. It must refuse and keep the bytes — writing over them is what
-        // turns a survivable empty session into data loss.
-        {
-            let _tmp = scratch_home();
-            let mut store = DocStore::open_for("so.tilo.future").unwrap();
-
-            let mut future = AutoCommit::new();
-            future
-                .put(
-                    &ROOT,
-                    "irreplaceable",
-                    ScalarValue::Str("please keep".into()),
-                )
-                .unwrap();
-            future
-                .put(&ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION) + 1)
-                .unwrap();
-            fs::create_dir_all(store.dir()).unwrap();
-            let on_disk = future.save();
-            fs::write(store.document_path(), &on_disk).unwrap();
-
-            // load() names the situation rather than calling it corruption.
-            match store.load() {
-                Err(StoreError::NewerSchema {
-                    found, understood, ..
-                }) => {
-                    assert_eq!(found, SCHEMA_VERSION + 1);
-                    assert_eq!(understood, SCHEMA_VERSION);
-                }
-                other => panic!("expected NewerSchema, got {other:?}"),
-            }
-
-            // load_or_new comes up empty and records why.
-            let mut doc = store.load_or_new();
-            assert!(
-                text_of(&doc, "irreplaceable").is_none(),
-                "a refused document must not be loaded"
-            );
-            let reason = store
-                .refusal()
-                .expect("the refusal has to be visible, or nothing downstream can act on it");
-            assert!(
-                reason.contains(&(SCHEMA_VERSION + 1).to_string()),
-                "the reason must name the layout found, got: {reason}"
-            );
-
-            // And every write path refuses, so the bytes survive an app that carries on regardless.
-            doc.put(&ROOT, "scribble", ScalarValue::Str("no".into()))
-                .unwrap();
-            assert!(
-                matches!(store.save(&mut doc), Err(StoreError::NewerSchema { .. })),
-                "save over a refused document must fail, not succeed quietly"
-            );
-            assert!(
-                matches!(store.append(&mut doc), Err(StoreError::NewerSchema { .. })),
-                "append over a refused document must fail too — it writes to the \
-                 same file"
-            );
-            assert_eq!(
-                fs::read(store.document_path()).unwrap(),
-                on_disk,
-                "the document on disk must be byte-for-byte what it was"
-            );
-        }
-    }
-
-    #[test]
-    #[serial_test::serial]
     fn opening_over_existing_state_keeps_persistence() {
         // Phase `opening_twice_against_an_existing_dir_keeps_persistence_enabled`.
         // If the directory create were not idempotent, the second open would fail
@@ -2005,7 +1429,6 @@ mod tests {
             let mut run1 =
                 DocStore::open_for(pkg).expect("first open must succeed when the dir exists");
             let mut doc = run1.load_or_new();
-            assert!(run1.refusal().is_none(), "a fresh store is not refused");
             let mut autosave1 = run1.writer();
             assert!(autosave1.is_enabled(), "run 1 must persist, not fall back");
             autosave1.seed(&mut doc);

@@ -187,10 +187,10 @@ impl HistorySource {
 
     /// Leave out a record's genesis: the change that created it with its
     /// initial content, made by an actor derived from the record's identity
-    /// at time zero (for a package-primary document, which records no
-    /// identity, the root change that stamps its store's schema). A
-    /// document's own history keeps it as the version to restore to; a feed
-    /// of what people did has no one to name for it.
+    /// at time zero, carrying the framework's genesis message (for a
+    /// package-primary document, which records no identity, the root change
+    /// that starts it). A document's own history keeps it as the version to
+    /// restore to; a feed of what people did has no one to name for it.
     #[must_use]
     pub fn without_record_genesis(mut self) -> Self {
         self.record_genesis = false;
@@ -244,19 +244,13 @@ fn genesis_context() -> tilo_actions::ActionContext {
 }
 
 /// Whether `v` is the genesis of a document its store created: the root
-/// change, made at time zero, which stamps the store's schema along with the
-/// initial content. Nobody's edit writes the schema stamp.
+/// change, made at time zero, which the framework commits the initial
+/// content as. Nobody's edit carries the framework's genesis message.
 fn is_store_genesis(doc: &mut AutoCommit, time_ms: i64, hash: &ChangeHash) -> bool {
+    let genesis = tilo_actions::FrameworkChange::Genesis.change_message();
     time_ms == 0
-        && doc
-            .get_change_meta_by_hash(hash)
-            .is_some_and(|change| change.deps.is_empty())
-        && doc.diff(&[], &[*hash]).iter().any(|patch| {
-            patch.obj == automerge::ROOT
-                && matches!(
-                    &patch.action,
-                    PatchAction::PutMap { key, .. } if key == app_state::SCHEMA_VERSION_KEY
-                )
+        && doc.get_change_meta_by_hash(hash).is_some_and(|change| {
+            change.deps.is_empty() && change.message.as_deref() == Some(genesis.as_str())
         })
 }
 

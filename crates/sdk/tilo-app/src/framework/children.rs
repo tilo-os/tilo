@@ -451,12 +451,12 @@ impl<C: ChildRecord> ChildrenState<C> {
 
     fn follow(&self, id: &Id) -> Result<(), String> {
         let record = Self::record(id)?;
-        let stored = self
+        let older = self
             .room
             .store
-            .read(&record, tilo_resource::evolution::stored_version)
+            .read(&record, tilo_resource::evolution::needs_migrate::<C>)
             .ok_or("the child is not open here")?;
-        if stored < <C as Resource>::VERSION {
+        if older {
             if !self.room.store.takes_writes() {
                 return Err("migrated once the store takes writes".into());
             }

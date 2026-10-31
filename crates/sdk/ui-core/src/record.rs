@@ -32,7 +32,7 @@ use tilo_sort::CompactSort as _;
 
 use crate::portable_storage::PortableStorage;
 mod portable;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use tilo_automerge::ApplyIncoming;
 
@@ -1426,7 +1426,6 @@ impl RecordSet {
             if !init_scoped(&mut doc, &want.id, &want.kind, &self.home, Some(&self.home)) {
                 return Err(RecordOpenError::IdentityMismatch);
             }
-            owner.validate_schema(&doc)?;
             validate_identity(&doc, want, &self.home)?;
             commit_genesis(&mut doc);
             let owner = Rc::new(owner);
@@ -2361,10 +2360,9 @@ impl RecordReservation {
                 set.home.clone(),
             )
         };
-        let mut doc = owner.new_document()?;
+        let mut doc = owner.new_document();
         genesis(&mut doc, &self.checkout, &workspace, initialize)?;
         seed(&mut doc).map_err(RecordOpenError::Initialization)?;
-        owner.validate_schema(&doc)?;
         validate_identity(&doc, &self.checkout, &workspace)?;
         commit_genesis(&mut doc);
         let mut set = self.store.0.borrow_mut();
@@ -3932,6 +3930,7 @@ mod replica_merge_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     /// A chain's parts and an on-demand record are ordinary record ids, in
     /// the wire form the host reads them by.

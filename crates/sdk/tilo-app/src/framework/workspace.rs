@@ -184,7 +184,7 @@ impl<P: Resource> WorkspaceRecord<P> {
             })
             .map_err(|error| tracing::warn!(kind = P::KIND, %error, "workspace record unavailable"))
             .ok()?;
-        if record.read(tilo_resource::evolution::stored_version)? < P::VERSION
+        if record.read(tilo_resource::evolution::needs_migrate::<P>)?
             && let Err(error) = record.edit(false, |doc| {
                 tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
             })

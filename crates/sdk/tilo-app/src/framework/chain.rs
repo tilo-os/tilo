@@ -501,12 +501,12 @@ impl<P: Chained> ChainState<P> {
         // An older part is brought up to the part's storage version before
         // it is read, as the app's record is when it opens: once, as the
         // same housekeeping change on every device.
-        let stored = self
+        let older = self
             .room
             .store
-            .read(&part, tilo_resource::evolution::stored_version)
+            .read(&part, tilo_resource::evolution::needs_migrate::<P>)
             .ok_or("the part is not open here")?;
-        if stored < <P as Resource>::VERSION {
+        if older {
             // Not while a frame reads the store: the part is held at the
             // next refresh, as a part this device asked for is.
             if !self.room.store.takes_writes() {

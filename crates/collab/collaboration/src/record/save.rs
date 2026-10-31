@@ -109,8 +109,7 @@ pub fn room_document(
 
 /// Open the document `store` holds, as a room this device governs reads it:
 /// from its on-disk copy, with a writer that keeps it there. A document that
-/// left the room ([`super::retirement`]) starts over; one written by a newer
-/// build is opened without persistence, so the copy on disk is left intact.
+/// left the room ([`super::retirement`]) starts over.
 pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
     let mut doc = store.load_or_new();
     // The app's document moved to another workspace, which now holds it
@@ -120,22 +119,6 @@ pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
         if let Err(error) = store.save(&mut doc) {
             tracing::error!(%error, "could not start a new app document after a move");
         }
-    }
-    // A document written by a newer build is not opened, and the empty
-    // stand-in must never reach disk — with autosave on, the first edit
-    // (or the exit flush) would save it over the existing document. The store
-    // also refuses the write itself; the disabled writer is what stops
-    // the app logging an error on every keystroke to earn that guarantee.
-    if let Some(reason) = store.refusal() {
-        let reason = reason.to_string();
-        tracing::error!(
-            reason = %reason,
-            "app state was written by a newer version of this app; running \
-             without persistence so the file on disk is left intact"
-        );
-        eprintln!("tilo: {reason}");
-        eprintln!("tilo: this session starts empty and will NOT be saved.");
-        return (doc, DocWriter::disabled(reason));
     }
     let mut autosave = store.writer();
     autosave.seed(&mut doc);
@@ -157,9 +140,6 @@ pub fn open_with_committed_read(
     let stored = store.load_complete().map_err(|e| e.to_string())?;
     let had_stored = stored.is_some();
     let mut doc = stored.unwrap_or_else(|| store.new_document());
-    if let Some(reason) = store.refusal() {
-        return Err(reason.to_string());
-    }
     let mut writer = store.writer();
     // Only the previously stored heads are durable. The captured graph must
     // remain a pending local-cache write even without a subsequent user edit.
