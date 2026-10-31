@@ -73,15 +73,20 @@ pub enum Brush {
     },
     /// What lies below the part, blurred by `blur` logical pixels and bent
     /// by `lens`, where the toolkit has a backdrop pass; `fallback` where it
-    /// has not (no pass, reduced transparency, a capture). The toolkit then
-    /// holds what shows inside the band around the part's fill
-    /// (`PartTokens::fill`, the tint a painter lays over it), so ink laid on
-    /// it keeps its contrast over any backdrop; the painter cannot skip
-    /// that.
+    /// has not (no pass, reduced transparency, a capture). Over it the
+    /// toolkit draws `glaze`, the painter's own light on the sample (a
+    /// sheen, a frost), and then holds everything in the path inside the
+    /// band around the part's fill (`PartTokens::fill`, the tint a painter
+    /// lays over it), so ink laid on it keeps its contrast over any
+    /// backdrop. The band is applied last; the painter cannot skip it.
+    ///
+    /// A glaze shows no backdrop of its own: a backdrop brush inside one is
+    /// drawn as its fallback.
     Backdrop {
         blur: f32,
         lens: Lens,
         fallback: Color,
+        glaze: Vec<Op>,
     },
 }
 
@@ -230,6 +235,7 @@ mod tests {
                     blur: 8.0,
                     lens: Lens::default(),
                     fallback: Color::WHITE,
+                    glaze: Vec::new(),
                 },
             );
         });

@@ -189,7 +189,8 @@ fn socket() -> Result<UnixStream, String> {
     } else {
         runtime.join(remote)
     };
-    UnixStream::connect(&path).map_err(|error| format!("connect {}: {error}", path.display()))
+    tilo_files::native::socket::connect(&path)
+        .map_err(|error| format!("connect {}: {error}", path.display()))
 }
 
 /// Copy `frame` into a buffer negotiated at `width`×`height`, scaling by

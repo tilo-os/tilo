@@ -6,26 +6,33 @@
 //! the answer as untrusted input (every length is bounded by the bytes that
 //! are there, and a malformed answer is `None`, drawn by the built-in set).
 //!
-//! Request: `kind: u8` ([`PAINT`] or [`TRANSITION`]), then
+//! Request: `kind: u8` ([`PAINT`], [`TRANSITION`] or [`PARAMS`]), then
 //! * paint: `part: u8, width: f64, height: f64, now: u16, was: u16,
 //!   progress: f32`, the tokens;
-//! * transition: `part: u8, from: u16, to: u16`.
+//! * transition: `part: u8, from: u16, to: u16`;
+//! * params: nothing more.
 //!
 //! Answer: paint is `0` for "not mine" or `1`, the scene and the hit shape;
-//! transition is one [`crate::Transition`].
+//! transition is one [`crate::Transition`]; params is the set's
+//! [`crate::ParamSpec`]s.
 
 use kurbo::{Affine, BezPath, PathEl, Point, Size};
 use peniko::Color;
 
 use crate::{
-    Brush, Easing, Lens, Op, PaintedPart, Param, Part, PartImage, PartScene, PartState, PartTokens,
-    States, Stop, Transition,
+    Brush, Easing, Lens, Op, PaintedPart, Param, ParamSpec, Part, PartImage, PartScene, PartState,
+    PartTokens, States, Stop, Transition,
 };
 
 /// A paint request.
 pub const PAINT: u8 = 1;
 /// A transition request.
 pub const TRANSITION: u8 = 2;
+/// A request for the set's parameters.
+pub const PARAMS: u8 = 3;
+
+/// Longest parameter name an answer may carry, bytes.
+pub const MAX_PARAM_NAME: usize = 64;
 
 /// Deepest layer nesting an answer may carry; vello's own bound is far
 /// above any part's need.
@@ -50,6 +57,7 @@ pub enum Request {
         from: States,
         to: States,
     },
+    Params,
 }
 
 /// Encode a paint request.
@@ -78,6 +86,12 @@ pub fn transition_request(part: Part, from: States, to: States) -> Vec<u8> {
     out.0
 }
 
+/// Encode a request for the set's parameters.
+#[must_use]
+pub fn params_request() -> Vec<u8> {
+    vec![PARAMS]
+}
+
 /// Decode a request.
 #[must_use]
 pub fn request(bytes: &[u8]) -> Option<Request> {
@@ -98,6 +112,7 @@ pub fn request(bytes: &[u8]) -> Option<Request> {
             from: States::from_bits(input.u16()?),
             to: States::from_bits(input.u16()?),
         },
+        PARAMS => Request::Params,
         _ => return None,
     };
     input.0.is_empty().then_some(request)
@@ -202,6 +217,71 @@ pub fn transition(bytes: &[u8]) -> Option<Transition> {
         _ => return None,
     };
     input.0.is_empty().then_some(transition)
+}
+
+/// Encode a params answer.
+#[must_use]
+pub fn params_answer(params: &[ParamSpec]) -> Vec<u8> {
+    let mut out = Writer::default();
+    out.len(params.len());
+    for param in params {
+        out.bytes(param.name.as_bytes());
+        match param.default {
+            None => out.u8(0),
+            Some(value) => {
+                out.u8(1);
+                out.f32(value);
+            }
+        }
+        for value in [
+            *param.admitted.start(),
+            *param.admitted.end(),
+            *param.usable.start(),
+            *param.usable.end(),
+        ] {
+            out.f32(value);
+        }
+    }
+    out.0
+}
+
+/// Decode a params answer: `None` for bytes that are not one, a name that
+/// is empty, too long, not UTF-8 or stated twice, or a band that is empty
+/// or a usable band outside its admitted one.
+#[must_use]
+pub fn params(bytes: &[u8]) -> Option<Vec<ParamSpec>> {
+    let mut input = Reader(bytes);
+    // A name's length, its default flag and four bounds.
+    let count = input.count(21)?;
+    let mut params: Vec<ParamSpec> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let name = std::str::from_utf8(input.bytes()?).ok()?.to_owned();
+        let default = match input.u8()? {
+            0 => None,
+            1 => Some(input.f32()?),
+            _ => return None,
+        };
+        let admitted = input.f32()?..=input.f32()?;
+        let usable = input.f32()?..=input.f32()?;
+        let well_formed = !name.is_empty()
+            && name.len() <= MAX_PARAM_NAME
+            && !params.iter().any(|known| known.name == name)
+            && admitted.start() <= admitted.end()
+            && usable.start() <= usable.end()
+            && admitted.start() <= usable.start()
+            && usable.end() <= admitted.end()
+            && default.is_none_or(|value| admitted.contains(&value));
+        if !well_formed {
+            return None;
+        }
+        params.push(ParamSpec {
+            name: name.into(),
+            default,
+            admitted,
+            usable,
+        });
+    }
+    input.0.is_empty().then_some(params)
 }
 
 #[derive(Default)]
@@ -311,17 +391,19 @@ impl Writer {
                 blur,
                 lens,
                 fallback,
+                glaze,
             } => {
                 self.u8(4);
                 self.f32(*blur);
                 self.f32(lens.refraction);
                 self.color(*fallback);
+                self.ops(glaze);
             }
         }
     }
-    fn scene(&mut self, scene: &PartScene) {
-        self.len(scene.ops.len());
-        for op in &scene.ops {
+    fn ops(&mut self, ops: &[Op]) {
+        self.len(ops.len());
+        for op in ops {
             match op {
                 Op::Fill {
                     path,
@@ -348,6 +430,9 @@ impl Writer {
             }
         }
     }
+    fn scene(&mut self, scene: &PartScene) {
+        self.ops(&scene.ops);
+    }
     fn tokens(&mut self, tokens: &PartTokens) {
         for color in [
             tokens.fill,
@@ -366,8 +451,9 @@ impl Writer {
         self.u8(u8::from(tokens.dark));
         self.u8(u8::from(tokens.high_contrast));
         self.u8(u8::from(tokens.reduce_transparency));
+        self.u8(u8::from(tokens.backdrop));
         self.len(tokens.params.len());
-        for param in &tokens.params {
+        for param in tokens.params.iter() {
             self.bytes(param.name.as_bytes());
             self.f32(param.value);
         }
@@ -463,7 +549,9 @@ impl Reader<'_> {
             })
             .collect()
     }
-    fn brush(&mut self) -> Option<Brush> {
+    /// A brush; `glazed`: inside a backdrop's glaze, where another
+    /// backdrop is refused.
+    fn brush(&mut self, glazed: bool) -> Option<Brush> {
         Some(match self.u8()? {
             0 => Brush::Solid(self.color()?),
             1 => Brush::Linear {
@@ -490,17 +578,19 @@ impl Reader<'_> {
                     scale: self.f32()?,
                 }
             }
-            4 => Brush::Backdrop {
+            4 if !glazed => Brush::Backdrop {
                 blur: self.f32()?,
                 lens: Lens {
                     refraction: self.f32()?,
                 },
                 fallback: self.color()?,
+                glaze: self.ops(true)?,
             },
             _ => return None,
         })
     }
-    fn scene(&mut self) -> Option<PartScene> {
+    /// Operations whose layers balance; `glazed`: a backdrop's glaze.
+    fn ops(&mut self, glazed: bool) -> Option<Vec<Op>> {
         let count = self.count(1)?;
         let mut ops = Vec::with_capacity(count);
         let mut depth = 0_usize;
@@ -508,13 +598,13 @@ impl Reader<'_> {
             let op = match self.u8()? {
                 0 => Op::Fill {
                     path: self.path()?,
-                    brush: self.brush()?,
+                    brush: self.brush(glazed)?,
                     brush_transform: self.affine()?,
                 },
                 1 => Op::Stroke {
                     path: self.path()?,
                     width: self.f32()?,
-                    brush: self.brush()?,
+                    brush: self.brush(glazed)?,
                 },
                 2 => {
                     depth = depth.checked_add(1).filter(|d| *d <= MAX_LAYER_DEPTH)?;
@@ -532,7 +622,12 @@ impl Reader<'_> {
             ops.push(op);
         }
         // Every layer an answer opens, it closes.
-        (depth == 0).then_some(PartScene { ops })
+        (depth == 0).then_some(ops)
+    }
+    fn scene(&mut self) -> Option<PartScene> {
+        Some(PartScene {
+            ops: self.ops(false)?,
+        })
     }
     fn tokens(&mut self) -> Option<PartTokens> {
         let mut colors = [Color::BLACK; 7];
@@ -554,6 +649,7 @@ impl Reader<'_> {
             dark: self.u8()? != 0,
             high_contrast: self.u8()? != 0,
             reduce_transparency: self.u8()? != 0,
+            backdrop: self.u8()? != 0,
             params: {
                 let count = self.count(8)?;
                 (0..count)
@@ -564,6 +660,7 @@ impl Reader<'_> {
                         })
                     })
                     .collect::<Option<Vec<_>>>()?
+                    .into()
             },
         })
     }
@@ -609,6 +706,11 @@ mod tests {
                 blur: 12.0,
                 lens: Lens { refraction: 3.0 },
                 fallback: Color::WHITE,
+                glaze: vec![Op::Fill {
+                    path: Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.1),
+                    brush: Brush::Solid(Color::WHITE.with_alpha(0.1)),
+                    brush_transform: Affine::IDENTITY,
+                }],
             },
         ]
     }
@@ -643,7 +745,9 @@ mod tests {
                 params: vec![Param {
                     name: "levels".into(),
                     value: 4.0,
-                }],
+                }]
+                .into(),
+                backdrop: true,
                 ..PartTokens::default()
             },
         };
@@ -715,5 +819,52 @@ mod tests {
             },
         );
         assert_eq!(paint(&paint_answer(Some(&PaintedPart::new(scene)))), None);
+        // A backdrop inside a backdrop's glaze.
+        let backdrop = |glaze| Brush::Backdrop {
+            blur: 4.0,
+            lens: Lens::default(),
+            fallback: Color::WHITE,
+            glaze,
+        };
+        let mut scene = PartScene::new();
+        scene.fill(
+            BezPath::new(),
+            backdrop(vec![Op::Fill {
+                path: BezPath::new(),
+                brush: backdrop(Vec::new()),
+                brush_transform: Affine::IDENTITY,
+            }]),
+        );
+        assert_eq!(paint(&paint_answer(Some(&PaintedPart::new(scene)))), None);
+    }
+
+    #[test]
+    fn params_round_trip_and_malformed_bands_are_refused() {
+        let specs = vec![
+            ParamSpec::new("levels", Some(4.0), 2.0..=16.0),
+            ParamSpec::new("grain", None, 0.0..=1.0).usable_within(0.0..=0.5),
+        ];
+        assert_eq!(request(&params_request()), Some(Request::Params));
+        assert_eq!(params(&params_answer(&specs)), Some(specs.clone()));
+        assert_eq!(params(&params_answer(&[])), Some(Vec::new()));
+        for bad in [
+            vec![ParamSpec::new("", None, 0.0..=1.0)],
+            vec![ParamSpec::new("x", None, 1.0..=0.0)],
+            vec![ParamSpec::new("x", Some(2.0), 0.0..=1.0)],
+            vec![ParamSpec::new("x", None, 0.0..=1.0).usable_within(0.0..=2.0)],
+            vec![
+                ParamSpec::new("x", None, 0.0..=1.0),
+                ParamSpec::new("x", None, 0.0..=1.0),
+            ],
+        ] {
+            assert_eq!(params(&params_answer(&bad)), None, "{bad:?}");
+        }
+        let long = ParamSpec {
+            name: "n".repeat(MAX_PARAM_NAME + 1).into(),
+            ..ParamSpec::new("x", None, 0.0..=1.0)
+        };
+        assert_eq!(params(&params_answer(&[long])), None);
+        // A count the bytes cannot hold is refused before anything is read.
+        assert_eq!(params(&u32::MAX.to_le_bytes()), None);
     }
 }

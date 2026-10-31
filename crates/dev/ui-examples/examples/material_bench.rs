@@ -7,12 +7,15 @@
 //! cargo run -p ui-examples --release --example ui-perf -- material_bench [THEME]...
 //! ```
 //!
-//! Without themes it runs Default, Glass and Block, light and dark. For each
-//! it writes `material-<theme>.png` to `TILO_UI_SNAPSHOT_OUT` (a directory,
+//! Without themes it runs Default, Glass and Block, light and dark. A
+//! theme is a shipped theme's name or a theme bundle's directory
+//! (`tilo_ui::theme_bundle`), whose painter modules it loads. For each it
+//! writes `material-<theme>.png` to `TILO_UI_SNAPSHOT_OUT` (a directory,
 //! default the working directory) and prints the median and 95th
 //! percentile frame time over `TILO_UI_MATERIAL_FRAMES` frames (default
 //! 120): building the scene, the backdrop blur and the render, GPU completion
-//! and readback included.
+//! and readback included. `first` is the shot's frame, the one that paints
+//! every part before the toolkit's cache holds it.
 
 use std::time::{Duration, Instant};
 
@@ -265,12 +268,23 @@ pub fn run(args: &[String]) {
     }
     let mut text = TextRenderer::new();
     for name in names {
-        let Some(theme) = Theme::named(&name) else {
-            crate::registry::fatal(format!("no theme named {name:?}"));
+        let theme = match Theme::named(&name) {
+            Some(theme) => theme,
+            None if std::path::Path::new(&name).is_dir() => {
+                tilo_ui::theme_bundle::load_dir(std::path::Path::new(&name))
+                    .unwrap_or_else(|e| crate::registry::fatal(format!("{name}: {e}")))
+            }
+            None => crate::registry::fatal(format!("no theme named {name:?}")),
+        };
+        let name = if Theme::named(&name).is_some() {
+            name
+        } else {
+            theme.name.clone()
         };
         let theme = theme.with_reduce_motion(true);
         let base = theme.tokens.colors.surfaces.base;
         // The shot.
+        let started = Instant::now();
         let (scene, backdrop) = frame(&theme, &mut text);
         let regions = backdrop.regions.len();
         renderer.set_backdrop(Some(std::sync::Arc::new(backdrop)));
@@ -278,6 +292,8 @@ pub fn run(args: &[String]) {
             .chars()
             .map(|c| if c.is_alphanumeric() { c } else { '-' })
             .collect();
+        let _pixels = renderer.render(&scene, base);
+        let first = started.elapsed();
         renderer.render_png(&scene, base, format!("{out}/material-{slug}.png"));
         // The timing: every frame built and rendered from scratch.
         let mut samples = Vec::with_capacity(frames);
@@ -290,7 +306,8 @@ pub fn run(args: &[String]) {
         }
         samples.sort_unstable();
         println!(
-            "{name:<12} regions {regions}  median {:>6.2} ms  p95 {:>6.2} ms  ({frames} frames, {WIDTH}x{HEIGHT})",
+            "{name:<12} regions {regions}  first {:>6.2} ms  median {:>6.2} ms  p95 {:>6.2} ms  ({frames} frames, {WIDTH}x{HEIGHT})",
+            first.as_secs_f64() * 1000.0,
             percentile(&samples, 0.5).as_secs_f64() * 1000.0,
             percentile(&samples, 0.95).as_secs_f64() * 1000.0,
         );

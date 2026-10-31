@@ -23,7 +23,7 @@ pub use colors::{
 };
 pub use density::{Density, RowHeights};
 pub use elevation::{Elevation, Outline, Shadow};
-pub use finish::{Border, BorderInk, Depth, Finish, Optics, RoleFinishes, SurfaceRole};
+pub use finish::{Border, BorderInk, Depth, Finish, RoleFinishes, SurfaceRole};
 pub use layout::{Breakpoint, BreakpointTracker, Layout};
 pub use metrics::Metrics;
 pub use motion::{
@@ -111,9 +111,9 @@ impl Tokens {
             },
             density: Density::Comfortable,
             finishes: if colors_high_contrast {
-                RoleFinishes::OPAQUE
+                RoleFinishes::solid()
             } else {
-                RoleFinishes::STOCK
+                RoleFinishes::stock()
             },
             border: Border::STOCK,
             border_color: None,

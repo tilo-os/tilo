@@ -252,6 +252,20 @@ primary action send(d: Draft) proposal compose(d) (icon: .send) {
     d.sent = true
 }
 
+/// Answers the conversation with what was typed: the message goes to whoever wrote its newest,
+/// as a reply to it, quoted.
+action answer(t: Thread, body: Text) -> Draft (icon: .reply) {
+    require body.len() > 0 "Say something first"
+    let m = root Mail
+    let last = t.messages.last()
+    let said = if let l = last {
+        "\n\nOn {l.received}, {l.from_name} wrote:\n\n> {l.body}"
+    } else { "" }
+    let d = m.drafts.insert(Draft(from: t.account, to: last?.from ?? "", subject: re(t.subject), body: "{body}{said}", in_reply_to: last?.message_id ?? "", references: "{last?.references ?? ""} {last?.message_id ?? ""}"))
+    send(d)
+    d
+}
+
 /// The message as it will leave, shown when someone is asked to send it.
 view compose(d: Draft) {
     stack(gap: .related) {
@@ -352,13 +366,48 @@ fn delivery_says(state: Text, reason: Text) -> Text {
     if state == "sent" { "Sent" } else if state == "sending" { "Sending" } else if state == "rejected" { "Not sent: {reason}" } else if state == "unknown" { "Not known whether it was sent" } else if reason == "" { "Waiting to send" } else { "Waiting to go online: {reason}" }
 }
 
-/// A conversation's window: its messages in order, each with who wrote it, to whom and when.
+/// A conversation's window: its subject, then every message in order with who wrote it, to
+/// whom and when, what it says and what came with it, and a reply at the foot.
 view conversation(t: Thread) {
-    std.page(t) {
-        for m in t.messages {
-            stack(gap: .related) {
-                ui.ListRow(title: m.from_name, secondary: m.to, meta: m.received)
-                text(m.body)
+    lens draft: Text
+    ui.NavShell(content_kind: .page, title: t.subject) {
+        actions: {
+            std.header(actions(t))
+        }
+        content: {
+            ui.Docked {
+                foot: {
+                    row {
+                        ui.TextInput(value: draft, placeholder: "Reply to {t.subject}", fill) {
+                            on submit: answer(t, draft).then(set(draft, ""))
+                        }
+                        ui.Button("Reply", icon: .send, icon_only: true) {
+                            on press: answer(t, draft).then(set(draft, ""))
+                        }
+                    }
+                }
+                ui.VirtualList(transcript: true) {
+                    for m in t.messages {
+                        ui.ListItem(item: m, time: m.received) {
+                            message(m)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One message of a conversation: who wrote it, to whom, what it says, and what came with it.
+view message(m: Message) {
+    stack(gap: .related) {
+        ui.Text(if m.from_name == "" { m.from } else { m.from_name }, role: .subheading)
+        ui.Text("to {m.to}", role: .caption, secondary: true)
+        ui.Text(m.body, role: .reading)
+        if m.attachments != "" {
+            stack(gap: .tight) {
+                ui.Text("Attached", role: .caption, secondary: true)
+                ui.Text(m.attachments, role: .label)
             }
         }
     }

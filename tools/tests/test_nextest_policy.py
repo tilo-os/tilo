@@ -153,8 +153,13 @@ class NextestPolicyTests(unittest.TestCase):
         referenced: set[str] = set()
         for path in consumers:
             text = path.read_text(encoding="utf-8")
-            # A consumer may also define a filter for one step of its own.
+            # A consumer may also define a filter for one step of its own: a
+            # shell assignment, or a line it writes into `$GITHUB_ENV`
+            # (`echo "CAPABILITY_FILTER=$filter" >> "$GITHUB_ENV"`), which
+            # the step that runs the tests reads from the environment.
             defined.update(re.findall(r"(?m)^\s*([A-Z][A-Z0-9_]*_FILTER)\s*[:=]", text))
+            defined.update(re.findall(
+                r"(?m)^\s*(?:echo|printf)\s+[\"']([A-Z][A-Z0-9_]*_FILTER)=", text))
             referenced.update(re.findall(r"\b([A-Z][A-Z0-9_]*_FILTER)\b", text))
         self.assertEqual(referenced - defined, set())
         # An empty term is what nextest rejects, so no consumer may compose

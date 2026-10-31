@@ -1,0 +1,25 @@
+[package]
+name = "tilo-theme-bauhaus"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Bauhaus: a theme built only through the theme SDK, with square geometry, hard offset shadows and ordered-dither fills, loaded from wasm."
+
+# A cdylib for the wasm module a theme bundle carries, and an rlib so the
+# painter's own tests run natively.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# The SDK and nothing else: the proof that it is enough to write a theme.
+[dependencies]
+tilo-theme-sdk = { version = "0.1.0", path = "../../theme-sdk" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

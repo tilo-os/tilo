@@ -466,11 +466,12 @@ impl Origin for SessionOrigin {
         let Some(reading) = self.link.reading.borrow().clone() else {
             return polled;
         };
-        let Some(package) = cx.host.package(cx.app) else {
+        let Some(types) = cx.host.find_in_packages(|package| {
+            (package.meta.app == cx.app).then(|| origin_types(&package.meta, ORIGIN))
+        }) else {
             tracing::error!(app = cx.app, "the shell's package is not loaded");
             return polled;
         };
-        let types = origin_types(&package.meta, ORIGIN);
         let root = match cx.host.root_of(cx.app) {
             Ok(root) => root,
             Err(error) => {

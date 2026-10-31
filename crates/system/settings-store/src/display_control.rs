@@ -387,17 +387,10 @@ mod tests {
 
     #[test]
     fn sandbox_denied_direct_preview_uses_explicit_host_source_without_global_write_grant() {
-        struct Restore(Option<std::sync::Arc<dyn SettingsSource>>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                crate::install_source(self.0.take());
-            }
-        }
-        let _restore = Restore(crate::installed_source());
         let sandbox = std::sync::Arc::new(HostDocument::new(serde_json::Map::default(), |_| {
             Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
         }));
-        crate::install_source(Some(sandbox.clone()));
+        let _sandbox = crate::scoped_source(Some(sandbox.clone()));
         let snapshot = observed();
         let DisplayCommand::Apply {
             observed_set,

@@ -2,17 +2,18 @@ app so.tilo.shell "Shell" (icon: .monitor, category: .system)
 
 /// This device's desk as the session holds it: the time in the person's style, who they are,
 /// their notifications, the workspaces on this device and the tasks running for them. The
-/// session keeps it in step; the shell's views read it.
+/// session keeps it in step; the shell's views read it. Its text is the session's to replace
+/// whole, never edited here: each is a register, not text to merge.
 type Desk (origin: session.desk) {
-    person: Text (title)
-    clock: Text
-    weekday: Text
-    date: Text
+    person: Text merge register (title)
+    clock: Text merge register
+    weekday: Text merge register
+    date: Text merge register
     unread: Int
     quiet: Bool
     status_panel: Bool
-    workspace: Text
-    strip: Text
+    workspace: Text merge register
+    strip: Text merge register
     workspaces: Collection<Workspace>
     tasks: Collection<Task>
     people: Collection<Person>
@@ -21,21 +22,21 @@ type Desk (origin: session.desk) {
 /// A workspace on this device.
 type Workspace (origin: session.workspace) {
     key: Text merge register
-    name: Text (title)
+    name: Text merge register (title)
     current: Bool
 }
 
 /// A task running for the person: an agent's or a script's.
 type Task (origin: session.task) {
     key: Text merge register
-    title: Text (title)
-    state: Text
+    title: Text merge register (title)
+    state: Text merge register
 }
 
 /// Someone else here in the workspace in front.
 type Person (origin: session.person) {
     key: Text merge register
-    name: Text (title)
+    name: Text merge register (title)
 }
 
 root Desk
