@@ -4727,6 +4727,23 @@
       }
     },
     {
+      "name": "WindowWell",
+      "doc": "A place's window, at the rectangle the well stands at: the app's own window shows there, so the well draws nothing and takes no input.",
+      "props": [
+        {
+          "name": "place",
+          "doc": "The place whose window shows here: the tab id the desktop model gives the window when it maps (shell.md §8).",
+          "type": "text",
+          "required": true,
+          "positional": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "place"
+      }
+    },
+    {
       "name": "ActivityEntry",
       "doc": "One change of a document: what it did, who did it and when.",
       "props": [

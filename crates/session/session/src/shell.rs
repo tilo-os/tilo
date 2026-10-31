@@ -22,7 +22,6 @@ use crate::panels::Held;
 pub fn compile() -> Result<Vec<tilolang_tilo::tilolang::Compiled>, String> {
     tilo_surface_host::shell_part::compile_shell()
 }
-}
 
 /// The height of the band the chrome leaves the shell's bar, logical pixels.
 fn band() -> u32 {
@@ -81,6 +80,7 @@ impl Shell {
             band(),
             scale,
             std::sync::Arc::new(move || wake.wake_by_ref()),
+            None,
         );
         let part = Rc::new(RefCell::new(part));
         compositor.add_host(Box::new(Held(Rc::clone(&part))));
@@ -101,7 +101,8 @@ impl Shell {
     /// the windows, which move without the desk changing. Whether anything was published.
     pub(crate) fn publish(&mut self) -> bool {
         let key = self.desk.key();
-        let desk_changed = self.seen.replace(key) != Some(key);
+        let was = self.seen.replace(key.clone());
+        let desk_changed = was.as_ref() != Some(&key);
         if desk_changed && !self.link.publish(self.desk.reading()) {
             return false;
         }

@@ -69,20 +69,10 @@ pub struct Staged {
 const EXCHANGES: usize = 8;
 
 impl Staged {
-    /// The app `app` of `packages` with `scenario` staged, its window laid out at `viewport`.
-    pub fn new(
-        app: &str,
-        packages: &Rc<Packages>,
-        scenario: &str,
-        viewport: (u32, u32),
-        theme: ui::Theme,
-    ) -> Result<Self, String> {
-        Self::over(app, packages, scenario, viewport, theme, None)
-    }
-
-    /// As [`Self::new`], the window showing the layer `root` names rather than the package's
-    /// first root: a package with more than one root (the shell's `Desk` beside its
-    /// `Arrangement`) shows each, and each is laid out as a person sees it.
+    /// The app `app` of `packages` with `scenario` staged, its window laid out at `viewport`,
+    /// showing the layer `root` names rather than the package's first root: a package with more
+    /// than one root (the shell's `Desk` beside its `Arrangement`) shows each, and each is laid
+    /// out as a person sees it.
     pub fn over(
         app: &str,
         packages: &Rc<Packages>,
