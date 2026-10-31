@@ -34,6 +34,8 @@ use ui::headless::FrameHarness;
 use ui::widget::Widget;
 
 const NOTES: &str = "so.tilo.lang.notes";
+/// The test's own notebook, whose notes' bodies are rich text.
+const RICHBODY: &str = "so.tilo.lang.richbody";
 const VIEWPORT: (u32, u32) = (1280, 800);
 
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;
@@ -304,6 +306,16 @@ impl Session {
     /// A person at a Notes window the live `App` runs.
     fn live_notes() -> Self {
         Self::open(NOTES, "../tl/notes", "ada", |hosted| {
+            let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
+            app.init_layout();
+            Window::Live(Box::new(app))
+        })
+    }
+
+    /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
+    /// live `App` running it: the same bar, fields and list as Notes, with a rich body.
+    fn live_rich() -> Self {
+        Self::open(RICHBODY, "tests/richbody", "ada", |hosted| {
             let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
             app.init_layout();
             Window::Live(Box::new(app))
@@ -851,8 +863,21 @@ fn a_bar_press_runs_between_the_keys_before_and_after_it_and_typing_after_it_whe
  {
     ui::window_toolbar::set_hosted(true);
     let mut session = Session::live_notes();
-    let mut bar = Bar::over(&mut session);
-    bar.press(&mut session, "New note", input_after(0));
+    bar_press_between_the_keys(&mut session);
+}
+
+#[test]
+fn a_bar_press_runs_between_the_keys_before_and_after_it_from_a_rich_body_too() {
+    ui::window_toolbar::set_hosted(true);
+    let mut session = Session::live_rich();
+    bar_press_between_the_keys(&mut session);
+}
+
+/// The person types in a note's body, presses "+" in the bar and types the new note's title:
+/// the keys typed after the press are the new note's title, wherever the keyboard was.
+fn bar_press_between_the_keys(session: &mut Session) {
+    let mut bar = Bar::over(session);
+    bar.press(session, "New note", input_after(0));
     session.settle();
     session.window.type_text("First");
     session.settle();
@@ -860,7 +885,7 @@ fn a_bar_press_runs_between_the_keys_before_and_after_it_and_typing_after_it_whe
     session.window.click_at(body.0, body.1);
     session.settle();
     // "Body" is eight key events; the press comes after them, and reaches the window first.
-    bar.press(&mut session, "New note", input_after(8));
+    bar.press(session, "New note", input_after(8));
     session.window.type_text("Body");
     session.window.type_text("Echo");
     session.settle();
@@ -899,35 +924,78 @@ fn open_note(session: &mut Session) -> (String, String) {
 fn after_a_bar_press_the_window_ran_from_the_body_typing_goes_to_the_new_notes_title() {
     ui::window_toolbar::set_hosted(true);
     for notebook in 0..4 {
-        let mut session = Session::live_notes();
-        let mut bar = Bar::over(&mut session);
-        for round in 0..6 {
-            if round % 2 == 1 {
-                let body = session.body();
-                session.window.click_at(body.0, body.1);
-                session.settle();
-                session.window.type_text("Text");
-                session.settle();
-            }
-            bar.press(&mut session, "New note", input_after(0));
-            // The press reaches the host, which runs it and answers, before the window's next
-            // frame: the keys come first.
-            if round % 3 == 2 {
-                session.settle();
-            } else {
-                for _ in 0..20 {
-                    session.host.turn();
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-            }
-            session.window.type_text("Note title");
+        typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
+            Session::live_notes(),
+            notebook,
+        );
+    }
+}
+
+#[test]
+fn after_a_bar_press_from_a_rich_body_typing_goes_to_the_new_notes_title() {
+    ui::window_toolbar::set_hosted(true);
+    for notebook in 0..4 {
+        typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
+            Session::live_rich(),
+            notebook,
+        );
+    }
+}
+
+fn typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
+    mut session: Session,
+    notebook: usize,
+) {
+    let mut bar = Bar::over(&mut session);
+    for round in 0..6 {
+        if round % 2 == 1 {
+            let body = session.body();
+            session.window.click_at(body.0, body.1);
             session.settle();
-            assert_eq!(
-                open_note(&mut session),
-                ("Note title".to_owned(), String::new()),
-                "notebook {notebook}, round {round}: the typing is the new note's title"
-            );
+            session.window.type_text("Text");
+            session.settle();
         }
+        bar.press(&mut session, "New note", input_after(0));
+        // The press reaches the host, which runs it and answers, before the window's next
+        // frame: the keys come first.
+        if round % 3 == 2 {
+            session.settle();
+        } else {
+            for _ in 0..20 {
+                session.host.turn();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        session.window.type_text("Note title");
+        session.settle();
+        let title = match session.field_value("Untitled") {
+            Some(tilo_ui_host::Value::Text(text)) => text,
+            other => panic!("a title: {other:?}"),
+        };
+        assert_eq!(
+            title, "Note title",
+            "notebook {notebook}, round {round}: the typing is the new note's title"
+        );
+        assert_eq!(
+            body_text(&mut session),
+            "",
+            "notebook {notebook}, round {round}: none of the typing went into the body"
+        );
+    }
+}
+
+/// The text of the open note's body, a line per paragraph, whether it is plain or rich.
+fn body_text(session: &mut Session) -> String {
+    match session.field_value("Write something") {
+        Some(tilo_ui_host::Value::Text(text)) => text,
+        Some(tilo_ui_host::Value::Rich(rich)) => rich
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => String::new(),
+        Some(other) => panic!("a body: {other:?}"),
     }
 }
 
