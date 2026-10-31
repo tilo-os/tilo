@@ -46,6 +46,115 @@ struct View {
     tree: UiNode,
 }
 
+/// What a bound control holds, as the person's typing left it: the text it showed when they
+/// began and now, or the rich text. Every bound control that takes typing reports in one of
+/// these, so what the person types while a press runs waits for it whichever kind of control
+/// the keyboard is in.
+#[derive(Clone, Debug)]
+enum Held {
+    /// A text control (or a number, a date): what it showed when they began, and now.
+    Text { base: String, now: String },
+    /// A rich-text control: what it held when they began, and now.
+    Rich {
+        base: wire::rich::RichText,
+        now: wire::rich::RichText,
+    },
+}
+
+impl Held {
+    /// The text it reads as: a rich text's paragraphs, a line each.
+    fn texts(&self) -> (String, String) {
+        match self {
+            Self::Text { base, now } => (base.clone(), now.clone()),
+            Self::Rich { base, now } => (rich_text_of(base), rich_text_of(now)),
+        }
+    }
+}
+
+/// `rich` as the text a person reads, a line per paragraph.
+fn rich_text_of(rich: &wire::rich::RichText) -> String {
+    rich.blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `rich` with `delete` bytes at byte `at` of its text replaced by `insert` (paragraphs a line
+/// each, as [`rich_text_of`] reads them): the change lands in the paragraph the caret is in,
+/// and every mark around it moves with the text it marks. Typing is characters, never a
+/// paragraph break: Enter's key text is a control character, which is never held.
+fn rich_spliced_at(
+    rich: &wire::rich::RichText,
+    at: usize,
+    delete: usize,
+    insert: &str,
+) -> wire::rich::RichText {
+    let mut rich = rich.clone();
+    if rich.blocks.is_empty() {
+        rich.blocks.push(wire::rich::Block {
+            kind: "paragraph".to_owned(),
+            ..wire::rich::Block::default()
+        });
+    }
+    // The paragraph the caret is in, and the byte in it.
+    let mut start = 0usize;
+    let mut index = rich.blocks.len().saturating_sub(1);
+    for (i, block) in rich.blocks.iter().enumerate() {
+        if at <= start.saturating_add(block.text.len()) {
+            index = i;
+            break;
+        }
+        start = start.saturating_add(block.text.len()).saturating_add(1);
+    }
+    let Some(block) = rich.blocks.get_mut(index) else {
+        return rich;
+    };
+    let mut local = at.saturating_sub(start).min(block.text.len());
+    while !block.text.is_char_boundary(local) {
+        local = local.saturating_sub(1);
+    }
+    let mut end = local.saturating_add(delete).min(block.text.len());
+    while !block.text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    // The marks count characters: the range they replace, and what it gives way to.
+    let first = block
+        .text
+        .get(..local)
+        .map_or(0, |head| head.chars().count());
+    let removed = block
+        .text
+        .get(local..end)
+        .map_or(0, |gone| gone.chars().count());
+    let added = insert.chars().count();
+    let last = first.saturating_add(removed);
+    let delta = added as i64 - removed as i64;
+    for mark in &mut block.marks {
+        let moved = |chars: usize| -> usize {
+            if chars <= first {
+                chars
+            } else if chars >= last {
+                (chars as i64 + delta).max(0) as usize
+            } else {
+                first.saturating_add(added)
+            }
+        };
+        mark.start = moved(mark.start);
+        mark.end = moved(mark.end);
+    }
+    block.marks.retain(|mark| mark.start < mark.end);
+    block.text.replace_range(local..end, insert);
+    rich
+}
+
+/// `text` with `(at, end)` replaced by `insert`.
+fn splice_text(text: &str, (at, end): (usize, usize), insert: &str) -> String {
+    let mut out = text.to_owned();
+    out.replace_range(at..end, insert);
+    out
+}
+
 /// What the person typed after a press the app has not run yet: held, not sent, until it did.
 /// It goes where the keyboard would have been had the press run at once: typed where the
 /// keyboard was when they pressed, or with no field focused, it follows the press into the
@@ -67,13 +176,11 @@ struct Typed {
     /// It followed the press into the field the press opened: it goes at that field's end,
     /// after whatever went there before it.
     moved: bool,
-    /// What it showed when the person started typing.
-    base: String,
-    /// What it shows now, with their typing.
-    now: String,
+    /// What the control holds as they typed.
+    held: Held,
     /// What the app sent for the field since (it showed something else meanwhile, such as the
     /// note the press opened).
-    sent: Option<String>,
+    sent: Option<Value>,
 }
 
 fn slot(element: Element, fit: Fit) -> Slot {
@@ -569,9 +676,9 @@ impl AppWindow {
                 && typed.target.is_some()
                 && typed.target == shows
         }) {
-            if let Value::Text(text) = &value {
-                typed.sent = Some(text.clone());
-            }
+            // What the app sent for the field: the typing goes against it when the app ran the
+            // press.
+            typed.sent = Some(value);
             return;
         }
         if self.seqs.get(&key).is_some_and(|sent| *sent > acked) {
@@ -934,22 +1041,10 @@ impl AppWindow {
                 Some(message) => message,
                 None => return,
             },
-            UiEvent::EditRich(composed, rich) => {
-                // What the field shows is what the person typed, until the app takes it.
-                self.bound
-                    .borrow_mut()
-                    .insert(composed.clone(), Value::Rich(rich.clone()));
-                let (lane, key) = lane_of(&composed);
-                let Some(target) = self.target(lane) else {
-                    return;
-                };
-                ToApp::EditRich {
-                    lane,
-                    target,
-                    key,
-                    rich,
-                }
-            }
+            UiEvent::EditRich(composed, rich) => match self.edited_rich(&composed, rich) {
+                Some(message) => message,
+                None => return,
+            },
             UiEvent::Toggle(key, checked) => {
                 let (lane, key) = lane_of(&key);
                 let Some(target) = self.target(lane) else {
@@ -975,64 +1070,121 @@ impl AppWindow {
     /// The bound control `composed` now holds `text`: a splice of what it showed when it edits
     /// text, the new text when it edits another value (a number, a date).
     fn edit(&mut self, composed: &str, text: String) -> Option<ToApp> {
-        let (lane, key) = lane_of(composed);
-        let edits_text = match self.bound.borrow().get(composed) {
-            Some(Value::Text(_)) | None => true,
-            Some(Value::Opt(held)) => matches!(held.as_deref(), Some(Value::Text(_)) | None),
-            Some(_) => false,
+        let held = Held::Text {
+            base: self.texts.get(composed).cloned().unwrap_or_default(),
+            now: text,
         };
+        self.bound_text(composed, held)
+    }
+
+    /// The bound rich-text control `composed` now holds `rich`.
+    fn edited_rich(&mut self, composed: &str, rich: wire::rich::RichText) -> Option<ToApp> {
+        let base = match self.bound.borrow().get(composed) {
+            Some(Value::Rich(before)) => before.clone(),
+            _ => wire::rich::RichText::default(),
+        };
+        self.bound_text(composed, Held::Rich { base, now: rich })
+    }
+
+    /// The bound control `composed` now holds `held`: shown as the person left it, and sent,
+    /// unless a press it was typed after has not run yet — then it waits, like every control
+    /// that takes typing ([`Self::hold`]).
+    fn bound_text(&mut self, composed: &str, held: Held) -> Option<ToApp> {
+        let (lane, key) = lane_of(composed);
+        // A control that edits no text (a number, a date) sends the value it now holds.
+        let edits_text = matches!(held, Held::Rich { .. })
+            || match self.bound.borrow().get(composed) {
+                Some(Value::Text(_)) | None => true,
+                Some(Value::Opt(held)) => matches!(held.as_deref(), Some(Value::Text(_)) | None),
+                Some(_) => false,
+            };
         if !edits_text {
+            let Held::Text { now, .. } = held else {
+                return None;
+            };
             let target = self.target(lane)?;
             return Some(ToApp::Edit {
                 lane,
                 target,
                 key,
-                text,
+                text: now,
             });
         }
-        let before = self.texts.get(composed).cloned().unwrap_or_default();
+        let shown = match &held {
+            Held::Text { now, .. } => Value::Text(now.clone()),
+            Held::Rich { now, .. } => Value::Rich(now.clone()),
+        };
         // Typing after a press the app has not run yet waits for it: the press may open
         // something else into the field the person types into.
         if self.fired > self.took {
-            let fired = self.fired;
-            let target = self.target(lane);
-            let same_field =
-                |typed: &Typed| typed.key.as_deref() == Some(composed) && typed.target == target;
-            // The person moved on to another field meanwhile: what they typed before stays
-            // where they typed it.
-            if self.typed.back().is_some_and(|typed| {
-                typed.after == fired && typed.key.is_some() && !same_field(typed)
-            }) && let Some(typed) = self.typed.pop_back()
-            {
-                self.send_typed_now(typed);
-            }
-            if !self
-                .typed
-                .back()
-                .is_some_and(|typed| typed.after == fired && same_field(typed))
-            {
-                let follows = self.pointed_after != Some(self.fired);
-                self.typed.push_back(Typed {
-                    after: fired,
-                    key: Some(composed.to_owned()),
-                    target,
-                    follows,
-                    moved: false,
-                    base: before,
-                    now: String::new(),
-                    sent: None,
-                });
-            }
-            if let Some(typed) = self.typed.back_mut() {
-                typed.now.clone_from(&text);
-            }
-            self.bound
-                .borrow_mut()
-                .insert(composed.to_owned(), Value::Text(text.clone()));
-            self.texts.insert(composed.to_owned(), text);
+            self.hold(composed, lane, held, shown);
             return None;
         }
-        self.splice(composed, &before, text)
+        match held {
+            Held::Text { base, now } => self.splice(composed, &base, now),
+            Held::Rich { now, .. } => {
+                let target = self.target(lane)?;
+                self.bound
+                    .borrow_mut()
+                    .insert(composed.to_owned(), Value::Rich(now.clone()));
+                Some(ToApp::EditRich {
+                    lane,
+                    target,
+                    key,
+                    rich: now,
+                })
+            }
+        }
+    }
+
+    /// Hold what the person typed in the bound control `composed` of `lane` until the presses
+    /// the app has not run yet did, showing `shown` meanwhile: what they typed goes where the
+    /// keyboard would have been had the press run at once.
+    fn hold(&mut self, composed: &str, lane: Lane, held: Held, shown: Value) {
+        let fired = self.fired;
+        let target = self.target(lane);
+        let same_field =
+            |typed: &Typed| typed.key.as_deref() == Some(composed) && typed.target == target;
+        // The person moved on to another field meanwhile: what they typed before stays where
+        // they typed it.
+        if self
+            .typed
+            .back()
+            .is_some_and(|typed| typed.after == fired && typed.key.is_some() && !same_field(typed))
+            && let Some(typed) = self.typed.pop_back()
+        {
+            self.send_typed_now(typed);
+        }
+        if !self
+            .typed
+            .back()
+            .is_some_and(|typed| typed.after == fired && same_field(typed))
+        {
+            let follows = self.pointed_after != Some(self.fired);
+            let base = held.clone();
+            self.typed.push_back(Typed {
+                after: fired,
+                key: Some(composed.to_owned()),
+                target,
+                follows,
+                moved: false,
+                held: base,
+                sent: None,
+            });
+        } else if let Some(typed) = self.typed.back_mut() {
+            // Every key after the first keeps what the control held before the person began:
+            // what they typed is read from there.
+            match (&mut typed.held, held) {
+                (Held::Text { now, .. }, Held::Text { now: newer, .. }) => now.clone_from(&newer),
+                (Held::Rich { now, .. }, Held::Rich { now: newer, .. }) => *now = newer,
+                (slot, newer) => *slot = newer,
+            }
+        }
+        // What the field shows is what the person typed, until the app takes it.
+        if let Some(Held::Text { now, .. }) = self.typed.back().map(|typed| &typed.held) {
+            self.texts.insert(composed.to_owned(), now.clone());
+        }
+        self.bound.borrow_mut().insert(composed.to_owned(), shown);
     }
 
     /// The view a person's press opened takes the keyboard in its first text field, and what
@@ -1041,7 +1193,10 @@ impl AppWindow {
     /// since, stays that field's, of the resource it showed.
     fn focus_opened(&mut self) {
         fn first_field(node: &UiNode) -> Option<&UiNode> {
-            if node.kind == crate::adapter::kind("TextInput") && node.binding.is_some() {
+            if node.binding.is_some()
+                && (node.kind == crate::adapter::kind("TextInput")
+                    || node.kind == crate::adapter::kind("RichInput"))
+            {
                 return Some(node);
             }
             node.children.iter().find_map(first_field)
@@ -1063,9 +1218,23 @@ impl AppWindow {
                 if typed.key.is_some() {
                     // Only what the person typed moves, never what the field held before it,
                     // and a line break a body's text ends with does not move into a title.
-                    let (_, _, insert) = splice_between(&typed.base, &typed.now);
-                    typed.base = String::new();
-                    insert.trim_end_matches('\n').clone_into(&mut typed.now);
+                    let insert = match &typed.held {
+                        Held::Text { base, now } => splice_between(base, now).2,
+                        Held::Rich { base, now } => {
+                            splice_between(&rich_text_of(base), &rich_text_of(now)).2
+                        }
+                    };
+                    let kept = insert.trim_end_matches('\n').to_owned();
+                    typed.held = match &mut typed.held {
+                        Held::Text { .. } => Held::Text {
+                            base: String::new(),
+                            now: kept,
+                        },
+                        Held::Rich { now, .. } => Held::Rich {
+                            base: wire::rich::RichText::default(),
+                            now: rich_spliced_at(now, 0, rich_text_of(now).len(), &kept),
+                        },
+                    };
                 }
                 typed.moved = true;
                 typed.key = Some(field.clone());
@@ -1108,15 +1277,22 @@ impl AppWindow {
             .back_mut()
             .filter(|typed| typed.after == fired && typed.key.is_none())
         {
-            Some(typed) => typed.now.push_str(text),
+            Some(typed) => match &mut typed.held {
+                Held::Text { now, .. } => now.push_str(text),
+                Held::Rich { now, .. } => {
+                    *now = rich_spliced_at(now, rich_text_of(now).len(), 0, text);
+                }
+            },
             None => self.typed.push_back(Typed {
                 after: fired,
                 key: None,
                 target: None,
                 follows: true,
                 moved: false,
-                base: String::new(),
-                now: text.to_owned(),
+                held: Held::Text {
+                    base: String::new(),
+                    now: text.to_owned(),
+                },
                 sent: None,
             }),
         }
@@ -1267,17 +1443,18 @@ impl AppWindow {
     /// field the keyboard is in now, at its end; with none, the window says where it went.
     fn send_typed_now(&mut self, mut typed: Typed) {
         if typed.key.is_none() {
-            let Some(field) = self.focused_text_field() else {
-                if !typed.now.is_empty() {
+            let Some(field) = self.focused_field() else {
+                let typed_text = typed.held.texts().1;
+                if !typed_text.is_empty() {
                     let words = Words::Plain(t_args(
                         "tilolang-typing-unplaced",
-                        &[("typed", typed.now.as_str().into())],
+                        &[("typed", typed_text.as_str().into())],
                     ));
                     self.notice(&words, wire::NoticeKind::Info, false);
                 }
                 return;
             };
-            typed.sent = Some(self.texts.get(&field).cloned().unwrap_or_default());
+            typed.sent = self.bound.borrow().get(&field).cloned();
             typed.target = self.target(lane_of(&field).0);
             typed.key = Some(field);
         }
@@ -1285,28 +1462,110 @@ impl AppWindow {
             return;
         };
         if typed.moved {
-            typed.sent = Some(self.texts.get(&key).cloned().unwrap_or_default());
+            typed.sent = self.bound.borrow().get(&key).cloned();
         }
-        let shown = typed.sent.clone().unwrap_or_else(|| typed.base.clone());
-        let (at, delete, insert) = splice_between(&typed.base, &typed.now);
-        let after = typed.base.len().saturating_sub(at.saturating_add(delete));
-        let mut at = shown.len().saturating_sub(after.saturating_add(delete));
-        while !shown.is_char_boundary(at) {
-            at = at.saturating_sub(1);
-        }
-        let mut end = at.saturating_add(delete).min(shown.len());
-        while !shown.is_char_boundary(end) {
-            end = end.saturating_add(1);
-        }
-        let mut text = shown.clone();
-        text.replace_range(at..end, &insert);
         let (lane, field) = lane_of(&key);
-        match typed.target {
-            // The lane moved on to another resource: the typing goes to the one it was typed
-            // into, and the field the lane shows now keeps what it shows.
-            Some(target) if self.target(lane).as_ref() != Some(&target) => {
-                let (at, delete, insert) = splice_between(&shown, &text);
-                self.out.push(ToApp::Splice {
+        // What the person typed, where it goes in what the control showed: the typing keeps
+        // its place from the end, so the same place counts back from the end of what it shows
+        // now.
+        let (base_text, now_text) = typed.held.texts();
+        let (at, delete, insert) = splice_between(&base_text, &now_text);
+        let place = |shown: &str| {
+            let after = base_text.len().saturating_sub(at.saturating_add(delete));
+            let mut at = shown.len().saturating_sub(after.saturating_add(delete));
+            while !shown.is_char_boundary(at) {
+                at = at.saturating_sub(1);
+            }
+            let mut end = at.saturating_add(delete).min(shown.len());
+            while !shown.is_char_boundary(end) {
+                end = end.saturating_add(1);
+            }
+            (at, end)
+        };
+        // The resource the lane shows now, when it is the one the person typed into.
+        let target = self.target(lane);
+        let still_shown = typed.target.is_none() || typed.target == target;
+        // What the field shows now: what the app sent for it since, or what it showed when the
+        // person began typing (the window showed their typing meanwhile, which is no part of
+        // what it shows now).
+        let shown = typed.sent.clone().unwrap_or_else(|| match &typed.held {
+            Held::Text { base, .. } => Value::Text(base.clone()),
+            Held::Rich { base, .. } => Value::Rich(base.clone()),
+        });
+        if still_shown && let Some(target) = target {
+            match (shown, &typed.held) {
+                (Value::Rich(before), _) => {
+                    let (at, end) = place(&rich_text_of(&before));
+                    let rich = rich_spliced_at(&before, at, end.saturating_sub(at), &insert);
+                    self.bound
+                        .borrow_mut()
+                        .insert(key.clone(), Value::Rich(rich.clone()));
+                    self.out.push(ToApp::EditRich {
+                        lane,
+                        target,
+                        key: field,
+                        rich,
+                    });
+                }
+                (Value::Text(before), _) => {
+                    let text = splice_text(&before, place(&before), &insert);
+                    if let Some(message) = self.splice(&key, &before, text) {
+                        self.out.push(message);
+                    }
+                }
+                (_, Held::Rich { now, .. }) => {
+                    self.bound
+                        .borrow_mut()
+                        .insert(key.clone(), Value::Rich(now.clone()));
+                    self.out.push(ToApp::EditRich {
+                        lane,
+                        target,
+                        key: field,
+                        rich: now.clone(),
+                    });
+                }
+                (_, Held::Text { now, .. }) => self.out.push(ToApp::Edit {
+                    lane,
+                    target,
+                    key: field,
+                    text: now.clone(),
+                }),
+            }
+            return;
+        }
+        // The lane moved on to another resource: what they typed goes to the one it was typed
+        // into, and the field the lane shows now keeps what it shows.
+        let Some(target) = typed.target else {
+            return;
+        };
+        let message = match (&typed.held, shown) {
+            (Held::Rich { base, .. }, _) => {
+                let (at, end) = place(&rich_text_of(base));
+                ToApp::EditRich {
+                    lane,
+                    target,
+                    key: field,
+                    rich: rich_spliced_at(base, at, end.saturating_sub(at), &insert),
+                }
+            }
+            (Held::Text { .. }, Value::Rich(before)) => {
+                let (at, end) = place(&rich_text_of(&before));
+                ToApp::EditRich {
+                    lane,
+                    target,
+                    key: field,
+                    rich: rich_spliced_at(&before, at, end.saturating_sub(at), &insert),
+                }
+            }
+            (Held::Text { .. }, shown) => {
+                let shown = match shown {
+                    Value::Text(text) => text,
+                    _ => base_text.clone(),
+                };
+                let (at, end) = place(&shown);
+                let typed_text = splice_text(&shown, (at, end), &insert);
+                let (at, delete, insert) = splice_between(&shown, &typed_text);
+                ToApp::Splice {
                     lane,
                     target,
                     key: field,
@@ -1314,14 +1573,10 @@ impl AppWindow {
                     at: u32::try_from(at).unwrap_or(u32::MAX),
                     delete: u32::try_from(delete).unwrap_or(u32::MAX),
                     insert,
-                });
-            }
-            _ => {
-                if let Some(message) = self.splice(&key, &shown, text) {
-                    self.out.push(message);
                 }
             }
-        }
+        };
+        self.out.push(message);
     }
 
     /// The bound control the keyboard is in now, by key in the composed tree.
@@ -1344,7 +1599,11 @@ impl AppWindow {
     /// The bound text control the keyboard is in, by key in the composed tree.
     fn focused_text_field(&self) -> Option<String> {
         let field = self.focused_field()?;
-        matches!(self.bound.borrow().get(&field), Some(Value::Text(_))).then_some(field)
+        matches!(
+            self.bound.borrow().get(&field),
+            Some(Value::Text(_) | Value::Rich(_))
+        )
+        .then_some(field)
     }
 
     /// The splice of the bound text control `composed` from `before` to `text`, which it now
