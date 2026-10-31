@@ -29,6 +29,7 @@ use std::rc::Rc;
 use tilo_desktop_model::{
     DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace,
 };
+use tilo_desktop_surface::crashed_app::Closed;
 use tilo_desktop_surface::navigation::{Command, Route, RouteIds, active_route};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
 use ui::kurbo::Rect;
@@ -91,6 +92,10 @@ type Launches = Rc<RefCell<Vec<String>>>;
 /// coming.
 type Crashed = Rc<RefCell<BTreeMap<TabId, String>>>;
 
+/// Why each app that left a notice is not running, by the app: a crash, or
+/// the session closing it for memory.
+type Closures = Rc<RefCell<BTreeMap<String, Closed>>>;
+
 /// The name each app is known by, for the notice it leaves when it stops.
 /// A launch id carries the app id alone, so its tab is named from here.
 type Titles = Rc<RefCell<BTreeMap<String, String>>>;
@@ -126,6 +131,8 @@ struct Windows {
     launches: Launches,
     /// The app each notice tab is about, which Reopen asks for again.
     crashed: Crashed,
+    /// Why each of those apps is not running.
+    closures: Closures,
     /// The name each app is known by, for its notice.
     titles: Titles,
     /// The tabs held for the apps' coming windows.
@@ -145,10 +152,16 @@ impl TileSource for Windows {
             .get(&app)
             .cloned()
             .unwrap_or_else(|| shown_name(&app));
+        let closed = self
+            .closures
+            .borrow()
+            .get(&app)
+            .copied()
+            .unwrap_or_default();
         let launches = Rc::clone(&self.launches);
         let reopened = app;
         TileHost::new(ui::widget::TileContent::App(Box::new(
-            tilo_desktop_surface::crashed_app::CrashedApp::new(&title, move || {
+            tilo_desktop_surface::crashed_app::CrashedApp::new(&title, closed, move || {
                 launches.borrow_mut().push(reopened.clone());
             }),
         )))
@@ -238,6 +251,8 @@ pub struct DesktopPolicy {
     launches: Launches,
     /// The apps whose notice tabs are open, by tab.
     crashed: Crashed,
+    /// Why each of those apps is not running.
+    closures: Closures,
     /// The name each app is known by, for its notice.
     titles: Titles,
     /// The tabs held for the apps' coming windows.
@@ -269,6 +284,7 @@ impl DesktopPolicy {
         let arriving = Arriving::default();
         let launches = Launches::default();
         let crashed = Crashed::default();
+        let closures = Closures::default();
         let titles = Titles::default();
         let held = Held::default();
         let (surface, handle) = DesktopSurface::new(
@@ -278,6 +294,7 @@ impl DesktopPolicy {
                 arriving: Rc::clone(&arriving),
                 launches: Rc::clone(&launches),
                 crashed: Rc::clone(&crashed),
+                closures: Rc::clone(&closures),
                 titles: Rc::clone(&titles),
                 held: Rc::clone(&held),
             }),
@@ -287,6 +304,7 @@ impl DesktopPolicy {
             arriving,
             launches,
             crashed,
+            closures,
             titles,
             held,
             places: BTreeMap::new(),
@@ -312,9 +330,21 @@ impl DesktopPolicy {
     /// # Errors
     /// The desktop has no workspace or strip to open it in.
     pub fn crashed(&mut self, asked: &str, title: &str) -> Result<(), String> {
+        self.stopped(asked, title, Closed::Crashed)
+    }
+
+    /// Show that the app `asked` names is not running any more, for `closed`,
+    /// in a tab of its own with Reopen asking for `asked` again: the same
+    /// notice a crash leaves, saying why the session closed it when the app
+    /// did not stop on its own.
+    ///
+    /// # Errors
+    /// The desktop has no workspace or strip to open it in.
+    pub fn stopped(&mut self, asked: &str, title: &str, closed: Closed) -> Result<(), String> {
         self.titles
             .borrow_mut()
             .insert(asked.to_owned(), title.to_owned());
+        self.closures.borrow_mut().insert(asked.to_owned(), closed);
         // The tab this opens is named by its launch id; the title it shows
         // and the launch Reopen asks for come from the maps the tile source
         // reads.
@@ -916,6 +946,7 @@ impl DesktopPolicy {
             !held.is_empty()
         });
         let mut crashed = self.crashed.borrow_mut();
+        let mut closures = self.closures.borrow_mut();
         let mut titles = self.titles.borrow_mut();
         crashed.retain(|tab, app| {
             let kept = open.contains(tab);
@@ -924,6 +955,8 @@ impl DesktopPolicy {
             }
             kept
         });
+        let shown: BTreeSet<String> = crashed.values().cloned().collect();
+        closures.retain(|app, _| shown.contains(app));
         closed
     }
 }

@@ -41,4 +41,4 @@ pub use instance::{Answer, Instance, Shown, Windows};
 pub use launch::{Launch, Open};
 pub use plan::{Kind, PlanContext, PlanError, Planned};
 pub use room::Room;
-pub use spawner::{End, Event, Spawner, Started};
+pub use spawner::{Cause, End, Event, Spawner, Started};

@@ -127,6 +127,10 @@ tilo-liveness = { path = "../liveness" }
 rustix = { workspace = true, features = ["fs"] }
 # Planning and starting the apps the person opens.
 tilo-app-launch = { path = "../app-launch" }
+# The udisks2 names the removable media are read and ejected by. The
+# blocking client is left out: this session speaks to the bus itself.
+block-devices = { path = "../../system/block-devices" }
+futures-util.workspace = true
 tilo-connectivity-service = { path = "../connectivity-service" }
 tilo-system-service = { path = "../system-service" }
 tilo-settings-service = { path = "../settings-service" }
@@ -164,7 +168,7 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 wire-frame = { path = "../../system/wire-frame" }
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros"] }
 tracing.workspace = true
 xkeysym = "0.2.1"
 zbus = { workspace = true, features = ["tokio"] }
@@ -173,6 +177,9 @@ workspace-hack = { version = "0.1" }
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The resource effects the tests' own questions are declared with.
 tilo-resource = { path = "../../sdk/tilo-resource" }
+# Reporting an ending to a session's apps as its spawner would, with the
+# memory cause a launcher remembers.
+tilo-app-launch = { path = "../app-launch", features = ["test-support"] }
 # The stand-in logind and UPower a power test serves over a socket pair.
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 zbus = { workspace = true, features = ["tokio", "p2p"] }

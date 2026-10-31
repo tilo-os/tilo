@@ -1142,6 +1142,8 @@ browser-new-workspace-name = Arbeitsbereich { $number }
 room-notice-joined = { $name } ist dazugekommen
 room-notice-renamed = { $name } hat den Arbeitsbereich in { $workspace } umbenannt
 browser-app-crashed = { $app } funktionierte nicht mehr und wurde geschlossen, damit der Rest des Desktops weiterläuft. Schließe dieses Fenster oder öffne { $app } erneut.
+browser-app-closed-for-memory = { $app } wurde geschlossen, um Arbeitsspeicher freizugeben. Schließe dieses Fenster oder öffne { $app } erneut, wenn du sie brauchst.
+browser-app-closed-for-runaway = { $app } hat zu viel Arbeitsspeicher verbraucht und wurde geschlossen, damit der Rest des Desktops weiterläuft. Schließe dieses Fenster oder öffne { $app } erneut, wenn du sie brauchst.
 browser-app-crashed-reopen = Erneut öffnen
 
 # Das Menü hinter dem Tilo-Zeichen der oberen Leiste und das Info-Blatt, das es öffnet

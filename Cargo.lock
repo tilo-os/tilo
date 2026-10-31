@@ -21423,6 +21423,7 @@ dependencies = [
  "app-catalogue",
  "app-cli",
  "atspi-proxies",
+ "block-devices",
  "bounded-command",
  "chrono",
  "collab-types",

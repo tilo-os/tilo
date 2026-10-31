@@ -198,6 +198,10 @@ fn start(
         tilo_app_launch::SessionEnvironment::from_process(),
         Some(wake.handle()),
     ));
+    // A drive the person plugs in is announced like any other news, and the
+    // eject the notice offers goes over the system bus the desktop services
+    // already hold.
+    let drives = drives(backend, desktop.as_ref());
     let options = Options {
         services,
         wake,
@@ -206,6 +210,7 @@ fn start(
         questions: desktop.as_ref().map(|desktop| desktop.questions().clone()),
         apps: Some(std::rc::Rc::clone(&launch) as std::rc::Rc<dyn tilo_session::AppActions>),
         launch: Some(std::rc::Rc::clone(&launch)),
+        drives,
         desktop,
         portal,
         power,
@@ -346,6 +351,25 @@ fn tell_the_person(
     {
         tilo_session::notices::start(desktop.notifications());
     }
+}
+
+/// The drives this desktop announces, when it owns the machine and the
+/// desktop services hold a system bus to ask udisks over: a session in a
+/// window of another desktop leaves that desktop's drives to it.
+#[cfg(target_os = "linux")]
+fn drives(
+    backend: Backend,
+    desktop: Option<&std::rc::Rc<tilo_session::desktop_services::DesktopServices>>,
+) -> Option<std::rc::Rc<tilo_session::mount::drives::Drives>> {
+    if backend != Backend::Drm {
+        return None;
+    }
+    let desktop = desktop?;
+    let connection = desktop.system_bus()?.clone();
+    Some(std::rc::Rc::new(tilo_session::mount::drives::Drives::new(
+        tilo_session::mount::drives::udisks(connection),
+        desktop.notifications().clone(),
+    )))
 }
 
 /// A main loop that stops for good keeps the display frozen on its last frame

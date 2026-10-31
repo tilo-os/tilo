@@ -180,6 +180,9 @@ pub struct Options {
     /// record their launch here; a session whose apps run in its own process
     /// (a test) records one itself.
     pub launches: std::sync::Arc<Launches>,
+    /// The drives the person plugs in, which this session announces and acts
+    /// on when they open or eject one.
+    pub drives: Option<Rc<mount::drives::Drives>>,
     /// Setup to run over everything before the desktop is used: the first
     /// use of this device, or the recovery of its identity.
     pub setup: Option<OnboardingView>,
@@ -364,6 +367,7 @@ impl Default for Options {
             kill_switch: None,
             action_plane: ActionPlane::default(),
             launches: std::sync::Arc::default(),
+            drives: None,
         }
     }
 }
@@ -382,6 +386,8 @@ struct Shared {
     search: Rc<SessionSearch>,
     /// The apps the person opens, when this session starts them.
     launch: Option<Rc<mount::apps::Apps>>,
+    /// The drives the person plugs in, when this session watches them.
+    drives: Option<Rc<mount::drives::Drives>>,
     /// What the desk and the chrome asked of the session.
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// Where the chrome takes intents the session raises.
@@ -1655,6 +1661,7 @@ impl Session {
             desktop,
             search,
             launch: options.launch,
+            drives: options.drives,
             asks,
             intents,
             quick_settings,
@@ -2118,6 +2125,11 @@ impl Session {
         // leaves to the session); a few rounds settle any chain.
         for _ in 0..4 {
             self.shared.follow_asks();
+            // What was plugged in since, and what the person asked of its
+            // notice: an open starts Files like any other launch.
+            if let Some(drives) = &self.shared.drives {
+                drives.follow(self.shared.launch.as_deref());
+            }
             // What the desktop asked to open, and what stopped since.
             if let Some(launch) = &self.shared.launch {
                 launch.follow();

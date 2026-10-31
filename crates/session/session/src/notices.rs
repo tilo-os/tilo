@@ -1,13 +1,14 @@
 //! What the session itself tells the person, through their notifications.
 //!
-//! Five things the desktop knows and the person should: that storage is
+//! Six things the desktop knows and the person should: that storage is
 //! running out, that the media codecs they asked for finished or failed, that
 //! the session or the computer stopped and started again, that an update
-//! waits for a restart, and that the machine's graphics stopped and every
-//! frame is drawn in software from now on. Each becomes an ordinary
-//! notification ([`tilo_notifications_service::Notification`]) published by
-//! the notifications service: the banners and the notification centre read the
-//! same resource any app's notification is read from, the person closes or
+//! waits for a restart, that the machine's graphics stopped and every frame is
+//! drawn in software from now on, and that a drive they plugged in is ready to
+//! open or eject. Each becomes an ordinary notification
+//! ([`tilo_notifications_service::Notification`]) published by the
+//! notifications service: the banners and the centre read it from the same
+//! resource any app's notification is read from, the person closes or
 //! acts on it as they would on any other, and nothing here draws.
 //!
 //! They are the whole machine's news, so they are shown on every display
@@ -32,10 +33,19 @@ use tilo_system_service::update;
 use ui::format::NaiveDate;
 
 use crate::i18n::{t, t_args};
+use crate::mount::drives::Medium;
 
 /// The action the update notice offers: restart the machine into the staged
 /// update.
 pub const RESTART_ACTION: &str = "restart-to-update";
+
+/// The action a plugged-in drive's notice offers: open it in Files on its
+/// mount point.
+pub const OPEN_MEDIUM_ACTION: &str = "open-medium";
+
+/// The action a plugged-in drive's notice offers: eject it, so it can be
+/// pulled out.
+pub const EJECT_MEDIUM_ACTION: &str = "eject-medium";
 
 /// The shortest time between two notices that an update waits for a restart.
 /// They batch instead of interrupting the person every day.
@@ -104,6 +114,15 @@ impl Notice {
     /// Show it to the person.
     fn tell(self, notifications: &Notifications) {
         notifications.push(self.into_notification(notifications));
+    }
+
+    /// Show it to the person, and say which notification went out: a producer
+    /// whose notice the person acts on needs its id to know what they meant.
+    fn tell_as(self, notifications: &Notifications) -> u32 {
+        let notification = self.into_notification(notifications);
+        let id = notification.id;
+        notifications.push(notification);
+        id
     }
 }
 
@@ -180,6 +199,33 @@ pub fn storage_notice(volume: Volume, before: Level, after: Level, room: Room) -
             t_args("storage-full-body", &args),
         ),
     })
+}
+
+/// The notice for the medium a person just plugged in: what it is called and
+/// how much it holds, and the two things they want done with it.
+#[must_use]
+pub fn medium_notice(medium: &Medium) -> Notice {
+    let name = medium.label.clone().unwrap_or_else(|| t("drives-unnamed"));
+    let title = t_args(
+        "drives-medium-title",
+        &[
+            ("name", name.into()),
+            ("size", ui::format::size(medium.size).into()),
+        ],
+    );
+    let mut notice = Notice::new(t("drives-app-name"), 1, title, t("drives-body"));
+    notice.actions = vec![
+        (OPEN_MEDIUM_ACTION.to_owned(), t("drives-open")),
+        (EJECT_MEDIUM_ACTION.to_owned(), t("drives-eject")),
+    ];
+    notice
+}
+
+/// Tell the person what they just plugged in, and return the notification's
+/// id, so what they ask of it can be carried out.
+#[must_use]
+pub fn announce_medium(notifications: &Notifications, medium: &Medium) -> u32 {
+    medium_notice(medium).tell_as(notifications)
 }
 
 /// Room `path`'s filesystem has left, when the path exists.
@@ -658,6 +704,73 @@ mod tests {
             .invoke(&resource, "close", &serde_json::Map::new())
             .expect("the person closes it");
         assert!(notifications.live().is_empty());
+    }
+
+    /// A medium a person plugs in is announced by what it is called and how
+    /// much it holds, and ejecting it from the notice reaches the eject.
+    #[test]
+    fn a_plugged_in_drive_is_announced_with_its_contents() {
+        use crate::mount::drives::{Drives, Media, Medium};
+
+        /// The udisks of a machine with one drive plugged into it, which
+        /// remembers what it was asked to eject.
+        #[derive(Default)]
+        struct FakeUdisks {
+            plugged_in: std::cell::RefCell<Vec<Medium>>,
+            ejected: std::cell::RefCell<Vec<Medium>>,
+        }
+
+        impl Media for FakeUdisks {
+            fn appeared(&self) -> Vec<Medium> {
+                std::mem::take(&mut *self.plugged_in.borrow_mut())
+            }
+
+            fn eject(&self, medium: &Medium) {
+                self.ejected.borrow_mut().push(medium.clone());
+            }
+        }
+
+        let photos = Medium {
+            device: "/org/freedesktop/UDisks2/block_devices/sdb1".into(),
+            label: Some("Photos".into()),
+            size: 3_400_000_000,
+            mount: "/run/media/person/Photos".into(),
+        };
+        let notifications = Notifications::new();
+        let udisks = std::rc::Rc::new(FakeUdisks::default());
+        udisks.plugged_in.borrow_mut().push(photos.clone());
+        let drives = Drives::new(udisks.clone(), notifications.clone());
+        drives.follow(None);
+
+        let live = notifications.live();
+        assert_eq!(live.len(), 1, "one drive, one notice");
+        assert_eq!(live[0].app_name, "Drives");
+        assert_eq!(live[0].summary, "Photos (3.4 GB)");
+        assert_eq!(
+            live[0]
+                .actions
+                .iter()
+                .map(|(_, label)| label.as_str())
+                .collect::<Vec<_>>(),
+            ["Open", "Eject"]
+        );
+
+        drives.follow(None);
+        assert_eq!(
+            notifications.live().len(),
+            1,
+            "the same drive twice says nothing"
+        );
+
+        let resource = tilo_notifications_service::notification_resource(live[0].id);
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("action".into(), EJECT_MEDIUM_ACTION.into());
+        let mut published = notifications;
+        published
+            .invoke(&resource, "invoke", &arguments)
+            .expect("the notice offers an eject");
+        drives.follow(None);
+        assert_eq!(*udisks.ejected.borrow(), [photos]);
     }
 
     /// A filesystem that cannot be read says nothing, and keeps the level it

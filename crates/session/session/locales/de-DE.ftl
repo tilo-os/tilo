@@ -66,3 +66,11 @@ session-param-paste-destination = Der Ordner, in den die kopierten Dateien einge
 ## A timer Clocks ran in the background has come due.
 clock-due-title = Uhren
 clock-due-body = Die Zeit ist abgelaufen
+
+## Ein Laufwerk wurde eingesteckt und lässt sich öffnen oder auswerfen.
+drives-app-name = Laufwerke
+drives-medium-title = { $name } ({ $size })
+drives-unnamed = Wechseldatenträger
+drives-body = Eingesteckt. Öffne es, um zu sehen, was darauf ist, oder wirf es aus, bevor du es abziehst.
+drives-open = Öffnen
+drives-eject = Auswerfen

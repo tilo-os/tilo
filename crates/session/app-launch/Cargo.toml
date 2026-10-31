@@ -11,6 +11,11 @@ description = "Starting an application from the desktop: the launch vocabulary, 
 # environment either is given. Nothing here draws; the session owns the loop
 # and hands over what this crate plans and spawns.
 
+[features]
+# The seam a session's tests report an ending through, for the apps it did
+# not start itself.
+test-support = []
+
 [dependencies]
 # The machine's own applications: their entries, entry kinds and launch plans.
 desktop-entry = { version = "0.1.0", package = "tilo-desktop-entry", path = "../../system/desktop-entry" }

@@ -28,11 +28,12 @@ use tilo_actions::remote::{
 };
 use tilo_app_launch::routing;
 use tilo_app_launch::{
-    Answer, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext, Planned, Room,
-    Routed, SessionEnvironment, Shown, Spawner, StartAlone,
+    Answer, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext, Planned,
+    Room, Routed, SessionEnvironment, Shown, Spawner, StartAlone,
 };
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
+use tilo_desktop_surface::crashed_app::Closed;
 use tilo_surface_host::{DesktopHost, WidgetHost};
 
 use crate::search::AppActions;
@@ -167,7 +168,6 @@ impl Apps {
         if asked.is_empty() {
             return;
         }
-        let room = self.active_room();
         for asked in asked {
             let Some(launch) = Launch::parse(&asked) else {
                 tracing::warn!(%asked, "not a launch this session knows");
@@ -178,10 +178,20 @@ impl Apps {
             if matches!(launch, Launch::Window { .. } | Launch::Crashed { .. }) {
                 continue;
             }
-            if let Err(error) = self.start(&launch, &room) {
+            if let Err(error) = self.open(&launch) {
                 tracing::warn!(%asked, %error, "an app did not start");
             }
         }
+    }
+
+    /// Start `launch` on the workspace in front, which is where what the
+    /// session itself opens belongs.
+    ///
+    /// # Errors
+    /// The launch starts nothing, or the process could not be started.
+    pub fn open(&self, launch: &Launch) -> Result<(), DoorError> {
+        let room = self.active_room();
+        self.start(launch, &room)
     }
 
     /// The apps that ended since the last pass: one that chose to end leaves
@@ -205,9 +215,17 @@ impl Apps {
             if asked.is_none() {
                 tracing::warn!(app = %event.app, "a stopped app this session did not start");
             }
+            // An app the session closed for memory did not stop working:
+            // the notice says which it was, so the person does not read a
+            // closing they caused as a crash.
+            let closed = match event.end.memory() {
+                Some(Cause::Kernel) => Closed::Memory,
+                Some(Cause::Runaway) => Closed::Runaway,
+                None => Closed::Crashed,
+            };
             if let Some(desktop) = self.desktop.borrow().clone() {
                 let notice = desktop.with_policy(|policy| {
-                    policy.crashed(asked.as_deref().unwrap_or(&event.app), &event.title)
+                    policy.stopped(asked.as_deref().unwrap_or(&event.app), &event.title, closed)
                 });
                 if let Err(error) = notice {
                     tracing::warn!(%error, app = %event.app, "no notice for the app");
@@ -532,4 +550,82 @@ fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_app_launch::{End, Event};
+
+    /// The desktop the apps are started from, laid out as wide as an output:
+    /// what its notice tabs draw on.
+    fn desk() -> DesktopHost {
+        let (desktop, _strips) = tilo_surface_host::desktop(7, 1.0);
+        desktop.with_widgets(|widgets| {
+            widgets.set_placement(tilo_surface_host::Placement {
+                origin: (0, 0),
+                size: (1200, 800),
+                scale: 1.0,
+            });
+        });
+        desktop
+    }
+
+    /// What the desktop shows after `end` ended the app `asked`, which this
+    /// session started as `running`.
+    fn showed_after(end: End) -> Vec<String> {
+        let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+        let desktop = desk();
+        apps.attach(desktop.clone());
+        apps.state
+            .borrow_mut()
+            .running
+            .insert(1, "example.Canvas".to_owned());
+        apps.state.borrow().spawner.report(Event {
+            id: 1,
+            app: "example.Canvas".to_owned(),
+            title: "Canvas".to_owned(),
+            end,
+        });
+        apps.follow();
+        desktop.with_widgets(|widgets| {
+            widgets.relayout();
+            ui::a11y::texts(widgets.host_mut().root_widget())
+        })
+    }
+
+    #[test]
+    fn an_app_closed_for_memory_says_so_instead_of_crashing() {
+        let closed = showed_after(End::signalled(9).remembering(Cause::Kernel));
+        assert!(
+            closed
+                .iter()
+                .any(|text| text.contains("was closed to free memory")),
+            "the notice says the session ended it: {closed:?}"
+        );
+        assert!(
+            !closed.iter().any(|text| text.contains("stopped working")),
+            "a closing the session did is not a crash: {closed:?}"
+        );
+        assert!(
+            closed.iter().any(|text| text == "Reopen"),
+            "the notice offers a way back: {closed:?}"
+        );
+
+        let runaway = showed_after(End::signalled(9).remembering(Cause::Runaway));
+        assert!(
+            runaway
+                .iter()
+                .any(|text| text.contains("was using too much memory")),
+            "a runaway app is told apart: {runaway:?}"
+        );
+
+        let crashed = showed_after(End::signalled(9));
+        assert!(
+            crashed
+                .iter()
+                .any(|text| text.starts_with("Canvas stopped working")),
+            "without a cause the same end is still a crash: {crashed:?}"
+        );
+    }
 }

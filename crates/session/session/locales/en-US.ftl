@@ -64,3 +64,11 @@ session-param-paste-destination = The folder the copied files are pasted into
 ## A timer Clocks ran in the background has come due.
 clock-due-title = Clocks
 clock-due-body = Time is up
+
+## A drive was plugged in and is ready to open or eject.
+drives-app-name = Drives
+drives-medium-title = { $name } ({ $size })
+drives-unnamed = Removable drive
+drives-body = Plugged in. Open it to see what is on it, or eject it before you pull it out.
+drives-open = Open
+drives-eject = Eject

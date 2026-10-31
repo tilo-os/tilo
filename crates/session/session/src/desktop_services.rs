@@ -62,6 +62,10 @@ pub struct DesktopServices {
     /// The apps the session sees run, by process: what names a notification's
     /// sender, shared with the daemon.
     running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
+    /// The system bus the agents registered on, which everything else the
+    /// session asks the machine goes through: one connection, not one per
+    /// service.
+    system: Option<zbus::Connection>,
 }
 
 impl DesktopServices {
@@ -104,9 +108,13 @@ impl DesktopServices {
             Arc::clone(&running),
         ));
         let tray = runtime.block_on(tray_on(&buses.session, Arc::clone(&running)));
-        if buses.system != Bus::None {
+        let system = match buses.system {
+            Bus::None => None,
+            _ => runtime.block_on(connect(&buses.system, true)),
+        };
+        if let Some(connection) = system.clone() {
             runtime.spawn(on_system_bus(
-                buses.system.clone(),
+                connection,
                 questions.clone(),
                 roaming.clone(),
             ));
@@ -120,6 +128,7 @@ impl DesktopServices {
             session,
             tray,
             running,
+            system,
         })
     }
 
@@ -265,6 +274,13 @@ impl DesktopServices {
     #[must_use]
     pub const fn runtime(&self) -> &tokio::runtime::Runtime {
         &self.runtime
+    }
+
+    /// The system bus the agents registered on: what else the session asks
+    /// the machine goes through the same connection.
+    #[must_use]
+    pub fn system_bus(&self) -> Option<&zbus::Connection> {
+        self.system.as_ref()
     }
 }
 
@@ -428,12 +444,13 @@ async fn on_session_bus(
     (portal, daemon.map(|daemon| (connection, daemon)))
 }
 
-/// The polkit, network secrets and Bluetooth pairing agents on `bus`, kept
-/// registered while the runtime runs.
-async fn on_system_bus(bus: Bus, questions: Questions, roaming: RoamingWifiSlot) {
-    let Some(connection) = connect(&bus, true).await else {
-        return;
-    };
+/// The polkit, network secrets and Bluetooth pairing agents on `connection`,
+/// kept registered while the runtime runs.
+async fn on_system_bus(
+    connection: zbus::Connection,
+    questions: Questions,
+    roaming: RoamingWifiSlot,
+) {
     let polkit = tilo_polkit_agent::questions::serve_on(connection.clone(), questions.clone())
         .await
         .inspect_err(|error| tracing::warn!(%error, "the polkit agent did not start"))

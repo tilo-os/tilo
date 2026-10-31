@@ -1124,6 +1124,8 @@ browser-new-workspace-name = Workspace { $number }
 room-notice-joined = { $name } joined
 room-notice-renamed = { $name } renamed the workspace to { $workspace }
 browser-app-crashed = { $app } stopped working, so it was closed to keep the rest of the desktop running. Close this window, or open { $app } again.
+browser-app-closed-for-memory = { $app } was closed to free memory. Close this window, or open { $app } again when you need it.
+browser-app-closed-for-runaway = { $app } was using too much memory, so it was closed to keep the rest of the desktop running. Close this window, or open { $app } again when you need it.
 browser-app-crashed-reopen = Reopen
 
 # The menu behind the top bar's Tilo mark, and the About sheet it opens
