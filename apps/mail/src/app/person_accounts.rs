@@ -21,11 +21,9 @@ impl MailApp {
         let person = record.get();
         let mut adopted = if self.custody.is_some() {
             AccountStore::without_secrets(&person.store())
-        } else {
-            let vault = root.map_or_else(accounts::AccountCredentials::open, |root| {
-                accounts::AccountCredentials::open_in(&root)
-            });
-            let vault = match vault {
+        } else if let Some(root) = root {
+            // A profile of its own (a test, `--data-dir`) keeps its vault.
+            let vault = match accounts::AccountCredentials::open_in(&root) {
                 Ok(vault) => vault,
                 Err(error) => {
                     tracing::error!(%error, "mail account credentials could not be opened");
@@ -34,6 +32,12 @@ impl MailApp {
                 }
             };
             AccountStore::from_store(&person.store(), &vault)
+        } else {
+            // In a session the secrets are the session's to release, and no
+            // sandbox here opens the person's vault: an account shows
+            // without a secret it was not released, and says so rather than
+            // signing in with nothing.
+            AccountStore::without_secrets(&person.store())
         };
         let active_changed = {
             let mut st = self.shared.borrow_mut();
