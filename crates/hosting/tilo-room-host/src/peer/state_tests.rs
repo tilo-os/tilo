@@ -239,6 +239,7 @@ impl Fixture {
             own_user_public_key: &self.source.own_user,
             own_device_cert: &self.source.peer.cert,
             own_device_public_key: &self.source.peer.cert.device_public_key,
+            own_device_signing_key: None,
             app_serving: None,
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
@@ -578,6 +579,7 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
         own_user_public_key: &fixture.source.own_user,
         own_device_cert: &fixture.source.peer.cert,
         own_device_public_key: &fixture.source.peer.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
@@ -636,6 +638,7 @@ async fn a_copy_of_a_commit_in_flight_waits_for_it_and_is_not_admitted_again() {
         own_user_public_key: &fixture.source.own_user,
         own_device_cert: &fixture.source.peer.cert,
         own_device_public_key: &fixture.source.peer.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
@@ -712,6 +715,7 @@ async fn two_commits_with_a_burst_of_one(stranger: Option<[u8; 32]>) -> Vec<Opti
         own_user_public_key: &own_user,
         own_device_cert: &fixture.source.peer.cert,
         own_device_public_key: &fixture.source.peer.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
@@ -1256,6 +1260,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 own_user_public_key: &source.own_user,
                 own_device_cert: &source.peer.cert,
                 own_device_public_key: &source.peer.cert.device_public_key,
+                own_device_signing_key: None,
                 app_serving: None,
                 metrics: &metrics,
                 trust_policy: &source.policy,
@@ -1362,6 +1367,7 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         own_user_public_key: &fixture.source.own_user,
         own_device_cert: &fixture.source.peer.cert,
         own_device_public_key: &fixture.source.peer.cert.device_public_key,
+        own_device_signing_key: None,
         app_serving: None,
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
@@ -1517,6 +1523,7 @@ impl Fixture {
             own_user_public_key: &self.source.own_user,
             own_device_cert: &self.source.peer.cert,
             own_device_public_key: &self.source.peer.cert.device_public_key,
+            own_device_signing_key: None,
             app_serving: None,
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
@@ -1660,6 +1667,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 own_user_public_key: &writer.source.own_user,
                 own_device_cert: &writer.source.peer.cert,
                 own_device_public_key: &writer.source.peer.cert.device_public_key,
+                own_device_signing_key: None,
                 app_serving: None,
                 metrics: &writer.metrics,
                 trust_policy: &writer.source.policy,
@@ -1788,9 +1796,10 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
         message: ActionMessage::CatalogueRefresh { scope: None },
     };
     let delivery = PrivateDelivery {
-        certified: false,
         action: action.clone(),
-        signed: None,
+        signed: Box::new(
+            SignedDirectedAction::sign(&action, unix_now_ns(), &fixture.source_key).unwrap(),
+        ),
         source: fixture.source.peer.clone(),
         source_tx: fixture.source.tx.clone(),
         reply,
@@ -1812,6 +1821,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             own_user_public_key: &writer.source.own_user,
             own_device_cert: &writer.source.peer.cert,
             own_device_public_key: &writer.source.peer.cert.device_public_key,
+            own_device_signing_key: None,
             app_serving: None,
             metrics: &writer.metrics,
             trust_policy: &writer.source.policy,
@@ -1867,10 +1877,8 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
     let mut reader = SessionReader::new(wire.as_slice());
     assert!(matches!(
         reader.read_next().await.unwrap(),
-        Some(EnvelopeV2::Delivered {
-            action: delivered,
-            ..
-        }) if delivered == action
+        Some(EnvelopeV2::CertifiedSignedDelivered { action: delivered, .. })
+            if SignedDirectedAction::action(&delivered) == &action
     ));
     assert!(reader.read_next().await.unwrap().is_none());
 }
@@ -1947,6 +1955,7 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
             own_user_public_key: &writer.source.own_user,
             own_device_cert: &writer.source.peer.cert,
             own_device_public_key: &writer.source.peer.cert.device_public_key,
+            own_device_signing_key: None,
             app_serving: None,
             metrics: &writer.metrics,
             trust_policy: &writer.source.policy,
@@ -2315,6 +2324,7 @@ impl Fixture {
             own_user_public_key: &self.source.own_user,
             own_device_cert: &self.source.peer.cert,
             own_device_public_key: &self.source.peer.cert.device_public_key,
+            own_device_signing_key: None,
             app_serving: None,
             metrics: &self.metrics,
             trust_policy: &self.source.policy,

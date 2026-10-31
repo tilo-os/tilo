@@ -1922,7 +1922,7 @@ pub use local_action_host::{CertifiedActionLifecycle, CertifiedPersonContext};
 
 pub use launchable::launchable_provider;
 #[path = "peer_action_broker.rs"]
-mod peer_action_broker;
+pub(crate) mod peer_action_broker;
 #[path = "policy_context.rs"]
 mod policy_context;
 #[path = "room_service.rs"]
@@ -14852,7 +14852,7 @@ pub mod tests {
                     actions: vec![action(
                         format!("document:{index}"),
                         "edit",
-                        Some("x".repeat(16 * 1024)),
+                        Some("x".repeat(64 * 1024)),
                     )],
                     live: true,
                 },
@@ -16314,13 +16314,14 @@ pub mod tests {
                 // does not assert that the running external effect stopped.
                 use tilo_delivery_protocol::{
                     peer_actions::{ActionMessage, DirectedAction},
-                    transport_v2::{self, EnvelopeV2},
+                    transport_v2,
                 };
+                let host = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
                 let cancel = DirectedAction {
                     room: uuid::Uuid::parse_str(&caller.room).unwrap(),
                     request_id: uuid::Uuid::new_v4(),
                     source: [52; 32],
-                    target: [51; 32],
+                    target: host.verifying_key().to_bytes(),
                     message: ActionMessage::Cancel {
                         invocation: request.invocation,
                     },
@@ -16345,9 +16346,16 @@ pub mod tests {
                         },
                     }
                 );
-                // And it survives the private lane the relay carries.
+                // And it survives the private lane the relay carries, signed.
                 assert!(cancel.validate() && acknowledgement.validate());
-                let reply = EnvelopeV2::Directed(acknowledgement);
+                let reply = transport_v2::EnvelopeV2::SignedDirected(
+                    tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
+                        &acknowledgement,
+                        tilo_clock::unix_now_ns(),
+                        &host,
+                    )
+                    .unwrap(),
+                );
                 let encoded = transport_v2::encode(&reply).unwrap();
                 assert_eq!(transport_v2::decode(&encoded[4..]).unwrap(), reply);
                 if disconnected {

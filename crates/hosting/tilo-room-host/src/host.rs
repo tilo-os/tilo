@@ -989,6 +989,7 @@ impl RelayProtocol {
             own_device_cert: self.identity.cert.clone(),
             metrics: self.metrics.clone(),
             own_device_public_key: self.identity.cert.device_public_key,
+            own_device_signing_key: self.identity.signing_key.clone(),
             app_serving: self.app_serving.clone(),
             live_bridge: self.live_bridge.get().cloned(),
             agents: self.agents.clone(),

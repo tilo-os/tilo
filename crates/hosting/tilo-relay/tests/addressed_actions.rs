@@ -12,7 +12,7 @@
     reason = "each test spells out one end-to-end scenario"
 )]
 use crate::common::{TestUser, client_endpoint, spawn_relay};
-use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_relay_stream_has_one_alpn_and_no_older_ones() {
@@ -60,7 +60,9 @@ async fn the_relay_stream_has_one_alpn_and_no_older_ones() {
 
 use crate::common::{TestDevice, TestRelay};
 use std::time::Duration;
-use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
+use tilo_delivery_protocol::peer_actions::{
+    ActionMessage, DirectedAction, SignedDirectedAction, UnavailableReason,
+};
 use tilo_delivery_protocol::transport_v2::{ActionCapability, EnvelopeV2};
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::RevocationList;
@@ -76,8 +78,10 @@ async fn next_action(client: &RelayClient) -> EnvelopeV2 {
         .await
         .unwrap()
 }
-async fn join_v2(relay: &TestRelay, device: &TestDevice, room: Uuid) -> RelayClient {
-    let client = RelayClient::connect_v2_to_enrolled_home_peer(
+/// A v2 session that can sign the actions it sends, before it enables any
+/// room's private lane.
+async fn signed_session(relay: &TestRelay, device: &TestDevice) -> RelayClient {
+    RelayClient::connect_v2_to_enrolled_home_peer(
         client_endpoint().await,
         relay.relay.node_addr(),
         relay.relay.own_user_public_key(),
@@ -87,7 +91,11 @@ async fn join_v2(relay: &TestRelay, device: &TestDevice, room: Uuid) -> RelayCli
         RevocationList::new(),
     )
     .await
-    .unwrap();
+    .unwrap()
+}
+
+async fn join_v2(relay: &TestRelay, device: &TestDevice, room: Uuid) -> RelayClient {
+    let client = signed_session(relay, device).await;
     client
         .send(Envelope::Subscribe {
             workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
@@ -114,6 +122,27 @@ fn refresh(room: Uuid, sender: &TestDevice, target: &TestDevice) -> DirectedActi
         target: target.device_pubkey(),
         message: ActionMessage::CatalogueRefresh { scope: None },
     }
+}
+
+/// The action a signed delivery carries, and the certificate the host
+/// attached for its source user.
+fn delivered(frame: EnvelopeV2) -> (DirectedAction, DeviceCert) {
+    match frame {
+        EnvelopeV2::CertifiedSignedDelivered {
+            action,
+            source_certificate,
+        } => (
+            action.action().clone(),
+            serde_json::from_slice(&source_certificate).unwrap(),
+        ),
+        other => panic!("a delivery is signed by its source, got {other:?}"),
+    }
+}
+
+async fn expect_delivery(client: &RelayClient, expected: &DirectedAction, user: [u8; 32]) {
+    let (action, certificate) = delivered(next_action(client).await);
+    assert_eq!(&action, expected);
+    assert_eq!(certificate.user_public_key, user);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -317,23 +346,14 @@ async fn addressed_actions_are_private_live_and_demultiplexed_from_v1_state() {
     .await;
     let ca = join_v2(&relay, &a, room).await;
     let cb = join_v2(&relay, &b, room).await;
-    let cc = RelayClient::connect(
-        client_endpoint().await,
-        relay.relay.node_addr(),
-        user.user_pk,
-        c.cert.clone(),
-        c.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
+    // Signed, but it never enables a room's private lane.
+    let cc = signed_session(&relay, &c).await;
     cc.send(Envelope::Subscribe { workspace_id }).unwrap();
     assert!(matches!(next_state(&cc).await, Envelope::Ready { .. }));
     cb.send(Envelope::Subscribe { workspace_id }).unwrap();
     assert!(matches!(next_state(&cb).await, Envelope::Ready { .. }));
     let directed = refresh(room, &a, &b);
-    ca.send_action(EnvelopeV2::Directed(directed.clone()))
-        .unwrap();
+    ca.send_directed(&directed).unwrap();
     ca.send(Envelope::Presence {
         workspace_id,
         payload: b"shared".to_vec(),
@@ -353,13 +373,7 @@ async fn addressed_actions_are_private_live_and_demultiplexed_from_v1_state() {
             payload: b"shared".to_vec()
         }
     );
-    assert_eq!(
-        next_action(&cb).await,
-        EnvelopeV2::Delivered {
-            action: directed,
-            source_user: user.user_pk
-        }
-    );
+    expect_delivery(&cb, &directed, user.user_pk).await;
     // Reply carries the existing typed lifecycle, privately, with full UUID.
     let invocation =
         tilo_actions::InvocationId(Uuid::from_u128(0x0012_3456_789a_bcde_f123_4567_89ab_cdef));
@@ -379,25 +393,16 @@ async fn addressed_actions_are_private_live_and_demultiplexed_from_v1_state() {
             },
         },
     };
-    cb.send_action(EnvelopeV2::Directed(update.clone()))
-        .unwrap();
-    assert_eq!(
-        next_action(&ca).await,
-        EnvelopeV2::Delivered {
-            action: update,
-            source_user: user.user_pk
-        }
-    );
-    ca.send_action(EnvelopeV2::Directed(refresh(room, &a, &c)))
-        .unwrap();
+    cb.send_directed(&update).unwrap();
+    expect_delivery(&ca, &update, user.user_pk).await;
+    ca.send_directed(&refresh(room, &a, &c)).unwrap();
     assert!(
         matches!(next_action(&ca).await, EnvelopeV2::Unavailable {reason:UnavailableReason::UnsupportedPeer, request_id,..} if request_id==Uuid::from_u128(100))
     );
     // Every session has the one framing and so a private lane, but a peer
     // that never enabled actions in the room is not routed: the relay
     // refuses its directed action instead of delivering it.
-    cc.send_action(EnvelopeV2::Directed(refresh(room, &c, &a)))
-        .unwrap();
+    cc.send_directed(&refresh(room, &c, &a)).unwrap();
     assert!(
         matches!(next_action(&cc).await, EnvelopeV2::Unavailable {reason:UnavailableReason::NotAuthorised, request_id,..} if request_id==Uuid::from_u128(100))
     );
@@ -410,8 +415,7 @@ async fn addressed_actions_are_private_live_and_demultiplexed_from_v1_state() {
     cc.send(Envelope::Ping).unwrap();
     assert_eq!(next_state(&cc).await, Envelope::Pong);
     cb.close().await;
-    ca.send_action(EnvelopeV2::Directed(refresh(room, &a, &b)))
-        .unwrap();
+    ca.send_directed(&refresh(room, &a, &b)).unwrap();
     assert!(matches!(
         next_action(&ca).await,
         EnvelopeV2::Unavailable {
@@ -456,11 +460,10 @@ async fn addressed_actions_replacement_survives_old_cleanup_and_rechecks_members
     let old = join_v2(&relay, &b, room).await;
     let cb = join_v2(&relay, &b, room).await;
     old.close().await;
-    ca.send_action(EnvelopeV2::Directed(refresh(room, &a, &b)))
-        .unwrap();
+    ca.send_directed(&refresh(room, &a, &b)).unwrap();
     assert!(matches!(
         next_action(&cb).await,
-        EnvelopeV2::Delivered { .. }
+        EnvelopeV2::CertifiedSignedDelivered { .. }
     ));
     crate::common::admit_members(
         &relay.relay,
@@ -469,8 +472,7 @@ async fn addressed_actions_replacement_survives_old_cleanup_and_rechecks_members
         &relay.state_root,
     )
     .await;
-    ca.send_action(EnvelopeV2::Directed(refresh(room, &a, &b)))
-        .unwrap();
+    ca.send_directed(&refresh(room, &a, &b)).unwrap();
     assert!(matches!(
         next_action(&ca).await,
         EnvelopeV2::Unavailable {
@@ -496,9 +498,20 @@ async fn addressed_actions_reject_source_forgery_and_external_effect_admission()
     .await;
     let ca = join_v2(&relay, &a, room).await;
     let cb = join_v2(&relay, &b, room).await;
-    let mut forged = refresh(room, &b, &a);
-    forged.target = b.device_pubkey();
-    ca.send_action(EnvelopeV2::Directed(forged)).unwrap();
+    // Device `a` signs as itself, then its frame's claimed source is swapped
+    // for `b`'s: the relay must never route an action on someone else's word.
+    let mut wire = postcard::to_allocvec(&EnvelopeV2::SignedDirected(
+        SignedDirectedAction::sign(&refresh(room, &a, &b), tilo_clock::unix_now_ns(), &a.sk)
+            .unwrap(),
+    ))
+    .unwrap();
+    let at = wire
+        .windows(32)
+        .position(|window| window == a.device_pubkey())
+        .unwrap();
+    wire[at..at + 32].copy_from_slice(&b.device_pubkey());
+    let forged = tilo_delivery_protocol::transport_v2::decode(&wire).unwrap();
+    ca.send_action(forged).unwrap();
     assert!(matches!(
         next_action(&ca).await,
         EnvelopeV2::Unavailable {
@@ -519,7 +532,7 @@ async fn addressed_actions_reject_source_forgery_and_external_effect_admission()
         confirmation: None,
         revision: None,
     };
-    ca.send_action(EnvelopeV2::Directed(invoke)).unwrap();
+    ca.send_directed(&invoke).unwrap();
     assert!(
         matches!(next_action(&ca).await,EnvelopeV2::Unavailable {reason:UnavailableReason::AdmissionUnavailable,invocation:Some(tilo_actions::InvocationId(id)),..} if id==Uuid::from_u128(55))
     );
@@ -529,8 +542,7 @@ async fn addressed_actions_reject_source_forgery_and_external_effect_admission()
             .is_err()
     );
     let mut wrong_room = refresh(Uuid::from_u128(987), &a, &b);
-    ca.send_action(EnvelopeV2::Directed(wrong_room.clone()))
-        .unwrap();
+    ca.send_directed(&wrong_room).unwrap();
     assert!(matches!(
         next_action(&ca).await,
         EnvelopeV2::Unavailable {
@@ -549,7 +561,7 @@ async fn addressed_actions_reject_source_forgery_and_external_effect_admission()
             message: None,
         },
     };
-    ca.send_action(EnvelopeV2::Directed(wrong_room)).unwrap();
+    ca.send_directed(&wrong_room).unwrap();
     assert!(matches!(
         next_action(&ca).await,
         EnvelopeV2::Unavailable {
@@ -560,8 +572,7 @@ async fn addressed_actions_reject_source_forgery_and_external_effect_admission()
     ca.send(Envelope::Unsubscribe { workspace_id }).unwrap();
     ca.send(Envelope::Ping).unwrap();
     assert_eq!(next_state(&ca).await, Envelope::Pong);
-    ca.send_action(EnvelopeV2::Directed(refresh(room, &a, &b)))
-        .unwrap();
+    ca.send_directed(&refresh(room, &a, &b)).unwrap();
     assert!(matches!(
         next_action(&ca).await,
         EnvelopeV2::Unavailable {
@@ -647,7 +658,7 @@ async fn addressed_actions_coedit_uses_the_same_demultiplexer() {
     }
     let mut doc = automerge::AutoCommit::new();
     doc.put(automerge::ROOT, "text", "shared edit").unwrap();
-    a_session.send_action(refresh(room, &a, &b)).unwrap();
+    a_session.send_action(&refresh(room, &a, &b)).unwrap();
     a_session
         .publish_retained_delta([7; 32], doc.save_incremental())
         .unwrap();
@@ -661,9 +672,14 @@ async fn addressed_actions_coedit_uses_the_same_demultiplexer() {
     let mut received = automerge::AutoCommit::new();
     tilo_automerge::ApplyIncoming::load_incoming(&mut received, &data).unwrap();
     assert_eq!(received.get_heads(), doc.get_heads());
-    assert!(
-        matches!(tilo_test_env::within("a message on b_session", b_session.recv_action()).await,Some(EnvelopeV2::Delivered{source_user,..}) if source_user==user.user_pk)
-    );
+    let Some(frame) =
+        tilo_test_env::within("a message on b_session", b_session.recv_action()).await
+    else {
+        panic!("the session closed before the action arrived")
+    };
+    let (action, certificate) = delivered(frame);
+    assert_eq!(action, refresh(room, &a, &b));
+    assert_eq!(certificate.user_public_key, user.user_pk);
     assert!(a_session.enable_actions(Uuid::from_u128(11)).is_err());
 }
 
@@ -736,22 +752,20 @@ async fn addressed_actions_sustained_state_flood_keeps_private_roundtrips_and_re
                 for id in 1..=32 {
                     let mut request = refresh(room, &a, &b);
                     request.request_id = Uuid::from_u128(id);
-                    ca.send_action(EnvelopeV2::Directed(request.clone()))
-                        .unwrap();
-                    assert_eq!(
-                        tokio::time::timeout(tilo_test_env::hang_bound(), cb.recv_action())
-                            .await
-                            .unwrap_or_else(|_| panic!(
+                    ca.send_directed(&request).unwrap();
+                    let frame = tokio::time::timeout(tilo_test_env::hang_bound(), cb.recv_action())
+                        .await
+                        .unwrap_or_else(|_| {
+                            panic!(
                                 "target stalled at request {id}; state sent {} received {}",
                                 produced.load(Ordering::SeqCst),
                                 received.load(Ordering::SeqCst)
-                            ))
-                            .expect("target closed"),
-                        EnvelopeV2::Delivered {
-                            action: request.clone(),
-                            source_user: user.user_pk
-                        }
-                    );
+                            )
+                        })
+                        .expect("target closed");
+                    let (arrived, certificate) = delivered(frame);
+                    assert_eq!(arrived, request);
+                    assert_eq!(certificate.user_public_key, user.user_pk);
                     let reply = DirectedAction {
                         source: b.device_pubkey(),
                         target: a.device_pubkey(),
@@ -760,21 +774,20 @@ async fn addressed_actions_sustained_state_flood_keeps_private_roundtrips_and_re
                         },
                         ..request
                     };
-                    cb.send_action(EnvelopeV2::Directed(reply.clone())).unwrap();
-                    assert_eq!(
-                        tokio::time::timeout(tilo_test_env::hang_bound(), ca.recv_action())
-                            .await
-                            .unwrap_or_else(|_| panic!(
+                    cb.send_directed(&reply).unwrap();
+                    let frame = tokio::time::timeout(tilo_test_env::hang_bound(), ca.recv_action())
+                        .await
+                        .unwrap_or_else(|_| {
+                            panic!(
                                 "reply stalled at request {id}; state sent {} received {}",
                                 produced.load(Ordering::SeqCst),
                                 received.load(Ordering::SeqCst)
-                            ))
-                            .expect("source closed"),
-                        EnvelopeV2::Delivered {
-                            action: reply,
-                            source_user: user.user_pk
-                        }
-                    );
+                            )
+                        })
+                        .expect("source closed");
+                    let (arrived, certificate) = delivered(frame);
+                    assert_eq!(arrived, reply);
+                    assert_eq!(certificate.user_public_key, user.user_pk);
                 }
                 done.send(true).unwrap();
             };

@@ -179,19 +179,6 @@ fn full_replay_window_refuses_rather_than_forgets() {
 }
 
 #[test]
-fn only_effect_free_reads_may_be_unsigned() {
-    let invocation = tilo_actions::InvocationId(Uuid::from_u128(4));
-    assert!(!ActionMessage::CatalogueRefresh { scope: None }.requires_signature());
-    assert!(!ActionMessage::Status { invocation }.requires_signature());
-    for message in [
-        invoke(&key(1), "a").message,
-        ActionMessage::Cancel { invocation },
-    ] {
-        assert!(message.requires_signature());
-    }
-}
-
-#[test]
 fn signed_frames_extend_the_v2_envelope_after_every_frozen_variant() {
     let device = key(1);
     let signed = SignedDirectedAction::sign(&invoke(&device, "a"), NOW, &device).unwrap();

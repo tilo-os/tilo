@@ -15,7 +15,11 @@ pub use signed::{
     ActionSignatureError, SignedDirectedAction,
 };
 
-pub const MAX_PRIVATE_BYTES: usize = 256 * 1024;
+/// Room for a whole remote-action message
+/// ([`tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES`]: a record piece
+/// or a content chunk) plus its routing, signature and source certificate.
+pub const MAX_PRIVATE_BYTES: usize =
+    tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES + 16 * 1024;
 // Catalogues aggregate descriptors for every record. Their structural budget
 // must be larger than a single effect's argument while remaining bounded by
 // the same wire-size and nesting limits.
@@ -93,6 +97,14 @@ pub enum ActionMessage {
     /// The cancellation request was recorded, not proof of cancellation.
     CancellationRequested {
         invocation: InvocationId,
+    },
+    /// A request to one device's action host, or its answer
+    /// ([`tilo_actions::remote`]): list, invoke, observe or cancel its
+    /// actions, read a record it keeps. Addressed to the relay's own device,
+    /// it reaches the relay's app-serving plane. The target takes the caller
+    /// from the source device's signature, never from the message.
+    Remote {
+        message: Box<tilo_actions::remote::RemoteActionMessage>,
     },
 }
 
@@ -177,13 +189,6 @@ impl UnavailableReason {
 }
 
 impl ActionMessage {
-    /// Whether a target may only serve this message as a request its source
-    /// device signed ([`SignedDirectedAction`]). Only effect-free reads are
-    /// exempt; every other message, including any added later, requires it.
-    pub const fn requires_signature(&self) -> bool {
-        !matches!(self, Self::CatalogueRefresh { .. } | Self::Status { .. })
-    }
-
     pub fn invocation(&self) -> Option<InvocationId> {
         match self {
             Self::CommittedDesktop { invocation, .. }
@@ -196,7 +201,8 @@ impl ActionMessage {
             Self::CatalogueRefresh { .. }
             | Self::Catalogue { .. }
             | Self::BrokerCatalogue { .. }
-            | Self::Rejected { .. } => None,
+            | Self::Rejected { .. }
+            | Self::Remote { .. } => None,
         }
     }
 
@@ -204,8 +210,10 @@ impl ActionMessage {
         let Ok(json) = serde_json::to_value(self) else {
             return false;
         };
-        let mut remaining = if matches!(self, Self::Catalogue { .. } | Self::BrokerCatalogue { .. })
-        {
+        let mut remaining = if matches!(
+            self,
+            Self::Catalogue { .. } | Self::BrokerCatalogue { .. } | Self::Remote { .. }
+        ) {
             MAX_CATALOGUE_NODES
         } else {
             4096
@@ -326,6 +334,17 @@ impl DirectedAction {
             && self.message.validate()
             && serde_json::to_vec(&self.message).is_ok_and(|bytes| bytes.len() <= MAX_PRIVATE_BYTES)
     }
+
+    /// The postcard length of this action, or `None` when it does not encode.
+    pub fn wire_len(&self) -> Option<usize> {
+        postcard::to_allocvec(self).ok().map(|bytes| bytes.len())
+    }
+
+    /// Whether this action encodes within [`MAX_PRIVATE_BYTES`], as the bytes
+    /// its source signs (and the frame that carries them) must.
+    pub fn wire_fits(&self) -> bool {
+        self.wire_len().is_some_and(|len| len <= MAX_PRIVATE_BYTES)
+    }
 }
 
 mod message_json {
@@ -409,12 +428,8 @@ mod catalogue_bounds_tests {
                 message,
             };
             assert!(
-                directed.validate(),
+                directed.validate() && directed.wire_fits(),
                 "a bounded catalogue with over 4096 nodes must remain discoverable"
-            );
-            assert!(
-                crate::transport_v2::encode(&crate::transport_v2::EnvelopeV2::Directed(directed))
-                    .is_ok()
             );
         }
         let invoke = ActionMessage::InvokeBound {
@@ -470,11 +485,7 @@ mod catalogue_bounds_tests {
                 catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(MAX_PRIVATE_BYTES)}),
             },
         };
-        assert!(!action.validate());
-        assert!(
-            crate::transport_v2::encode(&crate::transport_v2::EnvelopeV2::Directed(action))
-                .is_err()
-        );
+        assert!(!action.validate() && !action.wire_fits());
     }
 }
 

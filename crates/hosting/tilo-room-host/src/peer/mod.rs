@@ -69,11 +69,10 @@ use access::{
 };
 pub(crate) use actions::{ActionTarget, PrivateOutbound};
 #[cfg(test)]
-use actions::{PrivateDelivery, authorize_delivery};
+use actions::{PrivateDelivery, authorize_delivery, route_private_signed};
 use actions::{
     RemoteActionRoute, enable_actions, enable_broker_client, handle_host_action,
-    handle_remote_action, register_broker, route_private, route_signed_directed,
-    write_private_delivery,
+    handle_remote_action, register_broker, route_signed_directed, write_private_delivery,
 };
 use commit::{commit_run_key, handle_commit, handle_commit_run, over_change_limit};
 use compaction::handle_compaction;
@@ -110,7 +109,9 @@ use crate::workspace::{SharedWorkspace, Subscriber};
 use tilo_delivery_protocol::peer_actions::{
     ActionMessage, DirectedAction, SignedDirectedAction, UnavailableReason,
 };
-use tilo_delivery_protocol::transport_v2::{ActionCapability, EnvelopeV2, SessionReader};
+use tilo_delivery_protocol::transport_v2::{
+    ActionCapability, EnvelopeV2, SessionReader, UNSIGNED_DELIVERY_REFUSAL,
+};
 
 /// Maximum live fan-out backlog per connected peer. Deltas are durable before
 /// queueing; saturation disconnects the recipient for replay on reconnect.
@@ -193,6 +194,9 @@ pub struct PeerContext {
     /// This relay's own device key: the address remote-action frames use to
     /// reach the app-serving plane.
     pub own_device_public_key: [u8; 32],
+    /// The private half of [`Self::own_device_public_key`], so an answer the
+    /// host serves as its own device carries that device's signature.
+    pub own_device_signing_key: ed25519_dalek::SigningKey,
     /// Answers remote-action frames addressed to this relay. `None` unless
     /// the host supplied one and advertises `app_serving`.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
@@ -253,6 +257,9 @@ struct SessionCtx<'a> {
     /// The certificate of the device running this relay, so a session can
     /// recognise its own host's local self-connection.
     own_device_cert: &'a tilo_user_identity::DeviceCert,
+    /// This relay's own device key, when the host has one: an answer served
+    /// as this device is signed with it.
+    own_device_signing_key: Option<&'a ed25519_dalek::SigningKey>,
     metrics: &'a Arc<crate::metrics::Metrics>,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     disconnect: &'a mpsc::Sender<()>,
