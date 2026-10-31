@@ -215,6 +215,7 @@ impl Window {
                 index_dir: None,
                 record_loader: None,
                 sink: None,
+                root: tilolang_tilo::host::RootView::default(),
             },
             Rc::new(InProcess),
             Rc::new(RoomNames(names.clone())),

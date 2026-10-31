@@ -1241,7 +1241,7 @@ impl Instance {
     ) {
         let mut now: HashMap<String, Vec<(Principal, bool, bool)>> = HashMap::new();
         for (resource, who) in peers {
-            let typing = composers.iter().any(|composer| *composer == who);
+            let typing = composers.contains(&who);
             now.entry(resource)
                 .or_default()
                 .push((Principal::new(who), false, typing));
