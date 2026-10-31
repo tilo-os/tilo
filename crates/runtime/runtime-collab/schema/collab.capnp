@@ -886,6 +886,11 @@ interface PresenceHandle {
   # Short transient intention. Empty text clears it; automatic distinguishes
   # a local-model suggestion from words the participant explicitly authored.
   publishStatus @10 (keyBytes :Data, text :Text, automatic :Bool) -> ();
+
+  # Whether the sender is composing a message in the resource `keyBytes`
+  # names: a draft is being typed, never what it says. False says they
+  # stopped. Ephemeral like every presence frame; never the record.
+  publishComposing @11 (keyBytes :Data, composing :Bool) -> ();
 }
 
 interface PresenceStream {
@@ -992,6 +997,11 @@ struct PresencePayload {
       text @13 :Text;
       automatic @14 :Bool;
     }
+
+    # Whether the sender is composing a message under `PresenceEvent.keyBytes`
+    # (a channel, a direct conversation). Its own arm so a peer reads it as
+    # "typing here", never as words.
+    composing @15 :Bool;
   }
 }
 

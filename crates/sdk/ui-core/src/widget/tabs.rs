@@ -10483,3 +10483,9 @@ mod tests {
         }
     }
 }
+
+#[path = "tab_strip_component.rs"]
+mod component;
+pub use component::{
+    PresenceFaceProps, TabItemProps, TabStrip, TabStripProps, pack_point, unpack_point,
+};

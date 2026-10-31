@@ -224,6 +224,10 @@ impl FloatingPanelFace {
 }
 
 /// A retained floating panel: a header slot, a body and a footer slot.
+#[crate::component::not_a_component(
+    part,
+    "the panel `ui.FloatingPanel` is built from, around the view's header, body and footer"
+)]
 pub struct FloatingPanel {
     header: Option<Box<dyn Widget>>,
     body: Box<dyn Widget>,

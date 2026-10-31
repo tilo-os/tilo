@@ -944,3 +944,50 @@ fn a_direct_message_opens_with_a_person_and_takes_their_messages() {
     let mut conversation = ada.host.open_resource(&target(&dm), None).unwrap();
     assert_eq!(said(&mut conversation), ["Still on for Saturday?"]);
 }
+
+/// A conversation says who is typing in it from the system's presence: the lenses on the
+/// channel a person has open carry whether that person is composing a message there, never
+/// what it says. The line goes when they stop, and a lens that is only open (not composing)
+/// says nothing.
+#[test]
+fn a_conversation_says_who_is_typing_from_presence() {
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    ada.host.sync_from(&ada.doc);
+    let mut view = ada.host.open_resource(&target(&design), None).unwrap();
+    let channel = target(&design).id_string();
+
+    // Nobody at the channel but Ada: no one is typing.
+    let typing = |view: &mut ViewInstance| -> Vec<String> {
+        view.poll_patches().unwrap();
+        let mut found = Vec::new();
+        texts(view.tree(), &mut found);
+        found
+            .into_iter()
+            .filter(|text| text.contains("is typing") || text.contains("are typing"))
+            .collect()
+    };
+    assert!(typing(&mut view).is_empty(), "no one typing yet");
+
+    // Ben has the channel open and is composing: the conversation says so, in his name. The
+    // runtime's lenses are what `lenses(c)` reads; a view that read them runs again.
+    let ben = Principal::new("ben");
+    ada.host
+        .runtime()
+        .set_lenses(&channel, &[(ben.clone(), false, true)]);
+
+    assert_eq!(
+        typing(&mut view),
+        ["ben is typing…"],
+        "presence says Ben is composing"
+    );
+
+    // He stops: the line goes. Open but not composing says nothing either.
+    ada.host
+        .runtime()
+        .set_lenses(&channel, &[(ben, false, false)]);
+    assert!(typing(&mut view).is_empty(), "he stopped");
+}

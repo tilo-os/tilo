@@ -119,6 +119,16 @@ impl Manual {
             invalidation: ManualInvalidation::default(),
         }
     }
+    /// A region that takes its parent's whole box on both axes, as a canvas's viewport does:
+    /// its policy is handed that box as `available`, never the window's.
+    #[must_use]
+    pub fn filling(mut self) -> Self {
+        self.region = Size {
+            width: Dimension::percent(1.0),
+            height: Dimension::percent(1.0),
+        };
+        self
+    }
     #[must_use]
     pub fn child(mut self, child: Element) -> Self {
         self.parts.children.push(child);

@@ -81,6 +81,7 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
                 .collect(),
         ),
         Value::Offered(offered) => json!({ "action": offered.label }),
+        Value::Picture(src) => json!({ "picture": src }),
         Value::Node(_)
         | Value::Rec(_)
         | Value::Event

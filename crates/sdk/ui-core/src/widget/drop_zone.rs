@@ -323,6 +323,12 @@ impl Widget for DropZone {
                 if let Ok(current) = taffy.style(child) {
                     let mut child_style = current.clone();
                     child_style.position = taffy::Position::Absolute;
+                    // Centred horizontally by auto margins (`adjust_layout_style` sets the
+                    // top), never by a left inset computed from its solved width.
+                    child_style.inset.left = auto();
+                    child_style.inset.right = auto();
+                    child_style.margin.left = auto();
+                    child_style.margin.right = auto();
                     let _ = taffy.set_style(child, child_style);
                 }
                 taffy.parent_node(style, &[child])
@@ -347,10 +353,6 @@ impl Widget for DropZone {
             .action_node
             .and_then(|n| taffy.layout(n).ok())
             .map_or(0.0, |l| f64::from(l.size.height));
-        let action_w = self
-            .action_node
-            .and_then(|n| taffy.layout(n).ok())
-            .map_or(0.0, |l| f64::from(l.size.width));
         let mut changed = false;
         let face = self.face();
         let inner = width - 2.0 * m.pad;
@@ -370,17 +372,22 @@ impl Widget for DropZone {
         if let Some(child) = self.action_node
             && let Ok(current) = taffy.style(child)
         {
-            let top = f64::from(h) - m.pad - action_h;
-            let left = (width - action_w) / 2.0;
-            let inset = taffy::Rect {
-                left: length(crate::num::f32_of_f64(left)),
-                top: length(crate::num::f32_of_f64(top)),
-                right: auto(),
-                bottom: auto(),
-            };
-            if current.inset != inset {
+            // Sits under the text, centred by its own auto margins: the horizontal placement
+            // never depends on the button's solved (device-rounded) width, which computing a
+            // left inset from made oscillate by a subpixel every pass so the layout never
+            // settled.
+            let top = length(crate::num::f32_of_f64(f64::from(h) - m.pad - action_h));
+            if current.inset.top != top
+                || current.inset.left != auto()
+                || current.margin.left != auto()
+            {
                 let mut style = current.clone();
-                style.inset = inset;
+                style.inset.left = auto();
+                style.inset.right = auto();
+                style.margin.left = auto();
+                style.margin.right = auto();
+                style.inset.top = top;
+                style.inset.bottom = auto();
                 changed |= taffy.set_style(child, style).is_ok();
             }
         }

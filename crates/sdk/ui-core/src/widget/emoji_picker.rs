@@ -120,6 +120,10 @@ struct Geometry {
 }
 
 /// The shared emoji picker. See the [module docs](self).
+#[crate::component::not_a_component(
+    part,
+    "the panel of the `ui.EmojiPicker` button, which opens it in its popover"
+)]
 pub struct EmojiPicker {
     framed: bool,
     open: bool,

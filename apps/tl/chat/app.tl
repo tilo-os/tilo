@@ -269,6 +269,7 @@ view channel(c: TextChannel) {
     std.transcript(c, c.messages, unread: first_unseen(c)) { m ->
         channel_message(c, m, replying, editing, revised)
         composer: {
+            typing_here(c)
             composer(c, draft, replying, "Message #{c.name}")
         }
     }
@@ -284,6 +285,7 @@ view direct(d: Direct) {
     std.transcript(d, d.messages, unread: first_unseen(d)) { m ->
         direct_message(d, m, replying, editing, revised)
         composer: {
+            direct_typing_here(d)
             composer(d, draft, replying, "Message {d.name}")
         }
     }
@@ -334,6 +336,7 @@ view thread(t: Thread) {
     std.transcript(t, t.messages) { m ->
         thread_message(m, replying, editing, revised)
         composer: {
+            thread_typing_here(t)
             composer(t, draft, replying, "Message {t.name}")
         }
     }
@@ -366,6 +369,35 @@ view composer(to: TextChannel | Thread | Direct, draft: State<RichText>, replyin
         ui.Button("Send", icon: .send, icon_only: true) {
             on press: send(to, draft, replying).then(set(draft, RichText(""))).then(set(replying, .none))
         }
+    }
+}
+
+/// Who is typing here, from the system's presence: the lenses on `of` whose person is
+/// composing a message in it (`l.composing`), never the person looking. A conversation with
+/// no one typing says nothing, so the composer does not move.
+view typing_here(of: TextChannel) {
+    let typists = lenses(of).filter(l -> l.composing and not l.mine)
+    if let first = typists.first() {
+        let who = first.who.name()
+        ui.Text(if typists.len() == 1 { "{who} is typing…" } else { "{who} and others are typing…" }, role: .caption, secondary: true)
+    }
+}
+
+/// [`typing_here`] for a direct conversation.
+view direct_typing_here(of: Direct) {
+    let typists = lenses(of).filter(l -> l.composing and not l.mine)
+    if let first = typists.first() {
+        let who = first.who.name()
+        ui.Text(if typists.len() == 1 { "{who} is typing…" } else { "{who} and others are typing…" }, role: .caption, secondary: true)
+    }
+}
+
+/// [`typing_here`] for a thread.
+view thread_typing_here(of: Thread) {
+    let typists = lenses(of).filter(l -> l.composing and not l.mine)
+    if let first = typists.first() {
+        let who = first.who.name()
+        ui.Text(if typists.len() == 1 { "{who} is typing…" } else { "{who} and others are typing…" }, role: .caption, secondary: true)
     }
 }
 

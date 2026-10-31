@@ -48,6 +48,40 @@ pub enum ImageFit {
     Cover,
 }
 
+/// A picture as a component takes one, by where its bytes are.
+///
+/// The address is opaque to the widget: an image store loads it, reading a content address
+/// (`tilo-blob://<hash>`) from the window's content store and any other address by fetching it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PictureSource {
+    /// Where its bytes are read from: a content address (`tilo-blob://<hash>`) or a URL.
+    pub src: String,
+}
+
+impl PictureSource {
+    /// Whether it names nothing to load.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.src.is_empty()
+    }
+}
+
+/// A picture as a prop: `Type::Picture` holding [`tilo_ui_graph::component::Picture`].
+impl crate::component::PropType for PictureSource {
+    fn ty() -> crate::component::Type {
+        crate::component::Type::Picture
+    }
+
+    fn from_value(value: &crate::component::Value) -> Result<Self, String> {
+        match value {
+            crate::component::Value::Picture(picture) => Ok(Self {
+                src: picture.src.clone(),
+            }),
+            other => Err(crate::component::wrong(&Self::ty(), other)),
+        }
+    }
+}
+
 /// Errors that can occur when constructing an [`Image`] from encoded bytes.
 #[derive(Debug)]
 pub enum ImageDecodeError {
@@ -84,6 +118,12 @@ enum Source {
     Path(PathBuf),
     /// Parsed SVG paths, kept as vectors through rendering.
     Vector(Box<Scene>),
+    /// A picture by its address, loaded through the window's pictures as it arrives: the
+    /// placeholder paints until then.
+    Loading {
+        pictures: crate::pictures::Pictures,
+        picture: PictureSource,
+    },
     /// Decode previously failed — paint the error state every frame.
     Failed,
 }
@@ -208,6 +248,83 @@ impl Image {
         })
     }
 
+    /// Construct from a picture by its address, loaded through this window's `pictures` as it
+    /// arrives; the placeholder paints until then. A changed picture takes the place of the
+    /// old one in place ([`Self::set_picture`]).
+    pub fn from_picture(pictures: crate::pictures::Pictures, picture: PictureSource) -> Self {
+        Self {
+            source: Source::Loading { pictures, picture },
+            intrinsic_size: (0, 0),
+            fit: ImageFit::Contain,
+            rect: Rect::ZERO,
+            cached: None,
+            alt: None,
+            fill_parent: false,
+            icon_size: None,
+            layout_scale: 1.0,
+        }
+    }
+
+    /// Show `picture` instead, through `pictures`: the picture already shown stays until the
+    /// new one's bytes arrive.
+    pub fn set_picture(&mut self, pictures: crate::pictures::Pictures, picture: PictureSource) {
+        let same = matches!(&self.source, Source::Loading { picture: held, .. } if held.src == picture.src);
+        if same {
+            return;
+        }
+        self.source = Source::Loading { pictures, picture };
+        self.cached = None;
+        self.intrinsic_size = (0, 0);
+    }
+
+    /// What the image shows, when it shows a picture by its address.
+    #[must_use]
+    pub fn picture(&self) -> Option<&PictureSource> {
+        match &self.source {
+            Source::Loading { picture, .. } => Some(picture),
+            _ => None,
+        }
+    }
+
+    /// The window's pictures it loads a picture through, when it shows one by its address.
+    #[must_use]
+    pub fn pictures(&self) -> Option<&crate::pictures::Pictures> {
+        match &self.source {
+            Source::Loading { pictures, .. } => Some(pictures),
+            _ => None,
+        }
+    }
+
+    /// Whether it waits for a picture's bytes: a picture being loaded, or an SVG that paints
+    /// itself. Neither is a failure, and an address that names nothing waits for nothing.
+    fn loading(&self) -> bool {
+        matches!(
+            &self.source,
+            Source::Loading { pictures, picture } if !picture.is_empty() && !pictures.failed(picture)
+        )
+    }
+
+    /// Take the picture its address names, once it has arrived; `true` when that changed what
+    /// it shows.
+    fn follow_picture(&mut self) -> bool {
+        let Source::Loading {
+            pictures, picture, ..
+        } = &self.source
+        else {
+            return false;
+        };
+        let Some(image) = pictures.get(picture) else {
+            return false;
+        };
+        let size = (image.width, image.height);
+        self.cached = Some(image);
+        if self.intrinsic_size != size {
+            self.intrinsic_size = size;
+            return true;
+        }
+        false
+    }
+
     /// Size bundled artwork using the same live theme token as an icon glyph.
     #[must_use]
     pub fn with_icon_size(mut self, size: super::IconSize) -> Self {
@@ -220,6 +337,11 @@ impl Image {
     pub fn with_fit(mut self, fit: ImageFit) -> Self {
         self.fit = fit;
         self
+    }
+
+    /// [`Self::with_fit`] after construction.
+    pub fn set_fit(&mut self, fit: ImageFit) {
+        self.fit = fit;
     }
 
     /// Set the alternative text describing the image. Surfaced as the
@@ -238,6 +360,11 @@ impl Image {
     pub fn filling(mut self) -> Self {
         self.fill_parent = true;
         self
+    }
+
+    /// Set the alternative text describing the image; `None` leaves it decorative.
+    pub fn set_alt(&mut self, alt: Option<String>) {
+        self.alt = alt;
     }
 
     /// The alternative text describing the image, if any.
@@ -289,6 +416,9 @@ impl Image {
         if self.cached.is_some() {
             return;
         }
+        if self.follow_picture() && self.cached.is_some() {
+            return;
+        }
         match &self.source {
             Source::Decoded {
                 rgba,
@@ -327,7 +457,7 @@ impl Image {
                 self.intrinsic_size = (width, height);
                 self.cached = Some(img);
             }
-            Source::Vector(_) | Source::Failed => {}
+            Source::Vector(_) | Source::Loading { .. } | Source::Failed => {}
         }
     }
 
@@ -344,8 +474,12 @@ impl Image {
     fn paint(&mut self, scene: &mut Scene, transform: Affine, error_ink: Color) {
         self.ensure_cached();
 
+        // An SVG paints its own paths below; a picture still on its way shows nothing (its
+        // place is the layout's), never an error.
         if self.cached.is_none() && !matches!(self.source, Source::Vector(_)) {
-            self.paint_error(scene, transform, error_ink);
+            if !self.loading() {
+                self.paint_error(scene, transform, error_ink);
+            }
             return;
         }
 
@@ -469,6 +603,28 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), ImageDecodeError> {
 }
 
 impl Widget for Image {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// A picture's bytes may have arrived since the last frame: take them, and ask for the
+    /// frame that draws them.
+    fn update(
+        &mut self,
+        _state: &crate::widget::AppModel,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        self.follow_picture()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.cached.is_none() && self.loading()
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -750,3 +906,7 @@ mod tests {
         accessibility_without_alt_has_no_name();
     }
 }
+
+#[path = "image_component.rs"]
+mod component;
+pub use component::ImageProps;

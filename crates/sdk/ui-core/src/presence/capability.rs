@@ -19,6 +19,15 @@ pub trait PublishesPresence: Widget {
         None
     }
 
+    /// Whether this widget is composing a message where it stands (a conversation's composer
+    /// holding a draft): published under the key beside it, so a reader can say "… is typing".
+    /// Ephemeral, a presence frame; never what the draft says.
+    fn composing_payload(
+        &self,
+    ) -> Option<(super::PresenceKey, crate::collaboration::PresencePayload)> {
+        None
+    }
+
     /// What the person has selected here while this widget is focused, for
     /// asking an agent about it. `None` derives it from
     /// [`Self::presence_payload`] and the accessibility node (see
@@ -33,6 +42,13 @@ pub trait PublishesPresence: Widget {
 /// `widget`'s presence identity.
 pub fn presence_key(widget: &(impl Widget + ?Sized)) -> Option<super::PresenceKey> {
     capability::<dyn PublishesPresence>(widget)?.presence_key()
+}
+
+/// `widget`'s composing presence, when it is composing a message where it stands.
+pub fn composing_payload(
+    widget: &(impl Widget + ?Sized),
+) -> Option<(super::PresenceKey, crate::collaboration::PresencePayload)> {
+    capability::<dyn PublishesPresence>(widget)?.composing_payload()
 }
 
 /// `widget`'s outbound presence.

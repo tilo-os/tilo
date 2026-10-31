@@ -689,21 +689,14 @@ fn message_of(rows: &DescribedRows, key: &str, unread: Option<&str>) -> Element 
     // The row that shows the item the reader has not seen, of the rows the host rendered. An
     // item is named by its id (`root-x/iy`), the one the app said and the one the row shows.
     let first_unread = unread.is_some_and(|item| {
-        let found = rows
-            .with_item(key, |props| {
-                props
-                    .item
-                    .as_ref()
-                    .is_some_and(|shown| shown.0.as_str() == item)
-            })
-            .unwrap_or(false);
-        eprintln!(
-            "UNREAD key={key} item={item} found={found} at={:?}",
-            rows.index_of(&key.to_owned())
-        );
-        found
+        rows.with_item(key, |props| {
+            props
+                .item
+                .as_ref()
+                .is_some_and(|shown| shown.0.as_str() == item)
+        })
+        .unwrap_or(false)
     });
-    eprintln!("MESSAGE_OF key={key} unread={unread:?}");
     let said = rows.with_item(key, |item| (item.author, item.time));
     let Some((Some(author), at)) = said else {
         let row = page_row(row_of(rows, key), RUN_GAP);
