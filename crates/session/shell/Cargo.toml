@@ -454,6 +454,8 @@ app-fleet = { path = "../../packaging/app-fleet" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The copy lint test walks the shell's own sources for literals.
+walkdir.workspace = true
 tilo-onboarding-host = { path = "../onboarding-host", features = ["test-support"] }
 # The state writer's per-thread submit count, which the quiet upkeep test
 # reads to tell a call that queued a write from one that found nothing to do.
