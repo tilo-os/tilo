@@ -44,7 +44,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
-use ui::motion::{MotionValue, Timing};
+use ui::motion::MotionValue;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -1237,12 +1237,11 @@ impl ShellOverlayHost {
 
     /// Lift `id` under the hand, or set it down.
     fn set_desk_lift(&mut self, id: WidgetId, up: bool, now: Instant) {
-        let motion = self.desk.motion;
-        let timing = if motion.moves() {
-            Timing::Spring(ui::motion::SpringSpec::settling_within(motion.fast()))
-        } else {
-            Timing::Instant
-        };
+        let timing = ui::motion::ControlChange::MOVE.timing(
+            ui::motion::Direction::of(up),
+            self.desk.motion,
+            ui::tokens::MotionSource::Gesture,
+        );
         self.desk
             .lifts
             .entry(id)
@@ -1937,10 +1936,13 @@ impl ShellOverlayHost {
             theme,
             content: &content,
         };
-        let fade = self.desk.motion.fade(self.desk.motion.fast());
         for leaving in self.desk.leaving.clone() {
-            let gone = now.saturating_duration_since(leaving.since).as_secs_f64()
-                / fade.as_secs_f64().max(1e-3);
+            let gone = ui::motion::CROSS_FADE.progress_after(
+                ui::motion::Direction::Exit,
+                self.desk.motion,
+                ui::tokens::MotionSource::Pointer,
+                now.saturating_duration_since(leaving.since),
+            );
             if gone < 1.0 {
                 self.paint_leaving(&mut pass, leaving, gone, &mut painted);
             }
