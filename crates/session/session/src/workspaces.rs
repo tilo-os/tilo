@@ -53,6 +53,7 @@ use tilo_user_identity::{
 };
 
 use crate::directory;
+use crate::workspace_settings;
 
 /// Offer, in the workspace menu and in search, what only the session can do
 /// about workspaces: making one, joining one, leaving this one, and its
@@ -963,36 +964,54 @@ impl crate::Shared {
         let Some(personal) = &self.personal else {
             return;
         };
-        let mut personal = personal.borrow_mut();
-        let mut news = personal.publish_local(&self.handle);
-        // A device shown or kept off is a change this desk's pass did not
-        // write.
-        news |= personal.untold;
-        let mut behind = false;
-        if let Some(sync) = &self.sync {
-            let (taken, missing) = take_personal(&mut personal, sync);
-            news |= taken;
-            behind |= missing;
-        }
-        let adoption = personal.adopt_into(&self.handle);
-        for opened in adoption.enter {
-            let room = opened.room.to_string();
-            if let Err(error) = self.add_workspace(&room, &opened.name) {
-                tracing::warn!(%error, %room, "a workspace of the person's was not opened here");
-            }
-        }
-        for room in adoption.release {
-            self.release_workspace(room);
-        }
-        if (news || behind)
-            && let Some(sync) = &self.sync
-            && let Some(update) = personal.snapshot()
-        {
-            sync.tell_personal(&update);
+        let news = {
+            let mut personal = personal.borrow_mut();
+            let mut news = personal.publish_local(&self.handle);
+            // A device shown or kept off is a change this desk's pass did
+            // not write. The list is sent whole, so this asks for one now;
+            // a send that does not happen carries it the next time.
+            news |= personal.untold;
             personal.untold = false;
-        }
-        if adoption.changed {
-            self.keep_desk_now();
+            let mut behind = false;
+            if let Some(sync) = &self.sync {
+                let (taken, missing) = take_personal(&mut personal, sync);
+                news |= taken;
+                behind |= missing;
+            }
+            let adoption = personal.adopt_into(&self.handle);
+            for opened in adoption.enter {
+                let room = opened.room.to_string();
+                if let Err(error) = self.add_workspace(&room, &opened.name) {
+                    tracing::warn!(%error, %room, "a workspace of the person's was not opened here");
+                }
+            }
+            for room in adoption.release {
+                self.release_workspace(room);
+            }
+            if (news || behind)
+                && let Some(sync) = &self.sync
+                && let Some(update) = personal.snapshot()
+            {
+                sync.tell_personal(&update);
+            }
+            if adoption.changed {
+                self.keep_desk_now();
+            }
+            news
+        };
+        // The list moved, so what an open sheet says of the person's
+        // devices may have too: a device they linked, or a choice made on
+        // another one, arrives in the list alone.
+        if news {
+            self.ws_settings_fed.set(None);
+            workspace_settings::refresh(
+                self.workspace_settings.as_ref(),
+                &self.handle,
+                &self.person(),
+                &self.app_lists(),
+                &self.ws_settings_fed,
+                self.personal.as_ref(),
+            );
         }
     }
 
