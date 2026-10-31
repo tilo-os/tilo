@@ -48,7 +48,6 @@ tilolang-none-value = None
 tilolang-empty-value = Empty
 tilolang-yes = Yes
 tilolang-no = No
-tilolang-undo-unavailable = This window cannot take back a step named in its history.
 tilolang-history = History
 tilolang-history-changes = { $count ->
     [one] 1 change
