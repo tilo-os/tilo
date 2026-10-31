@@ -16,20 +16,15 @@ use ui::widget::TaffyTreeExt;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
+use ui::paint::{fill_round, stroke_round};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::widget::Widget;
-
-/// Font size for log lines.
-const LINE_SIZE: f32 = 13.0;
-/// Extra vertical gap between lines.
-const LINE_GAP: f32 = 4.0;
-/// Inner padding inside the log box.
-const PAD: f64 = 8.0;
 
 pub struct StatusLog {
     lines: Vec<String>,
@@ -80,26 +75,33 @@ impl Widget for StatusLog {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(
-            Fill::NonZero,
+        // The line of install output is console output: it says what the
+        // installer is doing and carries device paths in the same face.
+        let style = theme.text(TextRole::Code);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let line_gap = f64::from(theme.tokens.spacing.rhythm.tight);
+        let radius = theme.radius_standard;
+        let shape = RoundedRect::from_rect(self.rect, radius);
+        fill_round(
+            scene,
             transform,
+            self.rect,
+            radius,
             theme.tokens.colors.surfaces.content,
-            None,
-            &shape,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
+        stroke_round(
+            scene,
             transform,
+            self.rect,
+            radius,
             theme.border_standard,
-            None,
-            &shape,
+            f64::from(theme.tokens.metrics.chrome_rule_px),
         );
 
         // Clip glyphs to the box so long lines never bleed out.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
-        let max_w = ui::num::f32_of_f64(self.rect.width() - PAD * 2.0);
-        let inner_h = self.rect.height() - PAD * 2.0;
+        let max_w = ui::num::f32_of_f64(self.rect.width() - pad * 2.0);
+        let inner_h = self.rect.height() - pad * 2.0;
 
         // Tail: walk from the newest line upward, summing each line's WRAPPED
         // height (measured at the box width) until the box is full. A line that
@@ -108,8 +110,8 @@ impl Widget for StatusLog {
         let mut first = self.lines.len();
         let mut used = 0.0_f64;
         for (i, line) in self.lines.iter().enumerate().rev() {
-            let (_, h) = text_renderer.measure(line, LINE_SIZE, Some(max_w));
-            let need = f64::from(h) + f64::from(LINE_GAP);
+            let (_, h) = text_renderer.measure_style(line, Some(max_w), &style);
+            let need = f64::from(h) + line_gap;
             if used + need > inner_h && first != self.lines.len() {
                 break;
             }
@@ -117,18 +119,18 @@ impl Widget for StatusLog {
             first = i;
         }
 
-        let mut y = self.rect.y0 + PAD;
+        let mut y = self.rect.y0 + pad;
         for line in self.lines.iter().skip(first) {
-            let (_, h) = text_renderer.measure(line, LINE_SIZE, Some(max_w));
-            text_renderer.draw_text(
+            let (_, h) = text_renderer.measure_style(line, Some(max_w), &style);
+            text_renderer.draw_style(
                 scene,
                 line,
-                LINE_SIZE,
                 theme.text_primary,
-                transform.pre_translate(Vec2::new(self.rect.x0 + PAD, y)),
+                transform.pre_translate(Vec2::new(self.rect.x0 + pad, y)),
                 Some(max_w),
+                &style,
             );
-            y += f64::from(h) + f64::from(LINE_GAP);
+            y += f64::from(h) + line_gap;
         }
         scene.pop_layer();
     }

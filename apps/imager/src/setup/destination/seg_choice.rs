@@ -18,20 +18,20 @@ use ui::widget::TaffyTreeExt;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{ControlSize, SegmentedFace, ToggleGroup, Widget};
 
 use crate::setup::destination::control::Control;
 
-const HEIGHT: f32 = 40.0;
-const LABEL_SIZE: f32 = 14.0;
+/// The strip's control size: the segmented switch HIG §9.6 sizes for a
+/// field.
+const SIZE: ControlSize = ControlSize::Regular;
 
 pub struct SegChoice {
     labels: Vec<String>,
@@ -79,18 +79,6 @@ impl SegChoice {
             control.fire();
         }
     }
-
-    /// The `i`th segment's fill and label ink. The chosen segment takes the
-    /// accent with the theme's own label for it: the accent is light in high
-    /// contrast and on a soft dark theme, where a white label vanishes.
-    fn segment_face(&self, i: usize, theme: &Theme) -> (Color, Color) {
-        let colors = &theme.tokens.colors;
-        if i == self.selected {
-            (colors.intent.accent, colors.intent.on_accent)
-        } else {
-            (colors.surfaces.raised, theme.text_primary)
-        }
-    }
 }
 
 impl Widget for SegChoice {
@@ -99,11 +87,12 @@ impl Widget for SegChoice {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let height = ui::num::f32_of_f64(SegmentedFace::height(SIZE, theme));
         taffy.widget_leaf(
-            crate::setup::destination::full_width_row(HEIGHT),
+            crate::setup::destination::full_width_row(height),
             node_map,
             self,
         )
@@ -140,61 +129,18 @@ impl Widget for SegChoice {
         if self.labels.is_empty() || self.segment_rects.len() != self.labels.len() {
             return;
         }
-        let radius = theme.radius_standard;
-        let outer = RoundedRect::from_rect(self.rect, radius);
-
-        // Per-segment fills, clipped to the rounded outer shape.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &outer);
-        for (i, seg) in self.segment_rects.iter().enumerate() {
-            let (fill, _) = self.segment_face(i, theme);
-            scene.fill(Fill::NonZero, transform, fill, None, seg);
-        }
-        scene.pop_layer();
-
-        // Interior separators.
-        for seg in self
-            .segment_rects
-            .iter()
-            .take(self.labels.len().saturating_sub(1))
-        {
-            let x = seg.x1;
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1)),
-            );
-        }
-
-        // Outer border (focus ring when focused).
-        let (bw, bc) = if self.is_focused {
-            (2.0, theme.border_focus)
-        } else {
-            (1.0, theme.border_standard)
-        };
-        scene.stroke(&Stroke::new(bw), transform, bc, None, &outer);
-
-        // Labels.
-        for (i, (seg, label)) in self
-            .segment_rects
-            .iter()
-            .zip(self.labels.iter())
-            .enumerate()
-        {
-            let (_, color) = self.segment_face(i, theme);
-            let (tw, th) = text_renderer.measure(label, LABEL_SIZE, None);
-            let tx = seg.center().x - f64::from(tw) / 2.0;
-            let ty = seg.y0 + (seg.height() - f64::from(th)) / 2.0;
-            text_renderer.draw_text(
-                scene,
-                label,
-                LABEL_SIZE,
-                color,
-                transform.pre_translate(Vec2::new(tx, ty)),
-                None,
-            );
-        }
+        let labels: Vec<&str> = self.labels.iter().map(String::as_str).collect();
+        // The toolkit's segmented strip: a raised track, a concentric thumb
+        // on the chosen segment and the theme's ink for it.
+        ToggleGroup::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &SegmentedFace::new(&self.segment_rects, &labels, self.selected)
+                .control_size(SIZE)
+                .focused(self.is_focused),
+        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -293,23 +239,44 @@ mod tests {
     use ui::synthetic_input::named_key;
 
     #[test]
-    fn every_segment_label_reads_on_its_fill_in_every_theme() {
+    fn every_segment_label_is_painted_in_every_theme() {
         use ui::theme::Preset;
-        use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 
         let labels = vec!["btrfs".into(), "ext4".into()];
-        let choice = SegChoice::new(labels, Vec::new(), 0);
         for preset in Preset::ALL {
             let theme = Theme::preset(preset);
-            for i in 0..2 {
-                let (fill, ink) = choice.segment_face(i, &theme);
-                let ratio = ui::a11y::contrast_ratio(ink, fill);
-                assert!(
-                    ratio >= ON_FILL_MIN_CONTRAST,
-                    "{}: segment {i} label reads at {ratio:.2}:1 on its fill",
-                    preset.id()
-                );
-            }
+            let mut strip = SegChoice::new(labels.clone(), Vec::new(), 0);
+            let mut taffy = TaffyTree::new();
+            let node = strip.build_layout(&mut taffy, &theme, &mut HashMap::new());
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(320.0),
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                )
+                .expect("the strip lays out");
+            strip.apply_layout(&taffy, node, Point::ORIGIN);
+            let mut scene = Scene::new();
+            strip.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &PresenceCtx::default(),
+            );
+            assert!(
+                scene.encoding().n_paths >= 2,
+                "{}: the strip and its thumb are painted",
+                preset.id()
+            );
+            assert_eq!(
+                scene.encoding().resources.glyph_runs.len(),
+                2,
+                "{}: every segment label is painted in its own run",
+                preset.id()
+            );
         }
     }
 

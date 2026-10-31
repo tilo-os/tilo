@@ -52,13 +52,13 @@ use taffy::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
 use ui::a11y::Politeness;
+use ui::paint::{fill_rect, fill_round, stroke_round};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -304,15 +304,16 @@ const INSTALLED_REMOVE_MEDIUM: &str = "Installed. Remove the installer medium, t
 /// The log line a finished staged install ends with: there is no medium.
 const INSTALLED_RESTART: &str = "Installed. Restart to start Tilo.";
 
-/// Card geometry (logical px).
-const CARD_WIDTH: f32 = 520.0; // allow-breakpoint: the card's widest size, it narrows to the viewport
-const CARD_PADDING: f32 = 28.0;
-const CARD_GAP: f32 = 12.0;
-/// Breathing room around the card on compact displays. The card itself can
-/// narrow to the remaining width rather than extending beyond the viewport.
-const VIEWPORT_PADDING: f32 = 16.0;
-/// Height of the install status log box.
-const STATUS_LOG_HEIGHT: f32 = 200.0; // allow-breakpoint: the log box's height, not a breakpoint
+/// Lines of the install log the status box shows at once.
+const STATUS_LOG_LINES: usize = 10;
+
+/// The status box's height: the log lines it shows, on the code role, and the
+/// box's own inset, so it grows with the text it holds.
+fn status_log_height(theme: &Theme) -> f32 {
+    let line = f64::from(theme.text(TextRole::Code).line_height_px());
+    let pad = f64::from(theme.tokens.spacing.s2);
+    ui::num::f32_of_f64(ui::num::f64_of_usize(STATUS_LOG_LINES) * line + 2.0 * pad)
+}
 
 /// The wizard steps, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -476,6 +477,9 @@ fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
 struct Card {
     children: Vec<Box<dyn Widget>>,
     rect: Rect,
+    /// The inset the last layout pass was built with; [`Widget::apply_layout`]
+    /// runs without a theme, and paint and hit rects must match the layout.
+    padding: f32,
 }
 
 impl Card {
@@ -483,6 +487,7 @@ impl Card {
         Self {
             children,
             rect: Rect::ZERO,
+            padding: ui::tokens::Spacing::BASE.s6,
         }
     }
 }
@@ -517,31 +522,33 @@ impl Widget for Card {
         // `new_with_children` only errors for a child `NodeId` from a
         // different tree, which never happens here since every id in
         // `child_nodes` was just built in this same tree by the calls above.
+        let padding = theme.tokens.spacing.s6;
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
             align_items: Some(AlignItems::Stretch),
             gap: Size {
                 width: length(0.0_f32),
-                height: length(CARD_GAP),
+                height: length(theme.tokens.spacing.rhythm.sibling),
             },
             padding: taffy::Rect {
-                left: length(CARD_PADDING),
-                right: length(CARD_PADDING),
-                top: length(CARD_PADDING),
-                bottom: length(CARD_PADDING),
+                left: length(padding),
+                right: length(padding),
+                top: length(padding),
+                bottom: length(padding),
             },
             size: Size {
                 width: percent(1.0_f32),
                 height: Dimension::auto(),
             },
             max_size: Size {
-                width: length(CARD_WIDTH),
+                width: length(theme.tokens.metrics.panel_width_sheet),
                 height: Dimension::auto(),
             },
             flex_shrink: 0.0,
             ..Default::default()
         };
+        self.padding = padding;
         taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
@@ -562,7 +569,7 @@ impl Widget for Card {
             .map(|child| child.get_rect().y1)
             .reduce(f64::max)
         {
-            self.rect.y1 = self.rect.y1.max(bottom + f64::from(CARD_PADDING));
+            self.rect.y1 = self.rect.y1.max(bottom + f64::from(self.padding));
         }
     }
 
@@ -574,20 +581,21 @@ impl Widget for Card {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(
-            Fill::NonZero,
+        let radius = theme.radius_standard;
+        fill_round(
+            scene,
             transform,
+            self.rect,
+            radius,
             theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
+        stroke_round(
+            scene,
             transform,
+            self.rect,
+            radius,
             theme.border_standard,
-            None,
-            &shape,
+            f64::from(theme.tokens.metrics.chrome_rule_px),
         );
         for child in &mut self.children {
             child.draw(scene, transform, text_renderer, theme, presence);
@@ -648,6 +656,10 @@ impl Widget for Card {
 struct ViewportStage {
     children: Vec<Box<dyn Widget>>,
     rect: Rect,
+    /// The breathing room the last layout pass was built with;
+    /// [`Widget::apply_layout`] runs without a theme, and the scroll extent
+    /// must match the layout.
+    padding: f32,
 }
 
 impl ViewportStage {
@@ -655,6 +667,7 @@ impl ViewportStage {
         Self {
             children: vec![Box::new(Spacer::new()), card, Box::new(Spacer::new())],
             rect: Rect::ZERO,
+            padding: ui::tokens::RhythmScale::BASE.section,
         }
     }
 }
@@ -671,15 +684,16 @@ impl Widget for ViewportStage {
             .iter_mut()
             .map(|child| child.build_layout(taffy, theme, node_map))
             .collect();
+        let padding = theme.tokens.spacing.rhythm.section;
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
             align_items: Some(AlignItems::Center),
             padding: taffy::Rect {
-                left: length(VIEWPORT_PADDING),
-                right: length(VIEWPORT_PADDING),
-                top: length(VIEWPORT_PADDING),
-                bottom: length(VIEWPORT_PADDING),
+                left: length(padding),
+                right: length(padding),
+                top: length(padding),
+                bottom: length(padding),
             },
             size: Size {
                 width: percent(1.0_f32),
@@ -697,6 +711,7 @@ impl Widget for ViewportStage {
             flex_shrink: 0.0,
             ..Default::default()
         };
+        self.padding = padding;
         taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
@@ -714,7 +729,7 @@ impl Widget for ViewportStage {
             self.rect.y1 = self
                 .rect
                 .y1
-                .max(card.get_rect().y1 + f64::from(VIEWPORT_PADDING));
+                .max(card.get_rect().y1 + f64::from(self.padding));
         }
     }
 
@@ -2624,7 +2639,7 @@ impl InstallerApp {
                 };
                 let selected = self.network.selected_ssid.as_deref() == Some(network.ssid.as_str());
                 let label = format!(
-                    "{}{} · {marker} · signal {}/4",
+                    "{}{}, {marker}, signal {} of 4",
                     if selected { "✓ " } else { "" },
                     network.ssid,
                     network.signal
@@ -3119,7 +3134,7 @@ impl InstallerApp {
             Text::new("Disk encryption").with_role(TextRole::Body),
         ));
         children.push(Box::new(
-            Text::new("Always on · LUKS2")
+            Text::new("Always on, with LUKS2")
                 .with_role(TextRole::Body)
                 .with_color(theme.status_success),
         ));
@@ -3278,7 +3293,6 @@ impl InstallerApp {
                     self.control(DestinationEffect::SetMediaCodecs { enabled: true }),
                 )
                 .primary()
-                .large()
                 .with_width(theme.tokens.spacing.s16 * 4.0 + theme.tokens.spacing.s12)
                 .with_test_id("codecs_install"),
             )));
@@ -3671,7 +3685,10 @@ impl InstallerApp {
                     ));
                 }
                 self.compose_recovery_key(theme, children);
-                children.push(Box::new(StatusLog::new(friendly_status, STATUS_LOG_HEIGHT)));
+                children.push(Box::new(StatusLog::new(
+                    friendly_status,
+                    status_log_height(theme),
+                )));
                 if !self.status.is_empty() {
                     children.push(Box::new(
                         Text::new(&self.status)
@@ -3703,7 +3720,7 @@ impl InstallerApp {
                 self.compose_recovery_key(theme, children);
                 children.push(Box::new(StatusLog::new(
                     self.status_lines.clone(),
-                    STATUS_LOG_HEIGHT,
+                    status_log_height(theme),
                 )));
                 actions.push(Box::new(ActionButton::new(
                     "Review storage",
@@ -3724,7 +3741,10 @@ impl InstallerApp {
                     )),
                 ));
                 self.compose_recovery_key(theme, children);
-                children.push(Box::new(StatusLog::new(friendly_status, STATUS_LOG_HEIGHT)));
+                children.push(Box::new(StatusLog::new(
+                    friendly_status,
+                    status_log_height(theme),
+                )));
             }
         }
     }
@@ -4198,12 +4218,11 @@ impl Widget for InstallerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        scene.fill(
-            Fill::NonZero,
+        fill_rect(
+            scene,
             transform,
+            self.rect,
             theme.tokens.colors.surfaces.content,
-            None,
-            &self.rect,
         );
         if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
@@ -6544,11 +6563,15 @@ mod tests {
 
             let card = find_named(&app, "InstallerCard").expect("review card");
             assert!(
-                card.get_rect().width() <= 320.0 - 2.0 * f64::from(VIEWPORT_PADDING),
+                card.get_rect().width()
+                    <= 320.0 - 2.0 * f64::from(ui::tokens::RhythmScale::BASE.section),
                 "responsive card escaped compact viewport: {:?}",
                 card.get_rect()
             );
-            assert!(card.get_rect().x0 >= f64::from(VIEWPORT_PADDING));
+            assert!(
+                card.get_rect().x0 >= f64::from(ui::tokens::RhythmScale::BASE.section),
+                "the card keeps the viewport's inset"
+            );
             assert!(
                 card.get_rect().height() > 480.0,
                 "representative Review must exercise vertical overflow"

@@ -1,21 +1,15 @@
 //! [`ActionButton`] — the installer's primary/secondary call-to-action.
 //!
-//! `ui::Button` is fixed at 120×40 px and always paints the same neutral
-//! "raised surface" fill, so it can't express a wizard's visual hierarchy
-//! (a prominent accent "Next"/"Begin" vs. a quieter "Back") or fill a nav
-//! row. `ActionButton` is a leaf widget that:
+//! A wizard button fills its nav row rather than sitting at a fixed width,
+//! runs a published [`Control`] on activation, and can stand as a checkbox.
+//! Its face is the toolkit's own ([`ButtonFace`]): a **primary** action is
+//! the accent fill with its theme-resolved label, a **secondary** one the
+//! raised control with its derived edge, and a **quiet** one the plain role's
+//! text look. Every wizard button is the large control size: a wizard's
+//! actions are the screen's one thing to do.
 //!
-//!   * grows to share its row's width (so a lone button fills the row and
-//!     a Back/Next pair splits it evenly),
-//!   * styles itself **primary** (accent fill, white label) or
-//!     **secondary** (raised fill, neutral label),
-//!   * supports a **disabled** state (dimmed, non-interactive, dropped
-//!     from the focus order),
-//!   * on click / Enter / Space / assistive activation fires its
-//!     [`Control`]: the published action the
-//!     [`crate::setup::destination::installer_app::InstallerApp`] runs through its action door.
-//!
-//! Every colour is read from the [`Theme`]; nothing is hard-coded.
+//! Every colour, size, radius and edge is read from the [`Theme`]; nothing is
+//! hard-coded.
 
 use std::collections::HashMap;
 use ui::widget::ModelPath;
@@ -24,24 +18,24 @@ use ui::widget::TaffyTreeExt;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, Widget};
 
 use crate::setup::destination::control::Control;
 
-const HEIGHT: f32 = 44.0;
-const LABEL_SIZE: f32 = 15.0;
+/// The size of a wizard button: the wizard's actions are what the screen is
+/// for, so they take the large control.
+const SIZE: ControlSize = ControlSize::Large;
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent interaction/lifecycle flag (primary, quiet, large, disabled, hover, press, focus), not a combinatorial state machine"
+    reason = "each bool is an independent interaction/lifecycle flag (primary, quiet, disabled, hover, press, focus), not a combinatorial state machine"
 )]
 pub struct ActionButton {
     label: String,
@@ -64,8 +58,6 @@ pub struct ActionButton {
     primary: bool,
     /// Text-link look for a low-key alternative: no fill, no hairline.
     quiet: bool,
-    /// A taller button with a larger label.
-    large: bool,
     /// A fixed width instead of sharing the row.
     width: Option<f32>,
     disabled: bool,
@@ -87,7 +79,6 @@ impl ActionButton {
             check_taken: false,
             primary: false,
             quiet: false,
-            large: false,
             width: None,
             disabled: false,
             rect: Rect::ZERO,
@@ -109,13 +100,6 @@ impl ActionButton {
     #[must_use]
     pub fn quiet(mut self) -> Self {
         self.quiet = true;
-        self
-    }
-
-    /// A step's one deliberate action: taller, with a larger label.
-    #[must_use]
-    pub fn large(mut self) -> Self {
-        self.large = true;
         self
     }
 
@@ -168,43 +152,15 @@ impl ActionButton {
         self.control.fire();
     }
 
-    /// Fill and label colour by variant and interaction state.
-    fn face(&self, theme: &Theme) -> (Color, Color) {
-        let raised = theme.tokens.colors.surfaces.raised;
-        if self.disabled {
-            (raised, theme.text_dim)
+    /// What this button is: a step's main action, a low-key text action, or
+    /// an ordinary one. The role is the whole look; nothing else sets it.
+    fn role(&self) -> ButtonRole {
+        if self.primary {
+            ButtonRole::Primary
         } else if self.quiet {
-            let bg = if self.is_pressed {
-                theme.tokens.colors.lift_on(raised, 1.0)
-            } else if self.is_hovered {
-                theme.tokens.colors.lift_on(raised, 0.5)
-            } else {
-                Color::TRANSPARENT
-            };
-            (
-                bg,
-                if self.is_hovered || self.is_focused {
-                    theme.text_primary
-                } else {
-                    theme.text_dim
-                },
-            )
-        } else if self.primary {
-            let bg = if self.is_pressed || self.is_hovered {
-                theme.tokens.colors.intent.accent_hover
-            } else {
-                theme.tokens.colors.intent.accent
-            };
-            (bg, theme.tokens.colors.intent.on_accent)
+            ButtonRole::Plain
         } else {
-            let bg = if self.is_pressed {
-                theme.tokens.colors.lift_on(raised, 1.0)
-            } else if self.is_hovered {
-                theme.tokens.colors.lift_on(raised, 0.5)
-            } else {
-                raised
-            };
-            (bg, theme.text_primary)
+            ButtonRole::Secondary
         }
     }
 
@@ -253,12 +209,10 @@ mod tests {
 
     #[test]
     fn action_buttons_are_named_activatable_native_controls() {
-        // Phase `enter_and_space_fire_the_focused_action`.
         {
             assert_key_fires(NamedKey::Enter);
             assert_key_fires(NamedKey::Space);
         }
-        // Phase `button_semantics_are_named_focusable_and_activatable`.
         {
             let (control, presses) = Control::detached(DestinationEffect::Reboot);
             let mut button = ActionButton::new("Reboot now", control).with_test_id("reboot");
@@ -289,7 +243,6 @@ mod tests {
             ));
             assert!(presses.take().is_none());
         }
-        // Phase `recovery_ack_is_a_cleanly_named_native_checkbox`.
         {
             let (control, _) = Control::detached(DestinationEffect::SetRecoveryPromise {
                 acknowledged: false,
@@ -382,12 +335,7 @@ impl Widget for ActionButton {
         // returns a bare `NodeId` across every implementor, so surfacing a
         // theoretical error here would mean threading a `Result` through the
         // whole toolkit for a branch that can't be taken.
-        let height = if self.large {
-            (theme.tokens.spacing.s12 + theme.tokens.spacing.s2)
-                .max(theme.text(ui::tokens::TextRole::Heading).size + theme.tokens.spacing.s6)
-        } else {
-            HEIGHT
-        };
+        let height = ui::num::f32_of_f64(ButtonFace::height(SIZE, theme));
         let style = match self.width {
             Some(width) => Style {
                 size: Size::from_lengths(width, height),
@@ -428,71 +376,53 @@ impl Widget for ActionButton {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // The checkbox goes where its value is, as the input that changed
-        // it asks.
-        let now = ui::motion::frame_now();
-        let check_pose = self.checked.map(|checked| {
-            self.check
-                .follow_input(checked, ui::widget::CheckGlyph::Check, theme.motion(), now);
-            self.check.pose(now)
-        });
-        let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-
-        let (bg, label_color) = self.face(theme);
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-
-        // Border: focus ring wins; secondary buttons keep a hairline.
-        if self.is_focused && !self.disabled {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                theme.border_focus,
-                None,
-                &shape,
-            );
-        } else if !self.primary && !self.quiet {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &shape,
-            );
-        }
-
-        let label = self.accessible_label();
-        let label_size = if self.large {
-            theme.tokens.typography.size(ui::tokens::TextRole::Heading)
-        } else {
-            LABEL_SIZE
-        };
-        let (tw, th) = text_renderer.measure(label, label_size, None);
-        let checkbox_width = self.checked.map_or(0.0, |_| 24.0);
-        let group_half_width = f64::midpoint(f64::from(tw) + checkbox_width, 0.0);
-        let tx = self.rect.center().x - group_half_width;
-        let ty = self.rect.y0 + (self.rect.height() - f64::from(th)) / 2.0;
+        // The checkbox goes where its value is, as the input that changed it
+        // asks. It follows the input before the label is read, so the two
+        // borrows of the button never overlap.
         if let Some(checked) = self.checked {
-            let side = 16.0;
-            let box_rect = Rect::new(
-                tx,
-                self.rect.center().y - side / 2.0,
-                tx + side,
-                self.rect.center().y + side / 2.0,
+            self.check.follow_input(
+                checked,
+                ui::widget::CheckGlyph::Check,
+                theme.motion(),
+                ui::motion::frame_now(),
             );
-            // The shared checkbox face, posed by its motion.
-            let mut face = ui::widget::CheckboxFace::new(box_rect, checked);
-            if let Some(pose) = check_pose {
-                face = face.pose(pose);
-            }
-            ui::widget::Checkbox::paint(scene, transform, theme, &face);
         }
-        text_renderer.draw_text(
+        let label = self.accessible_label();
+        // A checkbox button paints its own label beside its box, centred on
+        // the box as one group, so the face paints without one.
+        let face = ButtonFace::new(self.rect, if self.checked.is_some() { "" } else { label })
+            .role(self.role())
+            .control_size(SIZE)
+            .hovered(self.is_hovered)
+            .pressed(self.is_pressed)
+            .focused(self.is_focused)
+            .disabled(self.disabled);
+        let (_, _, ink) = face.colors(theme);
+        Button::paint(scene, transform, text_renderer, theme, &face);
+
+        let Some(checked) = self.checked else {
+            return;
+        };
+        let metrics = &theme.tokens.metrics;
+        let side = f64::from(metrics.icon_control);
+        let gap = f64::from(metrics.icon_label_gap);
+        let style = SIZE.label_style(theme);
+        let (tw, th) = text_renderer.measure_style(label, None, &style);
+        let group_half_width = (f64::from(tw) + side + gap) / 2.0;
+        let center = self.rect.center();
+        let tx = center.x - group_half_width;
+        let box_rect = Rect::new(tx, center.y - side / 2.0, tx + side, center.y + side / 2.0);
+        // The shared checkbox face, posed by its motion.
+        let checkbox = ui::widget::CheckboxFace::new(box_rect, checked)
+            .pose(self.check.pose(ui::motion::frame_now()));
+        ui::widget::Checkbox::paint(scene, transform, theme, &checkbox);
+        text_renderer.draw_style(
             scene,
             label,
-            label_size,
-            label_color,
-            transform.pre_translate(Vec2::new(tx + checkbox_width, ty)),
+            ink,
+            transform.pre_translate(Vec2::new(tx + side + gap, center.y - f64::from(th) / 2.0)),
             None,
+            &style,
         );
     }
 

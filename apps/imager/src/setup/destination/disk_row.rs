@@ -13,16 +13,17 @@ use ui::widget::TaffyTreeExt;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::paint::{PaintCtx, fill_round, stroke_round};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::Widget;
+use ui::widget::primitives::{Fact, FactsFace};
 
 use crate::setup::destination::control::Control;
 use imager_backend::destination::disks::Disk;
@@ -163,23 +164,18 @@ impl Widget for DiskRow {
         } else {
             raised
         };
-        let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
+        let radius = theme.radius_standard;
+        fill_round(scene, transform, self.rect, radius, bg);
 
+        let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
         let (stroke_w, stroke_color) = if self.selected {
-            (2.0, theme.tokens.colors.intent.accent_ink)
+            (2.0 * rule, theme.tokens.colors.intent.accent_ink)
         } else if self.is_focused {
-            (2.0, theme.border_focus)
+            (2.0 * rule, theme.border_focus)
         } else {
-            (1.0, theme.border_standard)
+            (rule, theme.border_standard)
         };
-        scene.stroke(
-            &Stroke::new(stroke_w),
-            transform,
-            stroke_color,
-            None,
-            &shape,
-        );
+        stroke_round(scene, transform, self.rect, radius, stroke_color, stroke_w);
 
         let name_style = theme.tokens.typography.style(TextRole::Body);
         let detail_style = theme.tokens.typography.style(TextRole::Caption);
@@ -225,33 +221,44 @@ impl Widget for DiskRow {
             None,
             &name_style,
         );
-        let mut details = vec![self.disk.name.clone()];
-        details.push(self.disk.contents_summary());
-        if self.disk.hosts_staged_installer() {
-            details.push("prepared by Tilo Imager".to_string());
-        } else if self.disk.is_system {
-            details.push("running system disk".to_string());
-            details.push("not selectable".to_string());
-        }
-        if self.disk.read_only {
-            details.push("read-only".to_string());
-            details.push("not selectable".to_string());
-        }
-        if !self.disk.identity_ready() {
-            details.push("identity unavailable".to_string());
-            details.push("not selectable".to_string());
+        // The details are separate facts, not a joined line: the row is too
+        // narrow to elide a chain, so the lowest-priority fact drops first.
+        let mut details: Vec<String> = Vec::new();
+        {
+            let mut push = |detail: &str| {
+                if !details.iter().any(|d| d == detail) {
+                    details.push(detail.to_string());
+                }
+            };
+            push(&self.disk.name);
+            push(&self.disk.contents_summary());
+            if self.disk.hosts_staged_installer() {
+                push("prepared by Tilo Imager");
+            } else if self.disk.is_system {
+                push("running system disk");
+                push("not selectable");
+            }
+            if self.disk.read_only {
+                push("read-only");
+                push("not selectable");
+            }
+            if !self.disk.identity_ready() {
+                push("identity unavailable");
+                push("not selectable");
+            }
         }
         if !details.is_empty() {
             let y2 = y1 + f64::from(name_style.line_height_px() + theme.tokens.spacing.s1);
-            let details =
-                text_renderer.elide_to_width_style(&details.join(" · "), width, &detail_style);
-            text_renderer.draw_style(
-                scene,
-                &details,
-                theme.text_dim,
-                transform.pre_translate(Vec2::new(self.rect.x0 + padding, y2)),
-                None,
-                &detail_style,
+            let facts: Vec<Fact> = details.iter().map(|d| Fact::text(d.clone())).collect();
+            let band = Rect::new(
+                self.rect.x0 + padding,
+                y2,
+                self.rect.x0 + padding + f64::from(width),
+                y2 + f64::from(detail_style.line_height_px()),
+            );
+            FactsFace::new(&facts).paint(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                band,
             );
         }
     }
