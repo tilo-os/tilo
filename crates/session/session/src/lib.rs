@@ -114,7 +114,6 @@ use keys::{GuideKeys, Invocations, SessionKeys};
 use panels::{Banners, Held, Popover, Readout};
 use search::SessionSearch;
 use setup::Setup;
-use sheets::Sheet;
 use tilo_app_launch::Doors as WindowDoors;
 use tilo_desktop_search::providers::places::Place;
 use tilo_sheets::Seat as _;
@@ -467,6 +466,8 @@ struct Shared {
     /// The copies the person can paste again, and what the Clipboard section
     /// was last fed of them.
     clipboard: mount::clipboard::Clipboard,
+    /// The person's settings, kept in step with their other devices.
+    settings: mount::settings_sync::SettingsSync,
     /// The overview's pictures and the clock they fly on, which its panel
     /// in the chrome draws with.
     overview: mount::overview::Overview,
@@ -1570,7 +1571,7 @@ impl Session {
             mount_device(&mut compositor, &mut doors, &mut options, &readings);
 
         // The sheets, over the desktop and its panels.
-        let Sheets {
+        let mount::sheets::Sheets {
             power,
             workspace_settings,
             portal,
@@ -1579,7 +1580,7 @@ impl Session {
             lock,
             display_confirm,
             shortcut_guide: guide_seat,
-        } = mount_sheets(&mut compositor, &mut doors, &options);
+        } = mount::sheets::mount_sheets(&mut compositor, &mut doors, &options);
 
         // The capture studio, over everything it captures.
         let capture_studio = capture_studio::mount(&mut compositor, &mut doors, &options);
@@ -1707,6 +1708,7 @@ impl Session {
             notice_view: RefCell::new(None),
             sync,
             clipboard: mount::clipboard::Clipboard::new(),
+            settings: mount::settings_sync::SettingsSync::new(),
             overview,
             dictation,
             shortcut_guide,
@@ -2172,6 +2174,10 @@ impl Session {
             tilo_speaker_service::remote_audio::pump(fabric.as_ref(), media_enabled, None);
             tilo_speaker_service::groups::pump(fabric.as_ref(), media_enabled);
             tilo_speaker_service::settings::observe(fabric.as_ref());
+            // The person's settings follow them between their devices on the
+            // same fabric: what they set here is offered to it, and what
+            // they set there reaches the document this session reads.
+            self.shared.settings.sync(fabric.as_ref());
         }
         Ok(())
     }
@@ -2924,163 +2930,4 @@ fn mount_device(
     let quick_settings =
         panel.and_then(|panel| mount_quick_settings(compositor, doors, panel, options, readings));
     (device, quick_settings)
-}
-
-/// The sheets the session lends its seats to.
-struct Sheets {
-    power: Option<PowerSeat>,
-    workspace_settings: Option<WorkspaceSettingsSeat>,
-    directory: Option<DirectorySeat>,
-    portal: Option<PortalSeat>,
-    file_picker: Option<FilePickerSeat>,
-    lock: Option<LockSeat>,
-    display_confirm: Option<ConfirmSeat>,
-    shortcut_guide: Option<GuideSeat>,
-}
-
-fn mount_sheets(compositor: &mut Compositor, doors: &mut Doors, options: &Options) -> Sheets {
-    let who = (options.device.as_str(), options.person.as_str());
-    let power = mount_sheet(
-        compositor,
-        doors,
-        tilo_sheets::power::definition(),
-        PowerSeat::default(),
-        who,
-        options,
-    );
-    if let Some(power) = &power {
-        // The host's power is the host's: a session in a window offers no
-        // switching user, suspending or restarting, and a session that
-        // cannot check a password offers no locking.
-        power.set_offers(tilo_sheets::power::Offers {
-            user_switching: !options.hosted,
-            host_power: !options.hosted,
-            locking: options.verifier.available(),
-            hangs_from: 0.0,
-        });
-    }
-    let workspace_settings = mount_sheet(
-        compositor,
-        doors,
-        tilo_sheets::workspace_settings::definition(),
-        WorkspaceSettingsSeat::default(),
-        who,
-        options,
-    );
-    let directory = mount_sheet(
-        compositor,
-        doors,
-        tilo_sheets::directory::definition(),
-        DirectorySeat::default(),
-        who,
-        options,
-    );
-    let portal = mount_sheet(
-        compositor,
-        doors,
-        tilo_sheets::portal::definition(),
-        PortalSeat::default(),
-        who,
-        options,
-    );
-    let file_picker = mount_sheet(
-        compositor,
-        doors,
-        tilo_sheets::file_picker::definition(),
-        FilePickerSeat::default(),
-        who,
-        options,
-    );
-    let shortcut_guide = mount_sheet(
-        compositor,
-        doors,
-        tilo_sheets::shortcut_guide::definition(),
-        GuideSeat::default(),
-        who,
-        options,
-    );
-    // The question about a display change stands on every display: it may
-    // be about the display it would otherwise be put on.
-    let display_confirm = mount_sheet(
-        compositor,
-        doors,
-        tilo_sheets::display_confirm::definition(),
-        ConfirmSeat::default(),
-        who,
-        options,
-    );
-    if let Some(confirm) = &display_confirm {
-        confirm.presentation().cover_every_display();
-    }
-    // Last, so it covers every other sheet, the guide among them: the lock
-    // screen shows no key of the desktop behind it.
-    let lock = mount_lock_screen(compositor, doors, who, options);
-    Sheets {
-        power,
-        workspace_settings,
-        directory,
-        portal,
-        file_picker,
-        lock,
-        display_confirm,
-        shortcut_guide,
-    }
-}
-
-fn mount_sheet<S: tilo_sheets::Seat + 'static>(
-    compositor: &mut Compositor,
-    doors: &mut Doors,
-    definition: &'static ui::application::ApplicationDefinition,
-    seat: S,
-    who: (&str, &str),
-    options: &Options,
-) -> Option<S> {
-    match Sheet::mount(
-        definition,
-        seat,
-        who,
-        (options.presentation)(),
-        options.scale,
-    ) {
-        Ok(sheet) => {
-            let seat = sheet.seat().clone();
-            let sheet = Rc::new(RefCell::new(sheet));
-            compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
-            doors.add(sheet);
-            Some(seat)
-        }
-        Err(error) => {
-            tracing::warn!(%error, app = definition.app_id(), "sheet not mounted");
-            None
-        }
-    }
-}
-
-/// The lock screen, hosted over nothing while the session is locked; its
-/// seat, when it mounted.
-fn mount_lock_screen(
-    compositor: &mut Compositor,
-    doors: &mut Doors,
-    who: (&str, &str),
-    options: &Options,
-) -> Option<LockSeat> {
-    match Sheet::mount(
-        tilo_sheets::lock::definition(),
-        LockSeat::default(),
-        who,
-        (options.presentation)(),
-        options.scale,
-    ) {
-        Ok(sheet) => {
-            let seat = sheet.seat().clone();
-            let sheet = Rc::new(RefCell::new(sheet.locking()));
-            compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
-            doors.add(sheet);
-            Some(seat)
-        }
-        Err(error) => {
-            tracing::warn!(%error, "lock screen not mounted");
-            None
-        }
-    }
 }

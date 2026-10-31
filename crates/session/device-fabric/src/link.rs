@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 
 use tilo_network_actor::fabric::DeviceId;
 
-use crate::{ClipboardEntry, DeviceFabric, PersonalFabricAction};
+use crate::{ClipboardEntry, DeviceFabric, PersonalFabricAction, RoamingSetting};
 
 /// Why a personal fabric action did not reach the transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +72,14 @@ pub trait FabricLink {
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         let _ = entries;
     }
+    /// Offer the person's settings this device holds to their other devices,
+    /// as this device's own records in its next snapshot.
+    ///
+    /// A link whose transport does not carry settings yet ignores the offer;
+    /// what their devices set still merges in from [`Self::device_fabric`].
+    fn share_settings(&self, settings: Vec<RoamingSetting>) {
+        let _ = settings;
+    }
 }
 
 /// A link a service keeps beyond one call, for work it finishes later.
@@ -112,5 +120,9 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         (**self).share_clipboard(entries);
+    }
+
+    fn share_settings(&self, settings: Vec<RoamingSetting>) {
+        (**self).share_settings(settings);
     }
 }

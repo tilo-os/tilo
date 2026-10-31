@@ -13,4 +13,6 @@ pub mod firstboot;
 pub mod lock;
 pub(crate) mod overview;
 pub(crate) mod power;
+pub(crate) mod settings_sync;
+pub(crate) mod sheets;
 pub(crate) mod vpn;
