@@ -681,3 +681,18 @@ fn a_generic_view_with_a_lambda_and_view_state_expands_where_it_is_called() {
         "view state is passed by its name: {wrong:#?}"
     );
 }
+
+/// `ui.Time(at)` of a `Time` is the toolkit's relative time: a node whose `at` is the moment,
+/// marked as a time for the host to read it as one.
+#[test]
+fn a_time_shows_as_the_toolkits_relative_time() {
+    let (m, _) = lower(
+        "type Note {\n    title: Text (title)\n    seen: Time\n}\n\
+         view when(n: Note) {\n    ui.Time(n.seen, secondary: true)\n}\n",
+    );
+    let calls = ui_calls(func(&m, "when"));
+    assert!(has(&calls, "node ui.Time"), "{calls:#?}");
+    assert!(has(&calls, "prop at"), "{calls:#?}");
+    assert!(has(&calls, "prop at:as"), "{calls:#?}");
+    assert!(has(&calls, "prop secondary"), "{calls:#?}");
+}

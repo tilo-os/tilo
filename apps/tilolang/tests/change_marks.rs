@@ -51,6 +51,70 @@ pub(crate) fn marks(app: &mut HostedApp) -> Vec<(String, [f64; 4])> {
         .collect()
 }
 
+/// The list's rows: each one's title, rect and whether it carries a change mark (what it says
+/// to assistive technology names who changed it).
+pub(crate) fn rows(app: &mut HostedApp) -> Vec<(String, [f64; 4], bool)> {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    all.into_iter()
+        .filter(|node| node.widget == "SwipeRow" || node.widget == "ListRow")
+        .filter_map(|node| {
+            let semantics = node.semantics.as_ref()?;
+            let name = semantics.name.clone()?;
+            let marked = semantics.value.as_deref().is_some_and(|value| {
+                ["Made by", "Changed by", "Removed by"]
+                    .iter()
+                    .any(|said| value.contains(said))
+            });
+            Some((name, node.rect, marked))
+        })
+        .collect()
+}
+
+/// A reference to the published resource of `app` labelled `label`, as an action's argument
+/// names one.
+pub(crate) fn reference(app_id: &str, app: &mut HostedApp, label: &str) -> serde_json::Value {
+    fn flattened(
+        resources: &[ui::tilo_actions::ResourceSpec],
+    ) -> Vec<&ui::tilo_actions::ResourceSpec> {
+        resources
+            .iter()
+            .flat_map(|r| std::iter::once(r).chain(flattened(&r.children)))
+            .collect()
+    }
+    let resources = app.harness().resources();
+    let prefix = format!("tl:{app_id}:");
+    let found = flattened(&resources)
+        .into_iter()
+        .find(|r| r.label == label && r.id.as_str().starts_with(&prefix))
+        .unwrap_or_else(|| panic!("nothing of {app_id} is labelled {label}"));
+    serde_json::json!({
+        "app": app_id,
+        "kind": found.kind,
+        "id": found.id.as_str().trim_start_matches(&prefix),
+        "label": "",
+    })
+}
+
+/// The rows standing in for removed items: their titles.
+pub(crate) fn removed_rows(app: &mut HostedApp) -> Vec<String> {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    all.into_iter()
+        .filter(|node| node.widget == "SwipeRow" || node.widget == "ListRow")
+        .filter_map(|node| {
+            let semantics = node.semantics.as_ref()?;
+            semantics
+                .value
+                .as_deref()
+                .is_some_and(|value| value.contains("Removed by"))
+                .then(|| semantics.name.clone().unwrap_or_default())
+        })
+        .collect()
+}
+
 /// The id of the action labelled `label` the published resource `resource` offers.
 pub(crate) fn action_id(app: &mut HostedApp, resource: &str, label: &str) -> String {
     fn flattened(
@@ -133,7 +197,11 @@ pub(crate) fn published_with(app: &mut HostedApp, under: &str, label: &str) -> S
     let resources = app.harness().resources();
     let all = flattened(&resources);
     all.iter()
-        .find(|r| r.id.as_str().starts_with(under) && r.actions.iter().any(|a| a.label == label))
+        .find(|r| {
+            r.id.as_str().starts_with(under)
+                && r.id.as_str() != under
+                && r.actions.iter().any(|a| a.label == label)
+        })
         .map_or_else(
             || {
                 let ids: Vec<&str> = all.iter().map(|r| r.id.as_str()).collect();

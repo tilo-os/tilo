@@ -91,6 +91,45 @@ fn read_value(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<serde_json::Va
     }
 }
 
+/// The JSON value the document held at `value` (the object `id`) as of
+/// `heads`: [`read_value`] of a past version, read in place rather than on a
+/// fork of the document.
+pub(crate) fn read_value_at(
+    doc: &impl ReadDoc,
+    value: &Value<'_>,
+    id: &ObjId,
+    heads: &[automerge::ChangeHash],
+) -> Result<serde_json::Value, ModelError> {
+    match value {
+        Value::Scalar(scalar) => json_of_scalar(scalar),
+        Value::Object(ObjType::Text) => Ok(serde_json::Value::String(doc.text_at(id, heads)?)),
+        Value::Object(ObjType::Map | ObjType::Table) => {
+            let mut fields = serde_json::Map::new();
+            for key in doc.keys_at(id, heads).collect::<Vec<_>>() {
+                if let Some((value, inner)) = doc.get_at(id, key.as_str(), heads)? {
+                    let read = read_value_at(doc, &value, &inner, heads).located(&key)?;
+                    fields.insert(key, read);
+                }
+            }
+            Ok(serde_json::Value::Object(fields))
+        }
+        Value::Object(ObjType::List) => {
+            let length = doc.length_at(id, heads);
+            let mut items = Vec::with_capacity(length);
+            for index in 0..length {
+                let read = match doc.get_at(id, index, heads)? {
+                    Some((value, inner)) => {
+                        read_value_at(doc, &value, &inner, heads).located(&index.to_string())?
+                    }
+                    None => serde_json::Value::Null,
+                };
+                items.push(read);
+            }
+            Ok(serde_json::Value::Array(items))
+        }
+    }
+}
+
 /// Write `value` into `slot`, changing only what differs: a key of an
 /// object or an element of an array that holds the same value is left as
 /// it is.
